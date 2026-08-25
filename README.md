@@ -1,8 +1,21 @@
 # hierarchy-verifier
 
-Evaluation methodology for **model-development research agents**: not whether the code runs, but
-whether the agent breaks a research goal into sub-goals, relates them to the final objective, and
-spends a fixed experiment budget well.
+> **One-liner.** We're building a single learned outcome predictor for AI-research agents, and
+> shipping it as two head-to-head wins: beating **DataMaster** on **PostTrainBench** and beating
+> the **AI Research Preference Model** on **AIRS-Bench**.
+
+Both systems decide where to spend GPU budget with a mechanism that ignores outcomes it has
+already observed — RPM uses a frozen pairwise judge that sees only the current run, DataMaster
+uses a content-blind UCB scheduler — so we replace both with one model trained on prior run logs
+that predicts the performance delta of an unexecuted candidate, with calibrated uncertainty.
+
+The full thesis, the ablations it decomposes into, and the task-level findings that constrain it
+live in **[doc/iclr-27-idea.md](doc/iclr-27-idea.md)** — a living document, appended to as we
+learn.
+
+Underneath that sits the evaluation methodology for **model-development research agents**: not
+whether the code runs, but whether the agent breaks a research goal into sub-goals, relates them
+to the final objective, and spends a fixed experiment budget well.
 
 We do not build a benchmark from scratch. We take existing ones, keep only the tasks that are
 genuinely model-development research, run agents on them under one contract, and add the
@@ -12,6 +25,7 @@ evaluation dimensions the benchmarks are missing.
 
 | Path | |
 |---|---|
+| `doc/iclr-27-idea.md` | **The research thesis**: the one learned predictor, the two targets, the verifier tower and its objections, what the task set does to the claim, what to measure first |
 | `doc/reference/task_selection_principles.md` | The durable judgement rules: gates G1–G4, Track-Optimize vs Track-Replica, domain levels D0–D2, analysis principles P1–P6 |
 | `doc/meeting/aug_24_data_select.md` | Which benchmarks and tasks passed those rules, the trajectory assets, GPU budgets |
 | `doc/reference/harness_facts/` | Verbatim research on each upstream harness: task format, runner, agent interface, trajectory format |
