@@ -1,4 +1,4 @@
-agentic-world-model
+# agentic-world-model
 
 > **One-liner.** We're building a single learned outcome predictor for AI-research agents, and
 > shipping it as two head-to-head wins: beating **DataMaster** on **PostTrainBench** and beating
@@ -20,6 +20,12 @@ to the final objective, and spends a fixed experiment budget well.
 We do not build a benchmark from scratch. We take existing ones, keep only the tasks that are
 genuinely model-development research, run agents on them under one contract, and add the
 evaluation dimensions the benchmarks are missing.
+
+Three names appear below and all three are current: the repository is **agentic-world-model**,
+the Python distribution and its CLI are **`hierarchy-verifier`** / **`hv`**, and the licence is
+the **Hierarchy-Verifier Non-Commercial Research License 1.0**. Only the repository was renamed;
+the package name, the import path, the `HV_*` environment variables and the licence's legal name
+are unchanged, and `LICENSE` §5.9 already covers both repository names.
 
 ## What is here
 
