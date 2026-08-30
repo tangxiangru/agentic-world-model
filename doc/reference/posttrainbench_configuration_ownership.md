@@ -86,7 +86,14 @@ git add third_party/PostTrainBench
 1. **正式 GRES 模式**：每个 PTB cell 请求 `16 CPU + 128G + gres/gpu:1`，不携带 `--exclusive`；Slurm 的 device cgroup 和 Apptainer 共同限制可见设备。
 2. **allocation-scoped cleanup**：evaluation 前只查询当前 `SLURM_JOB_GPUS`，只清理当前 Unix 用户的进程；不再执行全节点 CUDA PID kill。
 3. **legacy manual 模式**：只作为无 GRES 站点的显式兜底，并强制 `--exclusive`，不能用于同节点多任务。
-4. **完整流程合同**：正式/pilot 需要 final model、四个 official canonical verdict 和 full-eval `metrics.json` 全部存在，否则 job 失败。
+4. **完整流程合同**：正式/pilot 需要完整权重、trace、monitor、provenance、四个 schema
+   正确的 official canonical verdict、full-eval log 和数值 `metrics.json`，否则 job 失败。
+5. **冻结 source 与批量放行**：pilot/formal job 从 receipt 的 PTB commit 在 local scratch
+   物化 source；正式六格先全部 held submit，再共同 release，避免共享 worktree 和先后揭盲。
+6. **base-model revision**：顶层 manifest 固定 Hugging Face commit；共享 cache 中对应 snapshot
+   和全部权重 shard 必须完整，agent prompt 使用该 local snapshot，provenance 记录 revision/config digest。
+7. **1M provider evidence**：真实 provider smoke 记录 model/effort/context/CLI/Vertex route 和实际
+   SIF digest；提交 receipt 冻结记录 SHA-256，正式 cell 与 research judge 启动时再次比对。
 
 详细配置、gate 和命令见 `third_party/PostTrainBench/src/commit_utils/slurm/README.md`。
 

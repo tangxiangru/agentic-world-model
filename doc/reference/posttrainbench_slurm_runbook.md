@@ -45,9 +45,24 @@ scontrol show node slurm2-a3nodesetondem-0 -o
 - Official judge SIF：`/rmeng_data/robtang/ptb-containers/gpt_5_5.sif`
   - SHA-256：`765cae4e7893171e935c89fba27fa9bff93bb884b139a7f319a9fbfbbbded117`
 - Final-eval SIF：`/rmeng_data/robtang/ptb-containers/vllm_debug.sif`
+  - SHA-256：`72748f77f9fe5a1abe925bb532c1da64d80b1dcce7849179c9546700099448f8`
+  - 内部 Inspect fork commit：`64db0afdd3796732b232954ef440c66ed22923a7`；该实现会在
+    30000–39999 随机选择并占用可用端口，不复用固定 vLLM port。
 - HF cache：顶层 `data/ptb/hf`。
+  - `Qwen/Qwen3-4B-Base@906bfd4b4dc7f14ee4320094d8b41684abff8539` 已完整缓存；
+  - `google/gemma-3-4b-pt@cc012e0a6d0787b4adcc0fa2c4da74402494554d` 必须以已接受
+    Gemma 使用条款的 Hugging Face 身份下载；snapshot 不完整时 launcher/preflight 失败关闭。
 - 结果：顶层 `data/ptb/results`。
 - 每 job local scratch：`/mnt/localssd/posttrainbench/$USER/$SLURM_JOB_ID`。
+
+固定 revision 的缓存命令（在顶层仓库执行）为：
+
+```bash
+HF_HOME="$PWD/data/ptb/hf" hf download Qwen/Qwen3-4B-Base \
+  --revision 906bfd4b4dc7f14ee4320094d8b41684abff8539
+HF_HOME="$PWD/data/ptb/hf" hf download google/gemma-3-4b-pt \
+  --revision cc012e0a6d0787b4adcc0fa2c4da74402494554d
+```
 
 所有大文件和 provider 证据在 `/data` 下，已被顶层 `.gitignore` 排除。历史 trace
 不挂载进 agent sandbox。
@@ -69,24 +84,32 @@ bash src/commit_utils/slurm/run_gates.sh g2 slurm2-a3nodesetondem-0
 bash src/commit_utils/slurm/run_gates.sh g3 slurm2-a3nodesetondem-0
 cd ../..
 
-# G4：真实 GPU/container/provider smoke；b1 代表 Fable，b6 代表 Opus
-uv run awm ptb context-smoke --cell b1 --cell b6
+# G4：真实 GPU/container/provider smoke；覆盖 Fable max、Opus max、Opus xhigh
+# 选择 Qwen arms，避免 provider smoke 被 Gemma gated-download 前置条件混淆。
+uv run awm ptb context-smoke --cell b2 --cell b4 --cell b6
 squeue -u "$USER"
 uv run awm ptb check
 ```
 
 `context-smoke` 会同时验证一张 H100 的容器可见性、task/judge/auth assets、真实 Claude
 provider 调用，以及响应中的 `modelUsage.contextWindow`；它写入 gitignored
-`data/ptb/context-validation/*.json`。裸 `claude-opus-5` 在 2026-08-30 实测只有
+`data/ptb/context-validation/*.json`。launcher 会把成功记录的实际 SHA-256 写入 receipt，
+job 启动时重新校验，防止排队期间被改写。裸 `claude-opus-5` 在 2026-08-30 实测只有
 200k，正式配置必须是 `claude-opus-5[1m]`。
 
 当前已知 G4 blocker：`sercan-v1` 的继承组织策略拒绝
 `publishers/anthropic/models/claude-fable-5:predict`。管理员解除 deny 后必须重新运行
-b1 smoke；不得手写成功记录或把 Fable 静默换成其他 provider/model。
+b2 smoke；不得手写成功记录或把 Fable 静默换成其他 provider/model。
+
+另一个 formal-only blocker 是当前 Hugging Face 身份尚未获准下载 gated 的
+`google/gemma-3-4b-pt`。先在其官方模型页接受条款，再执行 manifest 中固定 revision 的
+`hf download`；不得用微调版、镜像模型或别的 revision 替代。该 blocker 不影响 B6/Qwen pilot。
 
 ## 4. Pilot 与正式提交
 
 两次提交都要求顶层和 PTB submodule worktree 干净，并在 receipt 中冻结两个 commit。
+job 启动时会把冻结的 PTB commit 以 `git archive` 物化到 job-local scratch；后续共享开发
+工作区变更不会影响正在运行的 prompt、evaluator 或 judge。
 
 ```bash
 # G5：B6 形状，1h agent budget，仍跑全部 official judges + full GSM8K eval
@@ -102,8 +125,9 @@ uv run awm ptb status data/ptb/batches/gsm8k-claude5-1m-batch1/formal-*.json
 uv run awm ptb audit-receipt data/ptb/batches/gsm8k-claude5-1m-batch1/formal-*.json
 ```
 
-正式提交是一次冻结、连续提交六个独立 Slurm job。launcher 拒绝同类 receipt 的第二次
-提交；如果中途失败，receipt 会保留已经提交的 job 和失败 cell，不能直接重跑造成重复。
+正式提交先把六个独立 Slurm job 全部置于 hold，receipt 写齐后再通过一次
+`scontrol release` 共同放行。launcher 拒绝同类 receipt 的第二次提交；如果提交中途失败，
+已创建的 job 保持 hold，receipt 会保留 job 和失败 cell，不能直接重跑造成重复。
 
 每个 job 请求 `1 H100 + 16 CPU + 128G RAM`，agent budget 10h，Slurm walltime
 另留 12h 给排队的 official judge lock、四个 judge 和 full evaluation。官方 ChatGPT
@@ -123,6 +147,9 @@ uv run awm ptb research-judges \
 它为每个不可变 result 提交一个 CPU-only Slurm job，使用
 `claude-opus-5[1m]`、xhigh、Vertex 和完全相同的四份 judge prompt。输出为独立的
 `judgement_claude_*_rerun.json`，不会覆盖 official canonical verdict。
+research job 也从 official receipt 冻结的 PTB commit 物化 source，避免 judge prompt 随后漂移。
+它同时复用并校验 receipt 中冻结的 Opus 5 xhigh provider 证据；模型字符串保持
+`claude-opus-5[1m]`，因此不会退化到裸 alias 的 200k context。
 
 ## 6. 取消、故障与恢复
 

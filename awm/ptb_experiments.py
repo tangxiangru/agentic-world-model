@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,12 +19,6 @@ from awm import paths
 
 PTB_ROOT = paths.REPO_ROOT / "third_party" / "PostTrainBench"
 SUBMIT = PTB_ROOT / "src" / "commit_utils" / "slurm" / "submit.sh"
-REQUIRED_JUDGEMENTS = (
-    "judgement_gpt5_4.json",
-    "judgement_api.json",
-    "judgement_ptb_lookup.json",
-    "judgement_general.json",
-)
 
 
 class ExperimentError(ValueError):
@@ -34,6 +30,14 @@ class Launch:
     cell_id: str
     command: tuple[str, ...]
     environment: dict[str, str]
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_manifest(filename: Path) -> dict[str, Any]:
@@ -58,6 +62,7 @@ def validate_manifest(data: dict[str, Any]) -> None:
         "memory": "128G",
         "scratch_gb": 400,
         "context_tokens": 1_000_000,
+        "agent_cli_version": "2.1.219",
         "judge_profile": "official",
         "research_judge_profile": "claude-opus-5[1m]-xhigh",
         "require_complete": True,
@@ -67,11 +72,32 @@ def validate_manifest(data: dict[str, Any]) -> None:
     for key, value in expected.items():
         if contract.get(key) != value:
             raise ExperimentError(f"contract.{key} must be {value!r}")
+    if contract.get("agent_auth") != {
+        "provider": "vertex",
+        "project": "sercan-v1",
+        "region": "global",
+    }:
+        raise ExperimentError("contract.agent_auth must freeze the approved Vertex route")
+    base_models = contract.get("base_models") or {}
+    if set(base_models) != {"google/gemma-3-4b-pt", "Qwen/Qwen3-4B-Base"}:
+        raise ExperimentError("contract.base_models must pin the two approved starting models")
+    for model, metadata in base_models.items():
+        if not isinstance(metadata, dict) or not re.fullmatch(
+            r"[0-9a-f]{40}", str(metadata.get("revision", ""))
+        ):
+            raise ExperimentError(f"contract.base_models[{model!r}] must pin a commit revision")
     container = contract.get("container") or {}
     if container.get("name") != "opus_5" or not re.fullmatch(
         r"[0-9a-f]{64}", str(container.get("sha256", ""))
     ):
         raise ExperimentError("contract.container must pin opus_5 and a SHA-256 digest")
+    evaluation_container = contract.get("evaluation_container") or {}
+    if evaluation_container.get("name") != "vllm_debug.sif" or not re.fullmatch(
+        r"[0-9a-f]{64}", str(evaluation_container.get("sha256", ""))
+    ):
+        raise ExperimentError(
+            "contract.evaluation_container must pin vllm_debug.sif and a SHA-256 digest"
+        )
     if not re.fullmatch(r"[0-9a-f]{64}", str(contract.get("official_judge_container_sha256", ""))):
         raise ExperimentError("contract must pin the official judge container SHA-256")
 
@@ -99,9 +125,10 @@ def validate_manifest(data: dict[str, Any]) -> None:
     if pilot.get("cell") not in ids or pilot.get("agent_budget_hours") != 1:
         raise ExperimentError("pilot must select one formal cell shape with a 1h budget")
     records = data.get("context_validation") or {}
-    for model in {cell[0] for cell in actual}:
-        if model not in records:
-            raise ExperimentError(f"missing context-validation path for {model}")
+    for model, effort, _ in actual:
+        profile = f"{model}:{effort}"
+        if profile not in records:
+            raise ExperimentError(f"missing context-validation path for {profile}")
 
 
 def _cell(data: dict[str, Any], cell_id: str) -> dict[str, Any]:
@@ -112,7 +139,11 @@ def _cell(data: dict[str, Any], cell_id: str) -> dict[str, Any]:
 
 
 def build_launches(
-    data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | None = None
+    data: dict[str, Any],
+    *,
+    pilot: bool = False,
+    cell_ids: list[str] | None = None,
+    hold: bool = False,
 ) -> list[Launch]:
     contract = data["contract"]
     selected = [_cell(data, data["pilot"]["cell"])] if pilot else list(data["cells"])
@@ -146,27 +177,47 @@ def build_launches(
             "--judge-profile",
             "official",
         )
-        record = (paths.REPO_ROOT / data["context_validation"][cell["agent_model"]]).resolve()
+        if hold:
+            command = (*command, "--hold")
+        context_profile = f"{cell['agent_model']}:{cell['effort']}"
+        record = (paths.REPO_ROOT / data["context_validation"][context_profile]).resolve()
         environment = {
+            "POST_TRAIN_BENCH_BASE_MODEL_REVISION": contract["base_models"][
+                cell["base_model"]
+            ]["revision"],
             "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": str(record),
             "POST_TRAIN_BENCH_REQUIRE_CONTEXT_VALIDATION": "1",
             "POST_TRAIN_BENCH_REQUIRE_COMPLETE": "1",
             "POST_TRAIN_BENCH_JUDGE_PROFILE": "official",
             "POST_TRAIN_BENCH_SLURM_GPU_MODE": "gres",
+            "POST_TRAIN_BENCH_SKIP_CLI_UPDATE": "1",
             "POST_TRAIN_BENCH_CONTAINER_SHA256": contract["container"]["sha256"],
+            "POST_TRAIN_BENCH_EVALUATION_CONTAINER_SHA256": contract[
+                "evaluation_container"
+            ]["sha256"],
             "POST_TRAIN_BENCH_OFFICIAL_JUDGE_CONTAINER_SHA256": contract[
                 "official_judge_container_sha256"
             ],
         }
+        if record.is_file():
+            environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"] = _sha256(record)
         launches.append(Launch(cell["id"], command, environment))
     if len({launch.cell_id for launch in launches}) != len(launches):
         raise ExperimentError("launch result ids are not unique")
     return launches
 
 
-def local_issues(data: dict[str, Any], *, require_context: bool = True) -> list[str]:
+def local_issues(
+    data: dict[str, Any],
+    *,
+    require_context: bool = True,
+    cell_ids: list[str] | None = None,
+) -> list[str]:
     issues: list[str] = []
     contract = data["contract"]
+    selected_cells = (
+        [_cell(data, cell_id) for cell_id in cell_ids] if cell_ids else list(data["cells"])
+    )
     for relative in (
         "src/eval/tasks/gsm8k/evaluate.py",
         "src/eval/tasks/gsm8k/test_data.json",
@@ -174,36 +225,94 @@ def local_issues(data: dict[str, Any], *, require_context: bool = True) -> list[
     ):
         if not (PTB_ROOT / relative).is_file():
             issues.append(f"missing PTB task asset: {relative}")
-    for cell in data["cells"]:
+    for cell in selected_cells:
         for name in ("solve.sh", "api_keys.json", "profile.env"):
             if not (PTB_ROOT / "agents" / cell["agent"] / name).is_file():
                 issues.append(f"missing agent asset: agents/{cell['agent']}/{name}")
     env = read_ptb_env()
     containers = Path(env.get("POST_TRAIN_BENCH_CONTAINERS_DIR", PTB_ROOT / "containers"))
-    for image in (
-        f"{contract['container']['name']}.sif",
-        "vllm_debug.sif",
-        contract["official_judge_container"],
-    ):
-        if not (containers / image).is_file():
-            issues.append(f"missing container: {containers / image}")
+    hf_home = Path(env.get("HF_HOME", ""))
+    selected_base_models = {cell["base_model"] for cell in selected_cells}
+    for model in selected_base_models:
+        metadata = contract["base_models"][model]
+        cache_name = "models--" + model.replace("/", "--")
+        snapshot = hf_home / "hub" / cache_name / "snapshots" / metadata["revision"]
+        config = snapshot / "config.json"
+        index = snapshot / "model.safetensors.index.json"
+        if not config.is_file() or not index.is_file():
+            issues.append(
+                f"missing pinned base-model snapshot: {model}@{metadata['revision']} ({snapshot})"
+            )
+            continue
+        try:
+            weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
+            if not isinstance(weight_map, dict) or not weight_map:
+                raise ValueError("weight_map is missing or empty")
+            missing_weights: list[str] = []
+            for filename in weight_map.values():
+                if not isinstance(filename, str):
+                    missing_weights.append(repr(filename))
+                elif (
+                    Path(filename).is_absolute()
+                    or ".." in Path(filename).parts
+                    or not (snapshot / filename).is_file()
+                    or (snapshot / filename).stat().st_size == 0
+                ):
+                    missing_weights.append(filename)
+            missing_weights = sorted(set(missing_weights))
+            if missing_weights:
+                issues.append(
+                    f"incomplete pinned base-model snapshot: {model}@{metadata['revision']} "
+                    f"missing {missing_weights}"
+                )
+        except (KeyError, OSError, ValueError, TypeError) as exc:
+            issues.append(f"invalid base-model snapshot index for {model}: {exc}")
+    expected_images = {
+        f"{contract['container']['name']}.sif": contract["container"]["sha256"],
+        contract["evaluation_container"]["name"]: contract["evaluation_container"][
+            "sha256"
+        ],
+        contract["official_judge_container"]: contract[
+            "official_judge_container_sha256"
+        ],
+    }
+    for image, expected_digest in expected_images.items():
+        path = containers / image
+        if not path.is_file():
+            issues.append(f"missing container: {path}")
+            continue
+        actual_digest = _sha256(path)
+        if actual_digest != expected_digest:
+            issues.append(
+                f"container digest mismatch: {path} actual={actual_digest} expected={expected_digest}"
+            )
     if require_context:
-        for model, relative in data["context_validation"].items():
+        selected_profiles = {
+            f"{cell['agent_model']}:{cell['effort']}" for cell in selected_cells
+        }
+        for profile in selected_profiles:
+            relative = data["context_validation"][profile]
+            model, effort = profile.rsplit(":", 1)
             path = paths.REPO_ROOT / relative
             if not path.is_file():
-                issues.append(f"missing 1M provider validation for {model}: {path}")
+                issues.append(f"missing 1M provider validation for {profile}: {path}")
                 continue
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
                 if (
                     record.get("requested_model") != model
                     or record.get("provider") != "vertex"
+                    or record.get("project") != contract["agent_auth"]["project"]
+                    or record.get("region") != contract["agent_auth"]["region"]
+                    or record.get("cli_version") != contract["agent_cli_version"]
+                    or record.get("container_sha256") != contract["container"]["sha256"]
+                    or record.get("effort") != effort
                     or record.get("verified") is not True
                     or int(record.get("resolved_context_tokens", 0)) < 1_000_000
                 ):
-                    issues.append(f"invalid 1M provider validation for {model}: {path}")
+                    issues.append(f"invalid 1M provider validation for {profile}: {path}")
             except (OSError, ValueError, TypeError) as exc:
-                issues.append(f"unreadable 1M provider validation for {model}: {exc}")
+                issues.append(f"unreadable 1M provider validation for {profile}: {exc}")
     return issues
 
 
@@ -266,7 +375,7 @@ def source_snapshot() -> dict[str, Any]:
 
 def dry_run(data: dict[str, Any], *, pilot: bool = False) -> list[tuple[str, str]]:
     outputs = []
-    for launch in build_launches(data, pilot=pilot):
+    for launch in build_launches(data, pilot=pilot, hold=not pilot):
         env = os.environ | launch.environment
         result = subprocess.run(
             [*launch.command, "--dry-run"],
@@ -289,7 +398,7 @@ def dry_run(data: dict[str, Any], *, pilot: bool = False) -> list[tuple[str, str
 
 
 def submit_context_smokes(data: dict[str, Any], cell_ids: list[str]) -> list[dict[str, str]]:
-    issues = local_issues(data, require_context=False) + site_issues()
+    issues = local_issues(data, require_context=False, cell_ids=cell_ids) + site_issues()
     if issues:
         raise ExperimentError("context-smoke gates failed:\n- " + "\n- ".join(issues))
     jobs = []
@@ -316,7 +425,8 @@ def submit_context_smokes(data: dict[str, Any], cell_ids: list[str]) -> list[dic
 
 
 def submit(data: dict[str, Any], *, pilot: bool = False) -> Path:
-    issues = local_issues(data) + site_issues()
+    selected_cell_ids = [data["pilot"]["cell"]] if pilot else None
+    issues = local_issues(data, cell_ids=selected_cell_ids) + site_issues()
     if issues:
         raise ExperimentError("submission gates failed:\n- " + "\n- ".join(issues))
     snapshot = source_snapshot()
@@ -332,6 +442,13 @@ def submit(data: dict[str, Any], *, pilot: bool = False) -> Path:
             f"refusing duplicate {kind} submission; existing receipt: {previous[-1]}"
         )
     output = out_dir / f"{kind}-{submitted_at.replace(':', '')}.json"
+    ptb_env = read_ptb_env()
+    launches = build_launches(data, pilot=pilot, hold=not pilot)
+    if any(
+        "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256" not in launch.environment
+        for launch in launches
+    ):
+        raise ExperimentError("submission requires immutable context-validation digests")
     receipt = {
         "schema_version": 1,
         "batch_id": data["batch_id"],
@@ -340,14 +457,37 @@ def submit(data: dict[str, Any], *, pilot: bool = False) -> Path:
         "manifest": data["_path"],
         "submitted_at": submitted_at,
         "source": snapshot,
+        "contract": data["contract"],
+        "cells": data["cells"],
+        "context_validation": {
+            launch.cell_id: {
+                "path": launch.environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD"],
+                "sha256": launch.environment[
+                    "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"
+                ],
+            }
+            for launch in launches
+        },
+        "site": {
+            key: ptb_env.get(key, "")
+            for key in (
+                "POST_TRAIN_BENCH_SLURM_PARTITION",
+                "POST_TRAIN_BENCH_SLURM_NODELIST",
+                "POST_TRAIN_BENCH_SLURM_RESERVATION",
+            )
+        },
         "jobs": [],
     }
     output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
-    for launch in build_launches(data, pilot=pilot):
+    frozen_environment = {
+        "POST_TRAIN_BENCH_FROZEN_TOP_COMMIT": snapshot["top_commit"],
+        "POST_TRAIN_BENCH_FROZEN_PTB_COMMIT": snapshot["ptb_commit"],
+    }
+    for launch in launches:
         result = subprocess.run(
             launch.command,
             cwd=PTB_ROOT,
-            env=os.environ | launch.environment,
+            env=os.environ | launch.environment | frozen_environment,
             text=True,
             capture_output=True,
             check=False,
@@ -377,24 +517,46 @@ def submit(data: dict[str, Any], *, pilot: bool = False) -> Path:
             )
         receipt["jobs"].append({"cell_id": launch.cell_id, "job_id": match.group(1)})
         output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    if not pilot:
+        receipt["state"] = "held"
+        output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        job_ids = ",".join(job["job_id"] for job in receipt["jobs"])
+        release = subprocess.run(
+            ["scontrol", "release", job_ids], text=True, capture_output=True, check=False
+        )
+        if release.returncode:
+            receipt["state"] = "release_failed"
+            receipt["failure"] = {
+                "reason": "all formal jobs remain held because atomic release failed",
+                "stderr": release.stderr.strip(),
+            }
+            output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+            raise ExperimentError(
+                f"formal jobs were submitted but remain held; release failed: "
+                f"{release.stderr.strip()} (receipt: {output})"
+            )
+        receipt["released_at"] = datetime.now(timezone.utc).isoformat()
     receipt["state"] = "submitted"
     output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     return output
 
 
 def audit_result(result_dir: Path) -> list[str]:
+    validator = PTB_ROOT / "src" / "utils" / "validate_completed_run.py"
+    result = subprocess.run(
+        [sys.executable, str(validator), str(result_dir), "--judge-profile", "official"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return []
     issues = []
-    for relative in (
-        "solve_out.txt",
-        "solve_parsed.txt",
-        "runtime_provenance.json",
-        "final_model/config.json",
-        "metrics.json",
-        *REQUIRED_JUDGEMENTS,
-    ):
-        if not (result_dir / relative).is_file() or (result_dir / relative).stat().st_size == 0:
-            issues.append(f"missing or empty: {relative}")
-    return issues
+    for line in result.stdout.splitlines():
+        prefix = "COMPLETION ERROR: "
+        if line.startswith(prefix):
+            issues.append(line.removeprefix(prefix))
+    return issues or [result.stderr.strip() or "completion validator failed without details"]
 
 
 def load_receipt(filename: Path) -> dict[str, Any]:
@@ -445,6 +607,15 @@ def receipt_status(receipt: dict[str, Any]) -> list[dict[str, str | None]]:
 def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
     issues: dict[str, list[str]] = {}
     expected_source = receipt.get("source") or {}
+    contract = receipt.get("contract") or {}
+    cells = {cell["id"]: cell for cell in receipt.get("cells") or []}
+    site = receipt.get("site") or {}
+    expected_context_validation = receipt.get("context_validation") or {}
+    expected_container_digests = {
+        "container": (contract.get("container") or {}).get("sha256"),
+        "evaluation_container": (contract.get("evaluation_container") or {}).get("sha256"),
+        "official_judge_container": contract.get("official_judge_container_sha256"),
+    }
     for job in receipt_status(receipt):
         cell_issues = []
         if job["state"] != "COMPLETED":
@@ -460,13 +631,74 @@ def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
                     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
                     runtime = provenance.get("agent_runtime") or {}
                     source = provenance.get("source") or {}
+                    experiment = provenance.get("experiment") or {}
+                    slurm = provenance.get("slurm") or {}
+                    expected_cell = cells.get(job["cell_id"]) or {}
                     if int(runtime.get("resolved_context_tokens", 0)) < 1_000_000:
                         cell_issues.append("runtime provenance does not resolve >=1M context")
+                    if runtime.get("provider") != contract.get("agent_auth", {}).get("provider"):
+                        cell_issues.append("runtime agent provider differs from frozen contract")
+                    if runtime.get("requested_model") != expected_cell.get("agent_model"):
+                        cell_issues.append("runtime requested agent model differs from frozen cell")
+                    if runtime.get("effort") != expected_cell.get("effort"):
+                        cell_issues.append("runtime effort differs from frozen cell")
+                    if runtime.get("cli_version") != contract.get("agent_cli_version"):
+                        cell_issues.append("runtime agent CLI differs from frozen contract")
+                    context_record = (
+                        (runtime.get("context_validation") or {}).get("record") or {}
+                    )
+                    context_digest = (runtime.get("context_validation") or {}).get("sha256")
+                    if context_digest != (expected_context_validation.get(job["cell_id"]) or {}).get(
+                        "sha256"
+                    ):
+                        cell_issues.append(
+                            "runtime context-validation digest differs from frozen receipt"
+                        )
+                    for key in ("provider", "project", "region"):
+                        if context_record.get(key) != contract.get("agent_auth", {}).get(key):
+                            cell_issues.append(
+                                f"runtime context validation {key} differs from frozen contract"
+                            )
+                    if experiment.get("base_model") != expected_cell.get("base_model"):
+                        cell_issues.append("runtime base model differs from frozen cell")
+                    expected_revision = (
+                        contract.get("base_models", {})
+                        .get(expected_cell.get("base_model"), {})
+                        .get("revision")
+                    )
+                    if experiment.get("base_model_revision") != expected_revision:
+                        cell_issues.append("runtime base-model revision differs from frozen contract")
+                    if (provenance.get("base_model_cache_snapshot") or {}).get(
+                        "config_sha256"
+                    ) in (None, "missing"):
+                        cell_issues.append("runtime base-model cache snapshot is incomplete")
                     if provenance.get("judge_profile") != "official":
                         cell_issues.append("runtime provenance judge profile is not official")
+                    if slurm.get("partition") != site.get(
+                        "POST_TRAIN_BENCH_SLURM_PARTITION"
+                    ):
+                        cell_issues.append("runtime Slurm partition differs from frozen site")
+                    if str(slurm.get("cpus_per_task")) != str(contract.get("cpus")):
+                        cell_issues.append("runtime CPU allocation differs from frozen contract")
+                    expected_memory_mb = 128 * 1024
+                    if str(slurm.get("memory_per_node")) != str(expected_memory_mb):
+                        cell_issues.append("runtime memory allocation differs from frozen contract")
+                    if len(slurm.get("gpu_uuids") or []) != 1:
+                        cell_issues.append("runtime provenance does not contain exactly one GPU UUID")
                     for key in ("top_commit", "ptb_commit"):
                         if source.get(key) != expected_source.get(key):
                             cell_issues.append(f"runtime {key} differs from frozen receipt")
+                    if source.get("top_dirty") is not False or source.get("ptb_dirty") is not False:
+                        cell_issues.append("runtime source snapshot is not clean")
+                    if source.get("materialization") != "git-archive":
+                        cell_issues.append("runtime source was not materialized from a frozen archive")
+                    for key, expected_digest in expected_container_digests.items():
+                        if expected_digest and (provenance.get(key) or {}).get(
+                            "sha256"
+                        ) != expected_digest:
+                            cell_issues.append(
+                                f"runtime {key} digest differs from frozen receipt"
+                            )
                 except (OSError, ValueError, TypeError) as exc:
                     cell_issues.append(f"invalid runtime provenance: {exc}")
         issues[job["cell_id"]] = cell_issues
@@ -492,6 +724,34 @@ def submit_research_judges(receipt: dict[str, Any]) -> Path:
     if output.exists():
         raise ExperimentError(f"refusing duplicate research-judge submission: {output}")
     jobs = []
+    frozen_ptb_commit = (receipt.get("source") or {}).get("ptb_commit", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", frozen_ptb_commit):
+        raise ExperimentError("official receipt does not contain a valid frozen PTB commit")
+    cells = {cell["id"]: cell for cell in receipt.get("cells") or []}
+    context_validation = receipt.get("context_validation") or {}
+    evidence = {
+        (
+            (context_validation.get(cell_id) or {}).get("path"),
+            (context_validation.get(cell_id) or {}).get("sha256"),
+        )
+        for cell_id, cell in cells.items()
+        if cell.get("agent_model") == "claude-opus-5[1m]" and cell.get("effort") == "xhigh"
+    }
+    if len(evidence) != 1:
+        raise ExperimentError("official receipt has no unique Opus 5 xhigh 1M validation evidence")
+    research_context_path, research_context_digest = evidence.pop()
+    if (
+        not research_context_path
+        or not re.fullmatch(r"[0-9a-f]{64}", str(research_context_digest or ""))
+        or not Path(research_context_path).is_file()
+        or _sha256(Path(research_context_path)) != research_context_digest
+    ):
+        raise ExperimentError("Opus 5 xhigh 1M validation evidence is missing or changed")
+    research_environment = {
+        "POST_TRAIN_BENCH_FROZEN_PTB_COMMIT": frozen_ptb_commit,
+        "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": str(research_context_path),
+        "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256": str(research_context_digest),
+    }
     for job in receipt_status(receipt):
         command = [
             "sbatch",
@@ -515,7 +775,14 @@ def submit_research_judges(receipt: dict[str, Any]) -> Path:
                 str(job["result_dir"]),
             ]
         )
-        result = subprocess.run(command, cwd=PTB_ROOT, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            command,
+            cwd=PTB_ROOT,
+            env=os.environ | research_environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
         if result.returncode:
             raise ExperimentError(
                 f"research judge submission failed for {job['cell_id']}: {result.stderr.strip()}"
@@ -530,6 +797,11 @@ def submit_research_judges(receipt: dict[str, Any]) -> Path:
                 "schema_version": 1,
                 "source_receipt": str(source_receipt),
                 "profile": "claude-opus-5[1m]-xhigh",
+                "ptb_commit": frozen_ptb_commit,
+                "context_validation": {
+                    "path": research_context_path,
+                    "sha256": research_context_digest,
+                },
                 "jobs": jobs,
             },
             indent=2,
