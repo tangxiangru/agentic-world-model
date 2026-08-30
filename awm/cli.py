@@ -39,7 +39,9 @@ def _convert_pi(limit: int | None) -> int:
 
     raw = paths.raw_dir("pi_speedrun")
     if not (raw / "traces").is_dir():
-        print(f"pi_speedrun not fetched at {raw} — run `awm traj fetch pi_speedrun`", file=sys.stderr)
+        print(
+            f"pi_speedrun not fetched at {raw} — run `awm traj fetch pi_speedrun`", file=sys.stderr
+        )
         return 1
     metas = convert_pi.convert_all(raw, paths.events_dir("pi_speedrun"), limit=limit)
     print(f"pi_speedrun: {len(metas)} runs -> {paths.events_dir('pi_speedrun')}")
@@ -51,8 +53,10 @@ def _convert_ptb(limit: int | None) -> int:
 
     raw = paths.raw_dir("posttrainbench")
     if not raw.is_dir():
-        print(f"posttrainbench not fetched at {raw} — run `awm traj fetch posttrainbench`",
-              file=sys.stderr)
+        print(
+            f"posttrainbench not fetched at {raw} — run `awm traj fetch posttrainbench`",
+            file=sys.stderr,
+        )
         return 1
     out = paths.events_dir("posttrainbench")
     runs = list(ptb.iter_run_dirs(raw))
@@ -152,8 +156,11 @@ def _split_catalog(args: argparse.Namespace):
 
     path = paths.raw_dir("posttrainbench") / fetch.PTB_CATALOG
     if not path.exists():
-        print(f"catalogue not fetched at {path} — run `awm split fetch {args.id}` "
-              "or `awm traj fetch posttrainbench`", file=sys.stderr)
+        print(
+            f"catalogue not fetched at {path} — run `awm split fetch {args.id}` "
+            "or `awm traj fetch posttrainbench`",
+            file=sys.stderr,
+        )
         return None
     return fetch.ptb_catalog(), path.read_bytes()
 
@@ -180,6 +187,66 @@ def _split_fetch(args: argparse.Namespace) -> int:
     result = fetch.fetch_ptb_runs(s.train + s.test, revision=s.dataset["revision"])
     print("  " + str(result))
     return 0
+
+
+def _ptb(args: argparse.Namespace) -> int:
+    from awm import ptb_experiments as ptb
+
+    try:
+        manifest = ptb.load_manifest(args.manifest)
+        if args.cmd == "check":
+            issues = ptb.local_issues(manifest, require_context=not args.before_context_gate)
+            if not args.local_only:
+                issues += ptb.site_issues()
+            for issue in issues:
+                print(f"  - {issue}")
+            print(f"{len(issues)} issue(s)")
+            return 1 if issues else 0
+        if args.cmd == "dry-run":
+            for cell_id, command in ptb.dry_run(manifest, pilot=args.pilot):
+                print(f"{cell_id}: {command}")
+            return 0
+        if args.cmd == "submit":
+            receipt = ptb.submit(manifest, pilot=args.pilot)
+            print(receipt)
+            return 0
+        if args.cmd == "context-smoke":
+            for job in ptb.submit_context_smokes(manifest, args.cell):
+                print(f"{job['cell_id']}: Slurm job {job['job_id']}")
+            return 0
+        if args.cmd == "audit":
+            issues = ptb.audit_result(args.result_dir.resolve())
+            for issue in issues:
+                print(f"  - {issue}")
+            print(f"{len(issues)} issue(s)")
+            return 1 if issues else 0
+        if args.cmd == "status":
+            receipt = ptb.load_receipt(args.receipt)
+            for job in ptb.receipt_status(receipt):
+                print(
+                    f"{job['cell_id']} job={job['job_id']} state={job['state']} "
+                    f"result={job['result_dir'] or '<pending>'}"
+                )
+            return 0
+        if args.cmd == "audit-receipt":
+            receipt = ptb.load_receipt(args.receipt)
+            all_issues = ptb.audit_receipt(receipt)
+            issue_count = 0
+            for cell_id, issues in all_issues.items():
+                print(f"{cell_id}: {'PASS' if not issues else 'FAIL'}")
+                for issue in issues:
+                    print(f"  - {issue}")
+                    issue_count += 1
+            print(f"{issue_count} issue(s)")
+            return 1 if issue_count else 0
+        if args.cmd == "research-judges":
+            output = ptb.submit_research_judges(ptb.load_receipt(args.receipt))
+            print(output)
+            return 0
+    except ptb.ExperimentError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    raise AssertionError(args.cmd)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -239,15 +306,47 @@ def build_parser() -> argparse.ArgumentParser:
     sl = sp.add_parser("list", help="list the committed splits and selections")
     sl.set_defaults(func=_split_list)
 
-    sk = sp.add_parser(
-        "check", help="replay a split's rule over the pinned catalogue and compare"
-    )
+    sk = sp.add_parser("check", help="replay a split's rule over the pinned catalogue and compare")
     sk.add_argument("id", help="e.g. posttrainbench/gsm8k-gemma-holdout-v1")
     sk.set_defaults(func=_split_check)
 
     sf = sp.add_parser("fetch", help="download exactly a split's runs at its pinned revision")
     sf.add_argument("id")
     sf.set_defaults(func=_split_fetch)
+
+    ep = sub.add_parser("ptb", help="validate, launch, and audit committed PTB batches")
+    eps = ep.add_subparsers(dest="cmd", required=True)
+    default_manifest = Path("experiments/posttrainbench/gsm8k-claude5-1m-batch1.yaml")
+    for command_name in ("check", "dry-run", "submit"):
+        command = eps.add_parser(command_name)
+        command.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
+        if command_name in ("dry-run", "submit"):
+            command.add_argument("--pilot", action="store_true")
+        if command_name == "check":
+            command.add_argument("--local-only", action="store_true")
+            command.add_argument(
+                "--before-context-gate",
+                action="store_true",
+                help="skip provider-context records while preparing G0-G4",
+            )
+        command.set_defaults(func=_ptb)
+    context_smoke = eps.add_parser(
+        "context-smoke", help="submit real-provider 1M runtime probes for selected cells"
+    )
+    context_smoke.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
+    context_smoke.add_argument(
+        "--cell", action="append", required=True, choices=[f"b{i}" for i in range(1, 7)]
+    )
+    context_smoke.set_defaults(func=_ptb)
+    audit = eps.add_parser("audit")
+    audit.add_argument("result_dir", type=Path)
+    audit.add_argument("--manifest", type=Path, default=default_manifest)
+    audit.set_defaults(func=_ptb)
+    for command_name in ("status", "audit-receipt", "research-judges"):
+        receipt_command = eps.add_parser(command_name)
+        receipt_command.add_argument("receipt", type=Path)
+        receipt_command.add_argument("--manifest", type=Path, default=default_manifest)
+        receipt_command.set_defaults(func=_ptb)
     return p
 
 
