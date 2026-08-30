@@ -1,3 +1,5 @@
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -89,3 +91,58 @@ def test_receipt_validation(tmp_path: Path) -> None:
     receipt = tmp_path / "receipt.json"
     receipt.write_text('{"schema_version": 1, "jobs": [{"cell_id": "b6", "job_id": "1"}]}')
     assert ptb.load_receipt(receipt)["jobs"][0]["cell_id"] == "b6"
+
+
+def test_formal_submit_holds_all_jobs_before_one_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = ptb.load_manifest(MANIFEST)
+    fake_launches = [
+        ptb.Launch(
+            cell_id=f"b{index}",
+            command=("fake-submit", f"b{index}", "--hold"),
+            environment={
+                "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": f"/evidence/b{index}.json",
+                "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256": f"{index:064x}",
+            },
+        )
+        for index in range(1, 7)
+    ]
+    monkeypatch.setattr(ptb, "local_issues", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ptb, "site_issues", list)
+    monkeypatch.setattr(
+        ptb,
+        "source_snapshot",
+        lambda: {
+            "top_commit": "1" * 40,
+            "ptb_commit": "2" * 40,
+            "top_status": "",
+            "ptb_status": "",
+        },
+    )
+    monkeypatch.setattr(ptb, "dry_run", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ptb, "read_ptb_env", dict)
+    monkeypatch.setattr(ptb.paths, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(ptb, "build_launches", lambda *_args, **_kwargs: fake_launches)
+
+    commands: list[tuple[str, ...]] = []
+
+    def fake_run(command: list[str] | tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        normalized = tuple(command)
+        commands.append(normalized)
+        if normalized[:2] == ("scontrol", "release"):
+            return subprocess.CompletedProcess(command, 0, "", "")
+        job_id = 9000 + len([item for item in commands if item[0] == "fake-submit"])
+        return subprocess.CompletedProcess(command, 0, f"Submitted Slurm job {job_id}\n", "")
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+    receipt_path = ptb.submit(data)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+
+    submitted = [command for command in commands if command[0] == "fake-submit"]
+    assert len(submitted) == 6
+    assert all("--hold" in command for command in submitted)
+    assert commands[-1] == ("scontrol", "release", "9001,9002,9003,9004,9005,9006")
+    assert receipt["state"] == "submitted"
+    assert len(receipt["jobs"]) == 6
+    assert set(receipt["context_validation"]) == {f"b{index}" for index in range(1, 7)}
