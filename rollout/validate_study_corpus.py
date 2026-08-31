@@ -10,6 +10,7 @@ directory, which is copied back with the rest of the cell artifacts.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import math
@@ -36,7 +37,7 @@ HEX64 = re.compile(r"[0-9a-f]{64}")
 # package.  This credential contract therefore mirrors awm/credential_guard.py
 # in-place.  tests/test_credential_guard.py compares both the declaration and
 # behaviour so either copy changing alone fails CI.
-RULESET_VERSION = "awm-raw-credential-guard-v2"
+RULESET_VERSION = "awm-raw-credential-guard-v3"
 DIRECT_RULE_SPECS: tuple[tuple[str, bytes, int, bytes], ...] = (
     (
         "private-key-block",
@@ -163,6 +164,9 @@ NON_CREDENTIAL_TOKEN_KEYS = frozenset(
         "pad_token",
         "eos_token",
         "bos_token",
+        "boi_token",
+        "eoi_token",
+        "image_token",
         "unk_token",
         "sep_token",
         "cls_token",
@@ -174,6 +178,10 @@ NON_CREDENTIAL_TOKEN_KEYS = frozenset(
         "token_budget",
     }
 )
+LOCAL_API_SENTINELS = frozenset(
+    sentinel for sentinels in KEY_SPECIFIC_PLACEHOLDERS.values() for sentinel in sentinels
+)
+CLI_INLINE_SENTINEL_TERMINAL_PUNCTUATION = b"."
 OPENAI_SECRET_PATTERN = r"sk-(?:(?:proj|svcacct|admin)-[a-z0-9_-]{20,}|[a-z0-9]{20,})"
 _OPENAI_SECRET = re.compile(OPENAI_SECRET_PATTERN)
 _CASE_INSENSITIVE_ENV_KEY_PATTERN = (
@@ -333,6 +341,10 @@ def credential_ruleset_contract() -> dict[str, object]:
         },
         "angle_placeholder_words": sorted(ANGLE_PLACEHOLDER_WORDS),
         "noncredential_token_keys": sorted(NON_CREDENTIAL_TOKEN_KEYS),
+        "local_api_sentinels": sorted(LOCAL_API_SENTINELS),
+        "cli_inline_sentinel_terminal_punctuation": (
+            CLI_INLINE_SENTINEL_TERMINAL_PUNCTUATION.decode("ascii")
+        ),
         "openai_secret_pattern": OPENAI_SECRET_PATTERN,
         "context_patterns": {
             "env_assignment": _ENV_ASSIGNMENT.pattern.decode("ascii"),
@@ -487,6 +499,253 @@ def _has_material_value_suffix(data: bytes, value_end: int) -> bool:
     return True
 
 
+def _key_specific_sentinel(key: bytes, value: bytes) -> str | None:
+    """Return an exact, registered sentinel for ``key``, if present."""
+    normalised_key = _normalise_credential_identifier(
+        key.decode("ascii", errors="ignore")
+    )
+    normalised_value = _normalise_credential_value(value)
+    if normalised_value in KEY_SPECIFIC_PLACEHOLDERS.get(normalised_key, ()):
+        return normalised_value
+    return None
+
+
+def _is_balanced_inline_cli_sentinel(data: bytes, match: re.Match[bytes]) -> bool:
+    """Recognise only the audited Markdown form for the local CLI sentinel.
+
+    Historical documentation contains ``--api-key inspectai`` in a single-
+    backtick code span.  The generic unquoted-value parser consumes the closing
+    backtick (and, in prose, a following full stop).  Keep this exception local
+    to CLI matches and require both the opening delimiter and a terminal byte
+    boundary; a bare/generic backtick suffix must remain material.
+    """
+    key = match.group("key")
+    normalised_key = _normalise_credential_identifier(
+        key.decode("ascii", errors="ignore")
+    )
+    sentinels = KEY_SPECIFIC_PLACEHOLDERS.get(normalised_key, ())
+    if not sentinels:
+        return False
+
+    raw_value = match.group("value")
+    matched_sentinel: bytes | None = None
+    for sentinel in sentinels:
+        encoded = sentinel.encode("ascii")
+        if raw_value.lower().startswith(encoded):
+            matched_sentinel = encoded
+            break
+    if matched_sentinel is None:
+        return False
+
+    suffix = raw_value[len(matched_sentinel) :]
+    if suffix not in (
+        b"`",
+        b"`" + CLI_INLINE_SENTINEL_TERMINAL_PUNCTUATION,
+    ):
+        return False
+
+    line_start = data.rfind(b"\n", 0, match.start()) + 1
+    logical_start = max(line_start, match.start() - 4096)
+    cursor = logical_start
+    while True:
+        encoded_newline = data.find(b"\\n", cursor, match.start())
+        if encoded_newline < 0:
+            break
+        if _has_encoded_line_boundary(data, encoded_newline + 2):
+            logical_start = encoded_newline + 2
+        cursor = encoded_newline + 2
+
+    delimiters: list[int] = []
+    for index in range(logical_start, match.start()):
+        if data[index] != ord("`"):
+            continue
+        if index > logical_start and data[index - 1] in (ord("`"), ord("\\")):
+            continue
+        if index + 1 < match.start() and data[index + 1] == ord("`"):
+            continue
+        delimiters.append(index)
+    if len(delimiters) % 2 != 1:
+        return False
+    opener = delimiters[-1]
+    if opener < 0:
+        return False
+    if opener > 0 and data[opener - 1 : opener] in (b"`", b"\\"):
+        return False
+
+    tail = data[match.end() : match.end() + 1]
+    return not tail or tail in b" \t\r\n"
+
+
+def _json_record_bounds(data: bytes, position: int) -> tuple[int, int, int] | None:
+    """Return ``(json_start, line_start, line_end)`` for a valid JSONL record."""
+    line_start = data.rfind(b"\n", 0, position) + 1
+    line_end = data.find(b"\n", position)
+    if line_end < 0:
+        line_end = len(data)
+    json_start = data.find(b"{", line_start, position + 1)
+    if json_start < 0:
+        return None
+    if line_end - json_start > 1_048_576:
+        return None
+    try:
+        decoded = json.loads(data[json_start:line_end])
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, MemoryError):
+        return None
+    if not isinstance(decoded, (dict, list)):
+        return None
+    return json_start, line_start, line_end
+
+
+def _json_string_opener_at(
+    data: bytes, *, json_start: int, position: int
+) -> tuple[int, bool] | None:
+    """Return the active JSON string opener and escape state at ``position``."""
+    opener = -1
+    escaped = False
+    in_string = False
+    for index in range(json_start, position):
+        byte = data[index]
+        if not in_string:
+            if byte == ord('"'):
+                in_string = True
+                opener = index
+            continue
+        if escaped:
+            escaped = False
+        elif byte == ord("\\"):
+            escaped = True
+        elif byte == ord('"'):
+            in_string = False
+            opener = -1
+    if not in_string:
+        return None
+    return opener, escaped
+
+
+def _has_encoded_line_boundary(data: bytes, position: int) -> bool:
+    """Whether ``position`` follows one JSON-encoded CR/LF escape."""
+    for marker in (b"\\n", b"\\r"):
+        start = position - len(marker)
+        if start < 0 or data[start:position] != marker:
+            continue
+        preceding_slashes = 0
+        cursor = start - 1
+        while cursor >= 0 and data[cursor] == ord("\\"):
+            preceding_slashes += 1
+            cursor -= 1
+        if preceding_slashes % 2 == 0:
+            return True
+    return False
+
+
+def _is_terminal_json_env_sentinel(data: bytes, match: re.Match[bytes]) -> bool:
+    """Recognise the audited terminal env line inside a valid JSON string."""
+    key = match.group("key")
+    if _normalise_credential_identifier(
+        key.decode("ascii", errors="ignore")
+    ) != "vllm_api_key":
+        return False
+    if _key_specific_sentinel(key, match.group("value")) is None:
+        return False
+
+    value_end = match.end("value")
+    if data[value_end : value_end + 1] != b'"':
+        return False
+    bounds = _json_record_bounds(data, match.start())
+    if bounds is None:
+        return False
+    json_start, _line_start, line_end = bounds
+    if value_end >= line_end:
+        return False
+
+    state_at_key = _json_string_opener_at(
+        data, json_start=json_start, position=match.start()
+    )
+    state_at_closer = _json_string_opener_at(
+        data, json_start=json_start, position=value_end
+    )
+    if state_at_key is None or state_at_closer is None:
+        return False
+    opener_at_key, escaped_at_key = state_at_key
+    opener_at_closer, escaped_at_closer = state_at_closer
+    if escaped_at_key or escaped_at_closer or opener_at_key != opener_at_closer:
+        return False
+    return match.start() == opener_at_key + 1 or _has_encoded_line_boundary(
+        data, match.start()
+    )
+
+
+def _literal_mapping_candidates(
+    data: bytes, match: re.Match[bytes]
+) -> Iterable[str]:
+    """Yield bounded JSON/Python mapping candidates enclosing ``match``."""
+    line_start = data.rfind(b"\n", 0, match.start()) + 1
+    line_end = data.find(b"\n", match.end())
+    if line_end < 0:
+        line_end = len(data)
+    lower = max(line_start, match.start() - 4096)
+    upper = min(line_end, match.end() + 4096)
+
+    opens: list[int] = []
+    cursor = match.start()
+    while len(opens) < 32:
+        cursor = data.rfind(b"{", lower, cursor)
+        if cursor < 0:
+            break
+        opens.append(cursor)
+    closes: list[int] = []
+    cursor = match.end()
+    while len(closes) < 32:
+        cursor = data.find(b"}", cursor, upper)
+        if cursor < 0:
+            break
+        closes.append(cursor)
+        cursor += 1
+
+    seen: set[str] = set()
+    for opener in opens:
+        for closer in closes:
+            candidate = data[opener : closer + 1].decode("latin-1")
+            for variant in (candidate, candidate.replace(r'\"', '"')):
+                if variant not in seen:
+                    seen.add(variant)
+                    yield variant
+
+
+def _is_valid_local_authorization_wrapper(
+    data: bytes, match: re.Match[bytes]
+) -> bool:
+    """Accept only an exact local bearer sentinel in a parsed mapping."""
+    if _normalise_credential_identifier(
+        match.group("key").decode("ascii", errors="ignore")
+    ) != "authorization":
+        return False
+    value = _normalise_credential_value(match.group("value"))
+    bearer = re.fullmatch(r"bearer[ \t]+([a-z0-9._-]+)", value)
+    if bearer is None or bearer.group(1) not in LOCAL_API_SENTINELS:
+        return False
+
+    for candidate in _literal_mapping_candidates(data, match):
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                mapping = parser(candidate)
+            except (ValueError, SyntaxError, TypeError, RecursionError, MemoryError):
+                continue
+            if not isinstance(mapping, dict):
+                continue
+            for key, candidate_value in mapping.items():
+                if not isinstance(key, str) or not isinstance(candidate_value, str):
+                    continue
+                if key.lower() != "authorization":
+                    continue
+                parsed = re.fullmatch(
+                    r"bearer[ \t]+([a-z0-9._-]+)", candidate_value.lower()
+                )
+                if parsed is not None and parsed.group(1) in LOCAL_API_SENTINELS:
+                    return True
+    return False
+
+
 def _is_material_secret(value: bytes, *, key: bytes | None = None) -> bool:
     normalised = _normalise_credential_value(value)
     normalised_key = (
@@ -559,13 +818,13 @@ def scan_credential_bytes(data: bytes, *, path: str) -> list[dict[str, object]]:
             material = _is_material_secret(match.group("value"), key=match.group("key"))
             if _is_sensitive_env_key(match.group("key")) and (
                 material or _has_material_value_suffix(data, match.end("value"))
-            ):
+            ) and not _is_terminal_json_env_sentinel(data, match):
                 counts["secret-env-assignment"] += 1
     for match in _CLI_ASSIGNMENT.finditer(data):
         material = _is_material_secret(match.group("value"), key=match.group("key"))
         if _is_sensitive_key(match.group("key")) and (
             material or _has_material_value_suffix(data, match.end("value"))
-        ):
+        ) and not _is_balanced_inline_cli_sentinel(data, match):
             counts["secret-cli-argument"] += 1
     seen_context_spans: set[tuple[int, int]] = set()
     for pattern, rule_id in (
@@ -582,7 +841,7 @@ def scan_credential_bytes(data: bytes, *, path: str) -> list[dict[str, object]]:
             material = _is_material_secret(match.group("value"), key=match.group("key"))
             if _is_sensitive_key(match.group("key")) and (
                 material or _has_material_value_suffix(data, match.end())
-            ):
+            ) and not _is_valid_local_authorization_wrapper(data, match):
                 counts[rule_id] += 1
     for match in _BEARER.finditer(data):
         if _is_direct_material_secret(match.group("value")):

@@ -142,6 +142,161 @@ def test_audited_placeholders_and_token_telemetry_pass(standalone_guard, data: b
     assert standalone_guard.scan_credential_bytes(data, path="run/solve_out.txt") == []
 
 
+def test_audited_model_control_token_keys_are_not_credentials(standalone_guard) -> None:
+    data = (
+        b'{"boi_token":"<start_of_image>","eoi_token":"<end_of_image>",'
+        b'"image_token":"<image_soft_token>"}\n'
+    )
+    assert package_guard.scan_credential_bytes(data, path="run/solve_out.txt") == []
+    assert standalone_guard.scan_credential_bytes(data, path="run/solve_out.txt") == []
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b'{"my_boi_token":"alphabeticonlysecret"}\n',
+        b'{"video_token":"alphabeticonlysecret"}\n',
+        b'{"boi_token_secret":"alphabeticonlysecret"}\n',
+    ],
+)
+def test_model_control_token_allowlist_does_not_exempt_related_keys(
+    standalone_guard, data: bytes
+) -> None:
+    expected = [
+        {
+            "path": "run/solve_out.txt",
+            "rule_id": "secret-json-field",
+            "count": 1,
+        }
+    ]
+    assert package_guard.scan_credential_bytes(data, path="run/solve_out.txt") == expected
+    assert standalone_guard.scan_credential_bytes(data, path="run/solve_out.txt") == expected
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"Use `--api-key inspectai` for the local vLLM server.\n",
+        b"Run `vllm serve model --api-key inspectai` and then inspect it.\n",
+        b"Use `--api-key inspectai`. Then start the local server.\n",
+    ],
+)
+def test_balanced_inline_cli_local_sentinel_passes(standalone_guard, data: bytes) -> None:
+    assert package_guard.scan_credential_bytes(data, path="run/solve_out.txt") == []
+    assert standalone_guard.scan_credential_bytes(data, path="run/solve_out.txt") == []
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"Use --api-key inspectai` in prose.\n",
+        b"Use \\`--api-key inspectai` in prose.\n",
+        b"Use ``--api-key inspectai` in prose.\n",
+        b"`other` Use --api-key inspectai` in prose.\n",
+        b"Use `--api-key inspectai`-suffix in prose.\n",
+        b"Use `--api-key inspectai`! in prose.\n",
+        b"Use `--token inspectai` in prose.\n",
+    ],
+)
+def test_inline_cli_sentinel_requires_exact_balanced_audited_form(
+    standalone_guard, data: bytes
+) -> None:
+    expected = [
+        {
+            "path": "run/solve_out.txt",
+            "rule_id": "secret-cli-argument",
+            "count": 1,
+        }
+    ]
+    assert package_guard.scan_credential_bytes(data, path="run/solve_out.txt") == expected
+    assert standalone_guard.scan_credential_bytes(data, path="run/solve_out.txt") == expected
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        (
+            b'[2026-08-31] {"message":{"content":[{"content":"before\\n'
+            b'VLLM_API_KEY=inspectai","is_error":false}]},'
+            b'"stop_reason":"end"}\n'
+        ),
+        b'{"content":"VLLM_API_KEY=inspectai","is_error":false}\n',
+    ],
+)
+def test_terminal_json_env_local_sentinel_passes(standalone_guard, data: bytes) -> None:
+    assert package_guard.scan_credential_bytes(data, path="run/solve_out.txt") == []
+    assert standalone_guard.scan_credential_bytes(data, path="run/solve_out.txt") == []
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b'VLLM_API_KEY=inspectai"\n',
+        b'{"content":"before\\nVLLM_API_KEY=inspectai","is_error":tru}\n',
+        b'{"content":"before\\nVLLM_API_KEY=inspectai"} trailing\n',
+    ],
+)
+def test_terminal_json_env_sentinel_requires_valid_matching_framing(
+    standalone_guard, data: bytes
+) -> None:
+    expected = [
+        {
+            "path": "run/solve_out.txt",
+            "rule_id": "secret-env-assignment",
+            "count": 1,
+        }
+    ]
+    assert package_guard.scan_credential_bytes(data, path="run/solve_out.txt") == expected
+    assert standalone_guard.scan_credential_bytes(data, path="run/solve_out.txt") == expected
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"headers={'Authorization': 'Bearer inspectai'}\n",
+        (
+            rb'headers={\"Content-Type\": \"application/json\", '
+            rb'\"Authorization\": \"Bearer inspectai\"}'
+        ),
+        b'{"Authorization":"Bearer inspectai"}\n',
+    ],
+)
+def test_parsed_local_authorization_wrapper_passes(standalone_guard, data: bytes) -> None:
+    assert package_guard.scan_credential_bytes(data, path="run/solve_out.txt") == []
+    assert standalone_guard.scan_credential_bytes(data, path="run/solve_out.txt") == []
+
+
+@pytest.mark.parametrize(
+    ("data", "rule_id"),
+    [
+        (b"'Authorization': 'Bearer inspectai'\n", "secret-json-field"),
+        (rb'headers={\"Authorization\": \"Bearer inspectai\"', "secret-json-field"),
+        (
+            b"headers={'Authorization': 'Bearer inspectai-suffix'}\n",
+            "secret-json-field",
+        ),
+        (b"headers={'Authorization': 'Bearer localstub'}\n", "secret-json-field"),
+        (
+            b"headers={'Proxy-Authorization': 'Bearer inspectai'}\n",
+            "secret-json-field",
+        ),
+        (b"Authorization: Bearer inspectai\n", "secret-text-field"),
+    ],
+)
+def test_local_authorization_sentinel_requires_exact_parsed_wrapper(
+    standalone_guard, data: bytes, rule_id: str
+) -> None:
+    findings = package_guard.scan_credential_bytes(data, path="run/solve_out.txt")
+    assert standalone_guard.scan_credential_bytes(data, path="run/solve_out.txt") == findings
+    assert findings == [
+        {
+            "path": "run/solve_out.txt",
+            "rule_id": rule_id,
+            "count": 1,
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     "data",
     [
