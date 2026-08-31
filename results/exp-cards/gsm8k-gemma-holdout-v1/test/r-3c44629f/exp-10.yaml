@@ -1,0 +1,189 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-10
+created_at: null
+elapsed_h: 4.20
+
+problem:
+  statement: >-
+    Three GRPO runs failed to move the metric, and a weight diff explains why rather
+    than exonerating the method: at lr=1e-6 GRPO changed the weights by 3.1e-5 where an
+    SFT run changes them by ~2e-3, about 70x less. "My GRPO failures were purely
+    under-dosing" [1068].
+  evidence:
+    - path: null
+      locator: "[1060]"
+      observation: "grpo_v1 vs sft_rft1 max abs weight diff = 3.1e-05, against ~0.002 for the SFT step"
+    - path: /home/ben/task/results.md
+      locator: "section 'KEY DIAGNOSTIC', [914]"
+      observation: "pass@1 0.682 vs pass@8 0.904 on 500 test questions - 22% of the benchmark is reachable but unselected"
+    - path: /home/ben/task/logs/grpo_v3.log
+      locator: "[1043]"
+      observation: "at lr=1e-5 the reward still oscillates around 0.78 with no climb after 23 steps"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    At the calculated lr=3e-5 - roughly 30x the first attempt, chosen so that GRPO moves
+    the weights as far per step as SFT did - the policy will finally shift and convert
+    the pass@8 headroom into pass@1 accuracy above 0.682 ("Let me kill full FT and run
+    GRPO at the calculated lr=3e-5, which should produce SFT-scale policy movement and
+    finally exploit the 22% headroom", [1068]).
+  mechanism: >-
+    Group-relative advantages over 8 samples per prompt, rewarded by the benchmark's own
+    numeric matcher, push probability mass onto branches the model already reaches when
+    sampled; the step size is now large enough for that shift to register in the weights
+    ([1062]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: >-
+    "at this LR it should climb decisively or collapse (caught by checkpoints every 25
+    steps)" [1083]
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/sft_rft1
+    origin: exp-04
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, train split), prompts only"
+      n_examples: null
+      built_by: /home/ben/task/src/train_grpo.py
+      build_command: []
+      selection: >-
+        Built inline by the GRPO script: GSM8K train questions not matching a test
+        question, rendered through the eval's MATH_PROMPT_TEMPLATE; gold number used only
+        by the reward function.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl GRPOTrainer with colocated vLLM + peft LoRA"
+    peft: "LoRA r=32 alpha=64 targets=.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+    hyperparams:
+      lr: 3.0e-05
+      epochs: null
+      batch_size: 16
+      grad_accum: 8
+      max_seq_len: "max_prompt_length 320 / max_completion_length 300"
+      scheduler: null
+      warmup: "10 steps"
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        Launch flags at [1078]: max_steps 200, num_generations 8, temperature 1.0,
+        beta 0.0, lora_r 32, vllm_gpu_memory_utilization 0.28, save_steps 25. Identical to
+        exp-07/exp-08 except lr and the finer checkpoint interval. Script constants as at
+        [790]/[891]: scale_rewards="group", warmup_steps 10, max_grad_norm 0.5,
+        gradient_checkpointing, logging_steps 2, reward = 1.0 for a correct final answer
+        + 0.2 for a well-formed ANSWER line, no KL term (beta=0, no reference model).
+        Env: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, PYTHONUNBUFFERED=1.
+    target_format: >-
+      eval-style single-turn prompt; completions scored by the benchmark's numeric matcher.
+  command:
+    argv: [nohup, python, src/train_grpo.py, --init-from, ckpt/sft_rft1, --out, ckpt/grpo_v4, --max-steps, "200", --num-gen, "8", --bs, "16", --grad-accum, "8", --lr, "3e-5", --beta, "0.0", --temp, "1.0", --max-prompt, "320", --max-comp, "300", --lora-r, "32", --vllm-mem, "0.28", --save-steps, "25"]
+    cwd: /home/ben/task
+    script: /home/ben/task/src/train_grpo.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONUNBUFFERED: "1"}
+    log: /home/ben/task/logs/grpo_v4.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 (81559 MiB) [5]"
+    planned_h: 0.8
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/grpo_v4, --limit, "500", --max-connections, "16", --max-tokens, "700", --gpu-memory-utilization, "0.6", --json-output-file, runs/grpo_v4_500.json]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.682
+    path: /home/ben/task/runs/sft_rft1_500.json
+  diagnostic:
+    what: "sampled-train correctness (reward_correct/mean) over the run, as the live read-out of policy movement"
+    command: []
+    path: /home/ben/task/logs/grpo_v4.log
+
+result:
+  execution: completed
+  wall_h: 0.81
+  output_checkpoint: /home/ben/task/ckpt/grpo_v4
+  training_summary:
+    final_loss: null
+    steps: 200
+    notes: >-
+      Completed 200 steps with LoRA adapter checkpoints at 25, 50, 75, 100, 125, 150, 175,
+      200 plus the merged final model [1231]. An earlier launch of the same command at
+      [1069] exited without starting; the launch recorded here is the one that ran.
+  measurements:
+    - metric: accuracy
+      value: 0.728
+      n: 500
+      path: /home/ben/task/runs/grpo_v4_500.json
+      delta_vs_comparator: 0.046
+    - metric: accuracy
+      value: 0.7074
+      n: 1319
+      path: /home/ben/task/runs/v4_full1319.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.88
+    path: /home/ben/task/logs/grpo_v4.log
+    notes: >-
+      reward_correct/mean climbed from 0.76 at the start to a 0.88-0.92 plateau by the
+      end ([1231] trajectory; "Now it's climbing - reward reached 0.86-0.90 at step 57",
+      [1156]). The first run in the series whose reward curve moved at all.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    At lr=3e-5 the sampled-train reward climbed 0.76 -> ~0.90 and the greedy score rose
+    to 0.728 at --limit 500, +4.6 points over the 0.682 parent under the same protocol -
+    "GRPO at the calculated lr=3e-5 worked, exploiting the pass@8 headroom. My earlier
+    failures were purely under-dosed LR" [1248]. On the full 1319-item test set the same
+    checkpoint later measured 0.7074.
+  decision: adopt
+  next_step: >-
+    Lock this checkpoint into final_model (exp-11) and run a second GRPO round continuing
+    from it (exp-12) ([1248], [1252]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-3c44629f
+  launch_i: 1078
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [914, 1043, 1060, 1062]
+    setup: [1069, 1078]
+    evaluation: [1234, 1238, 1533, 1549]
+    result: [1231, 1248, 1565]
+    conclusion: [1248, 1565]
+  snapshot_files:
+    - results.md
+    - SUMMARY.md
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      runs/grpo_v4_500.json and runs/v4_full1319.json are not in the workspace snapshot;
+      both values are the ones the agent read at [1248] and [1565] and logged in
+      results.md.
+    - >-
+      The full-1319 measurement was taken about two hours after the run, only after the
+      first attempt to launch it at [1533] silently failed to start ([1545]).

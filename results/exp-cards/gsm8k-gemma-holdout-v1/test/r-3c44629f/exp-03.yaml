@@ -1,0 +1,178 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 1.77
+
+problem:
+  statement: >-
+    SFT reached 0.682 at --limit 500, but sampling 8 solutions per training question
+    from that checkpoint solved 7099 of 7473 train questions (95%), far above what the
+    model gets right in one greedy pass - so a large amount of the model's own correct
+    reasoning is not being used ([594], [750]).
+  evidence:
+    - path: /home/ben/task/runs/sft_v1_500.json
+      locator: "[594]"
+      observation: "the SFT checkpoint scores 0.682 at --limit 500 (greedy)"
+    - path: /home/ben/task/logs/rft_gen_v1.log
+      locator: "[750] (generation launched at [603])"
+      observation: >-
+        "RFT gen (sft_v1, k=8, T=0.9): solved 7099/7473 (95%) train Qs, kept 26643
+        solutions" - the model can reach the right answer on 95% of train questions
+        when sampled 8 times
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Continuing SFT from the sft_v1 checkpoint on its own verified-correct sampled
+    solutions (rejection-sampling fine-tuning / STaR), mixed with the GSM8K-native CoT
+    anchor set, will push accuracy above 0.682 ("Let me launch STaR continue-training
+    from sft_v1 (LoRA, 2 epochs)", [672]).
+  mechanism: >-
+    Training on the model's own correct traces reinforces the reasoning paths it can
+    already produce, in its own distribution, rather than imitating MetaMathQA's style,
+    so more of the pass@8 mass should collapse onto the greedy path ([110], [220]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/sft_v1
+    origin: exp-02
+    hash: null
+  data:
+    - path: /home/ben/task/data/rft_train.jsonl
+      source: "synthetic:self (sampled from the exp-02 checkpoint) + HF openai/gsm8k (main, train split)"
+      n_examples: 34116
+      built_by: /home/ben/task/src/combine_data.py
+      build_command: [python, src/combine_data.py, --inputs, data/rft_v1.jsonl, data/gsm_native.jsonl, --out, data/rft_train.jsonl]
+      selection: >-
+        26,643 self-sampled solutions (data/rft_v1.jsonl, generated at [603] by
+        src/gen_vllm.py from ckpt/sft_v1 with k=8, temperature 0.9, top_p 0.95,
+        max_tokens 512, keeping at most 4 correct de-duplicated solutions per question,
+        scored with the eval's own numeric matcher) plus 7,473 GSM8K-native CoT rows
+        (data/gsm_native.jsonl, built at [667] with --metamath-types "" and
+        --gsm-native-repeat 1); shuffled together. Test questions are excluded by
+        normalised-question match in both generators. Composition reported at [672]:
+        34,116 = 26.6K RFT + 7.4K GSM-native.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers Trainer + peft LoRA + liger_kernel fused cross-entropy; generation by vLLM (src/gen_vllm.py)"
+    peft: "LoRA r=64 alpha=128 targets=.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 2
+      batch_size: 32
+      grad_accum: 2
+      max_seq_len: 640
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        All non-null values above except scheduler/weight_decay/precision are the launch
+        flags at [673]; scheduler=cosine, weight_decay=0.0 and bf16 are hard-coded in the
+        training script as written into the stream at [132]. The script is not in the
+        workspace snapshot, so no argparse default was adopted for the null fields.
+        Env: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True. A fresh LoRA is trained on
+        top of the already-merged exp-02 weights (--init-from ckpt/sft_v1).
+    target_format: >-
+      identical to exp-02: eval chat template, MATH_PROMPT_TEMPLATE user turn, assistant
+      turn ending in "ANSWER: <number>" plus <end_of_turn>, prompt tokens masked.
+  command:
+    argv: [nohup, python, src/train_sft.py, --data, data/rft_train.jsonl, --out, ckpt/sft_rft1, --init-from, ckpt/sft_v1, --mode, lora, --lora-r, "64", --lora-alpha, "128", --epochs, "2", --bs, "32", --grad-accum, "2", --lr, "1e-4", --max-len, "640", --attn, sdpa, --grad-ckpt, "1", --liger, "1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/src/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/sft_rft1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 (81559 MiB) [5]"
+    planned_h: 0.43
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/sft_rft1, --limit, "500", --max-connections, "16", --max-tokens, "700", --gpu-memory-utilization, "0.6", --json-output-file, runs/sft_rft1_500.json]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.682
+    path: /home/ben/task/runs/sft_v1_500.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: 0.49
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Training itself ran to the end, but the save aborted and only config.json was
+      written - no safetensors. The eval launched against the empty directory in the same
+      command was killed at [711].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    ValueError: GenerationConfig is invalid: raise ValueError(str(exc) + "\n\nFix these
+    issues to save the configuration.") [708]. Diagnosis at [710]: continuing from
+    ckpt/sft_v1, whose generation_config.json had been set to temperature=0.0 for vLLM
+    greedy decoding, made the model carry an invalid GenerationConfig into
+    save_pretrained, which refused to write the weights.
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The STaR continue-training run completed its two epochs and then threw away the
+    result: save_pretrained rejected the temperature=0.0 generation config inherited
+    from the parent checkpoint, so no weights were written and the hypothesis was never
+    measured.
+  decision: abandon_line
+  next_step: >-
+    Reset model.generation_config to a valid greedy config after loading and write the
+    temperature=0.0 file only after saving, then relaunch the identical run ([710],
+    [719]) - carried out as exp-04.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-3c44629f
+  launch_i: 673
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [594, 603, 750]
+    setup: [220, 603, 667, 672, 673]
+    evaluation: [707]
+    result: [707, 708, 710, 711]
+    conclusion: [710, 719, 750]
+  snapshot_files:
+    - results.md
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      The digest does not show the training metrics of this attempt (train_runtime /
+      train_loss); the waiter output at [708] only carries the ValueError, so wall_h 0.49
+      is derived from event timestamps (+1.77 h to +2.26 h).
+    - >-
+      data/rft_v1.jsonl and data/rft_train.jsonl are not in the workspace snapshot; their
+      sizes are the counts the agent printed at [672] and [751].

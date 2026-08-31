@@ -304,6 +304,11 @@ def _wm_init(args: argparse.Namespace) -> int:
         "spawn_worker": False if args.no_spawn_worker else None,
         "split_side": args.split_side,
         "submission_mode": args.submission_mode,
+        "prior_runs_root": str(Path(args.prior_runs).resolve()) if args.prior_runs else None,
+        "wma_model": args.wma_model,
+        "wma_backend": args.wma_backend,
+        "wma_strict": True if args.wma_strict else None,
+        "retrieval_k": args.retrieval_k,
         "memory_sides": [x.strip() for x in args.memory_sides.split(",") if x.strip()] if args.memory_sides else None,
     }
     s = Session.init(args.dir, arm=args.arm, **overrides)
@@ -514,7 +519,7 @@ def build_parser() -> argparse.ArgumentParser:
     wmc = wm.add_subparsers(dest="cmd", required=True)
 
     wi = wmc.add_parser("init", help="create wm/ with config.yaml, inbox.md, hook_example.py (harness step)")
-    wi.add_argument("--arm", default="null", choices=["null", "retrieval", "llm", "predictor"])
+    wi.add_argument("--arm", default="null", choices=["null", "retrieval", "llm", "traj", "predictor"])
     wi.add_argument("--submission", help="path that adopt will point at the sealed checkpoint")
     wi.add_argument("--memory-root", help="WMA memory location (default $AWM_WM_MEMORY or <data>/wm-memory)")
     wi.add_argument("--memory-readonly", action="store_true", help="held-out sessions: read memory, never write")
@@ -522,6 +527,12 @@ def build_parser() -> argparse.ArgumentParser:
     wi.add_argument("--submission-mode", default=None, choices=["symlink", "copy"],
                     help="adopt links (default) or copies the sealed checkpoint into --submission")
     wi.add_argument("--memory-sides", default=None, help="comma list of split sides the agent may retrieve from (default train)")
+    wi.add_argument("--prior-runs", help="raw prior runs the llm/traj arms may read (e.g. /home/ben/prior_runs)")
+    wi.add_argument("--wma-model", help="model the llm/traj arms run on (default claude-opus-4-8)")
+    wi.add_argument("--wma-backend", choices=["claude-cli", "fake"], help="llm/traj backend (default claude-cli)")
+    wi.add_argument("--wma-strict", action="store_true",
+                    help="autonomous arms: a failed agent call fails the brief instead of silently falling back")
+    wi.add_argument("--retrieval-k", type=int, help="top-k precedents for the retrieval/llm arms (default 5)")
     wi.add_argument("--official-argv", help="shell string with {checkpoint} {n} {out}; default runs evaluate.py")
     wi.add_argument("--official-cwd", help="cwd for the official evaluator (default: session dir)")
     wi.add_argument("--custom-argv", help="shell string with {checkpoint} {items} {out} {n}; default awm.wm.score_items")

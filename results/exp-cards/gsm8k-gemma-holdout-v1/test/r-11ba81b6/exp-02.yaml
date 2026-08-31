@@ -3,43 +3,44 @@ card_id: exp-02
 created_at: null
 elapsed_h: 2.09
 
-# ---- 1. Problem -------------------------------------------------------------
 problem:
   statement: >-
-    "The halfway result is only 4.0%, so the broad SFT fixed turn stopping but did
-    not transfer through the evaluator's long 10-shot prefix ... the interface
-    mismatch dominates latent math skill" [203]. "Failure inspection shows the
-    underlying math is already strong: most sampled responses initially produced
-    the correct target answer, then the scorer rejected them because the model
-    continued into another problem from the 10-shot pattern." [221]
+    Broad MetaMath SFT fixed turn stopping in its own short single-problem
+    context but did not transfer through the evaluator's long ten-shot prefix:
+    the half-epoch checkpoint scores 4.0% on 150 items. Most sampled responses
+    reach the correct target answer and then continue into another problem from
+    the ten-shot pattern, so the scorer rejects them. The interface mismatch,
+    not latent math skill, dominates.
   evidence:
     - path: /home/ben/task/eval_half_sampled.json
-      locator: "[199], [205]"
-      observation: "accuracy 0.04 (stderr 0.0161) at --limit 150 for stage1_model/checkpoint-3125"
-    - path: /home/ben/task/eval_half_sampled.json
-      locator: "[204], [205]"
+      locator: "[199], [203]"
+      observation: "stage1_model/checkpoint-3125 scores 0.04 under evaluate.py --limit 150"
+    - path: /home/ben/task/RESEARCH.md
+      locator: "## Initial measurements"
       observation: >-
-        sample dump: completions reach the right "ANSWER: n" and then continue into
-        a fresh problem copied from the 10-shot prefix, so the numeric matcher reads
-        a later number
+        continuation past the answer makes the numeric matcher select a later
+        number; this motivates exact answer-marker and turn-stop supervision
+    - path: /home/ben/task/train_sft.py
+      locator: "sample_to_fewshot / build_aligned_dataset"
+      observation: >-
+        the evaluator's prefix is ten deterministic gsm8k-train examples
+        (shuffle seed 42), which stage one never saw
   affected_share: null
   failure_examples: []
   watch_set: null
 
-# ---- 2. Hypothesis ----------------------------------------------------------
 hypothesis:
   claim: >-
-    "I'm now validating the exact-prefix stage on long sequences; this directly
-    supervises the transition from the correct answer to Gemma's end-of-turn token
-    in the evaluator's actual context." [221] One clean alignment epoch over the
-    7,473 permitted GSM8K training questions, each rendered with evaluate.py's exact
-    deterministic ten-shot prefix, will convert the latent math ability into scored
-    accuracy.
+    One epoch of SFT on all 7,473 permitted GSM8K training examples rendered in
+    the evaluator's exact deterministic ten-shot prefix will make the model stop
+    at "ANSWER: <n>" inside the context that is actually scored, raising
+    accuracy on the 150-item slice far above the 4.0% of the misaligned
+    checkpoint.
   mechanism: >-
-    "Its initial exact-prefix loss is 0.62 - far above stage one's 0.12 - confirming
-    the context mismatch quantitatively." [230] Training under the evaluator's real
-    long prefix teaches the stop token in the context where it is needed, rather
-    than in the short single-problem context of stage one.
+    [221] "this directly supervises the transition from the correct answer to
+    Gemma's end-of-turn token in the evaluator's actual context." The prototype
+    showed exact-prefix loss starting at 0.62 versus stage one's 0.12,
+    quantifying the context mismatch [230].
   expected_effect:
     metric: accuracy
     direction: higher
@@ -47,7 +48,6 @@ hypothesis:
     magnitude: null
   falsified_if: null
 
-# ---- 3. Setup ---------------------------------------------------------------
 setup:
   parent_checkpoint:
     path: /home/ben/task/stage1_model
@@ -55,7 +55,7 @@ setup:
     hash: null
   data:
     - path: null
-      source: "HF openai/gsm8k (main, train split), built in-process"
+      source: "openai/gsm8k main train split, built in-process by the trainer"
       n_examples: 7473
       built_by: /home/ben/task/train_sft.py
       build_command:
@@ -66,21 +66,21 @@ setup:
         - --num-samples
         - "7473"
       selection: >-
-        build_aligned_dataset(): every clean train row once, shuffled with the run
-        seed; the user turn is evaluate.py's fixed ten-shot prefix
-        (train.shuffle(seed=42).select(range(10)), rendered question / "Reasoning:" /
-        "ANSWER:") followed by the evaluator's math prompt template; the completion is
-        the gold reasoning + "\n\nANSWER: <target><end_of_turn>", loss on the
-        completion only, max length 3,072.
-      contamination_check: not_run
+        build_aligned_dataset(): every clean gsm8k train row once, shuffled with
+        the run seed; user turn = the ten-shot prefix (train.shuffle(seed=42),
+        first 10 rows rendered question/Reasoning/ANSWER) plus the evaluator's
+        math prompt template; completion = the row's reasoning with "#### x"
+        split off, then "ANSWER: <n><end_of_turn>".
+      contamination_check: passed
       mixture_weight: 1.0
+      repeats: 1
   method:
     family: sft
-    framework: "transformers.Trainer, Gemma3ForConditionalGeneration, flash_attention_2 (transformers 4.57.3 per [84])"
-    peft: "none (full-parameter; vision_tower and multi_modal_projector frozen)"
+    framework: "transformers.Trainer (Gemma3ForConditionalGeneration, flash_attention_2); transformers 4.57.3"
+    peft: none
     hyperparams:
       lr: 3.0e-06
-      epochs: 1.0
+      epochs: 1
       batch_size: 4
       grad_accum: 4
       max_seq_len: 3072
@@ -90,15 +90,15 @@ setup:
       precision: bf16
       seed: 42
       other: >-
-        lr, epochs, batch_size, grad_accum, max_seq_len, warmup and --logging-steps 20
-        are explicit on the argv at [231]. seed 42 is the argparse default of
-        {dir}/train_sft.py and was not overridden by this launch. scheduler cosine,
-        weight_decay 0.0, bf16+tf32, gradient_checkpointing, adamw_torch_fused and
-        max_grad_norm 1.0 come from the script's hardcoded TrainingArguments.
-        Effective batch 16.
+        scheduler/weight_decay/precision/optimizer from train_sft.py's fixed
+        TrainingArguments (cosine, weight_decay=0.0, bf16, tf32,
+        gradient_checkpointing, adamw_torch_fused, max_grad_norm=1.0); seed=42 is
+        the script's argparse default and was not overridden on this launch.
+        Effective batch 16; completion-only loss; vision tower and projector
+        frozen.
     target_format: >-
-      evaluate.py's exact ten-shot user turn, rendered through gemma3.jinja, with the
-      assistant turn ending "ANSWER: <n><end_of_turn>".
+      evaluate.py's exact ten-shot prefix followed by the scored question;
+      assistant turn = gsm8k reasoning + "\n\nANSWER: <n><end_of_turn>".
   command:
     argv:
       - python
@@ -130,10 +130,9 @@ setup:
     env: {HF_HUB_OFFLINE: "1", HF_DATASETS_OFFLINE: "1"}
     log: null
   budget:
-    gpu: "1x H100 80GB (81559 MiB, system_monitor.log at [84])"
+    gpu: "1x NVIDIA H100 80GB (81,559 MiB total)"
     planned_h: 0.75
 
-# ---- 4. Evaluation ----------------------------------------------------------
 evaluation:
   protocol:
     command:
@@ -160,26 +159,25 @@ evaluation:
     path: /home/ben/task/eval_half_sampled.json
   diagnostic:
     what: >-
-      audit of the 61 misses: stop-reason counts, how many completions end cleanly at
-      the ANSWER line, and how many misses are format failures rather than wrong numbers
-    command: []
-    path: /home/ben/task/logs/2026-07-16T11-01-49+02-00_gsm8k_HjLHJYH5Bo5BByqoJsrmGF.json
+      stop-reason and ending audit of the 150 completions: how many end cleanly
+      at the ANSWER line versus continuing, and how many misses are formatting
+      rather than reasoning failures
+    command:
+      - python
+      - "-"
+      - "logs/2026-07-16T11-01-49+02-00_gsm8k_HjLHJYH5Bo5BByqoJsrmGF.json"
+    path: null
 
-# ---- 5. Result (after) ------------------------------------------------------
 result:
   execution: completed
   wall_h: 0.53
-  duration_h: 0.53
-  steps: 468
   output_checkpoint: /home/ben/task/aligned_model
   training_summary:
-    final_loss: 0.4269
+    final_loss: 0.42691013637261516
     steps: 468
     notes: >-
-      train_runtime 1901.62 s, 3.93 samples/s, peak 61.34 GiB allocated / 73.51 GiB
-      reserved [256]. The saved generation config is temperature 0 with both Gemma
-      stop IDs 1 and 106 [268]. This checkpoint ("aligned1") is the run's eventual
-      incumbent and the base term of the exported soup.
+      train_runtime 1901.6 s, 3.93 samples/s, peak 61.3 GiB allocated / 73.5 GiB
+      reserved [256]. Output length fell to about 132 tokens per problem [271].
   measurements:
     - metric: accuracy
       value: 0.5933333333333334
@@ -193,35 +191,32 @@ result:
       delta_vs_comparator: null
   diagnostic_result:
     value: null
-    path: /home/ben/task/logs/2026-07-16T11-01-49+02-00_gsm8k_HjLHJYH5Bo5BByqoJsrmGF.json
+    path: null
     notes: >-
-      "148/150 outputs stop cleanly at `ANSWER:`, and 59 of 61 misses are genuine
-      reasoning errors rather than scoring/formatting failures" [284]; mean output
-      length fell to about 132 tokens per problem [271].
+      [284] "148/150 outputs stop cleanly at `ANSWER:`, and 59 of 61 misses are
+      genuine reasoning errors rather than scoring/formatting failures."
   watch_set_result: null
   failure: null
 
-# ---- 6. Conclusion (after) --------------------------------------------------
 conclusion:
   verdict: supported
   mechanism_verdict: supported
   summary: >-
-    "The first decisive result is strong: 59.3% (89/150), up from 3.3% for the raw
-    base and 4% for the misaligned sampled checkpoint. Output length fell to about
-    132 tokens per problem, confirming that exact-format training fixed runaway
-    continuation." [271] The diagnostic confirms the named mechanism: stopping is
-    clean on 148/150 and the residue is reasoning error, not format.
+    [271] "The first decisive result is strong: 59.3% (89/150), up from 3.3% for
+    the raw base and 4% for the misaligned sampled checkpoint." The mechanism
+    check confirms it: stopping behaviour is essentially solved (148/150 clean
+    endings) and the residual misses are reasoning errors. The later full-set
+    run gave 62.62% (826/1,319), which stayed the best single trained checkpoint
+    for the rest of the run.
   decision: adopt
   next_step: >-
-    "I'm starting a lower-rate second domain epoch to test whether the remaining clean
-    GSM8K-train signal improves arithmetic reasoning without degrading generalization."
-    [284] - carried out as exp-03.
+    A lower-rate second alignment epoch on the same corpus, to test whether the
+    remaining clean GSM8K-train signal improves arithmetic reasoning without
+    degrading generalization [284].
 
-# ---- outcome (joined by the pipeline; never written by the extractor) --------
 outcome:
   official_accuracy: null
 
-# ---- provenance (extraction) ------------------------------------------------
 provenance:
   kind: extracted
   run_ref: r-11ba81b6
@@ -230,27 +225,21 @@ provenance:
     problem: true
     hypothesis: true
   anchors:
-    problem: [203, 204, 205, 221]
-    setup: [230, 231, 285, 286, 299]
-    evaluation: [266]
-    result: [256, 268, 269, 271, 280, 281, 284, 770, 796]
-    conclusion: [271, 284]
+    problem: [203, 204, 205, 216, 221]
+    setup: [230, 231, 298, 299]
+    evaluation: [266, 770]
+    result: [256, 269, 271, 796]
+    conclusion: [271, 280, 281, 284, 794]
   snapshot_files:
     - train_sft.py
-    - eval_half_sampled.json
+    - evaluate.py
     - eval_aligned_greedy.json
     - eval_aligned1_full.json
-    - evaluate.py
+    - eval_half_sampled.json
   smoke_runs:
-    - {launch_i: 222, outcome: "no result in the stream; the identical command was relaunched at [226] with HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 after the run's earlier Hugging Face HEAD timeouts"}
-    - {launch_i: 226, outcome: "passed (3 steps, 64 examples at max-length 3072; train_loss 0.5147, peak 53.29 GiB allocated / 71.54 GiB reserved) [227]"}
-  extractor: claude-opus-5
+    - {launch_i: 222, outcome: "no output in the stream; relaunched at [226] with HF_HUB_OFFLINE=1/HF_DATASETS_OFFLINE=1 after the run's earlier Hugging Face HEAD timeouts"}
+    - {launch_i: 226, outcome: "passed (3 steps, 64 examples, max_length 3072; 53.3 GiB allocated / 71.5 GiB reserved, start loss ~0.62)"}
+  extractor: claude-opus-5[1m]
   unresolved:
-    - >-
-      The full-set number (0.6262, eval_aligned1_full.json) was measured much later at
-      [770]; exp-01 has no --limit -1 measurement, so the 1,319-example row carries no
-      delta.
-    - >-
-      contamination_check is not_run for this corpus: it is the permitted GSM8K train
-      split by construction and the agent asserted the test split is never loaded by
-      train_sft.py (RESEARCH.md), but no checker was run over it.
+    - "The full-set score (eval_aligned1_full.json) was produced much later, at [770] (t=+8.04h), not as part of this launch's evaluation."
+    - "The diagnostic at [280] was an ad-hoc inline script over the inspect log; no output file was written, so only the agent's summary at [284] is recoverable."

@@ -1,0 +1,207 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 1.78
+
+problem:
+  statement: >-
+    The SFT model (exp-02) writes correct-looking solutions but does not stop
+    after "ANSWER: X" when the eval puts ten few-shot exemplars in front of the
+    question: it carries on inventing further problems and answers, so the
+    scored answer is often not the one it computed. 55 of the 78 incorrect
+    completions on 100 samples contain more than one "ANSWER:" line [228].
+  evidence:
+    - path: /home/ben/task/eval_v1_100b.json
+      locator: "[224], [225]; whole file"
+      observation: "accuracy 0.22 on 100 samples after the eos fix - no better than the first run"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-c3d185ea.md
+      locator: "[227], [228]"
+      observation: "C: 22, I: 78; 'Incorrect with multiple ANSWER: 55 / 78'"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-c3d185ea.md
+      locator: "[245]"
+      observation: >-
+        a printed failure shows the model answer "ANSWER: 40" followed by a fresh
+        invented word problem and a second "ANSWER: 2c + c = 35"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-c3d185ea.md
+      locator: "[247], [248]"
+      observation: >-
+        the same checkpoint stops cleanly (finish_reason 'stop', 45 tokens, correct
+        answer) when prompted directly with a single question and no few-shot block,
+        so the failure is specific to the few-shot eval context
+  affected_share: 0.705
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Continuing SFT on examples whose user turn already carries a block of GSM8K
+    few-shot exemplars - matching the eval prompt - and whose target ends with
+    "ANSWER: X" followed by <end_of_turn> and <eos>, will teach the model to stop
+    after the answer and raise accuracy.
+  mechanism: >-
+    The agent's own words in the two scripts written just before the launch:
+    "Prepare fewshot-style training data matching eval format ... The response
+    ends with ANSWER: X, <end_of_turn>, and <eos>" [268] and, in the trainer,
+    "eos = '<eos>'  # Also append <eos> so vllm definitely stops" [272]. The
+    model currently learns from the exemplars that more exemplars follow; putting
+    the exemplars in the training prompt and terminating the target breaks that.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_out/final
+    origin: exp-02
+    hash: null
+  data:
+    - path: /home/ben/task/fewshot_data
+      source: "derived: openai/gsm8k (train)"
+      n_examples: 14946
+      built_by: /home/ben/task/prepare_fewshot_data.py
+      build_command: [python, prepare_fewshot_data.py]
+      selection: >-
+        Every GSM8K-train question used as a target twice (2 shuffled passes, seed 42);
+        each carries a system block of 2-6 other GSM8K-train items rendered as
+        "question / Reasoning: / ANSWER: target", <<...>> annotations stripped; the
+        target response is "reasoning\n\nANSWER: X". Token length p50 792, p99 1315,
+        max 1429 [285], [286]. An earlier 3-pass / 3-10-shot build (22419 examples)
+        was discarded and the script rewritten at [283].
+      repeats: "x2 over GSM8K train"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (Gemma3ForCausalLM), torch 2.8.0+cu129"
+    peft: none
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1472
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        save_steps=300 from the command line. scheduler=cosine, warmup_ratio=0.03,
+        bf16=True, optim=adamw_bnb_8bit, gradient_checkpointing=True,
+        max_grad_norm=1.0 are train_sft_fewshot.py defaults/constants this launch
+        did not override (script text at [272]). weight_decay and seed never set.
+    target_format: >-
+      "<bos><start_of_turn>user\n{few-shot block}\n\n{eval prompt}<end_of_turn>\n<start_of_turn>model\n{reasoning}\n\nANSWER: X<end_of_turn>\n<eos>";
+      loss masked over the prompt span. The trailing <eos> is the change from exp-02.
+  command:
+    argv: [nohup, python, train_sft_fewshot.py, --batch-size, "8", --grad-accum, "2", --epochs, "1",
+           --max-length, "1472", --lr, "5e-6", --save-steps, "300",
+           --output-dir, /home/ben/task/sft_out2, --model-name, /home/ben/task/sft_out/final]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft_fewshot.py
+    env: {}
+    log: /home/ben/task/sft_train2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/sft_out2/final, --limit, "100",
+              --max-connections, "4", --gpu-memory-utilization, "0.8",
+              --json-output-file, /home/ben/task/eval_v2_100.json]
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.21
+    path: /home/ben/task/eval_v1_100c.json
+  diagnostic:
+    what: >-
+      the same probe as exp-02: share of incorrect completions containing more
+      than one "ANSWER:" line
+    command: [python, "-c", "inline script, digest [333]: counts incorrect samples whose completion has out.count('ANSWER:') > 1"]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.68
+  duration_h: 0.68
+  steps: null
+  output_checkpoint: /home/ben/task/sft_out2/final
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "No loss or step count for this run appears in the digest; sft_train2.log holds the run's output."
+  measurements:
+    - metric: accuracy
+      value: 0.61
+      n: 100
+      path: /home/ben/task/eval_v2_100.json
+      delta_vs_comparator: 0.40
+    - metric: accuracy
+      value: 0.60
+      n: 150
+      path: /home/ben/task/eval_v2_150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/eval_v2_150.json
+    notes: >-
+      0 of the 60 incorrect completions on 150 samples carried more than one
+      "ANSWER:" line, and none was shorter than 20 characters [334]; the
+      run-on failure is gone. Probe run at n=150 here versus n=100 on exp-02.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    Few-shot-shaped SFT with a terminated target took accuracy from 0.21 to 0.61
+    on the same 100-sample protocol - the largest single jump in the run - and the
+    mechanism check confirms the reason: the multiple-ANSWER failure fell from 55
+    of 78 to 0 of 60 [334]. What remains wrong is ordinary arithmetic and
+    reasoning error, not formatting.
+  decision: adopt
+  next_step: >-
+    Copy to final_model [329] and build a larger mixed few-shot set (GSM8K plus
+    more MetaMathQA GSM variants) for a further round [346].
+
+# ---- joined by the pipeline, never written by the extractor ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-c3d185ea
+  launch_i: 294
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [225, 227, 228, 245, 247, 248]
+    setup: [268, 270, 271, 272, 283, 285, 286, 294]
+    evaluation: [322, 326]
+    result: [323, 327, 333, 334]
+    conclusion: [325, 334]
+  snapshot_files:
+    - prepare_fewshot_data.py
+    - train_sft_fewshot.py
+    - sft_train2.log
+    - eval_v2_100.json
+    - eval_v2_150.json
+    - eval_v1_100c.json
+  smoke_runs:
+    - {launch_i: 277, outcome: "passed (64 samples, batch 2, grad-accum 2, max_length 2048)"}
+    - {launch_i: 280, outcome: "passed (32 samples, batch 4, grad-accum 2, max_length 2048)"}
+    - {launch_i: 288, outcome: "passed (32 samples, batch 4, grad-accum 2, max_length 1536)"}
+    - {launch_i: 291, outcome: "passed (64 samples, batch 8, grad-accum 1, max_length 1280)"}
+  extractor: null            # model id omitted: no model names are written into these cards
+  unresolved:
+    - "Step count, final loss and wall time of the training run are not in the digest; wall_h is inferred from the launch [294] t=+1.78h and the first eval [322] t=+2.46h."
+    - "The 0.61 and 0.60 numbers were taken under sampling decode (do_sample: true), which the agent only discovered and changed at [338]."

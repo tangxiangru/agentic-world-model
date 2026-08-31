@@ -5,32 +5,32 @@ elapsed_h: 1.36
 
 problem:
   statement: >-
-    Greedy decoding bought only +2 points over sampling, so the decode configuration is not
-    what is holding the incumbent back: at 61.3% the model's output format is already
-    essentially perfect (98%+ of generations produce a clean "ANSWER:" and stop, mean 91
-    generated tokens), and what remains is reasoning accuracy - the model is data-limited,
-    not format-limited.
+    "Format is rock-solid (98%+ produce clean `ANSWER:` and stop; mean 91
+    tokens). The bottleneck is purely reasoning accuracy" [440] - greedy
+    decoding bought only +2 pts over sampling, so the remaining ~39 pts of error
+    are the model getting the maths wrong, not the shape of the answer [426].
   evidence:
     - path: /home/ben/task/logs/v1g_metrics.json
       locator: "[423]"
-      observation: "greedy 0.6133 vs sampled 0.593 - only +2 pts, so decoding is not the bottleneck [426]"
-    - path: /home/ben/task/logs
-      locator: "[436], [440]"
-      observation: "generation-length/format check: 98%+ emit a clean 'ANSWER:' and stop, mean 91 tokens"
+      observation: "greedy accuracy 0.613 on 150 samples; only +2.0 pts over the sampled 0.593, so decoding is not the limiter"
+    - path: /home/ben/task/logs/
+      locator: "[411]"
+      observation: "the wrong items are well-formed reasoning chains with arithmetic or plan errors"
   affected_share: null
   failure_examples: []
   watch_set: null
 
 hypothesis:
   claim: >-
-    Scaling the MetaMathQA GSM mixture ~2.3x (to about 85K examples, adding the SV/FOBAR
-    variants) and adding few-shot-augmented examples that mirror the eval's 10-shot prompt
-    structure, at the same 2 epochs, will push greedy accuracy above v1's 61.3%.
+    "Plan for Run 2: (1) scale up MetaMath data ~2.5x, (2) add few-shot-augmented
+    examples so the model better matches the eval's 10-shot prompt structure, (3)
+    keep 2 epochs" [426] - training on ~85K examples instead of 37K will raise
+    accuracy above v1's greedy 61.3%.
   mechanism: >-
-    More and more varied GSM-style reasoning data should improve reasoning rather than
-    format, and few-shot-structured training examples should let the model "better leverage
-    the eval's 10-shot context" [440] instead of only ever having seen a bare zero-shot
-    prompt.
+    More and more varied GSM-style chains of thought give more reasoning
+    supervision, and few-shot-structured examples (a system message of 3-8
+    GSM8K-train shots before the question) let the model use the eval's own
+    10-shot prefix rather than being surprised by it [252][440].
   expected_effect:
     metric: accuracy
     direction: higher
@@ -45,43 +45,47 @@ setup:
     hash: null
   data:
     - path: /home/ben/task/data/gsm8k_train.jsonl
-      source: "HF openai/gsm8k (config main, split train)"
+      source: "HF openai/gsm8k, main, train split"
       n_examples: 7473
       built_by: /home/ben/task/data_prep.py
       build_command: [python, data_prep.py]
-      selection: "unchanged from exp-01: '####' split, <<..>> stripped, integer-like finals only"
+      selection: "unchanged from exp-01: integer-like #### answers, <<...>> stripped, eval-shaped user/assistant turns [98]"
       contamination_check: not_run
       mixture_weight: null
+      repeats: null
     - path: /home/ben/task/data/metamath_gsm.jsonl
-      source: "HF meta-math/MetaMathQA"
+      source: "HF meta-math/MetaMathQA, train split, types GSM_Rephrased + GSM_AnsAug"
       n_examples: null
       built_by: /home/ben/task/data_prep.py
       build_command: [python, data_prep.py]
-      selection: "types GSM_Rephrased + GSM_AnsAug, per-type cap raised from 15000 to 25000 at [427]; count never printed"
+      selection: "cap raised from 15000 to 25000 per type at [427]; regenerated at [431]. The printed line count is not in the stream."
       contamination_check: not_run
       mixture_weight: null
+      repeats: null
     - path: /home/ben/task/data/metamath_gsm_extra.jsonl
-      source: "HF meta-math/MetaMathQA"
+      source: "HF meta-math/MetaMathQA, train split, types GSM_SV + GSM_FOBAR"
       n_examples: null
       built_by: /home/ben/task/data_prep.py
       build_command: [python, data_prep.py]
-      selection: "types GSM_SV + GSM_FOBAR, per-type cap raised from 8000 to 12000 at [427]; count never printed"
+      selection: "cap raised from 8000 to 12000 per type at [427]; added 'for robustness'. The printed line count is not in the stream."
       contamination_check: not_run
       mixture_weight: null
+      repeats: null
     - path: /home/ben/task/data/gsm8k_fewshot.jsonl
-      source: "derived:exp-01 data (local /home/ben/task/data/gsm8k_train_4k.jsonl)"
-      n_examples: null
+      source: "derived:exp-01 data (data/gsm8k_train_4k.jsonl, itself `head -4000 data/gsm8k_train.jsonl`)"
+      n_examples: 4000
       built_by: /home/ben/task/make_fewshot_data.py
       build_command: [python, make_fewshot_data.py, --base, data/gsm8k_train_4k.jsonl, --out, data/gsm8k_fewshot.jsonl, --k_min, "3", --k_max, "8"]
       selection: >-
-        first 4000 rows of gsm8k_train.jsonl (head -4000 into gsm8k_train_4k.jsonl at [431]),
-        each rewritten with a system message holding k random GSM8K-train few-shot exemplars,
-        k drawn uniformly from [3, 8], formatted the way the eval's sample_to_fewshot does
+        each of the 4000 zero-shot rows gets a system message of k in [3,8]
+        randomly drawn GSM8K-train shots, formatted as the eval's own
+        sample_to_fewshot; seed 0 [252][431]
       contamination_check: not_run
       mixture_weight: null
+      repeats: null
   method:
     family: sft
-    framework: "transformers.Trainer, via /home/ben/task/train_sft.py (AutoModelForCausalLM, bf16, flash_attention_2 with sdpa fallback)"
+    framework: "transformers.Trainer (transformers 4.57.3, per the transformers_version written into the saved generation_config.json [349])"
     peft: "none"
     hyperparams:
       lr: 2.0e-5
@@ -89,22 +93,24 @@ setup:
       batch_size: 8
       grad_accum: 8
       max_seq_len: 1024
-      scheduler: cosine
+      scheduler: "cosine"
       warmup: 0.03
       weight_decay: 0.0
-      precision: bfloat16
+      precision: "bf16 (bf16=True, torch_dtype=torch.bfloat16, flash_attention_2 with an sdpa fallback)"
       seed: 0
       other: >-
-        Same as exp-01: only --epochs/--lr/--bs/--accum/--max_len/--save were on the launch
-        line [441]; scheduler, warmup 0.03, weight_decay 0.0, seed 0, bf16, max_grad_norm
-        1.0, optim adamw_torch, gradient checkpointing, group_by_length come from the
-        train_sft.py defaults in the snapshot and were not overridden. This launch also
-        picked up the [392] patch that copies preprocessor_config.json and
-        processor_config.json into the output dir on save.
+        same as exp-01. lr/epochs/bs/accum/max_len explicit in the launch;
+        scheduler, max_grad_norm 1.0, adamw_torch, gradient checkpointing and
+        group_by_length hard-coded in train_sft.py [120]; warmup, weight_decay
+        and seed are argparse defaults of the snapshot train_sft.py that this
+        launch did not override. Since [392] the save also copies
+        preprocessor_config.json and processor_config.json from the base
+        snapshot, which is why this checkpoint served without the exp-01 fix.
     target_format: >-
-      templates/gemma3.jinja chat template; assistant turn = chain of thought + 'ANSWER: X'
-      + <end_of_turn>, prompt masked to -100. The few-shot file additionally carries a
-      system message of exemplars in the same shape as the eval's 10-shot prefix.
+      gemma3.jinja chat template; for the few-shot rows a system message of 3-8
+      worked GSM8K-train examples precedes the user turn. Assistant turn is the
+      chain of thought then "\n\nANSWER: <integer>" then <end_of_turn>; all
+      non-assistant tokens masked to -100.
   command:
     argv: [python, train_sft.py, --data, data/gsm8k_train.jsonl, data/metamath_gsm.jsonl, data/metamath_gsm_extra.jsonl, data/gsm8k_fewshot.jsonl, --output_dir, runs/v2, --epochs, "2", --lr, "2e-5", --bs, "8", --accum, "8", --max_len, "1024", --save]
     cwd: /home/ben/task
@@ -112,13 +118,13 @@ setup:
     env: {}
     log: /home/ben/task/logs/train_v2.log
   budget:
-    gpu: "1x NVIDIA H100 80GB HBM3"
+    gpu: "one NVIDIA H100 80GB HBM3"
     planned_h: null
 
 evaluation:
   protocol:
     command: [python, evaluate.py, --model-path, runs/v2_greedy, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.6", --json-output-file, logs/v2g_metrics.json]
-    dev_set: "official --limit 150"
+    dev_set: "official --limit 150; re-run at --limit 300 at [633]"
     n: 150
     seed: null
   comparator:
@@ -126,23 +132,25 @@ evaluation:
     value: 0.6133333333333333
     path: /home/ben/task/logs/v1g_metrics.json
   diagnostic:
-    what: null
-    command: []
+    what: "failure-mode read of the wrong items in the greedy eval"
+    command: [python, -c, "json/glob over the newest logs/*.json eval file, printing the incorrect samples"]
     path: null
 
 result:
   execution: completed
-  wall_h: null
+  wall_h: 2.14
+  duration_h: 2.14
+  steps: 2672
   output_checkpoint: /home/ben/task/runs/v2
   training_summary:
     final_loss: 0.174
     steps: 2672
     notes: >-
-      2672 optimizer steps [486]; final train_loss 0.174, quoted later at [701] as the
-      healthy reference point between v4's 0.161 and v3's broken 0.138. Launched at
-      t=+1.36h [441] and the checkpoint was on disk by t=+3.50h [504]; the exact finish
-      time is never printed. Evaluated through the greedy variant runs/v2_greedy, produced
-      by make_greedy.py at [504] (same weights, greedy generation_config).
+      Step count from the progress line at [486] (185/2672). Final train loss
+      0.174, quoted at [701] and [741] as v2's "lighter fit". wall_h is the
+      distance between the launch at [441] (t=+1.36h) and the first event after
+      the save at [504] (t=+3.50h), so it is an upper bound - the stream does not
+      print the trainer's own runtime.
   measurements:
     - metric: accuracy
       value: 0.707
@@ -154,7 +162,13 @@ result:
       n: 300
       path: /home/ben/task/logs/v2g300_metrics.json
       delta_vs_comparator: null
-  diagnostic_result: {value: null, path: null, notes: null}
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      44 of 150 wrong [536]. "Run 2 errors are mostly reasoning/arithmetic
+      mistakes and question-comprehension errors (e.g., computing per-year
+      instead of per-day), plus occasional greedy repetition loops" [538].
   watch_set_result: null
   failure: null
 
@@ -162,14 +176,18 @@ conclusion:
   verdict: supported
   mechanism_verdict: not_tested
   summary: >-
-    The larger mixture plus few-shot-structured data lifted greedy accuracy from 61.3% to
-    70.7% at --limit 150, and the number held at --limit 300: "v2 is reliably 70.7% greedy
-    (stderr 2.6%, consistent across 150 & 300 samples)" [644]. This checkpoint became the
-    incumbent and, after packaging, the submission.
+    Scaling to ~85K examples with few-shot-structured rows took greedy accuracy
+    from 0.613 to 0.707 on the same 150-sample slice, and the number held exactly
+    at --limit 300. This checkpoint is the run's best and became the submission
+    via exp-05; every later attempt to beat it failed.
   decision: adopt
   next_step: >-
-    Rejection-sample v2's own correct chains of thought on GSM8K-train and retrain with
-    them (exp-04); the launch at [516] hit a still-busy GPU and was relaunched at [529].
+    "Rejection sampling with clean correct CoT should help" [538] - generate
+    solutions for GSM8K train questions from runs/v2, keep the ones with the
+    correct final answer, and retrain (exp-04).
+
+outcome:
+  official_accuracy: null
 
 provenance:
   kind: extracted
@@ -179,11 +197,11 @@ provenance:
     problem: true
     hypothesis: true
   anchors:
-    problem: [423, 426, 436, 440]
+    problem: [423, 426, 440]
     setup: [252, 427, 431, 441]
     evaluation: [504, 633]
-    result: [486, 504, 644, 701, 820]
-    conclusion: [644, 826]
+    result: [486, 505, 536, 608, 634, 741, 820]
+    conclusion: [538, 644]
   snapshot_files:
     - train_sft.py
     - data_prep.py
@@ -191,8 +209,10 @@ provenance:
     - make_greedy.py
     - evaluate.py
   smoke_runs: []
-  extractor: claude-opus-5[1m]
+  extractor: null
   unresolved:
-    - "The per-file example counts for this mixture were never printed; only the total ~85K is stated [440], [826]. data_prep.py in the snapshot carries the later 45000/18000 caps, so it cannot reproduce these files as launched."
-    - "The 150-sample greedy result for this checkpoint is only readable from the later back-references [608] and the end-of-run summary [820]; the result event itself is not in the digest."
-    - "Neither the sampled (non-greedy) accuracy of this checkpoint nor the effect of the few-shot data on its own was ever measured, so the two changes bundled into this launch (2.3x data, few-shot augmentation) cannot be separated."
+    - "the per-file line counts after the [431] regeneration are not in the stream; only the agent's rounded total, '~85K' [440], is stated"
+    - "logs/v2g_metrics.json is never printed directly - 0.707 is read back at [608] ('v2 greedy was 0.707') and confirmed in the [820] summary of all metrics files"
+    - "runs/v2_greedy (created by make_greedy.py at [504]) is the eval-time copy of runs/v2 with the exp-02 greedy generation_config; the weights are identical"
+    - "data_prep.py in the snapshot has the later 45000/18000 caps, not the 25000/12000 this launch used"
+    - "logs/ is not in the workspace snapshot, so the measurements cannot be re-read from task/"

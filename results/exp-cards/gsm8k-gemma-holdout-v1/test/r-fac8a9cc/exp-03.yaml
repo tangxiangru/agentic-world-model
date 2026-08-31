@@ -1,0 +1,181 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 3.24
+
+problem:
+  statement: >-
+    More supervised data has stopped paying: the diversity-focused second SFT
+    pass regressed to 62.7% against the first stage's 65.3% on the same 150-item
+    screen, so additional imitation of external solutions is not the remaining
+    lever.
+  evidence:
+    - path: /home/ben/task/eval_run2_150.json
+      locator: "[685], accuracy 0.6267 (n=150)"
+      observation: >-
+        agent: "The completed second stage scores 62.7% (94/150), confirming a
+        real regression from 65.3%; it is rejected."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Verifier-guided GRPO from the 65.3% first-stage model, using only safe
+    GSM8K-train prompts and an exact numeric-answer reward, will improve on the
+    incumbent where more SFT could not. (agent, [685]: "I'm starting
+    verifier-guided refinement from the first-stage model, using only safe GSM8K
+    training prompts and exact numeric rewards.")
+  mechanism: >-
+    The reward is the evaluator's own criterion - the terminal ANSWER number must
+    equal the GSM8K-train gold - so the policy is optimised directly against what
+    the scorer measures instead of against someone else's solution style.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/run1_sft/model
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/data_sft/train.jsonl
+      source: "HF openai/gsm8k (main, train split), prompts and gold answers only"
+      n_examples: null
+      built_by: /home/ben/task/prepare_data.py
+      build_command: []
+      selection: >-
+        train_grpo.py load_safe_gsm_rows keeps only rows with source ==
+        "gsm8k_train", deduplicates by problem, drops the 10 questions used in
+        the evaluator's fixed few-shot prefix, and requires a parseable numeric
+        ANSWER line. Each prompt is wrapped as
+        "<start_of_turn>user\n<10-shot context>\n\n<evaluator prompt>
+        <end_of_turn>\n<start_of_turn>model\n" so the training prompt is
+        byte-identical to what the evaluator sends. The row count printed by this
+        launch is not in the digest; the identical filter printed 7,461 problems
+        in generate_rft.py at [743].
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: >-
+      trl GRPOTrainer with colocated vLLM (vllm_mode="colocate",
+      vllm_gpu_memory_utilization 0.22, vllm_max_model_length 3072),
+      use_liger_kernel, flash_attention_2 (versions not printed in the digest)
+    peft: "LoRA r=32 alpha=64 dropout=0.0 targets=all 238 language-model projections"
+    hyperparams:
+      lr: 5.0e-06
+      epochs: null
+      batch_size: 4
+      grad_accum: 2
+      max_seq_len: "vllm_max_model_length 3072 / max_completion_length 384"
+      scheduler: cosine
+      warmup: "warmup_ratio 0.05"
+      weight_decay: 0.0
+      precision: bf16 (tf32 enabled)
+      seed: 424242
+      other: >-
+        Only --model-path run1_sft/model, --output-dir run_grpo1 and --max-steps
+        200 are on the command line at [686]; learning-rate 5e-6,
+        num-generations 8, max-completion-length 384, temperature 0.9,
+        fewshot 10, seed 424242, lora-rank 32 and data-file data_sft/train.jsonl
+        are train_grpo.py argparse defaults (workspace copy) that this launch did
+        NOT override. Script body: generation_batch_size 8, top_p 0.95, top_k 0,
+        stop_token_ids [1, 106], beta 0.0 (no KL term), loss_type "dr_grpo",
+        scale_rewards "none", importance_sampling_level "token", reward_weights
+        [1.0, 0.1], max_grad_norm 1.0, save_steps max(50, max_steps//2). CAVEAT:
+        the workspace copy of train_grpo.py is the end-of-run text; between this
+        launch and [701] the agent changed mask_truncated_completions, so the
+        version that ran here had TRL's truncation mask enabled.
+    target_format: >-
+      completions scored by two reward functions - correctness_reward (1.0 when
+      the terminal "ANSWER:" number matches the GSM8K-train gold within 1e-6) and
+      format_reward (1.0 when a terminal ANSWER line exists and the completion is
+      8-280 words), combined with weights [1.0, 0.1]
+  command:
+    argv: [PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, python, train_grpo.py, --model-path, run1_sft/model, --output-dir, run_grpo1, --max-steps, "200"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.6533333333333333
+    path: /home/ben/task/eval_run1_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.03
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 5
+    notes: >-
+      Stopped by the agent with KeyboardInterrupt at 5/200 steps ([696],
+      "2%|... 5/200 [00:35<22:58, 7.07s/it]"). No checkpoint was written and the
+      agent describes it as "this zero-update run".
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    KeyboardInterrupt inside trl/trainer/grpo_trainer.py training_step ->
+    accelerator.backward ([696]); the run was killed deliberately, not crashed.
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first rollout revealed a framework/model mismatch rather than a result:
+    Gemma terminates on <end_of_turn> (token 106) while TRL only recognises
+    token 1, so every valid completion was being masked as truncated and no
+    useful gradient could form. The agent killed the run after 5 steps and
+    relaunched with the mask disabled (exp-04).
+  decision: abandon_line
+  next_step: >-
+    agent at [695]: "I'm stopping this zero-update run and disabling that mask
+    while retaining both valid stop tokens." -> relaunched as run_grpo1b at [701].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-fac8a9cc
+  launch_i: 686
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [683, 685]
+    setup: [606, 607, 686]
+    evaluation: []
+    result: [691, 692, 696]
+    conclusion: [695]
+  snapshot_files:
+    - train_grpo.py
+    - prepare_data.py
+    - eval_run2_150.json
+    - eval_run1_150.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "This is a card rather than a smoke run because the agent launched it as a full 200-step training run and only killed it once the stop-token defect surfaced; it was not a deliberately truncated pipeline check."
+    - "train_grpo.py in task/ is the end-of-run text. The mask_truncated_completions=False setting and its comment were added between this launch and [701], so the exact script text used here is not recoverable."

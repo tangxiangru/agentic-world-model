@@ -1,0 +1,180 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 2.97
+
+problem:
+  statement: >-
+    The incumbent (exp-04) sits at 0.70 / 0.684 and the planned way past it -
+    rejection sampling from that checkpoint - turned out to be unaffordable:
+    vLLM generation ran at ~4.8 prompts/s (~7.3K output tok/s), about 3 hours
+    for the 59784 prompts, so it was killed. A cheaper source of improvement is
+    needed: the few-shot stage was trained on only 18000 MetaMath items.
+  evidence:
+    - path: /home/ben/task/logs/rft_gen.log
+      locator: "[544], [567]"
+      observation: "3968 of 59784 prompts after ~6 min; measured rate implies ~3 h - 'impractically slow'"
+    - path: /home/ben/task/logs/eval_runB_greedy_l150.json
+      locator: "[477]"
+      observation: "the score to beat: 0.70 at --limit 150, 0.684 at --limit 500"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Redoing the few-shot stage on a substantially larger few-shot dataset
+    (44073 examples with 40000 MetaMath GSM items instead of 18000) - "more
+    MetaMath diversity" - will beat exp-04, since "the base is strong and data
+    is abundant" [358].
+  mechanism: >-
+    Stage 2 only has to teach stopping in context, but more and more varied
+    reasoning traces at that stage should also carry math gains over from
+    MetaMath.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/runA
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/data/fewshot_big.jsonl
+      source: "derived:exp-01 inputs - openai/gsm8k (main, train) + meta-math/MetaMathQA GSM types"
+      n_examples: 44073
+      built_by: /home/ben/task/prep_fewshot.py
+      build_command: [nohup, python, prep_fewshot.py, --out, data/fewshot_big.jsonl, --n-metamath, "40000", --gsm8k-rep, "1", --kmin, "2", --kmax, "10", --max-len, "1600"]
+      selection: >-
+        all contamination-filtered GSM8K-train items plus 40000 MetaMathQA GSM
+        items; K sampled uniformly from 2..10 eval-style example Q&As prepended
+        as a system message; up to 3 redraws to fit 1600 tokens; "kept=44073
+        dropped=3400" [477].
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 1600
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        Set at launch: --init runs/runA, --attn flash_attention_2,
+        --optim paged_adamw_8bit. From the script text in
+        /home/ben/task/train_sft.py, not overridden: cosine schedule,
+        weight_decay 0.0, seed 42, max_grad_norm 1.0, gradient_checkpointing,
+        group_by_length, bf16, completion-only loss; warmup_ratio 0.03 is that
+        script's argparse default.
+    target_format: >-
+      gemma3 chat template with a few-shot system message; assistant turn =
+      reasoning then "ANSWER: <int>" followed by <end_of_turn>.
+  command:
+    argv: [nohup, python, train_sft.py, --out, runs/runC, --init, runs/runA, --data-file, data/fewshot_big.jsonl, --epochs, "1", --lr, "1e-5", --bs, "8", --accum, "8", --max-len, "1600", --attn, flash_attention_2, --optim, paged_adamw_8bit]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/runC.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.53
+
+evaluation:
+  protocol:
+    command: [python, eval_model.py, --model, runs/runC, --decode, greedy, --limit, "150", --tag, runC, --max-connections, "8"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.7
+    path: /home/ben/task/logs/eval_runB_greedy_l150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/runC
+  training_summary:
+    final_loss: 0.156858117902227
+    steps: 689
+    notes: "1 epoch, ~5-7 s/it, stable at ~80 GB."
+  measurements:
+    - metric: accuracy
+      value: 0.72
+      n: 150
+      path: /home/ben/task/logs/eval_runC_greedy_l150.json
+      delta_vs_comparator: 0.02
+    - metric: accuracy
+      value: 0.676
+      n: 500
+      path: /home/ben/task/logs/eval_runC_greedy_l500.json
+      delta_vs_comparator: -0.008
+    - metric: accuracy
+      value: 0.7066666666666667
+      n: 150
+      path: /home/ben/task/logs/eval_runC_default_greedy_l150.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "Run C is approximately Run B (72%/67.6% vs 70%/68.4% - within noise).
+    MetaMath data is saturated - more of it doesn't help" [648]: +0.02 at
+    --limit 150 but -0.008 at --limit 500 against the same comparator protocol,
+    so scaling the few-shot MetaMath slice from 18000 to 40000 bought nothing.
+    Re-measured later at the eval's default settings it gave 0.7067 [757].
+  decision: reject
+  next_step: >-
+    "To break the plateau I need a different signal" - add Orca-Math for
+    genuinely different grade-school problems [648].
+
+provenance:
+  kind: extracted
+  run_ref: r-25b064a8
+  launch_i: 594
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [544, 546, 567, 572]
+    setup: [459, 477, 594]
+    evaluation: [600]
+    result: [646, 757]
+    conclusion: [648]
+  snapshot_files:
+    - prep_fewshot.py
+    - train_sft.py
+    - paths.py
+    - eval_model.py
+    - eval_runC.sh
+    - eval_default.sh
+    - rft_generate.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "A rejection-sampling generation job (rft_generate.py --model runs/runB --k 8 --temp 0.9 --max-keep 4, launched at [488]) was killed at ~7% of 59784 prompts and produced no usable data file; it is not carded because it trained nothing and produced no candidate."
+    - "This same command was first issued at [573] but never started - the agent reported that an errexit on the preceding `kill` aborted the command [581] - and the lingering vLLM EngineCore holding 73 GB had to be killed at [588] first."
+
+outcome:
+  official_accuracy: null

@@ -1,0 +1,195 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 2.01
+
+problem:
+  statement: >-
+    After the pure-synthetic warmup the model has the right output behaviour -
+    concise solution, clean `ANSWER:` line, proper end-of-turn - but it still
+    gets the arithmetic wrong, and it has only ever seen the templated synthetic
+    problem distribution, not GSM8K's wording or reasoning style.
+  evidence:
+    - path: null
+      locator: "[490], [491], [493] (raw generation spot check, printed in the stream)"
+      observation: >-
+        on the Janet's-ducks probe the warmed model produced a well-formed short
+        solution ending in `ANSWER: 13` (gold 18) - format fixed, math wrong
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A GSM8K-train refinement pass on top of the synthetic-warmed adapter will
+    keep the improved stopping/format behaviour while adapting reasoning style
+    and problem distribution back toward the actual benchmark, raising the
+    50-sample accuracy above the human-only line's 0.06.
+  mechanism: >-
+    The warmup already taught how to answer; this stage only has to move the
+    distribution, so the GSM8K data is spent on reasoning style rather than on
+    relearning output format.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/template20k_stage1
+    origin: exp-02
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        full GSM8K train split, one repeat (--gsm8k-repeat 1); the `####` line
+        is split off and re-rendered as a final `ANSWER: <n>` line. No few-shot
+        prefix in this stage (zero-shot training prompt).
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (TRL with SFTConfig; version not printed in the stream)"
+    peft: "LoRA via peft, resumed with PeftModel.from_pretrained(..., is_trainable=True) over a 4-bit base; r / alpha / dropout never printed"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        From the SFTConfig / load_model_and_tokenizer text printed in the stream
+        ([521], [563]): lr_scheduler_type=cosine, optim=paged_adamw_8bit,
+        bf16=True, gradient_checkpointing=True, completion_only_loss=None, and
+        --resume-adapter loads the prior adapter as trainable rather than
+        starting a fresh LoRA. Remaining argparse defaults stay null.
+    target_format: >-
+      Gemma turn markers; assistant turn is the GSM8K reasoning ending in
+      `ANSWER: <number>`.
+  command:
+    argv:
+      - python
+      - scripts/train_gsm8k_sft.py
+      - --output-dir
+      - runs/template20k_then_gsm8k_stage2
+      - --resume-adapter
+      - runs/template20k_stage1
+      - --use-4bit
+      - --gsm8k-repeat
+      - "1"
+      - --epochs
+      - "1.0"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "4"
+      - --max-length
+      - "1024"
+      - --learning-rate
+      - "1e-4"
+      - --logging-steps
+      - "10"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/merged_template20k_then_gsm8k_stage2
+      - --limit
+      - "50"
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.5"
+      - --json-output-file
+      - runs/merged_template20k_then_gsm8k_stage2_eval50.json
+    dev_set: "official gsm8k test --limit 50 (inspect_evals/gsm8k, fewshot=10, fewshot_seed=42, shuffle_fewshot=True)"
+    n: 50
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.06
+    path: /home/ben/task/runs/merged_gsm8k_only_ep1_eval50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.24
+  output_checkpoint: /home/ben/task/runs/template20k_then_gsm8k_stage2
+  training_summary:
+    final_loss: 0.4373
+    steps: 468
+    notes: >-
+      train_runtime 853.46s, train_loss 0.4373464334724296, mean_token_accuracy
+      0.893 at epoch 1.0 ([573]). Merged with scripts/merge_lora.py ([577]) and
+      forced to greedy decoding with scripts/set_greedy_generation.py ([580]).
+  measurements:
+    - metric: accuracy
+      value: 0.22
+      n: 50
+      path: /home/ben/task/runs/merged_template20k_then_gsm8k_stage2_eval50.json
+      delta_vs_comparator: 0.16
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "The score moved from 0.06 to 0.22 on the 50-sample slice, so the
+    synthetic-to-GSM8K curriculum is real progress" ([609]). Error analysis on
+    the eval log then showed the remaining failures were arithmetic reasoning
+    errors rather than formatting ([622]), which redirected the next steps
+    toward prompt alignment and more math signal rather than output control.
+  decision: adopt
+  next_step: >-
+    Continue from this adapter with a training pass that uses the evaluator's
+    exact 10-shot prompt geometry, after measuring that the real eval prompt is
+    ~2.2k tokens and needs a much longer context window than this stage's 1024
+    ([637], [641]).
+
+provenance:
+  kind: extracted
+  run_ref: r-2432c636
+  launch_i: 494
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [489, 491, 493]
+    setup: [494, 521, 563]
+    evaluation: [577, 580, 591]
+    result: [573, 609, 1078]
+    conclusion: [609, 615, 620, 621, 622]
+  snapshot_files: []
+  smoke_runs: []
+  extractor: "reconstructed by an automated extractor; model id omitted per hard rule 5"
+  unresolved:
+    - "The hypothesis is quoted from [496], stated immediately after the launch at [494] in the same turn, not before it."
+    - "runs/merged_template20k_then_gsm8k_stage2_eval50.json is not in the workspace snapshot; the 0.22 value is read from the stream ([609], [1078])."

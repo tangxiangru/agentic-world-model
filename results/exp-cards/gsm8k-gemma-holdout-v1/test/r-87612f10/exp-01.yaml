@@ -2,75 +2,61 @@ schema_version: awm-experiment-card-v1
 card_id: exp-01
 created_at: null
 elapsed_h: null
-
 problem:
-  statement: >-
-    The workspace ships an evaluator but no training scaffold, and the base
-    model has not been adapted to the evaluator's format: the benchmark prompts
-    with 10 fixed GSM8K few-shot examples and grades the last numeric token of
-    the response, so training data has to be aligned to that exact
-    "ANSWER: <n>" style before any accuracy can be expected.
+  statement: 'The base model has to be adapted to the evaluator''s exact contract before anything else: the grader
+    sends a fixed 10-shot system prompt and expects a final line "ANSWER: <number>", and the repo ships no training
+    scaffold at all ([19], [52]).'
   evidence:
-    - path: /home/ben/task/baseline25.json
-      locator: "[35] (launch of the base-model eval), file written by that launch"
-      observation: >-
-        base-model accuracy 0.000 on the official 25-sample slice; the number
-        itself is never printed in the stream, only the file records it
-    - path: /home/ben/task/evaluate.py
-      locator: "[13], [15]"
-      observation: >-
-        the evaluator selects templates/gemma3.jinja for this model and runs the
-        inspect_evals/gsm8k task, which matches on the final number
+  - path: '{dir}/evaluate.py'
+    locator: '[13], [52]'
+    observation: 'the evaluator runs the inspect_evals/gsm8k task through vLLM with the repo''s own gemma3 chat
+      template; the agent read it and concluded the target format is a final "ANSWER: <number>" line under a fixed
+      10-shot system prompt'
+  - path: '{dir}/baseline25.json'
+    locator: launched at [35] with --limit 25 --max-tokens 512
+    observation: the untrained base model scores accuracy 0.0 on the 25-sample official slice (the number is in
+      the workspace file; the stream never prints it)
   affected_share: null
   failure_examples: []
   watch_set: null
-
 hypothesis:
-  claim: >-
-    LoRA on the text stack only, trained on GSM8K train minus a held-out dev
-    split with the repo's Gemma template and the benchmark's exact answer style,
-    is the fast probe that establishes whether lightweight adaptation is enough
-    before spending time on full-parameter training [144].
-  mechanism: >-
-    If the gap to the benchmark is mostly response format and termination rather
-    than reasoning capacity, adapting the attention and MLP projections with an
-    adapter is enough and is far cheaper than full fine-tuning.
+  claim: '"LoRA on the text stack only, trained on GSM8K train minus a held-out dev split, with the repo''s template
+    and exact benchmark answer style. This is the fast probe to establish whether lightweight adaptation is enough
+    before I spend time on full-parameter training." [144]'
+  mechanism: Adapters over the attention and MLP projections of the text stack are enough to teach the prompt/termination
+    format and the GSM8K rationale style, at a fraction of the cost of full fine-tuning ([144], [150]).
   expected_effect:
     metric: accuracy
     direction: higher
     against: base_model
     magnitude: null
   falsified_if: null
-
 setup:
   parent_checkpoint:
     path: google/gemma-3-4b-pt
     origin: base_model
     hash: null
   data:
-    - path: null
-      source: "openai/gsm8k (config main, split train)"
-      n_examples: null
-      built_by: /home/ben/task/gsm8k_pipeline.py
-      build_command: []
-      selection: >-
-        build_train_dev_split: gsm8k train with the 10 official few-shot
-        questions removed, shuffled with seed 1234; the first 256 rows are held
-        out as dev, the remainder is the training set (the agent reported "about
-        7.2k training examples" at [146]; the exact count is not in the stream).
-        Built in process, never written to a file.
-      contamination_check: not_run
-      mixture_weight: 1.0
+  - path: null
+    source: 'openai/gsm8k (config: main, split: train)'
+    n_examples: 7207
+    built_by: '{dir}/gsm8k_pipeline.py'
+    build_command: []
+    selection: 'built in-process by build_train_dev_split (gsm8k_pipeline.py): the 10 official few-shot questions
+      (train shuffled with seed 42, first 10) are removed, the remainder is shuffled with split_seed 1234 and
+      the first 256 rows are held out as dev, leaving the rest for training. n_examples is 7473 - 10 - 256 = 7207
+      from the script text; the agent reported "7.2k training examples" and 678 optimizer steps for 3 epochs at
+      [146], which matches. Sequences truncated at --max-length 768.'
+    contamination_check: not_run
+    mixture_weight: null
   method:
     family: sft
-    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129, peft 0.18.1) [31]"
-    peft: >-
-      LoRA r=64 alpha=128 dropout=0.05
-      targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
-      (train_gsm8k.py argparse defaults; not overridden at launch)
+    framework: transformers 4.57.3 Trainer + peft 0.18.1, torch 2.8.0+cu129 (versions printed at [31]); trl 0.27.2
+      is installed but not used - the script drives Trainer directly
+    peft: LoRA r=64 alpha=128 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]
     hyperparams:
-      lr: 1.0e-04
-      epochs: 3
+      lr: 0.0001
+      epochs: 3.0
       batch_size: 4
       grad_accum: 8
       max_seq_len: 768
@@ -79,149 +65,115 @@ setup:
       weight_decay: 0.01
       precision: bf16
       seed: null
-      other: >-
-        lr/epochs/batch_size/grad_accum/max_seq_len from the launch argv.
-        scheduler (lr_scheduler_type="cosine") and precision (bf16=True) are
-        hard-coded in train_gsm8k.py; warmup (--warmup-ratio 0.03),
-        weight_decay (--weight-decay 0.01), --split-seed 1234, --dev-size 256
-        and --model-name google/gemma-3-4b-pt are argparse defaults the launch
-        did not override. Also hard-coded: optim=adamw_bnb_8bit,
-        gradient_checkpointing=True, max_grad_norm=1.0, save_strategy="epoch",
-        save_total_limit=2, dataloader_num_workers=4. The trainer seed is a
-        TrainingArguments default and is not in the script text, so it is null.
-        Vision tower and multimodal projector are frozen
-        (freeze_non_text_modules).
-    target_format: >-
-      templates/gemma3.jinja chat format; user turn = the evaluator's math
-      prompt template, assistant turn = the GSM8K rationale with "#### n"
-      rewritten as a final "ANSWER: n" line; prompt tokens masked to -100.
+      other: lr / epochs / batch_size / grad_accum / max_seq_len / mode=lora / logging_steps=20 are explicit on
+        the launch argv at [145]. scheduler (cosine), warmup_ratio 0.03, weight_decay 0.01, bf16, optim adamw_bnb_8bit,
+        max_grad_norm 1.0, gradient_checkpointing, save_strategy="epoch", save_total_limit=2 and split_seed 1234
+        are argparse / TrainingArguments defaults read from {dir}/train_gsm8k.py that this launch did not override.
+        No training seed is set anywhere in the script, so `seed` is null; 1234 is only the data-split seed. The
+        vision tower and multimodal projector are frozen (freeze_non_text_modules). The LoRA r=64 / alpha=128
+        / dropout=0.05 / target modules and the base model name google/gemma-3-4b-pt are likewise script defaults
+        this launch did not override. The agent reported "about 132M trainable parameters" at [146].
+    target_format: 'templates/gemma3.jinja; user turn = the evaluator''s own wording ("Solve the following math
+      problem step by step. The last line of your response should be of the form \"ANSWER: $ANSWER\" ... Reasoning:")
+      wrapped around the question; assistant turn = the GSM8K rationale with its "#### n" line replaced by a blank
+      line and "ANSWER: <n>". Loss on the assistant tokens only (prompt masked to -100). No system turn on this
+      launch.'
   command:
     argv:
-      - python
-      - train_gsm8k.py
-      - --output-dir
-      - exp_lora_e3_lr1e4
-      - --mode
-      - lora
-      - --epochs
-      - "3"
-      - --batch-size
-      - "4"
-      - --grad-accum
-      - "8"
-      - --max-length
-      - "768"
-      - --learning-rate
-      - "1e-4"
-      - --logging-steps
-      - "20"
-    cwd: /home/ben/task
-    script: /home/ben/task/train_gsm8k.py
+    - python
+    - train_gsm8k.py
+    - --output-dir
+    - exp_lora_e3_lr1e4
+    - --mode
+    - lora
+    - --epochs
+    - '3'
+    - --batch-size
+    - '4'
+    - --grad-accum
+    - '8'
+    - --max-length
+    - '768'
+    - --learning-rate
+    - 1e-4
+    - --logging-steps
+    - '20'
+    cwd: '{dir}'
+    script: '{dir}/train_gsm8k.py'
     env: {}
     log: null
   budget:
-    gpu: "1x H100"
+    gpu: 1x H100 (run header; no nvidia-smi output appears in the stream)
     planned_h: null
-
 evaluation:
   protocol:
     command:
-      - python
-      - dev_eval.py
-      - --model-path
-      - exp_lora_e3_lr1e4
-      - --dev-size
-      - "256"
-      - --batch-size
-      - "8"
-      - --max-new-tokens
-      - "512"
-      - --output-file
-      - exp_lora_e3_lr1e4_dev.txt
-    dev_set: >-
-      held-out 256 rows of gsm8k train (build_train_dev_split dev_size=256,
-      split_seed=1234, official few-shot questions excluded); built in process,
-      not written to disk
-    n: 256
-    seed: 1234
+    - python
+    - evaluate.py
+    - --model-path
+    - exp_lora_e3_lr1e4
+    - --limit
+    - '25'
+    - --max-connections
+    - '1'
+    - --max-tokens
+    - '512'
+    - --gpu-memory-utilization
+    - '0.45'
+    - --json-output-file
+    - exp_lora_e3_lr1e4_eval25.json
+    dev_set: official --limit 25
+    n: 25
+    seed: null
   comparator:
     ref: base_model
     value: 0.0
-    path: /home/ben/task/baseline25.json
+    path: '{dir}/baseline25.json'
   diagnostic:
-    what: >-
-      the provided official evaluator on a 25-sample slice, which decodes under
-      vLLM with the benchmark's own settings rather than the local dev loop
-    command:
-      - python
-      - evaluate.py
-      - --model-path
-      - exp_lora_e3_lr1e4
-      - --limit
-      - "25"
-      - --max-connections
-      - "1"
-      - --max-tokens
-      - "512"
-      - --gpu-memory-utilization
-      - "0.45"
-      - --json-output-file
-      - exp_lora_e3_lr1e4_eval25.json
-    path: /home/ben/task/exp_lora_e3_lr1e4_eval25.json
-
+    what: null
+    command: []
+    path: null
 result:
   execution: completed
-  wall_h: 0.426
-  output_checkpoint: /home/ben/task/exp_lora_e3_lr1e4
+  wall_h: 0.43
+  output_checkpoint: '{dir}/exp_lora_e3_lr1e4'
   training_summary:
     final_loss: 0.2217
     steps: 678
-    notes: >-
-      last logged step loss 0.2217 (epoch 2.92); trainer-reported mean train_loss
-      0.3187, train_runtime 1532.84 s. The agent reported about 132M trainable
-      parameters and 678 optimizer steps at [146]. timer.sh showed 9:47 remaining
-      shortly before the launch [137] and 9:26 during it [191].
+    notes: 678 steps / 3 epochs, train_runtime 1532.84 s, train_loss 0.3187, last logged step loss 0.2217 at epoch
+      2.92 [196]; the agent read it as "finished cleanly in about 25.5 minutes and ended with losses around 0.22"
+      [197]. The adapter is merged into full weights by save_standalone_model, so the output directory is a standalone
+      model, not an adapter.
   measurements:
-    - metric: accuracy
-      value: 0.5117
-      n: 256
-      path: /home/ben/task/exp_lora_e3_lr1e4_dev.txt
-      delta_vs_comparator: null
-    - metric: accuracy
-      value: 0.44
-      n: 25
-      path: /home/ben/task/exp_lora_e3_lr1e4_eval25.json
-      delta_vs_comparator: 0.44
-  diagnostic_result:
+  - metric: accuracy
+    value: 0.5117
+    n: 256
+    path: '{dir}/exp_lora_e3_lr1e4_dev.txt'
+    delta_vs_comparator: null
+  - metric: accuracy
     value: 0.44
-    path: /home/ben/task/exp_lora_e3_lr1e4_eval25.json
-    notes: >-
-      The first official eval [214] used --limit 50 and failed: the saved
-      checkpoint was missing the Gemma 3 processor metadata vLLM expects [218].
-      The export path in train_gsm8k.py was fixed [218]-[221] and the eval was
-      re-run at 25 samples [226] with accuracy 0.440, stderr 0.101.
+    n: 25
+    path: '{dir}/exp_lora_e3_lr1e4_eval25.json'
+    delta_vs_comparator: 0.44
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
   watch_set_result: null
   failure: null
-
 conclusion:
   verdict: supported
   mechanism_verdict: not_tested
-  summary: >-
-    The adapter trained cleanly in about 25.5 minutes and scored 0.5117 on the
-    held-out 256 and 0.440 on the official 25-sample slice, against 0.000 for the
-    base model in baseline25.json under the same 25-sample protocol. The agent
-    read it as "clearly suboptimal ... the adapter alone is not good enough"
-    [229] and moved to full fine-tuning; it also noted at [213] that the error
-    file shows genuine reasoning mistakes, not just answer-format failures.
+  summary: LoRA on the text stack moved the 25-sample official slice from the base model's 0.000 to 0.440 under
+    the identical --limit 25 --max-tokens 512 protocol, so lightweight adaptation does teach the format; but the
+    agent read 44% official / 51.2% dev as "clearly suboptimal ... the error file shows genuine reasoning mistakes,
+    not just answer-format failures" ([213], [229]) and closed the adapter line.
   decision: reject
-  next_step: >-
-    Full fine-tuning of the text stack with the same data formatting, to give the
-    model capacity to learn the arithmetic patterns rather than just the response
-    format [229].
-
+  next_step: '"switching to full fine-tuning of the text stack now, keeping the same data formatting but giving
+    the model enough capacity to actually learn the arithmetic patterns rather than just the response format"
+    [229] - carried out as exp-02.'
 outcome:
   official_accuracy: null
-
 provenance:
   kind: extracted
   run_ref: r-87612f10
@@ -230,25 +182,50 @@ provenance:
     problem: true
     hypothesis: true
   anchors:
-    problem: [19, 52]
-    setup: [144, 145]
-    evaluation: [198, 214, 226]
-    result: [196, 209, 227]
-    conclusion: [213, 229]
+    problem:
+    - 19
+    - 35
+    - 52
+    setup:
+    - 144
+    - 145
+    - 146
+    evaluation:
+    - 198
+    - 214
+    - 226
+    result:
+    - 196
+    - 197
+    - 209
+    - 227
+    conclusion:
+    - 213
+    - 229
   snapshot_files:
-    - train_gsm8k.py
-    - gsm8k_pipeline.py
-    - dev_eval.py
-    - evaluate.py
-    - baseline25.json
-    - exp_lora_e3_lr1e4_dev.txt
-    - exp_lora_e3_lr1e4_eval25.json
+  - train_gsm8k.py
+  - gsm8k_pipeline.py
+  - dev_eval.py
+  - evaluate.py
+  - baseline25.json
+  - exp_lora_e3_lr1e4_dev.txt
+  - exp_lora_e3_lr1e4_eval25.json
   smoke_runs:
-    - {launch_i: 99, outcome: "passed: base-model dev_eval on 4 examples (dev_accuracy=0.2500); exposed right-padding on decoder-only batched generation, fixed to left padding [103]"}
-    - {launch_i: 108, outcome: "passed: LoRA mode, --max-steps 1 --max-train-samples 16; scored at [112] (dev_accuracy=0.2500 on 4 examples)"}
-    - {launch_i: 138, outcome: "passed: full mode, --max-steps 1 --max-train-samples 8; loss 1.9933, trainable_ratio 0.902"}
-  extractor: claude-opus-5[1m]
+  - launch_i: 108
+    outcome: 'passed (1 step, 16 samples, --mode lora); scoring the smoke checkpoint at [112] exposed two fixes
+      the agent made before the real launch: left padding for batched decoder-only generation, and sample/step
+      caps in the trainer [103]'
+  - launch_i: 138
+    outcome: passed (1 step, 8 samples, --mode full; loss 1.9933, trainable_parameters=3880263168 of 4300079472
+      with the vision tower frozen) [140]
+  extractor: claude-opus-5
   unresolved:
-    - "The base-model 25-sample comparator (0.000 in baseline25.json, produced by the eval launched at [35]) is never printed in the stream; the agent's judgement at [229] is stated against its expectations, not against a quoted baseline number."
-    - "The failed --limit 50 official eval at [214] left no eval_50 file in the workspace, and the digest does not show the command that re-exported the LoRA checkpoint with processor metadata before the successful --limit 25 re-run at [226]."
-    - "The exact size of the training split (agent: 'about 7.2k') is never printed in the digest."
+  - The stream carries no event timestamps (digest header), so elapsed_h is null on every card in this run; only
+    timer.sh readings bound the timeline (9:59 remaining at [7], 9:47 at [137], 9:33 at [172], 9:26 at [191] around
+    this launch).
+  - 'The first official eval of this checkpoint, at [214] with --limit 50, produced no score: the agent reports
+    the saved Gemma 3 checkpoint was missing the processor metadata vLLM expects and says it "fixed the export
+    path" [218], but no re-export or re-training command appears between [218] and the successful --limit 25 rerun
+    at [226], and exp_lora_e3_lr1e4_eval50.json is not in the workspace.'
+  - The base-model comparator value 0.0 is read from {dir}/baseline25.json; the eval was launched at [35] but
+    its score is never printed in the stream and the agent never quotes it.

@@ -1,0 +1,240 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 4.18
+
+problem:
+  statement: >-
+    The synthetic-only continuation did not improve the incumbent on the
+    screening slice (0.25 on 20 samples against the incumbent's 0.28 on 50), and
+    TemplateGSM's problems are highly templated - the same few sentence frames
+    with substituted names, places and quantities - so the model is getting
+    arithmetic drill without wording diversity.
+  evidence:
+    - path: /home/ben/task/runs/merged_stage4_from_stage3_template12k_eval20.json
+      locator: "[1225], [1226]"
+      observation: "arithmetic-only continuation screened at 0.250 (stderr 0.099) on 20 samples"
+    - path: null
+      locator: "[692], [709], [1011] (TemplateGSM rows and sources printed in the stream)"
+      observation: >-
+        every sampled TemplateGSM row comes from source gsm8k-train-round2-seed42
+        with template_id 0 and the same 'sold X in April, half as many in May'
+        frame
+    - path: null
+      locator: "[1061], [1064], [1088], [1089], [1119], [1120] (MetaMathQA inspection)"
+      observation: >-
+        MetaMathQA can be filtered to GSM-style rewrites: over the first 50000
+        rows, GSM_AnsAug 10137 and GSM_Rephrased 10108; mean rendered length 285
+        tokens, max 678, so all fit a 1024 window
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A refresh stage mixing GSM8K-train with 12k GSM-derived MetaMath rewrites
+    (types GSM_Rephrased and GSM_AnsAug) on top of the arithmetic-enhanced
+    adapter will add wording diversity without abandoning the arithmetic
+    improvements, and will beat the arithmetic-only checkpoint on the same
+    screening slice.
+  mechanism: >-
+    MetaMath's GSM rewrites are paraphrases and answer-augmentations of GSM8K
+    problems, so they broaden surface wording while staying in the benchmark's
+    problem distribution - unlike TemplateGSM, whose frames are near-identical,
+    and unlike orca-math, which the agent inspected and rejected as too broad
+    and less aligned ([1272], [1279]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/stage4_from_stage3_template12k
+    origin: exp-07
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        full GSM8K train split, one repeat (--gsm8k-repeat 1), no few-shot
+        prefix in this stage; `####` split off and re-rendered as `ANSWER: <n>`.
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: "meta-math/MetaMathQA (split train, streaming)"
+      n_examples: 12000
+      built_by: /home/ben/task/scripts/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        streaming shuffle with seed 42 over a 50000-row buffer, keeping only
+        type in {GSM_Rephrased, GSM_AnsAug} until 12000 rows; the response is
+        split by parse_metamath_response into reasoning plus final answer and
+        re-rendered as `ANSWER: <n>`. MATH_* and *_SV / *_FOBAR types are
+        excluded.
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (TRL with SFTConfig; version not printed in the stream)"
+    peft: "LoRA via peft, resumed as trainable over a 4-bit base; r / alpha / dropout never printed"
+    hyperparams:
+      lr: 7.0e-05
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --save-strategy steps --save-steps 400 --save-total-limit 2; the two
+        sources are concatenated and shuffled with the script seed, giving 19473
+        examples and a 1218-step epoch. From the SFTConfig text printed in the
+        stream: lr_scheduler_type=cosine, optim=paged_adamw_8bit, bf16=True,
+        gradient_checkpointing=True, completion_only_loss=None.
+    target_format: >-
+      Gemma turn markers; assistant turn is the reasoning ending in
+      `ANSWER: <number>`, for both the GSM8K and the MetaMath rows.
+  command:
+    argv:
+      - python
+      - "-u"
+      - scripts/train_gsm8k_sft.py
+      - --output-dir
+      - runs/stage5_from_stage4_gsm_metamath
+      - --resume-adapter
+      - runs/stage4_from_stage3_template12k
+      - --use-4bit
+      - --gsm8k-repeat
+      - "1"
+      - --metamath-samples
+      - "12000"
+      - --metamath-types
+      - GSM_Rephrased,GSM_AnsAug
+      - --metamath-buffer-size
+      - "50000"
+      - --epochs
+      - "1.0"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "4"
+      - --max-length
+      - "1024"
+      - --learning-rate
+      - "7e-5"
+      - --logging-steps
+      - "10"
+      - --save-strategy
+      - steps
+      - --save-steps
+      - "400"
+      - --save-total-limit
+      - "2"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_sft.py
+    env: {}
+    log: /home/ben/task/runs/stage5_from_stage4_gsm_metamath.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/merged_stage5_ckpt400
+      - --limit
+      - "20"
+      - --max-connections
+      - "1"
+      - --gpu-memory-utilization
+      - "0.4"
+      - --json-output-file
+      - runs/merged_stage5_ckpt400_eval20.json
+    dev_set: "official gsm8k test --limit 20 (inspect_evals/gsm8k, fewshot=10, fewshot_seed=42, shuffle_fewshot=True)"
+    n: 20
+    seed: 42
+  comparator:
+    ref: exp-07
+    value: 0.25
+    path: /home/ben/task/runs/merged_stage4_from_stage3_template12k_eval20.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.23
+  output_checkpoint: /home/ben/task/runs/stage5_from_stage4_gsm_metamath/checkpoint-400
+  training_summary:
+    final_loss: null
+    steps: 400
+    notes: >-
+      Deliberately cut at the step-400 save, 400 of a 1218-step epoch, at [1458]:
+      "the loss right after the save didn't suddenly improve enough to justify
+      another 800 mixed-distribution steps" ([1456]). Loss trace: 0.62 at step
+      10, 0.43 at step 20, ~0.28 at steps 70-80, ~0.24 at steps 160-170, 0.2368
+      at step 380, 0.2609 at step 400, 0.235 at step 410. Merged at [1462],
+      greedy generation config applied at [1469].
+  measurements:
+    - metric: accuracy
+      value: 0.35
+      n: 20
+      path: /home/ben/task/runs/merged_stage5_ckpt400_eval20.json
+      delta_vs_comparator: 0.10
+    - metric: accuracy
+      value: 0.30
+      n: 50
+      path: /home/ben/task/runs/merged_stage5_ckpt400_eval50.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "The step-400 mixed checkpoint screened at 0.35 on the same 20-sample slice,
+    which is a clear improvement over the arithmetic-only branch" ([1479]), and
+    the later 50-sample run put it at 0.30, above the 0.28 that the pre-synthetic
+    trunk had reached ([1677], [1679]). The +10 pts on 20 samples is inside the
+    slice's stderr (0.109), so the direction is right but the magnitude is not
+    resolved at this sample size.
+  decision: adopt
+  next_step: >-
+    A final 10-shot-context GSM8K polish from this checkpoint, matching the
+    evaluation prompt more closely ([1479]).
+
+provenance:
+  kind: extracted
+  run_ref: r-2432c636
+  launch_i: 1227
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [692, 1061, 1088, 1119, 1120, 1150, 1225, 1226]
+    setup: [1227, 1236]
+    evaluation: [1462, 1469, 1474, 1676]
+    result: [1268, 1289, 1357, 1443, 1456, 1459, 1460, 1476, 1677]
+    conclusion: [1479, 1679]
+  snapshot_files: []
+  smoke_runs: []
+  extractor: "reconstructed by an automated extractor; model id omitted per hard rule 5"
+  unresolved:
+    - "The 50-sample number (0.30) was measured later, at [1676], as part of the final selection round rather than at this card's screening time."
+    - "runs/merged_stage5_ckpt400_eval20.json and _eval50.json are not in the workspace snapshot; the 0.35 and 0.30 values are read from the stream ([1476], [1677])."
+    - "The mixture weight between GSM8K and MetaMath is implicit in the row counts (7473 vs 12000 concatenated then shuffled); it was never stated as a weight."

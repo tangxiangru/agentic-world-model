@@ -1,0 +1,193 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 2.32
+
+problem:
+  statement: >-
+    The first training launch was killed at step 2500 of 4906, so the epoch over
+    the 297k mixture is only half done and the cosine schedule never decayed.
+  evidence:
+    - path: /home/ben/task/checkpoints/checkpoint-2500/trainer_state.json
+      locator: "[110]"
+      observation: "max_steps 4906, global_step 2500, epoch 0.51, lr still at 1.02e-04"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-28a5f423.md
+      locator: "[124], [129]"
+      observation: "agent: 'The training process was killed (likely due to timeout). No GPU processes are running now.'"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Resuming from checkpoint-2500 and running the remaining ~2,400 steps to the
+    end of the cosine schedule will score higher than the half-trained adapter's
+    50%.
+  mechanism: >-
+    The adapter has seen half the mixture at a learning rate that has not yet
+    decayed; the rest of the epoch adds the unseen half and anneals the rate.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/checkpoint-2500
+    origin: exp-02
+    hash: null
+  data:
+    - path: /home/ben/task/training_data
+      source: "local (datasets save_to_disk) built from HF gsm8k/main train, meta-math/MetaMathQA, microsoft/orca-math-word-problems-200k"
+      n_examples: 297473
+      built_by: /home/ben/task/prepare_data.py
+      build_command:
+        - python
+        - prepare_data.py
+      selection: >-
+        The same file exp-02 trained on: GSM8K train in full (7,473) with
+        calculator annotations stripped; MetaMathQA GSM_Rephrased, GSM_AnsAug,
+        GSM_SV, GSM_FOBAR (240,000); 50,000 ORCA-Math sampled with
+        random.seed(42); Gemma-3 chat format; shuffled with seed 42.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.0
+    peft: "LoRA r=64 alpha=128, loaded from checkpoint-2500 with is_trainable=True (131,153,920 trainable params)"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        All values read from /home/ben/task/train_resume.py, which takes no
+        arguments and was launched with nothing overridden; the trainer is
+        entered with resume_from_checkpoint=./checkpoints/checkpoint-2500, so
+        the optimiser and schedule continue rather than restart. Also from the
+        script: packing=True, optim=adamw_torch_fused,
+        gradient_checkpointing=True, attn_implementation=flash_attention_2,
+        save_steps=500, save_total_limit=3.
+    target_format: >-
+      Gemma-3 chat format, one turn:
+      <bos><start_of_turn>user\n{question}<end_of_turn>\n<start_of_turn>model\n{solution}<end_of_turn>\n
+  command:
+    argv:
+      - cd
+      - /home/ben/task
+      - "&&"
+      - nohup
+      - python
+      - train_resume.py
+      - ">"
+      - training_resume.log
+      - "2>&1"
+      - "&"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_resume.py
+    env: {}
+    log: /home/ben/task/training_resume.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - final_model
+      - --limit
+      - "150"
+      - --max-connections
+      - "1"
+      - --gpu-memory-utilization
+      - "0.5"
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.66
+  output_checkpoint: /home/ben/task/checkpoints/checkpoint-4906
+  training_summary:
+    final_loss: 0.1973
+    steps: 4906
+    notes: >-
+      Ran to the end of the epoch. Agent at [176]: "Training is complete. The
+      final loss is 0.1973 with 93.8% token accuracy... The final checkpoint at
+      step 4906 has been saved." Intermediate checkpoints 3000, 3500, 4000, 4500
+      were written along the way (save_steps=500) and later used by exp-05 and
+      exp-12. wall_h from the event timestamps ([135] +2.32h to [176] +3.98h).
+  measurements:
+    - metric: accuracy
+      value: 0.647
+      n: 150
+      path: /home/ben/task/logs/2026-01-20T16-44-42+00-00_gsm8k_JejDagiXDSVroNhHD4dcE7.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.625
+      n: 200
+      path: /home/ben/task/logs/2026-01-20T20-31-41+00-00_gsm8k_SEs5N45zD7EoBg2EvSf5gS.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: "both numbers were measured on the merged copy of this adapter; see exp-06"}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Finishing the epoch produced the run's best checkpoint: 0.647 on 150 samples
+    after merging (exp-06), later 0.625 on 200. The comparator, the half-trained
+    adapter, was only ever scored on 50 samples against this one's 150, so the
+    direction is clear but the comparison is not like-for-like.
+  decision: adopt
+  next_step: >-
+    Merge checkpoint-4906 into final_model and score it ([176]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-28a5f423
+  launch_i: 135
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [110, 124, 129, 132]
+    setup: [133, 135]
+    evaluation: [184, 418]
+    result: [150, 163, 176, 185, 419]
+    conclusion: [176, 186]
+  snapshot_files:
+    - contamination_judgement.txt
+    - train_resume.py
+    - prepare_data.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "training_resume.log is not in the workspace snapshot, so the loss curve for steps 2500-4906 is only visible through the agent's quotes at [150], [163] and [176]."
+    - "The hypothesis is a minimal reconstruction: the agent said it was resuming ([132]) but never said what it expected the resume to be worth."
+    - "contamination_check reads `passed` from the workspace file contamination_judgement.txt ('no contamination detected'); the stream shows no checker invocation by the agent."

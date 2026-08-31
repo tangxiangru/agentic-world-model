@@ -1,0 +1,223 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.37
+
+problem:
+  statement: >-
+    The un-post-trained base model scores ~5% on the benchmark: it does not
+    follow the required answer format and never stops generating - outputs run
+    to 14k-20k characters of repetitive garbage ("<<<<...", "/******/") instead
+    of ending with an "ANSWER: <int>" line.
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[176]"
+      observation: "baseline eval of the base model (--limit 40) read as 5% accuracy"
+    - path: /home/ben/task/logs/2026-06-09T09-41-29+02-00_gsm8k_DCf5UDPWUcnGVZELDpoTCy.json
+      locator: "[181] first 3 of 40 samples"
+      observation: "all scored 'I'; completions 14k-20k chars of repeated tokens, no ANSWER line"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-06-09T09-41-29+02-00_gsm8k_DCf5UDPWUcnGVZELDpoTCy.json
+      question: null
+      gold: "6"
+      model_output: "(15731 chars) '<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<...'"
+      failure: "never stops; emits a repeated '<' run instead of reasoning + ANSWER"
+    - id: null
+      source: /home/ben/task/logs/2026-06-09T09-41-29+02-00_gsm8k_DCf5UDPWUcnGVZELDpoTCy.json
+      question: null
+      gold: "540"
+      model_output: "(20000 chars) '/******/\\n\\n/******/\\n\\n/******/ ...'"
+      failure: "never stops; repeats '/******/' to the token cap"
+    - id: null
+      source: /home/ben/task/logs/2026-06-09T09-41-29+02-00_gsm8k_DCf5UDPWUcnGVZELDpoTCy.json
+      question: null
+      gold: "2"
+      model_output: "(14094 chars) '... Reasoning: सम्राट\\n सम्राट\\nThere are 15 numbers:\\n\\n<tex>$$15=\\\\frac{3*5}{3*5}$$'"
+      failure: "drifts into unrelated text; no ANSWER line, no stop token"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised fine-tuning on GSM8K-train plus the GSM-derived slice of
+    MetaMathQA, with targets rendered in the eval's own chat template and
+    terminated by <end_of_turn>, "will fix format, reasoning, and stopping".
+  mechanism: >-
+    Completion-only loss on prompt/completion pairs pre-rendered to the eval
+    template teaches the model to answer in the graded shape and to emit
+    <end_of_turn> (token 106, an EOS for this model) right after "ANSWER: X",
+    so vLLM stops there and the last-number scorer sees the answer.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k.jsonl
+      source: "HF id: openai/gsm8k (main, train)"
+      n_examples: 7473
+      built_by: /home/ben/task/prep_data.py
+      build_command: [nohup, env, HF_HUB_OFFLINE=1, python, prep_data.py, --out-dir, data, --max-len, "1024"]
+      selection: >-
+        rows with '####'; reasoning stripped of <<calc>> annotations; integer-like
+        target only; drop pairs over 1024 tokens; used in full (--gsm8k -1) and
+        repeated twice at train time (--gsm8k-rep 2); agent recorded the file as
+        7473 rows [298].
+      contamination_check: passed
+      mixture_weight: null
+    - path: /home/ben/task/data/metamath_gsm.jsonl
+      source: "HF id: meta-math/MetaMathQA (GSM* types only)"
+      n_examples: 45000
+      built_by: /home/ben/task/prep_data.py
+      build_command: [nohup, env, HF_HUB_OFFLINE=1, python, prep_data.py, --out-dir, data, --max-len, "1024"]
+      selection: >-
+        type startswith 'GSM'; answer taken from the '####' tail with the trailing
+        "The answer is:" line removed; integer-like target only; drop pairs over
+        1024 tokens; 45000 sampled at train time (--metamath 45000). Agent
+        recorded the prepared file as ~238k rows [298].
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        Set at launch: --attn flash_attention_2, --optim paged_adamw_8bit,
+        --save-epochs. Taken from the script text in /home/ben/task/train_sft.py
+        and not overridden at launch: lr_scheduler_type cosine, weight_decay 0.0,
+        seed 42, max_grad_norm 1.0, gradient_checkpointing (use_reentrant False),
+        group_by_length, bf16; warmup_ratio 0.03 is that script's argparse default.
+        Loss is completion-only (prompt tokens masked with -100). Model loaded
+        text-only as Gemma3ForCausalLM.
+    target_format: >-
+      gemma3 chat template, zero-shot: user turn = the eval's math prompt ending
+      in "Reasoning:", assistant turn = reasoning then "ANSWER: <int>" followed by
+      <end_of_turn>.
+  command:
+    argv: [nohup, python, train_sft.py, --out, runs/runA, --gsm8k, "-1", --gsm8k-rep, "2", --metamath, "45000", --orca, "0", --epochs, "2", --lr, "1e-5", --bs, "16", --accum, "4", --max-len, "1024", --attn, flash_attention_2, --optim, paged_adamw_8bit, --save-epochs]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HUB_OFFLINE: "1"}
+    log: /home/ben/task/logs/runA.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.3
+
+evaluation:
+  protocol:
+    command: [python, eval_model.py, --model, runs/runA, --decode, greedy, --limit, "150", --tag, runA_ep2]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.05
+    path: /home/ben/task/logs/baseline.json
+  diagnostic:
+    what: >-
+      does the fine-tuned model emit <end_of_turn> after its own answer - run the
+      same test question zero-shot and 3-shot and check for token 106.
+    command: [python, diag.py]
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/runA
+  training_summary:
+    final_loss: null
+    steps: 1874
+    notes: >-
+      2 epochs, ~1.7-2.0 s/it, ~78.7 GB of 81.5 GB reserved, no OOM; epoch-1
+      checkpoint saved at runs/runA/checkpoint-937. The scheduled epoch-1 eval
+      failed to produce a number ("Failed to start vLLM server: Server process
+      exited unexpectedly with code 1") [373].
+  measurements:
+    - metric: accuracy
+      value: 0.06
+      n: 150
+      path: /home/ben/task/logs/eval_runA_ep2_greedy_l150.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.06
+      n: 150
+      path: /home/ben/task/logs/eval_runA_ep2_sampled_l150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [388] zero-shot: correct answer then <end_of_turn>, gen_len 112, stops
+      cleanly. 3-shot: correct answer then the model continues into a new
+      problem, gen_len 273+, so the last number in the output is not its answer.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    Training completed and taught the math and the answer format, but the model
+    scored 0.06 at --limit 150 under both greedy and sampled decoding - "6% is
+    barely above the 5% baseline - something is broken" [375]. The diagnostic
+    showed why: it stops correctly zero-shot but, in the eval's 10-shot context,
+    keeps generating the next problem, so the last-number scorer never sees its
+    answer. Verdict is inconclusive against the comparator because the baseline
+    was measured at --limit 40, not 150.
+  decision: adopt
+  next_step: >-
+    "Fix: train with few-shot-aware prompts" so the model learns to stop despite
+    preceding examples [388]; this checkpoint becomes the stage-1 init for every
+    later launch.
+
+provenance:
+  kind: extracted
+  run_ref: r-25b064a8
+  launch_i: 234
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [176, 181, 183]
+    setup: [146, 177, 184, 234]
+    evaluation: [335, 346]
+    result: [373, 377, 382, 388]
+    conclusion: [375, 388]
+  snapshot_files:
+    - prep_data.py
+    - train_sft.py
+    - paths.py
+    - eval_model.py
+    - eval_runA.sh
+    - diag.py
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 206, outcome: "passed (30 steps, --max-steps 30 on gsm8k only): flash-attn worked, loss decreasing, ~16 samples/s, model saved cleanly"}
+    - {launch_i: 218, outcome: "passed: vLLM loaded the saved Gemma3ForCausalLM and the limit-8 eval scored 0.125; smoke dir deleted before this launch"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The base-model comparator (0.05) was measured at --limit 40 while this checkpoint was measured at --limit 150, so the two numbers are not under the same protocol."
+    - "The epoch-1 checkpoint (runs/runA/checkpoint-937) was never scored: its eval crashed at vLLM server start [373] and was not retried."
+    - "No training loss was printed for this launch in the stream."
+
+outcome:
+  official_accuracy: null

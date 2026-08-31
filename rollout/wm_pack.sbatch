@@ -17,8 +17,8 @@ set -uo pipefail
 #   <agent>:<AGENT_CONFIG>
 #
 #   claude_fulltraj_noawm:claude-opus-4-8              C1  raw files, no WMA
-#   claude_wm:claude-opus-4-8:retrieval                C2  raw files + WMA   (with PRIOR_RUNS set)
-#   claude_wm:claude-opus-4-8:retrieval:train,test     C3  WMA + seeded memory (PRIOR_RUNS unset)
+#   claude_wm:claude-opus-4-8:traj                     C2  raw files + autonomous WMA over them (PRIOR_RUNS set)
+#   claude_wm:claude-opus-4-8:retrieval:train,test     C3  WMA + seeded memory, no prior runs for this agent
 #
 # Environment (host side, read here and by run_task.sh):
 #   PTB_TASK, PTB_MODEL, PTB_NUM_HOURS        task, base model, hours     (gsm8k, google/gemma-3-4b-pt, 10)
@@ -33,10 +33,14 @@ set -uo pipefail
 # Interleave conditions and models across GPU slots when you submit — "which
 # condition" must not be the same variable as "which card":
 #
+#   # C1 + C2 (prior runs mounted for both agents; the WMA in C2 reads them itself)
 #   sbatch rollout/wm_pack.sbatch \
-#     claude_fulltraj_noawm:claude-opus-4-6 claude_wm:claude-opus-4-8:retrieval claude_wm:claude-opus-5:retrieval:train,test \
-#     claude_fulltraj_noawm:claude-opus-4-8 claude_wm:claude-opus-5:retrieval   claude_wm:claude-opus-4-6:retrieval:train,test \
-#     claude_fulltraj_noawm:claude-opus-5   claude_wm:claude-opus-4-6:retrieval
+#     claude_fulltraj_noawm:claude-opus-4-6 claude_wm:claude-opus-4-8:traj claude_wm:claude-opus-5:traj \
+#     claude_fulltraj_noawm:claude-opus-4-8 claude_wm:claude-opus-5:traj   claude_wm:claude-opus-4-6:traj \
+#     claude_fulltraj_noawm:claude-opus-5   claude_wm:claude-opus-4-6:traj
+#   # C3 (no prior runs; memory seeded)
+#   PRIOR_RUNS= sbatch rollout/wm_pack.sbatch \
+#     claude_wm:claude-opus-4-6:retrieval claude_wm:claude-opus-4-8:retrieval claude_wm:claude-opus-5:retrieval
 ARMS=("$@")
 N="${#ARMS[@]}"
 { [ "$N" -ge 1 ] && [ "$N" -le 8 ]; } || { echo "FATAL: need 1..8 arms, got ${N}" >&2; exit 1; }

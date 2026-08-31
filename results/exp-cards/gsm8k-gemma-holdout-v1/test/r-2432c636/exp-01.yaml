@@ -1,0 +1,212 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.20
+
+problem:
+  statement: >-
+    The base model answers almost no GSM8K problems under the harness prompt:
+    5% accuracy on a 20-sample slice. The agent read this as an
+    instruction-following / post-training gap rather than an evaluation setup
+    problem, so nothing had yet been trained on the benchmark's answer shape.
+  evidence:
+    - path: /home/ben/task/baseline20.json
+      locator: "[32] launch, [68]/[102] result, [107] agent reading"
+      observation: "raw base model, gsm8k --limit 20: accuracy 0.050, stderr 0.050"
+    - path: /home/ben/task/evaluate.py
+      locator: "[59]"
+      observation: >-
+        eval task uses a 10-shot GSM8K-train prefix and scores a numeric answer
+        extracted from a final `ANSWER: ...` line, so training must end that way
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    QLoRA supervised fine-tuning of the base model on GSM8K-train alone, with
+    targets shaped as reasoning followed by a final `ANSWER: <n>` line, will
+    lift accuracy off the 5% base level and give a clean human-data-only
+    reference condition to compare a synthetic-augmented run against.
+  mechanism: >-
+    The base model is a pretrained (non-instruct) checkpoint; the gap is
+    format- and instruction-following, so direct supervision on GSM8K's own
+    solutions in the evaluator's answer shape should close most of it.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        full GSM8K train split, built in-process by the training script; the
+        `####` line is split off and re-rendered as a final `ANSWER: <n>` line.
+        Only the train split is used; the public test split is reserved for
+        evaluation ([225]).
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (TRL with SFTConfig; version not printed in the stream)"
+    peft: "LoRA via peft, loaded 4-bit (QLoRA, nf4, double-quant, bf16 compute); r / alpha / dropout / target modules never printed"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        From the SFTConfig text printed in the stream ([130], [521]), not from
+        argparse defaults: lr_scheduler_type=cosine, optim=paged_adamw_8bit
+        (because --use-4bit), bf16=True, gradient_checkpointing=True
+        (use_reentrant=False), completion_only_loss=None. warmup_ratio,
+        weight_decay, seed and the LoRA rank/alpha come from argparse defaults
+        whose values are not in the stream and whose script is not in the
+        snapshot, so they are left null.
+    target_format: >-
+      Gemma turn markers as used by the evaluator; user turn carries the
+      math-problem instruction, assistant turn is the GSM8K reasoning ending in
+      a final `ANSWER: <number>` line.
+  command:
+    argv:
+      - python
+      - scripts/train_gsm8k_sft.py
+      - --output-dir
+      - runs/gsm8k_only_e2
+      - --use-4bit
+      - --epochs
+      - "2.0"
+      - --batch-size
+      - "2"
+      - --grad-accum
+      - "8"
+      - --max-length
+      - "1536"
+      - --learning-rate
+      - "2e-4"
+      - --logging-steps
+      - "10"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.0
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/merged_gsm8k_only_ep1
+      - --limit
+      - "50"
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.5"
+      - --json-output-file
+      - runs/merged_gsm8k_only_ep1_eval50.json
+    dev_set: "official gsm8k test --limit 50 (inspect_evals/gsm8k, fewshot=10, fewshot_seed=42, shuffle_fewshot=True)"
+    n: 50
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.05
+    path: /home/ben/task/baseline20.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.95
+  output_checkpoint: /home/ben/task/runs/gsm8k_only_e2
+  training_summary:
+    final_loss: 0.3352
+    steps: 936
+    notes: >-
+      train_runtime 3411.1s, train_loss 0.3351552680007413, mean_token_accuracy
+      0.929 at epoch 2.0 ([324]). Epoch-1 save is
+      runs/gsm8k_only_e2/checkpoint-468 ([264]-[266]). Both the epoch-1 and the
+      final adapter were merged with scripts/merge_lora.py and forced to greedy
+      decoding with scripts/set_greedy_generation.py ([328], [330], re-run at
+      [363], [364] after the merge script was patched to copy the Gemma 3
+      processor files). A first eval at --limit 100 ([335]) failed before
+      generation because the merged directory lacked preprocessor_config.json
+      ([346]); only the epoch-1 merge was ever scored. The final merged adapter
+      (runs/merged_gsm8k_only_final) was never evaluated.
+  measurements:
+    - metric: accuracy
+      value: 0.06
+      n: 50
+      path: /home/ben/task/runs/merged_gsm8k_only_ep1_eval50.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The human-data-only line scored 0.06 on 50 samples, essentially the base
+    level, and inspection of the generations showed the model reaching a correct
+    `ANSWER:` line and then continuing into unrelated invented problems so the
+    scorer no longer saw the intended answer ([378], [387]). The agent called
+    the line "not viable as-is" ([397]). The only base-model number available
+    (0.05) was measured at --limit 20, not 50, so the comparison is not under
+    the same protocol.
+  decision: abandon_line
+  next_step: >-
+    Pivot to a synthetic TemplateGSM warmup followed by a GSM8K-train
+    refinement pass ([397]).
+
+provenance:
+  kind: extracted
+  run_ref: r-2432c636
+  launch_i: 154
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [59, 107]
+    setup: [130, 153, 154, 521]
+    evaluation: [328, 330, 335, 346, 363, 364, 370]
+    result: [264, 265, 266, 324, 376, 381]
+    conclusion: [378, 387, 397]
+  snapshot_files:
+    - baseline20.json
+    - evaluate.py
+    - contamination_judgement.txt
+  smoke_runs:
+    - {launch_i: 143, outcome: "crashed: HfHubHTTPError 429 Too Many Requests while resolving the tokenizer"}
+    - {launch_i: 149, outcome: "passed (4 optimizer steps, --gsm8k-limit 64 --epochs 0.05)"}
+  extractor: "reconstructed by an automated extractor; model id omitted per hard rule 5"
+  unresolved:
+    - "The comparator (base model, 0.05) was measured at --limit 20 while this card's eval is --limit 50, so the delta is not computed."
+    - "scripts/train_gsm8k_sft.py, scripts/merge_lora.py and scripts/set_greedy_generation.py are not in the workspace snapshot; only the excerpts printed in the stream are available, so all argparse defaults (LoRA rank/alpha/dropout, seed, warmup_ratio, weight_decay) stay null."
+    - "runs/merged_gsm8k_only_ep1_eval50.json is not in the workspace snapshot; the 0.06 value is read from the stream ([376], [381], [1078])."
+    - "The workspace holds a run-level contamination_judgement.txt ('no contamination detected') and disallowed_model_judgement.txt ('only allowed use detected'), but neither was produced by the agent inside the stream, so per-dataset contamination_check stays not_run."

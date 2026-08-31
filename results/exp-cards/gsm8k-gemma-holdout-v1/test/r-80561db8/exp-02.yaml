@@ -1,0 +1,236 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 2.51
+problem:
+  statement: The exp-01 model scores 38.7% on 150 items; the agent's reading is that "SFT never saw the
+    eval's 10-shot system prompt" [197], so the training distribution (single-turn, no exemplars) does
+    not match the prompt the grader actually sends.
+  evidence:
+  - path: /home/ben/task/logs/eval_sft_150.json
+    locator: '[195]'
+    observation: accuracy 0.3867 (stderr 0.0399) on 150 items
+  - path: /home/ben/task/logs/eval_sft_30.json
+    locator: '[156], [160]'
+    observation: 9/30 correct, 30/30 correctly formatted; the printed failures are arithmetic, not format
+      - "Format is fine; arithmetic errors are the bottleneck" [158]
+  affected_share: null
+  failure_examples:
+  - id: sample 4 of the 30-item eval log
+    source: /home/ben/task/logs/eval_sft_30.json
+    question: null
+    gold: '18'
+    model_output: 'She has 12 ducks because 16 x 2 = 32 / She has 32 eggs because 16 x 2 = 32 / She has
+      24 remaining eggs because 32 - 3 = 29 / She can make 6 muffins per day because 29 / 4 = 7.25 / Thus,
+      she has 19 eggs remaining to sell because 29 - 24 = 5 / She can get $10 from selling her remaining
+      eggs because 5 / 2 = 2.5 / ANSWER: 10'
+    failure: format correct, but the prose and the arithmetic disagree at every step (12 vs 32 ducks,
+      32 - 3 = 29, 29 - 24 = 5); final answer 10 vs gold 18 [156]
+  watch_set: null
+hypothesis:
+  claim: Continued SFT from the exp-01 checkpoint on data whose prompts carry a few-shot system message
+    built the same way the grader builds it will raise accuracy on the 150-item eval above 38.7% [197].
+  mechanism: Matching the training prompt to the eval prompt (a system turn of k solved train items, then
+    the templated question) removes the train/inference distribution gap; half the MetaMath rows are kept
+    zero-shot so the model stays robust to both.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft_gsm/final
+    origin: exp-01
+    hash: null
+  data:
+  - path: /home/ben/task/data/sft_fewshot.jsonl
+    source: derived:local (openai/gsm8k train + meta-math/MetaMathQA GSM_AnsAug, GSM_Rephrased)
+    n_examples: null
+    built_by: /home/ben/task/prepare_fewshot_data.py
+    build_command:
+    - python
+    - prepare_fewshot_data.py
+    - --output
+    - data/sft_fewshot.jsonl
+    - --fewshot
+    - '5'
+    - --max-metamath
+    - '60000'
+    selection: 'each GSM8K train item three times with a 5-shot system prompt sampled (seed 42) from other
+      train items, plus once with no system prompt; up to 60000 MetaMath GSM_AnsAug/GSM_Rephrased items,
+      alternating few-shot system / no system; assistant target = reasoning then "ANSWER: <n>"; the item''s
+      own question is excluded from its exemplars [198][201]'
+    contamination_check: not_run
+    mixture_weight: 1.0
+    repeats: 3x few-shot + 1x zero-shot per GSM8K train item
+  method:
+    family: sft
+    framework: trl 0.27.2 SFTTrainer (transformers 4.57.3, Gemma3ForCausalLM, flash_attention_2)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: packing=True (--packing on the launch). scheduler=cosine, warmup_ratio=0.03, weight_decay=0.0,
+        bf16, gradient_checkpointing (use_reentrant=False), optim=adamw_torch_fused, max_grad_norm=1.0,
+        completion_only_loss=True, dataset_text_field=None, seed=42 come from train_sft.py in the workspace
+        and were not overridden by this launch
+    target_format: 'three-turn (system / user / assistant) chat rows under the script''s gemma chat template;
+      assistant turn ends in "ANSWER: <n>"; loss on the completion only'
+  command:
+    argv:
+    - nohup
+    - python
+    - train_sft.py
+    - --model
+    - checkpoints/sft_gsm/final
+    - --data
+    - data/sft_fewshot.jsonl
+    - --output-dir
+    - checkpoints/sft_fewshot
+    - --num-train-epochs
+    - '1'
+    - --learning-rate
+    - 1e-5
+    - --per-device-train-batch-size
+    - '4'
+    - --gradient-accumulation-steps
+    - '8'
+    - --max-seq-length
+    - '2048'
+    - --save-steps
+    - '300'
+    - --logging-steps
+    - '20'
+    - --packing
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/sft_fewshot.log
+  budget:
+    gpu: 1x NVIDIA H100 80GB HBM3
+    planned_h: null
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - final_model
+    - --limit
+    - '150'
+    - --json-output-file
+    - logs/eval_fewshot_150.json
+    - --max-connections
+    - '4'
+    - --max-tokens
+    - '1024'
+    - --gpu-memory-utilization
+    - '0.85'
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.38666666666666666
+    path: /home/ben/task/logs/eval_sft_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+result:
+  execution: completed
+  wall_h: 2.29
+  output_checkpoint: /home/ben/task/checkpoints/sft_fewshot/final
+  training_summary:
+    final_loss: 0.0707
+    steps: null
+    notes: train_runtime 8246.2 s, mean train_loss 0.1115, mean_token_accuracy 0.981 at epoch 1.0; last
+      logged step loss 0.0707 [239]. Step count never printed. Output copied to final_model by promote_model.py
+      at [242].
+  measurements:
+  - metric: accuracy
+    value: 0.5733333333333334
+    n: 150
+    path: /home/ben/task/logs/eval_fewshot_150.json
+    delta_vs_comparator: 0.18666666666666668
+  - metric: accuracy
+    value: 0.54
+    n: 50
+    path: /home/ben/task/logs/eval_restore_50.json
+    delta_vs_comparator: null
+  - metric: accuracy
+    value: 0.49333333333333335
+    n: 150
+    path: /home/ben/task/logs/eval_final_150.json
+    delta_vs_comparator: 0.10666666666666669
+  diagnostic_result:
+    value: null
+    path: null
+    notes: re-evaluations of this same checkpoint under the same protocol gave 0.54 on 50 items [304]
+      and 0.4933 on 150 items [483] - an 8-point spread against the 0.5733 first reading
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: Few-shot-matched continued SFT took the 150-item score from 38.7% to 57.3% (+18.7 pts) under
+    the same protocol [249], the largest move in the run, and this checkpoint stayed the incumbent to
+    the end. A later repeat of the identical eval on the identical weights returned 49.3% [483], so the
+    57.3% figure itself carries several points of run-to-run noise.
+  decision: adopt
+  next_step: '"Running GRPO next to push it further" [251]; this checkpoint is also the parent of exp-04
+    to exp-12 and the weights behind the submitted final_model.'
+outcome:
+  official_accuracy: null
+provenance:
+  kind: extracted
+  run_ref: r-80561db8
+  launch_i: 213
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem:
+    - 156
+    - 158
+    - 160
+    - 195
+    - 197
+    setup:
+    - 198
+    - 201
+    - 213
+    evaluation:
+    - 242
+    - 248
+    result:
+    - 239
+    - 249
+    - 304
+    - 483
+    conclusion:
+    - 249
+    - 251
+  snapshot_files:
+  - prepare_fewshot_data.py
+  - train_sft.py
+  - promote_model.py
+  - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+  - the row count of data/sft_fewshot.jsonl is never printed in the stream (wc -l ran at [201] but its
+    output is not in the digest)
+  - the only printed failing item comes from the agent's own evaluate.py --limit 30 run, not from a held-out
+    dev set it built
+  - no contamination check was run against this file

@@ -1,0 +1,189 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.75
+
+problem:
+  statement: >-
+    The base model is at 8% and the first full SFT attempt (exp-01) never produced a
+    checkpoint: it went out of memory in the cross-entropy at step 100/1484, because
+    Gemma-3's 262K-token vocabulary makes the un-fused loss materialise huge logits on
+    the longest batches ([294], [298]).
+  evidence:
+    - path: /home/ben/task/logs/sft_v1.log
+      locator: "[296]"
+      observation: "torch.OutOfMemoryError in the gemma3 forward loss: tried to allocate 16.29 GiB with 814 MiB free"
+    - path: /home/ben/task/runs/baseline_150.json
+      locator: "[157]"
+      observation: "base model accuracy 0.08 at --limit 150 - the score this launch has to move"
+    - path: null
+      locator: "[311]"
+      observation: >-
+        training-token lengths are short (p99=428, max=668), so capping max_len at 640
+        truncates almost nothing and removes the long-batch blow-up
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    With the Liger fused linear cross-entropy kernel (which never materialises the full
+    262K logits) and max_len 640, the same LoRA SFT recipe will run to completion and
+    lift accuracy far above the 8% baseline ("Liger kernel (fused linear cross-entropy)
+    is the ideal fix - it avoids materializing full logits, saving memory and speeding
+    training. It only affects training, not the saved model", [311]).
+  mechanism: >-
+    The OOM was an artefact of the loss implementation, not of the recipe; fusing the
+    projection and the loss removes it, so the format-teaching SFT of exp-01 can
+    actually finish and be measured ([298], [311], [333]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "HF openai/gsm8k (main, train split) + HF meta-math/MetaMathQA (GSM_AnsAug, GSM_Rephrased)"
+      n_examples: 94946
+      built_by: /home/ben/task/src/prep_data.py
+      build_command: [python, src/prep_data.py, --out, data/sft_v1.jsonl, --metamath-types, "GSM_AnsAug,GSM_Rephrased", --per-type-limit, "40000", --gsm-native-repeat, "2"]
+      selection: >-
+        Same file as exp-01: GSM8K train CoT with <<...>> annotations stripped and ####
+        rewritten as "ANSWER: <number>", included twice; MetaMathQA GSM_AnsAug and
+        GSM_Rephrased capped at 40000 rows per type and kept only when the final answer
+        is purely numeric. Items whose normalised question matches a GSM8K test question
+        are dropped. A separate check at [246] re-scored every row with the eval's own
+        matcher.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers Trainer + peft LoRA + liger_kernel 0.8.0 fused_linear_cross_entropy for gemma3"
+    peft: "LoRA r=64 alpha=128 targets=.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 1
+      batch_size: 32
+      grad_accum: 2
+      max_seq_len: 640
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr, epochs, batch_size, grad_accum, max_seq_len, LoRA r/alpha, attn=sdpa,
+        grad-ckpt=1 and liger=1 are the launch flags at [334]; scheduler=cosine,
+        weight_decay=0.0, bf16 and group_by_length=True are hard-coded in the training
+        script as written into the stream ([132], [318]). The script is not in the
+        workspace snapshot, so no argparse default was adopted for the null fields.
+        Env: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True. On save the LoRA is merged
+        into the base weights and a greedy generation_config.json is written.
+    target_format: >-
+      eval chat template (templates/gemma3.jinja), user turn = the eval's
+      MATH_PROMPT_TEMPLATE, assistant turn = cleaned CoT ending in "ANSWER: <number>"
+      plus token 106 (<end_of_turn>); prompt tokens masked out of the loss.
+  command:
+    argv: [nohup, python, src/train_sft.py, --data, data/sft_v1.jsonl, --out, ckpt/sft_v1, --mode, lora, --lora-r, "64", --lora-alpha, "128", --epochs, "1", --bs, "32", --grad-accum, "2", --lr, "1e-4", --max-len, "640", --attn, sdpa, --grad-ckpt, "1", --liger, "1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/src/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/sft_v1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 (81559 MiB) [5]"
+    planned_h: 0.72
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/sft_v1, --limit, "500", --max-connections, "16", --max-tokens, "700", --gpu-memory-utilization, "0.6", --json-output-file, runs/sft_v1_500.json]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.08
+    path: /home/ben/task/runs/baseline_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.69
+  output_checkpoint: /home/ben/task/ckpt/sft_v1
+  training_summary:
+    final_loss: 0.208
+    steps: 1484
+    notes: >-
+      "Training done: final loss 0.208, model saved (8.6GB, 2 shards)" [575]. Loss fell
+      0.38 -> 0.25 by [266] with stable grad norms. Before the eval, fixup_ckpt.py wrote
+      a greedy generation_config.json (do_sample=false, temperature 0.0, eos [1,106]) and
+      copied the base preprocessor/processor configs so vLLM loads the multimodal model
+      [576], [577].
+  measurements:
+    - metric: accuracy
+      value: 0.682
+      n: 500
+      path: /home/ben/task/runs/sft_v1_500.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The Liger-fused run completed 1484 steps to a final loss of 0.208 and the merged
+    checkpoint scored 0.682 at --limit 500 with greedy decoding, against a base model
+    measured at 0.08 - a very large jump, but the two numbers come from different
+    protocols (150 items with sampling vs 500 items greedy), so the comparison is not
+    a like-for-like test. The agent read it as decisive: "sft_v1 = 68.2%, up from 8%
+    baseline. The SFT pipeline works excellently" [594].
+  decision: adopt
+  next_step: >-
+    Rejection-sampling / STaR: sample 8 solutions per GSM8K-train question from this
+    checkpoint, keep the correct ones, and continue training on them ([594], [603]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-3c44629f
+  launch_i: 334
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [294, 296, 298, 311]
+    setup: [126, 131, 132, 318, 334]
+    evaluation: [576, 589, 594]
+    result: [575, 577, 594]
+    conclusion: [594, 595]
+  snapshot_files:
+    - results.md
+    - SUMMARY.md
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 320, outcome: "passed (Liger stress test at the config that had OOM'd: bs=32, max_len=640, --limit 5000; 37 samples/s, no OOM)"}
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      runs/sft_v1_500.json is not in the workspace snapshot; the 0.682 is the number the
+      agent read at [594] and logged in results.md.
+    - >-
+      The comparator (base model, 0.08) was measured at --limit 150 with the model's own
+      sampling config, while this card is measured at --limit 500 with greedy decoding,
+      so no verdict under a shared protocol is possible.
+    - >-
+      wall_h 0.69 is derived from the event timestamps (launch at +0.75 h, checkpoint
+      verified at +1.44 h); no train_runtime line for this run appears in the digest.

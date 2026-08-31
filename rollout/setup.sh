@@ -45,13 +45,14 @@ fi
 
 # Pin which awm the claude_wm cells clone. Baked into solve.sh because the sandbox
 # is --cleanenv and sees no host environment.
-if [ -n "${AWM_REPO_REF:-}" ] || [ -n "${AWM_REPO_URL:-}" ]; then
+if [ -n "${AWM_REPO_REF:-}" ] || [ -n "${AWM_REPO_URL:-}" ] || [ -n "${WMA_MODEL:-}" ]; then
     sed -i \
         -e "s#^AWM_REPO_URL=.*#AWM_REPO_URL=\"\${AWM_REPO_URL:-${AWM_REPO_URL:-https://github.com/JerrrrryL/agentic-world-model.git}}\"#" \
         -e "s#^AWM_REPO_REF=.*#AWM_REPO_REF=\"\${AWM_REPO_REF:-${AWM_REPO_REF:-wm-runtime}}\"#" \
+        -e "s#^WMA_MODEL=.*#WMA_MODEL=\"\${WMA_MODEL:-${WMA_MODEL:-claude-opus-4-8}}\"#" \
         "$DST/agents/claude_wm/solve.sh"
 fi
-grep -E '^AWM_REPO_(URL|REF)=' "$DST/agents/claude_wm/solve.sh"
+grep -E '^(AWM_REPO_(URL|REF)|WMA_MODEL)=' "$DST/agents/claude_wm/solve.sh"
 
 # Runner patch (idempotent) and the study's prompt files.
 python3 "$HERE/patches/apply_extra_binds.py" "$DST/src/run_task.sh"

@@ -1,0 +1,197 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.30
+
+problem:
+  statement: >-
+    Same problem as exp-01 - the base model scores 0.000 and emits template
+    boilerplate rather than a solution ("Base model produces garbage. I need
+    SFT." [71]) - and the first SFT launch could not run: batch 32 exhausted the
+    GPU [127], [154].
+  evidence:
+    - path: /home/ben/task/baseline_30.json
+      locator: "[62], [63]; whole file"
+      observation: "accuracy 0.000, stderr 0.000 for the base model on 30 samples"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-c3d185ea.md
+      locator: "[127], [132], [154]"
+      observation: "batch 32 launch produced no loss line and was replaced by a batch 16 launch; the agent's note records that batch=32 OOMs"
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full supervised fine-tuning of the base model on GSM8K-train plus the GSM
+    subset of MetaMathQA, with every response rewritten to end in "ANSWER: X",
+    will make the model produce step-by-step solutions in the eval's answer
+    format instead of boilerplate.
+  mechanism: >-
+    The base checkpoint is a pure pretrained model with no instruction
+    following; SFT on question/solution pairs shaped exactly like the eval
+    prompt teaches both the task and the output contract [71], [96].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_data
+      source: "derived: openai/gsm8k (train) + meta-math/MetaMathQA (GSM_AnsAug, GSM_Rephrased)"
+      n_examples: 72419
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        GSM8K train split at the "####" marker into reasoning + final answer, <<...>>
+        calculator annotations stripped, response rewritten as "reasoning\n\nANSWER: X";
+        25000 each of MetaMathQA GSM_AnsAug and GSM_Rephrased (random.Random(42) shuffle),
+        "The answer is: X" rewritten to "ANSWER: X"; GSM8K part repeated 3x, whole set shuffled [99], [100]
+      repeats: "GSM8K train x3 (7473 -> 22419); MetaMathQA GSM x1 (50000)"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (Gemma3ForCausalLM), torch 2.8.0+cu129"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 640
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        save_steps=500 from the command line. scheduler=cosine, warmup_ratio=0.03,
+        bf16=True, optim=adamw_bnb_8bit, gradient_checkpointing=True,
+        max_grad_norm=1.0, logging_steps=20 are train_sft.py defaults/constants
+        this launch did not override (script text at [102]). weight_decay and seed
+        are never set. Measured GPU use ~59.4 GB at 100% utilisation [135].
+    target_format: >-
+      "<bos><start_of_turn>user\n{eval prompt}<end_of_turn>\n<start_of_turn>model\n{reasoning}\n\nANSWER: X<end_of_turn>\n";
+      loss masked over the prompt span
+  command:
+    argv: [nohup, python, train_sft.py, --batch-size, "16", --grad-accum, "2", --epochs, "1",
+           --max-length, "640", --lr, "2e-5", --save-steps, "500", --output-dir, /home/ben/task/sft_out]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/sft_train.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/sft_out/final, --limit, "100",
+              --max-connections, "4", --gpu-memory-utilization, "0.8",
+              --json-output-file, /home/ben/task/eval_v1_100.json]
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0
+    path: /home/ben/task/baseline_30.json
+  diagnostic:
+    what: >-
+      share of incorrect completions that contain more than one "ANSWER:" line,
+      i.e. whether the model keeps generating further problems after answering
+    command: [python, "-c", "inline script, digest [227]: counts incorrect samples whose completion has content.count('ANSWER:') > 1"]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.96
+  duration_h: 0.96
+  steps: 2264
+  output_checkpoint: /home/ben/task/sft_out/final
+  training_summary:
+    final_loss: null
+    steps: 2264
+    notes: >-
+      Reached step 2264 / epoch 1.0; the trainer's summary line is not in the
+      stream. Last logged training loss 0.1878 at step 2260, grad_norm 2.5625 [194].
+  measurements:
+    - metric: accuracy
+      value: 0.23
+      n: 100
+      path: /home/ben/task/eval_v1_100.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.22
+      n: 100
+      path: /home/ben/task/eval_v1_100b.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.21
+      n: 100
+      path: /home/ben/task/eval_v1_100c.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.705
+    path: /home/ben/task/eval_v1_100b.json
+    notes: >-
+      55 of the 78 incorrect completions contained more than one "ANSWER:" line
+      [228]. The model answers correctly and then continues inventing further
+      few-shot problems instead of stopping.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    SFT lifted the model off the floor - it now writes real step-by-step
+    solutions ending in "ANSWER: X" - but accuracy settles at 0.21-0.23 on 100
+    samples across three runs, and the diagnostic shows why: in the 10-shot eval
+    context the model does not stop after answering (55 of 78 failures carry
+    extra "ANSWER:" lines [228]). The comparator (base model) was only measured
+    at --limit 30, not 100, so no verdict against it under one protocol.
+  decision: adopt
+  next_step: >-
+    Continue SFT on data whose user turn already contains few-shot exemplars, with
+    the target ending in ANSWER, <end_of_turn> and <eos>, so the model learns to
+    stop [268], [272].
+
+# ---- joined by the pipeline, never written by the extractor ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-c3d185ea
+  launch_i: 132
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [62, 63, 71, 127, 154]
+    setup: [96, 99, 100, 102, 132]
+    evaluation: [198, 224, 241]
+    result: [193, 194, 200, 225, 227, 228, 242, 245]
+    conclusion: [228, 268, 272]
+  snapshot_files:
+    - baseline_30.json
+    - prepare_data.py
+    - train_sft.py
+    - sft_train.log
+    - eval_v1_100.json
+    - eval_v1_100b.json
+    - eval_v1_100c.json
+  smoke_runs: []
+  extractor: null            # model id omitted: no model names are written into these cards
+  unresolved:
+    - "The three 100-sample evals are re-runs of the same checkpoint; the digest labels them 'after eos fix' [224] and 'after tokenizer fix' [241] but the edits themselves are not in the stream, so what changed between them is unknown."
+    - "The trainer's final train_loss / train_runtime summary line is not in the digest; steps and epoch come from checkpoint-2264/trainer_state.json [194]."
+    - "The workspace holds contamination_judgement.txt ('no contamination detected'), but no contamination checker appears in the digest, so contamination_check is recorded as not_run."

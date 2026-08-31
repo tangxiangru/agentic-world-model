@@ -242,7 +242,7 @@ calibration.
 | propose → brief → freeze → checkpoint hook → worker → seal → finalize | `awm/wm/runtime.py` |
 | evaluators (official `evaluate.py`, custom item scorer) | `awm/wm/evaluators.py`, `awm/wm/score_items.py` |
 | memory (raw / structured / notes, precedents, seeding from `results/exp-cards/`) | `awm/wm/memory.py` |
-| arms: `null`, `retrieval` implemented; `llm`, `predictor` stubs | `awm/wm/agents/` |
+| arms: `null`, `retrieval` (deterministic), `llm` / `traj` (autonomous Claude Code, read-only, cited JSON; `traj` = raw prior runs only), `predictor` stub | `awm/wm/agents/` |
 | trainer hook (`TrainerCallback` + plain function) | `awm/wm/hook_example.py` (copied into `{dir}/wm/`) |
 | CLI `awm wm init|propose|reply|checkpoint|worker|finalize|status|pending|memory` | `awm/cli.py` |
 | Claude Code Stop hook (hold the turn while a reply is owed) | `.claude/hooks/wm_pending_reply.py` |

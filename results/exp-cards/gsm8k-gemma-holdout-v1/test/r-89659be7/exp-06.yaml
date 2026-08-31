@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: null                       # the digest header states this run carried no timestamps
+
+problem:
+  statement: >-
+    The training target does not match the format the eval demonstrates. The
+    few-shot examples in the eval's system message are "{question}\n\nReasoning:
+    \n{reasoning}\n\nANSWER: {target}" with the "####" line removed, but the
+    training data still carries "#### 35" just before "ANSWER: 35" [348, 351].
+    On top of that, completion-only loss had just destroyed the model's ability
+    to stop (0.06) [315, 345].
+  evidence:
+    - path: /home/ben/task/train_data.jsonl
+      locator: "[348]"
+      observation: "assistant turns of the MetaMathQA rows end '#### 35' then 'ANSWER: 35'"
+    - path: /home/ben/task/logs/2026-02-17T17-14-43+01-00_gsm8k_XgSmiMqAQym4tSLyeiYMRb.json
+      locator: "[315], [318]"
+      observation: "0.06 accuracy, 80K generated tokens, completions running on into invented problems"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Use more GSM8K-focused data ... only 1 epoch over a larger set to avoid
+    overfitting (loss went up in epoch 2 of v1) ... no completion_only_loss
+    (confirmed this breaks stop generation) ... try 100K examples, 1 epoch"
+    [345], on training targets cleaned so that the assistant turn ends at
+    "ANSWER: N" with no "####" line, matching the few-shot examples exactly
+    [351, 358, 376].
+  mechanism: >-
+    "The `####` part is extra compared to the few-shot examples ... our training
+    data should ideally also not include it" [351]; weighting the 7,473 real
+    GSM8K rows 3x makes the training distribution closer to the eval's, whose
+    few-shot examples are drawn from that same split [358].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v4.jsonl
+      source: "local (derived from HF openai/gsm8k train + meta-math/MetaMathQA)"
+      n_examples: 97419
+      built_by: /home/ben/task/prepare_data_v4.py
+      build_command: [python3, prepare_data_v4.py]
+      repeats: "GSM8K train x3, MetaMathQA x1"
+      selection: >-
+        7,473 GSM8K train rows repeated 3x (22,419) plus 75,000 rows sampled
+        (random.seed 42) from the 240,000 MetaMathQA rows of type
+        GSM_AnsAug/GSM_Rephrased/GSM_SV/GSM_FOBAR; clean_reasoning strips a
+        trailing "The answer is: N" and then a trailing "#### N" from every
+        assistant turn, so it ends "<reasoning>\n\nANSWER: N"; whole set
+        shuffled [358, 361, 369, 371, 372]. The stripping of "The answer is:"
+        was added after the first build and the file was regenerated [369, 371].
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129) [23]"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        Module-level constants in /home/ben/task/train_v4.py as quoted at [376]
+        (script in the workspace snapshot, launch passed no flags):
+        completion_only_loss NOT set - back to loss over the whole sequence -
+        optim=adamw_torch_fused, max_grad_norm=1.0,
+        gradient_checkpointing=True, save_steps=1000, save_total_limit=2,
+        attn_implementation=flash_attention_2. 6,089 optimizer steps [442].
+    target_format: >-
+      Gemma 3 chat template; assistant turn = reasoning with no "####" line,
+      blank line, "ANSWER: <number>".
+  command:
+    argv: [python3, /home/ben/task/train_v4.py, "2>&1", "|", tee, /home/ben/task/train_v4.log]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v4.py
+    env: {}
+    log: /home/ben/task/train_v4.log
+  budget:
+    gpu: "1x H100 80GB [24]"
+    planned_h: 4.1                     # agent: "6,089 steps: 6,089 x 2.4s ~ 4.1 hours" [394]
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model, final_model, --limit, "50"]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.46
+    path: /home/ben/task/logs/2026-02-17T15-13-24+01-00_gsm8k_jiAtNmzu7QRTrtA7wrABUM.json
+  diagnostic:
+    what: >-
+      Share of the 50 completions containing more than one "ANSWER:" line, and
+      mean completion length, measured on this eval log and on exp-02's for
+      reference [483, 484].
+    command: []
+    path: /home/ben/task/logs/2026-02-17T19-19-25+01-00_gsm8k_dfUn8Uj4xzsf9kzU6zPZtk.json
+
+result:
+  execution: completed
+  wall_h: 1.64
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.1477
+    steps: 6089
+    notes: >-
+      train_runtime 5911.9 s, 1.03 steps/s, train_loss 0.2197 averaged over the
+      epoch, mean token accuracy 0.957; loss fell 1.13 -> 0.30 (step 1000) ->
+      0.22 (2000) -> ~0.15 at the end with no epoch-2 spike, since there was no
+      epoch 2 [442, 450, 454, train_v4.log].
+  measurements:
+    - metric: accuracy
+      value: 0.22
+      n: 50
+      path: /home/ben/task/logs/2026-02-17T19-19-25+01-00_gsm8k_dfUn8Uj4xzsf9kzU6zPZtk.json
+      delta_vs_comparator: -0.24
+  diagnostic_result:
+    value: 0.34
+    path: /home/ben/task/logs/2026-02-17T19-19-25+01-00_gsm8k_dfUn8Uj4xzsf9kzU6zPZtk.json
+    notes: >-
+      17 of 50 completions contain more than one "ANSWER:" line and 29 of 50
+      exceed 500 characters, mean 2,522 chars, 44,251 generated tokens; exp-02
+      had 0 of 50 multi-ANSWER, mean 369 chars, 7,637 tokens [461, 484]. Of the
+      39 misses, 10 had a first "ANSWER:" line equal to the gold answer and were
+      still scored incorrect because the completion ran on [470, 473].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    Cleaning the "####" line out of the targets halved the score rather than
+    raising it: 0.22 against exp-02's 0.46 on the same 50 items [461]. The
+    diagnostic says why - "the model is generating correct answers for the first
+    question, but then it continues to generate NEW questions and answers"
+    [465] - so the "####" line was apparently doing work as a stop cue, and the
+    mechanism behind the change is contradicted.
+  decision: reject
+  next_step: >-
+    "Go back to the ORIGINAL data format (with `####`) that worked" and train a
+    single epoch on the same 50K subset [485, 488].
+
+provenance:
+  kind: extracted
+  run_ref: r-89659be7
+  launch_i: 395
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [315, 318, 345, 348, 351]
+    setup: [358, 361, 369, 371, 372, 376, 394, 395]
+    evaluation: [460, 483]
+    result: [442, 450, 454, 457, 458, 461, 463, 464, 465, 470, 473, 484]
+    conclusion: [465, 485, 488]
+  snapshot_files:
+    - prepare_data_v4.py
+    - train_v4.py
+    - train_v4.log
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the two effects changed together - target text (#### removed, 3x GSM8K) and schedule (1 epoch instead of 2) - so the 0.24-point drop cannot be attributed to either alone."
+    - "saving over final_model destroyed the exp-05 weights and, before them, exp-02's [457, 458]."
+
+outcome:
+  official_accuracy: null

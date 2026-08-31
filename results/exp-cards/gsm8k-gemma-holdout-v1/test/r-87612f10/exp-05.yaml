@@ -2,76 +2,64 @@ schema_version: awm-experiment-card-v1
 card_id: exp-05
 created_at: null
 elapsed_h: null
-
 problem:
-  statement: >-
-    The MetaMath curriculum underperformed, so the remaining candidate
-    explanation for the low scores is the distribution shift between the way the
-    models were trained and the way the benchmark actually prompts them: the
-    evaluator prepends a fixed 10-shot GSM8K system prompt that no training run
-    has ever seen, and the base model's characteristic failure was answering
-    once and then continuing to generate more question/answer material, which
-    makes the benchmark grade the wrong final number [152], [155], [566].
+  statement: '"The MetaMath branch underperformed, so I''m pivoting to a cleaner hypothesis ... This directly
+    targets the distribution shift between our earlier training setup and the actual evaluation prompt." [566]
+    Every fine-tune so far was trained without a system turn, while the benchmark always sends a fixed 10-shot
+    system prompt, so training and evaluation see different distributions ([152], [566]).'
   evidence:
-    - path: /home/ben/task/exp_meta50k_gsm_e2_lr1e5_dev.txt
-      locator: "[559]"
-      observation: "dev_accuracy=0.4805, below the 0.5273 direct GSM8K baseline"
-    - path: /home/ben/task/exp_meta50k_gsm_e2_lr1e5_ckpt226_dev.txt
-      locator: "[556]"
-      observation: "dev_accuracy=0.4609 for the epoch-1 checkpoint"
-    - path: /home/ben/task/exp_full_e3_lr2e5_dev.txt
-      locator: "[293]"
-      observation: "dev_accuracy=0.5273; the strongest clean checkpoint, used as the parent here"
+  - path: '{dir}/exp_meta50k_gsm_e2_lr1e5_dev.txt'
+    locator: '[559], [580]'
+    observation: the curriculum branch's epoch-2 checkpoint scores 0.4805, below the direct-full 0.5273, so the
+      data pivot is closed and prompt conditioning is the remaining lever
+  - path: '{dir}/exp_full_e3_lr2e5_dev.txt'
+    locator: '[590], [596]; rows with correct=0'
+    observation: 'sampling the direct-full dev misses, the agent found "the clean direct model''s failures are
+      mostly arithmetic or reasoning mistakes rather than missing the ANSWER: format", which it read as lowering,
+      not removing, the odds of a prompt-match win'
   affected_share: null
   failure_examples: []
   watch_set: null
-
 hypothesis:
-  claim: >-
-    A short prompt-match polish of the strongest GSM8K-only model - one further
-    epoch with the evaluator's exact 10-shot system prompt included during
-    training - will raise accuracy by removing the distribution shift between the
-    earlier training setup and the actual evaluation prompt [566].
-  mechanism: >-
-    Training in the exact benchmark context teaches the model to solve and then
-    terminate cleanly under that fixed few-shot preamble, instead of continuing
-    to emit further question/answer material that the last-number matcher then
-    grades.
+  claim: '"take the strongest GSM8K-only model and do a short prompt-match polish with the evaluator''s exact
+    few-shot system prompt included during training" [566]; the open question is "whether this extra prompt-alignment
+    epoch buys accuracy or just burns compute" [578].'
+  mechanism: Baking the evaluator's fixed 10-shot system prompt into the training context removes the train/eval
+    distribution shift and, in particular, teaches the model to terminate cleanly in that context - "the official
+    evaluator is sensitive to how generations terminate" ([155], [596]).
   expected_effect:
     metric: accuracy
     direction: higher
     against: exp-02
     magnitude: null
-  falsified_if: null
-
+  falsified_if: '"If it clears the 0.5273 dev baseline from the earlier clean full fine-tune, I''ll replicate
+    the recipe on all GSM8K train for final_model; otherwise I''ll keep the direct full model as the best candidate."
+    [578] - the agent then judged it on the official 25-sample slice instead of dev [700].'
 setup:
   parent_checkpoint:
-    path: /home/ben/task/exp_full_e3_lr2e5
+    path: '{dir}/exp_full_e3_lr2e5'
     origin: exp-02
     hash: null
   data:
-    - path: null
-      source: "openai/gsm8k (config main, split train)"
-      n_examples: null
-      built_by: /home/ben/task/gsm8k_pipeline.py
-      build_command: []
-      selection: >-
-        Same split as exp-01/exp-02/exp-04 (build_train_dev_split, few-shot
-        questions removed, shuffle seed 1234, first 256 held out as dev), but
-        with --include-official-fewshots-system, so every example now carries
-        official_fewshot_system_prompt() - the 10 GSM8K train examples drawn with
-        FEWSHOT_SEED 42 and rendered in the evaluator's own style - as a system
-        turn. Sequence lengths rise to about 2.3k tokens [568]. Built in process,
-        never written to a file.
-      contamination_check: not_run
-      mixture_weight: 1.0
+  - path: null
+    source: 'openai/gsm8k (config: main, split: train)'
+    n_examples: 7207
+    built_by: '{dir}/gsm8k_pipeline.py'
+    build_command: []
+    selection: 'the same held-out split as exp-01/exp-02/exp-04 (7473 - 10 few-shot - 256 dev = 7207 from the
+      script text; 226 steps for 1 epoch at an effective batch of 32 confirms it), but now every example carries
+      a system turn: official_fewshot_system_prompt() concatenates 10 examples drawn from GSM8K train shuffled
+      with FEWSHOT_SEED 42, each rendered "question / Reasoning: / rationale / ANSWER: n". Sequences truncated
+      at --max-length 2560; the agent notes this "pushes sequence lengths into the ~2.3k-token range" [568].'
+    contamination_check: not_run
+    mixture_weight: null
   method:
     family: sft
-    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129) [31]"
-    peft: "none"
+    framework: transformers 4.57.3 Trainer, torch 2.8.0+cu129 (versions printed at [31])
+    peft: none
     hyperparams:
       lr: 5.0e-06
-      epochs: 1
+      epochs: 1.0
       batch_size: 2
       grad_accum: 16
       max_seq_len: 2560
@@ -80,134 +68,118 @@ setup:
       weight_decay: 0.01
       precision: bf16
       seed: null
-      other: >-
-        model-name/dataset-source/mode/lr/epochs/batch_size/grad_accum/max_seq_len
-        and --include-official-fewshots-system from the launch argv. scheduler
-        and precision are hard-coded in train_gsm8k.py; warmup 0.03,
-        weight_decay 0.01, --split-seed 1234 and --dev-size 256 are argparse
-        defaults the launch did not override. The few-shot system prompt uses
-        FEWSHOT_SEED=42 and FEWSHOT_COUNT=10, constants in gsm8k_pipeline.py.
-    target_format: >-
-      templates/gemma3.jinja chat format with a system turn carrying the
-      evaluator's 10 few-shot examples; assistant turn = the GSM8K rationale
-      ending in "ANSWER: n"; prompt and system tokens masked.
+      other: model-name / dataset-source=gsm8k / --include-official-fewshots-system / mode=full / lr / epochs
+        / batch_size / grad_accum / max_seq_len / logging_steps=20 are explicit on the launch argv at [567]. scheduler
+        (cosine), warmup_ratio 0.03, weight_decay 0.01, bf16, optim adamw_bnb_8bit, max_grad_norm 1.0, gradient_checkpointing,
+        save_strategy="epoch", save_total_limit=2 and split_seed 1234 are argparse / TrainingArguments defaults
+        read from {dir}/train_gsm8k.py that this launch did not override. No training seed is set anywhere in
+        the script, so `seed` is null; 1234 is only the data-split seed. The vision tower and multimodal projector
+        are frozen (freeze_non_text_modules). Effective batch is unchanged at 32 (2 x 16) but each step is ~7x
+        slower at 13.4 s because of the long context.
+    target_format: 'templates/gemma3.jinja with three turns: system = the evaluator''s 10-shot block (10 GSM8K-train
+      examples, train shuffled with FEWSHOT_SEED 42, each rendered "question / Reasoning: / rationale / ANSWER:
+      n"), user = the evaluator''s problem wording around the question, assistant = GSM8K rationale + blank line
+      + "ANSWER: <n>". Loss on the assistant tokens only (system and user masked to -100).'
   command:
     argv:
-      - python
-      - train_gsm8k.py
-      - --model-name
-      - exp_full_e3_lr2e5
-      - --dataset-source
-      - gsm8k
-      - --include-official-fewshots-system
-      - --output-dir
-      - exp_full_promptmatch_e1_lr5e6
-      - --mode
-      - full
-      - --epochs
-      - "1"
-      - --batch-size
-      - "2"
-      - --grad-accum
-      - "16"
-      - --max-length
-      - "2560"
-      - --learning-rate
-      - "5e-6"
-      - --logging-steps
-      - "20"
-    cwd: /home/ben/task
-    script: /home/ben/task/train_gsm8k.py
+    - python
+    - train_gsm8k.py
+    - --model-name
+    - exp_full_e3_lr2e5
+    - --dataset-source
+    - gsm8k
+    - --include-official-fewshots-system
+    - --output-dir
+    - exp_full_promptmatch_e1_lr5e6
+    - --mode
+    - full
+    - --epochs
+    - '1'
+    - --batch-size
+    - '2'
+    - --grad-accum
+    - '16'
+    - --max-length
+    - '2560'
+    - --learning-rate
+    - 5e-6
+    - --logging-steps
+    - '20'
+    cwd: '{dir}'
+    script: '{dir}/train_gsm8k.py'
     env: {}
     log: null
   budget:
-    gpu: "1x H100"
+    gpu: 1x H100 (run header; no nvidia-smi output appears in the stream)
     planned_h: null
-
 evaluation:
   protocol:
     command:
-      - python
-      - evaluate.py
-      - --model-path
-      - exp_full_promptmatch_e1_lr5e6
-      - --limit
-      - "25"
-      - --max-connections
-      - "1"
-      - --gpu-memory-utilization
-      - "0.45"
-      - --json-output-file
-      - exp_full_promptmatch_e1_lr5e6_eval25.json
-    dev_set: >-
-      official --limit 25 (the provided evaluator; --max-tokens omitted, so the
-      evaluator's own 4000-token cap applies, which the agent confirmed at [643]
-      always overrides the model's generation config)
+    - python
+    - evaluate.py
+    - --model-path
+    - exp_full_promptmatch_e1_lr5e6
+    - --limit
+    - '25'
+    - --max-connections
+    - '1'
+    - --gpu-memory-utilization
+    - '0.45'
+    - --json-output-file
+    - exp_full_promptmatch_e1_lr5e6_eval25.json
+    dev_set: official --limit 25 (evaluate.py default --max-tokens 4000)
     n: 25
     seed: null
   comparator:
     ref: exp-02
     value: 0.24
-    path: /home/ben/task/exp_full_e3_lr2e5_eval25.json
+    path: '{dir}/exp_full_e3_lr2e5_eval25.json'
   diagnostic:
-    what: >-
-      token-length audit of the GSM8K training encodings, run while this job
-      trained, to rule out truncation at the earlier max_length=768 as the cause
-      of the plateau [616], [629]
-    command: []
+    what: 'a rival explanation for the low-50s plateau, probed while this run trained: whether --max-length 768
+      had been truncating GSM8K training rationales'
+    command:
+    - python
+    - -c
+    - inline script at [627] - tokenise every GSM8K train row through load_tokenizer + encode_supervised_example
+      with the normal (no-system) prompt and report the length percentiles and the counts over 768 / 1024
     path: null
-
 result:
   execution: completed
-  wall_h: 0.843
-  output_checkpoint: /home/ben/task/exp_full_promptmatch_e1_lr5e6
+  wall_h: 0.84
+  output_checkpoint: '{dir}/exp_full_promptmatch_e1_lr5e6'
   training_summary:
     final_loss: 0.156
     steps: 226
-    notes: >-
-      last logged step loss 0.156 (epoch 0.98); trainer-reported mean train_loss
-      0.1573, train_runtime 3036.48 s at 13.4 s/step - far slower per step than
-      the 768-token runs because every example now carries the full few-shot
-      context. timer.sh showed 7:19 remaining just after the launch [575] and
-      6:55 mid-run [663].
+    notes: 226 steps / 1 epoch, train_runtime 3036.48 s (~13.4 s/step under the long context), train_loss 0.1573,
+      last logged step loss 0.156 at epoch 0.98 [697].
   measurements:
-    - metric: accuracy
-      value: 0.36
-      n: 25
-      path: /home/ben/task/exp_full_promptmatch_e1_lr5e6_eval25.json
-      delta_vs_comparator: 0.12
+  - metric: accuracy
+    value: 0.36
+    n: 25
+    path: '{dir}/exp_full_promptmatch_e1_lr5e6_eval25.json'
+    delta_vs_comparator: 0.12
   diagnostic_result:
-    value: null
+    value: 0.0
     path: null
-    notes: >-
-      GSM8K training encodings under the normal (no system prompt) format: p50
-      274, p90 381, p95 418, p99 496, p100 642 tokens, count>768 = 0 [628]. So
-      the earlier max_length=768 runs lost no rationale content and truncation is
-      not the explanation for the plateau [629]. This probes a competing
-      explanation, not the prompt-match mechanism itself.
+    notes: 'no truncation: p50 274, p90 381, p95 418, p99 496, p100 642 tokens, count>768 = 0, count>1024 = 0
+      [628]. The agent: "the earlier max_length=768 runs were not losing rationale content. That narrows the remaining
+      levers to optimization and prompt-conditioning, not context length" [629].'
   watch_set_result: null
   failure: null
-
 conclusion:
   verdict: supported
   mechanism_verdict: not_tested
-  summary: >-
-    Under the official evaluator on the same 25-sample slice, the prompt-matched
-    checkpoint scored 0.360 against 0.240 for its parent - "materially improved
-    the official metric ... from 0.240 to 0.360. That is enough evidence to
-    promote the recipe" [712]. The agent noted beforehand that the parent's dev
-    misses looked like arithmetic errors rather than format failures [596], which
-    lowered its prior on this working, and it was never scored on the local dev
-    split, so the gain rests on 25 official samples (stderr 0.098).
+  summary: One prompt-matched epoch on the clean full checkpoint raised the official 25-sample score from 0.240
+    to 0.360 under identical evaluate.py settings - "The prompt-matched checkpoint materially improved the official
+    metric on 25 samples ... That's enough evidence to promote the recipe" [712]. The mechanism itself was not
+    probed; the one diagnostic run only ruled out truncation as a rival explanation, and the checkpoint was never
+    scored on the 256-item dev split the hypothesis was originally framed against.
   decision: adopt
-  next_step: >-
-    Continue this checkpoint on all GSM8K train data at a lower learning rate to
-    fold in the held-out examples without disturbing the behaviour that improved
-    official scoring, and export that as the final model [712].
-
+  next_step: '"training final_model by continuing this prompt-matched checkpoint on all GSM8K train data at a
+    lower learning rate to fold in the remaining held-out examples without disrupting the behavior that improved
+    official scoring" [712] - carried out as exp-06, with this checkpoint kept as the fallback floor [721].'
 outcome:
   official_accuracy: null
-
 provenance:
   kind: extracted
   run_ref: r-87612f10
@@ -216,19 +188,41 @@ provenance:
     problem: true
     hypothesis: true
   anchors:
-    problem: [152, 155, 566]
-    setup: [566, 567, 568]
-    evaluation: [700, 706]
-    result: [697, 708]
-    conclusion: [596, 705, 712]
+    problem:
+    - 152
+    - 566
+    - 590
+    - 596
+    setup:
+    - 566
+    - 567
+    - 568
+    evaluation:
+    - 643
+    - 700
+    - 701
+    - 706
+    result:
+    - 628
+    - 697
+    - 708
+    conclusion:
+    - 705
+    - 712
   snapshot_files:
-    - train_gsm8k.py
-    - gsm8k_pipeline.py
-    - evaluate.py
-    - exp_full_promptmatch_e1_lr5e6_eval25.json
-    - exp_full_e3_lr2e5_eval25.json
+  - train_gsm8k.py
+  - gsm8k_pipeline.py
+  - evaluate.py
+  - exp_full_promptmatch_e1_lr5e6_eval25.json
+  - exp_full_e3_lr2e5_eval25.json
   smoke_runs: []
-  extractor: claude-opus-5[1m]
+  extractor: claude-opus-5
   unresolved:
-    - "This checkpoint was never scored on the local held-out 256, so it cannot be compared with exp-01 to exp-04 on that protocol; the whole promotion decision rests on a 25-sample official slice with stderr 0.098."
-    - "The comparator's 0.240 was itself only measured at [701], immediately before this checkpoint's eval, so both sit under the evaluator's 4000-token default, but exp-01's 0.440 at [226] does not."
+  - 'The comparator was produced only after this run finished: exp-02 was re-scored officially at [701] with the
+    evaluate.py default --max-tokens 4000, which the agent discovered at [643] differs from the 512 it had used
+    for the LoRA slice at [226]. The 0.240 -> 0.360 comparison is internally consistent at 4000 tokens, but 25
+    samples carry stderr ~0.09-0.10 (recorded in both json files), so +0.12 is about one standard error.'
+  - The stated falsification test - clear 0.5273 on the 256-item dev split [578] - was never run on this checkpoint;
+    the agent switched to the official slice at [700] and never dev-scored the prompt-matched model.
+  - The truncation probe needed three attempts ([613] and [622] raised ImportError / TypeError against gsm8k_pipeline.py
+    before [627] succeeded); its output is only in the stream, not in a workspace file.

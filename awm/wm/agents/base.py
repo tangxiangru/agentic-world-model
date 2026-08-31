@@ -17,7 +17,10 @@ class Brief:
     precedents: list[dict[str, Any]] = field(default_factory=list)
     prediction: dict[str, Any] | None = None
     objections: list[dict[str, Any]] = field(default_factory=list)  # {field, severity: blocking|advisory, fix}
+    evidence: list[dict[str, Any]] = field(default_factory=list)    # agent-supplied {path, locator, observation}
     summary: str = ""
+    produced_by: str = "deterministic"   # deterministic | llm — who actually wrote this
+    degraded: str | None = None          # why an autonomous arm fell back, if it did
 
 
 @dataclass
@@ -36,6 +39,8 @@ class Advice:
     request_evaluators: list[str] = field(default_factory=list)
     recommendation: str | None = None  # continue | abort | select:<obs-id>
     precedents: list[dict[str, Any]] = field(default_factory=list)
+    produced_by: str = "deterministic"   # deterministic | llm
+    degraded: str | None = None
 
 
 class WorldModelAgent:

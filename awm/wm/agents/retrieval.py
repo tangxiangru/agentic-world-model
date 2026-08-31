@@ -16,7 +16,7 @@ class RetrievalAgent(WorldModelAgent):
 
     def on_proposal(self, card, grounding, memory, config) -> Brief:
         brief = super().on_proposal(card, grounding, memory, config)
-        brief.precedents = memory.precedents(card, k=int(config.get("retrieval_k", 5)))
+        brief.precedents = memory.precedents(card, k=int(config.get("retrieval_k", 5)))  # recorded in config.yaml
         if brief.precedents:
             deltas = [p["delta_best_vs_parent"] for p in brief.precedents if p.get("delta_best_vs_parent") is not None]
             tail = ""

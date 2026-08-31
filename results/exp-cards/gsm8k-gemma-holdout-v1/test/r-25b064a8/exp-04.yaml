@@ -1,0 +1,197 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 1.91
+
+problem:
+  statement: >-
+    The stage-1 SFT checkpoint (exp-01) solves the problems and emits
+    "ANSWER: X", but was trained on zero-shot prompts, so in the eval's 10-shot
+    context it keeps generating a new problem after its own answer instead of
+    stopping. The scorer takes the last number in the output, so the score sits
+    at 0.06 - barely above the 0.05 base model.
+  evidence:
+    - path: /home/ben/task/logs/eval_runA_ep2_greedy_l150.json
+      locator: "[373]"
+      observation: "0.06 at --limit 150 under greedy; the sampled run gave the same 0.06, so decoding is not the cause"
+    - path: /home/ben/task/diag.py
+      locator: "[382], [388]"
+      observation: "zero-shot: answer then <end_of_turn>, gen_len 112. 3-shot: answer then a new problem, gen_len 273+"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: null
+      question: null
+      gold: "17"
+      model_output: "'... Out of the 20 ripe oranges, 2 are sour, so there are 20 - 2 = 18 good oranges.\\n\\nANSWER: 18\\n\\nThe number of cars sold by a dealer is twice the number of vans sold, ...'"
+      failure: "answers, then starts a fresh problem instead of stopping; printed from the eval log at [377]"
+    - id: null
+      source: null
+      question: null
+      gold: "400"
+      model_output: "'There are 700/2 = 350 baby bees in the hive ... ANSWER: 700\\n\\nThree people are at a restaurant eating. They share a pizza. ...'"
+      failure: "answers, then continues with another question and its own reasoning"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    One epoch of continued training on few-shot-aware prompts (K=2-10 eval-style
+    example Q&As prepended as a system message) will teach the model to emit
+    <end_of_turn> after its own answer despite the preceding examples, and lift
+    accuracy at --limit 150 well above exp-01's 0.06.
+  mechanism: >-
+    The failure is a context effect, not a math or format failure: the training
+    prompts must contain the same "ANSWER: X then next question" pattern the
+    eval puts in context, while the target still terminates at <end_of_turn>
+    after the model's own answer. Math and format are already learned, so one
+    epoch should be enough.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/runA
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/data/fewshot.jsonl
+      source: "derived:exp-01 inputs - openai/gsm8k (main, train) + meta-math/MetaMathQA GSM types"
+      n_examples: null
+      built_by: /home/ben/task/prep_fewshot.py
+      build_command: [python, prep_fewshot.py, --out, data/fewshot.jsonl, --n-metamath, "18000", --gsm8k-rep, "1", --kmin, "2", --kmax, "10", --max-len, "1600"]
+      selection: >-
+        all contamination-filtered GSM8K-train items plus 18000 MetaMathQA GSM
+        items; K sampled uniformly from 2..10 eval-style example Q&As (raw
+        reasoning, with <<calc>> annotations) prepended as a system message; up
+        to 3 redraws to fit 1600 tokens. Kept/dropped counts were not printed;
+        the agent later described this file as ~23k examples [785].
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 1600
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        Set at launch: --init runs/runA, --attn flash_attention_2,
+        --optim paged_adamw_8bit. From the script text in
+        /home/ben/task/train_sft.py, not overridden: cosine schedule,
+        weight_decay 0.0, seed 42, max_grad_norm 1.0, gradient_checkpointing,
+        group_by_length, bf16, completion-only loss (prompt masked -100);
+        warmup_ratio 0.03 is that script's argparse default.
+    target_format: >-
+      gemma3 chat template with a few-shot system message; assistant turn =
+      reasoning then "ANSWER: <int>" followed by <end_of_turn>.
+  command:
+    argv: [nohup, python, train_sft.py, --out, runs/runB, --init, runs/runA, --data-file, data/fewshot.jsonl, --epochs, "1", --lr, "1e-5", --bs, "8", --accum, "8", --max-len, "1600", --attn, flash_attention_2, --optim, paged_adamw_8bit]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/runB.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 0.83
+
+evaluation:
+  protocol:
+    command: [python, eval_model.py, --model, runs/runB, --decode, greedy, --limit, "150", --tag, runB, --max-connections, "8"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.06
+    path: /home/ben/task/logs/eval_runA_ep2_greedy_l150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/runB
+  training_summary:
+    final_loss: 0.18627429777576077
+    steps: 372
+    notes: "1 epoch, ~80 GB in use, no OOM; last logged losses 0.1764 / 0.1831."
+  measurements:
+    - metric: accuracy
+      value: 0.7
+      n: 150
+      path: /home/ben/task/logs/eval_runB_greedy_l150.json
+      delta_vs_comparator: 0.64
+    - metric: accuracy
+      value: 0.684
+      n: 500
+      path: /home/ben/task/logs/eval_runB_greedy_l500.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.7133333333333334
+      n: 150
+      path: /home/ben/task/logs/eval_runB_default_greedy_l150.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "The few-shot fix worked: 70% (limit 150) and 68.4% (limit 500) - up from
+    the broken 6%" [479], a +0.64 swing over exp-01 under the same --limit 150
+    greedy protocol, from one epoch of continued training. Its weights were
+    copied to final_model as a safety net at [480]; later re-measured at the
+    eval's default settings it gave 0.7133 [764], and it was dropped once the
+    other candidates were compared there.
+  decision: reject
+  next_step: >-
+    Improve on it with rejection-sampling fine-tuning: sample K=8 solutions per
+    GSM8K-train question from this checkpoint, keep the ones whose final answer
+    matches gold, and retrain [483].
+
+provenance:
+  kind: extracted
+  run_ref: r-25b064a8
+  launch_i: 443
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [375, 377, 379, 388]
+    setup: [389, 414, 443]
+    evaluation: [449]
+    result: [477, 764]
+    conclusion: [479, 480]
+  snapshot_files:
+    - prep_fewshot.py
+    - train_sft.py
+    - paths.py
+    - eval_model.py
+    - eval_runB.sh
+    - eval_default.sh
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "An identical 1-epoch command was issued three turns earlier at [432] (exp-03) and never reappears; whether that process ran at all is not stated."
+    - "prep_fewshot.py's kept/dropped counts for data/fewshot.jsonl were never printed."
+    - "The eval helper rewrites the checkpoint's generation_config.json to greedy (temperature 0) before scoring, so the scored artefact differs in decoding config from the one the trainer saved."
+
+outcome:
+  official_accuracy: null

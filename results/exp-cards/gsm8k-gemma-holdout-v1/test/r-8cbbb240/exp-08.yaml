@@ -1,0 +1,210 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 5.75
+
+problem:
+  statement: >-
+    "Restarting GRPO with few-shot prompts so training matches evaluation." [348]
+    The earlier GRPO builds rolled out zero-shot prompts while the eval always
+    presents the question after a few-shot block, so the policy was being
+    optimised on a distribution the grader never uses.
+  evidence:
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-8cbbb240.md
+      locator: "[293] to_row(), [354] to_row()"
+      observation: "the old GRPO prompt had no system block; the rewrite adds fewshot_block(q, k) as a system message"
+    - path: /home/ben/task/eval_fewshot_v2_100.json
+      locator: "accuracy field"
+      observation: "incumbent to beat: 0.590 on 100 items"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    GRPO whose rollout prompts carry the same 5-shot system block the eval uses
+    ("GRPO on GSM8K train with few-shot prompts matching eval", train_grpo.py
+    docstring at [354]) will beat the few-shot SFT checkpoint.
+  mechanism: >-
+    Reward is only informative if the states it scores are the states the eval
+    visits; few-shot rollouts put the policy in the eval's distribution, and the
+    reshaped reward (+0.25 for exactly one ANSWER line, -0.8 for more,
+    +0.2 for stopping right after it, -0.4 over 800 chars) pays directly for
+    stopping.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft_fewshot_v2
+    origin: exp-03
+    hash: null
+  data:
+    - path: "openai/gsm8k train split (7473 rows), mapped in train_grpo.py"
+      source: openai/gsm8k
+      n_examples: 7473
+      built_by: /home/ben/task/train_grpo.py
+      build_command: []
+      selection: >-
+        every train question rendered with a 5-shot system block sampled from the
+        other train questions (rng seeded 42), the eval MATH_PROMPT_TEMPLATE as
+        the user turn, and the gold final answer as the reward target; shuffled
+        with seed 42.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: trl.GRPOTrainer 0.27.2
+    peft: none
+    hyperparams:
+      lr: 5.0e-07
+      epochs: null
+      batch_size: 1
+      grad_accum: 4
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        --max-steps 220, --fewshot 5, num_generations 4,
+        max_completion_length 320; temperature 0.8, top_p 0.95, beta 0.05,
+        warmup_steps 15, max_grad_norm 1.0, save_strategy="no" are constants in
+        train_grpo.py as it stands in the workspace; seed=42 is that script's
+        argparse default and was not overridden. The script forces greedy
+        generation_config on the saved model.
+    target_format: >-
+      free-form completion; reward_correctness pays +1.0 for a normalised match
+      of the first ANSWER line against gold, +0.15 parseable, +0.25 for exactly
+      one ANSWER line, -0.8 for several, -0.4 over 800 chars, +0.2 for ending
+      within 5 characters of the ANSWER line.
+  command:
+    argv:
+      - nohup
+      - python
+      - train_grpo.py
+      - --model
+      - checkpoints/sft_fewshot_v2
+      - --output-dir
+      - checkpoints/grpo_v2
+      - --max-steps
+      - "220"
+      - --fewshot
+      - "5"
+      - --lr
+      - "5e-7"
+      - --num-generations
+      - "4"
+      - --max-completion-length
+      - "320"
+      - --batch-size
+      - "1"
+      - --grad-accum
+      - "4"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {}
+    log: /home/ben/task/logs_grpo_v2.txt
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - checkpoints/grpo_v2_eval
+      - --limit
+      - "100"
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.55"
+      - --json-output-file
+      - eval_grpo_v2_100.json
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.59
+    path: /home/ben/task/eval_fewshot_v2_100.json
+  diagnostic:
+    what: "count of outputs with >1 `ANSWER:` line or over 1000 characters, plus median/max output length"
+    command:
+      - python
+      - "<< 'EOF'"
+      - 'long=sum(1 for s in data["samples"] if s["scores"]["match"].get("explanation","").count("ANSWER:")>1 or len(s["scores"]["match"].get("explanation",""))>1000)'
+      - 'print("median len", sorted(lens)[len(lens)//2], "max", max(lens))'
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.76
+  output_checkpoint: /home/ben/task/checkpoints/grpo_v2
+  training_summary:
+    final_loss: 2.2195709706548687e-05
+    steps: 220
+    notes: >-
+      train_runtime 2751.5s, epoch 0.03, kl 4.06e-04, entropy 0.051,
+      reward_zero_std 0.8, all clip ratios 0.0 [381] - almost no gradient signal
+      left by the end of the run.
+  measurements:
+    - metric: accuracy
+      value: 0.54
+      n: 100
+      path: /home/ben/task/eval_grpo_v2_100.json
+      delta_vs_comparator: -0.05
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/eval_grpo_v2_100.json
+    notes: "long=0, median output length 237 chars, max 930 [387]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "GRPO regressed to 54%" [389]. Matching the training prompts to the eval did
+    not rescue GRPO: under the same --limit 100 it lost 5 points against the SFT
+    checkpoint it started from, with reward_zero_std at 0.8 (most prompt groups
+    giving identical rewards, so little to learn from).
+  decision: reject
+  next_step: >-
+    "Keeping the 59% fewshot SFT and running rejection fine-tuning plus Orca-Math
+    data" [389].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-8cbbb240
+  launch_i: 357
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [348, 354]
+    setup: [354, 355, 357]
+    evaluation: [380, 386]
+    result: [364, 381, 387]
+    conclusion: [389]
+  snapshot_files:
+    - train_grpo.py
+    - prepare_final.py
+    - eval_grpo_v2_100.json
+    - logs_eval_grpo_v2_100.txt
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "logs_grpo_v2.txt is not in the workspace snapshot; the training numbers come from the digest at [381]"
+    - "checkpoints/grpo_v2 was deleted at [390] to free disk"

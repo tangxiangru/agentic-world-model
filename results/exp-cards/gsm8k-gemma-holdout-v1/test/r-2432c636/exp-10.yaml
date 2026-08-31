@@ -1,0 +1,233 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-10
+created_at: null
+elapsed_h: 5.12
+problem:
+  statement: 'The incumbent is good but the stage that produced it was noisy: the 10-shot long-context
+    pass at lr 3e-5 oscillated through its 200 steps, with a rough patch around step 180, so the checkpoint
+    was harvested mid-oscillation rather than at a converged point. Roughly half the time budget is still
+    unspent.'
+  evidence:
+  - path: /home/ben/task/runs/stage6_from_stage5ckpt400_fewshot.log
+    locator: '[1626], [1641], [1648], [1655]'
+    observation: the long-context loss curve oscillates in a tight band and drifts upward around steps
+      170-180 before recovering at 190
+  - path: /home/ben/task/final_model_eval150.json
+    locator: '[1696]'
+    observation: incumbent verified at 0.420 on 150 samples, 0.400 on the 50-sample gate
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: A short, low-risk continuation from the winning few-shot checkpoint that keeps the same 10-shot
+    GSM8K prompt shape and changes only the learning rate (1e-5) and length (80 steps) will sharpen the
+    long-context behaviour without drifting, beating the incumbent's 0.40 on the same 50-sample gate.
+  mechanism: Same evaluation-shaped objective as the stage that produced the gain, but turned into a brief
+    polish rather than another broad update pass, so the adapter settles rather than continuing to oscillate.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-09
+    magnitude: null
+  falsified_if: 'Stated as a gate rather than a threshold: the candidate must clear the existing 0.40
+    on the 50-sample slice, otherwise final_model stays on the incumbent ([1798], [1909]).'
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/stage6_from_stage5ckpt400_fewshot/checkpoint-200
+    origin: exp-09
+    hash: null
+  data:
+  - path: null
+    source: openai/gsm8k (config main, split train)
+    n_examples: 7463
+    built_by: /home/ben/task/scripts/train_gsm8k_sft.py
+    build_command: []
+    selection: full GSM8K train split, one repeat, minus the 10 few-shot prefix items; each example rendered
+      as the evaluator's 10-shot prefix followed by the target problem. --max-steps 80 at 16 examples/step
+      means only ~1280 of them are consumed. No synthetic or MetaMath data.
+    contamination_check: not_run
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer (TRL with SFTConfig; version not printed in the stream)
+    peft: LoRA via peft, resumed as trainable over a 4-bit base; r / alpha / dropout never printed
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: '--fewshot-count 10; --max-steps 80 overrides the 1.0-epoch schedule (0.17 of an epoch);
+        --save-strategy steps --save-steps 80 --save-total-limit 1. The cosine schedule anneals across
+        the 80 steps, so the LR is nearly zero by the end ([1785]). From the SFTConfig text printed in
+        the stream: lr_scheduler_type=cosine, optim=paged_adamw_8bit, bf16=True, gradient_checkpointing=True,
+        completion_only_loss=None.'
+    target_format: 'Gemma turn markers; user turn = 10-shot GSM8K-train prefix followed by the target
+      problem; assistant turn = reasoning ending in `ANSWER: <number>`.'
+  command:
+    argv:
+    - python
+    - -u
+    - scripts/train_gsm8k_sft.py
+    - --output-dir
+    - runs/stage7_from_stage6ckpt200_lowlr80
+    - --resume-adapter
+    - runs/stage6_from_stage5ckpt400_fewshot/checkpoint-200
+    - --use-4bit
+    - --gsm8k-repeat
+    - '1'
+    - --fewshot-count
+    - '10'
+    - --epochs
+    - '1.0'
+    - --max-steps
+    - '80'
+    - --batch-size
+    - '2'
+    - --grad-accum
+    - '8'
+    - --max-length
+    - '2816'
+    - --learning-rate
+    - 1e-5
+    - --logging-steps
+    - '10'
+    - --save-strategy
+    - steps
+    - --save-steps
+    - '80'
+    - --save-total-limit
+    - '1'
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_sft.py
+    env: {}
+    log: /home/ben/task/runs/stage7_from_stage6ckpt200_lowlr80.log
+  budget:
+    gpu: 1x NVIDIA H100 80GB HBM3
+    planned_h: null
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - runs/merged_stage7_lowlr80
+    - --limit
+    - '50'
+    - --max-connections
+    - '1'
+    - --gpu-memory-utilization
+    - '0.4'
+    - --json-output-file
+    - runs/merged_stage7_lowlr80_eval50.json
+    dev_set: official gsm8k test --limit 50 (inspect_evals/gsm8k, fewshot=10, fewshot_seed=42, shuffle_fewshot=True)
+    n: 50
+    seed: 42
+  comparator:
+    ref: exp-09
+    value: 0.4
+    path: /home/ben/task/runs/merged_stage6_ckpt200_eval50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+result:
+  execution: completed
+  wall_h: 0.19
+  output_checkpoint: /home/ben/task/runs/stage7_from_stage6ckpt200_lowlr80/checkpoint-80
+  training_summary:
+    final_loss: null
+    steps: 80
+    notes: Ran the full 80-step cap at ~7.7 s/step. Loss 0.238 at step 10, 0.1775 at 30, 0.1738 at 40,
+      a small bounce at 50, ~0.18 at 60 - "the strongest training signal I've seen from the long-context
+      family so far" ([1761]). No train_runtime / final train_loss line reached the stream. wall_h derived
+      from event timestamps ([1714] t=+5.12h to [1798] t=+5.31h). Merged at [1799], greedy generation
+      config applied at [1801]. Promoted to final_model by an inline shutil.rmtree + copytree of runs/merged_stage7_lowlr80
+      at [1852].
+  measurements:
+  - metric: accuracy
+    value: 0.46
+    n: 50
+    path: /home/ben/task/runs/merged_stage7_lowlr80_eval50.json
+    delta_vs_comparator: 0.06
+  - metric: accuracy
+    value: 0.4933333333333333
+    n: 150
+    path: /home/ben/task/final_model_eval150.json
+    delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: '"Stage7 beat the current selection on the 50-sample gate: 0.46 vs 0.40" ([1847]), and the
+    promoted model then verified at 0.493 (stderr 0.041) on 150 samples ([1930], [1932]) - the run''s
+    best measured result and the model left in final_model. The two later challengers built on this checkpoint
+    both lost the same gate, which the agent took as the signal to stop ([2139]). The +6 pt gate margin
+    is within one stderr (0.071), so the ranking is suggestive rather than tight; the 150-sample verification
+    is the stronger number.'
+  decision: adopt
+  next_step: Two further low-LR continuations from this checkpoint, gated on the same 50-sample slice
+    ([1860], [2077]); both were run and both lost.
+provenance:
+  kind: extracted
+  run_ref: r-2432c636
+  launch_i: 1714
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem:
+    - 1626
+    - 1648
+    - 1696
+    - 1712
+    setup:
+    - 1713
+    - 1714
+    evaluation:
+    - 1799
+    - 1801
+    - 1805
+    - 1852
+    - 1856
+    result:
+    - 1735
+    - 1761
+    - 1766
+    - 1785
+    - 1825
+    - 1930
+    - 1936
+    conclusion:
+    - 1847
+    - 1932
+    - 2139
+    - 2149
+  snapshot_files:
+  - final_model_eval150.json
+  - evaluate.py
+  - contamination_judgement.txt
+  - disallowed_model_judgement.txt
+  smoke_runs: []
+  extractor: reconstructed by an automated extractor; model id omitted per hard rule 5
+  unresolved:
+  - This is the checkpoint left in final_model at the end of the run ([2149]), but the stream never re-verifies
+    the directory contents after [1852], so the submission identity rests on that copy plus the 0.4933
+    verification at [1930].
+  - runs/merged_stage7_lowlr80_eval50.json is not in the workspace snapshot; the 0.46 value is read from
+    the stream ([1825]). final_model_eval150.json is in the snapshot and holds 0.4933, matching this card.
+  - No final training loss or train_runtime line for this run reached the stream.
+  - The workspace holds a run-level contamination_judgement.txt ('no contamination detected') and disallowed_model_judgement.txt
+    ('only allowed use detected'); neither was produced by the agent inside the stream.
+outcome:
+  official_accuracy: 0.44200151630022744

@@ -1,0 +1,201 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The full 267K-example run needed ~6 h of the 10 h budget (5738 steps at
+    ~3.85 s/it), leaving no room for evaluation or a second attempt, so the
+    training set has to be cut down [90,101].
+  evidence:
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-ee7eb0ec.md
+      locator: "[90], [101]"
+      observation: "agent's own step-count and s/it arithmetic on the killed run, and the plan to cut to ~50K examples"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-ee7eb0ec.md
+      locator: "[94], [95]"
+      observation: "timer.sh reported 9:47 of the 10 h budget remaining at this point"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    A much smaller, GSM8K-weighted set (GSM8K train repeated 3x plus 40K
+    MetaMathQA GSM rows, 62419 examples) will train in roughly a third of the
+    time and still teach the eval format and the reasoning [101,102].
+  mechanism: >-
+    "The key insight is that the GSM8K train set is 7473 examples, and we want
+    the model to learn the format and math reasoning", so the target
+    distribution is overweighted rather than diluted by 200K+ MetaMathQA rows
+    [101].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_v3.jsonl
+      source: "HF: openai/gsm8k (main, train) + meta-math/MetaMathQA (train, GSM subset)"
+      n_examples: 62419
+      built_by: /home/ben/task/prepare_data_v3.py
+      build_command:
+        - python3
+        - prepare_data_v3.py
+      selection: >-
+        GSM8K train 7473 rows with <<calc>> annotations stripped, repeated 3x
+        (22419), plus 40000 sampled (seed 42) from the 240000 MetaMathQA rows
+        whose type contains "GSM", answer taken by regex from "The answer
+        is ..."/\boxed{} and that sentence stripped from the reasoning; only
+        numeric answers kept. Average 1101 chars per example. Rendered as gemma3
+        chat text ending in <end_of_turn>, no trailing <eos> [102,104,105].
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 3
+  method:
+    family: sft
+    framework: "trl 0.27.2 SFTTrainer + peft 0.18.1 LoRA (transformers 4.57.3, torch 2.8.0+cu129, bitsandbytes 0.49.1) [21,23]"
+    peft: "QLoRA (4-bit nf4, double quant) r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=True, gradient_checkpointing=True (use_reentrant=False),
+        optim=paged_adamw_8bit, dataloader_num_workers=4, save_steps=500,
+        attn_implementation=eager. The launch passed no arguments; all values are
+        constants inside train_v2.py as written at [107]. The script merges the
+        adapter and writes /home/ben/task/final_model itself.
+    target_format: >-
+      gemma3 chat text; model turn = cleaned reasoning, a blank line, then
+      "ANSWER: <final>", closed by <end_of_turn>
+  command:
+    argv:
+      - python3
+      - train_v2.py
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: 2.3
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - final_model
+      - --limit
+      - "50"
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.9"
+      - --max-tokens
+      - "2048"
+    dev_set: "official --limit 50 (inspect_evals/gsm8k, openai/gsm8k test, 10-shot, match(numeric=True))"
+    n: 50
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.10
+    steps: null
+    notes: >-
+      "Training completed successfully. The loss went from high to 0.10 with 97%
+      token accuracy. The merged model is saved to final_model" [152]. The
+      adapter is at /home/ben/task/sft_output_v2; no step count or runtime for
+      this run is in the stream.
+  measurements:
+    - metric: accuracy
+      value: 0.16
+      n: 50
+      path: /home/ben/task/logs/2026-02-13T03-18-58+01-00_gsm8k_MXxsgQoK2ykfhnJ7K2eaw4.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      Of the 50 items, 8 correct and 42 incorrect [180]; the agent's read is that
+      the wrong ones "give the right answer but then continue generating new
+      questions", and the scorer takes the last answer in the text [181].
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    First scored candidate: 0.16 on 50 items, with no baseline to compare
+    against [174]. The agent diagnosed the dominant failure as the model not
+    stopping - it emits "ANSWER: X" and then starts a fresh question - and blamed
+    packing cross-contamination plus the <<calc>>/#### artifacts left in the
+    targets [178,181].
+  decision: reject
+  next_step: >-
+    Turn packing off, strip <<calc>> and #### from every target and terminate
+    each example with <end_of_turn> + <eos>, then retrain [186,187].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ee7eb0ec
+  launch_i: 109
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [90, 94, 95, 101]
+    setup: [102, 104, 105, 107, 109]
+    evaluation: [158, 171, 173]
+    result: [152, 155, 156, 174, 177, 180]
+    conclusion: [175, 178, 181, 186]
+  snapshot_files:
+    - prepare_data_v3.py
+    - train_v2.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the first evaluation attempt [158] failed because vLLM could not serve final_model; the agent copied preprocessor_config.json and processor_config.json from the base model into final_model [171] and re-ran the identical command [173]. That copy is not carried as its own card - it changed no weights and produced no new candidate."
+    - "no eval_*.json was written for this evaluation (--json-output-file was not passed); the accuracy is only in the printed summary [174] and the inspect log path it names, which is not in the workspace snapshot"
+    - "prepare_data_v2.py / training_data_v2.jsonl (262419 examples, built at [99]) were never used by any launch: train_v2.py reads training_data_v3.jsonl"
+    - "training_data.jsonl from exp-01/exp-02 is not consumed by this launch"

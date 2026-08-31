@@ -1,0 +1,262 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-10
+created_at: null
+elapsed_h: 8.37
+
+problem:
+  statement: >-
+    Weight averaging around the alignment checkpoints does not beat the
+    incumbent - the 50/50 aligned1/aligned2 soup scored 62.0% against
+    aligned_model's 62.62% - so parameter-space tricks alone are not moving the
+    score, and about 1h40 of budget remains.
+  evidence:
+    - path: /home/ben/task/eval_aligned12_a050_full.json
+      locator: "[802], [814]"
+      observation: >-
+        [814] "The soup scored 62.0%, so averaging does not improve the 62.62%
+        first-alignment incumbent."
+    - path: /home/ben/task/eval_aligned1_full.json
+      locator: "[770], [794]"
+      observation: "aligned_model scores 0.62623 on all 1,319 problems"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    [814] "four stochastic solutions per allowed training question, retain one
+    shortest evaluator-valid correct trajectory, then a gentle SFT pass from the
+    incumbent" - training the incumbent on its own verified-correct solutions
+    should raise full-set accuracy.
+  mechanism: >-
+    [766] "filtered self-training on GSM8K's allowed training split ... would
+    train only on model-generated solutions whose final numeric answer matches
+    the training label", reinforcing the model's own correct reasoning paths in
+    its own distribution rather than MetaMath's style. Keeping the shortest
+    correct trajectory "reduces opportunities" for spurious continuation
+    (generate_selftrain.py).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/aligned_model
+    origin: exp-02
+    hash: null
+  data:
+    - path: /home/ben/task/selftrain.jsonl
+      source: "synthetic:self (sampled from aligned_model, questions from openai/gsm8k main train)"
+      n_examples: 6248
+      built_by: /home/ben/task/generate_selftrain.py
+      build_command:
+        - python
+        - generate_selftrain.py
+        - --model
+        - aligned_model
+        - --output
+        - selftrain.jsonl
+        - --candidates
+        - "4"
+        - --temperature
+        - "0.7"
+        - --top-p
+        - "0.95"
+        - --max-tokens
+        - "384"
+        - --seed
+        - "2026"
+      selection: >-
+        4 samples for each of the 7,473 gsm8k train questions (29,892
+        trajectories); 17,769 had a valid correct final number; the single
+        shortest correct trajectory kept per question, leaving 6,248 questions.
+        Prompts fed as exact token ids for the evaluator-aligned prompt to avoid
+        double-BOS or chat-template mismatch [810]. Every retained completion ends
+        in <end_of_turn> [832].
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: rft
+    framework: "transformers.Trainer (Gemma3ForConditionalGeneration, flash_attention_2); vLLM for the sampling pass"
+    peft: none
+    hyperparams:
+      lr: 1.0e-06
+      epochs: 1
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 2026
+      other: >-
+        scheduler/weight_decay/precision/optimizer from train_sft.py's fixed
+        TrainingArguments (cosine, weight_decay=0.0, bf16, tf32,
+        gradient_checkpointing, adamw_torch_fused, max_grad_norm=1.0). Effective
+        batch 16; --num-samples 0 means use the whole JSONL. --save-steps 98
+        wrote quarter/half/three-quarter checkpoints (98, 196, 294) plus the
+        endpoint (391) so the trajectory could be scanned for over-training.
+    target_format: >-
+      prompt_text/completion_text pairs already in the evaluator-aligned form;
+      completion = the retained sampled solution ending
+      "ANSWER: <n><end_of_turn>".
+  command:
+    argv:
+      - python
+      - train_sft.py
+      - --stage
+      - selftrain
+      - --model
+      - aligned_model
+      - --output
+      - selftrained_model
+      - --data-file
+      - selftrain.jsonl
+      - --num-samples
+      - "0"
+      - --max-length
+      - "3072"
+      - --epochs
+      - "1"
+      - --batch-size
+      - "4"
+      - --gradient-accumulation
+      - "4"
+      - --learning-rate
+      - "1e-6"
+      - --warmup-ratio
+      - "0.03"
+      - --save-steps
+      - "98"
+      - --seed
+      - "2026"
+      - --logging-steps
+      - "10"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB (81,559 MiB total)"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - selftrained_model/checkpoint-98
+      - --limit
+      - "-1"
+      - --json-output-file
+      - eval_selftrain_98_full.json
+      - --max-connections
+      - "16"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.45"
+    dev_set: "official --limit -1 (all 1,319)"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.6262319939347991
+    path: /home/ben/task/eval_aligned1_full.json
+  diagnostic:
+    what: >-
+      trajectory scan: score the quarter- and half-epoch checkpoints to see
+      whether self-training degrades monotonically rather than helping at some
+      dose
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - selftrained_model/checkpoint-196
+      - --limit
+      - "-1"
+      - --json-output-file
+      - eval_selftrain_196_full.json
+    path: /home/ben/task/eval_selftrain_196_full.json
+
+result:
+  execution: completed
+  wall_h: 0.44
+  output_checkpoint: /home/ben/task/selftrained_model
+  training_summary:
+    final_loss: 0.16982075324296342
+    steps: 391
+    notes: >-
+      train_runtime 1594.96 s, 3.917 samples/s, peak 61.0 GiB allocated [856].
+      Checkpoints 98, 196, 294 and 391 all written [858]; only 98 and 196 were
+      ever evaluated.
+  measurements:
+    - metric: accuracy
+      value: 0.6171341925701289
+      n: 1319
+      path: /home/ben/task/eval_selftrain_98_full.json
+      delta_vs_comparator: -0.0090978013646702
+    - metric: accuracy
+      value: 0.6118271417740713
+      n: 1319
+      path: /home/ben/task/eval_selftrain_196_full.json
+      delta_vs_comparator: -0.0144048521607278
+  diagnostic_result:
+    value: 0.6118271417740713
+    path: /home/ben/task/eval_selftrain_196_full.json
+    notes: >-
+      [875] "confirming monotonic degradation from 62.62% -> 61.7% -> 61.2% as
+      self-training increases"; the 294 and 391 checkpoints were dropped without
+      evaluation on that basis.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    [865] "The quarter self-training checkpoint scores 61.7%, below the 62.62%
+    incumbent by roughly twelve problems", and the half checkpoint is lower
+    still: accuracy falls monotonically with self-training dose, so training on
+    its own verified-correct solutions makes this model worse, not better.
+  decision: reject
+  next_step: >-
+    Test a much smaller interpolated self-training update - a quarter of the
+    quarter-checkpoint displacement, about 6.25% of an epoch - and abandon the
+    line unless it beats the incumbent [875].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-11ba81b6
+  launch_i: 835
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [766, 794, 814]
+    setup: [815, 818, 824, 831, 832, 835]
+    evaluation: [860, 866]
+    result: [841, 845, 849, 852, 856, 858, 863, 873]
+    conclusion: [865, 875]
+  snapshot_files:
+    - train_sft.py
+    - generate_selftrain.py
+    - evaluate.py
+    - selftrain.jsonl.stats.json
+    - eval_selftrain_98_full.json
+    - eval_selftrain_196_full.json
+    - eval_aligned1_full.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "selftrained_model (the endpoint) and checkpoint-294 were never evaluated, so the bottom of the degradation curve is unmeasured."
+    - "selftrain.jsonl itself is not in the workspace snapshot; only selftrain.jsonl.stats.json survives."

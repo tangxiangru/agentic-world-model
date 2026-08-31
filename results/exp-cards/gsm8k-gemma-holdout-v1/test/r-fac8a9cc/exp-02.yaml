@@ -1,0 +1,208 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 2.05
+
+problem:
+  statement: >-
+    After the first SFT pass the formatting failure is solved but the remaining
+    errors are mathematical, and a second pass over the same OpenMath shards
+    would only add alternate solutions to problems already seen rather than new
+    problem formulations.
+  evidence:
+    - path: /home/ben/task/eval_step4000_50.json
+      locator: "[381], accuracy 0.48 (n=50) vs 0.46 at step 2,000"
+      observation: >-
+        agent: "The gain is real but modest relative to added tokens, confirming
+        that the 59k new formulations in the unique reserve are more valuable
+        than another pass over alternate solutions."
+    - path: /home/ben/task/eval_run1_150.json
+      locator: "[437], accuracy 0.6533 (n=150)"
+      observation: "the incumbent to beat is 65.3% on the 150-item screen"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A second LoRA SFT pass at a lower peak learning rate (1e-4) on a
+    diversity-focused corpus of 72,939 *distinct*, answer-verified OpenMath
+    problems from later shards, plus safe GSM8K-train anchors, will beat the
+    65.3% first-stage model. (agent, [437]: "I'm now starting the
+    diversity-focused second pass on 72,939 distinct, answer-verified synthetic
+    problems plus safe GSM8K-train anchors.")
+  mechanism: >-
+    The remaining failures are reasoning failures, so new problem formulations
+    should help more than more solutions for problems the model has already
+    seen; the corpus was audited to have every parseable boxed answer match its
+    structured expected answer ([417]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: >-
+    agent, [675]: "only if the completed second stage beats 65.3% will it become
+    the base for verifier-guided training; otherwise that refinement starts from
+    the stronger first-stage checkpoint."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/run1_sft/model
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/data_sft_unique
+      source: >-
+        HF nvidia/OpenMathInstruct-2 shards 8-15 (unique problems only) +
+        openai/gsm8k (main, train) x2
+      n_examples: null
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --output-dir, data_sft_unique, --openmath-limit, "100000", --orca-limit, "0", --openmath-start-shard, "8", --openmath-shards, "8", --gsm-repeats, "2", --block-size, "1024", --packing-mode, best_fit, --unique-openmath-problems, --seed, "141421"]
+      selection: >-
+        later OpenMath shards only (start-shard 8) with --unique-openmath-problems
+        so each problem appears once, no Orca, GSM8K-train repeated twice, same
+        test-question decontamination and best-fit packing as exp-01. Agent at
+        [437]: "72,939 distinct, answer-verified synthetic problems plus safe
+        GSM8K-train anchors"; at [417]: "72,578/72,578 parseable final boxed
+        results exactly match the structured expected answer, and 99.98% of all
+        solutions restate that answer in their final 400 characters".
+        EXPERIMENTS.md puts the packed size at 29.6M tokens. The build report
+        for this directory is not printed in the digest.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: >-
+      same custom loop as exp-01 (train_sft.py: transformers + peft LoRA,
+      flash_attention_2, gradient checkpointing, fused AdamW, liger_kernel
+      fused_linear_cross_entropy)
+    peft: >-
+      LoRA r=64 alpha=128 dropout=0.05 targets=all 238 language-model
+      projections; a fresh adapter over the merged exp-01 weights
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: "cosine to a floor of 0.1x peak (min_lr_ratio 0.1)"
+      warmup: "80 steps"
+      weight_decay: 0.01
+      precision: bf16 (tf32 matmuls enabled)
+      seed: 271828
+      other: >-
+        --model-path run1_sft/model, --lr 1e-4, --epochs 1, --micro-batch-size 4,
+        --grad-accum 2, --warmup-steps 80, --log-steps 50, --save-steps 2000 are
+        on the command line at [438]. block-size 1024, min-lr-ratio 0.1,
+        weight-decay 0.01, lora-rank 64, lora-alpha 128, lora-dropout 0.05 and
+        seed 271828 are train_sft.py argparse defaults (workspace copy) that this
+        launch did NOT override.
+    target_format: >-
+      identical to exp-01: evaluator prompt template, response ending in
+      "ANSWER: n" plus end-of-turn, prompt tokens masked, 1024-token packed blocks
+  command:
+    argv: [python, train_sft.py, --model-path, run1_sft/model, --data-dir, data_sft_unique, --output-dir, run2_unique, --epochs, "1", --micro-batch-size, "4", --grad-accum, "2", --lr, "1e-4", --warmup-steps, "80", --log-steps, "50", --save-steps, "2000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/run2_unique/train_log.jsonl
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, run2_unique/model, --limit, "150", --max-connections, "24", --max-tokens, "1024", --gpu-memory-utilization, "0.55", --json-output-file, eval_run2_150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.6533333333333333
+    path: /home/ben/task/eval_run1_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.15
+  output_checkpoint: /home/ben/task/run2_unique/model
+  training_summary:
+    final_loss: null
+    steps: 3790
+    notes: >-
+      run2_unique/train_log.jsonl: starting loss 0.23-0.25 versus 0.95 from the
+      pretrained checkpoint ([443]), 0.245 at step 700, 0.239 at 2,300, 0.226 at
+      2,800; total_steps 3,790; throughput ~7.6k tokens/s; 12.5 GB peak. The
+      step-2,000 adapter was merged onto run1_sft/model at [479]. The final loss
+      value is not printed in the digest.
+  measurements:
+    - metric: accuracy
+      value: 0.58
+      n: 50
+      path: /home/ben/task/eval_run2_step2000_50.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.6266666666666667
+      n: 150
+      path: /home/ben/task/eval_run2_150.json
+      delta_vs_comparator: -0.0266666666666666
+    - metric: accuracy
+      value: 0.624715693707354
+      n: 1319
+      path: /home/ben/task/eval_run2_all_1319.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Under the identical --limit 150 protocol the second pass scored 62.7% against
+    the first stage's 65.3%, a 2.7-point regression the agent called "real"
+    ([685]); the step-2,000 midpoint was also below the parent on the fixed
+    50-item slice (58% vs 66%). A late full-set re-check at --limit 1319 put it
+    at 62.47% versus the parent's 61.94%, i.e. the ranking reversed once the
+    prefix optimism was removed, but the agent had already rejected it.
+  decision: reject
+  next_step: >-
+    agent at [685]: "I'm starting verifier-guided refinement from the first-stage
+    model, using only safe GSM8K training prompts and exact numeric rewards."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-fac8a9cc
+  launch_i: 438
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [381, 417, 422, 437]
+    setup: [312, 438]
+    evaluation: [487, 682, 1291]
+    result: [443, 463, 466, 468, 485, 499, 522, 615, 633, 683, 1293, 1295]
+    conclusion: [499, 675, 685, 1292]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data.py
+    - merge_adapter.py
+    - finalize_assets.py
+    - evaluate.py
+    - eval_run2_step2000_50.json
+    - eval_run2_150.json
+    - eval_run2_all_1319.json
+    - eval_run1_150.json
+    - EXPERIMENTS.md
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "prepare_data.py at [312] printed no report block in the digest, so the exact example and token counts of data_sft_unique are only in the agent's prose ([417], [437]) and EXPERIMENTS.md."
+    - "The 150-item and 1319-item comparisons disagree in sign (-2.7 pts at n=150, +0.5 pts at n=1319); the card follows the --limit 150 comparison the agent actually decided on."

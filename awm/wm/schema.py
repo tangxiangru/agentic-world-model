@@ -37,7 +37,7 @@ CARD_DECISIONS = ("adopt", "reject", "iterate", "abandon_line")
 EXECUTIONS = ("completed", "failed", "killed", "not_run")
 VERDICTS = ("supported", "contradicted", "inconclusive")
 METHOD_FAMILIES = ("sft", "rft", "dpo", "grpo", "distill", "merge", "decode-config", "other")
-ARMS = ("null", "retrieval", "llm", "predictor")
+ARMS = ("null", "retrieval", "llm", "traj", "predictor")
 
 HOOK_CONTINUE = 0
 HOOK_YIELD = 3

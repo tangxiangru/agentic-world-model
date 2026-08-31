@@ -1,0 +1,218 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 2.39
+
+problem:
+  statement: >-
+    Training and evaluation see different prompt geometry. The evaluator always
+    prepends a 10-shot GSM8K-train prefix, measured at 2172-2286 tokens
+    (mean 2207) on the first 200 train items, while every training pass so far
+    used a zero-shot prompt with a 768-1024 token window. The agent named prompt
+    mismatch, not raw capacity, as the likely remaining failure mode.
+  evidence:
+    - path: /home/ben/task/runs/merged_template20k_then_gsm8k_stage2_eval50.json
+      locator: "[609]"
+      observation: "incumbent at 0.22 on 50 samples, well below what the agent expected of a 4B model"
+    - path: null
+      locator: "[638], [639], [641]"
+      observation: >-
+        eval-style 10-shot prompt measured at min 2172 / max 2286 / mean 2207.16
+        tokens over 200 GSM8K-train items, so a 1024-token training window would
+        silently truncate the very prefix being taught
+    - path: /home/ben/task/logs/2026-04-06T18-49-49+02-00_gsm8k_i7XgkNzix3u6EDxwJJFcbM.json
+      locator: "[620], [621], [622]"
+      observation: >-
+        remaining failures are arithmetic reasoning errors rather than
+        formatting, so output control is no longer the binding constraint
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Continuing the incumbent adapter on GSM8K-train rendered inside the
+    evaluator's exact 10-shot prefix, with a 2560-token window that fits the
+    whole prompt, will raise 50-sample accuracy above the incumbent's 0.22 by
+    teaching the model to operate under the prompt length and layout it actually
+    sees at evaluation.
+  mechanism: >-
+    The earlier 1k-token GSM8K pass never saw the long few-shot prefix, so the
+    model has to generalise across a large prompt-shape shift at eval time;
+    training on the real geometry removes that shift.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: >-
+    Stated only as a decision rule, not a threshold: "if it doesn't move the
+    needle enough ... treat it as evidence that arithmetic coverage matters more
+    than prompt-length matching" ([699]); the branch would be discarded and the
+    short-context stage-2 adapter kept as the trunk ([757]).
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/template20k_then_gsm8k_stage2
+    origin: exp-03
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: 7463
+      built_by: /home/ben/task/scripts/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        full GSM8K train split, one repeat, minus the 10 items drawn as the
+        few-shot prefix (build_fewshot_prefix shuffles openai/gsm8k train with
+        seed 42 and selects 10; those questions are excluded from the training
+        set). Each example is rendered as the 10-shot prefix followed by the
+        target problem, so training prompts match the evaluator's shape.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (TRL with SFTConfig; version not printed in the stream)"
+    peft: "LoRA via peft, resumed as trainable over a 4-bit base; r / alpha / dropout never printed"
+    hyperparams:
+      lr: 5.0e-05
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --fewshot-count 10 (few-shot prefix built with fewshot_seed, whose
+        default value is not in the stream). From the SFTConfig text printed in
+        the stream: lr_scheduler_type=cosine, optim=paged_adamw_8bit, bf16=True,
+        gradient_checkpointing=True, completion_only_loss=None.
+    target_format: >-
+      Gemma turn markers; user turn = 10-shot GSM8K-train prefix (each example
+      "question / Reasoning: ... / ANSWER: n") followed by the target problem;
+      assistant turn is the reasoning ending in `ANSWER: <number>`.
+  command:
+    argv:
+      - python
+      - scripts/train_gsm8k_sft.py
+      - --output-dir
+      - runs/template20k_then_gsm8k_then_fewshot_stage3
+      - --resume-adapter
+      - runs/template20k_then_gsm8k_stage2
+      - --use-4bit
+      - --gsm8k-repeat
+      - "1"
+      - --fewshot-count
+      - "10"
+      - --epochs
+      - "1.0"
+      - --batch-size
+      - "2"
+      - --grad-accum
+      - "8"
+      - --max-length
+      - "2560"
+      - --learning-rate
+      - "5e-5"
+      - --logging-steps
+      - "10"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.0
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/merged_template20k_then_gsm8k_then_fewshot_stage3
+      - --limit
+      - "50"
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.5"
+      - --json-output-file
+      - runs/merged_template20k_then_gsm8k_then_fewshot_stage3_eval50.json
+    dev_set: "official gsm8k test --limit 50 (inspect_evals/gsm8k, fewshot=10, fewshot_seed=42, shuffle_fewshot=True)"
+    n: 50
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.22
+    path: /home/ben/task/runs/merged_template20k_then_gsm8k_stage2_eval50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.0
+  output_checkpoint: /home/ben/task/runs/template20k_then_gsm8k_then_fewshot_stage3
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No train_runtime / train_loss line reached the stream; the trainer's
+      progress bar swallowed the intermediate prints ([696]). Late-run loss was
+      reported by the agent as "stable ... around 0.31 to 0.34" ([817], [829]).
+      wall_h is derived from event timestamps (launch [642] t=+2.39h to
+      completion [829] t=+3.40h), not from a printed runtime. Merged at [832],
+      greedy generation config applied at [836].
+  measurements:
+    - metric: accuracy
+      value: 0.28
+      n: 50
+      path: /home/ben/task/runs/merged_template20k_then_gsm8k_then_fewshot_stage3_eval50.json
+      delta_vs_comparator: 0.06
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "The few-shot branch beat the short-context stage on the same 50-sample
+    slice, moving from 0.22 to 0.28" ([846]), so long-context exposure to the
+    evaluator's real prompt geometry is worth keeping in the recipe. +6 pts on
+    50 samples is inside one stderr (0.064), which the agent acknowledged as a
+    risk of noisy 50-sample results ([729]) but treated as sufficient to keep the
+    branch as the trunk.
+  decision: adopt
+  next_step: >-
+    A much larger arithmetic-focused TemplateGSM continuation from this adapter,
+    then re-specialise on GSM8K ([846]); the visible failures are still low-level
+    math mistakes rather than formatting or prompt shape ([689], [770]).
+
+provenance:
+  kind: extracted
+  run_ref: r-2432c636
+  launch_i: 642
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [551, 556, 609, 622, 637, 638, 639]
+    setup: [569, 570, 641, 642]
+    evaluation: [832, 836, 841]
+    result: [817, 829, 843, 1078]
+    conclusion: [699, 757, 846]
+  snapshot_files: []
+  smoke_runs: []
+  extractor: "reconstructed by an automated extractor; model id omitted per hard rule 5"
+  unresolved:
+    - "No optimizer-step count or final training loss for this run reached the stream."
+    - "runs/merged_template20k_then_gsm8k_then_fewshot_stage3_eval50.json is not in the workspace snapshot; the 0.28 value is read from the stream ([843], [1078])."
+    - "fewshot_seed is an argparse default whose value is not in the stream, so the identity of the 10 excluded few-shot items is not recoverable from this card."

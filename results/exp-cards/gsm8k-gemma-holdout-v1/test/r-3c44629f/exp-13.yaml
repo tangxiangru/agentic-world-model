@@ -1,0 +1,151 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-13
+created_at: null
+elapsed_h: 5.99
+
+problem:
+  statement: >-
+    The winning GRPO run's reward peaked mid-run rather than at the end, so the 200-step
+    final model may not be the best point on its own trajectory - "grpo_v4's reward
+    peaked mid-run, so an intermediate may beat the 200-step final" [1343].
+  evidence:
+    - path: /home/ben/task/logs/grpo_v4.log
+      locator: "[1231]"
+      observation: >-
+        the reward trajectory rises to 0.918/0.914 around the middle of the run and
+        settles slightly lower (0.84-0.88) towards step 200
+    - path: /home/ben/task/runs/final_model_1000.json
+      locator: "[1376]"
+      observation: "the 200-step final model scores 0.702 on 1000 items (stderr 0.014) - the number an intermediate has to beat"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Merging the step-125 adapter checkpoint of the winning GRPO run into its base and
+    evaluating it will show whether the peak of the reward trajectory scores higher than
+    the 200-step endpoint - "cheap insurance for a higher peak" [1351].
+  mechanism: >-
+    GRPO checkpoints are LoRA adapters over ckpt/sft_rft1 ([1345]), so any step can be
+    reconstituted as a full model by merging; the merge runs on CPU while the GPU is
+    busy with the eval of the incumbent.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-11
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/grpo_v4/checkpoint-125
+    origin: exp-10
+    hash: null
+  data: []
+  method:
+    family: merge
+    framework: "transformers + peft PeftModel.merge_and_unload (CPU merge; no training)"
+    peft: "LoRA r=32 adapter from ckpt/grpo_v4/checkpoint-125, base_model_name_or_path = ckpt/sft_rft1 [1345]"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        Merges the step-125 adapter into the exp-04 checkpoint (ckpt/sft_rft1), writes a
+        valid greedy GenerationConfig on the model, saves, then writes the vLLM-facing
+        generation_config.json (do_sample false, temperature 0.0, top_p 1.0, top_k -1)
+        and copies the base preprocessor/processor configs, per the merge script as
+        written at [895].
+    target_format: null
+  command:
+    argv: [nohup, python, src/merge_adapter.py, ckpt/sft_rft1, ckpt/grpo_v4/checkpoint-125, ckpt/grpo_v4_ck125]
+    cwd: /home/ben/task
+    script: /home/ben/task/src/merge_adapter.py
+    env: {}
+    log: /home/ben/task/logs/merge_ck125.log
+  budget:
+    gpu: "CPU only (run while the GPU was occupied by the exp-11 eval) [1351]"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/grpo_v4_ck125, --limit, "1000", --max-connections, "16", --max-tokens, "700", --gpu-memory-utilization, "0.55", --json-output-file, runs/ck125_1000.json]
+    dev_set: "official --limit 1000"
+    n: 1000
+    seed: null
+  comparator:
+    ref: exp-11
+    value: 0.702
+    path: /home/ben/task/runs/final_model_1000.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/ckpt/grpo_v4_ck125
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "\"MERGED ckpt/grpo_v4/checkpoint-125 -> ckpt/grpo_v4_ck125\", 2 safetensors shards written [1363]."
+  measurements:
+    - metric: accuracy
+      value: 0.707
+      n: 1000
+      path: /home/ben/task/runs/ck125_1000.json
+      delta_vs_comparator: 0.005
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The mid-run checkpoint merged cleanly and scored 0.707 on 1000 items against the
+    endpoint's 0.702 under the same protocol - "tied within noise. Both solid" [1394],
+    with the eval's own stderr (0.014) wider than the 0.005 gap. Checkpoint-hunting
+    inside the winning run was dropped.
+  decision: reject
+  next_step: >-
+    Change what GRPO does rather than which step of it is taken: run it with num_gen=16
+    for cleaner group-relative advantages ([1406]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-3c44629f
+  launch_i: 1352
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [1231, 1343, 1344, 1345]
+    setup: [895, 1352]
+    evaluation: [1377, 1381]
+    result: [1363, 1394]
+    conclusion: [1394, 1406]
+  snapshot_files:
+    - results.md
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      Only checkpoint-125 was ever merged and evaluated; the other seven adapter
+      checkpoints of the winning run were left untested.
+    - >-
+      runs/ck125_1000.json is not in the workspace snapshot; 0.707 is the value read at
+      [1394] and logged in results.md.

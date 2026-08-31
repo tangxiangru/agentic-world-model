@@ -5,57 +5,60 @@ elapsed_h: 1.27
 
 problem:
   statement: >-
-    The incumbent now follows the format but only reaches 59.3%. Its errors are genuine
-    reasoning mistakes, and they are made worse by the eval's decoding: the eval harness
-    omits temperature, so vLLM falls back to the checkpoint's generation_config.json, which
-    has do_sample=true / top_k=64 / top_p=0.95 - i.e. sampling at roughly temperature 1.0,
-    which both adds noise (~3-4% stderr) and costs accuracy.
+    The eval never passes a temperature, so vLLM falls back to the checkpoint's
+    generation_config.json - do_sample=true, top_k=64, top_p=0.95 - and samples
+    at roughly temperature 1.0 [220]. v1's wrong answers are formatted correctly
+    but arithmetically wrong, which sampling noise can only make worse [413].
   evidence:
     - path: /home/ben/task/logs/v1_metrics.json
       locator: "[409]"
-      observation: "v1 accuracy 0.593 at --limit 150"
-    - path: /home/ben/task/logs
+      observation: "accuracy 0.593 on 150 samples under the checkpoint's sampling generation_config"
+    - path: /home/ben/task/logs/
       locator: "[411]"
-      observation: "4 of the incorrect samples printed: format is correct, the arithmetic or the plan is not"
+      observation: "4 wrong items printed: format is clean (reasoning then ANSWER: X) but the arithmetic or the plan is wrong"
   affected_share: null
   failure_examples:
     - id: null
-      source: /home/ben/task/logs
+      source: /home/ben/task/logs/
+      question: "A basket contains 25 oranges among which 1 is bad, 20% are unripe, 2 are sour and the rest are good. How many oranges are good?"
+      gold: "17"
+      model_output: |-
+        There are 5 oranges that are unripe, so the total number of oranges that are either bad, unripe, or sour is 1 + 5 + 2 = 8 oranges.\nTherefore, the number of good oranges is 2
+      failure: "truncates/garbles the final subtraction; last number is 2"
+    - id: null
+      source: /home/ben/task/logs/
       question: null
       gold: "400"
-      model_output: "... Combining like terms, we get 5.5x = 700\nDividing both sides by 5.5, we get x = 128\nTherefore, there are 2x = 2 * 128 = 256 worker bees.\n\nANSWER: 256"
-      failure: "clean format, wrong equation setup: 700/5.5 = 128 and the answer 256 instead of 400"
+      model_output: |-
+        y bees, the number of worker bees is 2x.\nThe total number of bees is given as 700, so we can set up the equation: x + x/2 + 2x + x/2 = 700\nCombining like terms, we get 5.5x = 700\nDividing both sides by 5.5, we get x = 128\nTherefore, there are 2x = 2 * 128 = <<2*128=256>>256 worker bees.\n\nANSWER: 256
+      failure: "sets up the wrong equation and mis-divides (700/5.5 is not 128)"
     - id: null
-      source: /home/ben/task/logs
+      source: /home/ben/task/logs/
       question: null
       gold: "50"
-      model_output: "... leaving 105 + 15 = 120 cookies to be divided between the two years.\nTwice the number of cookies from the previous year's competition is 120 / 2 = 60 cookies.\nSince Henry dropped 5 cookies, that means he had 60 + 5 = 65 cookies baked last year.\n\nANSWER: 65"
-      failure: "clean format, mis-modelled the relation between the two years; answers 65 instead of 50"
+      model_output: |-
+        s goal, leaving 105 + 15 = <<105+15=120>>120 cookies to be divided between the two years.\nTwice the number of cookies from the previous year's competition is 120 / 2 = <<120/2=60>>60 cookies.\nSince Henry dropped 5 cookies, that means he had 60 + 5 = <<60+5=65>>65 cookies baked last year.
+      failure: "misreads the relation between the two years; answer 65 instead of 50"
     - id: null
-      source: /home/ben/task/logs
+      source: /home/ben/task/logs/
       question: null
       gold: "30"
-      model_output: "... $1,000,000 / 100 = $10,000.\nTherefore, the value of each car in the fleet is $10,000.\n\nANSWER: 10000\n\nThe total cost of the cars in the fleet is $1,000,000, and there are 100 cars in the fleet."
-      failure: "answers the wrong quantity and then keeps talking after the ANSWER line"
-    - id: null
-      source: /home/ben/task/logs
-      question: null
-      gold: "17"
-      model_output: "... There are 5 oranges that are unripe, so the total number of oranges that are either bad, unripe, or sour is 1 + 5 + 2 = 8 oranges.\nTherefore, the number of good oranges is 2"
-      failure: "truncated/derailed final step; the last number the scorer sees is 2"
+      model_output: |-
+        are 100 cars in the fleet.\nTo find the value of each car, we divide the total cost by the number of cars: $1,000,000 / 100 = $10,000.\nTherefore, the value of each car in the fleet is $10,000.\n\nANSWER: 10000\n\nThe total cost of the cars in the fleet is $1,000,000, and there are 100 cars in the fleet.
+      failure: "answers a different question, and keeps talking after ANSWER: so the scorer reads a later number"
   watch_set: null
 
 hypothesis:
   claim: >-
-    Rewriting generation_config.json to greedy decoding (do_sample=false, temperature=0.0,
-    top_k=1, top_p=1.0) will remove the sampling noise the eval otherwise inherits and raise
-    accuracy over v1's sampled 59.3% at the same --limit.
+    "I could potentially set `generation_config.json` to greedy decoding to
+    reduce variance and boost accuracy - I'll test that trick after v1" [220];
+    greedy decoding of runs/v1 will score higher than the same checkpoint
+    sampled at temperature ~1.0 on the same 150-sample slice.
   mechanism: >-
-    "vLLM (default generation_config='auto') reads sampling defaults from
-    generation_config.json when the request omits them. inspect-ai omits temperature, so
-    setting temperature=0.0 here makes eval use greedy decoding" [230] - the model then takes
-    its argmax chain instead of a sampled one, so a single noisy token can no longer derail
-    an otherwise correct solution.
+    vLLM (generation_config='auto') reads sampling defaults from the model
+    directory's generation_config.json when the request omits them, and the eval
+    omits temperature; writing do_sample=false, temperature=0.0, top_k=1 there
+    makes the grader decode greedily without touching the weights [230].
   expected_effect:
     metric: accuracy
     direction: higher
@@ -71,7 +74,7 @@ setup:
   data: []
   method:
     family: decode-config
-    framework: "vLLM decode defaults read from generation_config.json; variant produced by /home/ben/task/make_greedy.py"
+    framework: "make_greedy.py (symlinks the weight/tokenizer files, rewrites generation_config.json only)"
     peft: "none"
     hyperparams:
       lr: null
@@ -85,10 +88,9 @@ setup:
       precision: null
       seed: null
       other: >-
-        No training. make_greedy.py symlinks every file of runs/v1 into runs/v1_greedy and
-        writes a real generation_config.json with do_sample=false, temperature=0.0,
-        top_k=1, top_p=1.0, eos_token_id=[1, 106], pad_token_id=0, bos_token_id=2 [415].
-        The weights are byte-identical to exp-01's.
+        no training. runs/v1_greedy holds symlinks to runs/v1's weights plus a
+        real generation_config.json with do_sample=false, temperature=0.0,
+        top_k=1, top_p=1.0, eos_token_id=[1, 106] [415].
     target_format: null
   command:
     argv: [python, make_greedy.py, runs/v1, runs/v1_greedy]
@@ -97,7 +99,7 @@ setup:
     env: {}
     log: null
   budget:
-    gpu: "1x NVIDIA H100 80GB HBM3"
+    gpu: "one NVIDIA H100 80GB HBM3"
     planned_h: null
 
 evaluation:
@@ -117,12 +119,11 @@ evaluation:
 
 result:
   execution: completed
-  wall_h: null
+  wall_h: 0.0
+  duration_h: 0.0
+  steps: null
   output_checkpoint: /home/ben/task/runs/v1_greedy
-  training_summary:
-    final_loss: null
-    steps: null
-    notes: "No training; only generation_config.json was rewritten, every other file is a symlink to runs/v1."
+  training_summary: {final_loss: null, steps: null, notes: "config-only variant; the weights are runs/v1 unchanged"}
   measurements:
     - metric: accuracy
       value: 0.6133333333333333
@@ -137,15 +138,20 @@ conclusion:
   verdict: supported
   mechanism_verdict: not_tested
   summary: >-
-    "Greedy v1: 61.3% vs sampling 59.3% - only +2%, so decoding isn't the bottleneck;
-    reasoning capability is" [426]. The greedy setting held up and was reused as the decode
-    configuration for every later evaluation and for the submitted model, but this
-    checkpoint itself was dropped in favour of the next training run.
-  decision: reject
+    Greedy decoding of the same weights scored 0.613 against 0.593 sampled, on
+    the same 150-sample slice - the predicted direction, though +2.0 pts sits
+    inside the reported stderr of ~4.0. The agent read it as "only +2%, so
+    decoding isn't the bottleneck; reasoning capability is" [426], and kept
+    greedy as the decode setting for every later evaluation and for the
+    submission.
+  decision: adopt
   next_step: >-
-    Keep greedy decoding as the standing decode setting; attack reasoning instead - scale
-    MetaMath data ~2.3x to ~85K and add few-shot-augmented examples that mirror the eval's
-    10-shot prompt structure, keeping 2 epochs [426], [440].
+    "I need better/more data. Plan for Run 2: (1) scale up MetaMath data ~2.5x,
+    (2) add few-shot-augmented examples so the model better matches the eval's
+    10-shot prompt structure, (3) keep 2 epochs" [426].
+
+outcome:
+  official_accuracy: null
 
 provenance:
   kind: extracted
@@ -162,10 +168,11 @@ provenance:
     conclusion: [426]
   snapshot_files:
     - make_greedy.py
-    - analyze_eval.py
     - evaluate.py
+    - analyze_eval.py
   smoke_runs: []
-  extractor: claude-opus-5[1m]
+  extractor: null
   unresolved:
-    - "The inspect eval JSON that analyze_eval.py read at [411] is picked by mtime and its filename is never printed, so the failure_examples cite the logs directory rather than a file."
-    - "The stream never separates how much of the +2.0 pts is the removal of sampling noise and how much is a genuine greedy-vs-sampled capability gap; only one greedy and one sampled run exist."
+    - "the eval's sampling temperature is inferred by the agent from the vLLM provider's defaults [220]; no explicit temperature is recorded anywhere in the stream"
+    - "the four failing items at [411] carry no dataset ids, and the inspect eval JSON that holds them is not named in the stream nor present in task/"
+    - "the later make_greedy.py invocations ([504] v2, [604] v3, [702] v4, [775] v4b) reuse this same, now-settled decode setting as part of the evaluation protocol of their training cards; they are recorded there rather than as separate cards"

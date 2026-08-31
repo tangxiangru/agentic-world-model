@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 1.82
+
+problem:
+  statement: >-
+    The first candidate reached only 0.22 on the 50-sample probe. The agent named
+    two suspected bottlenecks: the training prompt does not match the prompt the
+    evaluator uses, and the corpus is not GSM-specific enough [344].
+  evidence:
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/task/r-f9a8a01b/eval_meta60k_r32_50.json
+      locator: "read at [344]; accuracy 0.22, stderr 0.059, --limit 50"
+      observation: "MetaMath+GSM SFT candidate answers 11 of 50 correctly"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Training GSM8K-train only, with the evaluator's exact fixed 10-shot GSM8K
+    prefix in front of every training prompt, "directly targets the gap left by
+    the broader zero-shot-style SFT run" and should beat the 0.22 candidate
+    [357][364].
+  mechanism: >-
+    Aligning the training context with the benchmark context removes the prompt
+    mismatch, so the model learns the response continuation it will actually be
+    asked for, at the length the evaluator uses (~2.3k tokens median, all under
+    3072) [364].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm_train_clean.jsonl
+      source: "HF openai/gsm8k (train split)"
+      n_examples: 7473
+      built_by: data/exp-cards/gsm8k-gemma-holdout-v1/task/r-f9a8a01b/prepare_math_data.py
+      build_command:
+        - /bin/bash
+        - -lc
+        - PYTHONDONTWRITEBYTECODE=1 python prepare_math_data.py --output data/gsm_train_raw.jsonl --max-metamath 0 --seed 17 && PYTHONDONTWRITEBYTECODE=1 python ../contamination_check.py --reference ../test_data.json --input data/gsm_train_raw.jsonl > data/gsm_contamination.jsonl && PYTHONDONTWRITEBYTECODE=1 python filter_contaminated.py --input data/gsm_train_raw.jsonl --contamination-output data/gsm_contamination.jsonl --output data/gsm_train_clean.jsonl && wc -l data/gsm_train_clean.jsonl
+      selection: >-
+        All GSM8K train rows deduped on the normalized question, no MetaMathQA
+        (--max-metamath 0); each row rendered as reasoning + "ANSWER: <final>"
+        with the "####" delimiter stripped and commas removed from the number.
+        Supplied contamination checker run against the reference test data:
+        7,473 scanned, 0 contaminated, 0 matches [158]; rerun with the same
+        result at [1357] and [1617].
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 + peft 0.18.1, custom torch loop (train_lora_sft.py)"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q,k,v,o,gate,up,down_proj of the text stack; 119M trainable params [368]"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 2.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: "cosine with warmup (get_cosine_schedule_with_warmup)"
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 23
+      other: >-
+        --fixed-gsm-fewshots 10 --fewshot-seed 42 (the evaluator's 10-shot GSM8K
+        prefix, built by shuffling gsm8k train with seed 42 and taking the first
+        10); --eval-size 0 --eval-every 0, so no held-out loss. AdamW, grad-norm
+        clip 1.0, gradient checkpointing, sdpa. warmup 0.03 and weight_decay 0.0
+        are train_lora_sft.py argparse defaults this launch did not override.
+        NOTE: --epochs 2.0 planned 936 updates but the loop iterated the
+        DataLoader once, so only ~1 epoch / 467 updates ran [522].
+    target_format: >-
+      10-shot prefix + "<bos><start_of_turn>user\n<math prompt template +
+      question><end_of_turn>\n<start_of_turn>model\n", target "<reasoning>\n\n
+      ANSWER: <final><end_of_turn>\n<eos>"; loss masked to the model turn.
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - PYTHONDONTWRITEBYTECODE=1 TMPDIR=/home/ben/task/tmp HF_HOME=/home/ben/hf_cache TORCHINDUCTOR_CACHE_DIR=/home/ben/task/cache/torchinductor TRITON_CACHE_DIR=/home/ben/task/cache/triton python train_lora_sft.py --data data/gsm_train_clean.jsonl --output-dir runs/lora_gsm10shot_r64_e2 --epochs 2.0 --batch-size 4 --grad-accum 4 --max-length 3072 --fixed-gsm-fewshots 10 --fewshot-seed 42 --lora-r 64 --lora-alpha 128 --lora-dropout 0.05 --lr 1e-4 --eval-size 0 --eval-every 0 --seed 23
+    cwd: /home/ben/task
+    script: data/exp-cards/gsm8k-gemma-holdout-v1/task/r-f9a8a01b/train_lora_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - /bin/bash
+      - -lc
+      - PYTHONDONTWRITEBYTECODE=1 TMPDIR=/home/ben/task/tmp XDG_CACHE_HOME=/home/ben/task/cache TORCHINDUCTOR_CACHE_DIR=/home/ben/task/cache/torchinductor TRITON_CACHE_DIR=/home/ben/task/cache/triton VLLM_CACHE_ROOT=/home/ben/task/cache/vllm python evaluate.py --model-path models/gsm10shot_r64_e1_merged --limit 50 --max-connections 2 --max-tokens 1024 --gpu-memory-utilization 0.45 --json-output-file eval_gsm10shot_r64_e1_50.json
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.22
+    path: data/exp-cards/gsm8k-gemma-holdout-v1/task/r-f9a8a01b/eval_meta60k_r32_50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.93
+  output_checkpoint: /home/ben/task/runs/lora_gsm10shot_r64_e2
+  training_summary:
+    final_loss: null
+    steps: 467
+    notes: >-
+      Planned 936 updates; the manual epoch loop only iterated the DataLoader
+      once, so the adapter saved after one epoch / 467 updates [522]. Loss fell
+      from ~0.75 to ~0.45 through warmup [370]. wall_h computed from event
+      timestamps [365] -> [522]; the run's own saved_adapter/elapsed_min line is
+      not in the stream. Evaluated only after the merge in exp-04; the accuracy
+      below is that eval of its merged materialization.
+  measurements:
+    - metric: accuracy
+      value: 0.32
+      n: 50
+      path: data/exp-cards/gsm8k-gemma-holdout-v1/task/r-f9a8a01b/eval_gsm10shot_r64_e1_50.json
+      delta_vs_comparator: 0.10
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    Even at half the intended length (one epoch, 467 updates), the prompt-matched
+    GSM-only adapter scored 0.32 on 50 samples against the 0.22 of the broader
+    corpus under the same --limit, so prompt matching plus GSM specialization
+    helped. The epoch-loop bug means this is a one-epoch result, not the
+    two-epoch run that was launched.
+  decision: adopt
+  next_step: >-
+    Patch the epoch loop to re-enter the DataLoader until the requested number of
+    batches is reached [525], then rerun the same recipe for three epochs with
+    per-epoch checkpoints (exp-05).
+
+provenance:
+  kind: extracted
+  run_ref: r-f9a8a01b
+  launch_i: 365
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [342, 344]
+    setup: [157, 357, 364, 365]
+    evaluation: [533, 537]
+    result: [368, 370, 522]
+    conclusion: [522, 532]
+  snapshot_files:
+    - train_lora_sft.py
+    - prepare_math_data.py
+    - filter_contaminated.py
+    - eval_gsm10shot_r64_e1_50.json
+    - eval_meta60k_r32_50.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The run's own final save line (steps / elapsed_min) for runs/lora_gsm10shot_r64_e2 is not in the stream; 467 steps comes from the agent's description at [522]."
+    - "train_lora_sft.py in the workspace is the version patched at [525] and again at [998] (--adapter-init), not the version this launch ran."
+
+outcome:
+  official_accuracy: null

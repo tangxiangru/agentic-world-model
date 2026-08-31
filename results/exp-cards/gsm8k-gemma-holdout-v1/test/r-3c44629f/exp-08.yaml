@@ -1,0 +1,161 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 3.99
+
+problem:
+  statement: >-
+    GRPO at lr=1e-6 (exp-05) and at lr=6e-6 (exp-07) both produced a flat sampled-train
+    reward curve, so the 22% pass@8 headroom is still untouched and the learning rate is
+    the suspect ("lr=6e-6 is too gentle - only marginal movement after 49 steps. GRPO is
+    the right tool but underdosed", [980]).
+  evidence:
+    - path: /home/ben/task/logs/grpo_v2.log
+      locator: "[953], [974]"
+      observation: "reward_correct/mean oscillates 0.73-0.84 over 49 steps at lr=6e-6, no trend"
+    - path: /home/ben/task/results.md
+      locator: "section 'KEY DIAGNOSTIC', [914]"
+      observation: "pass@1 0.682 vs pass@8 0.904 - the headroom this line of runs is trying to collect"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A further 1.7x increase to lr=1e-5 will finally move the policy: "at this higher LR
+    it should climb more decisively if GRPO is going to work" [999].
+  mechanism: >-
+    Unchanged; only the step size is varied, with the reward trajectory used as the
+    read-out because no eval can run while the GPU is busy ([1013]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: >-
+    "if climbing, let it finish; if flat, abort and pivot" [1013]
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/sft_rft1
+    origin: exp-04
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, train split), prompts only"
+      n_examples: null
+      built_by: /home/ben/task/src/train_grpo.py
+      build_command: []
+      selection: >-
+        Built inline by the GRPO script: GSM8K train questions not matching a test
+        question, rendered through the eval's MATH_PROMPT_TEMPLATE; gold number used only
+        by the reward function.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl GRPOTrainer with colocated vLLM + peft LoRA"
+    peft: "LoRA r=32 alpha=64 targets=.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: null
+      batch_size: 16
+      grad_accum: 8
+      max_seq_len: "max_prompt_length 320 / max_completion_length 300"
+      scheduler: null
+      warmup: "10 steps"
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        Launch flags at [994]: max_steps 250, num_generations 8, temperature 1.0,
+        beta 0.0, lora_r 32, vllm_gpu_memory_utilization 0.28, save_steps 50. Identical to
+        exp-07 except lr. Script-fixed values as at [790]/[891]: scale_rewards="group",
+        warmup_steps 10, max_grad_norm 0.5, gradient_checkpointing, logging_steps 2,
+        reward = 1.0 correct answer + 0.2 well-formed ANSWER line, no KL term. Env:
+        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, PYTHONUNBUFFERED=1.
+    target_format: >-
+      eval-style single-turn prompt; completions scored by the benchmark's numeric matcher.
+  command:
+    argv: [nohup, python, src/train_grpo.py, --init-from, ckpt/sft_rft1, --out, ckpt/grpo_v3, --max-steps, "250", --num-gen, "8", --bs, "16", --grad-accum, "8", --lr, "1e-5", --beta, "0.0", --temp, "1.0", --max-prompt, "320", --max-comp, "300", --lora-r, "32", --vllm-mem, "0.28", --save-steps, "50"]
+    cwd: /home/ben/task
+    script: /home/ben/task/src/train_grpo.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONUNBUFFERED: "1"}
+    log: /home/ben/task/logs/grpo_v3.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 (81559 MiB) [5]"
+    planned_h: 0.97
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.682
+    path: /home/ben/task/runs/sft_rft1_500.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.13
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 23
+    notes: >-
+      Killed at step 23 of 250 before any checkpoint was saved, and the directory later
+      deleted at [1069]. Reward trajectory over those steps: 0.76 0.81 0.78 0.73 0.78
+      0.79 0.75 0.75 0.84 0.83 0.76 - oscillating with no climb [1043]. An identical
+      launch command issued at [981] never actually started ("v2 killed (GPU free) but v3
+      didn't launch", [993]); the launch recorded here is the one that ran.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    A third learning rate produced the same flat reward, and the agent stopped the line
+    rather than debug the trainer: "all three GRPO runs show flat reward regardless of
+    LR, which may indicate the colocate vLLM isn't receiving the updated LoRA weights...
+    let me cut losses" [1045]. Killed at step 23, never evaluated.
+  decision: abandon_line
+  next_step: >-
+    Check whether GRPO changed the weights at all, and meanwhile try the one family never
+    attempted - a full fine-tune from base instead of LoRA ([1056]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-3c44629f
+  launch_i: 994
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [953, 974, 980]
+    setup: [981, 993, 994]
+    evaluation: []
+    result: [1043, 1045, 1046]
+    conclusion: [1045, 1056]
+  snapshot_files:
+    - results.md
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      The suspicion recorded at [1045] (that colocated vLLM might not receive the updated
+      LoRA weights) was never tested; the later weight diff at [1060] showed the weights
+      did change, only far too little, so the flat reward is left unexplained beyond
+      "underdosed".

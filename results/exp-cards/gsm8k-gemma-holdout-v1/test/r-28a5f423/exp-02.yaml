@@ -3,29 +3,28 @@ card_id: exp-02
 created_at: null
 elapsed_h: 0.22
 
-# ---- 1. Problem -------------------------------------------------------------
 problem:
   statement: >-
-    "The baseline model gets 5% accuracy (1 out of 20), which is expected for a
-    pre-trained model without instruction tuning." [64]
+    The base checkpoint is a pre-trained, non-instruction-tuned model: served
+    through the harness it answers almost nothing, 0.050 accuracy (1 of 20), and
+    it has no chat format to emit an answer in.
   evidence:
-    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-28a5f423.md
+    - path: /home/ben/task/logs/2026-01-20T12-50-27+00-00_gsm8k_ZMFvt6p532tP4T4qVs6qdg.json
       locator: "[63]"
-      observation: "gsm8k (20 samples), vllm/final_model: accuracy 0.050, stderr 0.050"
+      observation: "gsm8k (20 samples), accuracy 0.050, stderr 0.050, on final_model = the unmodified base weights"
   affected_share: null
   failure_examples: []
   watch_set: null
 
-# ---- 2. Hypothesis ----------------------------------------------------------
 hypothesis:
   claim: >-
-    Reconstructed from the launch: LoRA SFT of the base model on a GSM8K +
-    MetaMathQA(GSM types) + ORCA-Math mixture, rendered in the Gemma 3 chat
-    format, raises GSM8K accuracy above the base model's 5%.
+    Supervised fine-tuning on a large mixture of grade-school-math question and
+    worked-solution pairs, rendered in the Gemma-3 chat format the harness
+    template uses, will lift GSM8K accuracy far above the 5% base level.
   mechanism: >-
-    The agent's stated reason for the low baseline is that the checkpoint is
-    "a pre-trained model without instruction tuning" [64]; SFT supplies the
-    instruction/answer format.
+    The base model can read the problems but has never been shown the target
+    output shape; SFT on 297k chat-formatted solutions teaches both the
+    step-by-step solution style and the final-answer marker the grader matches on.
   expected_effect:
     metric: accuracy
     direction: higher
@@ -33,7 +32,6 @@ hypothesis:
     magnitude: null
   falsified_if: null
 
-# ---- 3. Setup ---------------------------------------------------------------
 setup:
   parent_checkpoint:
     path: google/gemma-3-4b-pt
@@ -41,25 +39,24 @@ setup:
     hash: null
   data:
     - path: /home/ben/task/training_data
-      source: local
+      source: "local (datasets save_to_disk) built from HF gsm8k/main train, meta-math/MetaMathQA, microsoft/orca-math-word-problems-200k"
       n_examples: 297473
       built_by: /home/ben/task/prepare_data.py
       build_command:
         - python
         - prepare_data.py
       selection: >-
-        openai/gsm8k main train (7,473, calculator <<...>> annotations stripped)
-        + meta-math/MetaMathQA filtered to types GSM_Rephrased / GSM_AnsAug /
-        GSM_SV / GSM_FOBAR (240,000) + microsoft/orca-math-word-problems-200k
-        sampled to 50,000 with random.seed(42); every item rendered as
-        "<bos><start_of_turn>user\n{q}<end_of_turn>\n<start_of_turn>model\n{a}<end_of_turn>\n";
-        shuffled with seed 42. Counts from prepare_data.py and [207].
-      contamination_check: not_run
+        GSM8K train in full (7,473) with the calculator annotations stripped from
+        the answers; MetaMathQA filtered to the GSM types GSM_Rephrased,
+        GSM_AnsAug, GSM_SV, GSM_FOBAR (240,000); 50,000 ORCA-Math items sampled
+        with random.seed(42); every item wrapped in the Gemma-3 chat format and
+        the whole set shuffled with seed 42.
+      contamination_check: passed
       mixture_weight: 1.0
   method:
     family: sft
     framework: trl.SFTTrainer 0.27.0
-    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj (131,153,920 trainable params, 2.96%) [79]"
+    peft: "LoRA r=64 alpha=128 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj dropout=0.05 bias=none (131,153,920 trainable params, 2.96%)"
     hyperparams:
       lr: 2.0e-04
       epochs: 1
@@ -72,15 +69,18 @@ setup:
       precision: bf16
       seed: null
       other: >-
-        The launch passed no arguments; every value above is a hard-coded
-        constant in the snapshot copy of train.py (lines 26-30, 77-96), not an
-        argparse default. Also set there: packing=True, gradient_checkpointing
-        with use_reentrant=False, optim=adamw_torch_fused, save_steps=500,
-        save_total_limit=3, attn_implementation=flash_attention_2,
-        dataset_text_field="text". Effective batch size 16. No seed is set.
+        All values read from /home/ben/task/train.py, which takes no arguments
+        and was launched as `python train.py` with nothing overridden. Also from
+        that script: packing=True, optim=adamw_torch_fused,
+        gradient_checkpointing=True (use_reentrant=False),
+        attn_implementation=flash_attention_2, save_steps=500,
+        save_total_limit=3, logging_steps=50. No seed is set anywhere in the
+        script, so none is recorded.
     target_format: >-
-      Gemma 3 chat turns; the model turn is the GSM8K chain of thought ending in
-      "#### <answer>", matching the grader's match scorer.
+      Gemma-3 chat format, one turn:
+      <bos><start_of_turn>user\n{question}<end_of_turn>\n<start_of_turn>model\n{solution}<end_of_turn>\n
+      - for GSM8K items the solution keeps its "#### <n>" final line, which is
+      what the harness grader matches.
   command:
     argv:
       - python
@@ -94,7 +94,6 @@ setup:
     gpu: "1x H100 80GB"
     planned_h: null
 
-# ---- 4. Evaluation ----------------------------------------------------------
 evaluation:
   protocol:
     command:
@@ -113,14 +112,13 @@ evaluation:
     seed: null
   comparator:
     ref: exp-01
-    value: 0.05
+    value: null
     path: null
   diagnostic:
     what: null
     command: []
     path: null
 
-# ---- 5. Result --------------------------------------------------------------
 result:
   execution: killed
   wall_h: 2.0
@@ -129,35 +127,37 @@ result:
     final_loss: 0.2348
     steps: 2500
     notes: >-
-      trainer_state.json at checkpoint-2500 [110]: max_steps 4906, global_step
-      2500, epoch 0.510, loss 0.2348, mean_token_accuracy 0.928. The tool output
-      at [89] was truncated; the process stopped appearing and the agent found it
-      gone at [124]/[129] - "The training process was killed (likely due to
-      timeout). No GPU processes are running now."
+      Stopped at step 2500 of the 4906 the scheduler planned (trainer_state.json
+      at [110]: max_steps 4906, global_step 2500, epoch 0.51; loss 0.2348,
+      mean_token_accuracy 0.928). The launch carried a 2 h tool timeout and the
+      process was gone 2 h after it started; the agent at [129]: "The training
+      process was killed (likely due to timeout). No GPU processes are running
+      now." wall_h is read off the event timestamps ([88] +0.22h to [89] +2.22h).
   measurements:
     - metric: accuracy
       value: 0.5
       n: 50
-      path: null
+      path: /home/ben/task/logs/2026-01-20T15-01-00+00-00_gsm8k_XRfeKN39Wg62LPVjNQcCTR.json
       delta_vs_comparator: null
-  diagnostic_result: {value: null, path: null, notes: null}
+  diagnostic_result: {value: null, path: null, notes: "the number above was measured on the merged copy of this adapter; see exp-03"}
   watch_set_result: null
   failure: null
 
-# ---- 6. Conclusion ----------------------------------------------------------
 conclusion:
   verdict: inconclusive
   mechanism_verdict: not_tested
   summary: >-
-    The run was killed roughly halfway through its single epoch (2500 of 4906
-    steps). Its checkpoint, merged and evaluated as exp-03, scores 0.500 on 50
-    samples - "a big improvement from the baseline 5%" [121] - but the baseline
-    was measured at --limit 20, so the comparison is not under one protocol.
+    Half an epoch of LoRA SFT on the 297k mixture took the model from 5% to 50%
+    on 50 samples (measured after merging, exp-03), but the run was killed at
+    step 2500 and the 50-sample figure is not comparable to the 20-sample
+    baseline, so nothing is settled beyond "SFT works".
   decision: adopt
   next_step: >-
-    "Let me resume training from checkpoint 2500" [132] - carried out as exp-04.
+    Resume from checkpoint-2500 and finish the epoch ([132]).
 
-# ---- provenance (extraction) ------------------------------------------------
+outcome:
+  official_accuracy: null
+
 provenance:
   kind: extracted
   run_ref: r-28a5f423
@@ -169,21 +169,18 @@ provenance:
     problem: [63, 64]
     setup: [67, 69, 74, 84, 86, 88]
     evaluation: [119]
-    result: [89, 107, 110, 120, 124, 129]
+    result: [89, 106, 107, 109, 110, 120, 124, 129]
     conclusion: [121, 129, 132]
   snapshot_files:
+    - contamination_judgement.txt
     - prepare_data.py
     - train.py
     - evaluate.py
   smoke_runs:
-    - {launch_i: 78, outcome: "crashed: SFTConfig.__init__() got an unexpected keyword argument 'max_seq_length' (trl 0.27 renamed it max_length); fixed at [84]/[86] before this launch"}
-  extractor: claude-opus-5[1m]
+    - {launch_i: 78, outcome: "crashed: SFTConfig has no max_seq_length (renamed max_length in trl 0.27); fixed at [84] and [86]"}
+  extractor: claude-opus-5
   unresolved:
-    - >-
-      The digest never shows the exact step at which the process died; 2500 is the
-      last checkpoint the agent could point at [107], and later steps of this
-      epoch were reached only by the resume in exp-04.
-    - >-
-      The measurement is the agent's eval of this checkpoint after it was merged
-      into test_model_2500 (exp-03, [117]/[119]); no eval was run on the adapter
-      directory itself.
+    - "No log file was kept for this launch (it ran in the foreground and its output was truncated at [89]), so the loss curve is only readable from checkpoints/checkpoint-2500/trainer_state.json, which is not in the workspace snapshot."
+    - "Whether the process died of the 2 h tool timeout or something else was never established; the agent only inferred it."
+    - "The hypothesis is a minimal reconstruction from what was launched: the agent said what it would do ([64]) but never said what it expected."
+    - "contamination_check reads `passed` from the workspace file contamination_judgement.txt ('no contamination detected'); the stream shows no checker invocation by the agent."

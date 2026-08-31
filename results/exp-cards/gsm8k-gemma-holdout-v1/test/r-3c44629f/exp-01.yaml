@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.40
+
+problem:
+  statement: >-
+    The un-tuned base model scores 8% on the benchmark. It is a pre-trained
+    (non-instruct) checkpoint that has never seen the eval's chat format, does not
+    end its answer with the required "ANSWER: $ANSWER" line, and its shipped
+    generation_config decodes stochastically (do_sample=True, temperature 1.0)
+    ("Baseline: 8% accuracy. Very low - the base model isn't trained on the chat
+    format and samples at temp 1.0", [157]).
+  evidence:
+    - path: /home/ben/task/runs/baseline_150.json
+      locator: "[157] (eval launched at [64], result read at [151]/[157])"
+      observation: "baseline eval of the base model at --limit 150 with default sampling: accuracy 0.08"
+    - path: null
+      locator: "[63]"
+      observation: >-
+        the base model's generation_config.json sets do_sample=True (temp 1.0), so the
+        served model is stochastic; the agent notes it can control this through its own
+        checkpoint's generation_config
+    - path: null
+      locator: "[50]"
+      observation: >-
+        eos_token_id is [1, 106], so a model trained to emit <end_of_turn> after the
+        answer will stop generating
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised fine-tuning on GSM8K-train chain-of-thought plus a GSM-derived
+    MetaMathQA subset, rendered through the eval's exact prompt and chat template and
+    reformatted so every response ends with "ANSWER: <number>" followed by
+    <end_of_turn>, will lift accuracy far above the 8% baseline ("My SFT teaching the
+    exact format will help dramatically", [157]).
+  mechanism: >-
+    The failure is a contract failure, not an ability failure: teaching the format and
+    a consistent CoT style, and shipping a greedy generation_config, converts the
+    model's existing arithmetic ability into answers the scorer can read ([75], [157]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "HF openai/gsm8k (main, train split) + HF meta-math/MetaMathQA (GSM_AnsAug, GSM_Rephrased)"
+      n_examples: 94946
+      built_by: /home/ben/task/src/prep_data.py
+      build_command: [python, src/prep_data.py, --out, data/sft_v1.jsonl, --metamath-types, "GSM_AnsAug,GSM_Rephrased", --per-type-limit, "40000", --gsm-native-repeat, "2"]
+      selection: >-
+        GSM8K train answers with <<...>> calculator annotations stripped and the ####
+        line rewritten as "ANSWER: <number>", included twice (--gsm-native-repeat 2);
+        MetaMathQA GSM_AnsAug and GSM_Rephrased capped at 40000 rows per type, kept only
+        when the extracted final answer is purely numeric, with the "The answer is:" /
+        "####" trailers removed. Any item whose lower-cased, punctuation-stripped
+        question matches a GSM8K test question is dropped. Total printed at [131]: 94,946.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers Trainer + peft LoRA (versions not printed in the digest)"
+    peft: "LoRA r=64 alpha=128 targets=.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 1
+      batch_size: 32
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr, epochs, batch_size, grad_accum, max_seq_len, LoRA r/alpha and attn=sdpa are
+        the launch flags at [208]; scheduler=cosine, weight_decay=0.0, bf16 and
+        group_by_length=True are hard-coded in the TrainingArguments of the training
+        script as written into the stream at [132]/[158]-[173]. The script file is NOT in
+        the workspace snapshot, so no argparse default has been adopted for any field
+        left null here (warmup, seed). Vision tower and multimodal projector are frozen;
+        prompt tokens are masked with -100; gradient checkpointing on (--grad-ckpt 1).
+    target_format: >-
+      eval chat template (templates/gemma3.jinja), user turn = the eval's
+      MATH_PROMPT_TEMPLATE rendered on the question, assistant turn = cleaned CoT ending
+      in "ANSWER: <number>" plus token 106 (<end_of_turn>).
+  command:
+    argv: [nohup, python, src/train_sft.py, --data, data/sft_v1.jsonl, --out, ckpt/sft_v1, --mode, lora, --lora-r, "64", --lora-alpha, "128", --epochs, "1", --bs, "32", --grad-accum, "2", --lr, "1e-4", --max-len, "1024", --attn, sdpa, --grad-ckpt, "1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/src/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/sft_v1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 (81559 MiB) [5]"
+    planned_h: 0.95
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.08
+    path: /home/ben/task/runs/baseline_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: 0.06
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Died at step 100 of 1484 after 03:49 of training with an empty ckpt/sft_v1
+      directory ([288], [294]). The agent's reading at [298]: the 262K-token vocabulary
+      makes the cross-entropy logits for a 32 x 1024 batch balloon once group_by_length
+      clusters the longest sequences.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    File ".../transformers/models/gemma3/modeling_gemma3.py", line 1142, in forward
+    loss = loss_fct(flat_logits, flat_labels) ... torch.OutOfMemoryError: CUDA out of
+    memory. Tried to allocate 16.29 GiB. GPU 0 has a total capacity of 79.18 GiB of
+    which 814.31 MiB is free. [296]
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first real SFT launch crashed out of memory in the loss at step 100/1484 and
+    wrote no checkpoint, so the format hypothesis was never measured. The cause was
+    identified as full 262K-vocab logits on the longest batches, not the recipe itself.
+  decision: abandon_line
+  next_step: >-
+    Relaunch the same recipe with the Liger fused linear cross-entropy kernel and
+    max_len 640 (token lengths are p99=428, max=668, so almost nothing is truncated)
+    ([298], [311]) - carried out as exp-02.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-3c44629f
+  launch_i: 208
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [50, 63, 157]
+    setup: [118, 126, 131, 132, 208]
+    evaluation: [64, 157]
+    result: [225, 288, 294, 296]
+    conclusion: [298, 311]
+  snapshot_files:
+    - results.md
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 164, outcome: "passed (LoRA smoke, --limit 200: sdpa works, LoRA merges and saves)"}
+    - {launch_i: 180, outcome: "crashed: OOM at bs=32 with gradient checkpointing off (throughput probe, --limit 3000)"}
+    - {launch_i: 186, outcome: "passed (throughput probe, bs=32 with gradient checkpointing on, --limit 4000)"}
+    - {launch_i: 197, outcome: "passed (throughput probe with flash_attention_2, ~28 samples/s - no faster than sdpa)"}
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      The workspace snapshot contains only SUMMARY.md, results.md, evaluate.py, the two
+      judgement files and the timer/monitor logs; src/, data/, ckpt/, logs/ and runs/ are
+      absent, so every path under those directories is taken from the event stream and
+      cannot be opened.
+    - >-
+      The exact wall time of the crashed run is not printed; 0.06 h is read off the tqdm
+      counter (100/1484 at 03:49) at [288].

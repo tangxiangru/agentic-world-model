@@ -1,0 +1,200 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    Two thousand steps at lr 2e-4 did not teach the model to emit <end_of_turn>
+    after "ANSWER: X": it answers and then continues with a new question, and the
+    scorer takes the last answer, costing measured accuracy (8/30 scored vs
+    10/30 on first answer). The agent's read is that the base model's prior for
+    continuing text is too strong for that learning rate over that many steps
+    [385,391,434,435].
+  evidence:
+    - path: /home/ben/task/eval_v4_quick.json
+      locator: "accuracy 0.267 on 30 items"
+      observation: "the merged checkpoint-2000 scores 0.267 while answering 10/30 correctly on its first answer [434]"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-ee7eb0ec.md
+      locator: "[367], [371], [372], [373], [379]"
+      observation: "training targets do contain <end_of_turn> (106) and <eos> (1), and generation_config lists both as eos ids, so the model simply is not producing the token"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Training more aggressively - lr 5e-4 instead of 2e-4 and LoRA r=128
+    alpha=256, capped at 2300 steps (just under one epoch, also staying clear of
+    the step-2900 crash) - will make the model converge on the stopping
+    behaviour [386,391].
+  mechanism: >-
+    "The model hasn't trained enough / the learning rate is too low for this base
+    model"; a higher rate and more adapter capacity should let the format,
+    including the end-of-turn token, be learned inside one epoch [391].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_v5.jsonl
+      source: "HF: openai/gsm8k (main, train) + meta-math/MetaMathQA (train, GSM subset)"
+      n_examples: 37419
+      built_by: /home/ben/task/prepare_data_v5.py
+      build_command:
+        - python3
+        - prepare_data_v5.py
+      selection: >-
+        Unchanged from exp-04/exp-05: GSM8K train repeated 3x (22419) plus 15000
+        MetaMathQA GSM rows, <<calc>> and #### stripped, every example ending
+        "ANSWER: <final><end_of_turn>\n<eos>" [209,211,212].
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 3
+  method:
+    family: sft
+    framework: "trl 0.27.2 SFTTrainer + peft 0.18.1 LoRA (transformers 4.57.3, torch 2.8.0+cu129, bitsandbytes 0.49.1) [21,23]"
+    peft: "QLoRA (4-bit nf4, double quant) r=128 alpha=256 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 5.0e-04
+      epochs: 3
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        max_steps=2300 is the real cap (num_train_epochs=3 is never reached; the
+        run ends at epoch 0.98); packing=False, gradient_checkpointing=True
+        (use_reentrant=False), optim=paged_adamw_8bit,
+        dataloader_num_workers=0, save_steps=500, attn_implementation=eager. The
+        launch passed no arguments; all values are constants in train_v6.py as
+        written at [386]. The script merges the adapter into final_model itself.
+    target_format: >-
+      gemma3 chat text; model turn = cleaned reasoning, a blank line, then
+      "ANSWER: <final>", closed by <end_of_turn> and <eos>
+  command:
+    argv: [python, train_v6.py, "2>&1", "|", tee, train_v6_log.txt]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v6.py
+    env: {}
+    log: /home/ben/task/train_v6_log.txt
+  budget:
+    gpu: "1x H100"
+    planned_h: 1.2
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - final_model
+      - --limit
+      - "30"
+      - --json-output-file
+      - eval_v6_quick.json
+      - --gpu-memory-utilization
+      - "0.45"
+    dev_set: "official --limit 30 (inspect_evals/gsm8k, openai/gsm8k test, 10-shot, match(numeric=True))"
+    n: 30
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.26666666666666666
+    path: /home/ben/task/eval_v4_quick.json
+  diagnostic:
+    what: >-
+      Re-score the same 30 items on the FIRST "ANSWER:" line instead of the last
+      one, to separate reasoning quality from the failure to stop [433].
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.2
+  duration_h: 1.2
+  steps: 2300
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.26
+    steps: 2300
+    notes: >-
+      "2300 steps, final loss 0.26, 92.6% token accuracy" [408]; train_v6_log.txt
+      records train_runtime 4332.7 s (1.20 h), train_loss 0.4528 averaged over
+      the run, epoch 0.98. Loss tracked well above exp-05 at the same step (0.50
+      vs 0.39 at step 1000) [401,402]. The adapter is at
+      /home/ben/task/sft_output_v6 and the merge into final_model succeeded
+      [408,409,412,413].
+  measurements:
+    - metric: accuracy
+      value: 0.03333333333333333
+      n: 30
+      path: /home/ben/task/eval_v6_quick.json
+      delta_vs_comparator: -0.23333333333333334
+  diagnostic_result:
+    value: 0.03333333333333333
+    path: null
+    notes: >-
+      "For v6: both first and last answer got 1/30" [434] - the model now stops
+      after its answer (output tokens fell from 33569 to 3399 for the same 30
+      items [352,418]) but the answer itself is wrong.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: >-
+    The aggressive setting did exactly what it was aimed at and nothing else:
+    "the model IS properly stopping now ... But the answers are wrong - the
+    reasoning is poor quality" [422]. Accuracy fell from 0.267 to 0.033 on the
+    same 30 items, so the mechanism was fixed while the score collapsed.
+  decision: reject
+  next_step: >-
+    Split the difference on the learning rate - keep r=64 alpha=128 and
+    2300 steps but train at 3e-4 (exp-08) [425,426].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ee7eb0ec
+  launch_i: 392
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [385, 391, 434, 435]
+    setup: [386, 392]
+    evaluation: [417, 418]
+    result: [396, 399, 400, 401, 408, 412, 413, 418, 434]
+    conclusion: [402, 422, 425]
+  snapshot_files:
+    - prepare_data_v5.py
+    - train_v6.py
+    - train_v6_log.txt
+    - eval_v6_quick.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the merge overwrote the exp-06 final_model, which was the better-scoring candidate; nothing in the stream restores it"
+    - "the run stops at max_steps 2300 (epoch 0.98), so whether the step-2900 crash would have recurred is untested"

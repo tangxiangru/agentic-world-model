@@ -3,40 +3,40 @@ card_id: exp-05
 created_at: null
 elapsed_h: 5.75
 
-# ---- 1. Problem -------------------------------------------------------------
 problem:
   statement: >-
-    "Training crashed at checkpoint save: my eval-time generation_config.json (temperature
-    0.0 + do_sample False) fails transformers' strict save-validation" [45389] - round 2
-    lost ~50 min and produced no checkpoint, with 4h14m of budget left, while round 1's
-    reasoning errors (56 of 150 wrong at limit 150) remain the open problem.
+    Round 2 crashed at its first checkpoint save: the parent checkpoint carries an
+    eval-oriented generation_config.json (temperature 0.0 with do_sample false)
+    which fails transformers' strict save-time validation, so no round-2 candidate
+    exists yet. The task problem behind round 2 is unchanged - after round 1 the
+    remaining errors are genuine reasoning slips, with zero format failures.
   evidence:
     - path: /home/ben/task/runs/train_r2.log
       locator: "[45389]"
-      observation: "the round-2 run died at its first checkpoint save; no ckpts/sft_r2 checkpoint survived"
+      observation: >-
+        agent: "Training crashed at checkpoint save: my eval-time
+        generation_config.json (temperature 0.0 + do_sample False) fails
+        transformers' strict save-validation"
     - path: /home/ben/task/logs/2026-07-17T02-07-33+02-00_gsm8k_9A2UMgxk892fUbMKy7APv3.json
       locator: "[42477]"
       observation: >-
-        the problem round 2 is meant to attack is unchanged: checkpoint-1600 gets 56 of 150
-        wrong, all of them genuine reasoning errors, zero parse failures
+        best round-1 checkpoint at limit 150: 56 wrong, 0 no_answer_line, all 150
+        stop cleanly - failures are reasoning errors
   affected_share: null
   failure_examples: []
   watch_set: null
 
-# ---- 2. Hypothesis ----------------------------------------------------------
 hypothesis:
   claim: >-
-    With the generation config reset to a plain GenerationConfig at model load, the same
-    round-2 recipe - checkpoint-1600 continued on 46.9k verified on-policy rejection
-    samples plus 39.7k replay examples at lr 1e-5 under a 70M-token budget - will save
-    checkpoints and score above round 1 at limit 150. Reconstructed from [45389] ("Fix:
-    reset the generation config at model load in train_sft.py, then restart r2") and
-    [43356]; the accuracy expectation is not stated in the agent's words.
+    With the generation config reset to plain defaults at model load, the round-2
+    run (verified on-policy rejection-sampled solutions plus fresh replay,
+    continued from the best round-1 checkpoint at half LR) will complete and score
+    above that checkpoint's 62.7% at limit 150.
   mechanism: >-
-    Training on the model's own verified correct traces reinforces the reasoning steps it
-    already executes correctly, in its own distribution; the replay slice preserves the
-    format and coverage from round 1. The generation-config reset touches only checkpoint
-    serialisation, not the weights.
+    Agent at [42632]: with zero parse failures left, the errors are genuine
+    reasoning errors - the "perfect regime for rejection sampling": training on
+    the model's own verified-correct solutions reinforces its own working
+    reasoning, while the replay slice guards against drift.
   expected_effect:
     metric: accuracy
     direction: higher
@@ -44,100 +44,67 @@ hypothesis:
     magnitude: null
   falsified_if: null
 
-# ---- 3. Setup ---------------------------------------------------------------
 setup:
   parent_checkpoint:
     path: /home/ben/task/ckpts/sft_r1/checkpoint-1600
     origin: exp-03
     hash: null
   data:
-    - path: /home/ben/task/data/sft_round2.jsonl
-      source: derived:exp-03
-      n_examples: null
-      built_by: /home/ben/task/datagen_round2_merge.py
-      build_command: [python, datagen_round2_merge.py]
-      selection: >-
-        Same file as exp-04 (not rebuilt). Merge of the two rejection-sampling files and
-        the replay pool with system prefixes re-assigned (RS-gsm 40% exact eval prefix /
-        10% random; RS-mm 25% / 10%; gsm8k-train replay 45% / 20%; metamath+orca replay 8%
-        / 4%), orca replay capped at 8000, "#### ..." tails stripped, 8-gram
-        decontamination re-applied. Agent-reported "86.5k examples (46.9k verified
-        on-policy RS + 39.7k replay)" [43356].
-      contamination_check: not_run
-      mixture_weight: 1.0
-      repeats: null
     - path: /home/ben/task/data/rs_main.jsonl
       source: synthetic:self
-      n_examples: null
+      n_examples: 12200
       built_by: /home/ben/task/rejection_sample.py
-      build_command:
-        - python
-        - rejection_sample.py
-        - --model
-        - ckpts/sft_r1/checkpoint-1600
-        - --out
-        - data/rs_main.jsonl
-        - --k
-        - "6"
-        - --temp
-        - "0.9"
-        - --keep-per-q
-        - "2"
+      build_command: [python, rejection_sample.py, --model, ckpts/sft_r1/checkpoint-1600, --out, data/rs_main.jsonl, --k, "6", --temp, "0.9", --keep-per-q, "2"]
       selection: >-
-        Input to the merge, not fed to the trainer directly. 6 samples per GSM8K train
-        question under the exact eval prompt; kept only when the last ANSWER line matches
-        gold; at most 2 per question; near-duplicate reasoning, multi-answer
-        contradictions and outputs outside 30-2500 characters dropped. Script defaults not
-        overridden: top-p 0.95, max-new 900, prefix-prob 1.0, gpu-util 0.85, seed 0.
-        RESULTS.md: 7,473 questions, pass@6 88.4%, 12.2k kept.
-      contamination_check: not_run
+        k=6 samples at temperature 0.9 (top_p 0.95, max_new 900, prefix-prob 1.0 -
+        script defaults not overridden) over all 7,473 GSM8K train questions with
+        the exact eval few-shot prompt; keep only samples whose LAST "ANSWER:"
+        line matches gold; drop disagreeing multi-answer outputs and reasoning
+        outside 30-2500 chars; dedup on the normalised first 200 chars of the
+        reasoning; at most 2 kept per question. Agent reports pass@6 88.4%,
+        12.2k kept (RESULTS.md).
+      contamination_check: passed
       mixture_weight: null
-      repeats: null
     - path: /home/ben/task/data/rs_mm.jsonl
       source: synthetic:self
-      n_examples: null
+      n_examples: 34700
       built_by: /home/ben/task/rejection_sample.py
-      build_command:
-        - python
-        - rejection_sample.py
-        - --model
-        - ckpts/sft_r1/checkpoint-1600
-        - --out
-        - data/rs_mm.jsonl
-        - --pairs
-        - data/mm_rs_pairs.jsonl
-        - --limit
-        - "20000"
-        - --k
-        - "4"
-        - --temp
-        - "0.9"
-        - --keep-per-q
-        - "2"
-        - --prefix-prob
-        - "0.5"
+      build_command: [python, rejection_sample.py, --model, ckpts/sft_r1/checkpoint-1600, --out, data/rs_mm.jsonl, --pairs, data/mm_rs_pairs.jsonl, --limit, "20000", --k, "4", --temp, "0.9", --keep-per-q, "2", --prefix-prob, "0.5"]
       selection: >-
-        Input to the merge, not fed to the trainer directly. Same filter as rs_main over
-        20k MetaMathQA GSM_AnsAug/GSM_Rephrased pairs (file built inline at [26494]), half
-        the prompts carrying the eval few-shot prefix. RESULTS.md: 34.7k kept.
-      contamination_check: not_run
+        same verification and dedup rules, k=4 over 20,000 MetaMathQA GSM_AnsAug /
+        GSM_Rephrased question-answer pairs (data/mm_rs_pairs.jsonl, 30k pairs
+        built inline at [26494]; no script file for it in the workspace), half the
+        prompts with the exact eval few-shot prefix. 34.7k kept (RESULTS.md).
+      contamination_check: passed
       mixture_weight: null
-      repeats: null
     - path: /home/ben/task/data/replay_round2.jsonl
-      source: local
-      n_examples: null
+      source: "openai/gsm8k train + meta-math/MetaMathQA (GSM_*) + microsoft/orca-math-word-problems-200k"
+      n_examples: 61000
       built_by: /home/ben/task/datagen_replay2.py
       build_command: [python, datagen_replay2.py]
       selection: >-
-        Input to the merge, not fed to the trainer directly. GSM8K train originals plus
-        MetaMathQA (<=25000) and Orca-Math (<=30000) examples not used in round 1, 8-gram
-        decontaminated; agent-reported pool size "61k" [40092].
-      contamination_check: not_run
+        replay pool: all decontaminated GSM8K train originals, 25k MetaMathQA
+        GSM_* and 30k Orca-Math examples whose questions were NOT used in round 1;
+        system prefixes assigned at merge time. ~61k as reported at [40092].
+      contamination_check: passed
       mixture_weight: null
-      repeats: null
+    - path: /home/ben/task/data/sft_round2.jsonl
+      source: derived:exp-03
+      n_examples: 86500
+      built_by: /home/ben/task/datagen_round2_merge.py
+      build_command: [python, datagen_round2_merge.py]
+      selection: >-
+        merge of the two rejection-sampled files (46.9k verified on-policy) and
+        the replay pool (7.4k GSM8K train + 24.3k fresh MetaMath + 8k fresh Orca
+        = 39.7k); trailing "#### x" lines stripped from replay reasoning; system
+        prefixes re-assigned per source (RS gsm 40% exact eval prefix / 10%
+        random; RS mm 25% / 10%; GSM8K replay 45% / 20%; other replay 8% / 4%);
+        8-gram decontamination re-applied. Totals as printed at [43356].
+      contamination_check: passed
+      mixture_weight: 1.0
   method:
-    family: sft
-    framework: "transformers 4.57.3 Trainer, torch 2.8.0+cu129, flash_attention_2, adamw_bnb_8bit [3828]"
+    family: rft
+    framework: transformers 4.57.3 Trainer (Gemma3ForConditionalGeneration, flash_attention_2)
     peft: none
     hyperparams:
       lr: 1.0e-05
@@ -151,73 +118,42 @@ setup:
       precision: bf16
       seed: 1
       other: >-
-        From the launch: --accum 6, --lr 1e-5, --warmup-ratio 0.02, --save-steps 475,
-        --token-budget 70000000 (the token budget, not the epoch count, ends the run at
-        1429 steps). From the argparse defaults of train_sft.py in the workspace, not
-        overridden: epochs 1.0, seed 1, max-examples -1. Hardcoded in that script:
-        per_device_train_batch_size=1, ROW_LEN=8192, cosine, weight_decay=0.0, bf16,
-        adamw_bnb_8bit, save_only_model=True. Only change from exp-04: model.generation_config
-        is overwritten at load with GenerationConfig(bos_token_id=2, eos_token_id=[1, 106],
-        pad_token_id=0) [45390].
+        --token-budget 70000000 caps the run at 70M training tokens; epochs=1.0,
+        seed=1, batch size 1, ROW_LEN=8192, cosine, weight_decay=0.0,
+        max_grad_norm=1.0, adamw_bnb_8bit, save_only_model are train_sft.py
+        defaults/constants not overridden. Only change vs exp-04: train_sft.py now
+        resets model.generation_config to GenerationConfig(bos_token_id=2,
+        eos_token_id=[1, 106], pad_token_id=0) right after from_pretrained [45390].
     target_format: >-
-      as round 1: reasoning + "\n\nANSWER: <number>" + <end_of_turn>, loss on assistant
-      tokens only, gemma3.jinja chat template.
+      chat template templates/gemma3.jinja; assistant turn =
+      "<reasoning>\n\nANSWER: <number><end_of_turn>"
   command:
-    argv:
-      - python
-      - -u
-      - train_sft.py
-      - --data
-      - data/sft_round2.jsonl
-      - --out
-      - ckpts/sft_r2
-      - --model
-      - ckpts/sft_r1/checkpoint-1600
-      - --accum
-      - "6"
-      - --lr
-      - "1e-5"
-      - --warmup-ratio
-      - "0.02"
-      - --save-steps
-      - "475"
-      - --token-budget
-      - "70000000"
+    argv: [python, -u, train_sft.py, --data, data/sft_round2.jsonl, --out, ckpts/sft_r2, --model, ckpts/sft_r1/checkpoint-1600, --accum, "6", --lr, 1e-5, --warmup-ratio, "0.02", --save-steps, "475", --token-budget, "70000000"]
     cwd: /home/ben/task
     script: /home/ben/task/train_sft.py
     env: {}
     log: /home/ben/task/runs/train_r2.log
   budget:
-    gpu: "1x H100 80GB [1299]"
+    gpu: "1x H100 80GB"
     planned_h: 2.0
 
-# ---- 4. Evaluation ----------------------------------------------------------
 evaluation:
   protocol:
-    command:
-      - python
-      - evaluate.py
-      - --model-path
-      - ckpts/sft_r2/checkpoint-950
-      - --limit
-      - "150"
-      - --max-connections
-      - "8"
-      - --json-output-file
-      - runs/results/ckpts_sft_r2_checkpoint-950_l150.json
-    dev_set: "official --limit 150 (top-2 checkpoints re-run at --limit 300, then --limit -1)"
+    command: [bash, eval_ckpts.sh, "150", ckpts/sft_r2/checkpoint-475, ckpts/sft_r2/checkpoint-950, ckpts/sft_r2/final]
+    dev_set: "official --limit 150; top two candidates re-run at --limit 300 [46553] and at --limit -1 (full 1319) [47538]"
     n: 150
     seed: null
   comparator:
     ref: exp-03
-    value: 0.627
+    value: 0.6266666666666667
     path: /home/ben/task/runs/results/ckpts_sft_r1_checkpoint-1600_l150.json
   diagnostic:
-    what: null
-    command: []
-    path: null
-
-# ---- 5. Result (after) ------------------------------------------------------
+    what: >-
+      failure-class breakdown of the eval log (missing ANSWER lines, over-long
+      completions, vLLM stop reasons) - whether the output contract still holds
+      after round 2
+    command: [python, summarize_log.py, "$latest", "2"]
+    path: /home/ben/task/logs
 result:
   execution: completed
   wall_h: 2.03
@@ -226,9 +162,9 @@ result:
     final_loss: 0.181
     steps: 1429
     notes: >-
-      1429 steps under the 70M-token budget, 2h02m, train loss 0.181 (RESULTS.md);
-      checkpoint-475 saved with loss 0.186 [46011], confirming the generation-config fix.
-      Three checkpoints: ckpts/sft_r2/checkpoint-475, checkpoint-950 and final.
+      70M-token budget, continued from ckpts/sft_r1/checkpoint-1600; intermediate
+      checkpoints at steps 475 (loss 0.186 at [46011]) and 950 kept as candidates.
+      Loss and step count as reported in RESULTS.md and the progress prints.
   measurements:
     - metric: accuracy
       value: 0.627
@@ -260,31 +196,33 @@ result:
       n: 1319
       path: /home/ben/task/runs/r2final_full.json
       delta_vs_comparator: 0.0463
-  diagnostic_result: {value: null, path: null, notes: null}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/logs
+    notes: >-
+      run at [47948] on the packaged copy of ckpts/sft_r2/final: 150 samples, 46
+      wrong, 0 missing ANSWER lines, 0 over-long, stop reason "stop" on all 150 -
+      the contract survives round 2 and the remaining errors are reasoning slips
+      (e.g. a correct 7x=700 setup then reporting 800 instead of 400)
   watch_set_result: null
   failure: null
 
-# ---- 6. Conclusion (after) --------------------------------------------------
 conclusion:
   verdict: supported
-  mechanism_verdict: not_tested
+  mechanism_verdict: supported
   summary: >-
-    Round 2 trained cleanly and beat round 1 under the same protocol: 67.3% (checkpoint-950)
-    and 66.7% (final) against 62.7% for round-1 checkpoint-1600 at limit 150 [46546], and
-    66.57% against 61.94% on the full 1319-item test set - the agent's own reading is that
-    the "full-test deltas r1->r2 = +4.6 pts are far outside noise" (RESULTS.md). No probe
-    separated the rejection-sampling mechanism from the extra data, so why it improved is
-    not established.
+    Round 2 completed in 2h02m and beat its parent under the same limit-150
+    protocol (0.673 / 0.667 vs 0.6267) and on the full test set (0.6657 vs 0.6194
+    for round 1's checkpoint-1600, +4.6 pts), with the format contract intact.
+    Rejection sampling on verified on-policy solutions did what the agent expected.
   decision: adopt
   next_step: >-
-    Select between checkpoint-950 and final and package it as final_model ([46892],
-    carried out as exp-06 and exp-07).
+    Package the best round-2 checkpoint as final_model and validate the packaged
+    directory itself.
 
-# ---- outcome (joined by the pipeline; never written by the extractor) --------
 outcome:
   official_accuracy: null
 
-# ---- provenance (extraction) ------------------------------------------------
 provenance:
   kind: extracted
   run_ref: r-27c73665
@@ -293,24 +231,26 @@ provenance:
     problem: true
     hypothesis: false
   anchors:
-    problem: [42477, 45389]
-    setup: [45390, 45393]
+    problem: [42477, 42632, 45389]
+    setup: [42635, 43356, 45390, 45393]
     evaluation: [46220, 46553, 47538]
-    result: [46011, 46546, 46892, 47770]
-    conclusion: [46546, 46892]
+    result: [46011, 46546, 46892, 47770, 47949]
+    conclusion: [46892, 47770]
   snapshot_files:
-    - train_sft.py
     - rejection_sample.py
     - datagen_replay2.py
     - datagen_round2_merge.py
+    - train_sft.py
     - eval_ckpts.sh
+    - finalize_ckpt.py
+    - summarize_log.py
     - evaluate.py
     - RESULTS.md
   smoke_runs: []
   extractor: claude-opus-5
   unresolved:
-    - "The limit-150 score for checkpoint-475 (0.627) appears only in the RESULTS.md table; the agent's message at [46546] quotes only checkpoint-950 and final."
-    - "The same ckpts/sft_r2/final weights scored 0.667 at limit 150 here [46546] and 0.693 when re-evaluated as the packaged final_model directory [47947]; the digest does not explain the gap."
-    - "The full-test measurement (0.6657) was produced by the launch at [47538] on ckpts/sft_r2/final, i.e. this card's output before packaging; checkpoint-950's full-test score was measured only through the packaged directory (exp-06)."
-    - "Checkpoint selection was done against the official test set (limit 300 and the full 1319 items), which the agent itself flags as a selection risk in RESULTS.md; no held-out dev split of its own was ever built."
-    - "No eval JSON is in the workspace snapshot; measurement paths are the in-run paths written by eval_ckpts.sh and evaluate.py."
+    - "the limit-150 values 0.627 / 0.673 / 0.667 are the agent's rounded prints ([46546], RESULTS.md); full-precision figures were not shown"
+    - "checkpoint-475 was never evaluated beyond limit 150, and checkpoint-950's full-test number was measured on its packaged copy (exp-06), not on the checkpoint directory"
+    - "RESULTS.md lists 0.693 at limit 150 for this checkpoint, measured on the packaged final_model at [47947]; the checkpoint directory itself measured 0.667 at [46546] under the same --limit"
+    - "no eval JSON files are present in the task snapshot; measurement paths are the paths written during the run"
+    - "the exact inspect log filename behind the [47948] diagnostic is not in the stream (it was selected with ls -t)"

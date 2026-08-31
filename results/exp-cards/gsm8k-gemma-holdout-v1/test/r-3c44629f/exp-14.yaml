@@ -1,0 +1,180 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-14
+created_at: null
+elapsed_h: 6.20
+
+problem:
+  statement: >-
+    GRPO works but its gains do not transfer: the round-2 continuation reached a
+    sampled-train reward of 0.92 while its test score fell to 0.716, and a mid-run
+    checkpoint of round 1 was tied with its endpoint. The pattern the agent named is
+    train-overfitting - the policy is being sharpened on the training reward faster than
+    the improvement generalises ([1343], [1394], [1406]).
+  evidence:
+    - path: /home/ben/task/runs/grpo_v5_500.json
+      locator: "[1343]"
+      observation: "round-2 GRPO: sampled-train reward 0.92 but 0.716 at --limit 500, below the 0.728 it continued from"
+    - path: /home/ben/task/runs/ck125_1000.json
+      locator: "[1394]"
+      observation: "the step-125 checkpoint scores 0.707 against the endpoint's 0.702 on 1000 items - tied within noise"
+    - path: /home/ben/task/results.md
+      locator: "section 'FINAL COMPARISON', written at [1566]"
+      observation: "the run's own summary of why this launch was made: cleaner advantages should mean less train-overfit"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Doubling the number of sampled completions per prompt to 16 gives cleaner
+    group-relative advantage estimates, which will reduce the train-overfitting and
+    generalise better than the num_gen=8 run ("GRPO with num_gen=16 (cleaner advantage
+    estimates -> better test generalization, addressing the train-overfit gap)", [1406]).
+  mechanism: >-
+    With 8 samples per prompt the advantage estimate within a group is noisy, so gradient
+    steps partly fit sampling noise; 16 samples halve that variance and leave more of the
+    update pointing at real improvement ([1406], [1515]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-10
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/sft_rft1
+    origin: exp-04
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, train split), prompts only"
+      n_examples: null
+      built_by: /home/ben/task/src/train_grpo.py
+      build_command: []
+      selection: >-
+        Built inline by the GRPO script: GSM8K train questions not matching a test
+        question, rendered through the eval's MATH_PROMPT_TEMPLATE; gold number used only
+        by the reward function.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl GRPOTrainer with colocated vLLM + peft LoRA"
+    peft: "LoRA r=32 alpha=64 targets=.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+    hyperparams:
+      lr: 3.0e-05
+      epochs: null
+      batch_size: 16
+      grad_accum: 12
+      max_seq_len: "max_prompt_length 320 / max_completion_length 300"
+      scheduler: null
+      warmup: "10 steps"
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        Launch flags at [1407]: max_steps 120, num_generations 16 (the change under test,
+        against 8 in exp-10/exp-12), grad_accum 12, temperature 1.0, beta 0.0, lora_r 32,
+        vllm_gpu_memory_utilization 0.30, save_steps 20. Same parent as exp-10, i.e. this
+        is an alternative round 1, not a continuation. Script constants as at [790]/[891]:
+        scale_rewards="group", warmup_steps 10, max_grad_norm 0.5, gradient_checkpointing,
+        reward = 1.0 correct answer + 0.2 well-formed ANSWER line, no KL term. Env:
+        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, PYTHONUNBUFFERED=1.
+    target_format: >-
+      eval-style single-turn prompt; completions scored by the benchmark's numeric matcher.
+  command:
+    argv: [nohup, python, src/train_grpo.py, --init-from, ckpt/sft_rft1, --out, ckpt/grpo_v6, --max-steps, "120", --num-gen, "16", --bs, "16", --grad-accum, "12", --lr, "3e-5", --beta, "0.0", --temp, "1.0", --max-prompt, "320", --max-comp, "300", --lora-r, "32", --vllm-mem, "0.30", --save-steps, "20"]
+    cwd: /home/ben/task
+    script: /home/ben/task/src/train_grpo.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONUNBUFFERED: "1"}
+    log: /home/ben/task/logs/grpo_v6.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 (81559 MiB) [5]"
+    planned_h: 0.65
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/grpo_v6, --limit, "1000", --max-connections, "16", --max-tokens, "700", --gpu-memory-utilization, "0.55", --json-output-file, runs/grpo_v6_1000.json]
+    dev_set: "official --limit 1000"
+    n: 1000
+    seed: null
+  comparator:
+    ref: exp-11
+    value: 0.702
+    path: /home/ben/task/runs/final_model_1000.json
+  diagnostic:
+    what: "sampled-train correctness (reward_correct/mean) over the run, with 16 samples per prompt"
+    command: []
+    path: /home/ben/task/logs/grpo_v6.log
+
+result:
+  execution: completed
+  wall_h: 0.70
+  output_checkpoint: /home/ben/task/ckpt/grpo_v6
+  training_summary:
+    final_loss: null
+    steps: 120
+    notes: >-
+      Completed 120 steps at ~51 GB with adapter checkpoints at 20, 40, 60, 80, 100, 120
+      plus the merged final model [1500]. The merged weights of this run were then copied
+      to final_model (exp-15) and every later measurement of "grpo_v6" was taken through
+      that copy.
+  measurements:
+    - metric: accuracy
+      value: 0.719
+      n: 1000
+      path: /home/ben/task/runs/grpo_v6_1000.json
+      delta_vs_comparator: 0.017
+  diagnostic_result:
+    value: 0.9
+    path: /home/ben/task/logs/grpo_v6.log
+    notes: >-
+      reward_correct/mean climbed from 0.79 at the start to roughly 0.88-0.95 by the end
+      [1500], a cleaner climb than the num_gen=8 run.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    With 16 samples per prompt, GRPO scored 0.719 on 1000 items against 0.702 for the
+    num_gen=8 model under the same protocol - "a +1.7% improvement (cleaner advantages
+    reduced overfitting, as hypothesized). This is my new best" [1515]. Measured later
+    through the packaged copy on the whole 1319-item test set, the same weights gave
+    0.7263 against 0.7074 for the num_gen=8 model (exp-15).
+  decision: adopt
+  next_step: >-
+    Make this the submission (exp-15) and try one gentler continuation from it at
+    num_gen=16, lr=2e-5 (exp-16) ([1515], [1566]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-3c44629f
+  launch_i: 1407
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [1343, 1394, 1406]
+    setup: [1407]
+    evaluation: [1499, 1503, 1515]
+    result: [1471, 1500, 1515]
+    conclusion: [1515, 1565]
+  snapshot_files:
+    - results.md
+    - SUMMARY.md
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      runs/grpo_v6_1000.json is not in the workspace snapshot and 0.719 is not in
+      results.md; it is the value the agent stated at [1515].
+    - >-
+      num_gen and max_steps changed together (16/120 here against 8/200 in exp-10), so the
+      +1.7 points cannot be attributed to the sampling width alone.

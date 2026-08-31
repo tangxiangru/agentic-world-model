@@ -1,0 +1,214 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 4.93
+problem:
+  statement: At 57.3% the remaining failures are wrong final answers rather than malformed ones ("Format
+    is fine; arithmetic errors are the bottleneck" [158]); a first GRPO attempt over GSM8K train alone
+    showed no learning signal - "GRPO isn't learning on easy train items (zero reward variance)" [187].
+  evidence:
+  - path: /home/ben/task/logs/eval_fewshot_150.json
+    locator: '[249]'
+    observation: accuracy 0.5733 (stderr 0.0405) on 150 items - the incumbent
+  - path: /home/ben/task/logs/grpo_smoke.log
+    locator: '[185]'
+    observation: '2-step smoke run: rewards/reward_correctness/mean 1.0, reward_std 0.0, frac_reward_zero_std
+      1.0 - every sampled group was already correct, so no advantage signal'
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: GRPO with an answer-correctness reward, run over a mix of GSM8K train and harder MetaMath GSM
+    prompts (rephrased, SV, FOBAR) at temperature 1.0, will push accuracy past the 57.3% incumbent [187][251].
+  mechanism: Reinforcing sampled completions whose ANSWER line matches gold directly optimises the graded
+    quantity; the harder MetaMath prompt mix is there to create the within-group reward variance that
+    GSM8K train alone did not produce.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft_fewshot/final
+    origin: exp-02
+    hash: null
+  data:
+  - path: /home/ben/task/data (in-memory, built by train_grpo.py)
+    source: openai/gsm8k train + meta-math/MetaMathQA GSM_Rephrased, GSM_AnsAug, GSM_SV, GSM_FOBAR
+    n_examples: 10000
+    built_by: /home/ben/task/train_grpo.py
+    build_command: []
+    selection: 'prompt-only dataset: all 7473 GSM8K train questions plus MetaMath GSM_* queries with the
+      gold pulled from "The answer is:"/\boxed, templated through the eval prompt and the chat template,
+      shuffled (seed 42) and cut to --max-prompts 10000; the printed "GRPO dataset size" line is not in
+      the stream, 10000 is the launch''s cap applied by ds.select in train_grpo.py [252][255]'
+    contamination_check: not_run
+    mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: trl 0.27.2 GRPOTrainer with colocated vllm 0.11.0, peft 0.18.1
+    peft: LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+      (merged into the base weights on save)
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: --max-steps 500 (overrides the 1 epoch), --num-generations 4, --max-completion-length 768,
+        --max-prompts 10000 from the launch; temperature=1.0, top_p=0.95, use_vllm=True, vllm_mode=colocate,
+        vllm_gpu_memory_utilization=0.4, reward_weights=[1.0, 0.2], bf16, seed=42, stop_token_ids=[eos,
+        <end_of_turn>] are hard-coded in train_grpo.py in the workspace and were not overridden; no scheduler,
+        warmup or weight decay is set in the script
+    target_format: 'reward, not tokens: reward_correctness gives 1.0 when the completion''s "ANSWER: <n>"
+      line matches gold (numeric tolerance 1e-6), -0.25 when it is wrong and -0.5 when absent; reward_format
+      gives up to 0.3 for a well-formed, non-trivial completion; weighted 1.0 / 0.2'
+  command:
+    argv:
+    - nohup
+    - python
+    - train_grpo.py
+    - --model
+    - checkpoints/sft_fewshot/final
+    - --output-dir
+    - checkpoints/grpo
+    - --per-device-train-batch-size
+    - '8'
+    - --num-generations
+    - '4'
+    - --gradient-accumulation-steps
+    - '2'
+    - --max-steps
+    - '500'
+    - --max-prompts
+    - '10000'
+    - --max-completion-length
+    - '768'
+    - --learning-rate
+    - 5e-6
+    - --save-steps
+    - '50'
+    - --logging-steps
+    - '5'
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {}
+    log: /home/ben/task/logs/grpo.log
+  budget:
+    gpu: 1x NVIDIA H100 80GB HBM3
+    planned_h: null
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - final_model
+    - --limit
+    - '150'
+    - --json-output-file
+    - logs/eval_grpo_150.json
+    - --max-connections
+    - '4'
+    - --max-tokens
+    - '1024'
+    - --gpu-memory-utilization
+    - '0.85'
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.5733333333333334
+    path: /home/ben/task/logs/eval_fewshot_150.json
+  diagnostic:
+    what: 'the training reward itself: mean reward_correctness and reward_std across the 101 logged steps,
+      to see whether the correctness reward is rising and whether the zero-variance problem was fixed
+      [291]'
+    command:
+    - python
+    - -c
+    - means=re.findall(r"'rewards/reward_correctness/mean':\s*([0-9.eE+-]+)", t)
+    path: /home/ben/task/logs/grpo.log
+result:
+  execution: completed
+  wall_h: 0.55
+  output_checkpoint: /home/ben/task/checkpoints/grpo/final
+  training_summary:
+    final_loss: null
+    steps: 500
+    notes: no train_runtime or final loss line for this run appears in the stream; 101 reward log entries
+      at logging_steps=5 with logging_first_step, consistent with the --max-steps 500 it was given [292].
+      LoRA merged into the base weights on save; wall time is the gap between the launch [255] t=+4.93h
+      and the promote/eval at [285] t=+5.48h.
+  measurements:
+  - metric: accuracy
+    value: 0.5066666666666667
+    n: 150
+    path: /home/ben/task/logs/eval_grpo_150.json
+    delta_vs_comparator: -0.06666666666666671
+  diagnostic_result:
+    value: 0.7421875
+    path: /home/ben/task/logs/grpo.log
+    notes: 'mean reward_correctness 0.766 -> 0.641 (mid) -> 0.578 at the last logged step, mean of the
+      last 20 = 0.742: no upward trend over 500 steps. reward_std over the last 10 entries ranges 0.15-0.60,
+      so the zero-variance problem of the smoke run was fixed [292]'
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: GRPO ran its 500 steps and lost 6.7 pts against the incumbent under the same protocol (50.7%
+    vs 57.3%) [292]. The prompt mix did restore reward variance, but the correctness reward never trended
+    up, so the mechanism the claim rested on is not visible in the training signal either.
+  decision: reject
+  next_step: '"Reverting to the 57.3% few-shot SFT model and trying rejection fine-tuning" [294]; final_model
+    was restored to the exp-02 checkpoint at [295].'
+outcome:
+  official_accuracy: null
+provenance:
+  kind: extracted
+  run_ref: r-80561db8
+  launch_i: 255
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem:
+    - 158
+    - 185
+    - 187
+    - 249
+    setup:
+    - 252
+    - 255
+    evaluation:
+    - 285
+    - 291
+    result:
+    - 292
+    conclusion:
+    - 292
+    - 294
+  snapshot_files:
+  - train_grpo.py
+  - promote_model.py
+  - evaluate.py
+  smoke_runs:
+  - launch_i: 172
+    outcome: 'crashed: ValueError generation_batch_size (2) must be divisible by num_generations (4)'
+  - launch_i: 175
+    outcome: passed (2 steps) but frac_reward_zero_std 1.0 - no reward variance on GSM8K train alone
+  extractor: claude-opus-5[1m]
+  unresolved:
+  - an earlier version of train_grpo.py [105] was replaced at [169] and again at [252]; only the last
+    version is in the workspace, so the smoke runs at [172] and [175] were run against script text that
+    no longer exists
+  - no train_runtime line for the 500-step run is in the stream; wall_h is derived from event timestamps

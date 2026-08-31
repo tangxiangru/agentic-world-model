@@ -1,0 +1,178 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.27
+
+problem:
+  statement: >-
+    The base pretrained model almost never scores on the eval: it rambles, emits
+    several "ANSWER:" lines in one completion and never stops, so the grader
+    reads a later, wrong answer. Rough score on the 20 samples that had been
+    logged before the baseline eval was killed: 1/20 (~5%).
+  evidence:
+    - path: /home/ben/task/logs/2026-06-15T06-57-29+02-00_gsm8k_RCV8xZ39pbVshKTwr7yPLT.json
+      locator: "[182]-[183]: 20 logged samples of the killed baseline eval"
+      observation: "score value distribution C:1, I:19 -> rough correct 1/20"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-fdeba838.md
+      locator: "[186], [188]"
+      observation: >-
+        printed baseline completion runs past its first answer into invented new
+        problems; agent concludes the model "rambles ... never stops"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-06-15T06-57-29+02-00_gsm8k_RCV8xZ39pbVshKTwr7yPLT.json
+      question: null
+      gold: null
+      model_output: >-
+        "70+45=115>>115\n\nANSWER: 115\n\nFind the value of x in the figure:\n\nReasoning:\nx = 180 + 60 = <<180+60=240>>240\n\nANSWER: 240\n\nA line has the equation y = x. ..."
+      failure: "keeps generating new problems and further ANSWER: lines after the first answer"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full supervised fine-tuning on GSM8K train, formatted exactly as the eval
+    renders prompts and targets, will teach a clean single-answer format and a
+    stop, and give an enormous gain over the ~5% baseline.
+  mechanism: >-
+    The failure is format/stopping, not knowledge: training on
+    "reasoning\n\nANSWER: <target>" assistant turns with the prompt masked
+    teaches the model to emit one answer and end the turn.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF id: openai/gsm8k (main, train split), loaded inside the training script"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/train_sft.py
+      build_command: []
+      selection: >-
+        every GSM8K train row; answer split on "####" into reasoning and target;
+        assistant turn = "reasoning\n\nANSWER: target" (n from [75]:
+        "GSM8K train has 7473 examples"; the launch printed no loaded count)
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 (torch 2.8.0+cu129, per the package listing at [24])"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        Only the five values above are stated by the launch argv. The training
+        script is NOT in the workspace snapshot, so scheduler / warmup /
+        weight_decay / precision / seed are left null; the script source in the
+        digest write event [86] shows cosine, warmup_ratio 0.03, weight_decay
+        0.0, bf16, seed 42, gradient checkpointing, vision tower and projector
+        frozen.
+    target_format: >-
+      the eval's MATH_PROMPT_TEMPLATE user turn rendered with templates/gemma3.jinja,
+      assistant turn "reasoning\n\nANSWER: <target>", prompt tokens masked to -100
+      (completion-only loss)
+  command:
+    argv: ["nohup", "python", "scripts/train_sft.py", "--output_dir", "work/v1_gsm8k", "--data", "gsm8k", "--epochs", "3", "--lr", "1e-5", "--bs", "8", "--grad_accum", "4", "--max_len", "1024", "--save", ">", "work/train_v1.log", "2>&1", "&"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/work/train_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: ["bash", "scripts/run_eval.sh", "--model-path", "work/v1_gsm8k", "--limit", "150", "--max-connections", "8", "--json-output-file", "work/eval_v1.json"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.05
+    path: /home/ben/task/logs/2026-06-15T06-57-29+02-00_gsm8k_RCV8xZ39pbVshKTwr7yPLT.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/work/v1_gsm8k
+  training_summary:
+    final_loss: 0.30
+    steps: 702
+    notes: >-
+      "loss dropped to ~0.30, model saved (8.6GB, 2 shards)" [245]; progress bar
+      showed 702 total steps [208]. Launched at t=+0.27h, reported complete at
+      t=+0.62h; exact runtime not printed. Saving initially produced a directory
+      vLLM could not load - preprocessor_config.json / processor_config.json were
+      added to the save step at [293] and the model dir re-used.
+  measurements:
+    - metric: accuracy
+      value: 0.467
+      n: 150
+      path: /home/ben/task/work/eval_v1.json
+      delta_vs_comparator: 0.417
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    v1 reached 46.7% on the 150-item eval versus a ~5% baseline, and the printed
+    outputs show the format problem is gone (clean single ANSWER line) - but the
+    baseline was only a 20-sample fragment of a killed run, not the same
+    protocol, so the comparison is not a like-for-like measurement. The agent
+    read the remaining failures as "math reasoning errors (wrong intermediate
+    calcs)" [397].
+  decision: adopt
+  next_step: >-
+    "The #1 lever is better training data (MetaMathQA augmentation)" [397]; also
+    test greedy decoding, since the eval samples at temperature 1.0.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-fdeba838
+  launch_i: 197
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [182, 183, 186, 188]
+    setup: [85, 86, 125, 197]
+    evaluation: [252, 295, 372]
+    result: [245, 384, 389, 961]
+    conclusion: [389, 395, 397]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 94, outcome: "passed - CPU-only data-pipeline check, 50 examples: prompt ids an exact prefix of full ids (20/20), mask boundary correct"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the workspace snapshot holds only evaluate.py, timer.sh, system_monitor.log and the two judgement files - no scripts/train_sft.py, no work/eval_*.json - so every script and every number here is read from the digest, not from a file that can be reopened"
+    - "the first eval attempts of this checkpoint ([252], [295], [314], [372]) failed to start vLLM; the 46.7% comes from the attempt at [372]. Exact wall time of training is not printed."
+    - "baseline ~5% is 1/20 on a partial log, not a completed --limit run"

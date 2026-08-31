@@ -1,0 +1,222 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.12
+problem:
+  statement: 'The graded task wants step-by-step reasoning whose last line is "ANSWER: $ANSWER", prompted
+    10-shot from the train split [23]; the base pretrained checkpoint has no such behaviour and no chat/answer
+    format to score.'
+  evidence:
+  - path: /home/ben/task/evaluate.py
+    locator: '[5], [23]'
+    observation: 'the eval script''s argparse and the agent''s read of the task: prompts are 10-shot from
+      train and scored on a final "ANSWER: $ANSWER" line'
+  - path: /home/ben/task/prepare_data.py
+    locator: '[45]'
+    observation: the prompt template the agent wrote to match that format, used for every training example
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: 'Full SFT of the base checkpoint on MetaMathQA''s GSM subset plus GSM8K train, rewritten so every
+    assistant turn ends in "ANSWER: <n>", will make the model answer in the format the grader scores and
+    lift accuracy over the untrained base model [41][75].'
+  mechanism: The base model is a pretrained (non-instruct) checkpoint; supervised imitation of correctly
+    formatted GSM-style solutions supplies both the chain-of-thought habit and the terminal ANSWER line.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+  - path: /home/ben/task/data/sft_gsm.jsonl
+    source: derived:local (openai/gsm8k train + meta-math/MetaMathQA GSM_* types)
+    n_examples: 112534
+    built_by: /home/ben/task/prepare_data.py
+    build_command:
+    - python
+    - prepare_data.py
+    - --output
+    - data/sft_gsm.jsonl
+    selection: 'all 7473 GSM8K train items (#### answer rewritten to a trailing "ANSWER: <n>", <<calc>>
+      annotations kept) plus every MetaMathQA row whose type starts with GSM_, its "The answer is:"/\boxed
+      tail stripped and replaced by "ANSWER: <n>"; exact-query dedup against what is already in the file;
+      user turn = the eval''s math prompt template [45][51][60]'
+    contamination_check: not_run
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl 0.27.2 SFTTrainer (transformers 4.57.3, Gemma3ForCausalLM, flash_attention_2)
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: packing=True (--packing on the launch). scheduler=cosine, warmup_ratio=0.03, weight_decay=0.0,
+        bf16, gradient_checkpointing (use_reentrant=False), optim=adamw_torch_fused, max_grad_norm=1.0,
+        completion_only_loss=True, dataset_text_field=None, seed=42 come from train_sft.py in the workspace
+        and were not overridden by this launch. --model was not passed, so the script default google/gemma-3-4b-pt
+        was trained
+    target_format: 'chat template written by train_sft.py (<start_of_turn>user / <start_of_turn>model,
+      <end_of_turn>); assistant turn = reasoning lines then "ANSWER: <n>"; loss on the completion only'
+  command:
+    argv:
+    - nohup
+    - python
+    - train_sft.py
+    - --data
+    - data/sft_gsm.jsonl
+    - --output-dir
+    - checkpoints/sft_gsm
+    - --num-train-epochs
+    - '2'
+    - --learning-rate
+    - 2e-5
+    - --per-device-train-batch-size
+    - '8'
+    - --gradient-accumulation-steps
+    - '4'
+    - --max-seq-length
+    - '1536'
+    - --save-steps
+    - '400'
+    - --logging-steps
+    - '20'
+    - --packing
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/sft_gsm.log
+  budget:
+    gpu: 1x NVIDIA H100 80GB HBM3
+    planned_h: 2.2
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - final_model
+    - --limit
+    - '150'
+    - --json-output-file
+    - logs/eval_sft_150.json
+    - --max-connections
+    - '4'
+    - --max-tokens
+    - '1024'
+    - --gpu-memory-utilization
+    - '0.85'
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: do the outputs carry the required ANSWER line at all, and how many of the 30 scored items are
+      correct [155][159]
+    command:
+    - python
+    - -c
+    - correct=sum(1 for s in log['samples'] if s['scores']['match']['value']=='C')
+    path: null
+result:
+  execution: completed
+  wall_h: 2.19
+  output_checkpoint: /home/ben/task/checkpoints/sft_gsm/final
+  training_summary:
+    final_loss: 0.1182
+    steps: 1614
+    notes: train_runtime 7878.8 s, mean train_loss 0.1906, mean_token_accuracy 0.964 at epoch 2.0; last
+      logged step loss 0.1182 [142]. Output copied to final_model by promote_model.py at [145] before
+      evaluation.
+  measurements:
+  - metric: accuracy
+    value: 0.38666666666666666
+    n: 150
+    path: /home/ben/task/logs/eval_sft_150.json
+    delta_vs_comparator: null
+  - metric: accuracy
+    value: 0.3
+    n: 30
+    path: /home/ben/task/logs/eval_sft_30.json
+    delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: 30/30 completions contained an "ANSWER:" line and 9/30 were correct on the 30-item run [160];
+      the printed failures show correct formatting with wrong arithmetic [156]
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: SFT finished in 2.2 h and the model now answers in the graded format (30/30 outputs end in
+    an ANSWER line [160]), scoring 38.7% on 150 items [195]. The format mechanism held, but no base-model
+    baseline was ever measured, so the size of the gain is unquantified.
+  decision: adopt
+  next_step: 'The agent''s own reading at [197]: "SFT never saw the eval''s 10-shot system prompt" - retrain
+    from this checkpoint on few-shot-matched data.'
+outcome:
+  official_accuracy: null
+provenance:
+  kind: extracted
+  run_ref: r-80561db8
+  launch_i: 76
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem:
+    - 5
+    - 23
+    - 45
+    setup:
+    - 45
+    - 48
+    - 51
+    - 63
+    - 76
+    evaluation:
+    - 145
+    - 188
+    result:
+    - 142
+    - 145
+    - 156
+    - 160
+    - 195
+    conclusion:
+    - 195
+    - 197
+  snapshot_files:
+  - prepare_data.py
+  - train_sft.py
+  - promote_model.py
+  - evaluate.py
+  - run_eval.sh
+  smoke_runs:
+  - launch_i: 63
+    outcome: passed (5 steps, batch 2, no packing; train_loss 1.272)
+  extractor: claude-opus-5[1m]
+  unresolved:
+  - no base-model measurement exists anywhere in the stream, so this card has no comparator and the hypothesis
+    cannot be scored
+  - an ad-hoc 13-gram overlap audit of data/sft_gsm.jsonl against the gsm8k test split was launched at
+    [118]; its output never appears, so the contamination check is recorded as not_run
+  - data/sft_all.jsonl (146411 rows, GSM_* + MATH_*) was built at [63] but never used by any launch

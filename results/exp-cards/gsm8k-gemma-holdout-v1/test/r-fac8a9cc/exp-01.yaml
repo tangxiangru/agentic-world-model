@@ -1,0 +1,238 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.32
+
+problem:
+  statement: >-
+    The pretrained base model does not answer in the evaluator's protocol: it
+    never terminates cleanly and rarely emits the required terminal "ANSWER:"
+    line, so most completions cannot be scored at all.
+  evidence:
+    - path: /home/ben/task/baseline20.json
+      locator: "accuracy 0.1, stderr 0.0688 (n=20)"
+      observation: "the untrained checkpoint scores 10% on a 20-item diagnostic"
+    - path: null
+      locator: "[219]"
+      observation: >-
+        agent: "median completion length was 618 words, only 13/20 outputs
+        produced the required terminal answer line, and some ran to roughly
+        1,500 words"
+  affected_share: 0.35
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    One packed LoRA SFT pass over a decontaminated grade-school math corpus,
+    with targets written in the evaluator's exact "Reasoning: ... ANSWER: n"
+    protocol and terminated by the end-of-turn token, will both raise accuracy
+    and eliminate runaway generation. (agent, [219]: "The SFT targets explicitly
+    include the end-of-turn token after a concise `ANSWER:` line, so the first
+    evaluation will measure both arithmetic gains and whether that
+    runaway-generation failure is eliminated.")
+  mechanism: >-
+    Supervising on prompts that are byte-identical to the evaluator's template
+    and on responses that stop right after the ANSWER line teaches the stopping
+    behaviour the scorer needs, while the OpenMath/Orca solutions supply the
+    grade-school arithmetic the base checkpoint lacks.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data_sft
+      source: >-
+        HF openai/gsm8k (main, train split) + nvidia/OpenMathInstruct-2 +
+        microsoft/orca-math-word-problems-200k, all read from the local
+        hf_cache parquet shards
+      n_examples: null
+      built_by: /home/ben/task/prepare_data.py
+      build_command: []
+      selection: >-
+        EXPERIMENTS.md: "7,471 safe GSM8K-train examples (fourfold task
+        anchoring), 100,000 verified OpenMathInstruct-2 grade-school solutions,
+        and 15,000 auxiliary Orca-Math examples: 49.3M packed tokens total."
+        prepare_data.py drops any external question whose 4-word-shingle Jaccard
+        against a held-out test question is >= 0.52 or whose normalised form
+        matches exactly, keeps only scalar-numeric answers whose value is
+        restated in the solution, reformats every example into the evaluator
+        PROMPT template with a terminal "ANSWER: n" line, masks prompt tokens
+        from the loss, and best-fit packs into 1024-token blocks. The
+        prepare_data.py invocation that produced data_sft is not in the digest
+        (the stream opens at this launch), so its exact argv is unknown; the
+        composition above matches the script's argparse defaults
+        (openmath-limit 100000, orca-limit 15000, gsm-repeats 4,
+        block-size 1024, packing-mode best_fit, seed 314159).
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: >-
+      custom single-GPU PyTorch loop in train_sft.py: transformers
+      AutoModelForImageTextToText + peft LoraConfig, flash_attention_2,
+      gradient checkpointing, fused AdamW, liger_kernel
+      fused_linear_cross_entropy (versions not printed in the digest)
+    peft: >-
+      LoRA r=64 alpha=128 dropout=0.05 targets=all 238 language-model
+      q/k/v/o/gate/up/down_proj across 34 layers; vision_tower and
+      multi_modal_projector frozen
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: "cosine to a floor of 0.1x peak (min_lr_ratio 0.1)"
+      warmup: "120 steps"
+      weight_decay: 0.01
+      precision: bf16 (tf32 matmuls enabled)
+      seed: 271828
+      other: >-
+        lr 2e-4, epochs 1, micro-batch 4, grad-accum 2, warmup-steps 120,
+        log-steps 50 and save-steps 2000 are on the command line at [118].
+        block-size 1024, min-lr-ratio 0.1, weight-decay 0.01, lora-rank 64,
+        lora-alpha 128, lora-dropout 0.05 and seed 271828 are argparse defaults
+        of train_sft.py (workspace copy) that this launch did NOT override.
+        AdamW betas (0.9, 0.95), eps 1e-8, grad-norm clip 1.0 are hard-coded in
+        the script. The script also merges the adapter at the end and writes a
+        standalone run1_sft/model with do_sample=true, temperature=1e-6,
+        top_p=1.0, top_k=0 (vLLM clamps this to 0.01, i.e. near-greedy).
+    target_format: >-
+      the evaluator's own prompt template, response = "<reasoning>\n\nANSWER: n"
+      followed by end-of-turn; prompt tokens masked from the loss; examples
+      best-fit packed into 1024-token blocks (94.9% block utilisation)
+  command:
+    argv: [python, train_sft.py, --data-dir, data_sft, --output-dir, run1_sft, --epochs, "1", --micro-batch-size, "4", --grad-accum, "2", --lr, "2e-4", --warmup-steps, "120", --log-steps, "50", --save-steps, "2000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/run1_sft/train_log.jsonl
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, run1_sft/model, --limit, "150", --max-connections, "24", --max-tokens, "1024", --gpu-memory-utilization, "0.45", --json-output-file, eval_run1_150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.1
+    path: /home/ben/task/baseline20.json
+  diagnostic:
+    what: >-
+      mean generated tokens per problem, to check that the runaway-generation
+      failure named in the problem is actually gone
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.7
+  output_checkpoint: /home/ben/task/run1_sft/model
+  training_summary:
+    final_loss: 0.31
+    steps: 6022
+    notes: >-
+      agent at [430]: "Pass one is complete: 49.3M supervised tokens, 6,022
+      optimizer steps, final loss about 0.31." Loss trajectory from
+      run1_sft/train_log.jsonl: 0.95 -> 0.45 by step 250 ([154]), 0.371 at 2600
+      ([305]), 0.354 at 3250 ([364]), 0.319 at 4300 ([387]), 0.327 at 4950
+      ([420]). Throughput steady near 8.2k tokens/s, 12.5 GB peak allocation.
+      Intermediate adapters were written at steps 2,000 and 4,000 and merged to
+      run1_sft/model-step-2000 and model-step-4000 with merge_adapter.py
+      ([263]/[270], [373]); the first merge attempt at [263] failed because
+      Transformers rejects a greedy temperature=0 generation config, and the
+      script was fixed to save a neutral config first ([267]).
+  measurements:
+    - metric: accuracy
+      value: 0.46
+      n: 50
+      path: /home/ben/task/eval_step2000_50.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.48
+      n: 50
+      path: /home/ben/task/eval_step4000_50.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.6533333333333333
+      n: 150
+      path: /home/ben/task/eval_run1_150.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.6194086429112965
+      n: 1319
+      path: /home/ben/task/eval_run1_all_1319.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      agent at [285]: "Average generation fell from about 1,287 to 153 tokens,
+      so the stopping/format intervention worked", and at [300]: "formatting is
+      essentially solved (49/50 terminal answers); the remaining misses are
+      mathematical". Numbers appear only in the agent's prose; no probe file.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    The pass finished cleanly and lifted the fixed 50-item screen from 46% at
+    step 2,000 to 66% at the end, reaching 65.3% at --limit 150 and 61.9% on all
+    1,319 problems; formatting was solved outright (49/50 terminal answers,
+    mean output 1,287 -> 153 tokens). The verdict is inconclusive only because
+    the sole base-model number is a 20-item diagnostic (10%), never re-measured
+    under the 150- or 1319-item protocol used here.
+  decision: adopt
+  next_step: >-
+    agent at [381]/[422]: finish the cosine tail, then "restart a smaller 1e-4
+    adapter on the verified unique corpus" (exp-02).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-fac8a9cc
+  launch_i: 118
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [219]
+    setup: [118, 180]
+    evaluation: [273, 376, 431, 1245]
+    result: [154, 285, 300, 305, 364, 387, 420, 430, 437, 446, 448, 1249]
+    conclusion: [285, 381, 437, 448]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data.py
+    - merge_adapter.py
+    - finalize_assets.py
+    - evaluate.py
+    - baseline20.json
+    - eval_step2000_50.json
+    - eval_step4000_50.json
+    - eval_run1_150.json
+    - eval_run1_all_1319.json
+    - EXPERIMENTS.md
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The digest opens at this launch, so the prepare_data.py run that built data_sft, the baseline evaluation that produced baseline20.json, and any pre-launch reasoning are all outside the stream. The problem and hypothesis above are the agent's own words at [219], i.e. narrated after the launch rather than before it."
+    - "No base-model measurement exists under the 150- or 1319-item protocol; the only comparator is the 20-item baseline20.json, so every delta is left null."
+    - "merge_adapter.py and finalize_assets.py invocations that materialise this run's own adapters at scale 1.0 are recorded here rather than as separate cards: they are the standard export path applied identically to every checkpoint in this run."

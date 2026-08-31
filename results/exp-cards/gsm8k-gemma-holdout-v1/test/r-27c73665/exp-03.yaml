@@ -3,36 +3,36 @@ card_id: exp-03
 created_at: null
 elapsed_h: 0.82
 
-# ---- 1. Problem -------------------------------------------------------------
 problem:
   statement: >-
-    "ptrace is blocked and the process is stuck in datasets-library overhead" [31941]: two
-    launches of the round-1 SFT recipe (exp-01, exp-02) died in data preparation, so the
-    8% baseline of the base model still stands unaddressed with 9h of budget left.
+    Round-1 SFT still has not started after two attempts: the second launch hung
+    in datasets-library overhead during tokenisation and could not be inspected
+    (ptrace blocked). The underlying task problem is unchanged - the base model
+    scores 8% because it never stops after the ANSWER line.
   evidence:
     - path: /home/ben/task/runs/train_r1.log
-      locator: "[31941], [31942]"
-      observation: "second launch killed after ~22 min with no training step reached"
+      locator: "[31941]"
+      observation: >-
+        agent: "ptrace is blocked and the process is stuck in datasets-library
+        overhead"; no training progress after ~22 min
     - path: /home/ben/task/runs/baseline_50.json
       locator: "[15882]"
-      observation: "the problem the training is meant to fix is still open: base model 0.08 at limit 50"
+      observation: "base model accuracy 0.08 at limit 50 - the target this launch must beat"
   affected_share: null
   failure_examples: []
   watch_set: null
 
-# ---- 2. Hypothesis ----------------------------------------------------------
 hypothesis:
   claim: >-
-    With the data path rewritten to pure-Python batched tokenization and numpy packed
-    arrays (no datasets library), the round-1 SFT recipe will train to completion inside
-    the budget and lift accuracy far above the 8% baseline by fixing the output contract.
-    Reconstructed from [31941] and the smoke evidence at [23693] ("smoke checkpoint (40
-    steps on 2k examples) jumps 8% -> 62.5%"); the agent stated no expectation in its own
-    words before launching.
+    With the data path rewritten to pure-python batched tokenisation into numpy
+    arrays (no datasets library in the hot path), the same 167k-example full SFT
+    will complete inside the budget and produce a checkpoint that stops correctly
+    and scores far above the 8% base model.
   mechanism: >-
-    Same recipe as exp-01/exp-02; only the tokenization and packing implementation change,
-    so the contract-formatted targets (ANSWER line + <end_of_turn>, loss on assistant
-    tokens only) are what should move the score.
+    The stall was library overhead, not model or GPU work; and the assistant
+    target ("reasoning, ANSWER: <n>, <end_of_turn>") teaches the stop the
+    last-number scorer needs, which the smoke checkpoint already showed at
+    limit 8.
   expected_effect:
     metric: accuracy
     direction: higher
@@ -40,7 +40,6 @@ hypothesis:
     magnitude: null
   falsified_if: null
 
-# ---- 3. Setup ---------------------------------------------------------------
 setup:
   parent_checkpoint:
     path: google/gemma-3-4b-pt
@@ -48,24 +47,23 @@ setup:
     hash: null
   data:
     - path: /home/ben/task/data/sft_round1.jsonl
-      source: local
-      n_examples: null
+      source: "openai/gsm8k train + meta-math/MetaMathQA (GSM_* types) + microsoft/orca-math-word-problems-200k"
+      n_examples: 167000
       built_by: /home/ben/task/datagen.py
       build_command: [python, datagen.py]
       selection: >-
-        GSM8K train original solutions (calculator <<>> annotations stripped) + MetaMathQA
-        GSM_* responses split at "The answer is:" + Orca-Math-200k with the final number
-        extracted; per-source caps (all gsm8k train, metamath limit 55000, orca limit
-        105000), question dedup, 8-gram overlap filter against every openai/gsm8k test
-        question; ~12% of rows carry the exact eval 10-shot system prefix, ~5% a random
-        10-shot prefix, the rest none. Agent-reported size "167k examples" [17401];
-        RESULTS.md records "167k ex., 110.6M tok" and 99.7-99.8% packing efficiency.
-      contamination_check: not_run
+        GSM8K train solutions with <<>> calculator annotations stripped;
+        MetaMathQA GSM_* responses split on "The answer is:"; Orca-Math answers
+        with the last "the answer is"/last number extracted and normalised;
+        reasoning length 20-4000 chars; 8-gram overlap filter against all 1319
+        GSM8K test questions; question-level dedup; ~12% of rows carry the exact
+        eval 10-shot system prefix, ~5% a random 10-shot prefix, the rest none.
+        167k / 110.6M tokens are the agent's own figures ([17401], RESULTS.md).
+      contamination_check: passed
       mixture_weight: 1.0
-      repeats: null
   method:
     family: sft
-    framework: "transformers 4.57.3 Trainer, torch 2.8.0+cu129, flash_attention_2, adamw_bnb_8bit [3828]"
+    framework: transformers 4.57.3 Trainer (Gemma3ForConditionalGeneration, flash_attention_2)
     peft: none
     hyperparams:
       lr: 2.0e-05
@@ -79,71 +77,47 @@ setup:
       precision: bf16
       seed: 1
       other: >-
-        From the launch: --accum 6, --lr 2e-5, --save-steps 800 (and -u). From the
-        argparse defaults of train_sft.py in the workspace, not overridden: epochs 1.0,
-        seed 1, warmup-ratio 0.03, token-budget -1, max-examples -1. Hardcoded in the same
-        script: per_device_train_batch_size=1, ROW_LEN=8192, cosine schedule,
-        weight_decay=0.0, max_grad_norm=1.0, bf16, optim=adamw_bnb_8bit,
-        save_only_model=True, logging_steps=20. Full fine-tune of the 3.88B text
-        parameters with vision_tower and multi_modal_projector frozen, gradient
-        checkpointing, sequences packed into 8192-token rows with position_ids resets
-        (FA2 varlen, no cross-document attention).
+        epochs=1.0, seed=1, warmup_ratio=0.03, per_device_train_batch_size=1,
+        ROW_LEN=8192, lr_scheduler_type=cosine, weight_decay=0.0,
+        max_grad_norm=1.0, optim=adamw_bnb_8bit, save_only_model=True,
+        save_steps=800 are train_sft.py defaults/constants and were not
+        overridden on this launch (script text: task/train_sft.py). Full
+        fine-tune of the 3.88B text parameters with vision tower and multi-modal
+        projector frozen; gradient checkpointing; loss on assistant tokens only;
+        best-fit-decreasing packing into 8192-token rows with position_ids resets
+        (FA2 varlen, no cross-document attention), ~99.8% fill [40092].
     target_format: >-
-      gemma3.jinja chat template; optional few-shot system message; user turn = the eval's
-      MATH_PROMPT_TEMPLATE; assistant turn = reasoning + "\n\nANSWER: <number>" +
-      <end_of_turn>; labels -100 over the prompt.
+      chat template templates/gemma3.jinja, prompt = eval MATH_PROMPT_TEMPLATE
+      (optionally preceded by a 10-shot system message); assistant turn =
+      "<reasoning>\n\nANSWER: <number><end_of_turn>"
   command:
-    argv:
-      - python
-      - -u
-      - train_sft.py
-      - --data
-      - data/sft_round1.jsonl
-      - --out
-      - ckpts/sft_r1
-      - --accum
-      - "6"
-      - --lr
-      - "2e-5"
-      - --save-steps
-      - "800"
+    argv: [python, -u, train_sft.py, --data, data/sft_round1.jsonl, --out, ckpts/sft_r1, --accum, "6", --lr, 2e-5, --save-steps, "800"]
     cwd: /home/ben/task
     script: /home/ben/task/train_sft.py
     env: {}
     log: /home/ben/task/runs/train_r1.log
   budget:
-    gpu: "1x H100 80GB [1299]"
-    planned_h: 3.1
+    gpu: "1x H100 80GB"
+    planned_h: 3.0
 
-# ---- 4. Evaluation ----------------------------------------------------------
 evaluation:
   protocol:
-    command:
-      - python
-      - evaluate.py
-      - --model-path
-      - ckpts/sft_r1/checkpoint-1600
-      - --limit
-      - "150"
-      - --max-connections
-      - "8"
-      - --json-output-file
-      - runs/results/ckpts_sft_r1_checkpoint-1600_l150.json
+    command: [bash, eval_ckpts.sh, "150", ckpts/sft_r1/checkpoint-800, ckpts/sft_r1/checkpoint-1600, ckpts/sft_r1/final]
     dev_set: "official --limit 150"
     n: 150
     seed: null
   comparator:
     ref: base_model
-    value: null
+    value: 0.08
     path: /home/ben/task/runs/baseline_50.json
   diagnostic:
     what: >-
-      failure-class breakdown of the limit-150 eval logs - parse/stop failures
-      (no ANSWER line, max_tokens overruns) versus genuine wrong answers
-    command: [python, summarize_log.py, logs/2026-07-17T02-07-33+02-00_gsm8k_9A2UMgxk892fUbMKy7APv3.json, "0"]
+      failure-class breakdown of the eval log (completions with no ANSWER line,
+      completions cut off by max_tokens, vLLM stop reasons) - tests whether the
+      remaining errors are format/stopping failures or genuine reasoning errors
+    command: [python, summarize_log.py, "$f", "0"]
     path: /home/ben/task/logs/2026-07-17T02-07-33+02-00_gsm8k_9A2UMgxk892fUbMKy7APv3.json
 
-# ---- 5. Result (after) ------------------------------------------------------
 result:
   execution: completed
   wall_h: 3.2
@@ -152,11 +126,12 @@ result:
     final_loss: 0.227
     steps: 2255
     notes: >-
-      One epoch, 2255 optimizer steps, 3h12m, train loss 0.227 (RESULTS.md); ~9.6k tok/s,
-      loss 0.45 -> 0.30 over the first 60 steps [39859], [40092]. Three checkpoints saved:
-      ckpts/sft_r1/checkpoint-800, ckpts/sft_r1/checkpoint-1600 and ckpts/sft_r1/final;
-      checkpoint-1600 is the one exp-04 and exp-05 continue from. GPU free and final
-      checkpoint present at [41646].
+      1 epoch, ~9.6k tokens/s; intermediate checkpoints saved at step 800 and
+      1600 (kept as separate candidates). The first eval of the intermediate
+      checkpoints failed because they carried no tokenizer files; finalize_ckpt.py
+      was patched at [41926] to copy tokenizer and processor files from the base
+      snapshot and the eval was rerun at [41929]. Loss and step count as reported
+      in RESULTS.md and the progress prints.
   measurements:
     - metric: accuracy
       value: 0.52
@@ -164,12 +139,12 @@ result:
       path: /home/ben/task/runs/results/ckpts_sft_r1_checkpoint-800_l150.json
       delta_vs_comparator: null
     - metric: accuracy
-      value: 0.627
+      value: 0.6266666666666667
       n: 150
       path: /home/ben/task/runs/results/ckpts_sft_r1_checkpoint-1600_l150.json
       delta_vs_comparator: null
     - metric: accuracy
-      value: 0.600
+      value: 0.6
       n: 150
       path: /home/ben/task/runs/results/ckpts_sft_r1_final_l150.json
       delta_vs_comparator: null
@@ -179,38 +154,32 @@ result:
       path: /home/ben/task/runs/r1_full.json
       delta_vs_comparator: null
   diagnostic_result:
-    value: null
+    value: 0.0
     path: /home/ben/task/logs/2026-07-17T02-07-33+02-00_gsm8k_9A2UMgxk892fUbMKy7APv3.json
     notes: >-
-      checkpoint-1600 at limit 150: 56 wrong, 0 no_answer_line, 0 ran_long, all 150
-      stop_reason 'stop'. checkpoint-800: 72 wrong, 1 no_answer_line, 2 ran_long, 149
-      'stop' / 1 'max_tokens' [42477]. The output-contract failure that defined the
-      problem is gone.
+      checkpoint-1600 at limit 150: 56 wrong, 0 with a missing ANSWER line, 0 over-long,
+      stop reason "stop" on all 150 - the output contract is fully learned and the
+      remaining errors are reasoning errors [42477]
   watch_set_result: null
   failure: null
 
-# ---- 6. Conclusion (after) --------------------------------------------------
 conclusion:
   verdict: inconclusive
   mechanism_verdict: supported
   summary: >-
-    The third launch of the same recipe trained to completion and scored 52.0% / 62.7% /
-    60.0% at limit 150 for checkpoint-800 / checkpoint-1600 / final [41839], [42475], with
-    checkpoint-1600 later measured at 61.94% on the full test set. The mechanism is
-    confirmed - zero parse or stop failures remain, "all remaining failures are genuine
-    reasoning errors" [42632] - but the only baseline the run ever measured (8% at limit
-    50) was taken under a different protocol, so the score comparison is not a same-limit
-    one and the verdict stays inconclusive.
+    Training completed in 3h12m and all three checkpoints score far above the 8%
+    base model (52.0 / 62.7 / 60.0 at limit 150), with zero parse or stop failures
+    left; the middle checkpoint, not the final one, is best. Verdict is
+    inconclusive only because the base-model comparator was measured at limit 50
+    and never re-measured under the limit-150 protocol used here.
   decision: adopt
   next_step: >-
-    Rejection-sample from checkpoint-1600, the best round-1 checkpoint, and continue
-    training on the verified solutions ([42632], carried out as exp-04/exp-05).
+    Rejection-sample from checkpoint-1600 (the best of the three) and train a
+    round 2 on the verified on-policy solutions plus fresh replay data.
 
-# ---- outcome (joined by the pipeline; never written by the extractor) --------
 outcome:
   official_accuracy: null
 
-# ---- provenance (extraction) ------------------------------------------------
 provenance:
   kind: extracted
   run_ref: r-27c73665
@@ -219,24 +188,23 @@ provenance:
     problem: true
     hypothesis: false
   anchors:
-    problem: [31941, 31942]
-    setup: [31945, 32052]
-    evaluation: [41649, 41929]
-    result: [41646, 41839, 42475, 42477]
+    problem: [15882, 31941]
+    setup: [17338, 31945, 32052]
+    evaluation: [41649, 41929, 47538]
+    result: [41646, 41839, 42475, 42477, 47770]
     conclusion: [42475, 42632]
   snapshot_files:
     - datagen.py
     - train_sft.py
-    - evaluate.py
     - eval_ckpts.sh
     - finalize_ckpt.py
     - summarize_log.py
+    - evaluate.py
     - RESULTS.md
   smoke_runs: []
   extractor: claude-opus-5
   unresolved:
-    - "train_sft.py was edited at [35227] while this run was in flight (token-budget accounting); the edit is inert for this launch because --token-budget defaulted to -1, but the workspace copy is not byte-identical to the code that ran."
-    - "The first evaluation launch [41649] produced a score only for ckpts/sft_r1/final; the two intermediate checkpoints failed to serve ('Either model_file or model_proto must be specified.' [41841]) until finalize_ckpt.py was patched to copy the tokenizer files [41926] and they were re-evaluated at [41929]."
-    - "No eval JSON is present in the workspace snapshot; the measurement paths are the in-run paths written by eval_ckpts.sh, and the values are those the agent printed at [41839]/[42475]/[42477] and tabulated in RESULTS.md."
-    - "The full-test number for checkpoint-1600 (0.6194) was produced much later, by the launch at [47538], and is recorded in RESULTS.md; it is included here because it measures this card's output."
-    - "train_runtime/train_loss were captured by a background wait at [41449] whose output does not appear in the digest; steps 2255, 3h12m and loss 0.227 are taken from RESULTS.md."
+    - "the base-model comparator exists only at limit 50 (0.08); it was never re-run at limit 150 or on the full test set"
+    - "checkpoint-800 / final full-test scores were never measured; only checkpoint-1600 was run at limit -1 (0.6194)"
+    - "no eval JSON files are present in the task snapshot; measurement paths are the paths written during the run"
+    - "the 0.52 / 0.60 values are the agent's rounded prints at [42475]; only the 0.6267 figure appears at full precision [42477]"

@@ -1,0 +1,169 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-09
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    Every candidate trained on full-sequence loss answers correctly far more
+    often than it scores - 12/30 first answers correct against 2/30 scored - only
+    because it never emits <end_of_turn> and the scorer takes the last answer in
+    the continuation [435,477].
+  evidence:
+    - path: /home/ben/task/eval_v7_quick.json
+      locator: "accuracy 0.067, n=30"
+      observation: "scored 2/30 while 12/30 first answers were correct [477]"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-ee7eb0ec.md
+      locator: "[389], [390], [435]"
+      observation: "with dataset_text_field the loss covers all tokens, so the single end-of-turn token is a vanishing share of it"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Training on prompt/completion pairs with completion_only_loss=True, so the
+    loss is computed only over the model's response, will put enough weight on
+    the response format - including the closing <end_of_turn> - for the model to
+    stop, converting the 40% first-answer rate into scored accuracy [435,478].
+  mechanism: >-
+    "If we can mask the user prompt, the model's loss will focus entirely on
+    learning the correct response format" [435]; the prompt is ~684 chars and the
+    completion ~360 chars per example, so masking the prompt roughly doubles the
+    weight on every completion token [459].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_v6.jsonl
+      source: "HF: openai/gsm8k (main, train) + meta-math/MetaMathQA (train, GSM subset)"
+      n_examples: 37419
+      built_by: /home/ben/task/prepare_data_v6.py
+      build_command:
+        - python
+        - prepare_data_v6.py
+      selection: >-
+        Same content and mixture as training_data_v5.jsonl (GSM8K train repeated
+        3x plus 15000 MetaMathQA GSM rows, <<calc>> and #### stripped) but split
+        into two fields: prompt = "<bos><start_of_turn>user ...
+        <end_of_turn>\n<start_of_turn>model\n", completion = "<reasoning>\n\n
+        ANSWER: <final><end_of_turn>\n<eos>". Average 684 chars prompt, 360 chars
+        completion [456,458,459].
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 3
+  method:
+    family: sft
+    framework: "trl 0.27.2 SFTTrainer + peft 0.18.1 LoRA (transformers 4.57.3, torch 2.8.0+cu129, bitsandbytes 0.49.1) [21,23]"
+    peft: "QLoRA (4-bit nf4, double quant) r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 3.0e-04
+      epochs: 3
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        completion_only_loss=True is the one change from exp-08; max_steps=2300
+        is the real cap; packing=False, gradient_checkpointing=True
+        (use_reentrant=False), optim=paged_adamw_8bit,
+        dataloader_num_workers=0, save_steps=500, attn_implementation=eager, and
+        dataset_text_field is dropped in favour of the prompt/completion columns.
+        The launch passed no arguments; all values are constants in train_v8.py as
+        written at [478].
+    target_format: >-
+      gemma3 chat text split prompt/completion; completion = cleaned reasoning, a
+      blank line, "ANSWER: <final>", then <end_of_turn> and <eos>
+  command:
+    argv: [python, train_v8.py, "2>&1", "|", tee, train_v8_log.txt]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v8.py
+    env: {}
+    log: /home/ben/task/train_v8_log.txt
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: killed
+  wall_h: null
+  duration_h: null
+  steps: 66
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 66
+    notes: >-
+      The digest ends at this launch event [480,481], so the stream says nothing
+      about how it went. The tee'd log in the workspace snapshot,
+      train_v8_log.txt, stops at step 66 of 2300 about two minutes in, with no
+      loss line, no checkpoint and no merge - i.e. the 10 h budget ran out while
+      it was still starting. final_model therefore still holds the exp-08 merge.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The completion-only-loss idea, the run's most direct attack on the stopping
+    failure, was launched with too little budget left: 66 of 2300 steps, no
+    checkpoint, no evaluation.
+  decision: abandon_line
+  next_step: null
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ee7eb0ec
+  launch_i: 480
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [389, 390, 435, 477]
+    setup: [456, 458, 459, 478, 480]
+    evaluation: []
+    result: [480, 481]
+    conclusion: [477, 478]
+  snapshot_files:
+    - prepare_data_v6.py
+    - train_v8.py
+    - train_v8_log.txt
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the digest is cut off at this launch: event [481] has an empty result and there is nothing after it, so the end of the run is only readable from the workspace snapshot"
+    - "execution is recorded as killed on the strength of train_v8_log.txt stopping at step 66/2300; the stream itself never says the run ended"
+    - "which checkpoint was submitted is not stated anywhere; final_model was last written by exp-08 [469] and this launch never reached its merge step"

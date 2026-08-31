@@ -3,36 +3,37 @@ card_id: exp-06
 created_at: null
 elapsed_h: 7.99
 
-# ---- 1. Problem -------------------------------------------------------------
 problem:
   statement: >-
-    "r2-950 (68.67%) and r2-final (68.33%) confirmed tied at 300 samples, both clearly
-    above r1" [46892]: the two round-2 candidates cannot be separated on the dev protocol,
-    and the deliverable directory final_model still has to be produced, with 2h of budget
-    left.
+    Two round-2 candidates are statistically tied and one directory has to become
+    the submission: at limit 300, checkpoint-950 scores 0.6867 and final 0.6833.
+    The submission also has to be a self-contained directory that vLLM can serve
+    greedily and stop correctly.
   evidence:
     - path: /home/ben/task/runs/results/ckpts_sft_r2_checkpoint-950_l300.json
       locator: "[46892]"
-      observation: "checkpoint-950 scores 0.6867 at limit 300"
-    - path: /home/ben/task/runs/results/ckpts_sft_r2_final_l300.json
-      locator: "[46892]"
-      observation: "ckpts/sft_r2/final scores 0.6833 at limit 300 - a 0.3-point gap, inside the stderr"
+      observation: "checkpoint-950 0.6867 at limit 300, checkpoint final 0.6833 - agent calls them tied"
+    - path: /home/ben/task/runs/results/ckpts_sft_r1_checkpoint-800_l150.log
+      locator: "[41841]"
+      observation: >-
+        a checkpoint directory without tokenizer/processor files cannot be served:
+        vLLM exits with "Either model_file or model_proto must be specified"
   affected_share: null
   failure_examples: []
   watch_set: null
 
-# ---- 2. Hypothesis ----------------------------------------------------------
 hypothesis:
   claim: >-
-    checkpoint-950, the higher of the two at limit 300, is the better submission, so
-    packaging it as final_model (weights plus greedy generation_config and the tokenizer
-    and processor files vLLM needs) gives the best score the run can deliver.
-    Reconstructed from "Packaging r2-950 as final_model" [46892]; the agent stated the
-    choice, not an expectation.
+    Packaging round-2 checkpoint-950 as final_model - weights plus a greedy
+    generation_config.json (temperature 0.0, do_sample false, eos_token_id [1, 106])
+    and the full tokenizer/processor set - gives the best submission of the
+    candidates measured so far.
   mechanism: >-
-    final_model is the default --model-path of evaluate.py, and the greedy
-    generation_config (temperature 0.0, do_sample false, eos_token_id [1, 106]) is what
-    makes vLLM decode deterministically and stop at <end_of_turn> [4807], [9900].
+    vLLM falls back to the model's generation_config.json for any sampling
+    parameter the eval does not set, so shipping greedy decoding with
+    <end_of_turn> as an EOS makes the official eval deterministic and stop at the
+    ANSWER line; checkpoint-950 was the higher of the two tied candidates at
+    limit 300.
   expected_effect:
     metric: accuracy
     direction: higher
@@ -40,7 +41,6 @@ hypothesis:
     magnitude: null
   falsified_if: null
 
-# ---- 3. Setup ---------------------------------------------------------------
 setup:
   parent_checkpoint:
     path: /home/ben/task/ckpts/sft_r2/checkpoint-950
@@ -49,7 +49,7 @@ setup:
   data: []
   method:
     family: other
-    framework: "bash package_final.sh + finalize_ckpt.py (copy weights, write generation_config.json; no training)"
+    framework: "packaging: package_final.sh (cp weights + index + config) then finalize_ckpt.py"
     peft: none
     hyperparams:
       lr: null
@@ -63,15 +63,14 @@ setup:
       precision: null
       seed: null
       other: >-
-        Copies *.safetensors, model.safetensors.index.json and config.json from
-        checkpoint-950 into a fresh final_model/, then runs finalize_ckpt.py, which writes
-        generation_config.json = {bos_token_id 2, pad_token_id 0, eos_token_id [1, 106],
-        do_sample false, temperature 0.0} and copies preprocessor_config.json,
-        processor_config.json, tokenizer_config.json, tokenizer.json, tokenizer.model,
-        special_tokens_map.json and added_tokens.json from the base snapshot when the
-        checkpoint lacks them. This is also the decode-config decision for the submission:
-        greedy, stopping at <end_of_turn>.
-    target_format: null
+        no training - weights copied verbatim. The only change is the decode/config
+        surface: generation_config.json = {bos_token_id 2, pad_token_id 0,
+        eos_token_id [1, 106], do_sample false, temperature 0.0}, plus
+        preprocessor_config.json, processor_config.json and the tokenizer files
+        copied from the base snapshot by finalize_ckpt.py.
+    target_format: >-
+      served by vLLM through templates/gemma3.jinja; generation stops at
+      <end_of_turn> (106) or <eos> (1)
   command:
     argv: [bash, package_final.sh, ckpts/sft_r2/checkpoint-950]
     cwd: /home/ben/task
@@ -79,24 +78,13 @@ setup:
     env: {}
     log: null
   budget:
-    gpu: "1x H100 80GB [1299]"
+    gpu: "1x H100 80GB"
     planned_h: null
 
-# ---- 4. Evaluation ----------------------------------------------------------
 evaluation:
   protocol:
-    command:
-      - python
-      - evaluate.py
-      - --model-path
-      - final_model
-      - --limit
-      - "-1"
-      - --max-connections
-      - "8"
-      - --json-output-file
-      - runs/final_full.json
-    dev_set: "official --limit -1 (the full 1319-item test set)"
+    command: [python, evaluate.py, --model-path, final_model, --limit, "-1", --max-connections, "8", --json-output-file, runs/final_full.json]
+    dev_set: "official --limit -1 (full 1319-sample test set)"
     n: 1319
     seed: null
   comparator:
@@ -108,18 +96,11 @@ evaluation:
     command: []
     path: null
 
-# ---- 5. Result (after) ------------------------------------------------------
 result:
   execution: completed
   wall_h: null
   output_checkpoint: /home/ben/task/final_model
-  training_summary:
-    final_loss: null
-    steps: null
-    notes: >-
-      Packaging step, no training. The directory listing and the greedy
-      generation_config.json are printed at [46894]; 8.1G of weights plus tokenizer and
-      processor files. This directory was overwritten in place by exp-07 at [47771].
+  training_summary: {final_loss: null, steps: null, notes: "packaging only; 8.1G directory, 12 files"}
   measurements:
     - metric: accuracy
       value: 0.6596
@@ -130,26 +111,21 @@ result:
   watch_set_result: null
   failure: null
 
-# ---- 6. Conclusion (after) --------------------------------------------------
 conclusion:
   verdict: contradicted
   mechanism_verdict: not_tested
   summary: >-
-    Packaging worked - final_model served and scored - but the candidate chosen on the
-    limit-300 tie lost on the full test set: 65.96% for checkpoint-950 [47537] against
-    66.57% for ckpts/sft_r2/final measured under the same protocol immediately after
-    [47770]. The limit-300 ordering did not survive the larger sample, so this selection
-    was reversed.
+    Packaging worked, but the limit-300 tie did not hold on the full test set:
+    this package scores 0.6596 against 0.6657 for the other round-2 candidate
+    measured under the same protocol, so checkpoint-950 was the wrong pick.
   decision: reject
   next_step: >-
-    Repackage final_model from ckpts/sft_r2/final, the full-test winner ([47770], carried
-    out as exp-07).
+    Repackage final_model from ckpts/sft_r2/final, the full-test winner, and
+    revalidate the packaged directory [47770].
 
-# ---- outcome (joined by the pipeline; never written by the extractor) --------
 outcome:
   official_accuracy: null
 
-# ---- provenance (extraction) ------------------------------------------------
 provenance:
   kind: extracted
   run_ref: r-27c73665
@@ -158,19 +134,18 @@ provenance:
     problem: true
     hypothesis: false
   anchors:
-    problem: [46546, 46892]
-    setup: [46056, 46893, 46894]
+    problem: [41841, 46892]
+    setup: [21264, 23617, 41926, 46056, 46893]
     evaluation: [47141]
     result: [46894, 47537]
-    conclusion: [47537, 47770]
+    conclusion: [47770]
   snapshot_files:
     - package_final.sh
     - finalize_ckpt.py
     - evaluate.py
-    - RESULTS.md
   smoke_runs: []
   extractor: claude-opus-5
   unresolved:
-    - "final_model is a single path written twice in this run (here from checkpoint-950, then by exp-07 from ckpts/sft_r2/final); nothing preserves the exp-06 artifact."
-    - "The comparator value (0.6657 for ckpts/sft_r2/final on the full test set) was measured after this card's own eval, at [47538]; the agent had no full-test comparison at packaging time."
-    - "The stream shows no eval of the packaged directory at limit 150 or 300 for this candidate, only the full-test run."
+    - "this package was overwritten in place by exp-07; the intermediate final_model built from checkpoint-950 no longer exists"
+    - "wall time of the packaging step is not in the stream"
+    - "no eval JSON files are present in the task snapshot; measurement paths are the paths written during the run"

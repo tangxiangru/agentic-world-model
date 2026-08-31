@@ -1,0 +1,160 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-09
+created_at: null
+elapsed_h: 4.15
+
+problem:
+  statement: >-
+    Every model trained so far - SFT, rejection-sampling FT and three GRPO runs - has
+    been a LoRA on frozen base weights, and all of them are stuck at ~0.68; the agent
+    named the untried lever: "All my training has been LoRA - I haven't tried full
+    fine-tuning, which has more capacity to break the plateau" [1056].
+  evidence:
+    - path: /home/ben/task/runs/sft_rft1_500.json
+      locator: "[779]"
+      observation: "the LoRA SFT/RFT line is flat at 0.682 at --limit 500"
+    - path: null
+      locator: "[1045]"
+      observation: "three GRPO learning rates all produced flat reward and were killed or rejected"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A full fine-tune of the language model from the base checkpoint on the larger
+    combined dataset (MetaMath + GSM-native + verified self-generated solutions) has more
+    capacity than LoRA and can break the 0.68 plateau ([1056]).
+  mechanism: >-
+    LoRA at r=64 may simply lack the capacity to move the policy far from the base
+    behaviour; training all language-model parameters removes that constraint, and the
+    data is ReST-style: only solutions verified correct against gold ([1062]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "HF meta-math/MetaMathQA (GSM_AnsAug, GSM_Rephrased) + HF openai/gsm8k (main, train split) + synthetic:self"
+      n_examples: 74116
+      built_by: /home/ben/task/src/combine_data.py
+      build_command: [python, src/combine_data.py, --inputs, data/mm40.jsonl, data/gsm_native.jsonl, data/rft_v1.jsonl, --out, data/sft_v2.jsonl]
+      selection: >-
+        data/mm40.jsonl (MetaMathQA GSM_AnsAug + GSM_Rephrased capped at 20000 rows per
+        type, no GSM-native rows: prep_data.py --per-type-limit 20000 --gsm-native-repeat
+        0 at [679]) plus the 7,473-row GSM-native anchor file plus the 26,643 verified
+        self-generated solutions; shuffled together. Row count printed at [751]: 74,116.
+        Test questions excluded by normalised-question match in every source.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers Trainer (full fine-tune of the language model) + liger_kernel fused cross-entropy"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 640
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        Launch flags at [1063]; --mode full trains every language-model parameter with
+        the vision tower and multimodal projector frozen and switches the optimiser to
+        adamw_bnb_8bit, as hard-coded in the training script written into the stream at
+        [132]. scheduler=cosine, weight_decay=0.0 and bf16 are likewise script constants.
+        Env: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, PYTHONUNBUFFERED=1.
+    target_format: >-
+      eval chat template, MATH_PROMPT_TEMPLATE user turn, assistant turn ending in
+      "ANSWER: <number>" plus <end_of_turn>, prompt tokens masked.
+  command:
+    argv: [nohup, python, src/train_sft.py, --data, data/sft_v2.jsonl, --out, ckpt/sft_full, --init-from, google/gemma-3-4b-pt, --mode, full, --epochs, "2", --bs, "16", --grad-accum, "4", --lr, "1e-5", --max-len, "640", --attn, sdpa, --grad-ckpt, "1", --liger, "1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/src/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONUNBUFFERED: "1"}
+    log: /home/ben/task/logs/sft_full.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 (81559 MiB) [5]"
+    planned_h: 2.2
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.682
+    path: /home/ben/task/runs/sft_rft1_500.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.04
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "Full FT runs fine (35GB, no OOM) but ETA is 2.2 hours - too long" [1068]. Killed
+      about four minutes after launch and the output directory deleted at [1069], in
+      favour of a GRPO run at the learning rate the weight-diff diagnostic implied.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The only non-LoRA training run of the session started cleanly at 35 GB but was killed
+    within minutes on a time argument, not a technical one: 2.2 hours of the remaining
+    5:52 for one untested recipe, against a GRPO learning rate that the weight-diff
+    diagnostic had just made concrete.
+  decision: abandon_line
+  next_step: >-
+    Run GRPO at the calculated lr=3e-5, ~30x the first attempt, so that the policy moves
+    as far per step as SFT did ([1062], [1068]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-3c44629f
+  launch_i: 1063
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [1045, 1056]
+    setup: [679, 751, 1063]
+    evaluation: []
+    result: [1068, 1069]
+    conclusion: [1062, 1068]
+  snapshot_files:
+    - results.md
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      The full fine-tune was never given a chance to produce a number, so whether LoRA
+      capacity was really the limiting factor is left open for this run.

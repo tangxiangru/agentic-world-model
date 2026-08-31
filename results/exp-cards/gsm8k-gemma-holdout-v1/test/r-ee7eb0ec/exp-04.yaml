@@ -1,0 +1,188 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The exp-03 model scores 0.16 because it does not stop: it produces
+    "ANSWER: X" and then keeps generating a fresh question and a fresh answer,
+    and the scorer takes the last answer in the text. The agent attributes this
+    to packing (cross-contamination between concatenated examples) and to the
+    <<calc>> / #### artifacts left in the training targets [178,181,186].
+  evidence:
+    - path: /home/ben/task/logs/2026-02-13T03-18-58+01-00_gsm8k_MXxsgQoK2ykfhnJ7K2eaw4.json
+      locator: "[177], [179], [180] - samples printed from this inspect log"
+      observation: "8 correct / 42 incorrect on 50 items; several wrong items answer correctly and then start a new question"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-ee7eb0ec.md
+      locator: "[181], [186]"
+      observation: "agent names the two suspected causes: packing cross-contamination and <<calc>> artifacts"
+  affected_share: null
+  failure_examples:
+    - id: gsm8k_2e56ef42
+      source: /home/ben/task/logs/2026-02-13T03-18-58+01-00_gsm8k_MXxsgQoK2ykfhnJ7K2eaw4.json
+      question: null
+      gold: "8"
+      model_output: "There are 12 inches in 1 foot, so 4 feet is equal to 4 x 12 = 48 inches.\nTracy cut the wire into 48 / 6 = <<48/6=8>>8 pieces.\nTherefore, she obtained 8 pieces of wire.\n#### 8\n\nANSWER: 8\n\nSolve the fol..."
+      failure: "correct answer, then continues into a new problem statement; scored I [177]"
+    - id: gsm8k_311256b2
+      source: /home/ben/task/logs/2026-02-13T03-18-58+01-00_gsm8k_MXxsgQoK2ykfhnJ7K2eaw4.json
+      question: null
+      gold: "2"
+      model_output: "... 50 - 12 - 15 - 6 = <<50-12-15-6=17>>17 for the boxes of pizzas.\nThis means there are 2 boxes of pizzas that amount to $17 / 8.5 = <<17/8.5=2>>2.\nThus, there are 4 boxes of pizzas Marie ordered.\n\nANSWER: 4"
+      failure: "derives 2 mid-chain, then contradicts itself and answers 4; scored I [177]"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Turning packing off (so each example is independent), stripping <<calc>> and
+    #### from every target, and terminating each example with <end_of_turn>
+    followed by <eos> will make the model stop after its answer and raise
+    accuracy [186,187].
+  mechanism: >-
+    Packing concatenates unrelated examples into one 1024-token sequence, which
+    teaches the model to roll straight from one answer into the next question;
+    with packing off and an explicit end-of-turn/eos ending, the stop token is
+    the only continuation the model ever sees after "ANSWER: X" [181,186].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_v5.jsonl
+      source: "HF: openai/gsm8k (main, train) + meta-math/MetaMathQA (train, GSM subset)"
+      n_examples: 37419
+      built_by: /home/ben/task/prepare_data_v5.py
+      build_command:
+        - python3
+        - prepare_data_v5.py
+      selection: >-
+        GSM8K train 7473 rows repeated 3x (22419) plus 15000 sampled (seed 42)
+        from 239994 MetaMathQA GSM rows with reasoning longer than 20 chars;
+        <<calc>> annotations and everything from "####" on removed from every
+        target; each example ends "ANSWER: <final><end_of_turn>\n<eos>"
+        [209,211,212].
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 3
+  method:
+    family: sft
+    framework: "trl 0.27.2 SFTTrainer + peft 0.18.1 LoRA (transformers 4.57.3, torch 2.8.0+cu129, bitsandbytes 0.49.1) [21,23]"
+    peft: "QLoRA (4-bit nf4, double quant) r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        max_steps=3500 caps the 2 epochs; packing=False,
+        gradient_checkpointing=True (use_reentrant=False),
+        optim=paged_adamw_8bit, dataloader_num_workers=4, save_steps=2000,
+        attn_implementation=eager, and the model is loaded with dtype= rather
+        than torch_dtype=. The launch passed no arguments; all values are
+        constants in train_v3.py as edited at [195,198,221,224] and repointed
+        from training_data_v4.jsonl to training_data_v5.jsonl at [218].
+    target_format: >-
+      gemma3 chat text; model turn = cleaned reasoning, a blank line, then
+      "ANSWER: <final>", closed by <end_of_turn> and <eos>
+  command:
+    argv:
+      - python3
+      - train_v3.py
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v3.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: failed
+  wall_h: null
+  duration_h: null
+  steps: 1289
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 1289
+    notes: >-
+      Stopped at step 1289 with the first save due at step 2000, so
+      sft_output_v3 was empty and nothing survived [270,273]. The timer read
+      7:02 remaining shortly before this launch [184,185].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    No traceback: the agent grepped the background output for
+    error/traceback/OOM/CUDA [251] and found nothing, then observed "the GPU is
+    free and the v3 output directory is empty (training crashed without saving
+    checkpoints)" [270]. Suspected OOM on a long unpacked sequence or a
+    dataloader-worker crash [273].
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The no-packing, cleaned-target recipe never produced a checkpoint: the run
+    died silently at step 1289 of 3500 before the first save [270]. Nothing about
+    the stopping hypothesis was tested.
+  decision: iterate
+  next_step: >-
+    Re-run the same recipe as train_v4.py with torch_dtype instead of dtype,
+    dataloader_num_workers=0, save_steps=1000 and a try/except that saves on
+    error [273,274].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ee7eb0ec
+  launch_i: 228
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [175, 177, 178, 179, 180, 181, 186]
+    setup: [187, 189, 190, 192, 195, 198, 209, 211, 212, 218, 221, 224, 228]
+    evaluation: []
+    result: [251, 255, 266, 267, 270]
+    conclusion: [270, 273, 274]
+  snapshot_files:
+    - prepare_data_v5.py
+    - train_v3.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the cause of the silent stop at step 1289 is never established; the agent only guesses (OOM on a long sequence, or a dataloader worker) [273]"
+    - "prepare_data_v4.py / training_data_v4.jsonl (59892 examples, built at [189]) were superseded before any launch read them - train_v3.py was repointed to training_data_v5.jsonl at [218]"
+    - "the failure_examples above are the only two items the agent printed with their dataset ids [177]; their question text was never printed"

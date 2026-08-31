@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.22
+
+problem:
+  statement: >-
+    The base model scores 0.05 on a 20-sample run of the benchmark evaluator, so
+    it is not instruction-following enough for this harness; the first training
+    run has to teach the chat turn format and the exact "ANSWER: <number>" final
+    line, not just arithmetic [63].
+  evidence:
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/task/r-f9a8a01b/base_eval_20.json
+      locator: "launch [55], read at [63]: accuracy 0.05, stderr 0.05, --limit 20"
+      observation: "the untrained base model answers 1 of 20 correctly under the evaluator's 10-shot prompt"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised LoRA fine-tuning of the base model on decontaminated GSM-style
+    traces (all GSM8K train rows plus a capped sample of MetaMathQA rows whose
+    type starts with GSM), rendered as the chat turn the evaluator asks for and
+    ending in "ANSWER: <n>", will raise evaluator accuracy over the base model
+    [52][89][130].
+  mechanism: >-
+    Those rows keep the task distribution close to GSM8K while leaving out
+    advanced symbolic MATH examples that would waste limited SFT capacity [89],
+    and training the response format directly addresses the format failure the
+    baseline showed [63].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/math_train_clean.jsonl
+      source: "local: derived from HF openai/gsm8k (train) + meta-math/MetaMathQA"
+      n_examples: 67473
+      built_by: data/exp-cards/gsm8k-gemma-holdout-v1/task/r-f9a8a01b/prepare_math_data.py
+      build_command:
+        - /bin/bash
+        - -lc
+        - PYTHONDONTWRITEBYTECODE=1 TMPDIR=/home/ben/task/tmp HF_HOME=/home/ben/hf_cache python prepare_math_data.py --output data/math_train_raw.jsonl --max-metamath 60000 --seed 17
+      selection: >-
+        All GSM8K train rows deduped on the normalized question (7,473), then
+        MetaMathQA rows whose `type` starts with GSM, shuffled with seed 17,
+        numeric-looking final answer only, deduped against the GSM8K questions,
+        capped at 60,000 [112]; each row rendered as reasoning + "ANSWER:
+        <final>". filter_contaminated.py then copied the file through at [118]
+        (kept 67,473, removed 0), but data/contamination_raw.jsonl was never
+        produced by a contamination_check.py run anywhere in the stream, so no
+        check was actually applied to this corpus.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 + peft 0.18.1, custom torch loop (train_lora_sft.py)"
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=q,k,v,o,gate,up,down_proj of the text stack (238 modules); 59.6M trainable params [134]"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: "cosine with warmup (get_cosine_schedule_with_warmup)"
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 17
+      other: >-
+        AdamW, grad-norm clip 1.0, gradient checkpointing, sdpa attention;
+        --eval-size 512 --eval-every 250 (held-out loss only, no generation).
+        warmup 0.03 and weight_decay 0.0 are train_lora_sft.py argparse defaults
+        that this launch did not override; every other value above is on the
+        command line.
+    target_format: >-
+      "<bos><start_of_turn>user\n<math prompt template + question><end_of_turn>\n
+      <start_of_turn>model\n" with the target being "<reasoning>\n\nANSWER:
+      <final><end_of_turn>\n<eos>"; loss masked to the model turn only.
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - PYTHONDONTWRITEBYTECODE=1 TMPDIR=/home/ben/task/tmp HF_HOME=/home/ben/hf_cache TORCHINDUCTOR_CACHE_DIR=/home/ben/task/cache/torchinductor TRITON_CACHE_DIR=/home/ben/task/cache/triton python train_lora_sft.py --data data/math_train_clean.jsonl --output-dir runs/lora_meta60k_r32 --epochs 1.0 --batch-size 8 --grad-accum 4 --max-length 1024 --lora-r 32 --lora-alpha 64 --lora-dropout 0.05 --lr 2e-4 --eval-size 512 --eval-every 250 --seed 17
+    cwd: /home/ben/task
+    script: data/exp-cards/gsm8k-gemma-holdout-v1/task/r-f9a8a01b/train_lora_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - /bin/bash
+      - -lc
+      - PYTHONDONTWRITEBYTECODE=1 TMPDIR=/home/ben/task/tmp XDG_CACHE_HOME=/home/ben/task/cache TORCHINDUCTOR_CACHE_DIR=/home/ben/task/cache/torchinductor TRITON_CACHE_DIR=/home/ben/task/cache/triton VLLM_CACHE_ROOT=/home/ben/task/cache/vllm python evaluate.py --model-path models/meta60k_r32_merged --limit 50 --max-connections 2 --max-tokens 1024 --gpu-memory-utilization 0.45 --json-output-file eval_meta60k_r32_50.json
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.05
+    path: data/exp-cards/gsm8k-gemma-holdout-v1/task/r-f9a8a01b/base_eval_20.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.48
+  output_checkpoint: /home/ben/task/runs/lora_meta60k_r32
+  training_summary:
+    final_loss: 0.10632
+    steps: 2093
+    notes: >-
+      88.63 min wall, 66,958 train examples fit under 1024 tokens with 3 skipped
+      [134]; held-out loss fell 0.153 (step 1500) -> 0.150 (1750) -> 0.14872
+      (2000) [268][288][307][314]. The adapter was evaluated only after the merge
+      in exp-02; the accuracy below is that eval of its merged materialization.
+  measurements:
+    - metric: accuracy
+      value: 0.22
+      n: 50
+      path: data/exp-cards/gsm8k-gemma-holdout-v1/task/r-f9a8a01b/eval_meta60k_r32_50.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The adapter trained cleanly to 2,093 updates with a monotonically improving
+    held-out loss, and its merged form scored 0.22 on 50 samples, "better than
+    base but only 0.22" [344]. The comparator (base) was measured at --limit 20,
+    not 50, so the gain over base is not a same-protocol comparison.
+  decision: adopt
+  next_step: >-
+    Merge the adapter into a vLLM-loadable directory and benchmark it (exp-02);
+    the agent named prompt mismatch and insufficient GSM-specific specialization
+    as the two suspected bottlenecks [344].
+
+provenance:
+  kind: extracted
+  run_ref: r-f9a8a01b
+  launch_i: 131
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [55, 63]
+    setup: [105, 111, 118, 130, 131]
+    evaluation: [323, 337]
+    result: [134, 268, 288, 307, 314]
+    conclusion: [316, 344]
+  snapshot_files:
+    - train_lora_sft.py
+    - prepare_math_data.py
+    - filter_contaminated.py
+    - base_eval_20.json
+    - eval_meta60k_r32_50.json
+  smoke_runs:
+    - {launch_i: 122, outcome: "passed (16 examples, 1 optimizer step, loss 0.576, adapter saved to runs/smoke_lora)"}
+  extractor: claude-opus-5
+  unresolved:
+    - "data/math_train_clean.jsonl was passed through filter_contaminated.py at [118] with a contamination-output file that no contamination_check.py run in the stream ever wrote, so this corpus is unchecked; only the GSM-only corpus used from exp-03 on was actually checked [157]."
+    - "The first prepare_math_data.py run at [105] returned metamath_gsm: 0 / skipped: 159,996; the identical re-run at [111] returned 60,000 / 1. The stream does not say what changed between them."
+
+outcome:
+  official_accuracy: null

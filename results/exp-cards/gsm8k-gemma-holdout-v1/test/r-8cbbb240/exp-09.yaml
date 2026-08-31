@@ -1,0 +1,255 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-09
+created_at: null
+elapsed_h: 6.93
+
+problem:
+  statement: >-
+    "GRPO regressed to 54%. Keeping the 59% fewshot SFT and running rejection
+    fine-tuning plus Orca-Math data." [389] Neither more imitation data
+    (MetaMath, exp-04) nor reinforcement on the reward (exp-08) beat the few-shot
+    SFT checkpoint, and its remaining failures are wrong reasoning chains.
+  evidence:
+    - path: /home/ben/task/eval_grpo_v2_100.json
+      locator: "accuracy field"
+      observation: "0.540 on 100 items against the incumbent's 0.590"
+    - path: /home/ben/task/eval_metamath_v3_100.json
+      locator: "accuracy field"
+      observation: "0.530 on the same 100 items - the other attempt to move past 59% also lost ground"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Rejection fine-tuning: generate solutions, keep correct ones, SFT"
+    (generate_rft.py docstring, [393]) - continued SFT of the few-shot checkpoint
+    on its own sampled solutions that reach the gold answer will beat it.
+  mechanism: >-
+    Training on the model's own correct traces reinforces reasoning it can
+    already produce, in its own distribution, instead of imitating a foreign
+    corpus's style the way MetaMath did.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft_fewshot_v2
+    origin: exp-03
+    hash: null
+  data:
+    - path: /home/ben/task/data/rft_correct.jsonl
+      source: synthetic:self
+      n_examples: 32690
+      built_by: /home/ben/task/generate_rft_vllm.py
+      build_command:
+        - nohup
+        - python
+        - generate_rft_vllm.py
+        - --model
+        - checkpoints/sft_fewshot_v2
+        - --out
+        - data/rft_correct.jsonl
+        - --n-gen
+        - "8"
+        - --fewshot
+        - "5"
+        - --temperature
+        - "0.85"
+        - --max-tokens
+        - "384"
+        - --gpu-memory-utilization
+        - "0.75"
+      selection: >-
+        vLLM sampled 8 completions per GSM8K train question (7473 prompts, each
+        with a 5-shot system block; 59784 sequences) at temperature 0.85,
+        top_p 0.95, stop_token_ids [1,106]. A completion is kept only if it
+        contains exactly one "ANSWER:" line whose value normalises equal to gold,
+        deduplicated by exact text. "Kept 32690 trajectories (32690 unique
+        correct)" [415]. Launched at event [399].
+      contamination_check: not_run
+      mixture_weight: null
+    - path: /home/ben/task/data/sft_rft_mix.jsonl
+      source: "derived:exp-09 rft_correct.jsonl + openai/gsm8k + meta-math/MetaMathQA"
+      n_examples: 72636
+      built_by: null
+      build_command: []
+      selection: >-
+        built by the inline python at [414] with random.Random(0): the 32690 RFT
+        trajectories, plus every gold GSM8K train question twice (plain and with
+        a 10-shot system block, 14946 rows), plus 25000 MetaMath GSM rows parsed
+        from the `####` form with no few-shot block. "rft 32690 / meta 25000 /
+        total 72636" [415]. This is the file the trainer read.
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/sft_val.jsonl
+      source: openai/gsm8k
+      n_examples: 200
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: "the 200 held-out GSM8K train items; SFTTrainer eval_dataset only"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: rft
+    framework: trl.SFTTrainer 0.27.2 (generation via vLLM)
+    peft: none
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        --max-steps 1800 caps the run at 0.4 epoch. warmup=0.03 and seed=42 are
+        train_sft.py argparse defaults, not overridden here; cosine,
+        weight_decay=0.01, adamw_torch_fused, gradient checkpointing,
+        assistant_only_loss=True are constants in that script. Effective batch 16.
+    target_format: >-
+      {system: 5- or 10-shot block, user: eval MATH_PROMPT_TEMPLATE, assistant:
+      the model's own accepted solution ending in "ANSWER: n"} for RFT rows;
+      gold reasoning for the GSM8K and MetaMath rows.
+  command:
+    argv:
+      - nohup
+      - python
+      - train_sft.py
+      - --train-file
+      - data/sft_rft_mix.jsonl
+      - --val-file
+      - data/sft_val.jsonl
+      - --output-dir
+      - checkpoints/sft_rft_v1
+      - --model
+      - checkpoints/sft_fewshot_v2
+      - --epochs
+      - "1"
+      - --max-steps
+      - "1800"
+      - --lr
+      - "5e-6"
+      - --batch-size
+      - "2"
+      - --grad-accum
+      - "8"
+      - --max-seq-length
+      - "2048"
+      - --save-steps
+      - "600"
+      - --eval-steps
+      - "600"
+      - --logging-steps
+      - "20"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs_sft_rft_v1.txt
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - checkpoints/sft_rft_v1_eval
+      - --limit
+      - "150"
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.55"
+      - --json-output-file
+      - eval_rft_v1_150.json
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.4866666666666667
+    path: /home/ben/task/eval_fewshot_150.json
+  diagnostic:
+    what: "count of outputs with more than one `ANSWER:` line; per-band accuracy (first 100 vs last 50)"
+    command:
+      - python
+      - "<< 'EOF'"
+      - 'print("  first100", sum(correct[:100])/100, "last50", sum(correct[100:])/50)'
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.32
+  output_checkpoint: /home/ben/task/checkpoints/sft_rft_v1
+  training_summary:
+    final_loss: 0.1686779134803348
+    steps: 1800
+    notes: "train_runtime 4765.6s, epoch 0.4 (max-steps cap) [445]"
+  measurements:
+    - metric: accuracy
+      value: 0.5533333333333333
+      n: 150
+      path: /home/ben/task/eval_rft_v1_150.json
+      delta_vs_comparator: 0.06666666666666665
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/eval_rft_v1_150.json
+    notes: "long=0, median output length 226; first100 0.56, last50 0.54 [459], [474]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    RFT gave 0.553 on 150 items against 0.487 for the checkpoint it started from,
+    measured back-to-back under the same protocol at [448] and [462] - the first
+    intervention in the run to beat the few-shot SFT baseline. The agent later
+    re-measured that same baseline at 0.553 [563], which undercuts the margin.
+  decision: adopt
+  next_step: "Continue SFT on RFT + gold only, dropping MetaMath from the mix [462]."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-8cbbb240
+  launch_i: 423
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [387, 389]
+    setup: [393, 396, 399, 414, 415, 423]
+    evaluation: [448, 458, 462]
+    result: [445, 459, 469, 474]
+    conclusion: [462, 509]
+  snapshot_files:
+    - train_sft.py
+    - generate_rft.py
+    - generate_rft_vllm.py
+    - prepare_final.py
+    - logs_rft_gen.txt
+    - logs_sft_rft_v1.txt
+    - eval_rft_v1_150.json
+    - logs_eval_rft_v1_150.txt
+    - eval_fewshot_150.json
+  smoke_runs:
+    - {launch_i: 417, outcome: "failed to start: the backgrounded nohup produced no logs_sft_rft_v1.txt and no process; relaunched at [423] with an explicit cd and disown"}
+  extractor: claude-opus-5
+  unresolved:
+    - "the agent said it would add Orca-Math [389] and inspected the dataset [390], but the mix built at [414] contains only RFT, gold GSM8K and MetaMath - Orca-Math never entered training"
+    - "generate_rft.py (the transformers version) is in the workspace but was never run; the vLLM version at [396] is what generated the data"
+    - "data/sft_rft_mix.jsonl was built by an inline heredoc at [414]; no script in the workspace regenerates it"
+    - "the comparator re-measured 0.4867 at [469] and 0.5533 at [563] on the same checkpoint, protocol and limit, so the +6.7 point margin is not stable"

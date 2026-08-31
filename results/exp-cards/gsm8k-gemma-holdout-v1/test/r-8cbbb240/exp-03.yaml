@@ -1,0 +1,268 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 0.76
+
+problem:
+  statement: >-
+    The checkpoint was trained only on single-turn examples, so under the eval's
+    multi-shot prompt it does not stop: "The model often fails to stop after
+    `ANSWER:` and gets math wrong." [144] It also makes plain arithmetic errors
+    inside otherwise well-formed solutions.
+  evidence:
+    - path: /home/ben/task/eval_gsm_v1_50_greedy.json
+      locator: "accuracy field"
+      observation: "0.300 on 50 items even after the decode fix of exp-02"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-8cbbb240.md
+      locator: "[156]"
+      observation: "five failures printed: format clean, arithmetic wrong"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-8cbbb240.md
+      locator: "[165], [168], [169]"
+      observation: >-
+        with no few-shot block the model stops cleanly at <end_of_turn>;
+        the agent then re-ran the same probe with a 10-shot system message,
+        and the output of that probe never reached the stream
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/eval_gsm_v1_50_greedy.json
+      question: null
+      gold: "80"
+      model_output: "Half of the first person's guess is 80 / 2 = 40. So the second person guessed 40 + 20 = 60 jelly beans ... The third person guessed 80 + (80 * .25) = 110"
+      failure: "predicted 83; mis-set-up chain on the third guess"
+    - id: null
+      source: /home/ben/task/eval_gsm_v1_50_greedy.json
+      question: null
+      gold: "8"
+      model_output: "If Ben's iPhone is two times older than Suzy's iPhone, it is 1*2 = 2 years old. Since Brandon's iPhone is four times as old as Ben's iPhone, it is 2*4 = 8 years old.\n\nANSWER: 8\n\nMichael's 4 kids collect money for a trip. The first kid collects $60..."
+      failure: "answer 8 was correct, then the model kept generating a new problem; scored as 192 because the grader reads the last number"
+    - id: null
+      source: /home/ben/task/eval_gsm_v1_50_greedy.json
+      question: null
+      gold: "20"
+      model_output: "The chickens have eaten 15 cups ... 15 + 25 = 40 cups of feed. If each chicken eats 3 cups of feed per meal, then over a day the chickens consume 3 * 20 = 60 cups"
+      failure: "predicted 4; used the unknown it was asked to find as a given"
+    - id: null
+      source: /home/ben/task/eval_gsm_v1_50_greedy.json
+      question: null
+      gold: "75"
+      model_output: "Each day he eats 2 yogurts and they are on sale 4 for $5.00 so that means for 2 yogurts he spends 5/4=$1.25 ..."
+      failure: "predicted 30; unit price computed as 5/4 per two yogurts instead of per yogurt"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Continued SFT on data whose prompts carry few-shot system blocks matching the
+    eval ("Heavy fewshot training matching eval (exactly 10 shots often)" [178])
+    will teach the model to end its turn after the answer instead of continuing
+    into the next question.
+  mechanism: >-
+    The eval prompt shows the model several question/answer pairs before the real
+    question; a model trained only on single examples treats that as licence to
+    keep producing pairs. Training on 5/8/10-shot prompts with a single answer as
+    the target puts the stop where the eval needs it.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft_gsm_v1
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_fewshot_v2.jsonl
+      source: openai/gsm8k + meta-math/MetaMathQA
+      n_examples: 29892
+      built_by: null
+      build_command: []
+      selection: >-
+        built by the inline python at [178] with random.Random(123): for every
+        GSM8K train question, one example at each of k=5, 8, 10 few-shot shots
+        plus one plain example (4 rows per question); MetaMath GSM-typed rows
+        parsed out of \boxed{...}, 40% of them given a 3/5/8/10-shot block.
+        22419 rows carry a system block, 7473 do not [182].
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/sft_val.jsonl
+      source: openai/gsm8k
+      n_examples: 200
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: "the 200 held-out GSM8K train items; SFTTrainer eval_dataset only"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        warmup=0.03 and seed=42 are train_sft.py argparse defaults, not
+        overridden by this launch; cosine schedule, weight_decay=0.01,
+        max_grad_norm=1.0, adamw_torch_fused, gradient checkpointing,
+        packing=False and assistant_only_loss=True are constants in that script.
+        Effective batch 16.
+    target_format: >-
+      {system: k few-shot "question / Reasoning: / ANSWER: n" blocks, user: the
+      eval MATH_PROMPT_TEMPLATE, assistant: reasoning + "ANSWER: n"}, trained
+      under train_templates/gemma3_train.jinja so loss lands only on the
+      assistant span.
+  command:
+    argv:
+      - nohup
+      - python
+      - train_sft.py
+      - --train-file
+      - data/sft_fewshot_v2.jsonl
+      - --val-file
+      - data/sft_val.jsonl
+      - --output-dir
+      - checkpoints/sft_fewshot_v2
+      - --model
+      - checkpoints/sft_gsm_v1
+      - --epochs
+      - "1"
+      - --lr
+      - "1e-5"
+      - --batch-size
+      - "2"
+      - --grad-accum
+      - "8"
+      - --max-seq-length
+      - "2048"
+      - --save-steps
+      - "300"
+      - --eval-steps
+      - "300"
+      - --logging-steps
+      - "10"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs_sft_fewshot_v2.txt
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - checkpoints/sft_fewshot_v2_eval
+      - --limit
+      - "100"
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.55"
+      - --json-output-file
+      - eval_fewshot_v2_100.json
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-02
+    value: null
+    path: /home/ben/task/eval_gsm_v1_50_greedy.json
+  diagnostic:
+    what: "count of eval outputs with more than one `ANSWER:` line or longer than 1200 characters"
+    command:
+      - python
+      - "<< 'EOF'"
+      - 'long=sum(1 for s in data["samples"] if s["scores"]["match"].get("explanation","").count("ANSWER:")>1 or len(s["scores"]["match"].get("explanation",""))>1200)'
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.67
+  output_checkpoint: /home/ben/task/checkpoints/sft_fewshot_v2
+  training_summary:
+    final_loss: 0.17645160184944933
+    steps: 1869
+    notes: >-
+      train_runtime 6027.9s, epoch 1.0, mean_token_accuracy 0.964,
+      num_tokens 34.66M [223]. Evaluated through a prepare_final.py copy
+      (checkpoints/sft_fewshot_v2_eval) that sets architectures and greedy decode.
+  measurements:
+    - metric: accuracy
+      value: 0.59
+      n: 100
+      path: /home/ben/task/eval_fewshot_v2_100.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.4866666666666667
+      n: 150
+      path: /home/ben/task/eval_fewshot_150.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.5533333333333333
+      n: 150
+      path: /home/ben/task/eval_fewshot_recheck_150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/eval_fewshot_v2_100.json
+    notes: >-
+      "59% with no continuation failures" [239]; the single-prompt probe at [227]
+      returned 72 tokens, one ANSWER line, ending at <end_of_turn>.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    Few-shot-shaped SFT killed the run-on failure mode outright (no multi-answer
+    or over-long outputs among 100) and the score rose to 0.590 on 100 items.
+    The comparator was measured at a different --limit, so the accuracy gain
+    itself is not a like-for-like test; the mechanism claim is.
+  decision: adopt
+  next_step: "MetaMath SFT for reasoning, then GRPO [239]."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-8cbbb240
+  launch_i: 181
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [144, 155, 156, 164, 165, 168]
+    setup: [178, 179, 181, 182]
+    evaluation: [222, 230, 236]
+    result: [223, 227, 237, 459, 469, 563]
+    conclusion: [229, 239]
+  snapshot_files:
+    - train_sft.py
+    - prepare_final.py
+    - logs_sft_fewshot_v2.txt
+    - eval_fewshot_v2_100.json
+    - logs_eval_fewshot_v2_100.txt
+    - eval_fewshot_150.json
+    - logs_eval_fewshot_150.txt
+    - eval_fewshot_recheck_150.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "data/sft_fewshot_v2.jsonl was built by an inline heredoc at [178], not by a script kept in the workspace, so there is no build_command to rerun"
+    - "the parent directory checkpoints/sft_gsm_v1 also carries the greedy generation_config written by exp-02 at [149]; training reads weights only, so origin is exp-01"
+    - "this same checkpoint scored 0.4867 at [469] and 0.5533 at [563] on --limit 150 under the same protocol; the run never explains the 6.7-point spread between two identical evals"

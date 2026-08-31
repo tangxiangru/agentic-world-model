@@ -1,0 +1,207 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.16
+
+problem:
+  statement: >-
+    The base PT checkpoint has never been shaped to the eval's answer contract:
+    the grader expects step-by-step reasoning whose last line is
+    "ANSWER: $ANSWER", and nothing in the base model produces that. [26]
+  evidence:
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-8cbbb240.md
+      locator: "[5], [14], [26]"
+      observation: "agent read evaluate.py / the gsm8k task and concluded the eval wants reasoning ending in `ANSWER: ...`"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_gsm_only.jsonl
+      source: openai/gsm8k
+      n_examples: 7273
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        GSM8K train (7473) minus a 200-item validation slice held out with
+        random.Random(42); `####` split into reasoning + target, calculator
+        annotations `<<..>>` stripped; one plain (no few-shot) example per
+        question. n_examples read off prepare_data.py, not printed in the stream.
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/sft_val.jsonl
+      source: openai/gsm8k
+      n_examples: 200
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: "the 200 held-out GSM8K train items; passed as SFTTrainer eval_dataset, not trained on"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129) [12]
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        scheduler/weight_decay/max_grad_norm=1.0/optim=adamw_torch_fused/
+        gradient_checkpointing/packing=False/assistant_only_loss=True are
+        constants inside train_sft.py (in the snapshot); warmup=0.03 and seed=42
+        are that script's argparse defaults and the launch did not override
+        them. flash_attention_2. Effective batch 16.
+    target_format: >-
+      chat rows {system?, user, assistant}; user = the eval's MATH_PROMPT_TEMPLATE,
+      assistant = cleaned GSM8K reasoning + blank line + "ANSWER: <n>". Trained
+      under train_templates/gemma3_train.jinja, a copy of the eval template with
+      a {% generation %} span so assistant_only_loss masks the prompt.
+  command:
+    argv:
+      - nohup
+      - python
+      - train_sft.py
+      - --train-file
+      - data/sft_gsm_only.jsonl
+      - --val-file
+      - data/sft_val.jsonl
+      - --output-dir
+      - checkpoints/sft_gsm_v1
+      - --epochs
+      - "2"
+      - --lr
+      - "2e-5"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "4"
+      - --max-seq-length
+      - "1024"
+      - --save-steps
+      - "200"
+      - --eval-steps
+      - "200"
+      - --logging-steps
+      - "10"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs_sft_gsm_v1.txt
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - checkpoints/sft_gsm_v1
+      - --limit
+      - "30"
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.5"
+      - --json-output-file
+      - eval_gsm_v1_30.json
+    dev_set: "official --limit 30"
+    n: 30
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/checkpoints/sft_gsm_v1
+  training_summary:
+    final_loss: null
+    steps: 910
+    notes: >-
+      910/910 steps (2 epochs) between the launch at [92] (t=+0.16h) and the save
+      seen at [122] (t=+0.55h); logged 'loss' around 0.30 at step ~600 [113].
+      train_loss was never printed in the stream and logs_sft_gsm_v1.txt is not
+      in the workspace snapshot. config.json had no `architectures`, patched to
+      ["Gemma3ForCausalLM"] before eval [125].
+  measurements:
+    - metric: accuracy
+      value: 0.16666666666666666
+      n: 30
+      path: /home/ben/task/eval_gsm_v1_30.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first SFT ran to completion and produced a usable checkpoint, but scored
+    0.167 on 30 items; the agent called it "weak" and went looking at the raw
+    generations [140]. No base-model number was ever measured, so there is
+    nothing to compare against.
+  decision: adopt
+  next_step: >-
+    Inspect sample outputs and the generation config to find what is going wrong
+    [140].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-8cbbb240
+  launch_i: 92
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [26, 34]
+    setup: [53, 56, 86, 90, 92]
+    evaluation: [125, 131]
+    result: [113, 122, 138]
+    conclusion: [140]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data.py
+    - evaluate.py
+    - eval_gsm_v1_30.json
+    - logs_eval_gsm_v1_30.txt
+    - timer.sh
+  smoke_runs:
+    - {launch_i: 69, outcome: "aborted after ~2 min: the eval chat template has no {% generation %} span, so assistant_only_loss had nothing to mask; relaunched at [92] with train_templates/gemma3_train.jinja"}
+  extractor: claude-opus-5
+  unresolved:
+    - "final training loss and wall-clock for this launch are not in the stream; logs_sft_gsm_v1.txt was not kept in the workspace"
+    - "the first eval invocation at [125] wrote no files (redirect swallowed by the harness); the numbers come from the identical rerun at [131]"

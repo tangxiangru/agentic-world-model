@@ -62,6 +62,13 @@ def default_config(session_dir: Path, arm: str = "null") -> dict[str, Any]:
         "submission": str(session_dir / "submission"),
         "submission_mode": "symlink",   # or "copy": adopt copies the sealed checkpoint into `submission`
         "memory_sides": ["train"],      # which split sides the agent may retrieve from
+        "prior_runs_root": None,        # raw prior runs the llm/traj arms may read (e.g. /home/ben/prior_runs)
+        "wma_backend": "claude-cli",    # llm/traj arms: claude-cli | fake
+        "wma_model": "claude-opus-4-8",  # the agent's own model; fixed across cells
+        "wma_call_timeout_s": 900,
+        "wma_max_turns": 40,
+        "wma_strict": False,            # autonomous arms: fail the brief instead of falling back silently
+        "retrieval_k": 5,               # top-k precedents the retrieval/llm arms pull from memory
         "official_argv": None,      # default: python evaluate.py --model-path {checkpoint} --limit {n} --json-output-file {out}/metrics.json
         "official_cwd": None,       # default: the session dir
         "custom_argv": None,        # default: python -m awm.wm.score_items ...
@@ -102,6 +109,7 @@ class Session:
                              arm=self.config["arm"], split_side=self.config.get("split_side", "train"),
                              readonly=bool(self.config.get("memory_readonly")),
                              visible_sides=tuple(self.config.get("memory_sides") or ["train"]))
+        self.config["_session_dir"] = str(self.dir)
         self.agent = make_agent(self.config["arm"])
 
     # ------------------------------------------------------------ init
@@ -207,7 +215,12 @@ class Session:
     def _brief(self, card: dict[str, Any], grounding: list[dict[str, Any]], st: dict[str, Any]) -> dict[str, Any]:
         card_id = card["card_id"]
         cdir = self.card_dir(card_id)
-        brief: Brief = self.agent.on_proposal(card, grounding, self.memory, self.config)
+        try:
+            brief: Brief = self.agent.on_proposal(card, grounding, self.memory, self.config)
+        except Exception as exc:
+            self.ledger.append("agent_failed", card_id=card_id, where="brief", error=repr(exc)[:300])
+            raise WMError(f"the world-model agent could not produce the brief ({exc}); "
+                          f"wma_strict is on, so the card stays a draft — fix the agent setup and re-propose") from exc
         validate_contract(brief.contract)
         dump_yaml(cdir / "contract.proposed.yaml", brief.contract)
         dump_json(cdir / "grounding" / f"brief-{st['brief_rounds'] + 1}.json", {
@@ -223,6 +236,10 @@ class Session:
         for o in brief.objections:
             evidence.append({"path": str(cdir / "card.yaml"), "locator": o.get("field"),
                              "observation": f"[{o.get('severity')}] {o.get('fix')}"})
+        agent_evidence = _lint_evidence(brief.evidence, self.dir, self.config.get("memory_root"), self.config.get("prior_runs_root"))
+        if len(agent_evidence) < len(brief.evidence):
+            self.ledger.append("lint", card_id=card_id, dropped=len(brief.evidence) - len(agent_evidence), where="brief")
+        evidence += agent_evidence
         options = [
             {"id": "accept", "label": "freeze the card and contract as proposed", "consequence": "parent is scored; you may launch"},
             {"id": "amend", "label": "submit a revised evaluation section (--amend FILE)", "consequence": f"new brief; {self.config['amend_limit'] - st['brief_rounds'] - 1} rounds left"},
@@ -231,12 +248,25 @@ class Session:
         ]
         st["brief_rounds"] += 1
         self._save_state(st)
+        agent_meta = self._agent_meta(brief.produced_by, brief.degraded)
+        if brief.degraded:
+            self.ledger.append("agent_degraded", card_id=card_id, where="brief", reason=brief.degraded)
+            st["degraded_calls"] = int(st.get("degraded_calls", 0)) + 1
+            self._save_state(st)
         ping = self.mailbox(card_id).send(
             "brief", brief.summary, evidence=evidence, prediction=brief.prediction, options=options,
             timeout_action={"action": "remain_draft", "after_s": self.config["timeouts_s"]["brief"]},
             raised_by="runtime", extra={"contract_path": str(cdir / "contract.proposed.yaml"),
-                                        "blocking_objections": len(blocking), "arm_disclosed": False})
+                                        "blocking_objections": len(blocking), "arm_disclosed": False,
+                                        "agent": agent_meta})
         return ping
+
+    def _agent_meta(self, produced_by: str, degraded: str | None) -> dict[str, Any]:
+        return {"arm": self.config["arm"], "sources": list(getattr(self.agent, "sources", ()) or []),
+                "backend": self.config.get("wma_backend") if self.config["arm"] in ("llm", "traj") else None,
+                "model": self.config.get("wma_model") if self.config["arm"] in ("llm", "traj") else None,
+                "retrieval_k": self.config.get("retrieval_k") if self.config["arm"] in ("retrieval", "llm") else None,
+                "produced_by": produced_by, "degraded": degraded}
 
     # ------------------------------------------------------------ replies
 
@@ -518,7 +548,12 @@ class Session:
         card_id = st["card_id"]
         history = [self._load_obs(card_id, o["obs_id"]) for o in st["observations"][:-1]]
         advice: Advice = self.agent.on_observation(obs, history, contract, card, self.memory, self.config)
-        evidence = _lint_evidence(advice.evidence, self.dir, Path(self.config["memory_root"]))
+        agent_meta = self._agent_meta(advice.produced_by, advice.degraded)
+        if advice.degraded:
+            self.ledger.append("agent_degraded", card_id=card_id, where=obs["obs_id"], reason=advice.degraded)
+            st["degraded_calls"] = int(st.get("degraded_calls", 0)) + 1
+            self._save_state(st)
+        evidence = _lint_evidence(advice.evidence, self.dir, self.config.get("memory_root"), self.config.get("prior_runs_root"))
         if len(evidence) < len(advice.evidence):
             self.ledger.append("lint", card_id=card_id, dropped=len(advice.evidence) - len(evidence))
         evidence = [{"path": str(self.card_dir(card_id) / "observations" / obs["obs_id"] / "observation.json"),
@@ -560,7 +595,7 @@ class Session:
             ping = mb.send("decision", f"{head} {advice.summary}", evidence=evidence, prediction=advice.prediction,
                            options=options, timeout_action={"action": default, "after_s": self.config["timeouts_s"]["decision"]},
                            raised_by=raised, observation=obs["obs_id"],
-                           extra={"recommendation": advice.recommendation, "best_observation": best})
+                           extra={"recommendation": advice.recommendation, "best_observation": best, "agent": agent_meta})
             reply = self._await_reply(mb, ping)
             self.memory.record_interaction(card_id, ping, reply)
             return self._apply_decision(self.state(card_id), ping, reply["choice"])
@@ -575,15 +610,15 @@ class Session:
                                          "consequence": "one extra yield, charged to the WMA budget"},
                                         {"id": "reject", "label": "keep training", "consequence": "nothing happens"}],
                                timeout_action={"action": "reject", "after_s": self.config["timeouts_s"]["yield_request"]},
-                               raised_by="agent", observation=obs["obs_id"], extra={"evaluators": allowed})
+                               raised_by="agent", observation=obs["obs_id"], extra={"evaluators": allowed, "agent": agent_meta})
             else:
                 self.ledger.append("request_dropped", card_id=card_id, wanted=advice.request_evaluators,
                                    allowed=allowed, cost_min=cost, remaining_min=remaining)
                 mb.send("notice", advice.summary, evidence=evidence, prediction=advice.prediction,
-                        raised_by=self.agent.arm, observation=obs["obs_id"])
+                        raised_by=self.agent.arm, observation=obs["obs_id"], extra={"agent": agent_meta})
         else:
             mb.send("notice", advice.summary, evidence=evidence, prediction=advice.prediction,
-                    raised_by=self.agent.arm, observation=obs["obs_id"])
+                    raised_by=self.agent.arm, observation=obs["obs_id"], extra={"agent": agent_meta})
         return self._resume(self.state(card_id), obs)
 
     def _est_cost(self, st, names: list[str]) -> float:
@@ -802,8 +837,13 @@ class Session:
             return {**st, "pending_replies": [p["ping_id"] for p in self.mailbox(card_id).pending()]}
         return {"session": self.config["session_id"], "arm": self.config["arm"],
                 "cards": [{"card_id": s["card_id"], "status": s["status"], "observations": len(s["observations"]),
+                           "degraded_calls": int(s.get("degraded_calls", 0)),
                            "pending_replies": [p["ping_id"] for p in self.mailbox(s["card_id"]).pending()]}
                           for s in self.cards()],
+                "agent": {"arm": self.config["arm"], "backend": self.config.get("wma_backend"),
+                          "model": self.config.get("wma_model"), "strict": bool(self.config.get("wma_strict")),
+                          "prior_runs_root": self.config.get("prior_runs_root"),
+                          "retrieval_k": self.config.get("retrieval_k")},
                 "memory": self.memory.stats()}
 
 
@@ -862,15 +902,16 @@ def _fire_rules(contract: dict[str, Any], observations: list[dict[str, Any]]) ->
     return fired
 
 
-def _lint_evidence(evidence: list[dict[str, Any]], session_dir: Path, memory_root: Path) -> list[dict[str, Any]]:
-    """Grounding lint: keep only evidence whose path exists under the session or memory."""
+def _lint_evidence(evidence: list[dict[str, Any]], *roots: Path | str | None) -> list[dict[str, Any]]:
+    """Grounding lint: keep only evidence whose path exists under one of the allowed roots."""
+    allowed = [Path(str(r)) for r in roots if r]
     kept = []
     for e in evidence:
         p = e.get("path")
         if not p:
             continue
         path = Path(str(p))
-        if path.exists() and (inside(path, session_dir) or inside(path, memory_root)):
+        if path.exists() and any(inside(path, r) for r in allowed):
             kept.append(e)
     return kept
 

@@ -1,0 +1,188 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 2.94
+
+problem:
+  statement: >-
+    Both SFT and rejection-sampling fine-tuning sit at 0.682 at --limit 500, while
+    sampling the same model 8 times solves 95% of training questions - "the classic
+    pass@1 (68%) vs pass@8 (95%) gap - the model can solve problems but greedy decoding
+    doesn't" [783].
+  evidence:
+    - path: /home/ben/task/runs/sft_rft1_500.json
+      locator: "[779]"
+      observation: "sft_rft1 = 0.682 at --limit 500, identical to sft_v1 - more supervised data on self-generated traces moves nothing"
+    - path: /home/ben/task/logs/rft_gen_v1.log
+      locator: "[750]"
+      observation: "the same model solved 7099/7473 (95%) train questions when sampled 8 times at T=0.9"
+    - path: null
+      locator: "[783]"
+      observation: "weights of the two checkpoints genuinely differ (mean diff 2.6e-4), so the plateau is real and not a save/load bug"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    GRPO with a correctness reward on GSM8K-train prompts, started from the sft_rft1
+    checkpoint, will convert part of the pass@8 mass into pass@1 and raise accuracy
+    above 0.682 ("That's exactly what GRPO (RL) fixes by sharpening the policy",
+    [783]).
+  mechanism: >-
+    The reward is the eval's own criterion (the completion's final answer must match the
+    gold number, plus a small +0.2 shaping term for a well-formed "ANSWER:" line), so the
+    policy is optimised directly on what the scorer measures; group-relative advantages
+    over 8 samples per prompt push probability mass onto the branches that were already
+    reachable by sampling ([789], [790]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/sft_rft1
+    origin: exp-04
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, train split), prompts only"
+      n_examples: null
+      built_by: /home/ben/task/src/train_grpo.py
+      build_command: []
+      selection: >-
+        Built inline by the GRPO script as written at [790]: every GSM8K train question
+        whose normalised form does not match a test question, rendered as a single user
+        turn through the eval's MATH_PROMPT_TEMPLATE; the gold number (cleaned of $ , %
+        and trailing zeros) is carried as "answer" and used only by the reward function.
+        The printed prompt count is not in the digest.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl GRPOTrainer with colocated vLLM (vllm_mode=colocate) + peft LoRA"
+    peft: "LoRA r=32 alpha=64 targets=.*language_model.*\\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+    hyperparams:
+      lr: 1.0e-06
+      epochs: null
+      batch_size: 16
+      grad_accum: 8
+      max_seq_len: "max_prompt_length 320 / max_completion_length 300"
+      scheduler: null
+      warmup: "10 steps"
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        lr, batch_size, grad_accum, num_generations=8, temperature=1.0, beta=0.0,
+        max_prompt/max_comp, lora_r=32 and vllm_gpu_memory_utilization=0.28 are the
+        launch flags at [800]; max_steps=150. Fixed in the GRPO script as written at
+        [790]: bf16, gradient_checkpointing, scale_rewards="group", warmup_steps=10,
+        max_grad_norm=0.5, logging_steps=5, save_strategy="no" (no intermediate
+        checkpoints), alpha = 2 x r. Two reward functions: 1.0 for a correct final answer
+        under the eval's matcher, +0.2 for an "ANSWER: <number>" line. beta=0 means no
+        reference model and no KL term. The script is not in the workspace snapshot, so
+        no argparse default was adopted for the null fields. Env:
+        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True.
+    target_format: >-
+      eval-style single-turn prompt; the policy's own sampled completions are scored by
+      the same numeric matcher the benchmark uses.
+  command:
+    argv: [nohup, python, src/train_grpo.py, --init-from, ckpt/sft_rft1, --out, ckpt/grpo_v1, --max-steps, "150", --num-gen, "8", --bs, "16", --grad-accum, "8", --lr, "1e-6", --beta, "0.0", --temp, "1.0", --max-prompt, "320", --max-comp, "300", --lora-r, "32", --vllm-mem, "0.28"]
+    cwd: /home/ben/task
+    script: /home/ben/task/src/train_grpo.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/grpo_v1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 (81559 MiB) [5]"
+    planned_h: 0.6
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/grpo_v1, --limit, "500", --max-connections, "16", --max-tokens, "700", --gpu-memory-utilization, "0.6", --json-output-file, runs/grpo_v1_500.json]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.682
+    path: /home/ben/task/runs/sft_rft1_500.json
+  diagnostic:
+    what: "size of the weight change this run produced, compared with the change an SFT run produces"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.62
+  output_checkpoint: /home/ben/task/ckpt/grpo_v1
+  training_summary:
+    final_loss: null
+    steps: 150
+    notes: >-
+      Ran at ~14.5 s/step with 51 GB of GPU memory and no OOM [811]. Sampled train
+      correctness (reward_correct/mean) stayed flat at 0.74-0.85 across the whole run
+      [850]. The merged model was saved (3 safetensors entries).
+  measurements:
+    - metric: accuracy
+      value: 0.68
+      n: 500
+      path: /home/ben/task/runs/grpo_v1_500.json
+      delta_vs_comparator: -0.002
+  diagnostic_result:
+    value: 3.1e-05
+    path: null
+    notes: >-
+      Measured later, at [1060]: "grpo_v1 vs sft_rft1 max abs diff: 3.1e-05". The agent's
+      reading at [1062]: about 70x smaller than the 0.002 an SFT run produces, i.e. GRPO
+      was training but ~100x too gently to matter - the learning rate, not the method,
+      was wrong.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    GRPO at lr=1e-6 completed 150 steps with a flat reward curve and scored 0.68 at
+    --limit 500, indistinguishable from its 0.682 parent - "GRPO = 0.68, also no change.
+    All three post-training variants (SFT/RFT/GRPO) sit at ~68%" [867]. A later weight
+    diff showed the policy had barely moved (3.1e-5), locating the failure in the
+    learning rate rather than in the method.
+  decision: reject
+  next_step: >-
+    Diagnose the remaining 32% of failures before spending more compute - are they
+    reasoning errors or answer-extraction errors ([867]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-3c44629f
+  launch_i: 800
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [750, 779, 783]
+    setup: [789, 790, 800]
+    evaluation: [853, 857, 861]
+    result: [811, 850, 867, 1060]
+    conclusion: [867, 1062]
+  snapshot_files:
+    - results.md
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 794, outcome: "passed (3 steps, --limit 64: vLLM colocate loaded the multimodal model, rewards computed, checkpoint saved)"}
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      runs/grpo_v1_500.json is not in the workspace snapshot; results.md records the
+      value only as "grpo_v1 (lr 1e-6, 150 steps): 0.68", so the third decimal of this
+      measurement is unknown and delta_vs_comparator is computed from 0.68.
+    - >-
+      The number of GRPO prompts actually used is never printed in the digest.

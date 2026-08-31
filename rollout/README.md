@@ -13,8 +13,8 @@ conditions:
 | | prior information | WMA | prompt | agent |
 |---|---|---|---|---|
 | **C1** | raw files of the prior runs, read-only at `/home/ben/prior_runs` | none | `prompt_fulltraj` | `claude_fulltraj_noawm` |
-| **C2** | the same raw files | runtime + arm | `prompt_wm_fulltraj` | `claude_wm` |
-| **C3** | none directly; WMA memory seeded from the reconstructed cards | runtime + `retrieval` | `prompt_wm` | `claude_wm` |
+| **C2** | the same raw files, read by scientist **and** WMA | runtime + `traj` arm (autonomous, Claude Code read-only over `/home/ben/prior_runs`) | `prompt_wm_fulltraj` | `claude_wm:<model>:traj` |
+| **C3** | none directly; WMA memory seeded from the reconstructed cards | runtime + `retrieval` (or `llm` for an autonomous reader of memory) | `prompt_wm` | `claude_wm:<model>:retrieval` |
 
 Two versions of "prior": the split's 143 train-side runs, or all 193 including
 the 50 gemma runs. Scores and agent identity are visible in both (decision
@@ -47,10 +47,14 @@ only when it sits in the agent's own directory.
 export PTB_MODEL=google/gemma-3-4b-pt PTB_NUM_HOURS=10
 export PRIOR_RUNS=/data/prior_runs_143 WM_MEMORY=/data/wm-memory
 
+# C1 + C2 pack (prior runs mounted for both agents)
 sbatch rollout/wm_pack.sbatch \
-  claude_fulltraj_noawm:claude-opus-4-6  claude_wm:claude-opus-4-8:retrieval  claude_wm:claude-opus-5:retrieval \
-  claude_fulltraj_noawm:claude-opus-4-8  claude_wm:claude-opus-5:retrieval    claude_wm:claude-opus-4-6:retrieval \
-  claude_fulltraj_noawm:claude-opus-5    claude_wm:claude-opus-4-6:retrieval
+  claude_fulltraj_noawm:claude-opus-4-6  claude_wm:claude-opus-4-8:traj  claude_wm:claude-opus-5:traj \
+  claude_fulltraj_noawm:claude-opus-4-8  claude_wm:claude-opus-5:traj    claude_wm:claude-opus-4-6:traj \
+  claude_fulltraj_noawm:claude-opus-5    claude_wm:claude-opus-4-6:traj
+# C3 pack (no prior runs; memory seeded)
+PRIOR_RUNS= sbatch rollout/wm_pack.sbatch \
+  claude_wm:claude-opus-4-6:retrieval claude_wm:claude-opus-4-8:retrieval claude_wm:claude-opus-5:retrieval
 ```
 
 `PRIOR_RUNS_FOR=claude_fulltraj_noawm` restricts the prior-runs bind to C1, so
@@ -58,7 +62,21 @@ sbatch rollout/wm_pack.sbatch \
 the config (`claude_wm:claude-opus-4-8:retrieval:train:ro`) and get memory
 read-only.
 
-`AGENT_CONFIG` for `claude_wm` is `<model>[:<arm>[:<memory sides>[:ro]]]`.
+`AGENT_CONFIG` for `claude_wm` is `<model>[:<arm>[:<memory sides>[:ro]]]`. Arms: `null`,
+`retrieval` (deterministic, over memory), `traj` (autonomous Claude Code, read-only over the
+raw prior runs — C2), `llm` (autonomous, over memory + prior runs). The autonomous arms run
+on `WMA_MODEL` (default `claude-opus-4-8`, baked in by `setup.sh`), fixed across cells so the
+scientist model is the only thing that varies along that axis; every call and its parsed
+answer is logged under `task/wm/agent-calls/`.
+
+**A cell's label must equal what ran.** Every ping carries `agent: {arm, sources, backend, model,
+retrieval_k, produced_by, degraded}`. If an autonomous call fails or does not parse, the ping is
+stamped `produced_by: deterministic` with the reason, the ledger gets `agent_degraded`, and
+`awm wm status` counts `degraded_calls` per card; `solve.sh` prints the count at the end.
+The autonomous arms run with `--wma-strict`, so a failure at the *brief* fails the proposal
+loudly rather than letting the cell continue as a null-arm cell under a C2 label. Arms that read
+memory (`retrieval`, `llm`) refuse to start without the memory bind; `traj` refuses without the
+prior-runs bind. When analysing, treat any cell with `degraded_calls > 0` as its own category.
 
 ### What comes back
 

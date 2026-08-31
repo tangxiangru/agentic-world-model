@@ -1,0 +1,229 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-09
+created_at: null
+elapsed_h: 4.47
+
+problem:
+  statement: >-
+    The incumbent's last two stages (the TemplateGSM continuation and the mixed
+    GSM8K/MetaMath refresh) both trained on short, zero-shot prompts, while the
+    evaluator always presents a ~2.2k-token 10-shot prefix. The only earlier pass
+    that trained under that geometry (exp-04) was the one that produced a
+    measured gain, so the trunk has drifted away from the eval prompt shape
+    again.
+  evidence:
+    - path: /home/ben/task/runs/merged_stage5_ckpt400_eval20.json
+      locator: "[1476], [1479]"
+      observation: "mixed-refresh checkpoint at 0.350 on 20 samples - the best screening number so far"
+    - path: null
+      locator: "[638], [639], [706]"
+      observation: >-
+        the eval-style 10-shot prompt is 2172-2286 tokens, so any few-shot
+        refinement needs a ~2.5k window minimum
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A deliberately narrow, evaluation-shaped final stage - GSM8K-train only, the
+    same 10-shot prefix structure as the benchmark, a 2816-token window and a
+    lower learning rate - will sharpen prompt-following without overwriting the
+    arithmetic and wording gains from the mixed refresh, and will beat the
+    pre-polish checkpoint on the same slice.
+  mechanism: >-
+    The model now has the math competence; the remaining loss is in operating
+    under the real prompt geometry, and a low LR over GSM8K-only data adjusts
+    that without moving the rest of the adapter far.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-08
+    magnitude: null
+  falsified_if: >-
+    "If that checkpoint underperforms the pre-fewshot model, I'll simply keep the
+    pre-fewshot checkpoint as the final trunk rather than forcing the extra
+    prompt-polish stage" ([1648]).
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/stage5_from_stage4_gsm_metamath/checkpoint-400
+    origin: exp-08
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: 7463
+      built_by: /home/ben/task/scripts/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        full GSM8K train split, one repeat, minus the 10 few-shot prefix items
+        (7463 rows after exclusion, confirmed by the trainer's truncation bar at
+        [1513]); each example rendered as the evaluator's 10-shot prefix followed
+        by the target problem. No synthetic or MetaMath data in this stage.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (TRL with SFTConfig; version not printed in the stream)"
+    peft: "LoRA via peft, resumed as trainable over a 4-bit base; r / alpha / dropout never printed"
+    hyperparams:
+      lr: 3.0e-05
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --fewshot-count 10; --save-strategy steps --save-steps 200
+        --save-total-limit 2; a full epoch is 467 steps at ~8 s/step. From the
+        SFTConfig text printed in the stream: lr_scheduler_type=cosine,
+        optim=paged_adamw_8bit, bf16=True, gradient_checkpointing=True,
+        completion_only_loss=None.
+    target_format: >-
+      Gemma turn markers; user turn = 10-shot GSM8K-train prefix followed by the
+      target problem; assistant turn = reasoning ending in `ANSWER: <number>`.
+  command:
+    argv:
+      - python
+      - "-u"
+      - scripts/train_gsm8k_sft.py
+      - --output-dir
+      - runs/stage6_from_stage5ckpt400_fewshot
+      - --resume-adapter
+      - runs/stage5_from_stage4_gsm_metamath/checkpoint-400
+      - --use-4bit
+      - --gsm8k-repeat
+      - "1"
+      - --fewshot-count
+      - "10"
+      - --epochs
+      - "1.0"
+      - --batch-size
+      - "2"
+      - --grad-accum
+      - "8"
+      - --max-length
+      - "2816"
+      - --learning-rate
+      - "3e-5"
+      - --logging-steps
+      - "10"
+      - --save-strategy
+      - steps
+      - --save-steps
+      - "200"
+      - --save-total-limit
+      - "2"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_sft.py
+    env: {}
+    log: /home/ben/task/runs/stage6_from_stage5ckpt400_fewshot.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.0
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/merged_stage6_ckpt200
+      - --limit
+      - "50"
+      - --max-connections
+      - "1"
+      - --gpu-memory-utilization
+      - "0.4"
+      - --json-output-file
+      - runs/merged_stage6_ckpt200_eval50.json
+    dev_set: "official gsm8k test --limit 50 (inspect_evals/gsm8k, fewshot=10, fewshot_seed=42, shuffle_fewshot=True)"
+    n: 50
+    seed: 42
+  comparator:
+    ref: exp-08
+    value: 0.30
+    path: /home/ben/task/runs/merged_stage5_ckpt400_eval50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.44
+  output_checkpoint: /home/ben/task/runs/stage6_from_stage5ckpt400_fewshot/checkpoint-200
+  training_summary:
+    final_loss: null
+    steps: 200
+    notes: >-
+      Deliberately cut at the step-200 save, 200 of 467, at [1660]: "I'm stopping
+      the long-context run here so the model selection is based on the saved
+      fewshot checkpoint rather than whatever happens in the remaining 267 steps"
+      ([1658]). Loss 0.301 at step 10, then an oscillating band with a rougher
+      patch around step 180 and a recovery at 190 ([1520], [1648], [1655]).
+      Merged at [1662], greedy generation config applied at [1666]. Promoted to
+      final_model by `cp -a runs/merged_stage6_ckpt200 final_model` at [1688].
+  measurements:
+    - metric: accuracy
+      value: 0.35
+      n: 20
+      path: /home/ben/task/runs/merged_stage6_ckpt200_eval20.json
+      delta_vs_comparator: 0.0
+    - metric: accuracy
+      value: 0.40
+      n: 50
+      path: /home/ben/task/runs/merged_stage6_ckpt200_eval50.json
+      delta_vs_comparator: 0.10
+    - metric: accuracy
+      value: 0.42
+      n: 150
+      path: null
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    On the 20-sample screen the polished checkpoint tied the pre-polish one
+    (0.35 vs 0.35), so the agent escalated to 50 samples, where it won
+    decisively: "0.40 accuracy versus 0.30 for the pre-fewshot checkpoint"
+    ([1683]). It was promoted to final_model and verified at 0.420 on 150
+    samples ([1696]). This is the second time long-context few-shot training
+    produced the measured gain, matching exp-04.
+  decision: adopt
+  next_step: >-
+    A short, low-LR continuation from this checkpoint keeping the same 10-shot
+    setup, to see whether the long-context behaviour sharpens without drifting
+    ([1712], [1713]).
+
+provenance:
+  kind: extracted
+  run_ref: r-2432c636
+  launch_i: 1480
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [638, 639, 706, 1476, 1479]
+    setup: [1480, 1481, 1513]
+    evaluation: [1662, 1666, 1671, 1676, 1680, 1688, 1690]
+    result: [1520, 1655, 1658, 1661, 1672, 1681, 1696]
+    conclusion: [1683, 1691, 1696]
+  snapshot_files:
+    - final_model_eval150.json
+  smoke_runs: []
+  extractor: "reconstructed by an automated extractor; model id omitted per hard rule 5"
+  unresolved:
+    - "The 150-sample verification of this checkpoint (0.420, reported at [1696]) was written to /home/ben/task/final_model_eval150.json, which was then overwritten at [1856] by the exp-10 verification. The snapshot copy therefore holds 0.4933, not 0.420, so this card's 150-sample measurement has no surviving file."
+    - "The 20-sample comparison against exp-08 was a tie (0.35 vs 0.35); the verdict rests on the 50-sample round."
+    - "runs/merged_stage6_ckpt200_eval20.json and _eval50.json are not in the workspace snapshot; the values are read from the stream ([1672], [1681])."
+    - "This checkpoint was final_model only between [1688] and [1852]; the submitted model is exp-10's."

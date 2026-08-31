@@ -1,0 +1,174 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.65
+
+problem:
+  statement: >-
+    "The model often fails to stop after `ANSWER:` and gets math wrong." [144]
+    The checkpoint was saved with a sampling generation config (do_sample=true,
+    top_k=64, top_p=0.95), and under it the model runs past its own answer and
+    invents further questions; the grader takes the last number, so a correct
+    solution still scores wrong.
+  evidence:
+    - path: /home/ben/task/eval_gsm_v1_30.json
+      locator: "accuracy field; sample dump printed at [142]"
+      observation: "0.167 on 30 items; dumped generations end an answer and then continue with new problems and further `ANSWER:` lines"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-8cbbb240.md
+      locator: "[146]"
+      observation: "on the 30 eval samples: correct=5 wrong=25, multi_answer_or_long=13"
+    - path: data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-8cbbb240.md
+      locator: "[146]"
+      observation: "generation_config.json of the checkpoint: do_sample=true, top_k=64, top_p=0.95, eos_token_id=[1,106]"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Fixing the stop/decode behaviour of the saved checkpoint will remove the
+    run-on continuations that are costing correct answers. [144]
+  mechanism: >-
+    The model does emit <end_of_turn> (id 106) on a clean greedy decode [165];
+    it is the sampled decode that walks past it. Turning sampling off should let
+    the eval stop at the first answer.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft_gsm_v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: transformers generation_config.json
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        do_sample set to False; top_k, top_p and temperature removed;
+        eos_token_id left at [1, 106]. Applied to the root checkpoint and to
+        every checkpoint-*/generation_config.json under it [150].
+    target_format: null
+  command:
+    argv:
+      - "python << 'EOF'"
+      - 'p = Path("checkpoints/sft_gsm_v1/generation_config.json")'
+      - 'cfg["do_sample"] = False'
+      - 'cfg.pop("top_k", None)'
+      - 'cfg.pop("top_p", None)'
+      - 'cfg.pop("temperature", None)'
+      - 'p.write_text(json.dumps(cfg, indent=2)+"\n")'
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - checkpoints/sft_gsm_v1
+      - --limit
+      - "50"
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.5"
+      - --json-output-file
+      - eval_gsm_v1_50_greedy.json
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-01
+    value: null
+    path: /home/ben/task/eval_gsm_v1_30.json
+  diagnostic:
+    what: "count of samples whose output has more than one `ANSWER:` line or exceeds 1200 characters"
+    command:
+      - python
+      - "<< 'EOF'"
+      - 'if text.count("ANSWER:")>1 or len(text)>1200: long += 1'
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/checkpoints/sft_gsm_v1
+  training_summary: {final_loss: null, steps: null, notes: "config-only change; weights untouched"}
+  measurements:
+    - metric: accuracy
+      value: 0.3
+      n: 50
+      path: /home/ben/task/eval_gsm_v1_50_greedy.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      the printed counts are not in the stream; what [156] does show is five
+      failures whose format is clean and whose arithmetic is wrong
+      (T=80/P=83, T=8/P=192, T=20/P=4, T=75/P=30), i.e. the run-on mode is no
+      longer the whole story.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Greedy decoding lifted the score from 0.167 (n=30) to 0.300 (n=50), but the
+    two evals use different --limit values so this is not a like-for-like
+    comparison. The failures that remain are wrong arithmetic with correct
+    format, plus continuations that survive under the 10-shot eval prompt.
+  decision: adopt
+  next_step: >-
+    Train on few-shot-shaped data so the model stops under the eval's multi-shot
+    prompt, then MetaMath and GRPO [144].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-8cbbb240
+  launch_i: 149
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [138, 140, 141, 142, 144, 145, 146]
+    setup: [149]
+    evaluation: [149]
+    result: [150, 155, 156]
+    conclusion: [156, 164, 165]
+  snapshot_files:
+    - eval_gsm_v1_50_greedy.json
+    - logs_eval_gsm_v1_50_greedy.txt
+    - eval_gsm_v1_30.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the same greedy config is written into every later candidate by prepare_final.py, so no later card isolates the decode change again"
+    - "the diagnostic counts printed at [155] are cut off in the stream; only the failure listing survives"

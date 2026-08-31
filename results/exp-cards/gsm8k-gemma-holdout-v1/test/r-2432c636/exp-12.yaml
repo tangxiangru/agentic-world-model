@@ -1,0 +1,213 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-12
+created_at: null
+elapsed_h: 5.67
+
+problem:
+  statement: >-
+    The 80-step low-LR continuation from the incumbent lost the 50-sample gate
+    (0.44 against 0.46) even though its training loss was better at every logged
+    step, leaving open whether the continuation trajectory overshot and an
+    earlier point on it is the sweet spot.
+  evidence:
+    - path: /home/ben/task/runs/merged_stage8_ckpt80_eval50.json
+      locator: "[2069]"
+      observation: "80-step continuation at 0.440 (stderr 0.071) on 50 samples, below the incumbent's 0.46"
+    - path: /home/ben/task/runs/stage8_from_stage7ckpt80_lowlr5e6.log
+      locator: "[2039]"
+      observation: >-
+        the same run's loss was at or below the previous continuation's at every
+        logging step, so loss and gate score disagree
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Halving the length of the same low-LR continuation to 40 steps, from the
+    same parent checkpoint and with all other settings identical, will land at a
+    better point on the trajectory and clear the incumbent's 0.46 gate.
+  mechanism: >-
+    A focused check on whether the earlier part of the continuation trajectory
+    is the sweet spot ([2077]) - i.e. whether the 80-step version simply went
+    too far.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-10
+    magnitude: null
+  falsified_if: >-
+    Same gate as exp-11: it must beat 0.46 on the 50-sample slice or final_model
+    stays where it is ([2077], [2139]).
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/stage7_from_stage6ckpt200_lowlr80/checkpoint-80
+    origin: exp-10
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: 7463
+      built_by: /home/ben/task/scripts/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        full GSM8K train split, one repeat, minus the 10 few-shot prefix items;
+        each example rendered as the evaluator's 10-shot prefix followed by the
+        target problem. --max-steps 40 at 16 examples/step consumes ~640 rows.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (TRL with SFTConfig; version not printed in the stream)"
+    peft: "LoRA via peft, resumed as trainable over a 4-bit base; r / alpha / dropout never printed"
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --fewshot-count 10; --max-steps 40; --save-strategy steps --save-steps 40
+        --save-total-limit 1. Identical to exp-11 apart from the step count -
+        note that the cosine schedule anneals over 40 rather than 80 steps, so
+        this is not the exp-11 trajectory truncated but a different LR path.
+        From the SFTConfig text printed in the stream: lr_scheduler_type=cosine,
+        optim=paged_adamw_8bit, bf16=True, gradient_checkpointing=True,
+        completion_only_loss=None.
+    target_format: >-
+      Gemma turn markers; user turn = 10-shot GSM8K-train prefix followed by the
+      target problem; assistant turn = reasoning ending in `ANSWER: <number>`.
+  command:
+    argv:
+      - python
+      - "-u"
+      - scripts/train_gsm8k_sft.py
+      - --output-dir
+      - runs/stage9_from_stage7ckpt80_lowlr5e6_40
+      - --resume-adapter
+      - runs/stage7_from_stage6ckpt200_lowlr80/checkpoint-80
+      - --use-4bit
+      - --gsm8k-repeat
+      - "1"
+      - --fewshot-count
+      - "10"
+      - --epochs
+      - "1.0"
+      - --max-steps
+      - "40"
+      - --batch-size
+      - "2"
+      - --grad-accum
+      - "8"
+      - --max-length
+      - "2816"
+      - --learning-rate
+      - "5e-6"
+      - --logging-steps
+      - "10"
+      - --save-strategy
+      - steps
+      - --save-steps
+      - "40"
+      - --save-total-limit
+      - "1"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_sft.py
+    env: {}
+    log: /home/ben/task/runs/stage9_from_stage7ckpt80_lowlr5e6_40.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/merged_stage9_ckpt40
+      - --limit
+      - "50"
+      - --max-connections
+      - "1"
+      - --gpu-memory-utilization
+      - "0.4"
+      - --json-output-file
+      - runs/merged_stage9_ckpt40_eval50.json
+    dev_set: "official gsm8k test --limit 50 (inspect_evals/gsm8k, fewshot=10, fewshot_seed=42, shuffle_fewshot=True)"
+    n: 50
+    seed: 42
+  comparator:
+    ref: exp-10
+    value: 0.46
+    path: /home/ben/task/runs/merged_stage7_lowlr80_eval50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.11
+  output_checkpoint: /home/ben/task/runs/stage9_from_stage7ckpt80_lowlr5e6_40/checkpoint-40
+  training_summary:
+    final_loss: null
+    steps: 40
+    notes: >-
+      Full 40-step schedule; the agent reported the early curve behaving "exactly
+      like the early part of stage8" ([2098]) and step 30 "still slightly ahead
+      of the longer run" ([2120]), but no loss values for this run were printed
+      in the stream. Merge, greedy-config and the 50-sample gate were chained
+      behind the checkpoint write at [2075] and ran successfully. wall_h derived
+      from event timestamps ([2072] t=+5.67h to [2130] t=+5.78h).
+  measurements:
+    - metric: accuracy
+      value: 0.42
+      n: 50
+      path: /home/ben/task/runs/merged_stage9_ckpt40_eval50.json
+      delta_vs_comparator: -0.04
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    The shorter continuation scored 0.42 on the gate against the incumbent's
+    0.46, so the earlier point on the trajectory is not better either. "The last
+    two challenger branches both lost the gate, so I'm stopping the continuation
+    sweep here" ([2139]); final_model was left on the exp-10 model with its
+    0.493 / 150-sample verification. As with exp-11, the 4-point gap is inside
+    the slice's stderr (0.071), so the honest reading is that neither
+    continuation separated itself from the incumbent on 50 samples.
+  decision: reject
+  next_step: null
+
+provenance:
+  kind: extracted
+  run_ref: r-2432c636
+  launch_i: 2072
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [2039, 2069]
+    setup: [2072, 2074, 2077]
+    evaluation: [2075]
+    result: [2098, 2120, 2130, 2135, 2146]
+    conclusion: [2139, 2149]
+  snapshot_files: []
+  smoke_runs: []
+  extractor: "reconstructed by an automated extractor; model id omitted per hard rule 5"
+  unresolved:
+    - "The rationale for this launch is stated at [2074] and [2077], immediately after the launch at [2072] in the same turn, not before it."
+    - "No training loss values for this run were printed in the stream; the agent's comparisons at [2098] and [2120] refer to numbers not shown."
+    - "runs/merged_stage9_ckpt40_eval50.json is not in the workspace snapshot; the 0.42 value is read from the stream ([2135], [2146])."
+    - "The digest ends at [2149] with ~4.1 h of the 10 h budget unspent; the stream does not show the run being closed out or the budget being exhausted."

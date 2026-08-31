@@ -312,3 +312,78 @@ def test_adopt_copy_mode_and_memory_sides(tmp_path: Path) -> None:
     assert Memory(mem_root, session="y", arm="retrieval").precedents(card) == []
     both = Memory(mem_root, session="y", arm="retrieval", visible_sides=("train", "test")).precedents(card)
     assert [p["card_id"] for p in both] == ["exp-09"] and both[0]["delta_best_vs_parent"] == pytest.approx(0.2)
+
+
+def test_traj_arm_with_fake_backend_grounds_and_lints(tmp_path: Path) -> None:
+    prior = tmp_path / "prior_runs"
+    (prior / "cfg" / "run_a" / "task").mkdir(parents=True)
+    (prior / "INDEX.md").write_text("| 0.7 | fake/base-1b | cfg | run_a |\n")
+    (prior / "cfg" / "run_a" / "metrics.json").write_text('{"accuracy": 0.7}')
+    s, sd = make_session(tmp_path, parent_score=0.30, arm="traj")
+    s.config["prior_runs_root"] = str(prior)
+    s.config["wma_backend"] = "fake"
+    s.config["wma_fake"] = {
+        "brief": {"summary": "Two prior runs on this base with the same recipe gained +0.10 to +0.14.",
+                  "objections": [{"field": "evaluation.protocol.n", "severity": "advisory", "fix": "n=150 resolves ±0.04; expected effect is larger, fine"},
+                                 {"field": "bogus", "severity": "fatal", "fix": "x"}],
+                  "prediction": {"metric": "accuracy", "horizon": "final", "delta_mean": 0.12, "delta_sd": 0.03, "basis": "2 runs"},
+                  "evidence": [{"path": str(prior / "cfg" / "run_a" / "metrics.json"), "locator": "accuracy", "observation": "0.70 final"},
+                               {"path": "/etc/passwd", "locator": "1", "observation": "outside allowed roots"},
+                               {"path": str(prior / "missing.json"), "locator": "x", "observation": "does not exist"}],
+                  "recommendation": "run"},
+        "observation": {"kind": "yield_request", "summary": "dev150 tracks run_a's curve at 25%.",
+                        "evidence": [{"path": str(prior / "INDEX.md"), "locator": "run_a", "observation": "0.70"}],
+                        "prediction": {"metric": "accuracy", "horizon": "final", "delta_mean": 0.11, "delta_sd": 0.02, "basis": "run_a"},
+                        "request_evaluators": ["diag", "not_in_contract"], "recommendation": None},
+    }
+    brief = s.propose(write_card(sd))
+    assert brief["summary"].startswith("Two prior runs") and brief["summary"].endswith("Recommendation: run.")
+    assert brief["prediction"]["delta_mean"] == pytest.approx(0.12)
+    paths = [e["path"] for e in brief["evidence"]]
+    assert str(prior / "cfg" / "run_a" / "metrics.json") in paths
+    assert "/etc/passwd" not in paths and str(prior / "missing.json") not in paths
+    assert sum(1 for e in brief["evidence"] if e["locator"] == "evaluation.protocol.n") == 1  # the fatal one was dropped
+    assert any(r["event"] == "lint" and r.get("where") == "brief" and r["dropped"] == 2 for r in s.ledger.rows())
+    assert (s.wm / "agent-calls").is_dir() and list((s.wm / "agent-calls").glob("*-brief.prompt.md"))
+    s.reply("exp-01/p-1", "accept")
+    # the contract has no on_request evaluators, so the agent's yield_request degrades to a notice
+    assert s.checkpoint("exp-01", make_ckpt(sd, "exp-01", 250, 0.34), step=250) == HOOK_YIELD
+    s.run_worker("exp-01")
+    last = s.mailbox("exp-01").pings()[-1]
+    assert last["kind"] == "notice" and last["prediction"]["delta_mean"] == pytest.approx(0.11)
+    assert any(e["path"] == str(prior / "INDEX.md") for e in last["evidence"])
+
+
+def test_agent_degradation_is_recorded_and_strict_mode_refuses(tmp_path: Path) -> None:
+    prior = tmp_path / "prior_runs"; prior.mkdir(); (prior / "INDEX.md").write_text("x\n")
+    s, sd = make_session(tmp_path, parent_score=0.30, arm="traj")
+    s.config.update({"prior_runs_root": str(prior), "wma_backend": "fake", "wma_fake": {}})  # no canned answers -> fallback
+    brief = s.propose(write_card(sd))
+    assert brief["agent"]["produced_by"] == "deterministic" and "no canned answer" in brief["agent"]["degraded"]
+    assert brief["summary"].startswith("[agent degraded:")
+    assert brief["agent"]["arm"] == "traj" and brief["agent"]["sources"] == ["prior_runs"]
+    assert any(r["event"] == "agent_degraded" and r["where"] == "brief" for r in s.ledger.rows())
+    assert s.status()["cards"][0]["degraded_calls"] == 1
+    s.reply("exp-01/p-1", "accept")
+    assert s.checkpoint("exp-01", make_ckpt(sd, "exp-01", 250, 0.34), step=250) == HOOK_YIELD
+    s.run_worker("exp-01")
+    last = s.mailbox("exp-01").pings()[-1]
+    assert last["kind"] == "notice" and last["agent"]["produced_by"] == "deterministic" and last["agent"]["degraded"]
+    assert s.status("exp-01")["degraded_calls"] == 2
+
+    # strict: the brief refuses instead of falling back; the card stays a draft
+    s2, sd2 = make_session(tmp_path / "strict", parent_score=0.30, arm="traj")
+    s2.config.update({"prior_runs_root": str(tmp_path / "nope"), "wma_backend": "fake", "wma_strict": True})
+    with pytest.raises(WMError, match="wma_strict"):
+        s2.propose(write_card(sd2))
+    assert s2.status("exp-01")["status"] == "draft"
+    assert any(r["event"] == "agent_failed" for r in s2.ledger.rows())
+
+    # a healthy call is stamped llm, and the retrieval arm records its k
+    s3, sd3 = make_session(tmp_path / "ok", parent_score=0.30, arm="traj")
+    s3.config.update({"prior_runs_root": str(prior), "wma_backend": "fake",
+                      "wma_fake": {"brief": {"summary": "fine", "evidence": [], "prediction": None}}})
+    b3 = s3.propose(write_card(sd3))
+    assert b3["agent"]["produced_by"] == "llm" and b3["agent"]["degraded"] is None
+    s4, sd4 = make_session(tmp_path / "ret", parent_score=0.30, arm="retrieval")
+    assert s4.propose(write_card(sd4))["agent"]["retrieval_k"] == 5

@@ -1,0 +1,194 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 4.42
+
+problem:
+  statement: >-
+    Every branch built on top of the first SFT model has now failed to beat the
+    67.3% verifier checkpoint - the diversity SFT pass regressed and both
+    rejection-sampling checkpoints screened below the parent - so the whole
+    pass-one data recipe may be the limiting factor rather than the refinement
+    stage on top of it.
+  evidence:
+    - path: /home/ben/task/eval_rft1_final_50.json
+      locator: "[828], accuracy 0.62 (n=50); eval_rft1_step500_50.json 0.60"
+      observation: >-
+        agent: "Both RFT checkpoints underperformed (60% midpoint, 62% final on
+        the 50-problem screen), so I've rejected that branch and preserved the
+        67.3% parent."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    An independent SFT run from the untouched pretrained base on a
+    MetaMath-style corpus of GSM8K-train-derived transformations (rephrasings,
+    self-verification, FOBAR) will produce a different, possibly better, starting
+    point than the OpenMath/Orca pass-one recipe. (agent, [828]: "I'm now
+    starting the independent MetaMath-style ablation from the required Gemma
+    base: 103,834 GSM-train-derived transformations plus repeated clean
+    GSM8K-train examples.")
+  mechanism: >-
+    MetaMathQA's GSM augmentations are all derived from GSM8K's own training
+    split, so they stay exactly on-distribution for the benchmark while adding
+    question-side variety that the external OpenMath/Orca mixture cannot.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data_metamath
+      source: "HF meta-math/MetaMathQA (GSM_Rephrased / GSM_SV / GSM_FOBAR / GSM_AnsAug) + openai/gsm8k (main, train) x3"
+      n_examples: 126247
+      built_by: /home/ben/task/prepare_metamath.py
+      build_command: [python, prepare_metamath.py, --output-dir, data_metamath, --limit, "120000", --gsm-repeats, "3"]
+      selection: >-
+        data_metamath/report.json ([825]): 240,000 GSM-type MetaMathQA rows read,
+        136,125 duplicates dropped, 32 removed for test-question overlap, 3 with
+        unusable answers, 6 too long; selected 58,072 GSM_Rephrased +
+        29,267 GSM_SV + 16,495 GSM_FOBAR = 103,834, plus 7,471 unique
+        GSM8K-train examples repeated 3x. Trailing "The answer is" / "####"
+        markers are stripped so the only terminal protocol learned is the
+        evaluator's "ANSWER:" line. 126,245 examples packed into 44,101
+        1024-token blocks, 43,271,563 tokens, 95.8% utilisation.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: >-
+      same custom loop as exp-01 (train_sft.py: transformers + peft LoRA,
+      flash_attention_2, gradient checkpointing, fused AdamW, liger_kernel
+      fused_linear_cross_entropy)
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=all 238 language-model projections"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: "cosine to a floor of 0.1x peak (min_lr_ratio 0.1)"
+      warmup: "100 steps"
+      weight_decay: 0.01
+      precision: bf16 (tf32 matmuls enabled)
+      seed: 271828
+      other: >-
+        --model-path google/gemma-3-4b-pt, --data-dir data_metamath, --epochs 1,
+        --micro-batch-size 4, --grad-accum 2, --lr 2e-4, --warmup-steps 100,
+        --log-steps 50, --save-steps 3000 are on the command line at [829].
+        block-size 1024, min-lr-ratio 0.1, weight-decay 0.01, lora-rank 64,
+        lora-alpha 128, lora-dropout 0.05 and seed 271828 are train_sft.py
+        argparse defaults (workspace copy) that this launch did NOT override.
+    target_format: >-
+      evaluator prompt template, response = the MetaMath solution with its own
+      answer markers removed and a terminal "ANSWER: n" line appended; prompt
+      tokens masked, 1024-token best-fit packing
+  command:
+    argv: [python, train_sft.py, --model-path, google/gemma-3-4b-pt, --data-dir, data_metamath, --output-dir, run_meta_base, --epochs, "1", --micro-batch-size, "4", --grad-accum, "2", --lr, "2e-4", --warmup-steps, "100", --log-steps, "50", --save-steps, "3000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/run_meta_base/train_log.jsonl
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, run_meta_base/model, --limit, "50", --max-connections, "16", --max-tokens, "4000", --gpu-memory-utilization, "0.5", --json-output-file, eval_meta_final_50.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.6733333333333333
+    path: /home/ben/task/eval_grpo1_step100_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.63
+  output_checkpoint: /home/ben/task/run_meta_base/model
+  training_summary:
+    final_loss: 0.109
+    steps: 5512
+    notes: >-
+      agent at [958]: "MetaMath training completed successfully in 5,512 updates
+      (~98 minutes), ending at 0.109 loss with stable gradients." Loss fell
+      0.414 -> 0.214 by step 100 ([834]), 0.154 at 2,500, 0.146 at 3,000,
+      0.117 at 5,050, 0.108 at 5,400. The step-3,000 adapter was merged onto the
+      pretrained base at [969].
+  measurements:
+    - metric: accuracy
+      value: 0.52
+      n: 50
+      path: /home/ben/task/eval_meta_final_50.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.6
+      n: 50
+      path: /home/ben/task/eval_meta_step3000_50.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The branch trained cleanly to a much lower loss than pass one (0.109 vs 0.31)
+    but scored 52% at the end and 60% at its step-3,000 midpoint on the 50-item
+    screen, and the agent rejected the whole line at [975]. The verdict is
+    inconclusive rather than contradicted because the only comparator the agent
+    named here was the 67.3% figure measured at --limit 150; the incumbent's own
+    50-item score was not measured until [1081].
+  decision: reject
+  next_step: >-
+    agent at [975]: "I'm returning to the one method that produced a measured
+    gain and will refine it at a lower reinforcement-learning rate" -> exp-07.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-fac8a9cc
+  launch_i: 829
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [820, 828]
+    setup: [559, 824, 825, 829]
+    evaluation: [964, 969, 972]
+    result: [832, 834, 892, 897, 901, 903, 943, 947, 954, 958, 966, 970, 973]
+    conclusion: [968, 975]
+  snapshot_files:
+    - train_sft.py
+    - prepare_metamath.py
+    - prepare_data.py
+    - merge_adapter.py
+    - finalize_assets.py
+    - evaluate.py
+    - eval_meta_final_50.json
+    - eval_meta_step3000_50.json
+    - eval_grpo1_step100_150.json
+    - EXPERIMENTS.md
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The incumbent's own 50-item score (0.64, eval_best_step100_50.json) was only measured later at [1081]; against that same-protocol number both MetaMath points are below the incumbent, but that comparison was never the one the agent made."
+    - "This branch was never evaluated at --limit 150 or --limit 1319, so it cannot be re-ranked the way exp-02 and exp-05 were once the full-set sweep began."

@@ -1,0 +1,217 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 6.19
+
+problem:
+  statement: >-
+    The successful GRPO run wasted most of its rollout budget: in the logged
+    windows of the 200-step run a large share of generation groups had all eight
+    samples receive identical rewards, giving zero advantage and a grad_norm of
+    exactly 0.0, so only a minority of batches actually updated the policy.
+  evidence:
+    - path: /home/ben/task/run_grpo1b/checkpoint-200/trainer_state.json
+      locator: "[983], steps 130-200: frac_reward_zero_std 0.2-1.0, grad_norm 0.0 in most windows"
+      observation: >-
+        agent at [986]: "The earlier GRPO logs show many wasted batches where all
+        eight samples received identical rewards."
+    - path: /home/ben/task/eval_meta_final_50.json
+      locator: "[975], accuracy 0.52 (n=50); eval_meta_step3000_50.json 0.60"
+      observation: >-
+        agent: "The MetaMath midpoint scored 60%, so that entire branch is
+        rejected. The verifier-trained 100-step checkpoint remains best at 67.3%."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Restricting GRPO to a verifier-derived curriculum - only GSM8K-train problems
+    for which the current best model produced exactly one or two correct traces
+    out of eight - will raise the fraction of reward-varying groups and turn the
+    same step budget into a real gain over the 67.3% checkpoint. (agent, [986]:
+    "problems that are solvable but still provide reward variance"; [998]: "a
+    100-step GRPO refinement from the 67.3% checkpoint at a reduced 2e-6 learning
+    rate, saving both step 50 and step 100.")
+  mechanism: >-
+    GRPO's advantage is the within-group spread of rewards; problems the policy
+    always or never solves contribute nothing. Selecting the 1-2-correct band
+    concentrates the batch on prompts whose group correctness sits in the useful
+    40-70% regime.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/run_grpo1b/model-step-100
+    origin: exp-04
+    hash: null
+  data:
+    - path: /home/ben/task/data_grpo_curriculum/train.jsonl
+      source: "derived:exp-05 (data_rft1 acceptance counts) over HF openai/gsm8k (main, train) prompts"
+      n_examples: 1150
+      built_by: /home/ben/task/prepare_grpo_curriculum.py
+      build_command: [python, prepare_grpo_curriculum.py]
+      selection: >-
+        data_grpo_curriculum/report.json ([990]): count the accepted self_rft
+        traces per problem in data_rft1/train.jsonl and keep the GSM8K-train rows
+        whose count is between --min-accepted 1 and --max-accepted 2. Histogram:
+        520 problems with one accepted trace, 630 with two, 6,021 capped at
+        three; 1,150 selected. All arguments (rft-file data_rft1/train.jsonl,
+        gsm-file data_sft/train.jsonl, output-dir data_grpo_curriculum,
+        min-accepted 1, max-accepted 2) are the script's argparse defaults - the
+        launch at [989] passed none.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: >-
+      trl GRPOTrainer with colocated vLLM (vllm_mode="colocate",
+      vllm_gpu_memory_utilization 0.22, vllm_max_model_length 3072),
+      use_liger_kernel, flash_attention_2
+    peft: "LoRA r=32 alpha=64 dropout=0.0 targets=all 238 language-model projections"
+    hyperparams:
+      lr: 2.0e-06
+      epochs: null
+      batch_size: 4
+      grad_accum: 2
+      max_seq_len: "vllm_max_model_length 3072 / max_completion_length 384"
+      scheduler: cosine
+      warmup: "warmup_ratio 0.05"
+      weight_decay: 0.0
+      precision: bf16 (tf32 enabled)
+      seed: 8675309
+      other: >-
+        --model-path run_grpo1b/model-step-100, --data-file
+        data_grpo_curriculum/train.jsonl, --output-dir run_grpo_curr1,
+        --max-steps 100, --learning-rate 2e-6, --num-generations 8,
+        --temperature 0.9, --seed 8675309 are all on the command line at [999].
+        max-completion-length 384, fewshot 10 and lora-rank 32 are train_grpo.py
+        argparse defaults not overridden. Script body as exp-04:
+        generation_batch_size 8, top_p 0.95, top_k 0, stop_token_ids [1, 106],
+        beta 0.0, loss_type "dr_grpo", scale_rewards "none", reward_weights
+        [1.0, 0.1], max_grad_norm 1.0, save_steps max(50, 100//2) = 50.
+    target_format: >-
+      same exact-answer correctness reward plus the small format reward as
+      exp-04; prompts carry the exact 10-shot evaluator context (~2,210 tokens,
+      [1001])
+  command:
+    argv: [python, train_grpo.py, --model-path, run_grpo1b/model-step-100, --data-file, data_grpo_curriculum/train.jsonl, --output-dir, run_grpo_curr1, --max-steps, "100", --learning-rate, "2e-6", --num-generations, "8", --temperature, "0.9", --seed, "8675309"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, run_grpo_curr1/model-step-50, --limit, "-1", --max-connections, "16", --max-tokens, "4000", --gpu-memory-utilization, "0.5", --json-output-file, eval_curr1_step50_all_1319.json]
+    dev_set: "official --limit -1 (all 1,319)"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.6254738438210766
+    path: /home/ben/task/final_eval_all_1319.json
+  diagnostic:
+    what: >-
+      share of generation groups with nonzero reward variance during training,
+      the quantity the curriculum was built to raise
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.122
+  output_checkpoint: /home/ben/task/run_grpo_curr1/model
+  training_summary:
+    final_loss: null
+    steps: 100
+    notes: >-
+      agent at [1014]: "Curriculum GRPO finished in 7.3 minutes with both
+      checkpoints saved." The step-50 checkpoint was merged onto
+      run_grpo1b/model-step-100 at [1015]. Agent at [1025]: the step-50 model
+      "produced noticeably longer answers" (10,606 output tokens on the 50-item
+      screen versus 7,126 for the parent).
+  measurements:
+    - metric: accuracy
+      value: 0.62
+      n: 50
+      path: /home/ben/task/eval_curr1_step50_50.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.6
+      n: 50
+      path: /home/ben/task/eval_curr1_final_50.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.6209249431387415
+      n: 1319
+      path: /home/ben/task/eval_curr1_step50_all_1319.json
+      delta_vs_comparator: -0.0045489006823351
+  diagnostic_result:
+    value: 0.8
+    path: null
+    notes: >-
+      The curriculum did what it was designed to do at the training level. Agent
+      at [1003]: "The first five-step window has 25% reward-varying batches";
+      [1005]: "By steps 15-20 the curriculum is working as intended: 80% of
+      groups now have nonzero reward variance, with correctness around 45-70%";
+      [1008]: "40-80% useful groups with bounded gradients". These are prose
+      readings of the trainer log, not a saved probe file.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: >-
+    The mechanism worked and the metric did not: reward-varying groups rose from
+    roughly 20-40% in the broad run to 80% here, but the step-50 checkpoint
+    scored 62.09% on all 1,319 problems against the parent's 62.55% and both
+    checkpoints screened below the parent at --limit 50 (62% and 60% vs 64%).
+    Making GRPO batches informative did not make the resulting policy better.
+  decision: reject
+  next_step: >-
+    agent at [1030]: "next I'm testing a second independent 100-step broad run
+    from the 65.3% SFT model, using the proven settings with a new seed to
+    measure optimizer variance" -> exp-08.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-fac8a9cc
+  launch_i: 999
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [979, 980, 982, 983, 986]
+    setup: [989, 990, 992, 993, 998, 999]
+    evaluation: [1022, 1026, 1301]
+    result: [1001, 1003, 1005, 1008, 1010, 1014, 1015, 1023, 1027, 1304]
+    conclusion: [1025, 1030, 1307]
+  snapshot_files:
+    - train_grpo.py
+    - prepare_grpo_curriculum.py
+    - merge_adapter.py
+    - finalize_assets.py
+    - evaluate.py
+    - eval_curr1_step50_50.json
+    - eval_curr1_final_50.json
+    - eval_curr1_step50_all_1319.json
+    - final_eval_all_1319.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "run_grpo1b/checkpoint-200/trainer_state.json is cited from the agent's own reads at [980]/[982]; no checkpoint directories are present in the workspace snapshot, so that file cannot be re-opened."
+    - "Only the step-50 checkpoint of this run was carried to the full 1,319-item set; run_grpo_curr1/model (step 100) was screened at --limit 50 only."
+    - "The reward-variance readings that justify mechanism_verdict: supported are the agent's prose summaries of the live trainer log; no trainer_state.json for this run appears in the digest or the workspace snapshot."

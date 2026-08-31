@@ -1,0 +1,188 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.34
+
+problem:
+  statement: >-
+    The human-data-only SFT line is not viable: 0.06 on a 50-sample slice, and
+    inspection of the generations shows the model reaching an `ANSWER:` line and
+    then continuing into unrelated invented problems, so the scorer no longer
+    sees the intended final answer. The model is also still weak on novel
+    problems.
+  evidence:
+    - path: /home/ben/task/runs/merged_gsm8k_only_ep1_eval50.json
+      locator: "[376], [378]"
+      observation: "merged epoch-1 human-only checkpoint: accuracy 0.060, stderr 0.034 on 50 samples"
+    - path: /home/ben/task/logs/2026-04-06T17-46-24+02-00_gsm8k_YNRL4ac8aZcEhfytAPECdD.json
+      locator: "[380], [382], [387]"
+      observation: >-
+        sampled generations run past the intended answer into further invented
+        problems and extra `ANSWER:` lines
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A pure-synthetic warmup stage on 20k TemplateGSM examples, trained from the
+    base model with a short context and a larger batch, will give far broader
+    arithmetic supervision than the 7.4k human GSM8K set and will teach the
+    concise, terminating `ANSWER:` output shape, providing a better base for a
+    subsequent GSM8K-train refinement pass than the failed human-only line.
+  mechanism: >-
+    TemplateGSM sequences are short (~244 tokens mean, 360 max in the sampled
+    probe at [186]/[188]), so far more examples fit the same wall-clock budget;
+    each one is a fully worked grade-school problem ending in a single answer.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "math-ai/TemplateGSM (default config, split train, streaming)"
+      n_examples: 20000
+      built_by: /home/ben/task/scripts/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        streaming shuffle with seed 42 and a buffer, then the first
+        --synthetic-samples rows; the target is built from `solution_wocode`
+        plus `result` re-rendered as a final `ANSWER: <n>` line. GSM8K-train is
+        switched off entirely for this stage (--gsm8k-repeat 0).
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (TRL with SFTConfig; version not printed in the stream)"
+    peft: "LoRA via peft, loaded 4-bit (QLoRA, nf4, double-quant, bf16 compute); r / alpha / dropout / target modules never printed"
+    hyperparams:
+      lr: 3.0e-04
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        From the SFTConfig text printed in the stream ([130], [521]):
+        lr_scheduler_type=cosine, optim=paged_adamw_8bit, bf16=True,
+        gradient_checkpointing=True, completion_only_loss=None. Remaining
+        argparse defaults are not in the stream and the script is not in the
+        snapshot, so they stay null.
+    target_format: >-
+      Gemma turn markers; user turn carries the math-problem instruction,
+      assistant turn is the worked solution ending in `ANSWER: <number>`.
+  command:
+    argv:
+      - python
+      - scripts/train_gsm8k_sft.py
+      - --output-dir
+      - runs/template20k_stage1
+      - --use-4bit
+      - --gsm8k-repeat
+      - "0"
+      - --synthetic-samples
+      - "20000"
+      - --epochs
+      - "1.0"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "4"
+      - --max-length
+      - "768"
+      - --learning-rate
+      - "3e-4"
+      - --logging-steps
+      - "10"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 0.75
+
+evaluation:
+  protocol: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: "single-prompt raw generation spot check under the evaluator's prompt shape, greedy decoding"
+    command:
+      - python
+      - "-"
+      - "<inline script: load base + adapter runs/template20k_stage1, generate 200 tokens on the Janet's-ducks prompt>"
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.64
+  output_checkpoint: /home/ben/task/runs/template20k_stage1
+  training_summary:
+    final_loss: 0.0233
+    steps: 1250
+    notes: >-
+      train_runtime 2319.57s, train_loss 0.023322662930190564, late-run
+      mean_token_accuracy ~0.998 ([487]). The very low loss reflects the highly
+      templated synthetic distribution.
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      The spot check ([490]/[491]) produced a concise solution that ended with a
+      clean `ANSWER: 13` line and emitted `<end_of_turn>`, i.e. the stopping and
+      format problem from exp-01 was fixed; the arithmetic on that item was
+      still wrong ([493]).
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The synthetic warmup completed and structurally fixed the output behaviour -
+    concise answer, clean `ANSWER:` line, proper end-of-turn - but the agent
+    deliberately did not benchmark it, going straight into the GSM8K refinement
+    stage because "the math on that sample is still wrong" ([493]). No accuracy
+    number exists for this checkpoint.
+  decision: adopt
+  next_step: >-
+    GSM8K-train refinement on top of this adapter, to keep the improved stopping
+    behaviour while moving reasoning style and problem distribution back toward
+    the benchmark ([494], [496]).
+
+provenance:
+  kind: extracted
+  run_ref: r-2432c636
+  launch_i: 398
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [376, 378, 380, 382, 387, 397]
+    setup: [186, 188, 397, 398, 400]
+    evaluation: [490, 491, 493]
+    result: [487]
+    conclusion: [489, 493]
+  snapshot_files: []
+  smoke_runs: []
+  extractor: "reconstructed by an automated extractor; model id omitted per hard rule 5"
+  unresolved:
+    - "This checkpoint was never scored on the benchmark, so its contribution is only inferable from exp-03, which trains on top of it."
+    - "The TemplateGSM config used here is the dataset default (no --synthetic-config flag); later stages pin templategsm-7473-1k, so the two synthetic stages may not draw from the same config."
+    - "runs/template20k_stage1 and the merged/eval artefacts are not in the workspace snapshot."

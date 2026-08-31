@@ -1,0 +1,187 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 8.32
+
+problem:
+  statement: >-
+    v4 saw the most diverse data but "doesn't stop - it rambles, re-emitting the
+    prompt template (99/300 generations ramble, one was 13,600 chars!)" [733], so
+    the last-number scorer reads garbage and v4 scores 0.390 despite a healthy
+    train loss.
+  evidence:
+    - path: /home/ben/task/logs/v4g300_metrics.json
+      locator: "[729], [820]"
+      observation: "v4 greedy 0.390 on 300 samples against v2's 0.707"
+    - path: /home/ben/task/logs/
+      locator: "[731]"
+      observation: "no_ANSWER=2, rambles_after=99 of 300; one generation is 13,600 characters"
+  affected_share: 0.33
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/
+      question: null
+      gold: "20"
+      model_output: |-
+        then how many calories does the person consume in a week?\n\nRemember to put your answer on its own line at the end in the form "ANSWER: $ANSWER" (without quotes)
+      failure: "13,600-char generation: answers, then invents new problems and re-emits the prompt template instead of stopping"
+    - id: null
+      source: /home/ben/task/logs/
+      question: null
+      gold: "21"
+      model_output: |-
+        ne at the end in the form "ANSWER: $ANSWER" (without quotes) where $ANSWER is the answer to the problem, and you do not need to use a \boxed command.\n\nANSWER: 1
+      failure: "re-emits the prompt template and ends on an answer to a self-invented question"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "rescue v4 (which saw more diverse data but lost clean stopping) via a short
+    continued fine-tune on clean gsm8k_train to restore `<end_of_turn>` emission.
+    If it beats v2, I'll use it; otherwise v2 stays" [750].
+  mechanism: >-
+    A short, low-LR pass over the 7.5K clean GSM8K-train rows - every one of
+    which ends in "ANSWER: X" then <end_of_turn> - should re-teach the stop token
+    without undoing the broader reasoning coverage v4 picked up.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: >-
+    "If it beats v2, I'll use it; otherwise v2 stays" [750] - not clearing v2's
+    0.707 on the same 300 samples ends the line.
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/v4
+    origin: exp-06
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k, main, train split"
+      n_examples: 7473
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py]
+      selection: >-
+        the same cleaned GSM8K-train file used since exp-01, chosen here because
+        it is the only mixture component whose targets are guaranteed to end in
+        "ANSWER: X" + <end_of_turn> with no <<...>> annotations [633][763]
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers.Trainer (transformers 4.57.3)"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 2.0
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: "cosine"
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 (bf16=True, torch_dtype=torch.bfloat16, flash_attention_2 with an sdpa fallback)"
+      seed: 0
+      other: >-
+        continued fine-tune, not a fresh one: --model runs/v4 loads the exp-06
+        checkpoint instead of the base. That argument was added to train_sft.py
+        at [753]/[759] for this launch. LR halved to 1e-5. warmup, weight_decay
+        and seed remain the snapshot script's argparse defaults, not overridden;
+        scheduler and the rest of TrainingArguments are hard-coded [120].
+    target_format: >-
+      as exp-06: zero-shot user turn holding the eval's MATH_PROMPT_TEMPLATE,
+      assistant turn = chain of thought + "\n\nANSWER: X" + <end_of_turn>, prompt
+      masked.
+  command:
+    argv: [python, train_sft.py, --model, runs/v4, --data, data/gsm8k_train.jsonl, --output_dir, runs/v4b, --epochs, "2", --lr, "1e-5", --bs, "8", --accum, "8", --max_len, "1024", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v4b.log
+  budget:
+    gpu: "one NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/v4b_greedy, --limit, "300", --max-connections, "16", --gpu-memory-utilization, "0.6", --json-output-file, logs/v4b_metrics.json]
+    dev_set: "official --limit 300 - the same slice v2 and v4 were measured on"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.390
+    path: /home/ben/task/logs/v4g300_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.16
+  duration_h: 0.16
+  steps: null
+  output_checkpoint: /home/ben/task/runs/v4b
+  training_summary:
+    final_loss: 0.39
+    steps: null
+    notes: >-
+      "v4b saved (train_loss 0.39 - the rescue shifted v4 toward clean gsm8k
+      format)" [774]. Step count never printed. wall_h spans the launch at [763]
+      (t=+8.32h) and the save report at [774] (t=+8.48h).
+  measurements:
+    - metric: accuracy
+      value: 0.317
+      n: 300
+      path: /home/ben/task/logs/v4b_metrics.json
+      delta_vs_comparator: -0.073
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    The rescue made v4 worse, not better: 0.317 on the same 300 samples against
+    v4's own 0.390 and v2's 0.707. "the rescue failed; v4 is fundamentally
+    degenerate, not just a stopping issue. v2 is conclusively my best model"
+    [794]. The larger-data line is closed and final_model (exp-05, the v2
+    weights) stands as the submission.
+  decision: reject
+  next_step: >-
+    "Let me stop experimenting and do the final verification of the submission"
+    [794] - re-run final_model on the default grader invocation, which returned
+    0.693 at [818] and closed the run.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-6b7e26ac
+  launch_i: 763
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [729, 731, 733]
+    setup: [753, 759, 763]
+    evaluation: [775]
+    result: [774, 794, 820]
+    conclusion: [794]
+  snapshot_files:
+    - train_sft.py
+    - data_prep.py
+    - make_greedy.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the 0.317 value is stated by the agent at [794] and listed in the [820] roll-up; the metrics-file read event itself is not in the digest"
+    - "no diagnostic re-ran the ramble count on v4b, so whether the rescue restored stopping and simply lost accuracy, or did neither, is never settled"
+    - "logs/ and data/ are not in the workspace snapshot"
