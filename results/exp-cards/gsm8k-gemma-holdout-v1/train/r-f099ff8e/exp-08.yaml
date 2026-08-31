@@ -1,0 +1,179 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 6.17
+
+problem:
+  statement: >-
+    RFT has plateaued at ~62% [907][913], and the first GRPO attempt produced no
+    usable signal because none of its generations terminated: the trainer had
+    re-aligned eos_token_id to 151643 and dropped <|im_end|>, so every sample ran
+    to the 400-token cap. [923]
+  evidence:
+    - path: /home/ben/task/logs/grpo1.log
+      locator: "[923]"
+      observation: "completions/clipped_ratio 1.0 and completions/mean_terminated_length 0.0 on the pre-patch run"
+    - path: /home/ben/task/logs/eval_rft1_500.json
+      locator: "[907]"
+      observation: "the RFT line sits at 0.606-0.632 on 500 questions"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    DAPO-style GRPO on GSM8K train, in the exact few-shot eval condition with
+    reward = answer match and with the stop tokens restored, will lift temp-1.0
+    accuracy above the ~62% RFT plateau. [913][932]
+  mechanism: >-
+    RL on the sampling distribution itself optimises exactly what the eval
+    measures - a single temp-1.0 sample being correct - which supervised
+    training on self-samples only approximates. [913]
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/work/rft2
+    origin: exp-06
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: null
+      built_by: /home/ben/task/grpo.py
+      build_command: []
+      selection: >-
+        every train question rendered in-memory by grpo.py render_prompt as
+        system(the eval's 10 few-shot demonstrations) + user(MATH_PROMPT_TEMPLATE)
+        + assistant header; the gold final answer is used only as the reward
+        target, scored with inspect's match_str (numeric, location=end) [914]
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: grpo
+    framework: "trl GRPOTrainer with colocated vLLM generation"
+    peft: none
+    hyperparams:
+      lr: 3.0e-06
+      epochs: 1
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 2400
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --lr and --max_steps 160 came from the launch; batch_size, grad_accum
+        and num_generations 8 are grpo.py defaults the launch did not override;
+        GRPOConfig literals in grpo.py: temperature 1.0,
+        max_completion_length 400, max_prompt_length 2400, beta 0.0 (no
+        reference model), loss_type 'dapo', scale_rewards 'group',
+        warmup_steps 5, save_steps 60, save_total_limit 3, num_train_epochs 1,
+        use_vllm colocate at vllm_gpu_memory_utilization 0.30, bf16,
+        gradient_checkpointing, and - added for this launch [932] -
+        generation_kwargs={"stop_token_ids":[151643,151645]}
+    target_format: >-
+      the exact eval condition - 10-shot system message, MATH_PROMPT_TEMPLATE
+      user turn, completion scored on its final 'ANSWER:' line; after training
+      generation_config eos is re-patched to [151643, 151645]
+  command:
+    argv: [nohup, python, -u, grpo.py, --init, work/rft2, --out, work/grpo1, --lr, "3e-6", --max_steps, "160"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo.py
+    env: {}
+    log: /home/ben/task/logs/grpo1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [nohup, python, -u, myeval.py, eval, --model, work/grpo1, --limit, "500", --temperature, "1.0", --max_tokens, "512", --out, logs/eval_grpo1_500.json]
+    dev_set: "GSM8K test split scored by myeval.py with the eval's 10-shot system prompt, --limit 500, temperature 1.0"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.632
+    path: /home/ben/task/logs/eval_rft2_t1.json
+  diagnostic:
+    what: "cross-check against the benchmark's own evaluator at the same limit"
+    command: [nohup, python, evaluate.py, --model-path, work/grpo1, --limit, "500", --json-output-file, logs/official_grpo1_500.json]
+    path: /home/ben/task/logs/official_grpo1_500.json
+
+result:
+  execution: completed
+  wall_h: 0.77
+  output_checkpoint: /home/ben/task/work/grpo1
+  training_summary:
+    final_loss: null
+    steps: 160
+    notes: >-
+      mean completion length ~128 tokens, so generations stopped cleanly after
+      the stop-token fix [939]; reward rose from ~0.74 early to ~0.86-0.87 and
+      then flattened [951][957]; wall_h from the launch [934] t=+6.17h to the
+      post-run GPU free-up [970] t=+6.94h
+  measurements:
+    - metric: accuracy
+      value: 0.756
+      n: 500
+      path: /home/ben/task/logs/eval_grpo1_500.json
+      delta_vs_comparator: 0.124
+    - metric: accuracy
+      value: 0.754
+      n: 500
+      path: /home/ben/task/logs/official_grpo1_500.json
+      delta_vs_comparator: 0.122
+  diagnostic_result:
+    value: 0.754
+    path: /home/ben/task/logs/official_grpo1_500.json
+    notes: "the benchmark's own evaluator returned 0.754 against myeval's 0.756 at the same limit [995]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "GRPO1: 75.6%! - a massive +12.4% jump from rft2's 63.2% on the same 500"
+    [983], confirmed at 0.754 by the benchmark's own evaluator [995]; the
+    training reward rose from 0.74 to 0.87 over the run, so the gain appeared
+    where the mechanism predicted - in temp-1.0 sampled correctness.
+  decision: adopt
+  next_step: "a second GRPO round initialised from this checkpoint [989]"
+
+# ---- 7. Outcome (joined by the pipeline; never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-f099ff8e
+  launch_i: 934
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [913, 923]
+    setup: [914, 932, 934]
+    evaluation: [978, 984]
+    result: [939, 951, 957, 983, 995]
+    conclusion: [983, 995]
+  snapshot_files:
+    - grpo.py
+    - myeval.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "this checkpoint was final_model from [984] until it was replaced at [1050]"
+    - "no final reward or loss value was printed at completion; the reward figures are the agent's readings of the log at [951] and [957]"
+    - "logs/*.json referenced by this card are not present in the workspace snapshot"

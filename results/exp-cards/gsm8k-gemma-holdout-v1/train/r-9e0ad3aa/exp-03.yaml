@@ -1,0 +1,194 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 2.38
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The exp-02 model scores 0.030 and its training text does not match the
+    format evaluate.py uses: the agent's own words for this launch are "Train
+    Qwen3-1.7B-Base on GSM8K with CustomDataCollator and format matching
+    evaluate.py" [134], after reading how evaluate.py builds the gsm8k task
+    [104][105] and re-deriving the eval's prompt template and answer regexes in
+    test_format.py [128].
+  evidence:
+    - path: /home/ben/task/eval_metrics.json
+      locator: "[97]"
+      observation: "exp-02 accuracy 0.030 on gsm8k --limit 100"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-9e0ad3aa.md
+      locator: "[97]"
+      observation: "352,312 tokens [I: 221,723, O: 130,589] over 100 samples - generations run long, the model does not stop"
+    - path: /home/ben/task/evaluate.py
+      locator: "[104], [105]"
+      observation: "agent greps evaluate.py and finds the task is inspect_evals/gsm8k"
+    - path: /home/ben/task/test_format.py
+      locator: "[128]"
+      observation: >-
+        agent writes the eval's MATH_PROMPT_TEMPLATE ("... the last line of your
+        response should be of the form \"ANSWER: $ANSWER\" ...") and a helper to
+        split a MetaMathQA response into reasoning and target
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: null                          # the agent named the change, not an expected effect
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null                       # loaded in-process by the script, never written to disk
+      source: "HF openai/gsm8k (main, split=train)"
+      n_examples: 7473                 # gsm8k train size, printed at [13]
+      built_by: /home/ben/task/train_v2.py
+      build_command: []                # formatting is inline in the training script
+      repeats: 3                       # num_train_epochs=3
+      selection: >-
+        Every gsm8k train row. Text is built by hand as
+        "<|im_start|>system\n{5 few-shot Q/Reasoning/ANSWER blocks}<|im_end|>\n
+        <|im_start|>user\n{eval MATH_PROMPT_TEMPLATE(question)}\n<|im_end|>\n
+        <|im_start|>assistant\n{reasoning}\n\nANSWER: {target}<|im_end|>\n";
+        the 5 few-shots are re-sampled per example from the whole gsm8k train
+        split with random.sample and no seed set. Answer split on "####".
+        train_test_split(test_size=0.01).
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.1
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        All values are literals in the SFTConfig of train_v2.py as written at
+        [132]; the launch passed no CLI arguments. Effective batch 32
+        (per the agent's comment). save_strategy=no, eval_strategy=epoch,
+        max_grad_norm=1.0, dataset_num_proc=16. The collator is the agent's own
+        CustomDataCollator: it masks everything up to and including
+        "<|im_start|>assistant\n" plus all pad tokens, i.e. completion-only
+        loss. The tokenizer's EOS was left as the base model's
+        <|endoftext|> while the training text ends in <|im_end|>.
+    target_format: >-
+      the eval prompt template in the user turn; assistant turn = gsm8k
+      reasoning (calculator annotations kept) then a blank line then
+      "ANSWER: <n>", closed with <|im_end|>.
+  command:
+    argv: [python, train_v2.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: 2.0                     # shell timeout 7200000 ms at [134]
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model_v2, --limit, "100", --json-output-file, eval_metrics_v2.json]
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.03
+    path: /home/ben/task/eval_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.58                         # [134] t=+2.38h -> [135] t=+2.96h
+  duration_h: 0.58
+  steps: 696                           # progress bar at [135]: "464/696"
+  output_checkpoint: /home/ben/task/final_model_v2
+  training_summary:
+    final_loss: null
+    steps: 696
+    notes: >-
+      stdout truncated at [135]; the last visible log line is
+      {'loss': 0.3118, 'epoch': 1.99, 'mean_token_accuracy': 0.908}, so the
+      final (epoch-3) loss was never printed.
+  measurements:
+    - metric: accuracy
+      value: 0.04
+      n: 100
+      path: /home/ben/task/eval_metrics_v2.json
+      delta_vs_comparator: 0.01
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [137] reports 421,687 tokens [I: 221,723, O: 199,964] - output tokens rose
+      against exp-02, ~2000 per sample, i.e. generations run to the 4000-token
+      cap instead of stopping.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Rewriting the training text into the eval's own prompt/"ANSWER: <n>" format
+    and masking the loss to the completion moved accuracy 0.030 -> 0.040 [137],
+    inside the reported stderr (0.020), so the format change alone is not
+    demonstrated. Output tokens per sample went up, and the agent's next move
+    was to fix the EOS token on this checkpoint (exp-04).
+  decision: adopt
+  next_step: >-
+    Make the model stop: point the checkpoint's EOS at <|im_end|> and re-evaluate
+    the same weights (exp-04).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-9e0ad3aa
+  launch_i: 134
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [97, 104, 105, 128, 134]
+    setup: [13, 132, 134]
+    evaluation: [136]
+    result: [135, 137]
+    conclusion: [137, 154]
+  snapshot_files:
+    - train_v2.py
+    - test_format.py
+    - eval_metrics_v2.json
+    - eval_metrics.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "No seed is set before the per-example random.sample of 5 few-shots in train_v2.py, so the training text is not reproducible."
+    - "final_loss and the per-epoch eval losses were never printed: [135] is truncated."

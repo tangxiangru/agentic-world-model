@@ -1,0 +1,202 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 2.56
+
+problem:
+  statement: >-
+    "58% on full 150-sample eval" [255] - the exp-02 checkpoint loses a third of
+    its limit-50 margin when measured on 150 items, and its failures are long,
+    rambling chains that never resolve to a number, or that resolve to a number
+    the reasoning itself contradicts.
+  evidence:
+    - path: /home/ben/task/eval_v2_full.json
+      locator: "[249], [255]"
+      observation: "exp-02 measured 0.58 +- 0.040 at limit 150, against 0.64 at limit 50"
+    - path: /home/ben/task/logs/2026-04-21T16-36-28+02-00_gsm8k_oZC8kTjV9YyjtszTDkrYUh.json
+      locator: "[246], [247] - last 600 chars of 4 failures printed"
+      observation: >-
+        failures include prose that argues with itself and never commits, and
+        one completion that runs on past the answer line ("ANSWER: 0fully")
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-04-21T16-36-28+02-00_gsm8k_oZC8kTjV9YyjtszTDkrYUh.json
+      question: null
+      gold: "80"
+      model_output: "1.9 would be x if the problem is considered to be talking about the total population as 1.9 times ... However, looking at the provided parts, we find no concrete information that leads to the value of x."
+      failure: "abandons the calculation and reports a stray number (1.9) as the answer"
+    - id: null
+      source: /home/ben/task/logs/2026-04-21T16-36-28+02-00_gsm8k_oZC8kTjV9YyjtszTDkrYUh.json
+      question: null
+      gold: "8"
+      model_output: "Thus, he donates 16 dozen - 16 dozen - 4 dozen = -4 dozen eggs ... we will consider him to donate 0 eggs to charity. ANSWER: 0fully"
+      failure: "double-subtracts, rationalises the impossible negative into 0, and the completion runs on past the answer"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Let me try a v3 with more data and 2 epochs" [255], built as "more GSM-style
+    data from OpenMathInstruct-2 with length & quality filters" [256] and with
+    the GSM8K gold rows duplicated 3x - a larger, cleaner, gold-weighted mixture
+    trained from the base model will beat exp-02's 0.58 at limit 150.
+  mechanism: >-
+    Dropping heavy non-ASCII and over-long solutions removes the degenerate
+    targets, and upsampling the gold rows pulls the training distribution toward
+    the benchmark's own style.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/train_v3.jsonl
+      source: "HF openai/gsm8k (main, train) + HF nvidia/OpenMathInstruct-2 (split train_1M)"
+      n_examples: 112419
+      built_by: /home/ben/task/prepare_data_v3.py
+      build_command: [python, /home/ben/task/prepare_data_v3.py]
+      selection: >-
+        90,000 OpenMathInstruct-2 train_1M rows from a seed-42 shuffle,
+        problem_source in {gsm8k, augmented_gsm8k} (8,819 gsm8k + 81,181
+        augmented, printed at [259]), dropping any row whose problem or solution
+        is more than 5% non-ASCII and any solution over 2,500 characters;
+        \boxed{...} replaced by its content; expected_answer must be numeric and
+        is normalised. Plus the 7,473 GSM8K gold rows repeated 3x (22,419 rows).
+        Total 112,419, printed at [259] and confirmed by train_v3.log.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 3
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        Same script and recipe as exp-01/exp-02; only --data, --out,
+        --save_steps 20000 and --logging_steps 50 differ. Note the agent said it
+        would run 2 epochs [255] but launched --epochs 1 [261]. warmup_ratio
+        0.03 is the train_sft.py argparse default and was NOT overridden;
+        scheduler cosine, weight_decay 0.0, bf16, gradient checkpointing,
+        packing=False, optim="adamw_8bit", seed 42 and assistant_only_loss=True
+        are hardcoded in the script. `repeats: 3` applies to the 7,473 gold rows
+        only, not to the OMI portion.
+    target_format: >-
+      train_template.jinja chat format with {% generation %} assistant masking;
+      assistant turn = "\n<reasoning>\n\nANSWER: <n>" + <|im_end|>
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/train_v3.jsonl, --out, /home/ben/task/sft_v3, --epochs, "1", --lr, "1e-5", --per_device_bs, "8", --grad_accum, "2", --max_seq, "1024", --save_steps, "20000", --logging_steps, "50"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/train_v3.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/sft_v3, --limit, "150", --json-output-file, eval_v3_full.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.58
+    path: /home/ben/task/eval_v2_full.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.84
+  duration_h: 1.84
+  steps: 7027
+  output_checkpoint: /home/ben/task/sft_v3
+  training_summary:
+    final_loss: 0.2714
+    steps: 7027
+    notes: >-
+      train_v3.log: train_runtime 6608.00 s, 7027/7027 steps, train_loss 0.2714,
+      mean_token_accuracy 0.904. Mid-run checkpoints deleted and the same EOS fix
+      written onto the checkpoint at [317] before evaluating.
+  measurements:
+    - metric: accuracy
+      value: 0.6666666666666666
+      n: 150
+      path: /home/ben/task/eval_v3_full.json
+      delta_vs_comparator: 0.0866666666666667
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      stderr 0.0386. The agent's own tally at [329] is 100 correct / 50
+      incorrect; the failures it printed are single-step arithmetic or
+      set-up slips (25/100*20 = 5 read off the wrong base; a duration answered
+      as "5 hours 45 minutes" rather than a bare number; a profit computed as
+      70000 instead of 10000) rather than the runaway prose seen on exp-02.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    A larger, filtered, gold-upsampled mixture (112,419 rows, 1 epoch) took the
+    limit-150 reading from 0.58 to 0.667, +8.7 points under the same protocol -
+    "v3 = 66.7%. Saving v3 as final_model." [325]. The failure mode also shifts:
+    the surviving errors are arithmetic and set-up slips rather than
+    non-terminating chains.
+  decision: adopt
+  next_step: >-
+    "Let me also analyze v3 failures and do one more iteration" [325]; the agent
+    then wrote train_sft_cont.py to continue from this checkpoint at a lower LR
+    (exp-06), and copied this checkpoint over final_model (exp-05).
+
+provenance:
+  kind: extracted
+  run_ref: r-96bf32c3
+  launch_i: 261
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [246, 247, 249, 255]
+    setup: [256, 258, 259, 261]
+    evaluation: [317, 319]
+    result: [318, 325, 328, 329]
+    conclusion: [325, 326]
+  snapshot_files:
+    - prepare_data_v3.py
+    - train_sft.py
+    - train_template.jinja
+    - train_v3.log
+    - eval_v3_full.json
+    - eval_v2_full.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the agent said it would try '2 epochs' [255] but the launch at [261] passes --epochs 1; the stream never remarks on the discrepancy"
+    - "three things changed at once between exp-02 and exp-03 (2.4x more OMI data, the non-ASCII/length filters, and the 3x gold upsample), so the +8.7 points cannot be attributed to any one of them"

@@ -1,0 +1,191 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The chat template cannot be made to match the eval prompt from the training
+    side: "even without enable_thinking kwarg, the template adds
+    <think>\n\n</think>\n\n for the last assistant message when loop.last is
+    true" [150], while the served prompt ends at "<|im_start|>assistant\n"
+    [151]/[152]. exp-03 also died before saving, so there is still no checkpoint
+    trained on a format that matches the evaluator.
+  evidence:
+    - path: /home/ben/task/templates/qwen3.jinja
+      locator: "[150], [151]/[152]"
+      observation: >-
+        the template's own branch "{%- if loop.index0 > ns.last_query_index %}"
+        emits the think block for the final assistant turn regardless of
+        enable_thinking; the generation prompt ends '<|im_start|>assistant\n'
+    - path: /home/ben/task/eval_results_v1.json
+      locator: "[83]"
+      observation: "the only measured checkpoint so far scores 0.060 at limit 50"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Let me create training data that matches this exactly" [153] - writing the
+    training text by hand as
+    "<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n",
+    with no chat template in the loop, will put the model in exactly the state
+    the evaluator leaves it in and let it learn to stop.
+  mechanism: >-
+    "During eval, the model receives ... <|im_start|>assistant\n And it needs to
+    generate content that ends with ANSWER: {number} followed by <|im_end|>"
+    [153]; formatting the strings directly removes the template as a source of
+    disagreement.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v2.jsonl
+      source: "HF openai/gsm8k (config main, split train) + HF meta-math/MetaMathQA (type contains GSM)"
+      n_examples: 22463
+      built_by: /home/ben/task/prepare_data_v2.py
+      build_command: [python3, /home/ben/task/prepare_data_v2.py]
+      selection: >-
+        prepare_data_v2.py [154], run at [156]: 7,463 GSM8K train rows (all but
+        the eval's 10 few-shot indices, <<...>> stripped, answer from after
+        "####") + 15,000 of the 240,000 MetaMathQA GSM rows whose
+        "The answer is:" tail parses to a number; seed 42. Each row is a single
+        pre-rendered text field
+        "<|im_start|>user\n{math prompt}<|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n"
+        - no chat template is applied at training time.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 / peft 0.18.1 / transformers 4.57.3 [23], [24]"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        The launch takes no arguments; every value is a module-level constant in
+        train_v3.py (in the workspace), so all come from the script text and none
+        was overridden. MAX_SEQ_LENGTH was cut 1024 -> 768 ("Most GSM8K answers
+        are short") and save_strategy is "epoch". After merging, the script
+        deletes and rewrites final_model and writes generation_config.json with
+        eos_token_id [151643, 151645], do_sample true, temperature 0.7, top_p
+        0.8, top_k 20.
+    target_format: >-
+      raw text, no template: "<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n"
+  command:
+    argv: [python3, /home/ben/task/train_v3.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v3.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, final_model, --limit, "50", --max-connections, "2", --json-output-file, eval_results_v3.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.06
+    path: /home/ben/task/eval_results_v1.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.177
+    steps: null
+    notes: >-
+      "Training completed successfully. Final loss: 0.177, token accuracy:
+      95.9%" [169]; the trainer's step count and runtime were lost to output
+      truncation at [166].
+  measurements:
+    - metric: accuracy
+      value: 0.04
+      n: 50
+      path: /home/ben/task/eval_results_v3.json
+      delta_vs_comparator: -0.02
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      stderr 0.028; 194,693 output tokens for 50 answers, up from 102,400 in
+      exp-02 [173]. Reading the outputs at [175]/[176] the agent found the model
+      emitting the word "assistant" as plain text and rolling on into new,
+      invented problems, i.e. still not stopping. At [183] it also noted the
+      generation_config it had written samples at temperature 0.7 rather than
+      decoding greedily.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Training on hand-rendered text that matches the served prompt exactly made
+    things worse, not better: 0.04 against exp-02's 0.06 under the same
+    limit-50 protocol, with nearly twice the output tokens - "4% accuracy - even
+    worse! ... meaning the model isn't stopping properly" [174]. The format
+    hypothesis is contradicted as stated; the run-on generation was not fixed.
+  decision: reject
+  next_step: >-
+    "Instead of LoRA, let me do full fine-tuning. With an H100 80GB, we can fit
+    Qwen3-4B in bf16 for full fine-tuning. This should give better results"
+    [192], run as exp-05/exp-06 on the same data file.
+
+provenance:
+  kind: extracted
+  run_ref: r-c2a5a7bb
+  launch_i: 165
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [147, 150, 151, 152, 153]
+    setup: [154, 156, 157, 161]
+    evaluation: [172]
+    result: [169, 173]
+    conclusion: [174, 176, 177, 183, 189, 192]
+  snapshot_files:
+    - prepare_data_v2.py
+    - train_v3.py
+    - evaluate.py
+    - eval_results_v3.json
+    - eval_results_v1.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "step count, runtime and the training log for this launch were lost to output truncation at [166]"

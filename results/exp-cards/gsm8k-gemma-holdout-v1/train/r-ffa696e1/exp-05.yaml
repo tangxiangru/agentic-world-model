@@ -1,0 +1,170 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 0.89
+
+problem:
+  statement: >-
+    The same GSM8K+MetaMath recipe ran out of memory at step 342: MetaMath's
+    sequences are longer than GSM8K's and a batch of long examples spiked past
+    80 GB, with no checkpoint saved.
+  evidence:
+    - path: /home/ben/task/train_gsm_meta.log
+      locator: "[370]"
+      observation: "CUDA OOM tail at 4%|342/7652; 66.44 GiB allocated by PyTorch"
+    - path: null
+      locator: "[372]"
+      observation: "agent: crashed with CUDA OOM at step 342; no checkpoint was saved"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    With gradient checkpointing enabled the same GSM8K(x3)+MetaMath recipe will
+    fit in memory and train to completion, and MetaMath augmentation will beat the
+    66% of GSM8K-only SFT.
+  mechanism: >-
+    Gradient checkpointing trades compute for activation memory, which is what the
+    long MetaMath sequences exhaust.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py, --metamath, --metamath-max, "200000"]
+      selection: "same reformatting as exp-01"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 3
+    - path: /home/ben/task/data/metamath_gsm.jsonl
+      source: "HF meta-math/MetaMathQA (rows whose type starts with GSM)"
+      n_examples: 100000
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py, --metamath, --metamath-max, "200000"]
+      selection: "capped at 100000 by --max-per-file"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer, custom tokenization + completion-only loss"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        --grad-ckpt on. scheduler, warmup, weight_decay, seed, bf16,
+        flash_attention_2 are train_sft.py defaults, not overridden.
+        save_strategy="epoch", save_total_limit=2 (added at [352]).
+        122,419 total rows of which 22,419 GSM8K, per train_gsm_meta.log.
+    target_format: "same as exp-01"
+  command:
+    argv: [nohup, python, train_sft.py, --train-files, data/gsm8k_train.jsonl, data/metamath_gsm.jsonl,
+           --max-per-file, "100000", --repeat-gsm8k, "3", --epochs, "2", --lr, "1e-5",
+           --max-len, "1024", --per-device-batch-size, "16", --grad-accum, "2", --grad-ckpt,
+           --output-dir, out_gsm_meta]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/.cache/huggingface, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/train_gsm_meta.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "out_gsm_meta/checkpoint-3826", --limit, "150",
+              --json-output-file, "eval_checkpoint-3826.json"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.66
+    path: null
+  diagnostic: {what: null, command: [], path: null}
+
+result:
+  execution: killed
+  wall_h: 0.87
+  output_checkpoint: /home/ben/task/out_gsm_meta/checkpoint-3826
+  training_summary:
+    final_loss: null
+    steps: 3826
+    notes: >-
+      killed by the agent at [480] at the end of epoch 1 of 2. Agent at [479]:
+      "Since loss converged early and GSM8K is heavily upweighted (risk of
+      overfitting in epoch 2), let me kill training now and evaluate the epoch-1
+      checkpoint - this is the most information-efficient move." Memory sat at
+      ~39-45 GB with checkpointing, ~1.18 it/s.
+  measurements:
+    - metric: accuracy
+      value: 0.7133
+      n: 150
+      path: /home/ben/task/eval_checkpoint-3826.json
+      delta_vs_comparator: 0.0533
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    Gradient checkpointing fixed the OOM (memory ~39 GB) and the epoch-1
+    checkpoint scored 71.3% at --limit 150, which the agent read as MetaMath
+    helping over GSM8K-only. Verdict inconclusive: the 66% comparator was measured
+    at --limit 50, this at --limit 150.
+  decision: reject
+  next_step: >-
+    Use this checkpoint as the generator for rejection-sampling data
+    (rft_generate.py at [520], K=6, temp 0.8) and train the next model on
+    GSM8K + RFT + MetaMath.
+
+provenance:
+  kind: extracted
+  run_ref: r-ffa696e1
+  launch_i: 373
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [370, 372]
+    setup: [373]
+    evaluation: [486, 501]
+    result: [479, 480, 492, 500, 501, 508]
+    conclusion: [520, 610]
+  snapshot_files:
+    - train_sft.py
+    - data_prep.py
+    - fix_config.py
+    - train_gsm_meta.log
+    - eval_checkpoint-3826.json
+    - eval_checkpoint-3826.log
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the first eval of this checkpoint failed because Trainer had not saved tokenizer files; the agent copied them from the base snapshot at [501] and re-ran, so the 71.3% comes from the second attempt"
+    - "the 71.3% figure is never printed in a result block; it appears in the workspace file eval_checkpoint-3826.json and in the agent's own references at [520] and [610]"
+    - "epoch 2 was never run, so the epoch-1-is-best assumption was not tested here"

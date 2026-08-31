@@ -1,0 +1,157 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 7.91
+
+problem:
+  statement: >-
+    "vllm 0.11 runs SmolLM3ForCausalLM via the buggy Transformers fallback
+    backend" [640] - the served model corrupts a large share of responses into
+    runs of "!" characters, which is what collapsed the eval to 47.3% and 27.3%
+    on otherwise good checkpoints.
+  evidence:
+    - path: /home/ben/task/results/ckpt2000_lim150.json
+      locator: "[454]"
+      observation: "47.3% at --limit 150 on a checkpoint scoring 94.8% on holdout"
+    - path: /home/ben/task/results/grpo240_lim150.json
+      locator: "[590]-[591]"
+      observation: >-
+        27.3% at --limit 150 on a checkpoint scoring 94.4% on holdout; the agent
+        counted responses starting with "!!!!" in the eval log
+    - path: /home/ben/task/logs/
+      locator: "[466]"
+      observation: >-
+        the same weights are clean through the offline vllm.LLM API, so the fault
+        is in the served path
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SmolLM3 = llama arch + NoPE every 4th layer... Llama4ForCausalLM runs NATIVE
+    with the same no_rope_layers semantics" [640]: relabelling the checkpoint as
+    Llama4ForCausalLM (rename mlp -> feed_forward, rewrite the config) is
+    mathematically identical and makes vllm serve it on its native path instead
+    of the corrupting fallback backend.
+  mechanism: >-
+    the corruption is a property of the Transformers-fallback serving path, not
+    of the weights, so a mathematically identical checkpoint on a native path
+    should serve cleanly.
+  expected_effect:
+    metric: "corrupted-output rate under vllm serve"
+    direction: lower
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/pkg2000
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: other
+    framework: "safetensors + transformers (architecture relabelling, no training)"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: 8192
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        weight keys renamed .mlp. -> .feed_forward. and saved as a single
+        safetensors file; config rewritten to architectures
+        [Llama4ForCausalLM], model_type llama4_text, no_rope_layers copied over,
+        intermediate_size_mlp = intermediate_size, num_local_experts 1,
+        interleave_moe_layer_step 0, attention_chunk_size None,
+        max_position_embeddings 8192; tokenizer and generation_config copied from
+        the source directory.
+    target_format: unchanged from exp-02
+  command:
+    argv: [python, scripts/convert_llama4.py, --src, ckpts/pkg2000, --dst, ckpts/pkg2000_l4]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/convert_llama4.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, scripts/validate.py, --model, ckpts/pkg2000_l4, --n, "250", --fewshot, eval10, --gpu-mem, "0.35", --out, results/val2000_l4.json]
+    dev_set: /home/ben/task/data/holdout.jsonl
+    n: 250
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.948
+    path: /home/ben/task/results/val2000.json
+  diagnostic:
+    what: "next-token logits of the converted checkpoint against the SmolLM3 original on the same prompt, loaded through transformers"
+    command: [python, "-"]   # inline heredoc at [676]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.18
+  output_checkpoint: /home/ben/task/ckpts/pkg2000_l4
+  training_summary: {final_loss: null, steps: null, notes: "conversion launch; no training"}
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      the logit comparison at [676] and the holdout run at [659] have no result
+      blocks in the stream, but the agent's response was to rewrite the converter
+      twice - first setting attention_chunk_size to 8192 ([682]), then adding an
+      inverse rotary permutation of q/k and tie_word_embeddings True ([696],
+      [698], [700]) - so this conversion was not equivalent to the original.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first llama4 relabelling produced a loadable checkpoint but not an
+    equivalent one; the logit check and the holdout run were followed immediately
+    by fixes to the converter rather than by any reported number.
+  decision: reject
+  next_step: >-
+    Set attention_chunk_size to the context cap and inverse-permute the q/k
+    projections, because vllm's llama4 loader permutes them assuming the
+    Meta-interleaved rotary layout while SmolLM3 weights are already neox
+    ([682], [696], [698], [700]).
+
+# ---- official accuracy (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5dcadd31
+  launch_i: 642
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [454, 466, 590, 591, 640]
+    setup: [640, 642]
+    evaluation: [659]
+    result: [659, 676, 682]
+    conclusion: [682, 696, 698, 700]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "neither the holdout accuracy at [659] nor the logit-difference numbers at [676] and [682] appear in the stream; the verdict that this conversion was wrong is inferred from the fixes that immediately followed"

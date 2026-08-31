@@ -1,0 +1,192 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 6.68
+
+problem:
+  statement: >-
+    The first GRPO launch died of an out-of-memory error caused by full-vocab
+    logits over long few-shot prompts, and the crash went unnoticed for five
+    hours of the ten-hour budget.
+  evidence:
+    - path: /home/ben/task/logs/grpo1.log
+      locator: "[1022]"
+      observation: "log tail read after the process was gone; agent's reading at [1066]: 'OOM from full-vocab logits on long few-shot prompts'"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Relaunching with shorter prompts and safer memory settings" [1066] - k in
+    {1,2,3,4} few-shot exemplars, max-prompt 900, max-completion 512,
+    fewshot-frac 0.15, vLLM at 0.20 of GPU memory and expandable segments - will
+    let the same GRPO recipe train without OOM.
+  mechanism: >-
+    Peak memory is dominated by the logits tensor over prompt+completion length
+    times the full vocabulary, so cutting prompt and completion lengths and
+    leaving more headroom next to the colocated vLLM engine should keep it in
+    80 GB.
+  expected_effect:
+    metric: null
+    direction: null
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/evalmodels/sft1_greedy
+    origin: exp-02
+    hash: null
+  data:
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/e53f048856ff4f594e959d75785d2c2d37b678ee/main/train-00000-of-00001.parquet
+      source: "HF openai/gsm8k (train split), prompts only"
+      n_examples: null
+      repeats: null
+      built_by: /home/ben/task/train_grpo.py
+      build_command: []
+      selection: >-
+        As exp-03 but with the few-shot block shortened at [1067] to k in
+        {1,2,3,4} exemplars and only 15% of prompts carrying one. Built
+        in-process; no file is written.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: trl.GRPOTrainer 0.27.2
+    peft: none
+    hyperparams:
+      lr: 1.0e-06
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 32
+      max_seq_len: null
+      scheduler: constant_with_warmup
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: 0
+      other: >-
+        From the launch argv: num_generations=8, max_completion_length=512,
+        max_prompt_length=900, fewshot_frac=0.15, save_steps=15,
+        vllm_gpu_memory_utilization=0.20. epochs=1.0 is train_grpo.py's argparse
+        default and was not overridden (script text is in the workspace). Same
+        hard-coded settings as exp-03 (constant_with_warmup, warmup_steps=5,
+        beta=0.0, loss_type=dr_grpo, scale_rewards=False,
+        mask_truncated_completions=True, temperature=1.0, top_p=1.0, bf16,
+        seed=0, adamw_bnb_8bit, gradient_checkpointing, vLLM colocate).
+    target_format: >-
+      raw-string ChatML prompt ending "<|im_start|>assistant\n"; completions
+      rewarded 1.0 when the last number equals gold (tol 1e-4) and 0.1 when they
+      end with "ANSWER: <n>".
+  command:
+    argv:
+      - python
+      - -u
+      - train_grpo.py
+      - --init
+      - evalmodels/sft1_greedy
+      - --out
+      - runs/grpo1
+      - --lr
+      - "1e-6"
+      - --num-gen
+      - "8"
+      - --bs
+      - "8"
+      - --accum
+      - "32"
+      - --max-completion
+      - "512"
+      - --max-prompt
+      - "900"
+      - --fewshot-frac
+      - "0.15"
+      - --save-steps
+      - "15"
+      - --gpu-mem
+      - "0.20"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/grpo1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator:
+    ref: exp-02
+    value: 0.887
+    path: /home/ben/task/logs/sft1_greedy.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: 1.21
+  duration_h: 1.21
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Memory fix worked - "GRPO now running stably (64 s/step, 69 GB)" [1109] -
+      and the run trained for about 70 minutes (t=+6.68h to the stall found at
+      t=+7.89h), reaching the first save at step 15. It then died inside
+      Trainer.save_model. runs/grpo1 (with checkpoint-15) was deleted at [1171].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    "ValueError: GenerationConfig is invalid: - `temperature`: `do_sample` is set
+    to `False`. However, `temperature` is set to `0.0` -- this flag is only used
+    in sample-based generation modes. You should set `do_sample=True` or unset
+    `temperature`." raised from
+    transformers/generation/configuration_utils.py:725 via
+    modeling_utils.save_pretrained -> trainer._save -> save_model [1153].
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The memory settings fixed the OOM (64 s/step at 69 GB), but the run died at
+    its first checkpoint save because the greedy generation_config written by
+    finalize.py (temperature 0.0 with do_sample False) fails transformers'
+    save_pretrained validation [1170]. No checkpoint survived, no measurement.
+  decision: abandon_line
+  next_step: >-
+    Copy evalmodels/sft1_greedy to runs/grpo_init with `temperature` removed from
+    generation_config.json, then relaunch the identical GRPO command from that
+    init (exp-06).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-96346341
+  launch_i: 1069
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [1022, 1066]
+    setup: [1067, 1069]
+    evaluation: [949]
+    result: [1088, 1109, 1110, 1134, 1152, 1153]
+    conclusion: [1170]
+  snapshot_files:
+    - train_grpo.py
+    - finalize.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "how many optimizer steps ran before the save crash is not stated; only that checkpoint-15 was being written"
+    - "no reward values from this run appear in the stream"

@@ -1,0 +1,229 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 0.93
+
+problem:
+  statement: >-
+    The SFT model ends its answers with "<|im_end|>" while the evaluator's vLLM
+    setup only stops on "<|endoftext|>", so generation runs to the token cap and
+    the scorer picks up a later number; patching the generation config recovered
+    almost nothing (0.027 on 150 samples).
+  evidence:
+    - path: /home/ben/task/eval_sft_v1b_step300_eos_limit150.json
+      locator: "[182], [186]"
+      observation: "accuracy 0.027 on 150 samples after the stop-token config patch"
+    - path: /home/ben/task/eval_sft_v1b_step300_limit150.json
+      locator: "[165], [167]"
+      observation: "0.007 on 150 samples with every response at the 1024-token cap"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A shorter SFT run on the same GSM8K-train-only data, with the supervised
+    answer ending in "<|endoftext|>" instead of "<|im_end|>", will make the model
+    stop where the evaluator stops and restore usable accuracy.
+  mechanism: >-
+    "This directly targets the observed failure mode" [199] - the stop token is
+    learned rather than patched in afterwards.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k (main, train)
+      n_examples: null
+      built_by: null
+      build_command: []
+      selection: >-
+        loaded inside train_gsm8k_sft.py; train split shuffled with the run seed,
+        first --val-size 384 rows held out, 10 rows sampled with seed 42 build the
+        evaluator-style few-shot system message; each remaining row expanded into
+        an exact-system and a no-system variant (--include-no-system).
+        --completion-end eos makes every supervised answer end with the tokenizer
+        eos token.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer + peft LoRA (transformers 4.57.3)
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: null
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.04
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        --max-steps 300 caps the run (--epochs not passed; the trainer reported
+        epoch 0.34). max_seq_len (4096), weight_decay (0.0) and seed (42) are
+        train_gsm8k_sft.py argparse defaults not overridden by the launch; cosine
+        schedule, bf16+tf32, gradient_checkpointing, group_by_length,
+        adamw_torch_fused and max_grad_norm=0.3 are hardcoded. --save-steps 300,
+        --save-total-limit 3, --load-best, --merge, --completion-end eos.
+    target_format: >-
+      evaluator-style chat prompt; assistant turn = GSM8K rationale, blank line,
+      "ANSWER: <n>", then the tokenizer eos token
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --output-dir
+      - runs/sft_lora_v2_eos300
+      - --final-dir
+      - runs/sft_lora_v2_eos300/merged
+      - --max-steps
+      - "300"
+      - --learning-rate
+      - "2e-4"
+      - --warmup-ratio
+      - "0.04"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --lora-dropout
+      - "0.05"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "4"
+      - --val-size
+      - "384"
+      - --include-no-system
+      - --completion-end
+      - eos
+      - --save-steps
+      - "300"
+      - --save-total-limit
+      - "3"
+      - --load-best
+      - --merge
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/sft_lora_v2_eos300/merged
+      - --limit
+      - "20"
+      - --json-output-file
+      - eval_sft_v2_eos300_limit20.json
+      - --max-connections
+      - "8"
+      - --max-tokens
+      - "512"
+      - --gpu-memory-utilization
+      - "0.7"
+    dev_set: "official --limit 20 (also rerun at --limit 150 [216] and, after the greedy generation-config change, at --limit 150 [751])"
+    n: 20
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.4
+    path: /home/ben/task/baseline_limit20.json
+  diagnostic:
+    what: "output length per sample, as a check that the model now stops after the ANSWER line"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.27
+  output_checkpoint: /home/ben/task/runs/sft_lora_v2_eos300/merged
+  training_summary:
+    final_loss: 0.24438860376675925
+    steps: 300
+    notes: "train_runtime 974.16 s; eval_loss 0.25555 at step 300; merged to runs/sft_lora_v2_eos300/merged [211]"
+  measurements:
+    - metric: accuracy
+      value: 0.6
+      n: 20
+      path: /home/ben/task/eval_sft_v2_eos300_limit20.json
+      delta_vs_comparator: 0.2
+    - metric: accuracy
+      value: 0.6533333333333333
+      n: 150
+      path: /home/ben/task/eval_sft_v2_eos300_limit150.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.8133333333333334
+      n: 150
+      path: /home/ben/task/eval_sft_v2_eos300_limit150_greedy_config.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "output dropped from 512 tokens/sample to about 172 tokens/sample on the
+      quick run" [215]
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "The stop-token fix worked: output dropped from 512 tokens/sample to about
+    172 tokens/sample on the quick run, and accuracy on the same 20-sample size
+    improved from the base model's 0.400 to 0.600" [215]; 0.653 on 150 samples
+    [217]. Superseded by the 600-step run and never used as a parent, so it was
+    dropped.
+  decision: reject
+  next_step: >-
+    inspect the remaining misses and run a longer EOS-targeted SFT to see whether
+    accuracy keeps improving past 300 steps [219], [224]
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-77b138a8
+  launch_i: 206
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [167, 182, 186]
+    setup: [199, 206]
+    evaluation: [213, 216, 751]
+    result: [211, 214, 215, 217, 752]
+    conclusion: [215, 219]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - evaluate.py
+    - eval_sft_v2_eos300_limit20.json
+    - eval_sft_v2_eos300_limit150.json
+    - eval_sft_v2_eos300_limit150_greedy_config.json
+    - baseline_limit20.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "this is a relaunch of the identical command that crashed at [200]; that crash is carded separately as exp-06 because it was launched as a real 300-step run, not a dry run"
+    - "the 0.8133 measurement at [751] was taken after the greedy generation-config change; the stream never shows that config being applied to this directory, only that the eval file is named *_greedy_config"

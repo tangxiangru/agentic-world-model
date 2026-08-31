@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The model reaches the right number but glues non-ASCII characters onto it
+    ("ANSWER: 6<thai>", "ANSWER: 2<thai>"), so the grader reads the wrong value:
+    17/50 scored correct against 40/50 actually correct, 23 items lost to the
+    trailing garbage ([141], [143], [144]).
+  evidence:
+    - path: /home/ben/task/logs/2026-02-17T02-51-13+01-00_gsm8k_HWuzQiqAq7JzwM7CneECwG.json
+      locator: "[140], [143] - the agent's re-scoring pass over all 50 samples"
+      observation: "Scored correct 17/50 (34.0%); actually correct 40/50 (80.0%); 23 format-caused misses"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-990a90a4.md
+      locator: "[144], [147], [150]"
+      observation: "agent attributes it to the model not stopping after the answer line"
+  affected_share: 0.46
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-02-17T02-51-13+01-00_gsm8k_HWuzQiqAq7JzwM7CneECwG.json
+      question: null
+      gold: "109"
+      model_output: "...11/18*162 = <<11/18*162=99>>99 In 10 years, Allen will be 10+99=<<10+99=109>>109.\n\nANSWER: 109<non-ascii>"
+      failure: "right number, non-ASCII characters appended after it, so the numeric match fails"
+    - id: null
+      source: /home/ben/task/logs/2026-02-17T02-51-13+01-00_gsm8k_HWuzQiqAq7JzwM7CneECwG.json
+      question: null
+      gold: "104"
+      model_output: "...20+28+56= <<20+28+56=104>>104 hours.\n\nANSWER: 104<non-ascii>"
+      failure: "right number followed by trailing non-ASCII text"
+    - id: null
+      source: /home/ben/task/logs/2026-02-17T02-51-13+01-00_gsm8k_HWuzQiqAq7JzwM7CneECwG.json
+      question: null
+      gold: "57500"
+      model_output: "...So Jill's annual salary is $35000 + $22500 = $<<35000+22500=57500>>57500\n\nANSWER: 57500<non-ascii>"
+      failure: "right number followed by trailing non-ASCII text"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Retraining on data that is ASCII-only and whose assistant turn ends exactly at
+    "ANSWER: X", with the custom system prompt dropped so the format matches the
+    eval, will stop the trailing-garbage losses and raise the scored accuracy
+    ([150], [154], [158]).
+  mechanism: >-
+    "Make the training data format the assistant response as clean text that ends
+    right after the answer" and "explicitly has the <|im_end|> token right after
+    'ANSWER: X'", so the model learns to stop there ([147], [150]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v2.jsonl
+      source: "HF: openai/gsm8k train + meta-math/MetaMathQA (GSM types) + microsoft/orca-math-word-problems-200k"
+      n_examples: 49892
+      built_by: /home/ben/task/prepare_data_v2.py
+      build_command: [python, prepare_data_v2.py]
+      selection: >-
+        all text forced to ASCII; "The answer is"/boxed/#### tails stripped; every
+        item must match 'ANSWER:\s*-?\d+\.?\d*\s*$' and be pure ASCII, which cut
+        67473 candidates to 27473; no system message; gsm8k train added 3 further
+        times ([157]).
+      repeats: "gsm8k train x4 (once in the validated pool, three more appended)"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3, peft 0.18.1)
+    peft: "LoRA r=128 alpha=256 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        epochs from the launch argument ("train_v2.py 2"); the rest are the
+        SFTConfig literals in the workspace copy of train_v2.py, which the launch
+        did not override. packing=True, gradient_checkpointing=True,
+        optim=adamw_torch_fused, flash_attention_2, save_steps=500; LoRA merged into
+        the saved model.
+    target_format: >-
+      Qwen3 chat template over user/assistant only (no system message); assistant
+      turn ends exactly with "ANSWER: {number}".
+  command:
+    argv: [rm, -rf, /home/ben/task/sft_output_v2, /home/ben/task/final_model, /home/ben/task/sft_output, python, train_v2.py, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "50", --max-connections, "2", --gpu-memory-utilization, "0.9"]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.340
+    path: /home/ben/task/logs/2026-02-17T02-51-13+01-00_gsm8k_HWuzQiqAq7JzwM7CneECwG.json
+  diagnostic:
+    what: "the same re-scoring pass: how many wrong-scored items carry the right number after ANSWER:"
+    command: []
+    path: /home/ben/task/logs/2026-02-17T04-08-44+01-00_gsm8k_Gny9GT7oTXc2rd3dwPVsm4.json
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.243
+    steps: null
+    notes: "token accuracy 96.1% ([181])"
+  measurements:
+    - metric: accuracy
+      value: 0.280
+      n: 50
+      path: /home/ben/task/logs/2026-02-17T04-08-44+01-00_gsm8k_Gny9GT7oTXc2rd3dwPVsm4.json
+      delta_vs_comparator: -0.060
+  diagnostic_result:
+    value: 0.64
+    path: /home/ben/task/logs/2026-02-17T04-08-44+01-00_gsm8k_Gny9GT7oTXc2rd3dwPVsm4.json
+    notes: >-
+      "The format issue persists - the model is still generating Thai/non-ASCII
+      characters after the answer. The 'actual' accuracy is 64% which is lower than
+      v1's 80%." ([193])
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    28.0% on 50 samples, 6 points below the previous model under the same protocol,
+    and the trailing non-ASCII text is still there ([190], [193]); cleaning the data
+    did not teach the model to stop.
+  decision: reject
+  next_step: >-
+    Try full fine-tuning instead of LoRA - "with LoRA, only ~3% of parameters are
+    trainable, and it's not enough to completely override the base model's
+    multilingual tendencies" ([193]).
+
+provenance:
+  kind: extracted
+  run_ref: r-990a90a4
+  launch_i: 161
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [141, 143, 144, 147, 150]
+    setup: [154, 157, 159, 161]
+    evaluation: [186, 189]
+    result: [181, 189, 193]
+    conclusion: [190, 193]
+  snapshot_files:
+    - prepare_data_v2.py
+    - train_v2.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the failure examples carry no item ids; the agent printed only target and the tail of the output"

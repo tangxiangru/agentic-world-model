@@ -1,0 +1,195 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 0.56
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The two previous launches of the same recipe produced no trainable
+    artefact - the first was killed on memory headroom [227], the second
+    because "No loss is being logged to the file (a tqdm/redirect quirk)" so
+    the run could not be monitored for divergence [268]. The underlying problem
+    is unchanged from exp-01 - the base checkpoint is not instruction-tuned and
+    does not emit the eval's 'ANSWER: <num>' line or stop cleanly.
+  evidence:
+    - path: /home/ben/task/logs/train_v1.log
+      locator: "[261], [262]"
+      observation: >-
+        grep for loss / grad_norm / learning_rate in the training log returned
+        nothing while the run was progressing.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Only stated as an observability change - restart "with a proper logging
+    callback and resume support - cheap insurance to monitor learning" [268],
+    plus a higher checkpoint retention "so I can evaluate multiple checkpoints
+    after training and pick the best epoch" [282]. No claim about the metric was
+    made before this launch.
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft.jsonl
+      source: "derived: openai/gsm8k train + meta-math/MetaMathQA (GSM-derived subset)"
+      n_examples: null
+      built_by: /home/ben/task/scripts/prepare_data.py
+      build_command: [python, scripts/prepare_data.py, --metamath-n, "120000", --gsm8k-repeat, "2", --out, data/sft.jsonl]
+      selection: >-
+        Same file as exp-01/exp-02. GSM8K train answers cleaned of <<...>>
+        calculator spans and the '#### X' tail; MetaMathQA restricted to GSM
+        types with an extractable numeric answer, shuffled seed 42, capped at
+        120000. All records rendered as the eval's user prompt template plus an
+        assistant turn ending in 'ANSWER: <num>'. Records longer than 640 tokens
+        are dropped by the loader.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: "GSM8K train component duplicated x2 (--gsm8k-repeat 2)"
+  method:
+    family: sft
+    framework: transformers.Trainer (custom script), flash_attention_2, bitsandbytes adamw_8bit
+    peft: none
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 640
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr / epochs / batch_size / grad_accum / max_seq_len / save-steps 2000
+        from the launch argv at [287]. scheduler, warmup, weight_decay,
+        precision, seed, optim adamw_8bit, max_grad_norm 1.0, gradient
+        checkpointing, group_by_length and save_total_limit 8 are from the
+        training script text in the digest ([149], amended [188] [275] [279]
+        [283]); the script is not in the workspace snapshot. Vision tower and
+        multimodal projector frozen; the trainable count printed by the script
+        was not captured in the digest.
+    target_format: >-
+      Chat-formatted, prompt masked to -100, loss only on the assistant turn -
+      cleaned step-by-step reasoning then a final 'ANSWER: <num>' line then the
+      end-of-turn token. Training was 0-shot, i.e. no few-shot block precedes
+      the question, unlike the eval.
+  command:
+    argv: [HF_HOME=/home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, nohup, python, scripts/train.py, --out, runs/v1, --data, data/sft.jsonl, --epochs, "2", --lr, 1e-5, --bs, "16", --grad-accum, "2", --max-len, "640", --attn, flash_attention_2, --save-steps, "2000", --log-steps, "10", ">", logs/train_v1.log, "2>&1", "&"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: 1x 80GB GPU
+    planned_h: 2.5
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [bash, scripts/eval_model.sh, runs/v1, "200", logs/eval_v1_final.json, "8", "1024"]
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: >-
+      Manual 0-shot vs 3-few-shot generation from the trained checkpoint,
+      inspecting finish_reason / stop_reason, to find why accuracy was so low
+      [426].
+    command: ["HF_HOME=/home/ben/hf_cache", "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True", "python", "-", "(inline heredoc at [426]: vLLM greedy generation of one train question, 0-shot vs 3-fewshot, printing finish_reason and stop_reason)"]
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 3.07
+  output_checkpoint: /home/ben/task/runs/v1
+  training_summary:
+    final_loss: 0.151
+    steps: 8378
+    notes: >-
+      "Training completed successfully: 3.07hr, final loss 0.151. Final model
+      saved to runs/v1 with all tokenizer/config files. Checkpoints at
+      2000/4000/6000/8000/8378" [393]. Loss fell from ~0.56 early [302] through
+      ~0.11-0.18 at 38% [363] to 0.151 final; no NaN, no OOM.
+  measurements:
+    - metric: accuracy
+      value: 0.115
+      n: 200
+      path: /home/ben/task/logs/eval_v1_final.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "0-shot, the model stops cleanly (stop_reason=106, emits <end_of_turn>);
+      with fewshots, it continues generating (mimicking the fewshot Q->A list).
+      My 0-shot training didn't make stopping robust to the 10-fewshot eval
+      context" [431]. An eval sample dumped at [422] shows the model answering
+      and then inventing further problems, so the numeric matcher scores the
+      last number of a fabricated continuation.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    The 2-epoch 0-shot SFT trained cleanly to loss 0.151 but scored only 11.5%
+    at --limit 200 - "far too low given the good training loss. There's a
+    format/mismatch issue" [421]. The verdict is inconclusive because no
+    baseline was ever measured under the same protocol (the baseline eval was
+    killed at [167]), but the diagnostic pinned the cause on stopping behaviour
+    under the eval's few-shot context, not on reasoning ability.
+  decision: adopt
+  next_step: >-
+    "The fix: train with fewshot context in the data so the model learns to stop
+    after its answer even when fewshots precede it. I'll continue-train from v1
+    (which already has the math ability) with fewshot-augmented data" [431].
+
+# ---- outcome ----------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a88bb78b
+  launch_i: 287
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [261, 262, 268, 282]
+    setup: [275, 277, 279, 283, 287]
+    evaluation: [354, 396, 404, 413, 416]
+    result: [302, 310, 316, 329, 363, 375, 387, 393, 421, 422, 423, 426, 431]
+    conclusion: [421, 431]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The first eval attempt at [396] failed because the saved model directory lacked the processor config files needed to serve the multimodal architecture; the eval helper was patched at [413] and the eval rerun at [416]. The exact traceback is not in the digest."
+    - "No baseline number exists for the parent checkpoint, so the 11.5% has no comparator under the same protocol."
+    - "scripts/train.py, scripts/prepare_data.py, scripts/eval_model.sh and logs/eval_v1_final.json are not in the workspace snapshot."
+    - "The '[data] kept N examples, skipped M' line printed by the training script is not in the digest, so the trained example count is unknown."

@@ -1,0 +1,152 @@
+# Experiment card (awm-experiment-card-v1) — FROZEN extraction schema.
+# This is the schema the reconstructed cards under results/exp-cards follow.
+# The live template in doc/exp-card-specs may evolve; this copy must not.
+#
+# One card = one experiment: one problem, one hypothesis, one intervention, one
+# result. Written by the agent running the task, in two passes:
+#
+#   before launch   problem, hypothesis, setup, evaluation   (sections 1-4)
+#   after           result, conclusion                       (sections 5-6)
+#
+# The test of a finished card: another agent, given this file and {dir}, can
+# (a) rerun the experiment from the paths and commands in `setup` and get the
+# same kind of result, and (b) say in one sentence what the experiment was
+# testing and whether it held. If either fails, the card is not done.
+#
+#
+# Paths are absolute, inside {dir}. Commands are the exact argv that was run.
+# Unknown is `null`, never a guess. Don't write a target ("reach 85%") as a
+# hypothesis; write what you expect to change, against what, and what would
+# prove you wrong.
+
+schema_version: awm-experiment-card-v1
+card_id: exp-<NN>                      # sequential within this session
+created_at: <ISO-8601>
+elapsed_h: <float>                     # hours into the run when this card was opened (bash timer.sh)
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: <what is going wrong, concretely>
+  # e.g. "The incumbent gets the reasoning right but slips on multi-digit
+  #       arithmetic inside the chain of thought."
+  evidence:                            # where you saw it; each entry points at a real file
+    - path: <abs path>                 # eval output, error dump, log
+      locator: <line range | item ids | "rows 12,45,88">
+      observation: <one line - what those lines show>
+  affected_share: <float|null>         # fraction of failures this problem accounts for, if measured
+  failure_examples:                    # 3-10 concrete items the model gets wrong, showing the problem
+    - id: <item id in the dev set>     # ALL items come from your own dev/probe sets built from
+      source: <abs path>               # permitted training data. Never from the test copy.
+      question: <the prompt, or its first line>
+      gold: <expected answer>
+      model_output: <what the model produced, trimmed to the failing step>
+      failure: <one line - what went wrong on this item>
+  watch_set:                           # the items to re-check after the experiment
+    path: <abs path>                   # jsonl of item ids (+ questions) the model currently fails
+    n: <int>
+    selection: <how the items were chosen, e.g. "all 41 dev-300 failures tagged arithmetic_slip">
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: <intervention X will change metric M on the problem above>
+  # e.g. "Rejection-sampling fine-tuning on self-generated solutions filtered
+  #       for correct final answers will cut arithmetic slips."
+  mechanism: <why it should work, one or two lines>
+  expected_effect:
+    metric: <accuracy | ...>
+    direction: higher | lower
+    against: <card_id | base_model | incumbent>    # the comparator
+    magnitude: <string|null>           # e.g. "+3 to +6 pts on dev-300"; null if no prior
+  falsified_if: <observable outcome that would contradict the claim>
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: <abs path>                   # e.g. {dir}/ckpts/exp-02/final
+    origin: base_model | <card_id>     # what produced it
+    hash: <string|null>                # sha256 of config.json + safetensors index, if computed
+  data:
+    - path: <abs path>                 # the exact file(s) fed to the trainer
+      source: <HF id | synthetic:self | synthetic:<model> | derived:<card_id> | local>
+      n_examples: <int>
+      built_by: <abs path to the script | null>
+      build_command: [<argv>...]       # how to regenerate this file from source
+      selection: <filter / dedup / formatting rule, one line>
+      contamination_check: <passed | failed | not_run>   # via the supplied checker
+      mixture_weight: <float>
+  method:
+    family: sft | rft | dpo | grpo | distill | merge | decode-config | other
+    framework: <string>                # e.g. trl.SFTTrainer 0.19
+    peft: <"none" | "LoRA r=.. alpha=.. targets=..">
+    hyperparams:
+      lr: <float>
+      epochs: <float>
+      batch_size: <int>
+      grad_accum: <int>
+      max_seq_len: <int>
+      scheduler: <string>
+      warmup: <float>
+      weight_decay: <float>
+      precision: <string>
+      seed: <int>
+      other: <string|null>
+    target_format: <how the training target is shaped for the grader>
+  command:
+    argv: [<exact command as run>]
+    cwd: <abs path>
+    script: <abs path to the training script>
+    env: {}                            # only vars that change the result
+    log: <abs path to stdout/stderr>
+  budget:
+    gpu: <string>
+    planned_h: <float>
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [<argv>]                  # e.g. [python, evaluate.py, --model, <path>, --limit, "300"]
+    dev_set: <abs path | "official --limit N">
+    n: <int>
+    seed: <int|null>
+  comparator:
+    ref: <card_id | base_model>
+    value: <float|null>                # measured under the SAME protocol
+    path: <abs path|null>
+  diagnostic:                          # optional: a probe that tests the mechanism, not just the score
+    what: <string|null>
+    command: [<argv>]
+    path: <abs path|null>
+
+# ---- 5. Result (after) ------------------------------------------------------
+result:
+  execution: completed | failed | killed
+  wall_h: <float>
+  output_checkpoint: <abs path | null>
+  training_summary: {final_loss: <float|null>, steps: <int|null>, notes: <string|null>}
+  measurements:
+    - metric: <accuracy>
+      value: <float>
+      n: <int>
+      path: <abs path to eval output>
+      delta_vs_comparator: <float>
+  diagnostic_result: {value: <float|null>, path: <abs path|null>, notes: <string|null>}
+  watch_set_result:                    # the problem's watch_set re-run on the output checkpoint
+    fixed: <int>                       # previously failing, now correct
+    still_failing: <int>
+    path: <abs path to the re-run output>
+    regressions: <int|null>            # items outside the watch set that were correct and now fail, if measured
+  failure: <traceback tail or null>
+
+# ---- 6. Conclusion (after) --------------------------------------------------
+conclusion:
+  verdict: supported | contradicted | inconclusive
+  # supported/contradicted only with a measurement under the protocol above;
+  # inconclusive if the run failed, was cut short, or the delta is within noise.
+  mechanism_verdict: supported | contradicted | not_tested   # only from `diagnostic`
+  summary: <two lines - what happened and what it says about the hypothesis>
+  decision: adopt | reject | iterate | abandon_line
+  # adopt        -> output_checkpoint becomes the incumbent
+  # reject       -> keep the incumbent; this line is closed
+  # iterate      -> same hypothesis, changed setup; name the change in next_step
+  # abandon_line -> the problem stands but this approach is dropped
+  next_step: <string|null>

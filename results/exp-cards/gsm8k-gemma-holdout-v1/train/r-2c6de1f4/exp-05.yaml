@@ -1,0 +1,206 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    Named at [138] on the incumbent: some samples still keep generating after the
+    ANSWER line, harder problems fail on reasoning, and - the new point - "the
+    evaluation uses fewshot examples in a system message, but training data has
+    no system messages", so the prompt the model was trained on is not the prompt
+    it is graded on. The agent also suspected the full fine-tune of overfitting
+    ([142] header: "LoRA to prevent overfitting (v4 fully fine-tuned may have
+    overfit)").
+  evidence:
+    - path: /home/ben/task/logs/2026-03-22T03-14-06+01-00_gsm8k_aXsuYEKXRdBXrs5wjLzHgz.json
+      locator: "[136] - samples 5, 6, 7"
+      observation: "remaining failures are reasoning errors, not formatting"
+    - path: /home/ben/task/evaluate.py
+      locator: "[80], [138]"
+      observation: "the grader supplies a system message of 10 few-shot question/reasoning/ANSWER examples"
+  affected_share: null
+  failure_examples:
+    - id: "eval sample 5"
+      source: /home/ben/task/logs/2026-03-22T03-14-06+01-00_gsm8k_aXsuYEKXRdBXrs5wjLzHgz.json
+      question: null
+      gold: "75"
+      model_output: "He eats 2 yogurts a day and is currently on sale for 4 for $5.00 so that's 2/4 = 1/2 price ... He will spend $5.00 per day for 30 da"
+      failure: "mis-modelled the unit price and the response was cut off before an ANSWER line"
+    - id: "eval sample 6"
+      source: /home/ben/task/logs/2026-03-22T03-14-06+01-00_gsm8k_aXsuYEKXRdBXrs5wjLzHgz.json
+      question: null
+      gold: "80"
+      model_output: "The second friend guessed 80 + 20 = 100 jelly beans.\nThe third friend guessed 80 * 1.25 = 100 jelly beans.\nTheir total guess is 280 ... 280 / 3 = 93.33\n\nANSWER: 93.33"
+      failure: "misread the relations between the three guesses and answered the average instead"
+    - id: "eval sample 7"
+      source: /home/ben/task/logs/2026-03-22T03-14-06+01-00_gsm8k_aXsuYEKXRdBXrs5wjLzHgz.json
+      question: null
+      gold: "20"
+      model_output: "He makes 20 candles * 10 candles per pound = 200 candles ... his net profit is $40.00 - $2000.00 = -$1600.00\n\nANSWER: -1600"
+      failure: "inverted the candles-per-pound relation, so every downstream quantity is wrong"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "Let me create an optimized v5 that includes the system message format with
+    fewshot examples, uses LoRA to prevent overfitting, and trains on a larger
+    dataset" [141] - training on prompts that carry a few-shot system message, in
+    LoRA rather than a full fine-tune, will beat the incumbent's 48%.
+  mechanism: >-
+    Training prompts would then have the same shape as the graded prompt (system
+    few-shot block, then the instruction template), and LoRA with 2 epochs limits
+    how far the base model is moved ([142] header: "2 epochs to reduce
+    overfitting risk").
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k (main, train split)
+      n_examples: null          # this launch printed no counts before it was killed
+      built_by: /home/ben/task/train_v5.py
+      build_command: []
+      selection: >-
+        as in exp-04, but each example is prefixed with a system message holding
+        3-10 few-shot items (random.Random(42)) drawn from a pool built from the
+        gsm8k train split with the current question excluded; rows longer than
+        2048 tokens are filtered out.
+      repeats: 5
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: meta-math/MetaMathQA
+      n_examples: null
+      built_by: /home/ben/task/train_v5.py
+      build_command: []
+      selection: >-
+        all GSM_* rows plus 15,000 shuffled (seed=42) MATH_AnsAug/MATH_Rephrased
+        rows; \boxed{} rewritten to a trailing "ANSWER: <n>" line; a few-shot
+        system message is attached to half the rows (rng.random() < 0.5).
+      repeats: 1
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2
+    peft: "LoRA r=128 alpha=256 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 2
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=False, gradient_checkpointing=True, save_steps=2000,
+        attn_implementation=flash_attention_2. Module-level constants in
+        /home/ben/task/train_v5.py (no argparse); the launch passed no arguments.
+    target_format: >-
+      "<|im_start|>system\n{3-10 few-shot items}<|im_end|>\n<|im_start|>user\n
+      {grader instruction}\n\n{question}\n\n{reminder}\n\nReasoning:<|im_end|>\n
+      <|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>".
+  command:
+    argv: [python3, train_v5.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v5.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null             # launched with 3:20 left on the 10 h budget [140]
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: []                 # never evaluated
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: killed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Reached roughly step 2610 of 3180 (~82%) with an estimated 38 minutes to go
+      [160][177] when only 18 minutes of budget remained [179]; killed at [182]
+      ("Killed training processes"), confirmed at [195] as exit code 143
+      (SIGTERM). save_steps=2000, so an intermediate checkpoint may exist under
+      /home/ben/task/training_output_v5, but the stream never points at one and
+      the merged model was never written.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Only 18 minutes left! The v5 training won't finish in time. Let me stop it
+    and make sure the v4 model (our best at 48%) is in final_model" [181]. The
+    few-shot-system-message idea was never trained to completion or evaluated, so
+    it says nothing either way; the incumbent from exp-04 was confirmed still in
+    place by file timestamp [185][186] and re-checked at 50% on 20 samples [188].
+  decision: abandon_line
+  next_step: null
+
+provenance:
+  kind: extracted
+  run_ref: r-2c6de1f4
+  launch_i: 146
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [136, 138]
+    setup: [141, 142, 146]
+    evaluation: []
+    result: [151, 160, 177, 179, 182, 183, 195]
+    conclusion: [181, 185, 186, 189, 192]
+  snapshot_files:
+    - train_v5.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "No output block for [146] survives in the digest, so the dataset sizes,
+       the step count and the loss curve of this launch are unknown; the ~82%
+       progress figure is the agent's own reading of the progress bar."
+    - "Whether any intermediate LoRA checkpoint was written before the kill is
+       not settled by the stream."
+
+# ---- Official result (joined by the pipeline; never written by the extractor) ----
+outcome:
+  official_accuracy: null

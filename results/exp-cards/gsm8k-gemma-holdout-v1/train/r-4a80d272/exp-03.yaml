@@ -1,0 +1,244 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 0.29
+
+problem:
+  statement: >-
+    On the untouched base model many generations get the arithmetic right but
+    miss or corrupt the final "ANSWER:" line, and some generations drift into
+    irrelevant text, so correct reasoning is not being scored as correct.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-4a80d272.md
+      locator: "[58]"
+      observation: >-
+        agent: "many outputs have the right arithmetic but miss or corrupt the
+        final `ANSWER:` line, and some generations drift into irrelevant text"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-4a80d272.md
+      locator: "[87]"
+      observation: "the same recipe OOM'd at per-device batch size 8"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A LoRA SFT pass from Qwen/Qwen3-4B-Base on a contamination-safe mix of
+    GSM8K-train, harness-style GSM8K prompts and synthetic grade-school math,
+    with loss masked to assistant tokens and the harness's ChatML prompt
+    structure, will optimise both reasoning and exact answer formatting.
+  mechanism: >-
+    Training the assistant turn under the same prompt structure the evaluator
+    uses teaches the model to end on the "ANSWER: <n>" line instead of drifting;
+    the synthetic math adds breadth beyond GSM8K-train itself.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF: openai/gsm8k (main, train), plain prompt"
+      n_examples: null
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: "MATH_PROMPT_TEMPLATE user turn; target = GSM8K rationale + \"ANSWER: <n>\"; no system message"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 3
+    - path: null
+      source: "HF: openai/gsm8k (main, train), exact harness prompt"
+      n_examples: null
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: "as above plus a 10-shot GSM8K-train system message (shuffle seed 42, first 10 rows)"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+    - path: null
+      source: "HF: clarkkitchen22/SynthGSM8K-50K (train)"
+      n_examples: 25000
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: "shuffle(seed=42), first 25000; unparseable answers dropped"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+    - path: null
+      source: "HF: HuggingFaceH4/orca-math-word-problems-200k (train_sft)"
+      n_examples: 30000
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: "shuffle(seed=42), first 30000; unparseable answers dropped"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer + peft LoRA (custom script train_math_sft.py)"
+    peft: "LoRA r=64 alpha=64 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 1.7e-4
+      epochs: 1
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        warmup_ratio 0.03 and seed 42 are train_math_sft.py argparse defaults,
+        not overridden on this launch; cosine schedule, bf16,
+        optim=adamw_torch_fused, max_grad_norm=1.0, group_by_length=True,
+        save_total_limit=2 are hard-coded there. Terminator not passed; the
+        agent later describes this candidate as trained to stop on <|im_end|>
+        rather than the tokenizer EOS ([155], [165]).
+    target_format: >-
+      ChatML user/assistant turns; assistant turn = rationale ending in
+      "ANSWER: <n>" plus a terminator token
+  command:
+    argv:
+      - python
+      - train_math_sft.py
+      - --output-dir
+      - runs/candidate_lora_b2
+      - --final-dir
+      - runs/candidate_b2_merged
+      - --max-seq-length
+      - "1536"
+      - --orca-limit
+      - "30000"
+      - --synth-limit
+      - "25000"
+      - --gsm-repeats
+      - "3"
+      - --gsm-exact-repeats
+      - "1"
+      - --per-device-batch-size
+      - "4"
+      - --grad-accum
+      - "8"
+      - --epochs
+      - "1"
+      - --learning-rate
+      - "1.7e-4"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "64"
+      - --lora-dropout
+      - "0.05"
+      - --save-steps
+      - "500"
+      - --logging-steps
+      - "20"
+      - --num-proc
+      - "8"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_math_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/candidate_b2_merged
+      - --limit
+      - "50"
+      - --json-output-file
+      - eval_candidate_b2_50.json
+      - --max-connections
+      - "4"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.55"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator: null
+  diagnostic:
+    what: "read the evaluator log for the merged candidate to see where generation stops"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.41
+  duration_h: 1.41
+  steps: 2651
+  output_checkpoint: /home/ben/task/runs/candidate_b2_merged
+  training_summary:
+    final_loss: 0.2157
+    steps: 2651
+    notes: >-
+      train_runtime 5047 s (~84 min), train_loss 0.2157; the script's merge step
+      completed and wrote runs/candidate_b2_merged (~7.6 GB full HF model).
+  measurements:
+    - metric: accuracy
+      value: 0.04
+      n: 50
+      path: /home/ben/task/eval_candidate_b2_50.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [150]-[155]: outputs solve the first problem and then continue into
+      synthetic "next user/assistant" text until the 1024-token cap, so the
+      scorer picks up a later number.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    The first completed candidate scored 0.04 on 50 samples with outputs
+    running to the token cap ([147]). The formatting objective did not produce
+    a stopping model: the mechanism failed, and there is no same-protocol
+    comparator to score the accuracy claim against.
+  decision: reject
+  next_step: >-
+    Change the training terminator to the actual Qwen EOS token and drop the
+    long exact-system examples so the model ends right after "ANSWER:" ([155]).
+
+provenance:
+  kind: extracted
+  run_ref: r-4a80d272
+  launch_i: 91
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [58, 87]
+    setup: [91]
+    evaluation: [143]
+    result: [133, 134, 147, 150, 151]
+    conclusion: [147, 155]
+  snapshot_files:
+    - train_math_sft.py
+    - eval_candidate_b2_50.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "no fresh problem/hypothesis statement accompanies this launch; the text is the line's stated intent from [58]/[68]/[73]"
+    - "the 0.04 result was never compared against the 30-sample base-model baseline under the same --limit"

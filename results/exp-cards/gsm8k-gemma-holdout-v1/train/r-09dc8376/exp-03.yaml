@@ -1,0 +1,254 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 4.29
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    Two problems stand: the incumbent (exp-01) misses only on reasoning --
+    'format failures are zero; all 35 misses are pure reasoning slips' ([39470])
+    -- and the first attempt at the RFT continuation lost its weights, because
+    'the save crashed on generation-config validation before writing weights'
+    ([42604]).
+  evidence:
+    - path: /home/ben/task/eval_final.log
+      locator: "[39102], [39470]; accuracy 0.767 at limit 150"
+      observation: "35 of 150 wrong, all reasoning errors, no format failures"
+    - path: /home/ben/task/stage2_train.log
+      locator: "[41778], [41779]"
+      observation: >-
+        exp-02 finished 305 steps then raised
+        'ValueError: GenerationConfig is invalid' inside save_pretrained;
+        runs/stage2/final was empty
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Same claim as exp-02, agent at [39470]: 'all 35 misses are pure reasoning
+    slips. This is exactly what on-policy RFT helps with' -- one epoch on the
+    model's own answer-verified samples plus stage-1 replay will raise limit-150
+    accuracy over exp-01; the trainer now resets a clean generation_config so the
+    checkpoint can actually be saved ([42604], [42605]).
+  mechanism: >-
+    Rejection sampling reinforces the reasoning paths the model already reaches
+    on its own (pass@8 97.8% on GSM8K-train vs 0.767 greedy), so the gain should
+    come from converting reachable-but-not-greedy solutions into greedy ones.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/main/final
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/sft_data/packs_stage2.jsonl
+      source: derived:exp-01
+      n_examples: null
+      built_by: /home/ben/task/tokenize_packs.py
+      build_command: [PACK_IN=sft_data/pairs_stage2.jsonl, PACK_OUT=sft_data/packs_stage2.jsonl, SINGLE_ANCHOR_N=2500, python, tokenize_packs.py]
+      selection: "same packs file built for exp-02 at [40438]; SINGLE_ANCHOR_N=2500 single-turn eval-format anchor packs"
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+    - path: /home/ben/task/sft_data/pairs_stage2.jsonl
+      source: synthetic:self
+      n_examples: null
+      built_by: /home/ben/task/build_pairs_stage2.py
+      build_command: [python, build_pairs_stage2.py]
+      selection: >-
+        RFT_N=40000 cap over sft_data/rft_pairs.jsonl (27,934 kept solutions)
+        plus REPLAY_N=20000 rows from stage-1 sft_data/pairs.jsonl, exact
+        (question, solution) dedupe, shuffled (seed 41); caps read from
+        build_pairs_stage2.py in the snapshot. RESULTS.md at [44250] describes
+        this as '27.9K self-distilled + 20K replay'.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+    - path: /home/ben/task/sft_data/rft_pairs.jsonl
+      source: synthetic:self
+      n_examples: 27934
+      built_by: /home/ben/task/gen_rft.py
+      build_command: [python, gen_rft.py, --ckpt, runs/main/final, --k, "8", --temp, "0.9", --max-per-q, "4", --out, sft_data/rft_pairs.jsonl]
+      selection: >-
+        8 samples per GSM8K-train question at T=0.9, top_p 0.95, max_tokens 512,
+        exact eval prompt; keep only samples whose trailing 'ANSWER: N' equals
+        gold, <=1800 chars, deduped, <=4 per question. 'kept 27934 solutions;
+        solved 7306/7473 questions (97.8%)'
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: rft
+    framework: "transformers Trainer (custom ChunkedCETrainer subclass)"
+    peft: none
+    hyperparams:
+      lr: 7.0e-06
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 31
+      other: >-
+        lr/epochs/bs/accum/data/out/resume-from passed on the command line.
+        scheduler, warmup_ratio 0.03, weight_decay 0.0, seed 31,
+        optim=adamw_torch_fused, max_grad_norm 1.0, save_strategy=epoch are
+        hard-coded in TrainingArguments in /home/ben/task/train_sft.py (in the
+        snapshot; not overridden here). max_seq_len from STATIC_PAD=4096. The
+        only change from exp-02 is the GenerationConfig reset added at [42605].
+    target_format: >-
+      eval-identical chat rendering, short CoT ending in 'ANSWER: N' +
+      <|im_end|>, loss on the assistant span only
+  command:
+    argv: [python, train_sft.py, --data, sft_data/packs_stage2.jsonl, --epochs, "1", --lr, "7e-6", --bs, "8", --accum, "2", --out, runs/stage2, --resume-from, runs/main/final]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env:
+      GRAD_CKPT: "1"
+      COMPILE: "1"
+      STATIC_PAD: "4096"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    log: /home/ben/task/stage2_train.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [./eval_ckpt.sh, runs/stage2/final, "150", "16", "4000"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.7666666666666667
+    path: /home/ben/task/eval_final.log
+  diagnostic:
+    what: >-
+      why the official-path full test collapsed: is the checkpoint degenerate or
+      is it the serving path? Re-ran the same prompts through a fresh offline
+      vLLM engine and through the official path at other limits/concurrencies.
+    command: [python, offline_eval.py, --ckpt, runs/stage2/final, --gpu-mem, "0.3", --limit, "650", --out, offline_stage2_650.json]
+    path: /home/ben/task/offline_stage2_650.json
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.52
+  duration_h: 0.52
+  steps: 305
+  output_checkpoint: /home/ben/task/runs/stage2/final
+  training_summary:
+    final_loss: 0.2455
+    steps: 305
+    notes: "train_loss 0.2475, train_runtime 1863.3 s, 1 epoch = 305 steps"
+  measurements:
+    - metric: accuracy
+      value: 0.8266666666666667
+      n: 150
+      path: /home/ben/task/eval_stage2.log
+      delta_vs_comparator: 0.06
+    - metric: accuracy
+      value: 0.7945413191811979
+      n: 1319
+      path: /home/ben/task/offline_runs_stage2_final_full.json
+      delta_vs_comparator: 0.0227
+    - metric: accuracy
+      value: 0.7815384615384615
+      n: 650
+      path: /home/ben/task/offline_stage2_650.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.2175890826383624
+      n: 1319
+      path: /home/ben/task/eval_stage2_full.log
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.5283333333333333
+      n: 600
+      path: /home/ben/task/stage2_600_hi_mem.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.7815384615384615
+    path: /home/ben/task/offline_stage2_650.json
+    notes: >-
+      the two low numbers above are a serving artefact, not the model: the
+      official long session at max-connections 16 collapsed to '!!!' outputs
+      after ~300-450 requests (954 of 1319 samples degenerate, [47539]), raising
+      gpu-memory-utilization to 0.9 did not prevent it (0.528 at limit 600), and
+      the same prompts through a fresh offline engine produced 0 degenerate
+      outputs at 0.78 (650) and 0.7945 (1319). Runs of <=150 samples were always
+      clean.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    One RFT epoch on 27.9K self-generated verified solutions plus 20K replay
+    moved limit-150 accuracy from 0.767 to 0.827 (+6.0 pts) under the identical
+    protocol, and +2.3 pts on the clean full-test replication (0.7718 ->
+    0.7945); the agent recorded '26/150 wrong, all reasoning, 0 format'
+    ([44250]). A separate serving-path anomaly, not the model, produced the
+    0.218 official full-test number.
+  decision: adopt
+  next_step: >-
+    'stage-3 = RFT round 2 continuation (28.4K r2 + 10K r1 + 15K replay, 1ep
+    lr5e-6)' ([44962]) -- resample from this checkpoint and continue (exp-04).
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-09dc8376
+  launch_i: 42608
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [39470, 41777, 41779, 42604]
+    setup: [40234, 40438, 42605, 42608]
+    evaluation: [43813, 45391, 60200, 60741]
+    result: [44250, 45674, 46191, 47539, 48836, 62655]
+    conclusion: [44250, 61938]
+  snapshot_files:
+    - gen_rft.py
+    - rft_gen.log
+    - build_pairs_stage2.py
+    - tokenize_packs.py
+    - train_sft.py
+    - stage2_train.log
+    - eval_stage2.log
+    - eval_stage2_full.log
+    - eval_stage2_600.log
+    - stage2_600_hi_mem.json
+    - offline_eval.py
+    - offline_stage2_650.json
+    - offline_repro.log
+    - offline_runs_stage2_final_full.json
+    - offline_runs_stage2_final.log
+    - eval_final.log
+  smoke_runs: []
+  extractor: opus-5-1m          # the extracting model, not the run's agent
+  unresolved:
+    - "the row counts printed by build_pairs_stage2.py and by the stage-2 packing run are not in the stream; the 27.9K/20K split is the agent's own RESULTS.md wording plus the caps in build_pairs_stage2.py"
+    - "root cause of the long-session '!!!' degeneration at max-connections 16 was never established, only bounded (count-based, not memory-capacity-based; absent offline and at max-connections 2)"
+
+# ---- outcome (joined by the pipeline; the extractor never writes it) --------
+outcome:
+  official_accuracy: null

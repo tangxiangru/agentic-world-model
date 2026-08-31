@@ -1,0 +1,188 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 7.02
+
+problem:
+  statement: >-
+    "Still pure reasoning slips - format is perfect" [32538]: v2-1719 scores
+    82.7% at limit 150 and every failure is a reasoning error, so the plan for
+    the remaining ~3.4h is "RFT round 2 from v2-1719 + continue-training on
+    fresh data, then full-test the winner" [32538].
+  evidence:
+    - path: /home/ben/task/results/v2-ckpt-sft_v2-checkpoint-1719-limit150.json
+      locator: "[31448]"
+      observation: "v2 @ 1.5 epochs = 82.7% at limit 150"
+    - path: "/home/ben/task/logs/*gsm8k*.json (most recent at [31449]; exact filename not printed)"
+      locator: "[31449], [31450] - analyze_failures.py output"
+      observation: "no format failures; the printed cases are arithmetic/setup slips"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: "/home/ben/task/logs/*gsm8k*.json (v2 eval log at [31450])"
+      question: "(not printed - bees leaving and returning to a hive)"
+      gold: "75"
+      model_output: >-
+        "In the first 6 hours, 30 bees leave the hive ... so 30 + 15 + 60 = 105
+        bees return.  ANSWER: 105"
+      failure: "double-counts returning bees; answered 105 instead of 75"
+    - id: null
+      source: "/home/ben/task/logs/*gsm8k*.json (v2 eval log at [31450])"
+      question: "(not printed - John's weekly glasses of water)"
+      gold: "26"
+      model_output: >-
+        "... 4 glasses x 5 weekdays = 20 ... 4 glasses x 2 weekend days = 8 ...
+        20 + 8 = 28 glasses  ANSWER: 28"
+      failure: "ignores the stated weekend rate; answered 28 instead of 26"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Continue-training v2-1719 for one epoch at lr 5e-6 on the v3 corpus (the
+    part of the v2 corpus its token budget never reached, plus RFT round-2
+    self-solutions sampled from v2-1719) will beat v2-1719's 82.7% [32538].
+  mechanism: >-
+    A second round of answer-verified self-distillation plus data the model has
+    not seen keeps attacking reasoning slips without re-showing consumed rows.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: local
+      n_examples: null
+      built_by: /home/ben/task/build_v3.py
+      build_command: []
+      selection: >-
+        Rows of data/sft_v2.jsonl that the v2 run's 150M-token budget did not
+        reach (replicating its Random(7) shuffle and length filter) plus RFT
+        round-2 rows, at most 3 per question, with prompt variants re-drawn. The
+        build_v3.py invocation is not in the filtered digest; RESULTS.md [39153]
+        describes v3 as ~78K unseen rows + 58.7K RFT round-2 rows.
+      repeats: "at most 3 RFT solutions per question"
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/rft_v2.jsonl
+      source: synthetic:self
+      n_examples: null
+      built_by: /home/ben/task/rft_generate.py
+      build_command: [nohup, python, rft_generate.py, --model, export/v2-ckpt-sft_v2-checkpoint-1719, --out, data/rft_v2.jsonl, --k-train, "8", --k-aug, "4", --n-aug, "15000", --temperature, "1.0"]
+      selection: >-
+        Rejection sampling with the exported v2-1719 checkpoint on the 7473
+        GSM8K train questions (k=8) and 15000 fresh OpenMathInstruct-2 augmented
+        questions (k=4, shuffle seed changed to 88 at [32539]), T=1.0, top_p
+        0.95, max_tokens 700; keep answer-verified completions, body 80-1800
+        chars, shortest per distinct opening, at most 3 per question (--max-keep
+        default 3, not overridden). "RFT round 2: 95.2% solve rate, 58.7K rows"
+        [33776]. Component of data/sft_v3.jsonl.
+      repeats: "at most 3 solutions per question"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (custom packed Dataset), flash_attn 2.8.3, torch 2.8.0+cu129"
+    peft: none
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: "fp32 weights with bf16 autocast (dtype=torch.float32, bf16=True)"
+      seed: 7
+      other: >-
+        --token-budget 95000000 and --save-steps 350 from the launch;
+        batch_size, grad_accum and max_seq_len are train_sft.py argparse
+        defaults not overridden. At this point train_sft.py had no --base flag,
+        so the launch loaded weights from Qwen/Qwen3-1.7B-Base instead of the
+        intended v2-1719 checkpoint - the reason it was killed [33910].
+    target_format: >-
+      assistant turn = "<reasoning>\n\nANSWER: <n>" followed by <|im_end|>.
+  command:
+    argv: [nohup, env, "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True", python, train_sft.py, --data, data/sft_v3.jsonl, --out, ckpt/sft_v3, --epochs, "1", --lr, "5e-6", --save-steps, "350", --token-budget, "95000000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/train_v3.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator:
+    ref: exp-06
+    value: 0.8266666666666667
+    path: /home/ben/task/results/v2-ckpt-sft_v2-checkpoint-1719-limit150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.01
+  duration_h: 0.01
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "Critical fix: train_sft.py always loads from BASE - v3 must start from
+      checkpoint-1719. Killing and adding a `--base` flag" [33910]; the process
+      was killed at [33911] about a minute after launch, before any checkpoint.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: "no traceback; killed because the script hard-coded the base model as the parent [33910]"
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first v3 launch was killed within a minute: train_sft.py had no way to
+    start from the v2 checkpoint, so it was silently continuing from the base
+    model [33910]. No checkpoint, no measurement.
+  decision: abandon_line
+  next_step: "add a --base flag to train_sft.py [33916] and relaunch from ckpt/sft_v2/checkpoint-1719 [34040]"
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-89603e49
+  launch_i: 33782
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [31448, 31449, 31450, 32538]
+    setup: [32539, 32541, 33169, 33776, 33782]
+    evaluation: [31116, 31448]
+    result: [33910, 33911]
+    conclusion: [33910, 33916, 34040]
+  snapshot_files:
+    - train_sft.py
+    - build_v3.py
+    - rft_generate.py
+    - analyze_failures.py
+    - evaluate.py
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the build_v3.py invocation is not in the filtered digest, so data/sft_v3.jsonl's row count is known only from RESULTS.md"

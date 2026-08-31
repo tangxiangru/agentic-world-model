@@ -1,0 +1,208 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: null                        # the stream carries no timestamps
+
+problem:
+  statement: >-
+    "LoRA runs are hurting generation behavior" [205]: the merged adapter
+    model repeated its `ANSWER:` line and scored 0.125 on 40 samples [152],
+    and the two plain-format adapter runs stalled on eval loss without ever
+    beating it [183][197].
+  evidence:
+    - path: /home/ben/task/runs/lora_run1_eval40.json
+      locator: "[152]"
+      observation: "merged LoRA checkpoint: accuracy 0.125 on 40 samples, below the 0.167 base-model baseline on 30"
+    - path: null
+      locator: "[197]"
+      observation: "the few-shot adapter run's only checkpoint had eval_loss 0.4831, no better than the previous run"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Pivoting to full-parameter SFT (still only HuggingFaceTB/SmolLM3-3B-Base)
+    ... a short full-finetune on GSM8K train with strict prompt-completion
+    formatting" [205] will improve over the base model and over the prior LoRA
+    runs.
+  mechanism: >-
+    Updating all weights rather than a low-rank adapter lets the model absorb
+    the answer format and stop-behaviour that the adapters distorted.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split=train), loaded inside the training script"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_full.py
+      build_command: []
+      selection: >-
+        openai/gsm8k main/train shuffled with seed 42 and split by
+        --train_ratio 0.95; each row becomes a flat prompt-completion pair -
+        the benchmark's math prompt text (no chat template) then the gold
+        rationale with `####` stripped + `ANSWER: <final>` + EOS - with labels
+        masked over the prompt and only the prompt truncated when too long.
+        7473 source rows [55]; split sizes never printed.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3, torch 2.8.0+cu129 [36]"
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1.5
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/batch_size/grad_accum/max_seq_len from the launch argv; the
+        cosine schedule, bf16, warmup_ratio 0.05, weight_decay 0.0 and seed 42
+        are argparse defaults or literals in the workspace copy of
+        train_gsm8k_full.py and were not overridden. Also from the launch:
+        --train_ratio 0.95, --eval_steps 40, --save_steps 40. This script has
+        no --merged_dir: it saves the full model straight to --output_dir.
+    target_format: >-
+      raw prompt text + gold rationale + blank line + `ANSWER: <final>` +
+      eos token; no chat template at training time
+  command:
+    argv:
+      - python
+      - train_gsm8k_full.py
+      - --output_dir
+      - runs/full_run1
+      - --num_train_epochs
+      - "1.5"
+      - --learning_rate
+      - "2e-5"
+      - --per_device_train_batch_size
+      - "4"
+      - --gradient_accumulation_steps
+      - "8"
+      - --max_length
+      - "1536"
+      - --train_ratio
+      - "0.95"
+      - --eval_steps
+      - "40"
+      - --save_steps
+      - "40"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_full.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [34]"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/full_run1
+      - --limit
+      - "40"
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "512"
+      - --gpu-memory-utilization
+      - "0.3"
+      - --json-output-file
+      - runs/full_run1_eval40.json
+    dev_set: "official --limit 40"
+    n: 40
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.125
+    path: /home/ben/task/runs/lora_run1_eval40.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/full_run1
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "Full SFT run completed" [228]; "much faster than expected" [211]. No
+      checkpoint had been written when the agent polled mid-run [215]; the
+      finished directory later copied to final_model contained checkpoint-200
+      and checkpoint-333 alongside the saved model [263], so the schedule ran
+      to about 333 steps, but no step count or loss was ever printed.
+  measurements:
+    - metric: accuracy
+      value: 0.200
+      n: 40
+      path: /home/ben/task/runs/full_run1_eval40.json
+      delta_vs_comparator: 0.075
+    - metric: accuracy
+      value: 0.190
+      n: 100
+      path: /home/ben/task/runs/full_run1_eval100.json
+      delta_vs_comparator: null        # no comparator was measured at --limit 100
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "`full_run1` is the first clear improvement (`accuracy=0.200` on 40
+    samples)" [232], +7.5 pts over the merged LoRA model under the identical
+    --limit 40 protocol; a wider 100-sample slice gave 0.190 and the agent
+    called it "currently best" [256]. Full-parameter SFT beat the adapter
+    line, though both slices are small and the base-model baseline was only
+    measured at --limit 30.
+  decision: adopt
+  next_step: >-
+    Run one more full-SFT variant (1 epoch, lr 3e-5) to try to push higher
+    before finalizing [232]; then promote the winner to final_model.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-98b1304c
+  launch_i: 209
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [152, 197, 205]
+    setup: [206, 209]
+    evaluation: [229, 250]
+    result: [215, 228, 230, 256]
+    conclusion: [232, 256]
+  snapshot_files:
+    - train_gsm8k_full.py
+    - evaluate.py
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "runs/full_run1_eval40.json and runs/full_run1_eval100.json are not in the workspace snapshot; 0.200 is from the printed eval table at [230] and 0.190 from the agent's statement at [256] (the 100-sample table itself is not in the digest)"
+    - "training duration, step count and final loss were never printed"

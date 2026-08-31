@@ -1,0 +1,199 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 0.34
+
+problem:
+  statement: >-
+    The eval prepends a 10-shot system prompt whose demos are formatted
+    "ANSWER: N\n\n[next problem]"; a model SFT'd zero-shot copies that
+    continuation pattern in context and does not stop after its own answer, so
+    the last-number scorer fails even after the EOS fix. [156] "The problem is
+    the 10-shot system prompt at eval ... which teaches the model in-context to
+    continue after ANSWER."
+  evidence:
+    - path: /home/ben/task/eval_v1b.json
+      locator: "[141]"
+      observation: "3.3% at --limit 150 with eos_token_id already fixed"
+    - path: null
+      locator: "[151]"
+      observation: >-
+        direct generation from sft_v1 in the exact zero-shot trained format stops
+        cleanly and contains <|im_end|> (151645), so the checkpoint itself is fine
+    - path: /home/ben/task/fewshot_system.txt
+      locator: "[166]"
+      observation: "the exact 10-shot eval system prefix, 2053 tokens"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Training with a random number of few-shot demos (0-6) per example, formatted
+    exactly like the eval, plus sometimes the exact 10-shot prefix, will teach the
+    model to emit <|im_end|> after its own ANSWER in any context and so generalize
+    to the 10-shot eval. [166] "This teaches robust stopping across contexts and
+    generalizes to the 10-shot eval."
+  mechanism: >-
+    Stopping is context-dependent behaviour: the model must see the
+    demo-continuation pattern during training and still end its turn, rather than
+    only ever seeing a bare zero-shot prompt.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF:openai/gsm8k main split=train"
+      n_examples: 7473
+      built_by: /home/ben/task/train_sft2.py
+      build_command: []
+      selection: >-
+        built inside the training script: reasoning with "<<...>>" stripped and
+        completion "{reasoning}\nANSWER: {target}"; per example, p=0.30 the exact
+        10-shot eval prefix as system message, p=0.20 zero-shot, else k=1..6
+        random GSM8K-train demos rendered eval-style (question, "Reasoning:",
+        raw answer with "<<>>", "ANSWER: N"); random.seed(42)
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: /home/ben/task/fewshot_system.txt
+      source: local
+      n_examples: null
+      built_by: null
+      build_command: []
+      selection: >-
+        the exact 10-shot system prompt lifted from an eval log (2053 tokens
+        [166]); used as the system message for 30% of training examples
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer (full fine-tune, custom padding collator)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        seed 42 is the --seed argparse default of train_sft2.py (in task/, not
+        overridden by the launch); scheduler/warmup/weight_decay/bf16,
+        group_by_length=True, gradient_checkpointing=True, save_strategy='no',
+        logging_steps=20 are hardcoded in that script's TrainingArguments; the
+        script also patches eos_token_id to [151643, 151645] in the saved
+        config.json and generation_config.json after training
+    target_format: >-
+      optional "<|im_start|>system\n{demos}<|im_end|>\n" then
+      "<|im_start|>user\n{MATH_PROMPT_TEMPLATE}<|im_end|>\n<|im_start|>assistant\n"
+      and completion "{reasoning}\nANSWER: {N}<|im_end|>\n"; loss masked on the prompt
+  command:
+    argv: [nohup, python, train_sft2.py, --out, sft_v2, --epochs, "3", --lr, "1e-5",
+           --bs, "8", --accum, "4", --maxlen, "2048"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft2.py
+    env: {}
+    log: /home/ben/task/train_v2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [timeout, "1800", python, evaluate.py, --model-path, sft_v2, --limit,
+              "150", --max-connections, "16", --max-tokens, "1024",
+              --gpu-memory-utilization, "0.85", --json-output-file, eval_v2.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.0333
+    path: /home/ben/task/eval_v1b.json
+  diagnostic:
+    what: >-
+      count correct, count completions whose stop_reason is not 'stop', and print
+      the first 4 wrong completions from the eval log [193]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.354
+  output_checkpoint: /home/ben/task/sft_v2
+  training_summary:
+    final_loss: 0.435
+    steps: 702
+    notes: >-
+      last logged 'loss' 0.435, reported train_loss 0.4724, 3 epochs over 7473
+      examples (avg len 1118.9 tokens, max 2048), train_runtime 1275.1 s
+      (train_v2.log); agent read it as "loss ~0.43" [186]
+  measurements:
+    - metric: accuracy
+      value: 0.3333
+      n: 150
+      path: /home/ben/task/eval_v2.json
+      delta_vs_comparator: 0.30
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [194] "total 150 correct 50 no-stop(hit max) 150" - the stop_reason field
+      came back None for every sample, but the four printed wrong completions are
+      short and end cleanly at their own "ANSWER: n", so the agent read stopping
+      as fixed [196]
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    33.3% vs 3.3% under the same --limit 150 protocol: few-shot-context training
+    plus the EOS fix removed the non-stopping failure entirely. [196] "The model
+    now stops correctly and produces clean output - remaining failures are genuine
+    reasoning errors."
+  decision: reject
+  next_step: >-
+    [196] "GSM8K-train alone caps at ~33%. The biggest lever is higher-quality /
+    more diverse CoT data" - bring in MetaMathQA (GSM8K/MATH-train-derived) and
+    retrain from base.
+
+provenance:
+  kind: extracted
+  run_ref: r-d7327838
+  launch_i: 169
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [141, 145, 151, 156, 166]
+    setup: [167, 169]
+    evaluation: [187]
+    result: [186, 192, 194]
+    conclusion: [192, 196]
+  snapshot_files:
+    - train_sft2.py
+    - train_v2.log
+    - fewshot_system.txt
+    - eval_v2.json
+    - eval_v1b.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the command that extracted fewshot_system.txt from an eval log is not in the digest (only the agent's statement at [156] and the token count at [166])"
+    - "sft_v2 was never copied to final_model and no later launch loaded it; the recipe (few-shot mixing + eos patch) was carried forward in train_pool.py, but the checkpoint was dropped"
+    - "the agent's own evals call evaluate.py on the official benchmark set (first N samples); no held-out dev set was built at any point in the run"

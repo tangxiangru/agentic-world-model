@@ -1,0 +1,202 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.22
+
+problem:
+  statement: >-
+    The un-tuned base model scores 0.21 on the first 100 test problems: it
+    rambles, hallucinates extra turns, does not stop at the end of the answer,
+    and does not emit the "ANSWER: <n>" line the scorer reads.
+  evidence:
+    - path: /home/ben/task/logs/baseline_metrics.json
+      locator: "[91]"
+      observation: "baseline accuracy 0.21 (stderr 0.041) on the first 100 test problems"
+    - path: /home/ben/task/logs/2026-06-13T17-20-48+02-00_gsm8k_YycaNkYEa4pXHMfiQTgRdy.json
+      locator: "[97]-[98], samples 0-3"
+      observation: >-
+        "The base model rambles and hallucinates extra turns (sample 2 hit
+        max_tokens with garbage; sample 0 got lucky)" [100]
+  affected_share: null
+  failure_examples:
+    - id: "baseline eval sample 2"
+      source: /home/ben/task/logs/2026-06-13T17-20-48+02-00_gsm8k_YycaNkYEa4pXHMfiQTgRdy.json
+      question: null
+      gold: null
+      model_output: >-
+        "...0 diverse-technology spam lines and URLs... assistant\n\nBrian's cat
+        eats an average of 2 pounds of food per day... Divide the total cubed
+        feet of my ideal plant habitat..." (truncated at max_tokens)
+      failure: "hallucinated a new turn, drifted off-task, hit max_tokens with no ANSWER line"
+    - id: "baseline eval sample 3"
+      source: /home/ben/task/logs/2026-06-13T17-20-48+02-00_gsm8k_YycaNkYEa4pXHMfiQTgRdy.json
+      question: null
+      gold: "40"
+      model_output: "'<think>\\n\\n...section.number Formatter: Month/Date/Time in Text\\nArguments without Accuracy Formatters\\n...'"
+      failure: "no reasoning, no ANSWER line; degenerate text, stop_reason=stop"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SFT will help enormously by teaching clean reasoning + proper stopping"
+    [100] - supervised fine-tuning on GSM8K-train solutions, rendered through
+    the eval's own template and prompt, will raise limit-100 accuracy over the
+    0.21 base.
+  mechanism: >-
+    Train (short system + the eval's exact MATH_PROMPT user turn) -> (GSM8K
+    chain with <<calc>> annotations stripped, ending in "ANSWER: <int>"), with
+    the eval's smollm.jinja template and assistant-only loss, so the model
+    produces exactly the shape the last-number scorer reads and terminates at
+    <|im_end|> [106].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_sft.jsonl
+      source: "HF openai/gsm8k main, train split"
+      n_examples: 7394
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: [python, scripts/prep_data.py]
+      selection: >-
+        every GSM8K train row whose "#### <target>" is an integer; reasoning =
+        the chain with <<calc>> annotations and double spaces removed; rendered
+        as system(SmolLM persona) + user(eval MATH_PROMPT_TEMPLATE) +
+        assistant("<reasoning>\n\nANSWER: <target>"). n_examples is the agent's
+        own count for this builder, printed as "gsm8k base: 7394" at [233] and
+        restated as "GSM8K train 7.4K" at [331]; the wc for this file itself is
+        not in the stream.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl SFTTrainer (TRL 0.27, per the API probe at [120]/[125])"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        scheduler/weight_decay/precision/seed and assistant_only_loss=True,
+        packing=False, group_by_length=False, gradient_checkpointing=True,
+        chat_template_path=templates/smollm.jinja, save_strategy="no",
+        optim=adamw_torch, flash_attention_2 are literals in the SFTConfig of
+        scripts/train_sft.py as written at [126] and edited at [130]/[131].
+        warmup is left null: --warmup was not passed and the script's argparse
+        default (0.03) cannot be used because the script text is not in the
+        workspace snapshot.
+    target_format: >-
+      chat messages rendered by templates/smollm.jinja; the assistant turn is
+      the cleaned chain of thought ending in "ANSWER: <int>", loss on the
+      assistant span only.
+  command:
+    argv: [nohup, python, scripts/train_sft.py, --data, data/gsm8k_sft.jsonl, --out, work/sft_v1,
+           --epochs, "3", --lr, 2e-5, --bs, "16", --accum, "4", --max-len, "768", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [nohup, python, evaluate.py, --model-path, work/sft_v1, --limit, "100",
+              --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.55",
+              --json-output-file, logs/v1_metrics.json]
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.21
+    path: /home/ben/task/logs/baseline_metrics.json
+  diagnostic:
+    what: "stop-reason and format check on the limit-100 completions (does the model terminate cleanly and emit ANSWER?)"
+    command: [python, "- <<PY", "log = json.load(...)", "stops[c.get('stop_reason')] += 1"]
+    path: /home/ben/task/logs/2026-06-13T17-39-20*.json
+
+result:
+  execution: completed
+  wall_h: 0.17
+  duration_h: 0.17
+  steps: 348
+  output_checkpoint: /home/ben/task/work/sft_v1
+  training_summary:
+    final_loss: null
+    steps: 348
+    notes: >-
+      loss 0.80 -> 0.51 and mean_token_accuracy 0.85 by epoch 0.95 [164];
+      "Training v1 done (609s)" [209]; the step total 348 is the denominator of
+      the progress bar the agent grepped at [156]. The train_loss summary line
+      was never printed in the stream.
+  measurements:
+    - metric: accuracy
+      value: 0.54
+      n: 100
+      path: /home/ben/task/logs/v1_metrics.json
+      delta_vs_comparator: 0.33
+  diagnostic_result:
+    value: 0.98
+    path: /home/ben/task/logs/2026-06-13T17-39-20*.json
+    notes: >-
+      stop_reasons {stop: 98, max_tokens: 2}; "clean stopping confirmed (98/100
+      stop cleanly; eos fix works) and format is correct. The remaining 46
+      errors are genuine reasoning/arithmetic mistakes, not format issues" [223]
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "v1: 54% (up from 21% baseline)" [219], with 98/100 clean stops and correct
+    format, so the format-alignment mechanism did what the hypothesis said.
+    The residual errors are reasoning/arithmetic, not format [223].
+  decision: adopt
+  next_step: >-
+    "more diverse CoT data (MetaMathQA) is the right next step" [223] - built as
+    data/combined_sft.jsonl and trained as exp-02.
+
+# joined by the pipeline, never written by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-6920c788
+  launch_i: 144
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [91, 93, 97, 98, 100]
+    setup: [106, 108, 114, 126, 130, 131, 144]
+    evaluation: [210, 214]
+    result: [164, 209, 219, 220, 221]
+    conclusion: [219, 223]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 136, outcome: "passed (50 examples, 1 epoch, bs 4; loss 0.8, token acc 0.81)"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "scripts/train_sft.py, scripts/prep_data.py and the eval JSONs are not in the workspace snapshot; their content is quoted from the write/shell events in the stream."
+    - "Before the eval at [210] the agent rewrote work/sft_v1/generation_config.json to eos_token_id=[128001,128012] (scripts/prepare_model.py). The unfixed checkpoint was never evaluated, so 0.54 is the checkpoint plus that eos fix."
+    - "The exact line count of data/gsm8k_sft.jsonl was never printed; 7394 is the agent's count for the same builder at [233]/[331]."

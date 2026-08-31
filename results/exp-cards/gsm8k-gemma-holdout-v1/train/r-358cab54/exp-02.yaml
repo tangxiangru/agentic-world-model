@@ -1,0 +1,177 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.5
+
+problem:
+  statement: >-
+    The SFT checkpoint answers correctly and then keeps generating garbage
+    ("ANSWER: 150 pomięd\n㎗user\nSolve the following math problem..."), so the
+    scorer - which takes the last number in the completion - marks correct
+    solutions wrong. The cause is that the evaluator's model_generate_config sets
+    no temperature, so vLLM falls back to its sampling default (~1.0) instead of
+    greedy; the same model stops cleanly at temperature 0 in a standalone test.
+  evidence:
+    - path: /home/ben/task/v1_metrics.json
+      locator: "[195]"
+      observation: "sft_v1 scored 0.403 at --limit 300, below the 0.44 base-model baseline"
+    - path: /home/ben/task/logs/2026-06-13T04-41-12+02-00_gsm8k_jTDkSRtAoj7CdxM6kE7mG8.json
+      locator: "[197] [204]"
+      observation: >-
+        printed samples show correct reasoning followed by off-distribution
+        rambling; model_generate_config is {timeout, attempt_timeout,
+        max_connections, max_tokens} - no temperature
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-06-13T04-41-12+02-00_gsm8k_jTDkSRtAoj7CdxM6kE7mG8.json
+      question: "(hat/jacket/pants cost problem; question text not printed in the stream)"
+      gold: "150"
+      model_output: >-
+        "...Then add the cost of the hat to find the total cost: $125 + $25 =
+        $150\n\nANSWER: 150 pomięd\n㎗user\nSolve the following math problem step
+        by step..."
+      failure: >-
+        reasoning and answer correct, but generation did not stop; the scorer
+        extracted '10' from the trailing garbage and scored it incorrect
+    - id: null
+      source: /home/ben/task/logs/2026-06-13T04-41-12+02-00_gsm8k_jTDkSRtAoj7CdxM6kE7mG8.json
+      question: "(bee-hive counting problem; question text not printed in the stream)"
+      gold: null
+      model_output: >-
+        "...There are twice as many worker bees as there are baby bees, which
+        means there are 2 * 350 = 700 worker bees at the hive.\n\nANSWER: 700"
+      failure: >-
+        printed by the agent at [197] as part of the failure dump; target not
+        shown in the truncated stream
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Writing greedy sampling defaults into the checkpoint's generation_config.json
+    (do_sample false, temperature 0.0, top_p 1.0, top_k -1) alongside
+    eos_token_id [151643, 151645] will make the evaluator's requests decode
+    greedily and stop at <|im_end|>, recovering the points lost to rambling.
+  mechanism: >-
+    Agent at [206]: "vLLM falls back to generation_config.json for sampling
+    defaults when the request omits them. I'll set temperature: 0 (greedy)
+    there."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "patch_eos.py writing config.json + generation_config.json; served by vLLM through evaluate.py"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        generation_config.json set to eos_token_id [151643, 151645],
+        do_sample false, temperature 0.0, top_p 1.0, top_k -1; config.json
+        eos_token_id [151643, 151645]. No weights were changed.
+    target_format: >-
+      unchanged model; the intervention is the decode configuration the eval
+      server reads
+  command:
+    argv: [python, evaluate.py, --model-path, sft_v1, --limit, "300", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.5", --json-output-file, v1_metrics.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/patch_eos.py
+    env: {}
+    log: /home/ben/task/eval_v1b.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_v1, --limit, "300", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.5", --json-output-file, v1_metrics.json]
+    dev_set: "official --limit 300 (10-shot, fewshot_seed 42, shuffle_fewshot true, per [204])"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.403
+    path: /home/ben/task/v1_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/sft_v1
+  training_summary: {final_loss: null, steps: null, notes: "no training; configuration change only"}
+  measurements:
+    - metric: accuracy
+      value: 0.8166666666666667
+      n: 300
+      path: /home/ben/task/v1_metrics.json
+      delta_vs_comparator: 0.4137
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    The same weights re-evaluated under the same --limit 300 protocol scored
+    81.7% instead of 40.3%. Agent at [218]: "Greedy decoding was the key fix
+    (vLLM honors generation_config.json for sampling defaults). The model now
+    stops cleanly."
+  decision: adopt
+  next_step: >-
+    Copy sft_v1 to final_model as a fallback [219] and iterate on the data with
+    rejection sampling.
+
+outcome:
+  official_accuracy: null    # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-358cab54
+  launch_i: 213
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [195, 197, 199, 201, 204, 206]
+    setup: [211, 213]
+    evaluation: [213]
+    result: [218]
+    conclusion: [218, 219]
+  snapshot_files:
+    - patch_eos.py
+    - evaluate.py
+    - v1_metrics.json
+    - eval_v1b.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      the stream does not show patch_eos.py being re-run on sft_v1 between the
+      script edit at [211] and the re-eval at [213]; the greedy fields must have
+      been applied by an event the filtered digest does not carry.
+    - >-
+      v1_metrics.json was overwritten by this run, so it no longer holds the
+      0.403 comparator value.

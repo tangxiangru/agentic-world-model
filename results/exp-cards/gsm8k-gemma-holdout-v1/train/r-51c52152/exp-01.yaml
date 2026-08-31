@@ -1,0 +1,181 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.26
+
+problem:
+  statement: >-
+    The base model does not follow the eval's chat format at all: at 10-shot it
+    scores 22% and its completions are garbage ("<think>\n\nAnswer:  Form answer
+    line here...") instead of a reasoning chain ending in "ANSWER: <n>", so the
+    scorer (last number in the completion) has nothing to match.
+  evidence:
+    - path: /home/ben/task/baseline_metrics.json
+      locator: "[89], [95]"
+      observation: "raw base model, 10-shot, --limit 50: accuracy 0.22 (stderr 0.059)"
+    - path: /home/ben/task/baseline_eval.log
+      locator: "[97], [99]"
+      observation: >-
+        first eval sample's completion was
+        "<think>\n\nAnswer:  Form answer line hereiffany needs to walk  Annotation:\n",
+        scored incorrect; the agent read this from logs/*.json, which it deleted at [110]
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised fine-tuning on GSM8K train gold, rendered in the exact eval format
+    (10-shot-style MATH_PROMPT_TEMPLATE user turn, assistant turn = gold reasoning
+    with <<calc>> annotations ending in "ANSWER: <n>"), will make the base model
+    follow the format and lift accuracy well above the 22% baseline.
+  mechanism: >-
+    "SmolLM3-3B-Base is a base model, so it won't natively follow this chat format
+    - fine-tuning to match it is the main lever" [18]; assistant-only loss via the
+    chat template's {% generation %} mask teaches only the answer span.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data_gold
+      source: "HF:openai/gsm8k (main, train split, gold solutions)"
+      n_examples: 7473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --out, data_gold, --gold, "1", --max-length, "1024"]
+      selection: >-
+        gold answer split on "####" into reasoning (keeps the <<calc>> annotations
+        the eval few-shots use) + target; any train question whose whitespace/case
+        normalised text appears in the gsm8k test split is dropped; duplicate
+        (question, reasoning) dropped; examples over 1024 tokens dropped.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "gold x1"
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        Only lr/epochs/bs/accum came from the launch. scheduler=cosine, seed=0,
+        max_grad_norm=1.0, group_by_length=True, optim=adamw_torch_fused,
+        gradient_checkpointing=True, attn_implementation=flash_attention_2 are
+        hard-coded in /home/ben/task/train_sft.py; warmup=0.03 and weight_decay=0.0
+        are that script's argparse defaults (--warmup, --wd) and the launch did not
+        override them. max_seq_len is enforced at data-build time by
+        prepare_data.py --max-length 1024, not by the trainer.
+    target_format: >-
+      the eval's chat format rendered with templates/smollm.jinja; assistant turn =
+      gold reasoning + "\n\nANSWER: <n>"; loss only on assistant tokens via the
+      template's {% generation %} mask.
+  command:
+    argv: [python, train_sft.py, --data, data_gold, --out, runs/gold_v1, --epochs, "3", --lr, "2e-5", --bs, "16", --accum, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_gold_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/gold_v1, --limit, "150", --max-connections, "8", --gpu-memory-utilization, "0.5", --json-output-file, gold_v1_metrics.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.22
+    path: /home/ben/task/baseline_metrics.json
+  diagnostic:
+    what: >-
+      stop-reason / completion-length / failure-mode inspection of the eval log to
+      check whether remaining errors are format or reasoning errors
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.14
+  duration_h: 0.14
+  steps: 702
+  output_checkpoint: /home/ben/task/runs/gold_v1
+  training_summary: {final_loss: 0.3012, steps: 702, notes: "train_runtime 515.5 s, 7473 train examples (train_gold_v1.log)"}
+  measurements:
+    - metric: accuracy
+      value: 0.5667
+      n: 150
+      path: /home/ben/task/gold_v1_metrics.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [226] completion length min/median/max = 62/257/887 chars, all completions
+      end cleanly; the 3 printed failures are arithmetic/reasoning slips inside a
+      well-formed chain, not format failures [228].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "gold_v1: 56.7% (up from 22% baseline). Format learning works." [224]. Marked
+    inconclusive rather than supported because the baseline comparator was measured
+    at --limit 50 and this output at --limit 150, so the two are not the same protocol.
+  decision: adopt
+  next_step: >-
+    RFT: "sample K CoTs per train problem from the SFT model, keep correct ones
+    using the exact scorer logic, then retrain" [153].
+
+outcome:
+  official_accuracy: null      # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-51c52152
+  launch_i: 146
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [89, 95, 97, 99]
+    setup: [118, 121, 124, 131, 146]
+    evaluation: [189]
+    result: [221, 222]
+    conclusion: [224, 228]
+  snapshot_files:
+    - prepare_data.py
+    - train_sft.py
+    - sft_common.py
+    - train_gold_v1.log
+    - gold_v1_metrics.json
+    - baseline_metrics.json
+    - baseline_eval.log
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the base-model comparator (0.22) was measured at --limit 50, this output at --limit 150; no same-limit baseline exists"
+    - "n_examples 7473 is the 'train examples: 7473' line in train_gold_v1.log; the prepare_data.py stdout for data_gold is not shown in the stream"
+    - "prepare_data.py was edited at [260]/[266]/[269]/[293] after this launch; the snapshot copy is the edited version, not the one that built data_gold"

@@ -1,0 +1,187 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The fine-tuned model of exp-02 scores 0.08 because it does not stop after
+    "ANSWER: N" - it keeps generating further invented problems and answers, so
+    the numeric match reads the wrong line; the saved generation config lists
+    only eos 128001 and not the chat template's <|im_end|>.
+  evidence:
+    - path: /home/ben/task/eval_iter1.json
+      locator: "[149], [150]"
+      observation: "accuracy 0.080 on --limit 50, with 196,831 output tokens for 50 samples"
+    - path: /home/ben/task/final_model/generation_config.json
+      locator: "[171], [172]"
+      observation: 'eos_token_id: [128001] only; <|im_end|> is not a stop token'
+  affected_share: null
+  failure_examples:
+    - id: "eval sample 1"
+      source: /home/ben/task/logs/2026-02-15T15-51-59+01-00_gsm8k_Ay53nKwapTmfi4ZQNXHjmQ.json
+      question: null
+      gold: "6"
+      model_output: 'three ANSWER lines in one generation: 3, -95, 3000'
+      failure: "scored I; the model continued with new problems after its first answer [156]"
+    - id: "eval sample 2"
+      source: /home/ben/task/logs/2026-02-15T15-51-59+01-00_gsm8k_Ay53nKwapTmfi4ZQNXHjmQ.json
+      question: null
+      gold: "540"
+      model_output: 'ANSWER lines: 540, then the prompt boilerplate ("$ANSWER" (without quotes) ...), then 7'
+      failure: "scored I although the first answer was right; the run-on text supplies later ANSWER lines [156]"
+    - id: "eval sample 4"
+      source: /home/ben/task/logs/2026-02-15T15-51-59+01-00_gsm8k_Ay53nKwapTmfi4ZQNXHjmQ.json
+      question: null
+      gold: "8"
+      model_output: 'ANSWER lines: 8, then the prompt boilerplate twice'
+      failure: "scored I; the model echoed the instruction text after answering [156]"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Saving a generation config whose eos_token_id includes <|im_end|>, training
+    with assistant_only_loss=True and raising the LoRA rank to 128 will make the
+    model stop at the end of its answer and lift accuracy well above exp-02.
+  mechanism: >-
+    "the model doesn't properly learn to stop at <|im_end|> after ANSWER: X";
+    taking the loss on the assistant turn only teaches the stop token instead of
+    the system and user text [163].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "gsm8k (main/train) + meta-math/MetaMathQA"
+      n_examples: 27473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        all 7473 gsm8k train items with <<calc>> markers stripped, plus 20000
+        sampled GSM-type MetaMathQA items; shuffled (seed 42). [70] [71]
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3, peft 0.18.1)
+    peft: "LoRA r=128 alpha=256 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 2
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        assistant_only_loss=True, gradient_checkpointing=True (use_reentrant=False),
+        optim=adamw_torch_fused, save_steps=500, logging_steps=20; after merging
+        the adapter the script writes a GenerationConfig with
+        eos_token_id=[128001, <|im_end|>]. All values read from the script text of
+        /home/ben/task/train_v2.py [174]; the launch passed no overrides.
+    target_format: >-
+      chat messages [user, assistant]; assistant = "<think>\n{rationale}\n</think>\n\nANSWER: {n}"
+  command:
+    argv: [python3, /home/ben/task/train_v2.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, /home/ben/task/evaluate.py, --model-path, /home/ben/task/final_model, --limit, "150", --max-connections, "2", --gpu-memory-utilization, "0.5", --json-output-file, /home/ben/task/eval_v2_150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.08
+    path: /home/ben/task/eval_iter1.json
+  diagnostic:
+    what: "share of eval samples that contain no ANSWER line [207]"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: 3436
+    notes: "the agent reported ~1.37 s/step over 3436 steps [182]"
+  measurements:
+    - metric: accuracy
+      value: 0.52
+      n: 50
+      path: /home/ben/task/eval_v2.json
+      delta_vs_comparator: 0.44
+    - metric: accuracy
+      value: 0.6466666666666666
+      n: 150
+      path: /home/ben/task/eval_v2_150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.0
+    path: null
+    notes: "Correct: 97, Incorrect: 53, No ANSWER: 0 on the 150-sample eval [208]; output tokens fell to 5,537 for 50 samples [202]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "52% accuracy on 50 samples - a massive improvement from 8% (v1) and 25%
+    (baseline)... confirming the model now stops properly" [203], and 64.7% on
+    150 samples with every sample producing an ANSWER line [208]. The stop-token
+    and assistant-only-loss fix is what moved the score; the remaining errors are
+    wrong arithmetic, not format [218].
+  decision: iterate
+  next_step: >-
+    "let me try full fine-tuning with a focused approach: more epochs, better
+    data selection" [209] [212] - exp-04
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5ca84abf
+  launch_i: 178
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [150, 151, 153, 156, 163, 172]
+    setup: [174, 178]
+    evaluation: [201, 204]
+    result: [182, 199, 202, 205, 208]
+    conclusion: [203, 209, 212, 218]
+  snapshot_files:
+    - prepare_data.py
+    - train_v2.py
+    - evaluate.py
+    - eval_v2.json
+    - eval_v2_150.json
+    - eval_iter1.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "this checkpoint - the best measurement of the run - was written to /home/ben/task/final_model and then overwritten by exp-04 at [221]; the agent later notes it as lost ('the original v2 model was the best but we overwrote it' [362]) and no copy of it exists"

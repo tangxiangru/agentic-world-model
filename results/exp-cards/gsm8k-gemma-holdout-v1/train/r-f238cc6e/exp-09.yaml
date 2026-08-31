@@ -1,0 +1,162 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-09
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    After the EOS fix the official harness still only reaches 0.4/10 while the
+    local held-out evaluator reads ~0.83. The remaining gap is decoding, not
+    reasoning: vLLM chat completions default to temperature=1.0 and the saved
+    generation_config.json does not override it, so the official harness has been
+    sampling randomly while every local eval was greedy.
+  evidence:
+    - path: /home/ben/task/final_eval10_fixed.json
+      locator: "[520], [524]"
+      observation: "0.4 (stderr 0.163) on the official 10-sample check after the EOS patch"
+    - path: /home/ben/task/final_model/generation_config.json
+      locator: "[522], [525]"
+      observation: "eos_token_id [151643, 151645] and max_new_tokens 2048, but no temperature / do_sample entry"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "I found the biggest remaining issue: vLLM chat completions default to
+    temperature=1.0, and our saved generation_config.json wasn't overriding
+    that ... I'm forcing deterministic decoding in the checkpoint metadata now"
+    [550] - greedy decoding will remove the random junk generations and raise the
+    official score.
+  mechanism: >-
+    "The local eval was greedy, so the official harness has been sampling
+    randomly" [550]; matching the two decoding paths removes a source of error
+    that has nothing to do with the weights.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-08
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-08
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "hand edit of the saved checkpoint metadata (no training)"
+    peft: null
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        deterministic decoding forced in final_model/generation_config.json so
+        vLLM sees an explicit temperature entry instead of its 1.0 default
+        [550], [554]; keeps the dual EOS from exp-08. The exact key/value pair
+        written is not dumped in the stream, though [606] later shows the saved
+        config carried temperature=0.0 with do_sample=False.
+    target_format: null
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - python evaluate.py --model-path final_model --limit 10 --json-output-file final_eval10_greedy.json --max-connections 1 --max-tokens 1500 --gpu-memory-utilization 0.5
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - /bin/bash
+      - -lc
+      - python evaluate.py --model-path final_model --limit 10 --json-output-file final_eval10_greedy.json --max-connections 1 --max-tokens 1500 --gpu-memory-utilization 0.5
+    dev_set: "official --limit 10"
+    n: 10
+    seed: null
+  comparator:
+    ref: exp-08
+    value: 0.4
+    path: /home/ben/task/final_eval10_fixed.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary: {final_loss: null, steps: null, notes: "metadata-only change; no training"}
+  measurements:
+    - metric: accuracy
+      value: 0.6
+      n: 10
+      path: /home/ben/task/final_eval10_greedy.json
+      delta_vs_comparator: 0.2
+    - metric: accuracy
+      value: 0.64
+      n: 50
+      path: /home/ben/task/final_eval50_greedy.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "The deterministic patch helped exactly as expected: the official smoke test
+    improved again, from 0.4 to 0.6, and token usage dropped sharply because
+    generations are ending much earlier" [557]. A larger official check at [619]
+    then read 0.640 (stderr 0.069) on 50 samples, and this is the artifact the
+    run leaves behind [621].
+  decision: adopt
+  next_step: >-
+    two remaining misses put the answer in vLLM's hidden reasoning channel, so
+    try teaching the checkpoint to emit an empty <think></think> block first
+    [562], [592] - that becomes exp-10/exp-11.
+
+outcome:
+  official_accuracy: null   # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-f238cc6e
+  launch_i: 552
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [520, 524, 525, 527, 541, 550]
+    setup: [550, 552]
+    evaluation: [552, 619]
+    result: [557, 620]
+    conclusion: [557, 562, 618, 621]
+  snapshot_files:
+    - evaluate.py
+    - final_eval10_fixed.json
+    - final_eval10_greedy.json
+    - final_eval50_greedy.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The metadata edit itself is not a shell event in the digest, so launch_i points at the run that instantiated and measured the patched checkpoint; the change is described at [550] and its effect confirmed at [554], [557]."
+    - "The 50-sample number (0.64) has no exp-08 counterpart at the same limit, so its delta is left null."
+    - "final_model is edited in place; the run ends without re-verifying that the dual-EOS and greedy metadata are both still present in the submitted directory, though [621] states they are."

@@ -1,0 +1,182 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 0.58
+
+problem:
+  statement: >-
+    "Smoke test passed but eval is still ~6% - checking how vLLM applies the
+    chat template and few-shot prompts" [147]: the same checkpoint answers
+    correctly and stops when driven by hand through transformers, but scores
+    0.06 under evaluate.py.
+  evidence:
+    - path: /home/ben/task/logs/eval_v2_50.json
+      locator: "[145]"
+      observation: "accuracy 0.060 (stderr 0.034) at limit 50 for the exp-03 checkpoint"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-65be88fb.md
+      locator: "[135]"
+      observation: "the same checkpoint, greedy through transformers, answers 'ANSWER: 72' in 120 characters and stops on <|im_end|>"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-65be88fb.md
+      locator: "[161]"
+      observation: "the eval's own log records model_generate_config with only timeout/attempt_timeout/max_connections/max_tokens - no temperature - and the checkpoint's generation_config.json carries no sampling fields either"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-65be88fb.md
+      locator: "[181]"
+      observation: "vllm 0.11.0 SamplingParams() defaults print as temperature=1.0, top_p=1.0, top_k=0"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft_v2_gsm8k
+    origin: exp-03
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0, as driven by the task's evaluate.py"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        No training. The intervention is the generation_config.json written at
+        [180] into both final_model and checkpoints/sft_v2_gsm8k:
+        {"bos_token_id": 151643, "eos_token_id": [151645, 151643],
+        "pad_token_id": 151643, "temperature": 0.0, "top_p": 1.0, "top_k": -1,
+        "do_sample": false, "max_new_tokens": 512, "transformers_version":
+        "4.57.3"}. The previous file, printed at [161], was {"eos_token_id":
+        [151643, 151645], "max_new_tokens": 2048, "pad_token_id": 151643}.
+    target_format: >-
+      unchanged; the change is decode-side only - greedy decoding and both
+      <|im_end|> and <|endoftext|> as stop tokens.
+  command:
+    argv:
+      - |
+        cd /home/ben/task && python - <<'PY'
+        import json
+        from pathlib import Path
+
+        # Update generation config for greedy + stop tokens
+        gc = {
+            "bos_token_id": 151643,
+            "eos_token_id": [151645, 151643],
+            "pad_token_id": 151643,
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "top_k": -1,
+            "do_sample": False,
+            "max_new_tokens": 512,
+            "transformers_version": "4.57.3"
+        }
+        for d in ['final_model', 'checkpoints/sft_v2_gsm8k']:
+            path = Path(d)/'generation_config.json'
+            path.write_text(json.dumps(gc, indent=2))
+            print('wrote', path)
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "50", --max-connections, "2", --max-tokens, "1024", --json-output-file, logs/eval_v2_greedy_50.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.06
+    path: /home/ben/task/logs/eval_v2_50.json
+  diagnostic:
+    what: >-
+      re-scoring the completions by the first "ANSWER:" line rather than the
+      last number, and counting how many generations run on past the first
+      answer or hit max_tokens
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.02
+  duration_h: 0.02
+  steps: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary: {final_loss: null, steps: null, notes: "no training; a config file was rewritten"}
+  measurements:
+    - metric: accuracy
+      value: 0.34
+      n: 50
+      path: /home/ben/task/logs/eval_v2_greedy_50.json
+      delta_vs_comparator: 0.28
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      stderr 0.0677 [197]. The eval log at [196] confirms "temperature": 0.0 was
+      picked up. The re-scoring at [199]/[200] shows the remaining failures are
+      dominated by generations that keep going after the first "ANSWER:" line -
+      one shown at [200] restates the question and runs to max_tokens (512
+      output tokens) - so first-ANSWER and last-number scoring still disagree.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    Writing temperature 0.0 / do_sample false into generation_config.json took
+    the same exp-03 checkpoint from 0.06 to 0.34 at limit 50 - vLLM had been
+    sampling at its default temperature 1.0 because neither the harness nor the
+    checkpoint specified one. The agent's own summary at [547]: "Fixed vLLM
+    defaults via generation_config.json (temperature: 0.0) - without this,
+    sampling at temp=1 destroyed accuracy."
+  decision: adopt
+  next_step: >-
+    The remaining failure mode is generations that do not stop after the first
+    answer; the agent went on to rebuild the training data so that the prompt
+    matches the eval's few-shot system message (exp-05).
+
+provenance:
+  kind: extracted
+  run_ref: r-65be88fb
+  launch_i: 180
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [147, 145, 135, 161, 181]
+    setup: [180, 181]
+    evaluation: [190]
+    result: [191, 197, 199, 200]
+    conclusion: [197, 547]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "this exact generation_config.json block was re-written by hand onto every later candidate ([232], [263], [337], [347], [383], [393], [431], [441], [451], [461], [477], [487], [493], [503]); it is treated here as one intervention, adopted once"

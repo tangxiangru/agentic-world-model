@@ -1,0 +1,234 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 1.23
+
+problem:
+  statement: >-
+    The v1 checkpoint was trained on bare user/assistant turns, but the eval
+    prepends a long ten-shot system message. Under that prompt the model does not
+    produce a single clean answer: 90 of 150 completions carry a correct first
+    "ANSWER:" line yet only 21 are scored correct, because generation continues
+    past it and the scorer takes the last number [204]. A vLLM replay of the
+    eval's exact messages returns repeated Chinese filler to the token cap [226].
+    Hence "SFT training v2: with system messages to match eval format" [235].
+  evidence:
+    - path: /home/ben/task/logs/2026-04-20T10-22-07+02-00_gsm8k_GfwaeyvgeqPG4RPKJrNMmE.json
+      locator: "[203][204], all 150 samples"
+      observation: "n=150, first-ANSWER correct: 90, score-correct: 21, no-answer: 4"
+    - path: /home/ben/task/logs/2026-04-20T10-22-07+02-00_gsm8k_GfwaeyvgeqPG4RPKJrNMmE.json
+      locator: "[200][201], sample 0 messages"
+      observation: "the eval sends the fewshot block as a system message, then the instruction-wrapped question as user - a shape absent from v1's training data"
+    - path: null
+      locator: "[225][226]"
+      observation: "vLLM replay of those exact messages with templates/qwen3.jinja decodes '难度：3 / 分类：数学' repeated until finish_reason=length"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SFT training v2: with system messages to match eval format" [235] - training
+    each example behind a system message of K randomly drawn GSM8K fewshot
+    solutions in the eval's own layout, "K chosen from 0-10 ... to match eval"
+    [230], will stop the collapse and make the graded answer the last number in
+    the completion.
+  mechanism: >-
+    The model only ever saw single-turn prompts, so the eval's ten-shot system
+    block is out of distribution; putting the same block in training - with the
+    target still ending at "ANSWER: n" plus <|im_end|> - teaches it to answer once
+    and stop inside that context.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/train_data_v2.jsonl
+      source: local
+      n_examples: 60000
+      built_by: /home/ben/task/work/prepare_data_v2.py
+      build_command:
+        - python
+        - prepare_data_v2.py
+      selection: >-
+        GSM8K train (7,473, <<..>> stripped) plus meta-math/MetaMathQA
+        GSM_AnsAug / GSM_Rephrased rows whose answer is purely numeric (160,000);
+        shuffled with seed 42 and cut to 60,000 [233]. Each row becomes
+        system / user / assistant, where system is K GSM8K train solutions
+        rendered in the eval's fewshot layout (question, "Reasoning:", the raw
+        solution with its <<..>> annotations, "ANSWER: n") joined by blank lines,
+        K drawn from {0,2,4,5,6,8,8,8} in the final regeneration at [270][272];
+        user is the eval's instruction wrapper; assistant is the cleaned
+        reasoning plus "ANSWER: n". Token lengths at [273]: mean 1,241, p90
+        1,901, p99 2,190, max 2,577, 173 of 5,000 over the 2,048 cap.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129) [17]"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        lr, epochs, bsz, grad_accum, max_len are the launch flags at [277];
+        --no_gc was also passed (gradient checkpointing off), and --subset 60000
+        takes the whole file. --model was not passed, so the script's own default
+        Qwen/Qwen3-1.7B-Base was used. train_v2.py is not in the workspace
+        snapshot, so its defaults are not filled into the typed fields; the text
+        written at [235] shows, unoverridden, seed=42, lr_scheduler_type=cosine,
+        warmup_ratio=0.03, weight_decay=0.0, bf16=True,
+        attn_implementation=flash_attention_2, optim=adamw_torch_fused,
+        max_grad_norm=1.0, save_strategy=no, logging_steps=25, and a
+        generation_config.json with eos_token_id [151645, 151643] written at
+        save time. Effective batch 16 -> 3,750 steps.
+    target_format: >-
+      "<|im_start|>system\n{K fewshot solutions}<|im_end|>\n<|im_start|>user\n
+      {eval instruction wrapper + question}<|im_end|>\n<|im_start|>assistant\n" +
+      cleaned reasoning + "\n\nANSWER: n" + "<|im_end|>"; loss on the assistant
+      span only, over-long samples truncated from the LEFT so the answer survives.
+  command:
+    argv:
+      - nohup
+      - python
+      - train_v2.py
+      - --subset
+      - "60000"
+      - --max_len
+      - "2048"
+      - --bsz
+      - "4"
+      - --grad_accum
+      - "4"
+      - --lr
+      - 1e-5
+      - --epochs
+      - "1"
+      - --no_gc
+      - --output_dir
+      - /home/ben/task/work/sft_v2
+    cwd: /home/ben/task/work
+    script: /home/ben/task/work/train_v2.py
+    env: {}
+    log: /home/ben/task/work/train_v2.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - /home/ben/task/work/sft_v2
+      - --limit
+      - "150"
+      - --max-connections
+      - "4"
+      - --max-tokens
+      - "1500"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --json-output-file
+      - /home/ben/task/work/eval_v2.json
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.14
+    path: /home/ben/task/logs/2026-04-20T10-22-07+02-00_gsm8k_GfwaeyvgeqPG4RPKJrNMmE.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/work/sft_v2
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No train_runtime or loss line for this run appears in the stream. Launched
+      at t=+1.23h [277]; "Training complete. Let me eval now." at t=+2.50h [343].
+      A duplicate of the same command was started at [291] and killed at [294]
+      (PID 1699086) while the original process (PID 1698073) kept running.
+  measurements:
+    - metric: accuracy
+      value: 0.673
+      n: 150
+      path: /home/ben/task/work/eval_v2.json
+      delta_vs_comparator: 0.533
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    0.673 +/- 0.038 on 150 official samples [349], against 0.14 for the same
+    checkpoint family without fewshot-shaped training under the identical eval
+    command - the collapse under the eval's system prompt is gone, and 147 of 150
+    completions now stop on their own [352]. The remaining failures are
+    arithmetic and reasoning, not format: "fails_format: 3 fails_reasoning: 46
+    no_answer: 0" [352].
+  decision: reject
+  next_step: >-
+    Keep the same data recipe and trainer but give it more of the data and a
+    second epoch (v3) [365][371]; a wider math corpus (Orca-Math,
+    OpenMathInstruct-2) was inspected at [357][439] and not used.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-0632a2e4
+  launch_i: 277
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [200, 201, 203, 204, 225, 226, 230, 235]
+    setup: [230, 232, 233, 245, 259, 261, 270, 272, 273, 277]
+    evaluation: [348]
+    result: [291, 292, 294, 343, 349, 352, 557]
+    conclusion: [349, 352]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 240, outcome: "passed (128 examples, 4 steps, max_len 3072 bsz 2)"}
+    - {launch_i: 248, outcome: "passed (128 examples, max_len 2048 bsz 4 grad_accum 4, --no_gc)"}
+    - {launch_i: 253, outcome: "crashed: torch.OutOfMemoryError, 7.58 GiB on top of 72.87 GiB in use (bsz 8, --no_gc)"}
+    - {launch_i: 256, outcome: "passed (bsz 4 with gradient checkpointing, 12.4 samples/s)"}
+    - {launch_i: 264, outcome: "passed (max_len 2560, --no_gc, 10.3 samples/s)"}
+    - {launch_i: 267, outcome: "passed (bsz 8, max_len 2048, with checkpointing, 9.7 samples/s)"}
+  extractor: null
+  unresolved:
+    - "the comparator is the exp-02 checkpoint measured under the same --limit 150 command, but the agent never states the comparison; it moved straight from 0.673 to a failure breakdown"
+    - "eval_v2.json is not in the workspace snapshot; the value is the one printed at [349] and re-read at [557]"
+    - "train_v2.py and prepare_data_v2.py are not in the snapshot; their text is only the write events [230][235] plus the edits at [243][259][270]"
+    - "no seed or item list is recorded for the --limit 150 slice"

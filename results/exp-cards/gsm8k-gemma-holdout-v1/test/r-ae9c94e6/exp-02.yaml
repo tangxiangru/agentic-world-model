@@ -1,0 +1,247 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The LoRA SFT model reaches only 23.3% on 30 samples, which the agent judged
+    too low: "The model scored 23.3% on 30 samples. Let me analyze the issues
+    and do a better training run" [110].
+  evidence:
+    - path: /home/ben/task/eval_result_quick.json
+      locator: "[101], [104]"
+      observation: "accuracy 0.233 (stderr 0.079) on 30 samples for the exp-01 merged model"
+    - path: "logs/2026-03-20T03-24-03+01-00_gsm8k_2MyyuKQk75jt2NCiGSrT4s.json"
+      locator: "[105]-[106], samples 0-4"
+      observation: >-
+        the agent printed the tails of the first five model outputs; two are
+        scored incorrect, and one output keeps generating a second question
+        after its ANSWER line instead of stopping
+  affected_share: null
+  failure_examples:
+    - id: "sample 3"
+      source: "logs/2026-03-20T03-24-03+01-00_gsm8k_2MyyuKQk75jt2NCiGSrT4s.json"
+      question: null
+      gold: "7"
+      model_output: >-
+        "...She has 3 eggs * 7 days a week = <<3*7=21>>21 eggs in a week. She
+        will have 21 eggs * 4 weeks = <<21*4=84>>84 eggs in 4 weeks. She will
+        consume 84 / 3 = <<84/3=28>>28 dozens of eggs. ANSWER: 28"
+      failure: "answered 28 against gold 7; also reproduced the training data's <<...>> calculator markup"
+    - id: "sample 4"
+      source: "logs/2026-03-20T03-24-03+01-00_gsm8k_2MyyuKQk75jt2NCiGSrT4s.json"
+      question: null
+      gold: "18"
+      model_output: >-
+        "...She has 144 eggs left to sell because 192 - 3 - 4 = 144. She makes
+        $280 selling the eggs because 144 x 2 = 280. ANSWER: 280. Janet makes
+        $280 selling the eggs every day. ANSWER: 280"
+      failure: "answered 280 against gold 18, and emitted a second ANSWER line after the first instead of stopping"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full fine-tuning instead of LoRA, with more MetaMathQA data, the gsm8k train
+    split oversampled 3x, and loss taken only on the assistant response, will
+    raise accuracy above the 23.3% the LoRA run reached. The agent's four stated
+    improvements at [110]: "1. Use more and higher-quality data 2. Try full
+    fine-tuning (not LoRA) for better learning on a pretrained model 3. Use
+    assistant_only_loss=True so loss is only on the response 4. Oversample the
+    GSM8K train data."
+  mechanism: >-
+    "full fine-tuning (not LoRA) for better learning on a pretrained model"
+    [110], and assistant_only_loss so no gradient is spent on the prompt.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k
+      n_examples: 22419
+      built_by: /home/ben/task/train_v2.py
+      build_command:
+        - python
+        - /home/ben/task/train_v2.py
+      selection: >-
+        same in-process formatting as exp-01 (split on "####", strip <<...>>,
+        assistant turn ends "ANSWER: <n>"), then the whole 7473-example list is
+        repeated 3x (GSM8K_OVERSAMPLE = 3). Printed at [116]/train_v2_log.txt:
+        "GSM8K formatted examples: 7473" then "GSM8K oversampled: 22419".
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: meta-math/MetaMathQA
+      n_examples: 50000
+      built_by: /home/ben/task/train_v2.py
+      build_command:
+        - python
+        - /home/ben/task/train_v2.py
+      selection: >-
+        filtered to type in [GSM_Rephrased, GSM_AnsAug, GSM_SV, GSM_FOBAR]
+        (240000 available), shuffled with seed 42 and cut to METAMATH_GSM_LIMIT
+        = 50000, up from 30000 in exp-01. Combined and shuffled: "Total
+        training examples: 72419".
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129)
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 4
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        All of the above are module-level constants in
+        /home/ben/task/train_v2.py (in the workspace snapshot); the launch at
+        [127] passed no command-line arguments, so nothing was overridden. Also
+        set there: effective batch 16, assistant_only_loss=True,
+        max_grad_norm=1.0, gradient_checkpointing=True (use_reentrant=False),
+        attn_implementation=flash_attention_2, save_strategy=steps with
+        save_steps=1000 and save_total_limit=3, logging_steps=50. Full
+        fine-tuning: "Total params: 4,300,079,472, Trainable: 4,300,079,472".
+    target_format: >-
+      same prompt wrapper and "ANSWER: <n>" ending as exp-01, but rendered
+      through a chat template inlined in train_v2.py rather than
+      templates/gemma3.jinja: it wraps the assistant turn (content plus
+      <end_of_turn>) in a "{% generation %}" block so assistant-only masking
+      works. Rewritten twice, at [119] and [125], before the template compiled.
+  command:
+    argv:
+      - python
+      - /home/ben/task/train_v2.py
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: /home/ben/task/train_v2_log.txt
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - /home/ben/task/final_model
+      - --limit
+      - "20"
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "2048"
+      - --json-output-file
+      - /home/ben/task/eval_result_v2_quick.json
+    dev_set: "official --limit 20"
+    n: 20
+    seed: null
+  comparator:
+    ref: exp-01
+    value: null
+    path: /home/ben/task/eval_result_quick.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 6.04
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.0777
+    steps: 10822
+    notes: >-
+      Killed for time, not by an error: at [137] the agent wrote "The training
+      is at 50% (epoch 2/4). At ~2s/step, the full 4 epochs would take ~10
+      hours. I only have limited time left. Let me stop the training early and
+      use the checkpoint from epoch 2", and the timer at [139] showed 0:31
+      remaining. The last progress line in train_v2_log.txt is step
+      10822/18108 at 6:02:37; the last logged loss is 0.0777 at epoch 2.0
+      (~step 9050), mean_token_accuracy 0.971. checkpoint-10000 (~epoch 2.2)
+      was copied file by file to /home/ben/task/final_model at [152], together
+      with preprocessor_config.json and processor_config.json from the base
+      snapshot; checkpoints 8000 and 9000 and the 15 GB optimizer state were
+      deleted at [155] to free disk.
+  measurements:
+    - metric: accuracy
+      value: 0.0
+      n: 20
+      path: /home/ben/task/eval_result_v2_quick.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The full fine-tune was stopped at ~epoch 2.2 of 4 for time and its
+    checkpoint scored 0.0 on 20 samples: "0% accuracy! Something is seriously
+    wrong with the v2 model" [163]. The agent traced it to generation never
+    stopping - "Token 106 is `<end_of_turn>` and it's already in the
+    eos_token_id list ... The v2 model must have been trained in a way that it
+    no longer generates this token" [187] - consistent with the eval burning
+    40,960 output tokens on 20 samples against 5,988 for the LoRA model. The
+    hypothesis was never tested on its merits: the run did not finish and the
+    only comparator value (0.233) was measured at --limit 30, not 20.
+  decision: abandon_line
+  next_step: >-
+    Stated at [163] and [170]: revert to the v1 LoRA checkpoints, which are
+    still on disk, and rebuild final_model by merging the adapter into the base
+    model.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ae9c94e6
+  launch_i: 127
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [102, 104, 105, 106, 110]
+    setup: [113, 119, 125, 127]
+    evaluation: [160]
+    result: [116, 137, 138, 139, 141, 148, 149, 150, 152, 153, 155, 157, 158, 161]
+    conclusion: [163, 170, 187]
+  snapshot_files:
+    - train_v2.py
+    - train_v2_log.txt
+    - evaluate.py
+    - eval_result_v2_quick.json
+    - eval_result_quick.json
+  smoke_runs:
+    - {launch_i: 115, outcome: "crashed: assistant_only_loss=True but the chat template produced no assistant mask (missing {% generation %})"}
+    - {launch_i: 121, outcome: "crashed: jinja TemplateSyntaxError - the 'generation' block was not closed before 'endif'"}
+  extractor: null
+  unresolved:
+    - "Launches [115], [121] and [127] carry the identical argv; only the third reached training. The two earlier crashes are recorded as smoke_runs, not as cards."
+    - "The comparator was measured at --limit 30 (0.233) while this output was measured at --limit 20 (0.0), so no delta under a shared protocol exists; comparator.value is left null."
+    - "The stop-token diagnosis at [187] was an inspection of eos_token_id, never a re-run or a probe, so the mechanism behind 0.0 is asserted rather than tested."
+    - "checkpoint-10000 was packaged into final_model at [152] and overwritten at [173]; no artifact of this run survives in the workspace snapshot."
+    - "The step count 10822 is the last progress line in the log; the packaged checkpoint is step 10000, and no trainer summary line was written because the run was killed."

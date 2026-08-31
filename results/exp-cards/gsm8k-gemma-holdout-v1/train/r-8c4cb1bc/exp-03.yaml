@@ -1,0 +1,211 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The GSM8K-only recipe reached only 0.40 on the 50-item slice, and its remaining
+    headroom is "mostly on reasoning quality" rather than format or termination -
+    the merged model "stopped cleanly and emitted `ANSWER:` reliably", so more or
+    broader math supervision is the next lever [212][248].
+  evidence:
+    - path: /home/ben/task/runs/pilot_gsm8k_eval50.json
+      locator: "[212]"
+      observation: "GSM8K-only run reached 0.40 on the 50-sample slice"
+    - path: /home/ben/task/logs
+      locator: "[248]"
+      observation: >-
+        merged model "stopped cleanly and emitted `ANSWER:` reliably, so the
+        assistant-span masking plus `<|im_end|>` target did its job"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A broader `gsm8k + MetaMath` mixture with explicit GSM8K upweighting (repeat 6)
+    and periodic step checkpoints will beat the narrow GSM8K-only recipe [212]; if
+    the step-400 checkpoint "already clears the narrow-run score by a meaningful
+    margin, I can promote this recipe immediately" [219].
+  mechanism: >-
+    Extra GSM-style synthetic supervision (MetaMathQA GSM_Rephrased / GSM_AnsAug)
+    adds reasoning variety the 7k GSM8K train rows cannot cover, while repeating
+    GSM8K six times keeps the target distribution dominant.
+  expected_effect:
+    metric: held_out_loss
+    direction: lower
+    against: exp-01
+    magnitude: null
+  falsified_if: >-
+    Stated as the positive test at [262]: held-out loss "clearly below the GSM8K-only
+    run's epoch-1 `0.4556`" would be evidence the added data pays off.
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF id: openai/gsm8k (main, train split)"
+      n_examples: null
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: >-
+        gsm8k train shuffled with seed 42, first 256 rows held out for eval, the
+        remainder concatenated 6x (--gsm8k-repeat 6); target = reasoning with the
+        "####" tail rewritten as "\n\nANSWER: <n>". Row count never printed for this
+        launch.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 6
+    - path: null
+      source: "HF id: meta-math/MetaMathQA"
+      n_examples: null
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: >-
+        --dataset-mix gsm8k_metamath_easy keeps only type GSM_Rephrased and
+        GSM_AnsAug, shuffles with seed 42 and caps at 60000 rows
+        (--metamath-max-samples 60000); each response is rewritten to end in
+        "\n\nANSWER: <n>". The agent noted at [79] that the MetaMathQA card states
+        its prompts derive from GSM8K/MATH training data only, and at [112] that all
+        240000 GSM_* rows normalised without failures.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 + peft 0.18.1 (torch 2.8.0+cu129) [13][20]"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=all-linear use_rslora=True"
+    hyperparams:
+      lr: 1.5e-04
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        lr, epochs, batch sizes, grad_accum, max_length, save/eval every 400 steps
+        and save_total_limit 4 are from the launch argv at [213]. scheduler (cosine),
+        warmup_ratio 0.03, weight_decay 0.01, seed 42, bf16, gradient_checkpointing,
+        optim adamw_torch_fused and the LoRA config are argparse/script defaults from
+        the snapshot train_math_sft.py, which the launch did not override. Run length
+        was 1615 optimizer steps for one epoch [219].
+    target_format: >-
+      "simple" prompt mode, assistant-span-only loss, target ends
+      "\n\nANSWER: <n>" followed by <|im_end|>.
+  command:
+    argv:
+      - python
+      - train_math_sft.py
+      - --output-dir
+      - runs/pilot_mix_easy
+      - --dataset-mix
+      - gsm8k_metamath_easy
+      - --gsm8k-repeat
+      - "6"
+      - --metamath-max-samples
+      - "60000"
+      - --max-length
+      - "1024"
+      - --num-train-epochs
+      - "1"
+      - --learning-rate
+      - "1.5e-4"
+      - --per-device-train-batch-size
+      - "16"
+      - --per-device-eval-batch-size
+      - "16"
+      - --gradient-accumulation-steps
+      - "4"
+      - --logging-steps
+      - "20"
+      - --save-strategy
+      - steps
+      - --save-steps
+      - "400"
+      - --save-total-limit
+      - "4"
+      - --eval-strategy
+      - steps
+      - --eval-steps
+      - "400"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_math_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [12]"
+    planned_h: 1.0
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/pilot_mix_easy/checkpoint-400
+  training_summary:
+    final_loss: 0.2681
+    steps: 400
+    notes: >-
+      Killed at step 400 of a planned 1615 with
+      `pkill -f 'train_math_sft.py --output-dir runs/pilot_mix_easy'` [276], after
+      reading the step-400 trainer_state.json [271][272].
+  measurements:
+    - metric: held_out_loss
+      value: 0.5005455613136292
+      n: 256
+      path: /home/ben/task/runs/pilot_mix_easy/checkpoint-400/trainer_state.json
+      delta_vs_comparator: 0.0449
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The step-400 checkpoint's held-out loss was 0.5005, worse than the GSM8K-only
+    run's epoch-1 0.4556, so the agent terminated the run "instead of spending
+    another hour on a direction that already looks weaker" [275]. No benchmark eval
+    was ever run on this branch, and the run was cut short, so the mixture
+    hypothesis is untested against the real evaluator - especially since the run
+    immediately after this one showed held-out loss to be a bad proxy for GSM8K
+    accuracy [316].
+  decision: abandon_line
+  next_step: >-
+    Rerun the narrow GSM8K-only recipe as a single epoch with checkpoint retention
+    fixed, to get the genuine best checkpoint from the strongest recipe so far [280].
+
+provenance:
+  kind: extracted
+  run_ref: r-8c4cb1bc
+  launch_i: 213
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [212, 248]
+    setup: [212, 213]
+    evaluation: []
+    result: [271, 272, 276]
+    conclusion: [275, 280]
+  snapshot_files:
+    - train_math_sft.py
+  smoke_runs: []
+  extractor: "claude-opus-5[1m]"
+  unresolved:
+    - "Training-set size for this mixture is never printed; only the step count (1615 for one epoch) appears [219]."
+    - "The step-400 checkpoint was never merged or benchmarked, so the mixture was judged on held-out loss alone."

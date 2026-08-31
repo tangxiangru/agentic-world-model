@@ -1,0 +1,168 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-09
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Every fine-tune so far (chat few-shot, chat simple, plain text) scores far
+    below the base model's 0.1625. The agent's reading: the earlier runs used
+    aggressive settings and non-masked losses and drifted catastrophically away
+    from the base model's chat behaviour.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-11be89c8.md
+      locator: "[426]"
+      observation: >-
+        "previous runs trained with aggressive settings and non-masked losses,
+        which likely caused catastrophic drift from the base chat behavior"
+    - path: /home/ben/task/modelC_ckpt327_eval40.json
+      locator: "[421]"
+      observation: "0.025 on 40 - the worst candidate so far"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A conservative, template-aligned chat SFT run - assistant_only_loss, low LR
+    (2e-5), low-rank LoRA (r=16), one epoch, empty system message - preserves
+    the base model's capability while improving GSM8K reasoning.
+  mechanism: >-
+    Masking the loss to the assistant turn and shrinking both the learning rate
+    and the adapter rank limits how far the weights can move from the base
+    model, so the base chat behaviour survives training ([426]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (config main, train split), loaded in-process by the training script"
+      n_examples: null
+      built_by: /home/ben/task/train_sft_gsm8k.py
+      build_command: []
+      selection: >-
+        train_test_split(test_size=512, seed=42, shuffle=True); each remaining
+        row rendered as a 3-turn chat with an empty system message
+        (--system-mode empty); assistant turn is the gold rationale with "####"
+        stripped, ending in "ANSWER: <target>"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl 0.27.2 SFTTrainer (transformers 4.57.3, peft 0.18.1) [43]"
+    peft: "LoRA r=16 alpha=32 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,up_proj,down_proj,gate_proj]"
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        assistant_only_loss=True, gradient_checkpointing=True,
+        load_best_model_at_end on eval_loss, eval/save every 100 steps,
+        save_total_limit=3, chat_template_path=templates/smollm.jinja. Not
+        overridden at launch, from train_sft_gsm8k.py argparse defaults (script
+        text is in the workspace): weight_decay=0.0, seed=42, val_size=512,
+        model_name=HuggingFaceTB/SmolLM3-3B-Base,
+        attn_implementation=flash_attention_2.
+    target_format: >-
+      chat messages serialised with templates/smollm.jinja, empty system turn;
+      assistant turn ends in "ANSWER: <number>"; loss only on the assistant turn
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - "python train_sft_gsm8k.py --output-dir expD_ao_lr2e5_e1 --system-mode empty --assistant-only-loss --num-train-epochs 1.0 --learning-rate 2e-5 --warmup-ratio 0.03 --per-device-train-batch-size 2 --per-device-eval-batch-size 2 --gradient-accumulation-steps 8 --max-length 2048 --lora-r 16 --lora-alpha 32 --lora-dropout 0.05 --gradient-checkpointing --eval-steps 100 --save-steps 100 --logging-steps 20 --save-total-limit 3"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [42]"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: >-
+      sha256 of the root adapter against checkpoint-400 and checkpoint-436, to
+      see which checkpoints are distinct candidates
+    command:
+      - /bin/bash
+      - -lc
+      - "sha256sum expD_ao_lr2e5_e1/adapter_model.safetensors expD_ao_lr2e5_e1/checkpoint-400/adapter_model.safetensors expD_ao_lr2e5_e1/checkpoint-436/adapter_model.safetensors"
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.335
+  output_checkpoint: /home/ben/task/expD_ao_lr2e5_e1/checkpoint-400
+  training_summary:
+    final_loss: 0.4760334447983208
+    steps: 436
+    notes: >-
+      436 steps at 1.0 epoch; train_runtime 1206.9686 s, 5.767 samples/s
+      ([477]). Held-out eval_loss 0.4521 / 0.4304 / 0.4234 / 0.4210 at steps
+      100/200/300/400; best checkpoint-400 ([459],[478]).
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      root adapter sha256 equals checkpoint-400's; checkpoint-436 is a distinct
+      late-step adapter ([481])
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The conservative run completed in ~20 minutes with a monotonically falling
+    validation loss and left two distinct candidates (checkpoint-400 = root,
+    checkpoint-436). No GSM8K accuracy on the adapter itself, so whether the
+    low-LR/low-rank recipe preserves base capability is untested at this card.
+  decision: adopt
+  next_step: >-
+    Merge checkpoint-400 and checkpoint-436 and run quick 40-sample GSM8K
+    probes ([483]) - exp-10 and exp-11.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-11be89c8
+  launch_i: 427
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [421, 426]
+    setup: [427]
+    evaluation: []
+    result: [459, 464, 477, 478, 481]
+    conclusion: [483]
+  snapshot_files:
+    - train_sft_gsm8k.py
+    - modelC_ckpt327_eval40.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "n_examples never printed; train_meta.json is not in the workspace snapshot."
+    - "wall_h is taken from the trainer's own train_runtime (1206.97 s); the stream has no event timestamps."

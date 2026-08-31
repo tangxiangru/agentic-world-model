@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Unchanged from exp-05: LoRA on format-matched data scores 0.04-0.06 and the
+    checkpoints do not stop after the answer; the agent attributes this to
+    insufficient capacity/convergence rather than to the data [189], [192]. The
+    exp-05 launch never trained, because the language-modelling collator could
+    not pad the labels field [198].
+  evidence:
+    - path: /home/ben/task/eval_results_v3.json
+      locator: "[173]"
+      observation: "accuracy 0.040 at limit 50; 194,693 output tokens for 50 answers"
+    - path: /home/ben/task/eval_results_v1.json
+      locator: "[83]"
+      observation: "accuracy 0.060 at limit 50 for the earlier LoRA checkpoint"
+    - path: /home/ben/task/train_v4.py
+      locator: "[198]"
+      observation: "ValueError from DataCollatorForLanguageModeling on the labels field, at step 0/2808"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Instead of LoRA, let me do full fine-tuning ... This should give better
+    results" [192] - full-parameter SFT of the base model on the 22,463-row
+    format-matched file at lr 2e-5 for 2 epochs will beat the LoRA checkpoints
+    and learn to stop at <|im_end|>.
+  mechanism: >-
+    Updating every parameter at a lower learning rate should drive the loss well
+    below the ~0.18 LoRA plateau and fit the end-of-turn token, which the
+    adapter never learned.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v2.jsonl
+      source: "HF openai/gsm8k (config main, split train) + HF meta-math/MetaMathQA (type contains GSM)"
+      n_examples: 22463
+      built_by: /home/ben/task/prepare_data_v2.py
+      build_command: [python3, /home/ben/task/prepare_data_v2.py]
+      selection: >-
+        unchanged from exp-04: 7,463 GSM8K train rows (all but the eval's 10
+        few-shot indices, <<...>> stripped) + 15,000 MetaMathQA GSM rows,
+        pre-rendered as raw <|im_start|> text, seed 42. The trainer confirmed 2
+        <|im_end|> tokens per tokenised sample and 255 tokens for the first row
+        [203].
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 with DataCollatorForSeq2Seq (padding=True, pad_to_multiple_of=8)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        The launch takes no arguments; every value is a module-level constant in
+        train_v4.py (in the workspace, including the [200] collator fix), so all
+        come from the script text and none was overridden. Also hardcoded:
+        gradient_checkpointing, optim="adamw_torch", max_grad_norm=1.0,
+        save_strategy="epoch", padding_side="right", labels = input_ids copied
+        (loss over prompt and answer alike). After training it deletes and
+        rewrites final_model and writes generation_config.json with eos_token_id
+        [151643, 151645] and, this time, do_sample false (greedy) with
+        max_new_tokens 2048.
+    target_format: >-
+      raw text, no template: "<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n"
+  command:
+    argv: [python3, /home/ben/task/train_v4.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v4.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, final_model, --limit, "50", --max-connections, "2", --json-output-file, eval_results_v4.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.04
+    path: /home/ben/task/eval_results_v3.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: 2808
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.096
+    steps: 2808
+    notes: >-
+      "Training completed. Loss went down to 0.096, which is much better than
+      LoRA (0.18)" [206]. Step count 2808 is the trainer's own total at [198]
+      and [203] (22,463 rows / effective batch 16 x 2 epochs). Runtime is not in
+      the stream; the budget check right after the run reads 4:40 remaining
+      [208].
+  measurements:
+    - metric: accuracy
+      value: 0.60
+      n: 50
+      path: /home/ben/task/eval_results_v4.json
+      delta_vs_comparator: 0.56
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      stderr 0.070; output tokens fell to 9,320 for 50 answers, from 194,693 in
+      exp-04, and the eval finished in 26 s instead of 9 min [212] - the
+      stopping problem is fixed. Reading five outputs at [214]/[215] the agent
+      still saw one item run on past "ANSWER: 540" into another problem and one
+      correct answer emitted without an "ANSWER:" prefix.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    Full-parameter fine-tuning took the same data from 0.04 to 0.60 at limit 50
+    - "60% accuracy! Huge improvement from the previous 4-6%" [213] - and cut
+    output tokens by a factor of twenty, so the checkpoint now stops where it
+    should. The delta is far outside the eval's stderr, and this checkpoint
+    became the incumbent in final_model.
+  decision: adopt
+  next_step: >-
+    "Adding more diverse training data and ensuring consistent ANSWER: format;
+    training for more epochs with the full fine-tuning approach" [216];
+    prepare_data_v3.py adds stricter answer validation and repeats the GSM8K
+    rows, trained as exp-07/exp-08.
+
+provenance:
+  kind: extracted
+  run_ref: r-c2a5a7bb
+  launch_i: 202
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [173, 189, 192, 198]
+    setup: [193, 200, 203]
+    evaluation: [211]
+    result: [203, 206, 208, 212, 215]
+    conclusion: [213, 216, 219]
+  snapshot_files:
+    - prepare_data_v2.py
+    - train_v4.py
+    - evaluate.py
+    - eval_results_v4.json
+    - eval_results_v3.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the training log and runtime for this launch were lost to output truncation at [203]; final_loss is the agent's reading at [206]"

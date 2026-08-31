@@ -1,0 +1,214 @@
+# Reconstructed experiment card (extracted, not agent-written).
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 3.82
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The reinforcement-learning lever has run out: a second GRPO stage on the same
+    base lost ground and the reward curve flattened, so "GRPO saturates ~300 steps"
+    ([581]). Meanwhile the training-set reward sits near 0.90 while the held-out
+    eval sits at 0.8667 - "there's also a ~10% train->test generalization gap
+    suggesting data diversity (MetaMath) could help" ([527]). The SFT mixture is
+    narrow: gold gsm8k solutions plus the model's own paraphrases of them.
+  evidence:
+    - path: /home/ben/task/runs/eval_v3b_150.json
+      locator: "[581]"
+      observation: "350 further GRPO steps gave 0.8533, below grpo_v3's 0.8667 - the RL path is exhausted at this configuration"
+    - path: /home/ben/task/runs/grpo_v3.log
+      locator: "[504], [527]"
+      observation: "training reward ~0.90 against 0.8667 on held-out items - the gap the agent reads as a diversity/generalisation problem"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "I'll do both, sequenced by certainty: first continue GRPO from v3 (quick,
+    proven), then try the MetaMath-augmented SFT+GRPO path" ([527]) - adding 40000
+    MetaMathQA GSM-derived solutions to the gold + rejection-sampled mixture and
+    retraining from base will produce a checkpoint that generalises better than the
+    narrow mixture of exp-02.
+  mechanism: >-
+    the mixture so far contains only gsm8k's own wording and the model's
+    re-derivations of it; MetaMathQA's GSM-typed rows are question-rephrasings and
+    alternative solutions of the same training problems, so they should add
+    reasoning variety the current data cannot ([527], [302]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+    # no --model on the launch: train_sft.py's BASE default, a fresh run from base
+  data:
+    - path: /home/ben/task/data/sft_gsm8k.jsonl
+      source: "openai/gsm8k (main, train)"
+      n_examples: 7473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --out, data/sft_gsm8k.jsonl]
+      selection: "reused unchanged from exp-01"
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/rft.jsonl
+      source: "synthetic:self (sampled from exp-01's checkpoint sft_v1)"
+      n_examples: 28099
+      built_by: /home/ben/task/rft_generate.py
+      build_command: [nohup, python, rft_generate.py, --model, sft_v1, --out, data/rft.jsonl, --k, "8", --temp, "1.0", --top_p, "0.95", --max_keep, "4", --max_tokens, "640", --gpu_mem, "0.85"]
+      selection: "reused unchanged from exp-02: up to 4 deduplicated correct-answer samples per gsm8k train question"
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/metamath_gsm_40k.jsonl
+      source: "meta-math/MetaMathQA"
+      n_examples: 40000                # "metamath_40k lines: 40000" ([542])
+      built_by: /home/ben/task/prepare_metamath.py
+      build_command: [python, prepare_metamath.py, --out, data/metamath_gsm.jsonl, --n, "60000"]
+      selection: >-
+        rows whose `type` starts with "GSM" only - MetaMathQA's GSM8K-TRAIN-derived
+        augmentations, which is the agent's stated contamination argument ("Keeps
+        only GSM_* types (augmented from GSM8K TRAIN, no test contamination)",
+        [302]); shuffled with seed 42, first 60000 kept, 0 skipped ([314]). Each
+        response is split at its last "The answer is:", the "#### x" tail stripped
+        from the reasoning ([317]), the answer normalised to a bare number, and the
+        row rewritten as reasoning + "\n\nANSWER: <n><|im_end|>" over the same chat
+        prompt. The file actually trained on is `head -40000` of that already
+        shuffled 60000-row file ([532]).
+      contamination_check: not_run
+      mixture_weight: 1.0              # plain concatenation; 40000 of 75572 rows
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57 (hand-written tokenize/mask + DataCollatorForSeq2Seq; no TRL)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr / epochs / bs / accum / max_len from the launch argv [582]; epochs drops
+        to 2 (from 3 in exp-01 and exp-02) because the mixture is more than twice
+        as large, so this is not a clean data-only comparison against exp-02.
+        warmup_ratio 0.03 and weight_decay 0.0 remain train_sft.py argparse
+        defaults, not overridden; cosine schedule, max_grad_norm 1.0, bf16,
+        gradient checkpointing, adamw_torch and seed 42 are hard-coded in the
+        script. env TOKENIZERS_PARALLELISM=false, PYTHONUNBUFFERED=1.
+    target_format: >-
+      as in exp-01: the eval's user turn, then a chain of thought ending
+      "ANSWER: <n>" and <|im_end|>. The MetaMath rows contribute a more explicitly
+      staged style, which shows up later as the "Step 1 / Step 2" completions of
+      exp-07 ([685], [687]).
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/sft_gsm8k.jsonl, data/rft.jsonl, data/metamath_gsm_40k.jsonl, --out, sft_v4, --epochs, "2", --lr, "1e-5", --bs, "16", --accum, "2", --max_len, "1024", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {TOKENIZERS_PARALLELISM: "false", PYTHONUNBUFFERED: "1"}
+    log: /home/ben/task/runs/train_v4.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 1.83                    # "4724 steps, ~100-110 min ETA" ([597])
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_v4, --limit, "150", --max-connections, "16", --json-output-file, runs/eval_v4sft_150.json]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k, 10-shot, served through vllm)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.84
+    path: /home/ben/task/runs/eval_v2_150.json
+    # the SFT checkpoint this one replaces; exp-03's 0.8667 is a GRPO model and not
+    # the right comparator for an SFT-level question
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.0                          # "v4-sft done (loss 0.14, ~2h)" ([626])
+  output_checkpoint: /home/ben/task/sft_v4
+  training_summary:
+    final_loss: 0.14                   # [626]
+    steps: 4724                        # [597]
+    notes: >-
+      75572 examples loaded ([591]) = 7473 gold + 28099 rejection-sampled + 40000
+      MetaMath; no sequence truncated at max_len 1024 ([597]). Launched [582]
+      t=+3.82h, reported done at [626] t=+5.88h - the single largest block of the
+      run, spending about a fifth of the budget.
+  measurements:
+    - metric: accuracy
+      value: 0.8467
+      n: 150
+      path: /home/ben/task/runs/eval_v4sft_150.json
+      delta_vs_comparator: 0.0067
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "v4-sft (with MetaMath) = 84.67% ~ v2's 84% - **MetaMath diversity was
+    essentially neutral** at the SFT level" ([632]). Measured against exp-02 under
+    the same --limit 150 the delta is +0.67 pts, far inside the ~2.9 pt stderr of a
+    150-item eval, so at the level this card tests, the claim is neither carried nor
+    refuted - and the 2-vs-3 epoch change means the comparison is not clean anyway.
+  decision: adopt
+  next_step: >-
+    "The v4 base is still genuinely different (more diverse), so GRPO on it is my
+    best shot at a new high" ([632]) - sft_v4 becomes exp-07's parent, where the
+    diversity claim gets its real test.
+
+# ---- joined by the pipeline, never by the extractor --------------------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-5f4b22de
+  launch_i: 582
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [527, 581]
+    setup: [302, 308, 314, 317, 319, 532, 542, 582, 591, 597]
+    evaluation: [627]
+    result: [591, 597, 610, 626, 632]
+    conclusion: [632]
+  snapshot_files:
+    - prepare_data.py
+    - rft_generate.py
+    - prepare_metamath.py
+    - train_sft.py
+    - run_eval.sh
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "event [582] carries two launches; the final_model copy that runs first is exp-05."
+    - "two things change at once against exp-02: 40000 MetaMath rows are added AND epochs drop from 3 to 2, so +0.67 pts cannot be attributed to the data."
+    - "the first prepare_metamath.py run ([308]) left '#### x' inside the reasoning; the script was fixed at [317] and rerun at [319], so the 60000-row file used here is the corrected one - but the rerun's row count was not reprinted in the digest, only the first run's 'wrote 60000, skipped 0' ([314])."
+    - "data/metamath_gsm_40k.jsonl is `head -40000` of a file shuffled with seed 42; it is a random subset only because the source was shuffled before writing."

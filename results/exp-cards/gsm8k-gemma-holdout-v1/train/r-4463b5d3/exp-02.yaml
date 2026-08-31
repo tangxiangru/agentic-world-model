@@ -1,0 +1,230 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.39
+
+problem:
+  statement: >-
+    The base model scores 0.207 on the benchmark [384], and the first attempt at
+    the SFT run would have saved nothing until both epochs finished, so a
+    two-hour run risked ending with no usable artifact and no way to compare
+    epoch 1 against epoch 2: "Add per-epoch checkpointing and restart" [604].
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[128], [316], [384]"
+      observation: "base model, 150 samples: accuracy 0.207"
+    - path: /home/ben/task/train_sft.py
+      locator: "[604], [607], [618]"
+      observation: >-
+        the running script had save_strategy="no"; the pkill+patch at [604]
+        failed (exit 144, the edit never landed, [607]) and was reapplied at [618]
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: >-
+        derived: HF nvidia/OpenMathInstruct-2 (gsm8k + augmented_gsm8k rows of the
+        first 4 parquet shards) + HF openai/gsm8k train + HF meta-math/MetaMathQA
+        (GSM_Rephrased, GSM_AnsAug, GSM_FOBAR, GSM_SV)
+      n_examples: 117650
+      built_by: /home/ben/task/prep_data.py
+      build_command: [OMI2_SHARDS=4, N_META=25000, python, prep_data.py]
+      selection: >-
+        numeric-only gold answers, \boxed{} stripped, solutions <= 3000 chars and
+        problems <= 1500 chars, "The answer is:" tails removed, every target
+        rewritten to end in "ANSWER: <number>"; MetaMathQA capped at 25000 rows,
+        records shuffled with seed 0. Per RESULTS.md the mix is ~85k
+        OpenMathInstruct-2, 7.5k gsm8k-train originals, 25k MetaMathQA.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: >-
+        OpenMathInstruct-2 kept at most 2 solutions per gsm8k problem and 1 per
+        augmented_gsm8k problem; gsm8k-train and MetaMathQA items appear once
+    - path: /home/ben/task/data/gsm8k_fewshot_pool.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: null
+      built_by: null
+      build_command: [python, -c, "from datasets import load_dataset"]
+      selection: >-
+        every gsm8k train row written as {question, reasoning, answer} at [397];
+        used only as the pool the 2-6-shot system messages are sampled from
+        (--p-kshot 0.05), not as target text
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler; torch 2.8.0+cu129, flash-attn 2.8.3 ([81])"
+    peft: "none"
+    hyperparams:
+      lr: 1.4e-05
+      epochs: 2
+      batch_size: null
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine_with_min_lr
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        --token-budget 8192: per_device_train_batch_size is pinned to 1 and
+        batches are formed by a length-sorted sampler with a 8192 padded-token
+        budget, so there is no fixed batch_size. max_seq_len 3072, scheduler
+        cosine_with_min_lr (min_lr_rate 0.1), warmup_ratio 0.03, weight_decay 0.0,
+        adam_beta2 0.95, max_grad_norm 1.0, optim adamw_torch_fused and seed 0 are
+        argparse/script constants in /home/ben/task/train_sft.py and were not
+        overridden at launch. --p-fewshot 0.04 --p-kshot 0.05 were overridden from
+        the script defaults of 0.06/0.06. This launch added save_strategy="epoch"
+        with save_total_limit=3.
+    target_format: >-
+      the eval's own chat template (templates/smollm.jinja) rendered by
+      promptlib.py; assistant turn = solution ending in "ANSWER: <number>" plus
+      <|im_end|>; loss masked over the prompt. 4% of examples carry the eval's
+      10-shot system message, 5% a random 2-6-shot system message, 91% none. The
+      saved model gets eos_token_id set to <|im_end|> (128012) in config.json and
+      generation_config.json so vLLM stops correctly.
+  command:
+    argv: [nohup, python, train_sft.py, --out, ckpt/sft_v1, --epochs, "2", --lr, "1.4e-5", --token-budget, "8192", --accum, "8", --p-fewshot, "0.04", --p-kshot, "0.05"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/sft_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/sft_v1, --limit, "200", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, logs/test_sft_v1_ep2.json]
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.207
+    path: /home/ben/task/logs/baseline.json
+  diagnostic:
+    what: >-
+      whether the model is sensitive to the prompt condition: the same 400 dev
+      problems answered with the eval's 10-shot system message and with no system
+      message at all (eval_both.py, launched at [942])
+    command: [nohup, python, eval_both.py, --model, ckpt/sft_v1, --limit, "400", --dump, logs/dump_sft_v1.json]
+    path: /home/ben/task/logs/dump_sft_v1.json
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: 2460
+  output_checkpoint: /home/ben/task/ckpt/sft_v1
+  training_summary:
+    final_loss: null
+    steps: 2460
+    notes: >-
+      2460 optimizer steps over 2 epochs at ~3.13 s/it ([723]); loss values were
+      never printed in the stream. Launched at +0.39h; the training plus four
+      evals driven by after_sft.sh ([769]) had all finished by +2.68h ([814]), so
+      the training time alone is not separable from the stream. The epoch-1
+      checkpoint was repackaged as ckpt/sft_v1_ep1 by finalize_ckpt.py inside
+      after_sft.sh; the remaining checkpoint-* dirs were deleted at [817].
+  measurements:
+    - metric: accuracy
+      value: 0.695
+      n: 200
+      path: /home/ben/task/logs/test_sft_v1_ep2.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.690
+      n: 200
+      path: /home/ben/task/logs/test_sft_v1_ep1.json
+      delta_vs_comparator: null
+    - metric: dev_accuracy_10shot_system_prompt
+      value: 0.680
+      n: 400
+      path: /home/ben/task/logs/eval_both_sft_v1.log
+      delta_vs_comparator: null
+    - metric: dev_accuracy_no_system_prompt
+      value: 0.6875
+      n: 400
+      path: /home/ben/task/logs/eval_both_sft_v1.log
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.6875
+    path: /home/ben/task/logs/dump_sft_v1.json
+    notes: >-
+      "Prompt condition doesn't matter (68.0% vs 68.75%)" [973] - the 10-shot
+      system message the eval prepends costs nothing and buys nothing on the
+      400-item held-out dev set, so the mixed-system-prompt training recipe did
+      make the model robust to the condition.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The run completed and the 2-epoch checkpoint scored 0.695 on 200 test samples
+    against a 0.207 base model, with the epoch-1 checkpoint at 0.690: "SFT v1:
+    69.5% on test (vs 20.7% baseline)" [814]. The comparator was measured at
+    --limit 150 and this at --limit 200, so the +49 pt gap is not a same-protocol
+    delta, which is why the verdict is inconclusive rather than supported; the
+    size of the gap leaves little doubt about the direction.
+  decision: adopt
+  next_step: >-
+    "Now rejection sampling" [814] - generate 6 samples per problem from this
+    checkpoint over the 29,473-problem pool and keep the correct ones
+    (gen_rft.py, launched at [817]); in the event the RFT data was never trained
+    on and the agent went to GRPO from this same checkpoint instead ([1040]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-4463b5d3
+  launch_i: 632
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [384, 604, 607, 618]
+    setup: [303, 305, 385, 397, 618, 626, 628, 630, 632]
+    evaluation: [767, 769, 942]
+    result: [722, 723, 814, 816, 973]
+    conclusion: [814, 973]
+  snapshot_files:
+    - prep_data.py
+    - train_sft.py
+    - promptlib.py
+    - fewshot_system.txt
+    - finalize_ckpt.py
+    - after_sft.sh
+    - eval_both.py
+    - eval_dev.py
+    - evaluate.py
+    - RESULTS.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the 0.690 epoch-1 number and the 0.695 epoch-2 number are read from RESULTS.md; logs/test_sft_v1_ep1.json and logs/test_sft_v1_ep2.json are named in after_sft.sh but logs/ is not in the workspace snapshot"
+    - "after_sft.sh also ran eval_dev.py --limit 400 on both checkpoints (logs/dev_sft_v1_ep1.log, logs/dev_sft_v1_ep2.log); those DEV ACC numbers never appear in the stream"
+    - "training loss was never printed, so there is no final_loss and no way to tell whether epoch 2 was still improving"
+    - "gen_rft.py at [817] produced data/rft_v1.jsonl and its solve rate / pass@1 were waited on at [842], but neither number is in the digest and no later launch trains on that file"

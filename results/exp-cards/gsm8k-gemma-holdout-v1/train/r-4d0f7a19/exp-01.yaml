@@ -1,0 +1,222 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.17
+
+problem:
+  statement: >-
+    The base model reasons at length but does not produce the required final
+    "ANSWER: $ANSWER" line under the evaluator's exact prompt and chat template;
+    an 8-sample baseline scored 1/8, so format adaptation is the blocking
+    problem, not raw math ability. [49]
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-4d0f7a19/baseline8.json
+      locator: "[23] launch, [46] result"
+      observation: "8-sample GSM8K eval of the base model: accuracy 0.125, stderr 0.125"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-4d0f7a19.md
+      locator: "[56] print of the eval log, [57] result"
+      observation: >-
+        the printed sample completion reaches the right intermediate numbers but
+        never emits the "ANSWER:" line; it echoes the prompt's reminder text and
+        then drifts into unrelated text
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-4d0f7a19.md
+      question: null
+      gold: null
+      model_output: >-
+        '... Value of eggs sold = 9 eggs * $2/egg = $18 / So, Janet makes $18 in
+        dollars every day at the farmers' market. / Remember to put your answer on
+        its own line at the end in the form 'ANSWER: $ANSWER' ...'
+      failure: >-
+        arithmetic is right ($18) but no final "ANSWER:" line is produced; the
+        completion repeats the prompt's reminder and continues past the answer [57]
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full SFT from the base checkpoint on 100k GSM-style MetaMathQA samples plus
+    repeated GSM8K-train examples rendered in the exact evaluator prompt format,
+    with loss masked to the assistant completion, will make the model answer in
+    the scored format and raise GSM8K accuracy well above the base model. [49] [97]
+  mechanism: >-
+    A published SFT recipe on meta-math/MetaMathQA (augmented from GSM8K/MATH
+    train splits, not test) supplies broad math reasoning, while GSM8K-train
+    examples wrapped in the evaluator's own system/user prompt teach the
+    "ANSWER: $ANSWER" completion the grader matches on. [45] [37]
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "meta-math/MetaMathQA"
+      n_examples: 100000
+      built_by: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-4d0f7a19/train_sft.py
+      build_command: []
+      selection: >-
+        built in-process by train_sft.py: rows whose `type` starts with "GSM",
+        shuffled with seed 1234, first 100,000 taken (--max-metamath-samples
+        100000 --metamath-type-prefix GSM); response rewritten to end in
+        "ANSWER: <final>"; examples longer than 3072 tokens dropped
+      contamination_check: passed
+      mixture_weight: null
+      repeats: 1
+    - path: null
+      source: "openai/gsm8k (main, train split)"
+      n_examples: null
+      built_by: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-4d0f7a19/train_sft.py
+      build_command: []
+      selection: >-
+        whole train split under the generic math system prompt, answer reasoning
+        with "#### x" turned into "ANSWER: x" (--generic-gsm-repeats 1)
+      contamination_check: passed
+      mixture_weight: null
+      repeats: 1
+    - path: null
+      source: "openai/gsm8k (main, train split)"
+      n_examples: null
+      built_by: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-4d0f7a19/train_sft.py
+      build_command: []
+      selection: >-
+        whole train split under the exact evaluator prompt: a 10-shot system
+        prompt built from train rows (shuffle seed 42, first 10) plus the
+        evaluator's user template (--exact-gsm-repeats 2)
+      contamination_check: passed
+      mixture_weight: null
+      repeats: 2
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 (torch 2.8.0+cu129, flash_attention_2)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 (tf32 matmul enabled)"
+      seed: 42
+      other: >-
+        from the launch: --save-steps 1000 --logging-steps 20 --save-total-limit 2;
+        effective batch size 16 [97]. Not on the command line, taken from
+        train_sft.py argparse defaults in the workspace (not overridden by the
+        launch): warmup_ratio=0.03, weight_decay=0.0, seed=42,
+        optim=adamw_bnb_8bit, attn_implementation=flash_attention_2,
+        gradient_checkpointing=True, template-path=templates/smollm.jinja.
+        Hard-coded in the script: lr_scheduler_type="cosine", bf16=True, tf32=True,
+        group_by_length=True, max_grad_norm=1.0, save_safetensors=True.
+    target_format: >-
+      chat-templated system/user prompt (templates/smollm.jinja) with the
+      assistant turn = reasoning followed by a final "ANSWER: <final>" line;
+      labels set to -100 over the prompt so loss falls on the completion only
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - "python train_sft.py --output-dir model_stage1 --max-metamath-samples 100000 --metamath-type-prefix GSM --generic-gsm-repeats 1 --exact-gsm-repeats 2 --max-seq-length 3072 --num-train-epochs 1 --learning-rate 1e-5 --per-device-train-batch-size 4 --gradient-accumulation-steps 4 --save-steps 1000 --logging-steps 20 --save-total-limit 2"
+    cwd: null
+    script: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-4d0f7a19/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - /bin/bash
+      - -lc
+      - "python evaluate.py --model-path model_stage1 --limit 150 --json-output-file stage1_150.json --max-connections 2 --max-tokens 1024 --gpu-memory-utilization 0.45"
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.95
+  duration_h: 1.95
+  steps: 7652
+  output_checkpoint: model_stage1
+  training_summary:
+    final_loss: 0.1886457366215516
+    steps: 7652
+    notes: >-
+      train_runtime 7022.565 s, 17.432 samples/s, epoch 1.0 [196]; total steps
+      read off the progress line "step 4,250 of 7,652" [176]; checkpoint losses
+      stable at 0.173-0.184 through the run [138] [150] [169]
+  measurements:
+    - metric: accuracy
+      value: 0.5666666666666667
+      n: 150
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-4d0f7a19/stage1_150.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Stage 1 scored 0.567 accuracy on the 150-sample GSM8K eval. That's a large
+    gain from the base smoke score, but low enough that a second supervised pass
+    on GSM8K train formatting is worth the time" [211]. The only base-model
+    number is an 8-sample eval (0.125), so there is no comparator under the same
+    --limit 150 protocol and the verdict cannot be more than inconclusive.
+  decision: adopt
+  next_step: >-
+    A second supervised pass from model_stage1 on GSM8K-train formatting only,
+    evaluated on the same 150-sample slice before choosing final_model [211].
+
+outcome:
+  official_accuracy: null   # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-4d0f7a19
+  launch_i: 98
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [23, 46, 49, 56, 57]
+    setup: [45, 97, 98]
+    evaluation: [205, 206]
+    result: [176, 196, 210]
+    conclusion: [211]
+  snapshot_files:
+    - train_sft.py
+    - baseline8.json
+    - stage1_150.json
+    - evaluate.py
+    - contamination_judgement.txt
+  smoke_runs:
+    - {launch_i: 79, outcome: "passed (10 steps, 64+64 samples, bs1 x ga2)"}
+    - {launch_i: 83, outcome: "passed (5 steps, bs4 x ga4)"}
+  extractor: claude-opus-5
+  unresolved:
+    - "n_examples for the two GSM8K-train slices was never printed for this launch; only the MetaMath cap (100,000) is stated"
+    - "no absolute cwd appears in the stream; every command uses paths relative to the run's working directory"
+    - "the training stdout/stderr was never redirected to a file the workspace kept, so `log` is null"

@@ -1,0 +1,154 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 4.57
+
+problem:
+  statement: >-
+    "Root cause: a CUDA illegal memory access in vLLM - the checkpoint has
+    torch_dtype: None and fp32 weights (16GB), which is problematic. Critically,
+    the grader uses evaluate.py's defaults: gpu_memory_utilization=0.3 (24GB) - a
+    16GB fp32 model barely fits, risking failure. I must make final_model clean
+    bf16 (8GB)" ([496]).
+  evidence:
+    - path: /home/ben/task/logs/ckpt600_full.log
+      locator: "[487], [494]"
+      observation: >-
+        run of HTTP 500s, then "torch.AcceleratorError: CUDA error: an illegal
+        memory access was encountered" and EngineDeadError during the full-test
+        eval of checkpoint-600
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Re-saving checkpoint-600 in bf16 (about 8 GB instead of 16 GB) will let
+    final_model load and run at the grader's default gpu_memory_utilization=0.3
+    without the vLLM crash ([496]).
+  mechanism: >-
+    A bf16 model leaves enough of the 24 GB budget for the KV cache; the fp32
+    copy left almost none.
+  expected_effect:
+    metric: null
+    direction: null
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/work/grpo/checkpoint-600
+    origin: exp-04
+    hash: null
+  data: []
+  method:
+    family: other
+    framework: "transformers AutoModelForCausalLM.from_pretrained(torch_dtype=bfloat16).save_pretrained + finalize.py"
+    peft: null
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: "packaging only, no training; safe_serialization=True"
+    target_format: null
+  command:
+    argv:
+      - |-
+        python -c "
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        print('loading checkpoint-600 as bf16...')
+        m = AutoModelForCausalLM.from_pretrained('work/grpo/checkpoint-600', torch_dtype=torch.bfloat16)
+        print('dtype:', next(m.parameters()).dtype, '| config torch_dtype:', m.config.torch_dtype)
+        m.save_pretrained('work/grpo600_bf16', safe_serialization=True)
+        tok = AutoTokenizer.from_pretrained('work/grpo/checkpoint-600')
+        tok.save_pretrained('work/grpo600_bf16')
+        print('saved bf16 model')
+        "
+      - python finalize.py --src work/grpo600_bf16 --dst final_model
+    cwd: /home/ben/task
+    script: /home/ben/task/finalize.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      the bf16 save aborted and finalize.py then copied the empty directory over
+      the existing final_model, destroying the exp-05 deliverable; the source
+      checkpoint-600 was unaffected.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    "The bf16 save failed (checkpoint-600's patched generation_config has the
+    invalid do_sample/temperature combo), and finalize then overwrote
+    final_model with the empty dir" ([502]). No traceback text was printed in the
+    stream.
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The same HF GenerationConfig validation that killed exp-03 also blocks
+    re-saving the checkpoint, because finalize.py had written do_sample=false
+    together with temperature=0.0 into checkpoint-600's generation_config. The
+    conversion produced nothing and left the workspace without a final_model.
+  decision: abandon_line
+  next_step: >-
+    "redo the conversion correctly - setting a valid generation config before
+    saving - and rebuild final_model" ([502]), done at [503].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5d3c708b
+  launch_i: 497
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [487, 494, 496]
+    setup: [497]
+    evaluation: []
+    result: [502]
+    conclusion: [502]
+  snapshot_files:
+    - finalize.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the failing traceback itself was never printed; the cause is only the agent's reading at [502]."

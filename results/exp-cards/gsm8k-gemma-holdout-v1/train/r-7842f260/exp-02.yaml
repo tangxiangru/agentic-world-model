@@ -1,0 +1,182 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.22
+
+problem:
+  statement: >-
+    The same SFT launch cannot be run at the script's default micro-batch: the
+    fp32 logits over the 151,936-token vocabulary at bs 32 x 2816 tokens need
+    about 54 GB and the run OOMs before training.
+  evidence:
+    - path: /home/ben/task/logs/train_v1.log
+      locator: "[12538]"
+      observation: >-
+        agent's words: "OOM from the 151k-vocab logits (bs 32 x 2816 x 151936
+        fp32 ~ 54GB). Dropping to bs 8 with accum 16, plus expandable segments."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Reconstructed from the agent's one line at [12538]: cutting the micro-batch
+    to 8 with grad_accum 16 (same effective batch of 128) plus an expandable
+    allocator will fit the same SFT recipe in memory. No expected effect on
+    accuracy was stated.
+  mechanism: >-
+    The peak allocation is the fp32 logit tensor, which scales with micro-batch
+    x sequence length; grad accumulation keeps the effective batch unchanged.
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_sft_v1.jsonl
+      source: "HF openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        every train-split item, gold CoT with <<...>> calculator annotations
+        stripped; target = cleaned reasoning + "\n\nANSWER: <answer>" (commas and
+        $ removed); system message = the same 10 few-shot examples the evaluator
+        builds (train split, shuffle seed 42, limit 10); user message = the
+        evaluator's MATH_PROMPT_TEMPLATE. n_examples 7473 is the agent's own
+        count from SUMMARY.md [27810]; rows longer than max_seq_len are dropped
+        by the trainer and that count was not printed.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer (version not stated in the stream)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 8
+      grad_accum: 16
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 (bf16=True; weights loaded in fp32, saved bf16)"
+      seed: 17
+      other: >-
+        lr, epochs, bs and accum are from the command line (effective batch 128).
+        max_seq_len 2816, warmup 0.03 and seed 17 are train_sft.py argparse
+        defaults (file present in the workspace) and were NOT overridden.
+        scheduler cosine, weight_decay 0.0, adam_beta2 0.95, max_grad_norm 1.0,
+        optim adamw_torch_fused, group_by_length=True, gradient checkpointing on
+        and save_strategy=no are hardcoded in the script. Loss is masked to the
+        completion + <|im_end|>.
+    target_format: >-
+      the eval-rendered chat format (templates/qwen3.jinja); assistant turn =
+      cleaned CoT + "\n\nANSWER: <int>" terminated by <|im_end|>
+  command:
+    argv: [python, train_sft.py, --data, data/gsm8k_sft_v1.jsonl, --out, runs/sft_v1, --epochs, "3", --lr, "1e-5", --bs, "8", --accum, "16"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/sft_v1/final, --limit, "150", --max-connections, "16", --json-output-file, runs/sft_v1_limit150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.09
+    path: /home/ben/task/runs/base_limit100.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.08
+  output_checkpoint: /home/ben/task/runs/sft_v1/final
+  training_summary:
+    final_loss: 0.41
+    steps: null
+    notes: >-
+      "Training done (final avg loss 0.41)" [16565]. wall_h bracketed from event
+      timestamps: launched t=+0.22h [12539], reported done t=+1.30h [16565].
+      Before the eval the checkpoint was finalized in the same shell command
+      [16566]: `python finalize_ckpt.py runs/sft_v1/final --temperature 0.0`,
+      which writes generation_config.json (greedy, eos [151645, 151643]) and
+      sets the tokenizer eos_token to <|im_end|>.
+  measurements:
+    - metric: accuracy
+      value: 0.660
+      n: 150
+      path: /home/ben/task/runs/sft_v1_limit150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      post-hoc failure triage at [16650]/[16651]: 51 of 150 wrong; 50 of the 51
+      stopped cleanly with an "ANSWER:" marker present and only 1 hit max_tokens,
+      i.e. the residual failures are reasoning errors, not format errors.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The memory fix held and the run trained to completion (final avg loss 0.41),
+    scoring 0.660 at --limit 150 against a base-model reading of 0.090 - but the
+    base reading was taken at --limit 100, so the two are not the same protocol
+    and the card cannot be called supported. The agent's own reading [16893]:
+    "Failures are pure reasoning errors with correct format."
+  decision: adopt
+  next_step: >-
+    Because format was solved and reasoning was the bottleneck, generate
+    answer-verified traces from a local Qwen3-14B teacher and answer-verified
+    self-samples from this checkpoint, mix them, and retrain from base [16893].
+
+provenance:
+  kind: extracted
+  run_ref: r-7842f260
+  launch_i: 12539
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [12538]
+    setup: [8312, 9111, 10819, 12539]
+    evaluation: [16566]
+    result: [16565, 16649, 16650, 16651]
+    conclusion: [16649, 16893]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data.py
+    - finalize_ckpt.py
+    - evaluate.py
+    - results.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "0.660 is quoted by the agent at [16649] and recorded in results.md; the eval log line itself is not in the stream and runs/sft_v1_limit150.json is not in the workspace snapshot"
+    - "step count and wall time of the training run were never printed"
+    - "the comparator (base model, 0.090) was measured at --limit 100, not 150"

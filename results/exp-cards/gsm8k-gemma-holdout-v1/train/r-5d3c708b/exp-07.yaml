@@ -1,0 +1,177 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 4.58
+
+problem:
+  statement: >-
+    The bf16 re-package failed and took the deliverable with it: "the bf16 save
+    failed (checkpoint-600's patched generation_config has the invalid
+    do_sample/temperature combo), and finalize then overwrote final_model with
+    the empty dir" ([502]). The underlying need stands - final_model must be
+    clean bf16 to load at the grader's gpu_memory_utilization=0.3 ([496]).
+  evidence:
+    - path: /home/ben/task/logs/ckpt600_full.log
+      locator: "[494]"
+      observation: "CUDA illegal memory access / EngineDeadError while serving the fp32 checkpoint"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Loading checkpoint-600 in bf16, attaching a valid greedy GenerationConfig
+    before saving, and packaging that as final_model will give a ~8 GB model that
+    runs at the grader's gpu_memory_utilization=0.3 without the vLLM crash
+    ([496], [502]).
+  mechanism: >-
+    A valid GenerationConfig (do_sample=False with no temperature) passes HF's
+    save validator, and bf16 weights leave room for the KV cache inside the 24 GB
+    the grader allots.
+  expected_effect:
+    metric: null
+    direction: null
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/work/grpo/checkpoint-600
+    origin: exp-04
+    hash: null
+  data: []
+  method:
+    family: other
+    framework: "transformers AutoModelForCausalLM/GenerationConfig save_pretrained + finalize.py"
+    peft: null
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        packaging only, no training; GenerationConfig(do_sample=False,
+        eos_token_id=151645, bos_token_id=151643, pad_token_id=151643,
+        max_new_tokens=2048), config.eos_token_id=151645,
+        safe_serialization=True; finalize.py then re-applies
+        do_sample=false/temperature=0.0/top_p=1.0 by raw JSON write on the copy
+    target_format: null
+  command:
+    argv:
+      - |-
+        python -c "
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+        m = AutoModelForCausalLM.from_pretrained('work/grpo/checkpoint-600', torch_dtype=torch.bfloat16)
+        m.generation_config = GenerationConfig(do_sample=False, eos_token_id=151645, bos_token_id=151643, pad_token_id=151643, max_new_tokens=2048)
+        m.config.eos_token_id = 151645
+        m.save_pretrained('work/grpo600_bf16', safe_serialization=True)
+        AutoTokenizer.from_pretrained('work/grpo/checkpoint-600').save_pretrained('work/grpo600_bf16')
+        print('OK saved bf16')
+        "
+      - python finalize.py --src work/grpo600_bf16 --dst final_model
+    cwd: /home/ben/task
+    script: /home/ben/task/finalize.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "-1", --max-connections, "2", --gpu-memory-utilization, "0.3", --max-tokens, "4000", --json-output-file, logs/final_mc2.json]
+    dev_set: "official --limit -1 (all 1319)"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.92
+    path: /home/ben/task/logs/eval_work_grpo_checkpoint-600.json
+  diagnostic:
+    what: >-
+      does the packaged model survive a full-length eval at the grader's own
+      defaults (max-connections 2, gpu_memory_utilization 0.3)
+    command: []
+    path: /home/ben/task/logs/final_mc2.log
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "final_model is now clean bf16 (7.6GB) with greedy config" ([508]); the
+      same weights also live at work/grpo600_bf16 and become the starting point
+      for exp-08. A first full eval at --max-connections 8 still died with the
+      CUDA illegal memory access ([520], [525]); the run at --max-connections 2
+      completed with zero crashes ([537]).
+  measurements:
+    - metric: accuracy
+      value: 0.8817
+      n: 1319
+      path: /home/ben/task/logs/final_mc2.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.892
+      n: 500
+      path: /home/ben/task/logs/sel_work_grpo600_bf16.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/final_mc2.log
+    notes: >-
+      "max-connections 2 (grader default) is stable (no crash)" and vLLM logs
+      "Default sampling parameters have been overridden by the model's Hugging
+      Face generation config", confirming the eval decodes greedily ([535], [537])
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    "final_model (GRPO) achieves 88.17% on the full 1319-sample GSM8K test set
+    (greedy, grader config, zero crashes) - up from 38.3% baseline" ([543]). The
+    bf16 packaging removed the crash at the grader's settings, but the comparator
+    (checkpoint-600 at --limit 300) was measured under a different protocol, so
+    no same-protocol delta exists.
+  decision: adopt
+  next_step: >-
+    "I have ~5 hours left, so let me try to push further with continued GRPO
+    while keeping this as the safe baseline" ([543]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5d3c708b
+  launch_i: 503
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [496, 502]
+    setup: [503]
+    evaluation: [509, 528, 578]
+    result: [508, 520, 525, 535, 537, 543, 589]
+    conclusion: [543]
+  snapshot_files:
+    - finalize.py
+    - evaluate.py
+    - select_eval.sh
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "logs/final_mc2.json and logs/sel_work_grpo600_bf16.json are not in the workspace snapshot; the values are the numbers the agent printed at [543] and [589]."
+    - "the --limit 500 measurement came from the later select_eval.sh sweep at [578] (max-connections 4, gpu_memory_utilization 0.55, max-tokens 2048), not from this card's own protocol."

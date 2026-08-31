@@ -1,0 +1,171 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 1.78
+
+problem:
+  statement: >-
+    "The 2048 max-len silently dropped ~10.5k samples (mostly eval-mode rows - the
+    most valuable context)" [23386]: rows whose prompt carries the exact eval
+    10-shot system message exceed 2048 tokens and are zeroed out by the tokenizer
+    map, so the most eval-relevant part of the data never reached the optimizer.
+  evidence:
+    - path: /home/ben/task/train_sft.py
+      locator: "tokenize(): rows longer than --max-len are replaced by [0]/[-100] and filtered out"
+      observation: "explains how the drop happens silently"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Raising --max-len to 3072 keeps the eval-context rows in the training set
+    [23386].
+  mechanism: >-
+    The dropped rows are the 10-shot-context ones; 3072 tokens covers them.
+  expected_effect:
+    metric: null
+    direction: null
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: synthetic:self
+      n_examples: 28781
+      built_by: /home/ben/task/build_sft_data.py
+      build_command:
+        - python
+        - build_sft_data.py
+        - --star-file
+        - data/star_round1.jsonl
+        - --out
+        - data/sft_v1.jsonl
+      selection: >-
+        Gold gsm8k train solution (calculator annotations stripped) plus <=3
+        verified rejection-sampled traces per question from data/star_round1.jsonl
+        (gen_star.py: greedy + k=8 @ T=0.8, kept when the normalized ANSWER marker
+        equals the gold train answer), every trace rewritten to end in
+        "ANSWER: <gold>", deduped, capped at 2400 chars, low-lexical-diversity
+        traces dropped; system prompt per row 35% exact eval 10-shot / 35% random
+        k-shot / 30% none.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 (torch 2.8, flash-attn 2.8.3)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 8
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr and seed are train_sft.py argparse defaults, not overridden in this
+        launch; batch_size, grad_accum, max_seq_len and epochs come from the launch
+        args (effective batch 128). scheduler, warmup_ratio 0.03, weight_decay 0.0,
+        bf16, adamw_torch_fused with adam_beta2 0.95, max_grad_norm 1.0, gradient
+        checkpointing, flash_attention_2 and DataCollatorWithFlattening are fixed
+        in the script.
+    target_format: >-
+      Rendered through templates/qwen3.jinja; assistant turn is the reasoning
+      ending in a final line "ANSWER: <gold>" followed by <|im_end|>.
+  command:
+    argv:
+      - python
+      - train_sft.py
+      - --data
+      - data/sft_v1.jsonl
+      - --out
+      - runs/sft_v1
+      - --epochs
+      - "3"
+      - --per-device-bs
+      - "8"
+      - --grad-accum
+      - "16"
+      - --max-len
+      - "3072"
+      - --save-each-epoch
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/runs_sft_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.11
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "Training works but is slow (3h11m ETA - 10k tok/s)" [24406]; the agent
+      killed it to try a fused cross-entropy kernel and a bigger micro-batch
+      ([25836]: uninstall of that kernel plus pkill -f train_sft.py). wall_h is the
+      difference of the event timestamps.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    With max-len 3072 the run trained correctly but at ~10k tok/s it needed 3h11
+    for 3 epochs, too much of the remaining budget, so it was killed [24406].
+  decision: abandon_line
+  next_step: >-
+    Try a fused-CE kernel and a larger micro-batch; the kernel was uninstalled
+    again at [25836] and the run was relaunched at 2 epochs, micro-batch 10,
+    grad-accum 13 (exp-05).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-9395d5af
+  launch_i: 23390
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [23386]
+    setup: [23387, 23390, 23433]
+    evaluation: []
+    result: [24406, 25836, 25837]
+    conclusion: [24406]
+  snapshot_files:
+    - train_sft.py
+    - build_sft_data.py
+    - gen_star.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "An identical command was issued one event earlier at [23387] and returned exit code 144 (its own pkill -f train_sft.py matched the wrapping shell); whether that invocation started a trainer at all is not settled, so both events are treated as one launch."
+    - "Between [24406] and [25836] the agent installed and tried a fused-CE (liger) kernel; that launch does not appear in the digest, so it has no card. At [25840] a train_sft process was still reported running (STILL) when exp-05 was started."

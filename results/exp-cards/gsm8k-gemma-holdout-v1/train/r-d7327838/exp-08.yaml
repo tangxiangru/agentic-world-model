@@ -1,0 +1,241 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 4.24
+
+problem:
+  statement: >-
+    sft_v4 gets 94/150 with perfectly clean formatting and its failures are
+    genuine reasoning errors; more MetaMath data is expected to stop paying off.
+    [331] "v4: 94/150, clean format, failures are genuine reasoning errors - near
+    the typical ceiling for MetaMath SFT on a 1.7B model."
+  evidence:
+    - path: /home/ben/task/eval_v4.json
+      locator: "[318]"
+      observation: "62.7% at --limit 150"
+    - path: null
+      locator: "[329]"
+      observation: >-
+        "correct 94 | no-ANSWER 0 | long 3"; failures are value errors (17/15,
+        400/350, 40/55, 10000/50000, 45/57) plus one 2567-char degenerate output
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: null
+      question: null
+      gold: "20"
+      model_output: "'C.OPENL\\n545580\\n[non-latin text]\\nAns\\nFor' (completion 2567 chars)"
+      failure: "degenerate multilingual continuation, no usable answer [329]"
+    - id: null
+      source: null
+      question: null
+      gold: "17"
+      model_output: "answer 15 (completion 233 chars)"
+      failure: "reasoning error, wrong value [329]"
+    - id: null
+      source: null
+      question: null
+      gold: "400"
+      model_output: "answer 350 (completion 243 chars)"
+      failure: "reasoning error, wrong value [329]"
+    - id: null
+      source: null
+      question: null
+      gold: "40"
+      model_output: "answer 55 (completion 235 chars)"
+      failure: "reasoning error, wrong value [329]"
+    - id: null
+      source: null
+      question: null
+      gold: "10000"
+      model_output: "answer 50000 (completion 513 chars)"
+      failure: "reasoning error, wrong value [329]"
+    - id: null
+      source: null
+      question: null
+      gold: "45"
+      model_output: "answer 57 (completion 183 chars)"
+      failure: "reasoning error, wrong value [329]"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Rejection-sampling self-distillation (STaR-style) - sampling solutions from
+    sft_v4 on GSM8K-train questions, keeping only those whose answer matches gold,
+    and retraining on those plus MetaMath - is a higher-leverage move than more
+    MetaMath data. [331] "use v4 to generate solutions on GSM8K train, keep only
+    those matching the gold answer, and retrain on these on-distribution
+    high-quality CoTs plus MetaMath."
+  mechanism: >-
+    Verified self-generated CoTs are on the model's own distribution and on the
+    benchmark's own question distribution, unlike MetaMath's rewritten style.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_pool_v5.jsonl
+      source: "derived:exp-05 (self-sampled) + HF:meta-math/MetaMathQA + HF:openai/gsm8k main split=train"
+      n_examples: 90000
+      built_by: /home/ben/task/build_v5.py
+      build_command: [python, build_v5.py]
+      selection: >-
+        rejection_pool.jsonl repeated x3; MetaMathQA GSM_AnsAug 45000,
+        GSM_Rephrased 22000, GSM_SV 7000, GSM_FOBAR 7000, MATH_AnsAug 15000
+        requested, cleaned as in build_data.py; plus the clean GSM8K train set x1;
+        shuffled with random.seed(42). The launch capped the trainer at
+        --max_examples 90000 (train_v5.log "examples: 90000"); the pool's own
+        total is not printed in the digest.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: 1
+    - path: /home/ben/task/rejection_pool.jsonl
+      source: "synthetic:self (sampled from the exp-05 checkpoint)"
+      n_examples: null
+      built_by: /home/ben/task/gen_rejection.py
+      build_command: [timeout, "2400", python, gen_rejection.py]
+      selection: >-
+        for every GSM8K-train question, 4 samples from sft_v4 (temperature 0.8,
+        top_p 0.95, max_tokens 512, stop_token_ids [151645, 151643]) behind a
+        4-shot eval-style prefix built from the first 4 train rows; a sample is
+        kept only if it contains "ANSWER:" and its extracted number equals gold
+        (float compare), trimmed at the end of the ANSWER line, at most 2 kept per
+        question. The agent later described the result as "13.7K verified
+        on-distribution self-generated CoTs" [366]; the script's printed
+        covered/kept counts are not in the digest.
+      contamination_check: passed
+      mixture_weight: null
+      repeats: 3
+  method:
+    family: rft
+    framework: "transformers.Trainer (full fine-tune); sampling with vllm.LLM"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1600
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        seed 42 is the --seed argparse default of train_pool.py (not overridden by
+        the launch); scheduler/warmup/weight_decay/bf16, group_by_length=True,
+        gradient_checkpointing=True, save_strategy='no', logging_steps=25 are
+        hardcoded in that script's TrainingArguments; it patches eos_token_id to
+        [151643, 151645] in the saved config after training. gen_rejection.py uses
+        random.seed(0) and vllm gpu_memory_utilization 0.85, max_model_len 2048.
+    target_format: >-
+      same few-shot-mixed chat format as exp-04/exp-05 (p=0.15 exact 10-shot
+      prefix, p=0.30 zero-shot, else 1-5 random demos), completion
+      "{body}\nANSWER: {N}<|im_end|>\n", loss masked on the prompt
+  command:
+    argv: [nohup, python, train_pool.py, --pool, train_pool_v5.jsonl, --out, sft_v5,
+           --epochs, "2", --lr, "1e-5", --bs, "16", --accum, "2", --maxlen, "1600",
+           --max_examples, "90000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_pool.py
+    env: {}
+    log: /home/ben/task/train_v5.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 2.4
+
+evaluation:
+  protocol:
+    command: [timeout, "2400", python, evaluate.py, --model-path, sft_v5, --limit,
+              "500", --max-connections, "24", --max-tokens, "1024",
+              --gpu-memory-utilization, "0.85", --json-output-file, eval_v5_500.json]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.598
+    path: /home/ben/task/eval_v4_500.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 2.003
+  output_checkpoint: /home/ben/task/sft_v5
+  training_summary:
+    final_loss: 0.1507
+    steps: 5626
+    notes: >-
+      last logged 'loss' 0.1507, reported train_loss 0.1588, 2 epochs over 90000
+      examples (avg len 807.1 tokens, max 1600), train_runtime 7211.4 s
+      (train_v5.log)
+  measurements:
+    - metric: accuracy
+      value: 0.6667
+      n: 150
+      path: /home/ben/task/eval_v5.json
+      delta_vs_comparator: 0.04
+    - metric: accuracy
+      value: 0.666
+      n: 500
+      path: /home/ben/task/eval_v5_500.json
+      delta_vs_comparator: 0.068
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    66.7% vs 62.7% at --limit 150 and, on the 500-sample re-run of both
+    checkpoints the agent ordered because the 150 gap was inside the noise,
+    66.6% vs 59.8%. [389] "v5 (66.6%) clearly beats v4 (59.8%) on 500 samples -
+    rejection-sampling self-distillation gave ~7 points."
+  decision: adopt
+  next_step: >-
+    [393] one more STaR iteration with the stronger v5 as the generator.
+
+provenance:
+  kind: extracted
+  run_ref: r-d7327838
+  launch_i: 351
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [327, 329, 331]
+    setup: [332, 334, 345, 351]
+    evaluation: [373, 379, 384]
+    result: [370, 378, 389]
+    conclusion: [378, 389]
+  snapshot_files:
+    - gen_rejection.py
+    - build_v5.py
+    - train_pool.py
+    - train_v5.log
+    - eval_v5.json
+    - eval_v5_500.json
+    - eval_v4_500.json
+    - eval_v4.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the round-1 generation run [334] printed its covered/kept counts to a task output file that is not in the digest and not in the workspace; the only figure is the agent's '13.7K' at [366]"
+    - "build_v5.py's printed pool total is not in the digest; only the trainer's 'examples: 90000' after the cap is known"
+    - "the agent called the 150-sample gap (+4.0 pts) 'within noise' [378] and arbitrated on 500 samples; the 500-sample comparison is the one this card's verdict rests on"
+    - "the agent's own evals call evaluate.py on the official benchmark set (first N samples); no held-out dev set was built at any point in the run"

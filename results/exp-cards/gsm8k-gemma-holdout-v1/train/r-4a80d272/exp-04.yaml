@@ -1,0 +1,213 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 1.78
+
+problem:
+  statement: >-
+    The merged candidate solves the first problem correctly and then keeps
+    generating synthetic "next user/assistant" turns until the 1024-token cap,
+    so the scorer reads a later number: 0.04 accuracy on 50 samples despite
+    usable reasoning.
+  evidence:
+    - path: /home/ben/task/eval_candidate_b2_50.json
+      locator: "[147]"
+      observation: "0.04 on 50 samples, outputs hitting the 1024-token cap"
+    - path: /home/ben/task/logs/2026-04-26T16-10-15+02-00_gsm8k_VdCBQ8BDaV2wYzDzbgCj5k.json
+      locator: "[150]-[151], first 8 samples"
+      observation: >-
+        completions run to ~2836 characters, continuing "\nuser\n<next
+        problem>" after a correct "ANSWER: 81"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Training the target to terminate on the actual Qwen EOS token (and dropping
+    the long exact-system examples) will make the model stop immediately after
+    the "ANSWER:" line instead of continuing a conversation, recovering the
+    accuracy that the runaway generations were hiding.
+  mechanism: >-
+    The previous targets ended on <|im_end|>, which the evaluator's decoding
+    did not treat as a stop; putting <|endoftext|> at the end of each training
+    response makes the stop token one the runtime actually honours.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF: openai/gsm8k (main, train), plain prompt"
+      n_examples: null
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: "MATH_PROMPT_TEMPLATE user turn; target = rationale + \"ANSWER: <n>\" + <|endoftext|>"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 6
+    - path: null
+      source: "HF: openai/gsm8k (main, train), exact harness prompt"
+      n_examples: 0
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: "dropped on this launch (--gsm-exact-repeats 0)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+      repeats: 0
+    - path: null
+      source: "HF: clarkkitchen22/SynthGSM8K-50K (train)"
+      n_examples: 20000
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: "shuffle(seed=42), first 20000; unparseable answers dropped"
+      contamination_check: passed
+      mixture_weight: null
+      repeats: 1
+    - path: null
+      source: "HF: HuggingFaceH4/orca-math-word-problems-200k (train_sft)"
+      n_examples: 10000
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: "shuffle(seed=42), first 10000; unparseable answers dropped"
+      contamination_check: passed
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer + peft LoRA (custom script train_math_sft.py)"
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 1.8e-4
+      epochs: 1
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        --terminator eos on this launch (response suffix <|endoftext|>).
+        warmup_ratio 0.03 and seed 42 are train_math_sft.py argparse defaults,
+        not overridden; cosine schedule, bf16, optim=adamw_torch_fused,
+        max_grad_norm=1.0, group_by_length=True are hard-coded there.
+    target_format: >-
+      ChatML user turn, assistant turn = rationale + "ANSWER: <n>" + <|endoftext|>
+  command:
+    argv:
+      - python
+      - train_math_sft.py
+      - --output-dir
+      - runs/candidate_lora_c
+      - --final-dir
+      - runs/candidate_c_merged
+      - --max-seq-length
+      - "1024"
+      - --orca-limit
+      - "10000"
+      - --synth-limit
+      - "20000"
+      - --gsm-repeats
+      - "6"
+      - --gsm-exact-repeats
+      - "0"
+      - --per-device-batch-size
+      - "8"
+      - --grad-accum
+      - "4"
+      - --epochs
+      - "1"
+      - --learning-rate
+      - "1.8e-4"
+      - --lora-r
+      - "32"
+      - --lora-alpha
+      - "64"
+      - --lora-dropout
+      - "0.05"
+      - --save-steps
+      - "500"
+      - --logging-steps
+      - "20"
+      - --num-proc
+      - "8"
+      - --terminator
+      - eos
+    cwd: /home/ben/task
+    script: /home/ben/task/train_math_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: 0.03
+  duration_h: 0.03
+  steps: 0
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 0
+    notes: "CUDA OOM at step 0 of 2338 with per-device batch size 8"
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 4.64 GiB.
+    GPU 0 has a total capacity of 79.18 GiB of which 3.01 GiB is free
+    (transformers/loss/loss_utils.py -> fixed_cross_entropy), 0/2338 [00:42<?, ?it/s]
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The EOS-terminator run OOM'd on the first step at per-device batch size 8,
+    the same batch size that had already OOM'd at [87]. Nothing about the
+    terminator hypothesis was measured.
+  decision: abandon_line
+  next_step: "Same recipe at per-device batch size 4 / grad accum 8 (done at [164])."
+
+provenance:
+  kind: extracted
+  run_ref: r-4a80d272
+  launch_i: 161
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [147, 150, 151, 155]
+    setup: [158, 161]
+    evaluation: []
+    result: [162]
+    conclusion: [162, 164]
+  snapshot_files:
+    - train_math_sft.py
+    - eval_candidate_b2_50.json
+  smoke_runs:
+    - {launch_i: 158, outcome: "passed (data build only, --skip-train --terminator eos, orca/synth limit 2, max-seq 256; tokenized 7,477 examples)"}
+  extractor: claude-opus-5
+  unresolved:
+    - "the evaluator log the failure analysis was read from is not in the workspace snapshot (no logs/ directory)"

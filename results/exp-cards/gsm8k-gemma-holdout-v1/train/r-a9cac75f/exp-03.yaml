@@ -1,0 +1,227 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The training taught the model a different format ('The answer is X' inside
+    `<think>` blocks) that conflicts with the evaluation prompt format. The
+    model generates the ANSWER: line from the few-shot examples but then
+    continues generating irrelevant text." The evaluator scores with
+    match(numeric=True) on a final line "ANSWER: $ANSWER", so the trained model
+    scores 0.060 while the untrained base scores 0.120.
+  evidence:
+    - path: /home/ben/task/eval_v1.json
+      locator: "[149]"
+      observation: "exp-02 output scores accuracy 0.060 at --limit 50, half the base model's 0.120"
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      locator: "[154]-[160]"
+      observation: >-
+        agent at [160]: "the evaluation uses `match(numeric=True)` and expects
+        answers in the format `ANSWER: $ANSWER`... My training data uses
+        `The answer is X.` format which doesn't match."
+    - path: /home/ben/task/logs/2026-02-13T12-18-14+01-00_gsm8k_Tz7Kapir5tsVwYb5bA749U.json
+      locator: "[162], [165] - first 10 items"
+      observation: >-
+        outputs are 4400-6600 characters long, carry an ANSWER string but no
+        <think> block, and run past the answer into unrelated text
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-02-13T12-18-14+01-00_gsm8k_Tz7Kapir5tsVwYb5bA749U.json
+      question: null
+      gold: "540"
+      model_output: >-
+        "...there are infinitely many ways to choose four points on a unit
+        circle. The number of quadrilaterals that satisfy the given condition is
+        at least infinite. ANSWER: at least infinite."
+      failure: "answered a different, invented question and emitted a non-numeric ANSWER line"
+    - id: null
+      source: /home/ben/task/logs/2026-02-13T12-18-14+01-00_gsm8k_Tz7Kapir5tsVwYb5bA749U.json
+      question: null
+      gold: "30"
+      model_output: >-
+        "...the new length of $AB$ after dilation is $6 \\times \\frac{2}{3} =
+        \\boxed{4}$. The answer is 4." followed by an unrelated sentence
+      failure: "used the trained 'The answer is X' / \\boxed form instead of an ANSWER line, on the wrong problem"
+    - id: null
+      source: /home/ben/task/logs/2026-02-13T12-18-14+01-00_gsm8k_Tz7Kapir5tsVwYb5bA749U.json
+      question: null
+      gold: "8"
+      model_output: >-
+        "...there are 10.5 more grams of non-filler in the new burger than the
+        old burger. #### 10.5" followed by unrelated non-English text
+      failure: "kept generating past the answer and finished on a GSM8K-style '####' line, not an ANSWER line"
+    - id: null
+      source: /home/ben/task/logs/2026-02-13T12-18-14+01-00_gsm8k_Tz7Kapir5tsVwYb5bA749U.json
+      question: null
+      gold: "7"
+      model_output: '"The average speed of the car is 80 km/hour. So, the correct answer is: E). 80 km."'
+      failure: "drifted into a multiple-choice item of its own invention; no ANSWER line at the end"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "I need to train with the EXACT format the evaluation uses" - rebuilding the
+    training targets as the evaluator's own prompt template followed by
+    reasoning and a final "ANSWER: {X}" line, and retraining from the base
+    model, will raise GSM8K accuracy over the mis-formatted exp-02 model.
+  mechanism: >-
+    The scorer only reads a final "ANSWER: $ANSWER" line; if the assistant turn
+    the model is trained to produce is literally that shape under the
+    evaluator's own user prompt, the score should follow the reasoning quality
+    instead of being lost to format mismatch.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data/train_v2.jsonl
+      source: "local (built from HF openai/gsm8k, meta-math/MetaMathQA, microsoft/orca-math-word-problems-200k)"
+      n_examples: 357257
+      built_by: /home/ben/task/prepare_data_v2.py
+      build_command: [python3, prepare_data_v2.py]
+      selection: >-
+        prepare_data_v2.py writes 312419 rows (GSM8K 7473 x3, all 240000
+        MetaMathQA-GSM, 50000 of 199460 Orca-Math, seed 42); the user turn is
+        the evaluator's math prompt template verbatim and the assistant turn is
+        "{reasoning}\nANSWER: {X}". train.py then repeats the gsm8k-tagged rows
+        3x again, so the launch actually saw GSM8K 9x (67257) + 240000 +
+        50000 = 357257, as printed in train_v2_log.txt.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: "gsm8k x9 (3x in the file, 3x again in the trainer), metamath x1, orca 50000/199460"
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (full fine-tune)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        Values are the module-level constants of task/train.py, which at this
+        launch differed from [88] only by the DATA_FILE edit at [176]; the
+        launch passed no arguments and so overrode nothing. Also set:
+        gradient_checkpointing=True, tf32=True, optim=adamw_torch_fused,
+        max_grad_norm=1.0, attn_implementation=flash_attention_2,
+        save_steps=total_steps//4, dynamic padding, loss masked to the
+        assistant span.
+    target_format: >-
+      user turn = the evaluator's prompt ("Solve the following math problem step
+      by step. The last line of your response should be of the form
+      \"ANSWER: $ANSWER\"... Reasoning:"); assistant turn = the reasoning then a
+      final line "ANSWER: {X}", answers stripped of $ and commas.
+  command:
+    argv: [python3, train.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/train_v2_log.txt
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 2.2
+
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, /home/ben/task/final_model, --limit, "50", --max-connections, "2", --max-tokens, "4000", --json-output-file, eval_v2_50.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.06
+    path: /home/ben/task/eval_v1.json
+  diagnostic:
+    what: "read the first five eval outputs end-to-end at [209] to see where the generation goes wrong"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 2.82
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.1634
+    steps: 5582
+    notes: >-
+      last logged step loss 0.1634 at step 5575, first logged 0.4871;
+      trainer-reported mean train_loss 0.1697, train_runtime 10142.1 s, 1.0
+      epoch (train_v2_log.txt).
+  measurements:
+    - metric: accuracy
+      value: 0.06
+      n: 50
+      path: /home/ben/task/eval_v2_50.json
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      at [210]-[211] the agent found the model now gives the right answer early
+      ("sample 2: ANSWER: 540 which is correct") but keeps generating new
+      questions and further ANSWER lines, "and the scorer takes the LAST
+      answer"; output tokens rose to 76,280.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Matching the evaluator's answer format did not move the score: 0.060 at
+    --limit 50, the same as exp-02 and still below the 0.120 base. The agent
+    localised the remaining fault at [211] - the model does not stop after the
+    first answer because <|im_end|> is not in the checkpoint's eos_token_id, so
+    the scorer reads the last of several ANSWER lines.
+  decision: adopt
+  next_step: >-
+    Add <|im_end|> (151645) to the checkpoint's eos_token_id and re-evaluate the
+    same weights before training anything further.
+
+outcome:
+  official_accuracy: null   # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-a9cac75f
+  launch_i: 182
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [149, 160, 162, 165, 166]
+    setup: [167, 169, 176, 182]
+    evaluation: [206]
+    result: [203, 207, 210]
+    conclusion: [211]
+  snapshot_files:
+    - prepare_data_v2.py
+    - train.py
+    - train_v2_log.txt
+    - eval_v2_50.json
+    - eval_v1.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "decision is adopt because these weights are the parent of exp-04 and exp-05, not because the measurement was good - on its own eval this launch matched exp-02 and lost to the base model"
+    - "the double repetition of GSM8K (9x) looks unintended: the comment in train.py still says 3x"
+    - "eval_v1.json (the comparator) ran with --max-tokens 2048 and eval_v2_50.json with 4000; --limit is 50 in both"
+    - "no contamination check was run by the agent; the workspace file contamination_judgement.txt reads 'contamination detected', but the stream contains no check"
+    - "failure examples come from the evaluator's own log of the official split, the only failing items the agent printed; no dev/probe set was ever built"

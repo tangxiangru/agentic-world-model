@@ -1,0 +1,217 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The packed-SFT checkpoint scores 0.060 at --limit 50: "The accuracy is only 6%
+    (0.060). That's quite low. The issue is likely that the model generates
+    `<think>` tags which interfere with answer extraction, or the model hasn't
+    learned the exact answer format expected by the evaluator" [319]. Reading the
+    eval samples, the model does not stop after its answer - it rolls straight on
+    into further invented questions and answers, which the agent attributes to
+    packing having hidden the EOS token: "I need the model to properly learn EOS
+    tokens" [331].
+  evidence:
+    - path: /home/ben/task/logs/2026-03-21T15-56-45+01-00_gsm8k_f64R7WGq8UoXd48JSAo3hF.json
+      locator: "[320], [321] - samples 0-4 of the --limit 50 eval"
+      observation: "assistant turns continue past their own ANSWER line into new self-generated problems"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-03-21T15-56-45+01-00_gsm8k_f64R7WGq8UoXd48JSAo3hF.json
+      question: null
+      gold: null
+      model_output: >-
+        "... So in total, Mary reads 90 + 80 + 400 + 580 = <<90+80+400+580=1150>>
+        1150 pages in the month of March.\n\nANSWER: 1150\n\nSue and her friends
+        went to a restaurant. They ordered a pizza pie that was cut into 8
+        slices... ANSWER: 2\n\nIf John drives at a speed of 25 km / h for 3
+        hours... ANSWER: 145"
+      failure: >-
+        no EOS - the model emits its ANSWER and then generates two more
+        question/answer pairs of its own (printed at [321]; the item id, question
+        and gold were not printed, and the digest block is truncated at the head)
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "Training without packing will be slower per step but I need the model to
+    properly learn EOS tokens. Let me train with a smaller dataset (100K samples)
+    for 1 epoch to be safe on time" [331] - i.e. turning packing off will make the
+    model terminate at the end of its answer and lift accuracy above the 6% of
+    exp-05.
+  mechanism: >-
+    With packing=True, examples are concatenated into fixed-length blocks, so the
+    EOS boundary between examples is not learned; unpacked examples end at EOS
+    [331], [326].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: meta-math/MetaMathQA
+      n_examples: 240000
+      built_by: /home/ben/task/train.py
+      build_command: []
+      selection: >-
+        as exp-03 (GSM_Rephrased / GSM_AnsAug / GSM_SV / GSM_FOBAR, response
+        rewritten to end in "#### <answer>"), but the shuffled pool of 262419 was
+        then truncated to the first 100000 rows by --max-samples 100000 [334],
+        [135]; the per-source composition of that 100k subsample was never printed
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+    - path: null
+      source: openai/gsm8k (main, train split)
+      n_examples: 22419
+      built_by: /home/ben/task/train.py
+      build_command: []
+      selection: >-
+        7473 rows x3 with <<...>> annotations stripped, shuffled into the same
+        pool before the 100000-row truncation
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 3
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129) [23]
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/batch_size/grad_accum/max_seq_len/warmup/max_samples=100000/
+        save_steps=2000/logging_steps=50 from the launch argv [334]. scheduler,
+        weight_decay, seed and bf16 are values in train.py as it stands in the
+        workspace snapshot - which is exactly the version this launch ran (last
+        edited at [326]) - and were not overridden. packing=False is the
+        intervention [326]; dataset_num_proc=8, gradient_checkpointing=True,
+        save_total_limit=2, flash_attention_2 unchanged.
+    target_format: >-
+      Qwen3 chat template, system+user+assistant, assistant answer ends in
+      "#### <number>" [135]
+  command:
+    argv:
+      - python
+      - train.py
+      - --output-dir
+      - trained_model_v2
+      - --dataset
+      - metamath_gsm
+      - --num-epochs
+      - "1"
+      - --batch-size
+      - "8"
+      - --grad-accum
+      - "4"
+      - --learning-rate
+      - "2e-5"
+      - --max-seq-length
+      - "1024"
+      - --warmup-ratio
+      - "0.03"
+      - --max-samples
+      - "100000"
+      - --save-steps
+      - "2000"
+      - --logging-steps
+      - "50"
+      - 2>&1
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: 1x H100 80GB
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol: null           # evaluated only after packaging as final_model - exp-07
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: 3125
+  output_checkpoint: /home/ben/task/trained_model_v2
+  training_summary:
+    final_loss: null
+    steps: 3125
+    notes: >-
+      No loss was ever printed for this run (save_steps=2000, and the agent read
+      no trainer_state.json). Step count from [356]: "Checkpoint-2000 at 16:32.
+      Training should be done soon (1125 steps left)"; completion announced at
+      [363]. Timer read 3:47 remaining just before the launch [330].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Training finished, but the packaged copy (exp-07) scored 0.033 at --limit 150
+    against exp-05's 0.060 at --limit 50 - "Only 3.3% accuracy. Even worse" [372] -
+    and the outputs were degenerate rather than merely unterminated. Different
+    --limit, so no verdict on the EOS claim; the agent nonetheless dropped this
+    line.
+  decision: reject
+  next_step: >-
+    Fall back to the exp-03 checkpoint as final_model and train a third variant on
+    the full 262k rows at lr 5e-5 (exp-08, exp-09).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-139b3113
+  launch_i: 334
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [319, 320, 321]
+    setup: [326, 331, 334]
+    evaluation: []
+    result: [356, 363]
+    conclusion: [372, 374, 376]
+  snapshot_files:
+    - train.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "no loss curve, step time or duration was printed for this run; the 3125 steps are inferred from the agent's '1125 steps left' at [356]"
+    - "which 100000 of the 262419 shuffled rows were kept was never printed"
+    - "no contamination check was run in the stream; contamination_judgement.txt in the workspace (harness artifact) reads 'no contamination detected'"

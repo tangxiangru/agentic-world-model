@@ -1,0 +1,200 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    [439] "The first self-training recipe was close but not better: `0.42` versus
+    the fallback `0.44`. That suggests the direction is viable, but the update was
+    still too aggressive."
+  evidence:
+    - path: /home/ben/task/exp_selftrain200_lora_r16_lr1e5_eval50.json
+      locator: "[435]"
+      observation: "self-training LoRA on 200 harvested traces: 0.42 on 50 samples"
+    - path: /home/ben/task/final_model_candidate_eval50.json
+      locator: "[432]"
+      observation: "the near-base incumbent is pinned at 0.44 on the same 50 samples"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    [439] "one broader-but-gentler variant next: more self-generated data,
+    lower-rank adapter, lower learning rate"; [444] "training the gentler 1k-trace
+    adapter now with `rank=8` and `lr=5e-6` to see if broader coverage plus a
+    smaller update beats the `0.44` fallback."
+  mechanism: >-
+    [446] "the update is much smaller, and the adapter footprint is half the
+    previous experiment" - wider coverage of the self-generated distribution with
+    a smaller parameter change should add the format habit without disturbing the
+    base behaviour.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: >-
+    [446] "If it still regresses on GSM8K after this, that's a strong signal that
+    the safest near-base model is the right final submission."
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/selftrain_greedy_1000.jsonl
+      source: synthetic:self
+      n_examples: 893
+      built_by: /home/ben/task/build_selftrain_dataset.py
+      build_command:
+        - python
+        - build_selftrain_dataset.py
+        - --output-jsonl
+        - data/selftrain_greedy_1000.jsonl
+        - --limit
+        - "1000"
+        - --gpu-memory-utilization
+        - "0.4"
+      selection: >-
+        same harvest recipe as exp-07 over the first 1000 GSM8K train questions
+        (after removing the 10 demonstration rows): 10-shot system message from
+        the seed-42 shuffle, the exact Inspect user prompt, greedy decoding, max
+        512 new tokens, keep only traces whose "ANSWER:" line normalises to gold
+        and truncate at that line. [441] 893 of 1000 kept (keep_rate 0.893). The
+        trainer then held out --eval-size 64 of them; the resulting training-row
+        count was not printed.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: rft
+    framework: vLLM harvest + transformers.Trainer + peft LoRA (versions not printed in the stream)
+    peft: "LoRA r=8 alpha=16 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1
+      batch_size: 1
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/batch_size/grad_accum/max_seq_len, --train-jsonl, --eval-size 64,
+        --lora --lora-r 8 --lora-alpha 16 --merge-adapter --save-strategy no from
+        the launch argv at [443]. lora dropout 0.05, target modules, warmup 0.03,
+        weight_decay 0.01 and seed 42 are argparse defaults of
+        /home/ben/task/train_qwen_gsm8k.py which the launch did not override;
+        scheduler and bf16 are hard-coded there.
+    target_format: >-
+      same as exp-07: the harvested record's 10-shot system message plus Inspect
+      user prompt under templates/qwen3.jinja, assistant turn = the base model's
+      own greedy trace truncated at its first correct "ANSWER: <n>" line, loss
+      masked to the assistant span.
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - 'python train_qwen_gsm8k.py --output-dir exp_selftrain1000_lora_r8_lr5e6 --train-jsonl data/selftrain_greedy_1000.jsonl --eval-size 64 --max-length 3072 --num-train-epochs 1 --learning-rate 5e-6 --per-device-train-batch-size 1 --per-device-eval-batch-size 1 --gradient-accumulation-steps 16 --logging-steps 5 --save-strategy no --lora --lora-r 8 --lora-alpha 16 --merge-adapter'
+    cwd: /home/ben/task
+    script: /home/ben/task/train_qwen_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - exp_selftrain1000_lora_r8_lr5e6
+      - --limit
+      - "50"
+      - --json-output-file
+      - exp_selftrain1000_lora_r8_lr5e6_eval50.json
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.5"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.44
+    path: /home/ben/task/final_model_candidate_eval50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/exp_selftrain1000_lora_r8_lr5e6
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      the training output for this run was not shown in the stream; [450] reports
+      it "trained and merged" before the eval at [449].
+  measurements:
+    - metric: accuracy
+      value: 0.36
+      n: 50
+      path: /home/ben/task/exp_selftrain1000_lora_r8_lr5e6_eval50.json
+      delta_vs_comparator: -0.08
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    More self-generated data with a gentler adapter went the wrong way: 0.36 on 50
+    samples against the incumbent's 0.44 under the same protocol, and below the
+    smaller 200-trace variant's 0.42. [458] "The search converged. The broader
+    self-training variants both underperformed, and the best verified checkpoint
+    remains the near-base tiny-update model at `0.44` on 50 samples."
+  decision: reject
+  next_step: >-
+    [458] promote the near-base candidate to final_model (exp-09).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-0295e24f
+  launch_i: 443
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [432, 435, 439]
+    setup: [440, 441, 443, 444]
+    evaluation: [449]
+    result: [451]
+    conclusion: [458]
+  snapshot_files:
+    - build_selftrain_dataset.py
+    - train_qwen_gsm8k.py
+    - exp_selftrain1000_lora_r8_lr5e6_eval50.json
+    - final_model_candidate_eval50.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "no training log for this run appears in the stream: final loss, step count and runtime are unknown"
+    - "the harvested 1000-trace dataset file is not in the workspace snapshot"

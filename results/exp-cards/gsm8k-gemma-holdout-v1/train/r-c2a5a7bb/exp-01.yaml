@@ -1,0 +1,175 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The model to be post-trained is a base model, so it does not follow the
+    evaluator's instruction format at all: the eval sends a system message of 10
+    few-shot examples plus a math prompt that demands a step-by-step solution
+    whose last line is "ANSWER: $ANSWER", and a base checkpoint has no reason to
+    produce that shape [35], [38].
+  evidence:
+    - path: /home/ben/task/evaluate.py
+      locator: "[29]-[35]"
+      observation: >-
+        the agent traced the eval task from evaluate.py and summarised it: 10 few-shot examples
+        drawn from the gsm8k train split (shuffled, seed 42), a math prompt
+        template ending in "ANSWER: $ANSWER", numeric match scoring, Qwen3 chat
+        template with <|im_start|> tokens
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SFT on diverse math datasets formatted in the exact eval format" [38] -
+    supervised fine-tuning on GSM8K train plus the GSM subset of MetaMathQA,
+    with every target shaped as chain-of-thought reasoning ending in
+    "ANSWER: {number}", will make the base model answer in the graded format.
+  mechanism: >-
+    "The key is to format training data to match the evaluation format ...
+    Assistant response with step-by-step reasoning ending with ANSWER: {number}"
+    [38]; the base model needs SFT to follow instructions at all.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "HF openai/gsm8k (config main, split train) + HF meta-math/MetaMathQA (type contains GSM)"
+      n_examples: 27463
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        prepare_data.py [41], run at [43]. (a) all 7,473 GSM8K train rows minus
+        the 10 the eval uses as few-shot (indices 4833, 3457, 3620, 6312, 5032,
+        1258, 3341, 1458, 5173, 1914, reproduced with random.seed(42) and the
+        same shuffle) = 7,463 rows, calculator annotations <<...>> stripped,
+        final number taken from after "####"; (b) MetaMathQA rows whose type
+        contains "GSM" (240,000 available) whose "The answer is:" tail parses to
+        a number, shuffled and cut to 20,000. Every row is a user/assistant
+        message pair: user = the evaluator's math prompt template, assistant =
+        "{reasoning}\n\nANSWER: {answer}". seed 42.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (versions printed at [23]/[24]: transformers 4.57.3, datasets 4.5.0, torch 2.8.0+cu129, trl 0.27.2, peft 0.18.1, bitsandbytes 0.49.1)"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj (132,120,576 trainable params)"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        The launch takes no arguments; every value is a module-level constant in
+        the script, so all of them come from the script text and none was
+        overridden. The version launched here is the one written at [46], which
+        is NOT the train.py in the workspace snapshot (that file is the [68]
+        rewrite): [46] passes max_seq_length=1024 and dataset_text_field="text"
+        to SFTConfig, which is what the launch died on. Also hardcoded:
+        gradient_checkpointing=True, optim="adamw_torch", packing=False,
+        save_strategy="steps"/save_steps=500/save_total_limit=2,
+        logging_steps=50, dataloader_num_workers=4.
+    target_format: >-
+      /home/ben/task/templates/qwen3.jinja applied with
+      add_generation_prompt=False and enable_thinking=False, which prefixes the
+      assistant turn with "<think>\n\n</think>\n\n"; assistant turn =
+      "{reasoning}\n\nANSWER: {n}" + <|im_end|>
+  command:
+    argv: [python3, train.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: null
+  training_summary: {final_loss: null, steps: null, notes: "died while building SFTConfig, before the trainer was constructed; the dataset had already been mapped (27,463 rows)"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: |-
+    Traceback (most recent call last):
+      File "/home/ben/task/train.py", line 109, in <module>
+        training_args = SFTConfig(
+    TypeError: SFTConfig.__init__() got an unexpected keyword argument 'max_seq_length'
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first SFT launch crashed on an API mismatch in the installed TRL
+    (SFTConfig takes max_length, not max_seq_length) before a single step ran,
+    so the hypothesis was not tested. The agent inspected the signature at [51]
+    and patched the file.
+  decision: iterate
+  next_step: >-
+    Same data and same hyper-parameters, with max_seq_length renamed to
+    max_length [53] and the SFTTrainer call reworked after checking its
+    signature [55]/[62]; relaunched as exp-02.
+
+provenance:
+  kind: extracted
+  run_ref: r-c2a5a7bb
+  launch_i: 48
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [29, 35, 38]
+    setup: [41, 43, 44, 46]
+    evaluation: []
+    result: [49]
+    conclusion: [50, 51, 53]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the train.py in the workspace is the [68] rewrite, not the text that this launch ran; the launched text is only in the digest at [46]"
+    - "no base-model baseline was measured under any protocol at any point in the run, so no card in this run has a base_model comparator"

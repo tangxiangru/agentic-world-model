@@ -1,0 +1,196 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 3.17
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The RFT hypothesis is still untested because the previous launch crashed on every
+    checkpoint save: setting temperature (with do_sample=False) and max_new_tokens=None
+    on the model's generation_config before training makes transformers' validation
+    reject the save, so 50 minutes of training produced no usable checkpoint.
+  evidence:
+    - path: /home/ben/task/logs/train_v2.log
+      locator: "[391], traceback tail"
+      observation: "ValueError: GenerationConfig is invalid, raised from Trainer._save_checkpoint at step 2290"
+    - path: /home/ben/task/ckpts/sft_v2/checkpoint-2290
+      locator: "[384], [387]"
+      observation: "checkpoint dir contains only config.json - no weights, no tokenizer"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    With the pre-training generation_config settings reverted (only eos_token_id kept)
+    and step-based save_only_model checkpoints, the same RFT-augmented data will train
+    and save cleanly, and training on self-generated correct solutions on top of the
+    original SFT data will beat the 84% SFT plateau.
+  mechanism: >-
+    Agent at [399]: "transformers' GenerationConfig.validate() rejects setting
+    temperature when do_sample=False - that's what crashed every checkpoint save. The
+    fix: don't pre-set generation config on the model (v1's post-training dict patch
+    bypasses validation and works)"; the RFT rationale is unchanged from [181]/[312].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--Qwen--Qwen3-4B-Base/snapshots/906bfd4b4dc7f14ee4320094d8b41684abff8539
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "derived:exp-01 (self-sampled solutions) + local (the exp-01 SFT file)"
+      n_examples: 73279
+      built_by: /home/ben/task/scripts/combine_rft.py
+      build_command: [python, scripts/combine_rft.py, --base, data/sft_v1.jsonl, --rft,
+                      data/rft_solutions.jsonl, --out, data/sft_v2.jsonl, --rft_upsample, "1"]
+      selection: >-
+        the same file built at [342]: data/sft_v1.jsonl (47473 examples) plus the RFT
+        solutions wrapped in the eval prompt format, shuffled with seed 42
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "rft_upsample=1 (RFT solutions used once)"
+    - path: /home/ben/task/data/rft_solutions.jsonl
+      source: synthetic:self
+      n_examples: null
+      built_by: /home/ben/task/scripts/rft_generate.py
+      build_command: [nohup, python, scripts/rft_generate.py, --model, ckpts/sft_v1/checkpoint-2968,
+                      --out, data/rft_solutions.jsonl, --k, "4", --temp, "0.8", --top_p, "0.95",
+                      --max_tokens, "768", --gpu_mem, "0.85"]
+      selection: >-
+        4 samples per GSM8K train question from checkpoint-2968 at temperature 0.8 /
+        top_p 0.95, seed 0; keep only samples whose ANSWER value matches gold,
+        deduplicated per question ([182], launched at [313])
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: rft
+    framework: "transformers.Trainer (transformers 4.57.3, version read off generation_config.json at [586])"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/bs/accum/max_len from the launch argv at [422]; scheduler,
+        weight_decay, precision and seed are literals in the script as edited at [416]
+        and [418] (script not in the workspace snapshot, so no argparse defaults are
+        filled - warmup_ratio is left null). This version sets only
+        model.generation_config.eos_token_id=151645 before training and saves with
+        save_strategy="steps", save_steps=760, save_total_limit=8, save_only_model=True.
+    target_format: >-
+      eval chat format, assistant turn ends with "ANSWER: <number>" and <|im_end|>
+  command:
+    argv: [nohup, python, scripts/train_sft.py, --data, data/sft_v2.jsonl, --out, ckpts/sft_v2,
+           --epochs, "2", --lr, "1e-5", --bs, "16", --accum, "2", --max_len, "1024"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 1.6           # "4580 steps, ~1.6h" [427]
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/sft_v2/checkpoint-4560, --limit, "150",
+              --max-connections, "16", --json-output-file, logs/eval_v2_checkpoint-4560.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.84
+    path: /home/ben/task/logs/eval_v1_ep2.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.69
+  duration_h: 1.69
+  steps: 4580
+  output_checkpoint: /home/ben/task/ckpts/sft_v2
+  training_summary:
+    final_loss: null
+    steps: 4580
+    notes: >-
+      4580 steps (2 epochs). Checkpoints at 760/1520/2280/3040/3800/4560/4580 all saved
+      complete (weights + tokenizer + valid generation_config) after the fix, verified at
+      [428]/[438]; all were patched to greedy at [487]. No loss values in the log.
+      wall_h from event timestamps [422] (t=+3.17h) to [486] (t=+4.86h, completion
+      confirmed).
+  measurements:
+    - metric: accuracy
+      value: 0.82
+      n: 150
+      path: /home/ben/task/logs/eval_v2_checkpoint-2280.json
+      delta_vs_comparator: -0.02
+    - metric: accuracy
+      value: 0.813
+      n: 150
+      path: /home/ben/task/logs/eval_v2_checkpoint-3800.json
+      delta_vs_comparator: -0.027
+    - metric: accuracy
+      value: 0.82
+      n: 150
+      path: /home/ben/task/logs/eval_v2_checkpoint-4560.json
+      delta_vs_comparator: -0.02
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Agent at [499]: "v2 (RFT) did not improve over v1: v2 checkpoints scored 82%
+    (epoch 1) / 81.3% / 82% vs v1 epoch-2's 84%. The self-generated solutions didn't
+    help (likely diluted quality). The differences are within noise, but v1 epoch-2
+    remains the nominal best and is secured in final_model."
+  decision: reject
+  next_step: >-
+    Take the highest-upside swing left - GRPO on the v1 epoch-2 model to optimise
+    answer correctness directly ([499]).
+
+provenance:
+  kind: extracted
+  run_ref: r-ee271986
+  launch_i: 422
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [384, 387, 391, 393, 399]
+    setup: [313, 342, 416, 418, 422]
+    evaluation: [487, 491]
+    result: [427, 438, 486, 488, 491, 499]
+    conclusion: [499]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The three v2 numbers were reported at [499] as '82% (epoch 1) / 81.3% / 82%' while the evals at [491] ran in the order 4560, 3800, 2280; the mapping used here (2280=0.82 as the labelled epoch-1, 3800=0.813, 4560=0.82) is the reading that makes the epoch-1 label consistent, but the raw JSON values were not shown per checkpoint."
+    - "The RFT hypothesis was tested only with rft_upsample=1 and one SFT recipe; no ablation of the RFT data on its own."

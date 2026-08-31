@@ -1,0 +1,223 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Training and inference use different prompts. The trainer renders a simplified
+    system/user block of its own, while the evaluator's chat template "injects a
+    large default system preamble and starts assistant generations differently", and
+    the benchmark task also injects a fixed set of 10 GSM8K train few-shot exemplars
+    that the model never sees during training [66][486][495].
+  evidence:
+    - path: /home/ben/task/evaluate.py
+      locator: "[469][486]"
+      observation: >-
+        the evaluator prompts through templates/smollm.jinja with a metadata/system
+        preamble and requires the final line to be exactly "ANSWER: ..."
+    - path: /home/ben/task/train_math_sft.py
+      locator: "[459][468]"
+      observation: >-
+        "a straightforward assistant-only SFT with a custom system/user template" -
+        i.e. not the evaluator's rendering
+    - path: null
+      locator: "[499]"
+      observation: >-
+        measured prompt lengths under the aligned format: prompt p50 2055 / max 2119
+        tokens, full sequence p50 2153 / max 2311 - which set the 2560 max-length
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Training against the exact evaluator chat template, including the fixed 10
+    GSM8K few-shots the benchmark injects at inference, is "the cleanest remaining
+    hypothesis for a real accuracy gain" and is the highest-yield remaining lever
+    [495][513].
+  mechanism: >-
+    Removing the train/inference prompt-distribution mismatch means the model is
+    optimised on exactly the context it is scored in, so the supervised behaviour
+    should transfer instead of being disrupted by an unfamiliar preamble and
+    few-shot block.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: >-
+    Selection rule stated in advance at [599][602]: promote only if the checkpoint
+    clears the existing 0.40 on the 50-item slice; a tie or a marginal edge would
+    force a 150-item comparison before replacing the current best.
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF id: openai/gsm8k (main, train split)"
+      n_examples: null
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: >-
+        Same rows as exp-01 (--dataset-mix gsm8k, shuffled seed 42, first 256 held
+        out), but rendered with --prompt-format inspect_smollm: the tokenizer's chat
+        template is loaded from templates/smollm.jinja and a system message is built
+        from 10 GSM8K train few-shots (shuffle seed 42, the evaluator's own set,
+        listed at [498]), then the user turn uses the benchmark's math prompt
+        template. Row count not printed; the run was 226 optimizer steps per epoch.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 + peft 0.18.1 (torch 2.8.0+cu129) [13][20]"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=all-linear use_rslora=True"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        lr, epochs, per-device batch sizes (train 8 / eval 4), grad_accum, max_length
+        2560, logging_steps 10, save-strategy epoch, save_total_limit 3 and
+        eval-strategy no are from the launch argv at [514]. --prompt-format
+        inspect_smollm was added to the script for this launch [505][507].
+        fewshot_count 10, fewshot_seed 42 and chat_template_path
+        templates/smollm.jinja are argparse defaults from the snapshot
+        train_math_sft.py that the launch did not override; so are scheduler
+        (cosine), warmup_ratio 0.03, weight_decay 0.01, seed 42, bf16,
+        gradient_checkpointing, optim adamw_torch_fused and the LoRA config.
+        Throughput was about 8-9 s/step [525][530].
+    target_format: >-
+      "inspect_smollm" prompt mode: the evaluator's own smollm.jinja chat template,
+      a system message of 10 fixed GSM8K few-shot exemplars, the benchmark's math
+      prompt as the user turn, and the assistant span ending "\n\nANSWER: <n>";
+      prompt tokens masked to -100.
+  command:
+    argv:
+      - python
+      - train_math_sft.py
+      - --output-dir
+      - runs/inspect_aligned_gsm8k
+      - --dataset-mix
+      - gsm8k
+      - --prompt-format
+      - inspect_smollm
+      - --max-length
+      - "2560"
+      - --num-train-epochs
+      - "2"
+      - --learning-rate
+      - "2e-4"
+      - --per-device-train-batch-size
+      - "8"
+      - --per-device-eval-batch-size
+      - "4"
+      - --gradient-accumulation-steps
+      - "4"
+      - --logging-steps
+      - "10"
+      - --save-strategy
+      - epoch
+      - --save-total-limit
+      - "3"
+      - --eval-strategy
+      - "no"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_math_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [12]"
+    planned_h: 1.17
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.40
+    path: /home/ben/task/runs/pilot_gsm8k_eval50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/inspect_aligned_gsm8k/checkpoint-452
+  training_summary:
+    final_loss: null
+    steps: 452
+    notes: >-
+      Two epochs completed; checkpoint-226 saved at [649] and checkpoint-452 at
+      [724], both confirmed by directory-watch loops [534][647]. Epoch-1 training
+      loss settled "around the low-0.5 range" [648], but the agent explicitly refused
+      to select on it. Both checkpoints were merged and scored by
+      score_checkpoints.py, whose invocation never appears as a command in the stream;
+      its per-checkpoint JSON is echoed at [748].
+  measurements:
+    - metric: accuracy
+      value: 0.08
+      n: 50
+      path: /home/ben/task/runs/inspect_aligned_gsm8k/checkpoint_scores_limit50.json
+      delta_vs_comparator: -0.32
+    - metric: accuracy
+      value: 0.18
+      n: 50
+      path: /home/ben/task/runs/inspect_aligned_gsm8k/checkpoint_scores_limit50.json
+      delta_vs_comparator: -0.22
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "The prompt-aligned experiment is a loss: 0.08 at epoch 1 and only 0.18 at epoch
+    2 on 50 samples" [749] - both far below the 0.40 the pre-declared selection rule
+    required, so training in the evaluator's exact prompt format made GSM8K accuracy
+    worse rather than better. The branch was discarded.
+  decision: reject
+  next_step: >-
+    Promote the previously best verified model, the three-epoch GSM8K-only run in
+    runs/pilot_gsm8k, into final_model and verify that artifact on 150 items [749].
+
+provenance:
+  kind: extracted
+  run_ref: r-8c4cb1bc
+  launch_i: 514
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [468, 486, 495, 499]
+    setup: [504, 505, 513, 514]
+    evaluation: [599, 602, 730]
+    result: [724, 744, 748]
+    conclusion: [749]
+  snapshot_files:
+    - train_math_sft.py
+    - score_checkpoints.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: "claude-opus-5[1m]"
+  unresolved:
+    - "The checkpoint-scoring launch has no command block in the digest, so evaluation.protocol.command is empty; --limit 50 is confirmed by the eval summary echoed at [748]."
+    - "runs/inspect_aligned_gsm8k/checkpoint_scores_limit50.json is cited by the agent at [811] but is not in the workspace snapshot; the two accuracies are read from the JSON echoed at [748]."
+    - "Training-set size and final training loss are never printed for this launch."

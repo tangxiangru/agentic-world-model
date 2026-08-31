@@ -1,0 +1,213 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The first candidate scores 52% on 50 items. Reading its outputs, the failures
+    are reasoning and arithmetic errors (and one case of answering a different
+    question than the one asked), not format errors - the model reliably emits
+    the "ANSWER: <n>" line. The agent also suspected a train/inference mismatch:
+    the evaluation puts 10 few-shot examples in a system message, and the
+    training data has none.
+  evidence:
+    - path: /home/ben/task/eval_result_v1.json
+      locator: "whole file"
+      observation: "accuracy 0.52, stderr 0.0714 on 50 items"
+    - path: /home/ben/task/logs/2026-03-17T01-51-48+01-00_gsm8k_UxSjcSuu5UMA8PzEuK5PRN.json
+      locator: "[103], [104] - first 5 samples printed"
+      observation: "3 of the 5 printed samples correct; the two wrong ones carry fluent step-by-step reasoning to a wrong number"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-03-17T01-51-48+01-00_gsm8k_UxSjcSuu5UMA8PzEuK5PRN.json
+      question: "Marissa is hiking a 12-mile trail. She took 1 hour to walk the first 4 miles, then another hour to walk the next two miles. If she wants her average speed to be 4 miles per hour, what speed must she walk the remaining distance?"
+      gold: "6"
+      model_output: "She still needs to walk 12 miles - 6 miles = 6 miles ... She has 4 - 2 = 2 hours left. She needs to walk 6 miles / 2 hours = 3 miles per hour to finish the hike. ANSWER: 3"
+      failure: "used the wrong remaining-distance/remaining-time pair; the agent at [105]: 'the model got 3 but target was 6'"
+    - id: null
+      source: /home/ben/task/logs/2026-03-17T01-51-48+01-00_gsm8k_UxSjcSuu5UMA8PzEuK5PRN.json
+      question: "Richard lives in an apartment building with 15 floors. Each floor contains 8 units, and 3/4 of the building is occupied. What's the total number of unoccupied units in the building?"
+      gold: "30"
+      model_output: "15 floors x 8 units/floor = 120 units. Since 3/4 of the building is occupied, the unoccupied units are 120 x 1/4 = 30 units. Therefore, there are 120 - 30 = 90 unoccupied units. ANSWER: 90"
+      failure: "computed the right quantity (30) and then subtracted it again; the agent at [105]: 'it answered the wrong question'"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Training on more of the same mixture (80,000 samples instead of 50,000), for
+    2 epochs instead of 1, with a higher-capacity adapter (LoRA r=128,
+    alpha=256) and a longer context (1536), will raise accuracy above 52%. The
+    agent at [105]: "52% is a reasonable start, but I can improve it
+    significantly ... 1. More data and more epochs 2. Higher quality data ...
+    4. Longer training to better learn the format."
+  mechanism: >-
+    More gradient steps over more math traces, with more adapter capacity to
+    absorb them, should improve the reasoning itself rather than the formatting,
+    which was already correct.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "HF: openai/gsm8k (main, train) + meta-math/MetaMathQA (train)"
+      n_examples: 371323
+      built_by: /home/ben/task/prepare_data.py
+      build_command:
+        - python3
+        - prepare_data.py
+      selection: >-
+        Same file as exp-02 (GSM8K train + MetaMathQA GSM + MetaMathQA MATH with
+        integer answers); this launch subsamples 80,000 rows (shuffle seed 42)
+        via MAX_SAMPLES in train_v2.py. The agent also built
+        /home/ben/task/train_data_v2.jsonl at [111] (254,849 rows, GSM8K x2 with
+        and without a 5-10-shot system message, plus MetaMathQA GSM), but decided
+        at [113] not to train on it - "the system message can be 3000+ tokens,
+        leaving little room for the actual Q&A" - so no launch ever read it.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer / SFTConfig 0.27.2 (transformers 4.57.3, peft 0.18.1)
+    peft: "LoRA r=128 alpha=256 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj; base loaded in 4-bit nf4 (double quant, bf16 compute)"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 2
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        All values are module-level constants in train_v2.py (the launch passed
+        no arguments, so nothing was overridden); script text at [114] and in the
+        workspace snapshot. packing=True, optim=paged_adamw_8bit,
+        gradient_checkpointing=True, MAX_SAMPLES=80000,
+        attn_implementation=flash_attention_2. The script's own docstring
+        promises "full precision base model training (no quantization)", but the
+        code still loads the base in 4-bit nf4 - the docstring is wrong.
+    target_format: >-
+      Unchanged from exp-02: two-turn chat via templates/gemma3.jinja, assistant
+      turn ends in "ANSWER: <n>". No few-shot system message in training.
+  command:
+    argv:
+      - python3
+      - train_v2.py
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: null
+  budget:
+    gpu: "H100 80GB (single GPU)"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python3
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - /home/ben/task/final_model
+      - --limit
+      - "50"
+      - --json-output-file
+      - /home/ben/task/eval_result_v2.json
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "2048"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.52
+    path: /home/ben/task/eval_result_v1.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Adapter saved to /home/ben/task/checkpoints_v2/final_adapter, merged into
+      the base model, and written over /home/ben/task/final_model (the script
+      rmtree's the directory first and re-copies the processor configs). No loss
+      or step count is in the digest; the trainer stdout block at [117] was
+      truncated. The timer at [125], right after this launch, showed 6:02 of the
+      10 h budget left.
+  measurements:
+    - metric: accuracy
+      value: 0.5
+      n: 50
+      path: /home/ben/task/eval_result_v2.json
+      delta_vs_comparator: -0.02
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-03-17T04-50-11+01-00_gsm8k_VmyDJehZvtbpdZvFWUiRhW.json
+    notes: >-
+      At [132]/[133] the agent listed all 25 wrong items as target/answer pairs
+      (e.g. 30 -> 90, 20 -> 380, 45 -> 180, 125 -> 2.5, 230 -> "80, 150"); it read
+      them as arithmetic/reasoning errors, not format errors.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    50% against exp-02's 52% under the same 50-item protocol, i.e. the extra
+    data, epochs and adapter capacity bought nothing (the 2-pt gap is well inside
+    the 7-pt stderr of a 50-item eval). The agent at [135]: "the v2 model with
+    higher LoRA rank actually performed slightly worse, suggesting possible
+    overfitting."
+  decision: reject
+  next_step: >-
+    Drop the MetaMathQA MATH rows and the "#### n" markers from the targets, and
+    triple the original GSM8K items, i.e. attack data quality instead of data
+    quantity ([135]) - built as prepare_data_v3.py.
+
+provenance:
+  kind: extracted
+  run_ref: r-715efad9
+  launch_i: 116
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [101, 102, 103, 104, 105]
+    setup: [109, 111, 112, 113, 114, 116]
+    evaluation: [129]
+    result: [117, 125, 130, 132, 133]
+    conclusion: [135]
+  snapshot_files:
+    - prepare_data.py
+    - prepare_data_v2.py
+    - train_v2.py
+    - evaluate.py
+    - eval_result_v1.json
+    - eval_result_v2.json
+  smoke_runs: []
+  extractor: null                 # withheld: no model name is written into these cards
+  unresolved:
+    - "No loss or step count for this launch appears in the digest."
+    - "prepare_data_v2.py was run and its 254,849-row output written, but no launch trained on it."

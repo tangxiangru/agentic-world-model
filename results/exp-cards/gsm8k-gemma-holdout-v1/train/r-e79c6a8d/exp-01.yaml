@@ -1,0 +1,230 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 1.17
+
+problem:
+  statement: >-
+    The base model scores 0.400 on the benchmark at limit 150, and most of the
+    90 failures are contract failures rather than reasoning failures: 25
+    completions run to the token cap without stopping, 14 never emit the
+    "ANSWER:" marker the scorer needs, and 51 are genuine reasoning errors.
+    The eval never sends a temperature, so the served model's own
+    generation_config.json controls decoding.
+  evidence:
+    - path: /home/ben/task/runs/base_150.json
+      locator: "[11336]"
+      observation: "baseline accuracy 0.400, stderr 0.040, on --limit 150"
+    - path: /home/ben/task/logs/2026-07-19T10-02-44+02-00_gsm8k_JE3GDzgkuALqWJX2ZMJSa3.json
+      locator: "[11484], [13474]"
+      observation: >-
+        90 wrong of 150 categorised as 25 truncated (stop_reason=max_tokens),
+        14 no ANSWER marker, 51 wrong final number
+    - path: /home/ben/task/logs/2026-07-19T10-02-44+02-00_gsm8k_JE3GDzgkuALqWJX2ZMJSa3.json
+      locator: "[10282]"
+      observation: >-
+        scorer takes the last number in the completion; evaluate.py passes no
+        temperature, so vLLM falls back to the checkpoint's generation_config.json
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-07-19T10-02-44+02-00_gsm8k_JE3GDzgkuALqWJX2ZMJSa3.json
+      question: null
+      gold: "20"
+      model_output: >-
+        "... So, there are 4 * 3 * 2 * 1 * 3 * 2 * 1 = 144 ways to choose an
+        announcer team. ... 96 * 144 = 13,824 ways to make these designations.
+        ANSWER: 13824"
+      failure: "wrong final number (13824 vs 20); stop_reason=stop"
+    - id: null
+      source: /home/ben/task/logs/2026-07-19T10-02-44+02-00_gsm8k_JE3GDzgkuALqWJX2ZMJSa3.json
+      question: null
+      gold: "60"
+      model_output: >-
+        "... In a primary school, 20% of the students can speak Spanish ...
+        uibModalFormsModule powered by jQuery ... <script> function main() {
+        const englishSpeakers = 1; ..."
+      failure: "no stop: model invents new questions and code until max_tokens"
+    - id: null
+      source: /home/ben/task/logs/2026-07-19T10-02-44+02-00_gsm8k_JE3GDzgkuALqWJX2ZMJSa3.json
+      question: null
+      gold: "5"
+      model_output: >-
+        "... we round up to the next whole number, which is 2. ... Since we are
+        not considering any additional information given in this question, we
+        will stop here. ANSWER: 2"
+      failure: "reasoning stops early; wrong final number (2 vs 5)"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SFT with verified CoT + greedy decoding + proper EOS addresses all three
+    classes" [13474] - supervised fine-tuning on rejection-sampled, answer-verified
+    chains of thought rendered in the exact eval prompt, with targets ending
+    "ANSWER: <n><|im_end|>", will raise accuracy over the base model.
+  mechanism: >-
+    Training only on traces whose final answer matches gold, in the byte-exact
+    eval prompt format, teaches the format contract (ANSWER line, then stop at
+    <|im_end|>) and reinforces reasoning the model can already do; a
+    generation_config.json shipped in the checkpoint makes the server decode
+    greedily instead of at vLLM's temp-1.0 fallback.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/runs/sft_v1
+      source: synthetic:self
+      n_examples: null
+      built_by: /home/ben/task/build_sft.py
+      build_command:
+        - python
+        - build_sft.py
+        - --rs-files
+        - runs/rs1_sample.jsonl
+        - runs/rs1_greedy.jsonl
+        - runs/rs2_hot.jsonl
+        - --out
+        - runs/sft_v1
+        - --add-gold
+        - --max-traces-per-q
+        - "4"
+        - --max-len
+        - "2816"
+      selection: >-
+        Rejection-sampled traces from the base model under the byte-exact eval
+        prompt (rs1_sample: k=8 t=1.0 [13478]; rs1_greedy: greedy [15631];
+        rs2_hot: k=16 t=1.15 top-p 0.98 on questions unsolved by pass 1, which
+        added 281 hard questions [17754]); kept only when the ANSWER line equals
+        gsm8k-train gold, deduped, degenerate/overlong traces dropped, <<...>>
+        annotations stripped, final line rewritten as "ANSWER: <gold>"; up to 4
+        traces per question plus 1 gold train solution (--add-gold); examples
+        over 2816 tokens dropped; 70% carry the exact eval system message, 30%
+        none (build_sft.py --no-system-frac default 0.3, not overridden).
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: "<=4 self-generated traces + 1 gold solution per train question"
+  method:
+    family: sft
+    framework: transformers.Trainer (DataCollatorWithFlattening packing, flash_attention_2)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 12
+      grad_accum: 11
+      max_seq_len: null
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        --bs is examples per flattened row, not sequences; examples were capped
+        at 2816 tokens when the dataset was built. scheduler (cosine),
+        weight_decay 0.0, seed 42, bf16, optim adamw_torch_fused, max_grad_norm
+        1.0, gradient checkpointing and warmup 0.03 come from train_sft.py in
+        the workspace and were not overridden by this launch.
+    target_format: >-
+      eval chat template (templates/qwen3.jinja); prompt tokens masked with -100,
+      assistant target is the verified trace ending "ANSWER: <n>" plus the
+      <|im_end|> token (151645).
+  command:
+    argv:
+      - nohup
+      - python
+      - train_sft.py
+      - --data
+      - runs/sft_v1
+      - --out
+      - runs/sft1
+      - --epochs
+      - "2"
+      - --lr
+      - 1e-5
+      - --bs
+      - "12"
+      - --accum
+      - "11"
+      - --save-each-epoch
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/runs/sft1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator:
+    ref: base_model
+    value: 0.4
+    path: /home/ben/task/runs/base_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  output_checkpoint: null
+  training_summary: {final_loss: null, steps: null, notes: "crashed within ~2 min of launch; no checkpoint written"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    CUDA OOM. No traceback text is in the stream; the agent's reading at [17976]:
+    "OOM from the 151k-vocab logits over 21k-token rows."
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The launch died on an out-of-memory error before any training step produced
+    a checkpoint, so the SFT hypothesis was not tested. The agent attributed it
+    to the 151k-vocab logits over 21k-token flattened rows [17976] and relaunched
+    immediately with half the row size.
+  decision: iterate
+  next_step: >-
+    Same data and hypothesis, halved rows: --bs 6 --accum 22 with
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (exp-02).
+
+provenance:
+  kind: extracted
+  run_ref: r-e79c6a8d
+  launch_i: 17760
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [11336, 11484, 13474, 10282]
+    setup: [13478, 15631, 17754, 17755, 17760]
+    evaluation: [11130, 11336]
+    result: [17976]
+    conclusion: [17976, 17977]
+  snapshot_files:
+    - train_sft.py
+    - build_sft.py
+    - rs_gen.py
+    - common.py
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 15810, outcome: "passed: CPU dry-run build of the SFT dataset from pass-1 traces only (runs/sft_smoke)"}
+    - {launch_i: 16968, outcome: "passed: same dry-run rebuilt with --max-len 2816 after measuring the ~2050-token eval system prompt"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "runs/sft_v1 example count was never printed; n_examples unknown."
+    - "No OOM traceback appears in the stream, only the agent's one-line reading at [17976]."

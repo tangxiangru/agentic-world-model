@@ -1,0 +1,189 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-10
+created_at: null
+elapsed_h: 5.74
+
+problem:
+  statement: >-
+    Every supervised variant tried from the champion has lost ground, and the
+    five-step reward smoke policy already moved the model 4 points off the champion
+    (78.0% vs 82.0%), which reads as too large a step rather than evidence against
+    outcome optimization itself.
+  evidence:
+    - path: /home/ben/task/grpo_smoke5_150.json
+      locator: "[782], [784]"
+      observation: >-
+        Merged five-step policy at lr 1e-5 scores 78.0% against the champion's
+        82.0%: "The five-step policy changed too aggressively."
+    - path: /home/ben/task/sft_v2_step200_150.json
+      locator: "[759]"
+      observation: "The unaveraged step-200 model remains the 82.0% champion."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A conservative 50-step GRPO run at one-tenth the smoke rate (1e-6) from the
+    champion "averages many more reward groups while limiting total parameter
+    drift" and will beat 82.0% [784].
+  mechanism: >-
+    Outcome reward on exact-answer correctness plus an answer-format term should
+    sharpen final-answer accuracy; a very small step keeps the policy inside the
+    supervised checkpoint's basin.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: null
+  falsified_if: >-
+    Agent's own gate at [784]: it "will be rejected if it does not beat the
+    champion."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v2_step200
+    origin: exp-07
+    hash: null
+  data:
+    - path: "openai/gsm8k (main, train split)"
+      source: "HF id: openai/gsm8k"
+      n_examples: 7473
+      built_by: /home/ben/task/train_grpo.py
+      build_command: ["python", "train_grpo.py", "--model", "sft_v2_step200", "--output", "grpo_conservative", "--max-steps", "50", "--learning-rate", "1e-6", "--save-steps", "25"]
+      selection: >-
+        build_dataset() shuffles the official train split (seed 4242) and, with no
+        --limit passed, keeps all rows; prompts are the short SFT-style
+        MATH_PROMPT_TEMPLATE user turn (no evaluator few-shot context, since
+        --exact-context was not passed); the label is the '####' final number. No
+        held-out data is loaded by this script.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "1 (50 optimizer steps consume only a prefix of the shuffled split)"
+  method:
+    family: grpo
+    framework: "trl 0.27.2 GRPOTrainer + peft 0.18.1"
+    peft: "LoRA r=32 alpha=64 dropout=0.0 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]"
+    hyperparams:
+      lr: 1.0e-6
+      epochs: null
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: null
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.0
+      precision: "bf16 (tf32), flash_attention_2 via model_init_kwargs dtype=bfloat16"
+      seed: 4242
+      other: >-
+        lr, max_steps 50 and save_steps 25 come from the launch argv. batch_size 4,
+        grad_accum 4, num_generations 4, max_completion_length 384 and seed 4242 are
+        train_grpo.py argparse defaults (script in the workspace, not overridden by
+        this launch). LoRA rank/alpha, temperature 0.9, top_p 0.95, beta 0.0,
+        loss_type 'dapo', reward_weights [1.0, 0.1], mask_truncated_completions,
+        disable_dropout, max_prompt_length 384, scheduler and warmup are hard-coded
+        in the script. Rewards: exact final-number match (weight 1.0) and a regex
+        answer-format reward (weight 0.1). The adapter is merged into standalone
+        weights at the end with eos_token_id [151643, 151645].
+    target_format: >-
+      Sampled rollouts scored by exact final-number match plus a strict
+      'ANSWER: <number>' last-line format check.
+  command:
+    argv: ["/bin/bash", "-lc", "python train_grpo.py --model sft_v2_step200 --output grpo_conservative --max-steps 50 --learning-rate 1e-6 --save-steps 25"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 0.2
+
+evaluation:
+  protocol:
+    command: ["python", "evaluate.py", "--model-path", "grpo_conservative/merged", "--limit", "150", "--json-output-file", "grpo_conservative50_150.json", "--max-connections", "16", "--max-tokens", "2048", "--gpu-memory-utilization", "0.55"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-07
+    value: 0.82
+    path: /home/ben/task/sft_v2_step200_150.json
+  diagnostic:
+    what: "Sampled training-set correctness reported by the trainer during the run."
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.21
+  duration_h: 0.2
+  steps: 50
+  output_checkpoint: /home/ben/task/grpo_conservative/merged
+  training_summary:
+    final_loss: null
+    steps: 50
+    notes: >-
+      50 steps in 12:00 at 14.4 s/step; clean termination retained; adapter
+      checkpoints at 25 and 50, merged policy written [792], [794].
+  measurements:
+    - metric: accuracy
+      value: 0.7267
+      n: 150
+      path: /home/ben/task/grpo_conservative50_150.json
+      delta_vs_comparator: -0.0933
+  diagnostic_result:
+    value: 0.8625
+    path: null
+    notes: >-
+      Sampled train correctness was 92.5% at step 25 [791] and 86.25% in the last
+      window [794], i.e. the reward signal was being optimized on train while the
+      held-out score fell.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    "The conservative GRPO endpoint fell to 72.7%; outcome optimization on easy
+    official-train prompts is driving the policy away from held-out generalization
+    even at 1e-6. I'm rejecting reward refinement entirely" [799]. High sampled
+    train reward alongside a 9-point held-out drop is the clearest mechanism
+    evidence in the run.
+  decision: reject
+  next_step: >-
+    Final substantive experiment: diverse alternate correct rationales at a very
+    small full-model rate from the champion (exp-11).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ad144811
+  launch_i: 786
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [759, 782, 784]
+    setup: [603, 604, 660, 661, 786, 996, 997]
+    evaluation: [795]
+    result: [791, 792, 794, 799]
+    conclusion: [799]
+  snapshot_files:
+    - train_grpo.py
+    - prepare_specialization_data.py
+    - prepare_train_data.py
+    - grpo_conservative50_150.json
+    - grpo_smoke5_150.json
+    - grpo_smoke_eval2.json
+    - sft_v2_step200_150.json
+    - EXPERIMENTS.md
+  smoke_runs:
+    - {launch_i: 761, outcome: "crashed: RuntimeError: FlashAttention only support fp16 and bf16 data type - the deprecated torch_dtype string was ignored and the policy loaded in FP32"}
+    - {launch_i: 773, outcome: "passed (5 steps, 85 s, clean merge); its merged policy scored 0.780 on 150 and 0.740 on rerun at the evaluator's default concurrency, which is why this launch dropped the rate to 1e-6"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The step-25 adapter was saved but never merged or scored, so the intended 'even smaller update' fallback at [794] was not tested."
+    - "The digest does not show the result block of the [795] evaluation; 0.7267 comes from grpo_conservative50_150.json and the agent's report at [799]."

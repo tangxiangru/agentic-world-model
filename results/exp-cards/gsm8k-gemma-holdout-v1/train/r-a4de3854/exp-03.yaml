@@ -1,0 +1,192 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 3.26
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The SFT model trained on "Question:/Answer:" targets scores 0.153 on 150 official items, and its
+    training targets do not have the shape the grader expects: the agent wrote that the data should
+    "match [the grader's] format: Prompt: '... Question: {q}\nReasoning:' Completion: '{cot}\nANSWER:
+    {result}'", i.e. the model should end its chain of thought with an "ANSWER:" line rather than the
+    GSM8K "#### N" line it was trained on.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-a4de3854/results_retry.json
+      locator: "[147]"
+      observation: "the exp-02 checkpoint scores accuracy 0.153 (stderr 0.030) on 150 official items"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-a4de3854.md
+      locator: "[152]"
+      observation: >-
+        the rewritten prepare_data.py carries the agent's comment that the targets must match the
+        grader's "Reasoning:" / "ANSWER: {result}" shape, and rewrites "####" to "\nANSWER:"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Reformatting the SFT targets so the answer ends with "\nANSWER: {result}" instead of "#### {result}"
+    (and the prompt ends with "Reasoning:") will raise accuracy on the 150-item protocol, because the
+    generations will then carry the marker the grader extracts.
+  mechanism: >-
+    The scorer looks for the answer after an "ANSWER:" marker; a model trained to emit "#### N" never
+    produces it, so correct reasoning is scored wrong.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-a4de3854/data/train.jsonl
+      source: local
+      n_examples: 56973
+      built_by: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-a4de3854/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        Same corpus as exp-02, reformatted at [152]: 6973 GSM8K train rows (500 held out, shuffle seed 42)
+        as "Question: {question}\nReasoning:\n{answer with '####' replaced by '\nANSWER:'}", plus the
+        first 50000 meta-math/MetaMathQA rows containing "The answer is:", with that phrase replaced by
+        "\nANSWER:", as "Question: {query}\nReasoning:\n{response}"; shuffled with random.seed(42).
+        Counts printed at [155].
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-a4de3854/data/val.jsonl
+      source: local
+      n_examples: 500
+      built_by: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-a4de3854/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: "the 500 held-out GSM8K train rows, same formatting; passed to SFTTrainer as eval_dataset"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "trl SFTTrainer + SFTConfig (version not stated in the stream)"
+    peft: "LoRA r=16 alpha=32 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]"
+    hyperparams:
+      lr: 2.0e-4
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        max_grad_norm=0.3, logging_steps=50, save_strategy=steps/save_steps=500,
+        eval_strategy=steps/eval_steps=500, packing=False, attn_implementation=flash_attention_2.
+        All values are read from train.py, whose text is in the snapshot and which the launch did not
+        override (the launch was `python train.py` with no arguments); train.py was not edited between
+        exp-02 and this launch, so the recipe differs only in the data formatting.
+    target_format: "'Question: {q}\\nReasoning:\\n{cot}\\nANSWER: {result}'"
+  command:
+    argv: [nohup, python, train.py, ">", train_v2.log, "2>&1", "&"]
+    cwd: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-a4de3854
+    script: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-a4de3854/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: ["export VLLM_BASE_URL=http://localhost:8000/v1", python, evaluate.py, --model-path, final_model, --limit, "150", --max-tokens, "1024", --json-output-file, results_v2.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.15333333333333332
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-a4de3854/results_retry.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-a4de3854/final_model
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      train_v2.log was deleted at [336] and is not in the snapshot, so no loss or step count for this
+      launch is available. The run finished between +3.26 h [158] and +3.89 h [178], when the agent
+      served the merged final_model for evaluation.
+  measurements:
+    - metric: accuracy
+      value: 0.22
+      n: 150
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-a4de3854/results_v2.json
+      delta_vs_comparator: 0.06666666666666665
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    Retraining from the base model on the same corpus with "Reasoning:" prompts and "ANSWER: {result}"
+    endings scored 0.220 against 0.153 for the "#### N" formatting under the identical 150-item protocol
+    [185], the largest number the run ever measured; the margin is about 1.5 combined standard errors,
+    so the direction is clear but the size is not tightly pinned. The agent later called this "the v2
+    format which got 22%" [360].
+  decision: reject
+  next_step: >-
+    the agent kept iterating on the target format instead of keeping this checkpoint: at [188] it dropped
+    the "Question: " prefix to match the grader's few-shot examples more closely and retrained; this
+    checkpoint was deleted at [192].
+
+# ---- outcome (joined by the pipeline; never written by the extractor) ----------
+outcome:
+  official_accuracy: null
+
+# ---- provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-a4de3854
+  launch_i: 158
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [147, 152]
+    setup: [152, 154, 158]
+    evaluation: [178, 184]
+    result: [185]
+    conclusion: [185, 188, 192, 360]
+  snapshot_files:
+    - train.py
+    - prepare_data.py
+    - evaluate.py
+    - results_v2.json
+    - results_retry.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "checkpoint and data paths are written under the snapshot root for reference; data/ and the
+       checkpoints were deleted during the run and are not in the snapshot."
+    - "prepare_data.py in the snapshot is the last (v5) revision; the revision this launch consumed is
+       the write event at [152]."
+    - "the agent's stated problem and hypothesis are taken from the comments it wrote in prepare_data.py
+       at [152]; it never wrote a separate rationale. The comment names the evaluation framework, which
+       is paraphrased here as 'the grader'."

@@ -1,0 +1,180 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 1.59
+
+problem:
+  statement: >-
+    Training on the model's own solutions collapsed the model: "RFT on own
+    solutions overfits hard -> collapse. If using RFT: gentle (1-2 ep, lr1e-5) +
+    diverse ext data" [356]. The data source, not the recipe, is what needs
+    replacing - the self-RFT set is too low-diversity.
+  evidence:
+    - path: /home/ben/task/rft_v1_metrics.json
+      locator: "[351], [356]"
+      observation: "exp-02 scored 0.40 at --limit 150 vs exp-01's 0.5667, with 24% of completions degenerating"
+    - path: /home/ben/task/RESULTS.md
+      locator: "[356] (## Results / ## Key lessons)"
+      observation: "the agent's own log states the RFT collapse and names MetaMathQA as the more robust alternative"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Metamath recipe (gold + diverse external GSM augs) is more robust" [356] -
+    mixing 50k GSM-derived MetaMathQA augmentations into the gold set will avoid
+    the self-RFT collapse and beat exp-01.
+  mechanism: >-
+    external, human/teacher-written GSM augmentations (rephrased, AnsAug, SV,
+    FOBAR) are far more diverse than the model's own resampled traces, so the
+    trainer cannot collapse onto its own narrow distribution.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data_meta
+      source: "HF:openai/gsm8k gold x1 + HF:meta-math/MetaMathQA (GSM* types only)"
+      n_examples: null
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --out, data_meta, --gold, "1", --metamath, "50000", --max-length, "1024"]
+      selection: >-
+        MetaMathQA downloaded to metamath.parquet at [114]; only rows whose `type`
+        starts with "GSM" are kept, the final answer is parsed from
+        "The answer is: ..." and rounded to an integer, the trailing "The answer
+        is" and "#### N" lines are stripped from the reasoning (fix at [293]);
+        shuffled with seed 0 and capped at 50000; then deduped on
+        (question, reasoning) together with gold, test-split questions dropped,
+        over-1024-token examples dropped. The agent reported the result as
+        "57K: gold 7473 + ~49.6K MetaMath" [365] but the exact count was never printed.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "gold x1"
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum and --save-epoch (save_strategy="epoch",
+        save_total_limit=4) came from the launch; scheduler, seed, max_grad_norm,
+        group_by_length, adamw_torch_fused, gradient_checkpointing and
+        flash_attention_2 are hard-coded in train_sft.py and warmup/weight_decay
+        are its argparse defaults, not overridden here. From [366] on, the script
+        sets generation_config.eos_token_id=[128001, 128012] before training so
+        per-epoch checkpoints stop at <|im_end|> under vLLM.
+    target_format: >-
+      smollm.jinja chat format; assistant turn = reasoning + "\n\nANSWER: <n>";
+      assistant-only loss.
+  command:
+    argv: [python, train_sft.py, --data, data_meta, --out, runs/meta_v1, --epochs, "3", --lr, "2e-5", --bs, "16", --accum, "2", --save-epoch]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_meta_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/meta_v1/checkpoint-3570, --limit, "150", --max-connections, "8", --gpu-memory-utilization, "0.5", --json-output-file, meta_e2_metrics.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.5667
+    path: /home/ben/task/gold_v1_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: 5355
+  output_checkpoint: /home/ben/task/runs/meta_v1
+  training_summary: {final_loss: 0.14, steps: 5355, notes: "train_loss 0.14 at epoch 3, the same value as the collapsed exp-02 [430]; ~1:12 of training per the progress bar at [422]; epoch checkpoints were staged with tokenizer files copied from runs/gold_v1 at [400]/[431] because this launch predates the processing_class fix; the whole run directory was deleted at [449]/[453]"}
+  measurements:
+    - metric: accuracy
+      value: 0.42
+      n: 150
+      path: /home/ben/task/meta_e2_metrics.json
+      delta_vs_comparator: -0.1467
+    - metric: accuracy
+      value: 0.2667
+      n: 150
+      path: /home/ben/task/meta_e1_metrics.json
+      delta_vs_comparator: -0.3
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "Epoch 1 metamath = 26.7%, epoch 2 = 42% - both far below gold_v1. Metamath
+    data is genuinely worse for this eval (wrong style: no <<>>, verbose,
+    rephrased questions), not just overtraining. The lesson: the gold format/style
+    is critical." [448]
+  decision: reject
+  next_step: >-
+    "My RFT data IS gold-style, so the right move is *gentle* RFT (rft_v1 collapsed
+    only from 3-epoch overtraining at lr 2e-5)" [448].
+
+outcome:
+  official_accuracy: null      # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-51c52152
+  launch_i: 378
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [351, 356]
+    setup: [114, 292, 293, 360, 366, 370, 378]
+    evaluation: [437, 443]
+    result: [430, 442, 448]
+    conclusion: [448, 459]
+  snapshot_files:
+    - prepare_data.py
+    - train_sft.py
+    - sft_common.py
+    - metamath_dl.log
+    - meta_e1_metrics.json
+    - meta_e2_metrics.json
+    - eval_meta_e1.log
+    - eval_meta_e2.log
+    - gold_v1_metrics.json
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "train_meta_v1.log is not in the workspace snapshot; final_loss 0.14 and the ~1:12 runtime come from the agent's prints at [430]/[422]"
+    - "the size of data_meta was never printed exactly; the agent reported ~57K at [365]"
+    - "the epoch-3 checkpoint (runs/meta_v1 final) was never evaluated - only checkpoint-1785 (ep1) and checkpoint-3570 (ep2) were"

@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 7.84
+
+problem:
+  statement: >-
+    Most of the RL prompt set no longer produces a gradient: after two GRPO
+    rounds the policy solves 6/6 samples on 5,752 of 7,473 train prompts, so
+    those groups have zero reward variance and contribute nothing.
+  evidence:
+    - path: /home/ben/task/logs_grpo2.log
+      locator: "[619], [620], [622]"
+      observation: "entropy down to 0.09 and frac_reward_zero_std 0.67-0.83 late in GRPO-2; the agent read this as the policy sharpening and late checkpoints risking overfit"
+    - path: /home/ben/task/logs_sweep.log
+      locator: "[691]; pass-rate histogram line"
+      observation: "k=6 sampling at temp 1.0 over 7,473 train prompts: {0: 168, 1: 89, 2: 129, 3: 150, 4: 295, 5: 890, 6: 5752}"
+  affected_share: 0.77
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Spending the remaining 75 GRPO steps only on the 1,721 prompts the policy
+    does not already solve 6/6 gives a denser gradient than sampling the whole
+    train set.
+  mechanism: >-
+    Groups where every sample is correct have zero advantage; restricting to
+    pass<=5/6 prompts makes a much larger share of each 512-completion batch
+    carry signal.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: >-
+    it does not beat 0.878 at n=500 - in which case final_model is not swapped
+    [707].
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/qwen3_grpo2_pkg
+    origin: exp-05
+    hash: null
+  data:
+    - path: /home/ben/task/data/train_pass_rates.jsonl
+      source: "derived:exp-05 (GRPO-2 policy sampled over the openai/gsm8k train prompts)"
+      n_examples: 1721
+      built_by: /home/ben/task/scripts/hardness_sweep.py
+      build_command: [python3, scripts/hardness_sweep.py]
+      selection: >-
+        k=6 samples per train prompt at temperature 1.0 under the GRPO-2 policy;
+        keep only prompts with pass<=5/6 (1,553 at 1-5 plus 168 at 0) - 1,721 of
+        7,473. The 5,752 prompts solved 6/6 are dropped.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: trl.GRPOTrainer 0.27.2 with vLLM 0.11.0 in colocate mode
+    peft: none
+    hyperparams:
+      lr: 1.0e-06
+      epochs: null
+      batch_size: 16
+      grad_accum: 32
+      max_seq_len: null
+      scheduler: constant_with_warmup
+      warmup: 5
+      weight_decay: null
+      precision: bf16
+      seed: 33
+      other: >-
+        Identical to exp-04/exp-05 - the launch overrode only --model, --out,
+        --max-steps 75, --save-steps 25 and the new --hard-only flag added at
+        [697]; everything else is the scripts/train_grpo.py literals.
+        num_generations=8, effective batch 512 completions/step,
+        max_completion_length=560, temperature=1.0, beta=0.0,
+        mask_truncated_completions=True. 75 steps over 1,721 prompts is ~2.9
+        passes over the subset.
+    target_format: >-
+      binary reward from inspect match_str(location="end", numeric=True) against
+      the raw gold string.
+  command:
+    argv: [nohup, python3, scripts/train_grpo.py, --model, runs/qwen3_grpo2_pkg, --out, runs/qwen3_grpo3, --max-steps, "75", --save-steps, "25", --hard-only]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_grpo.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs_grpo3.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, runs/qwen3_grpo3_pkg, --limit, "500", --max-connections, "16", --json-output-file, results_grpo3_lim500.json]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.878
+    path: /home/ben/task/results_grpo2_lim500.json
+  diagnostic:
+    what: >-
+      whether the hard-only subset really is denser in signal: the fraction of
+      groups with zero reward std in the first steps
+    command: []
+    path: /home/ben/task/logs_grpo3.log
+
+result:
+  execution: completed
+  wall_h: 0.93
+  duration_h: 0.93
+  output_checkpoint: /home/ben/task/runs/qwen3_grpo3/final
+  steps: 75
+  training_summary:
+    final_loss: -0.05922030263269941
+    steps: 75
+    notes: >-
+      train_runtime 3355 s (~41 s/step) from logs_grpo3.log. Reward on the hard
+      subset started at 0.66-0.70 [717] and the agent reported 0.78 by step 19
+      [727]. Checkpoint-25 was deleted in the disk cleanup at [780].
+  measurements:
+    - metric: accuracy
+      value: 0.884
+      n: 500
+      path: /home/ben/task/results_grpo3_lim500.json
+      delta_vs_comparator: 0.006
+    - metric: accuracy
+      value: 0.86
+      n: 150
+      path: /home/ben/task/results_qwen3_grpo3_pkg_lim150_t0.0.json
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.39
+    path: /home/ben/task/logs_grpo3.log
+    notes: >-
+      frac_reward_zero_std 0.36-0.47 in the first four steps [717], against
+      0.67-0.83 at the end of GRPO-2 [620] - the subset is roughly twice as
+      dense in signal, as intended.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    Hard-only training did make the batches informative again (zero-variance
+    groups roughly halved) and read 0.884 at n=500 against the incumbent's
+    0.878 - a 0.6-point gap on a +-1.4-point stderr, which the agent called a
+    statistical tie. At n=150 it read 0.860, level with GRPO-2's 0.860 and below
+    the incumbent's confirmed 0.873.
+  decision: reject
+  next_step: >-
+    Swapped into final_model at [800] to be measured on the stated --limit 150
+    protocol; it read 0.853 there, so GRPO-2 was reinstated [810] and these
+    weights were archived in runs/qwen3_grpo3/final.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-06a66e16
+  launch_i: 699
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [619, 620, 622, 691, 707]
+    setup: [697, 699]
+    evaluation: [758, 788, 794]
+    result: [716, 717, 727, 744, 758]
+    conclusion: [794, 800, 804, 810, 820]
+  snapshot_files:
+    - logs_grpo3.log
+    - logs_sweep.log
+    - results_qwen3_grpo3_pkg_lim150_t0.0.json
+    - logs_eval_qwen3_grpo3_pkg_lim150_t0.0.log
+    - results_grpo3_lim500.json
+    - logs_eval_grpo3_500.log
+    - results_grpo2_lim500.json
+    - RESULTS.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The hypothesis and the swap rule were written at [707], about 30 s after the launch at [699]; the pre-launch record is the --hard-only help string at [697] and the sharpening note at [622]."
+    - "scripts/hardness_sweep.py and data/train_pass_rates.jsonl are not in the workspace snapshot; only logs_sweep.log, which holds the pass-rate histogram, survives. The sweep's vLLM engine died after printing the histogram."
+    - "The first screen attempt at [758] was cut short by the disk filling up; the reported n=150 screen is the rerun at [788]."
+    - "RESULTS.md notes GRPO-3 was better on samples 151-500 (89.4 vs 88.0), i.e. the two models disagree mainly on the first 150 items - the stream does not resolve which is better on the full test set."

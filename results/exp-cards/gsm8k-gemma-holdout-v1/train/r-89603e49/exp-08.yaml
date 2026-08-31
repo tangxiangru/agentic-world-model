@@ -1,0 +1,221 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 7.03
+
+problem:
+  statement: >-
+    "Still pure reasoning slips - format is perfect" [32538]: v2-1719 scores
+    82.7% at limit 150 and every failure is a reasoning error; the plan for the
+    remaining ~3.4h is "RFT round 2 from v2-1719 + continue-training on fresh
+    data, then full-test the winner" [32538].
+  evidence:
+    - path: /home/ben/task/results/v2-ckpt-sft_v2-checkpoint-1719-limit150.json
+      locator: "[31448]"
+      observation: "v2 @ 1.5 epochs = 82.7% at limit 150"
+    - path: "/home/ben/task/logs/*gsm8k*.json (most recent at [31449]; exact filename not printed)"
+      locator: "[31449], [31450] - analyze_failures.py output"
+      observation: "no format failures; printed cases are reasoning slips"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: "/home/ben/task/logs/*gsm8k*.json (v2 eval log at [31450])"
+      question: "(not printed - bees leaving and returning to a hive)"
+      gold: "75"
+      model_output: >-
+        "In the first 6 hours, 30 bees leave the hive ... so 30 + 15 + 60 = 105
+        bees return.  ANSWER: 105"
+      failure: "double-counts returning bees; answered 105 instead of 75"
+    - id: null
+      source: "/home/ben/task/logs/*gsm8k*.json (v2 eval log at [31450])"
+      question: "(not printed - John's weekly glasses of water)"
+      gold: "26"
+      model_output: >-
+        "... 4 glasses x 5 weekdays = 20 ... 4 glasses x 2 weekend days = 8 ...
+        20 + 8 = 28 glasses  ANSWER: 28"
+      failure: "ignores the stated weekend rate; answered 28 instead of 26"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Continue-training v2-1719 for one epoch at lr 5e-6 on the v3 corpus - the
+    part of the v2 corpus its token budget never reached plus RFT round-2
+    answer-verified self-solutions sampled from v2-1719 - will beat v2-1719's
+    82.7% at limit 150 [32538].
+  mechanism: >-
+    A second round of verified self-distillation, at a lower learning rate and
+    on rows the model has not seen, keeps reducing reasoning slips without
+    re-training on already-consumed data.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/sft_v2/checkpoint-1719
+    origin: exp-06
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: local
+      n_examples: null
+      built_by: /home/ben/task/build_v3.py
+      build_command: []
+      selection: >-
+        Rows of data/sft_v2.jsonl that the v2 run's 150M-token budget never
+        reached (build_v3.py replays the same Random(7) shuffle and length
+        filter to find the unconsumed tail) plus the RFT round-2 rows below, at
+        most 3 per question, prompt variants re-drawn (12% exact eval few-shot
+        system prompt, 8% random 10-shot, 13% random 1-8-shot, 67% none). The
+        build_v3.py invocation is not in the filtered digest; RESULTS.md [39153]
+        describes v3 as ~78K unseen rows + 58.7K RFT round-2 rows.
+      repeats: "at most 3 RFT solutions per question"
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/rft_v2.jsonl
+      source: synthetic:self
+      n_examples: null
+      built_by: /home/ben/task/rft_generate.py
+      build_command: [nohup, python, rft_generate.py, --model, export/v2-ckpt-sft_v2-checkpoint-1719, --out, data/rft_v2.jsonl, --k-train, "8", --k-aug, "4", --n-aug, "15000", --temperature, "1.0"]
+      selection: >-
+        Rejection sampling with the exported v2-1719 checkpoint on the 7473
+        GSM8K train questions (k=8) and 15000 fresh OpenMathInstruct-2 augmented
+        questions (k=4; OMI2 shuffle seed changed to 88 at [32539] so the
+        questions differ from round 1), T=1.0, top_p 0.95, max_tokens 700,
+        random 4-shot system prompt; keep answer-verified completions, body
+        80-1800 chars, shortest per distinct opening, at most 3 per question
+        (--max-keep default 3, not overridden). "RFT round 2: 95.2% solve rate,
+        58.7K rows" [33776]. Component of data/sft_v3.jsonl.
+      repeats: "at most 3 solutions per question"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (custom packed Dataset), flash_attn 2.8.3, torch 2.8.0+cu129"
+    peft: none
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: "fp32 weights with bf16 autocast (dtype=torch.float32, bf16=True)"
+      seed: 7
+      other: >-
+        --token-budget 95000000, --save-steps 350 and --base
+        ckpt/sft_v2/checkpoint-1719 from the launch (the --base flag was added
+        at [33916] after exp-07 loaded the base model by mistake; the tokenizer
+        is still loaded from Qwen/Qwen3-1.7B-Base [34038]). batch_size,
+        grad_accum and max_seq_len are train_sft.py argparse defaults the launch
+        did not override; scheduler/warmup/weight_decay/seed hard-coded in
+        train_sft.py. Packing: first-fit-decreasing with capacity buckets.
+        Completion-only loss.
+    target_format: >-
+      assistant turn = "<reasoning>\n\nANSWER: <n>" followed by <|im_end|>, in the
+      eval's chat rendering.
+  command:
+    argv: [nohup, env, "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True", python, train_sft.py, --data, data/sft_v3.jsonl, --out, ckpt/sft_v3, --epochs, "1", --lr, "5e-6", --save-steps, "350", --token-budget, "95000000", --base, ckpt/sft_v2/checkpoint-1719]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/train_v3.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 1.28
+
+evaluation:
+  protocol:
+    command: [bash, run_evals.sh, "ckpt/sft_v3/final", v3, "150", "16"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.8266666666666667
+    path: /home/ben/task/results/v2-ckpt-sft_v2-checkpoint-1719-limit150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.4
+  duration_h: 1.4
+  steps: 741
+  output_checkpoint: /home/ben/task/ckpt/sft_v3/final
+  training_summary:
+    final_loss: null
+    steps: 741
+    notes: >-
+      "v3 running (741 steps ~ 77 min)" [34253]; "DONE" seen in the log at
+      [34873] and "v3 done" at [35015] (t=+8.43h). No loss values appear in the
+      digest.
+  measurements:
+    - metric: accuracy
+      value: 0.8333333333333334
+      n: 150
+      path: /home/ben/task/results/v3-ckpt-sft_v3-final-limit150.json
+      delta_vs_comparator: 0.0066666666666667
+    - metric: accuracy
+      value: 0.81
+      n: 300
+      path: null
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "v3-final: 83.3% - edges out v2-1719" [35121]: +0.67 pts over the comparator
+    at limit 150, i.e. one item out of 150 and well inside the eval's stderr, so
+    the round-2 RFT claim is not settled by this measurement. Three attempts to
+    run the full 1319-sample test crashed the inference engine with "CUDA error:
+    an illegal memory access" [35176], [35830], [36503]; the first crashed run
+    had scored 300 samples at 81.0% [37730] and a later one 110 samples at 91
+    correct [38654], consistent with the limit-150 figure.
+  decision: adopt
+  next_step: >-
+    "finalize v3-final as final_model, then run official eval at limit 300 on
+    it" [38077].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-89603e49
+  launch_i: 34040
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [31448, 31449, 31450, 32538]
+    setup: [32539, 32541, 33169, 33776, 33916, 34038, 34040]
+    evaluation: [35016, 35121, 35124, 35824, 36353, 38654]
+    result: [34253, 34873, 35015, 35121, 37730, 38654]
+    conclusion: [35121, 35176, 35830, 36503, 38077]
+  snapshot_files:
+    - train_sft.py
+    - build_v3.py
+    - rft_generate.py
+    - run_evals.sh
+    - export_model.py
+    - evaluate.py
+    - analyze_failures.py
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the full 1319-sample test never completed for this checkpoint; only partial pre-crash scores (300 and 110 samples) exist and neither has a results/*.json file"
+    - "the 81.0% partial figure comes from a crashed eval log in /home/ben/task/logs/, whose filename is not recorded here"
+    - "the +0.67 pt gap to v2-1719 is one item at n=150; the agent never re-ran either checkpoint at a larger limit that completed"

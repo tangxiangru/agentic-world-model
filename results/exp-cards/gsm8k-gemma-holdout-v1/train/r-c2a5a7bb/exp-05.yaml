@@ -1,0 +1,159 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Two LoRA runs on data that matches the served prompt still score 0.04-0.06
+    and still run past the answer. The agent's reading at [189]/[192]: the
+    tokenisation of the special tokens is correct, so what is left is that
+    "the training wasn't sufficient (loss was still 0.18)" and that the adapter
+    is not enough capacity - "the model hasn't converged on the stopping
+    behavior".
+  evidence:
+    - path: /home/ben/task/eval_results_v3.json
+      locator: "[173]"
+      observation: "accuracy 0.040 at limit 50, 194,693 output tokens for 50 answers"
+    - path: /home/ben/task/logs/2026-02-13T05-12-41+01-00_gsm8k_4xbRaytGnGgcGr3otLSxSF.json
+      locator: "[175]/[176]"
+      observation: "outputs emit 'assistant' as plain text and continue into new invented problems instead of stopping"
+    - path: /home/ben/task/train_data_v2.jsonl
+      locator: "[189]/[192]"
+      observation: "the agent verified <|im_end|> tokenises to 151645 in the training text, so the data is not the cause"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Instead of LoRA, let me do full fine-tuning. With an H100 80GB, we can fit
+    Qwen3-4B in bf16 for full fine-tuning. This should give better results"
+    [192] - full-parameter SFT on the same 22,463-row file at lr 2e-5 will teach
+    the format and the stop token where LoRA at 2e-4 did not.
+  mechanism: >-
+    LoRA at 3.18% of parameters left the loss at ~0.18 and the stopping
+    behaviour unlearned; updating every parameter at a lower learning rate
+    should fit the target format, including <|im_end|>.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v2.jsonl
+      source: "HF openai/gsm8k (config main, split train) + HF meta-math/MetaMathQA (type contains GSM)"
+      n_examples: 22463
+      built_by: /home/ben/task/prepare_data_v2.py
+      build_command: [python3, /home/ben/task/prepare_data_v2.py]
+      selection: "unchanged from exp-04: 7,463 GSM8K train rows + 15,000 MetaMathQA GSM rows, pre-rendered as raw <|im_start|> text, seed 42"
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 (no TRL; plain Trainer + DataCollatorForLanguageModeling)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        The launch takes no arguments; every value is a module-level constant in
+        train_v4.py, so all come from the script text and none was overridden.
+        The version launched here is the one written at [193]; the workspace
+        train_v4.py carries the [200] collator fix, which is the only difference.
+        Also hardcoded: gradient_checkpointing, optim="adamw_torch",
+        max_grad_norm=1.0, save_strategy="epoch", padding_side="right",
+        labels = input_ids copied (loss on the whole sequence, prompt included).
+    target_format: >-
+      raw text, no template: "<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n"
+  command:
+    argv: [python3, /home/ben/task/train_v4.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v4.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  duration_h: null
+  steps: 0
+  output_checkpoint: null
+  training_summary: {final_loss: null, steps: 0, notes: "died in the first batch (0/2808 steps); the dataset had tokenised cleanly"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: |-
+    File "/usr/local/lib/python3.10/dist-packages/transformers/data/data_collator.py", line 1033, in torch_call
+      batch = pad_without_fast_tokenizer_warning(
+    ...
+    ValueError: Unable to create tensor, you should probably activate truncation and/or padding with 'padding=True' 'truncation=True' to have batched tensors with the same length. Perhaps your features (`labels` in this case) have excessive nesting (inputs type `list` where type `int` is expected).
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first full fine-tuning launch crashed in the first collated batch:
+    DataCollatorForLanguageModeling could not pad the pre-copied labels field.
+    No step ran, so the full-fine-tuning hypothesis was untouched.
+  decision: iterate
+  next_step: >-
+    Swap the collator for DataCollatorForSeq2Seq with padding=True,
+    pad_to_multiple_of=8 [200] and relaunch unchanged otherwise, as exp-06.
+
+provenance:
+  kind: extracted
+  run_ref: r-c2a5a7bb
+  launch_i: 197
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [173, 176, 177, 189, 192]
+    setup: [193]
+    evaluation: []
+    result: [198]
+    conclusion: [200]
+  snapshot_files:
+    - prepare_data_v2.py
+    - train_v4.py
+  smoke_runs: []
+  extractor: null
+  unresolved: []

@@ -1,0 +1,203 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "Both stronger runs are clearly overfitting/collapsing" [233]: every TRL run so far -
+    chat-format (cards exp-01, exp-03) and plain-text (card exp-04) - produces degenerate
+    repeated-token output instead of a solution.
+  evidence:
+    - path: null
+      locator: "[231]"
+      observation: "runs/exp3_plain_merged: 1800 chars of one repeated token, no ANSWER line, no EOS."
+    - path: null
+      locator: "[176]"
+      observation: "runs/exp2b_merged: reaches ANSWER: 18 then repeats a single token to the cap."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Switching to a very small, low-risk LoRA update (few steps, low LR, limited modules)
+    to preserve base behavior and target only format/alignment gains" [233]; described
+    after the fact as "a minimally invasive fine-tune likely to preserve base behavior"
+    [237].
+  mechanism: >-
+    If the collapse comes from the size of the update, then a tiny one - 2000 examples,
+    half an epoch, lr 1e-5, LoRA r=8 on q_proj/v_proj only - should leave the base
+    model's fluency intact and teach only the answer format [233].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF: openai/gsm8k (config main, split=train, loaded in-process by the training script)"
+      n_examples: 2000
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        Train split shuffled with seed 42, then the first 2000 rows (--train-limit 2000);
+        prompt/completion chat pairs from convert_example_prompt_completion() with the gold
+        rationale re-ended as "ANSWER: <target>"; 128 of those held out as the val split
+        (--val-size 128), leaving 1872 for training.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer (version printed at [43]; the digest truncates that result)
+    peft: "QLoRA: LoRA r=8 alpha=16 dropout=0.05 targets=q_proj,v_proj over a 4-bit NF4 base"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 0.5
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 compute + tf32, 4-bit NF4 double-quant base weights"
+      seed: 42
+      other: >-
+        From the argv at [234]: --dataset-format prompt_completion, --train-limit 2000,
+        --val-size 128, --lora-r 8, --lora-alpha 16, --target-modules q_proj,v_proj,
+        --no-gradient-checkpointing, eval/save every 40 steps, logging every 10. Taken
+        from train_gsm8k_sft.py in task/ because [234] did not override them:
+        --use-4bit True, --warmup-ratio 0.03, --weight-decay 0.0, --seed 42,
+        --completion-only-loss True, cosine schedule, max_grad_norm 1.0, bf16/tf32,
+        packing=False, flash_attention_2.
+    target_format: >-
+      Same chat prompt/completion shape as card exp-01 (templates/qwen3.jinja, assistant
+      turn ends in "ANSWER: <n>"), loss on completion tokens only.
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --output-dir
+      - runs/exp4_tiny
+      - --merged-dir
+      - runs/exp4_tiny_merged
+      - --dataset-format
+      - prompt_completion
+      - --train-limit
+      - "2000"
+      - --val-size
+      - "128"
+      - --epochs
+      - "0.5"
+      - --lr
+      - "1e-5"
+      - --batch-size
+      - "16"
+      - --grad-accum
+      - "2"
+      - --max-length
+      - "1536"
+      - --eval-steps
+      - "40"
+      - --save-steps
+      - "40"
+      - --logging-steps
+      - "10"
+      - --lora-r
+      - "8"
+      - --lora-alpha
+      - "16"
+      - --lora-dropout
+      - "0.05"
+      - --target-modules
+      - q_proj,v_proj
+      - --no-gradient-checkpointing
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: >-
+      Greedy single-prompt generation (gsm8k test[:1], 220 new tokens) of the merged model
+      side by side with the base model [238], then the same prompt through the unmerged
+      LoRA adapter loaded onto the base model with PeftModel [241], to tell a merge bug
+      from a training bug.
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.005
+  duration_h: 0.005
+  steps: 30
+  output_checkpoint: /home/ben/task/runs/exp4_tiny_merged
+  training_summary:
+    final_loss: 1.1238
+    steps: 30
+    notes: >-
+      30 steps, train_runtime 19.04 s, train_loss 1.1238, mean_token_accuracy ~0.805,
+      epoch 0.51 [235]. Loss barely moved (1.1228 -> 1.1278 across the three logged
+      points), consistent with a deliberately tiny update.
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      The base model answers coherently on the same prompt, while the merged model emits
+      660 characters of one repeated token with "has ANSWER False" [239]; the unmerged
+      adapter loaded through PeftModel produces the identical degenerate output [242], so
+      the collapse is in training, not in the merge.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    Even a 30-step, lr 1e-5, r=8 update on 2000 examples collapses the model, and it
+    collapses identically with the adapter unmerged, so update size is not the cause:
+    "its current setup is clearly unstable here" [244]. Never benchmarked.
+  decision: abandon_line
+  next_step: >-
+    "Pivoting away from TRL... implementing a manual LoRA training script with plain
+    transformers.Trainer and explicit tokenization/collation to eliminate hidden
+    masking/template side effects" [244] - train_manual_lora.py, cards exp-06/exp-07.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-1441f3c6
+  launch_i: 234
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [176, 231, 233]
+    setup: [233, 234]
+    evaluation: [238, 241]
+    result: [235, 239, 242]
+    conclusion: [242, 244]
+  snapshot_files:
+    - train_gsm8k_sft.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "runs/exp4_tiny_merged was never scored with evaluate.py; it was dropped on the one-prompt greedy probe alone."
+    - "n_examples 2000 is the --train-limit argument, not a printed dataset size; the digest never prints the resulting train/val counts for this launch."

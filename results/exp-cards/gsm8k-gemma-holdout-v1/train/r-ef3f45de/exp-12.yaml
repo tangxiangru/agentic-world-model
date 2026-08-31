@@ -1,0 +1,173 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-12
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The tokenizer's apply_chat_template adds <think>\n\n</think>\n\n before the
+    assistant content. So the training data for v3 (which used messages format
+    with apply_chat_template) included these think tags. But the eval template
+    does NOT add these think tags! So at eval time the prompt ends with
+    <|im_start|>assistant\n and the model needs to generate from there. But it was
+    trained to expect <|im_start|>assistant\n<think>\n\n</think>\n\n{content}, so
+    it generates garbage first. This is the key mismatch!" [376].
+  evidence:
+    - path: /home/ben/task/eval_v3_50.json
+      locator: "[369]"
+      observation: "accuracy 0.020 on 50 items for the unpacked messages-format model - the worst of the three candidates so far"
+    - path: /home/ben/task/logs/2026-02-17T08-25-35+01-00_gsm8k_6nhTMXxnaN89udBmpiTZDr.json
+      locator: "[371]-[372], samples 4-5"
+      observation: "completions of 6.5k characters carrying 12 and 19 ANSWER lines, and now non-ASCII text before the reasoning as well as after it"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Option 1 is the right approach. Let me go back to the ... raw text format but
+    without packing. The trick is to format the text EXACTLY as the eval template
+    would produce it, without the <think> tags" [376].
+  mechanism: >-
+    If the training text is byte-for-byte the string the eval template renders -
+    "<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n{answer}<|im_end|>\n<|endoftext|>"
+    - the model is never conditioned on a <think> block it will not be given at
+    inference, so it starts the reasoning immediately and has a terminator to
+    learn.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-11
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_gsm_raw.jsonl
+      source: "HF meta-math/MetaMathQA (GSM_* only) + HF openai/gsm8k (main, train)"
+      n_examples: 50000
+      built_by: null
+      build_command: []
+      selection: >-
+        Built by an inline python heredoc at [383]: gsm8k train 7,473 rows with
+        <<calc>> annotations stripped, plus MetaMathQA
+        GSM_AnsAug/GSM_Rephrased/GSM_SV/GSM_FOBAR 239,998 rows with "####" and
+        "The answer is:" lines stripped; 247,471 rows total [384]. Each row is one
+        raw text field
+        "<|im_start|>user\n{eval prompt}<|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n<|endoftext|>",
+        shuffled seed 42. The trainer cut to 50,000 via --max-samples.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 / transformers 4.57.3 / peft 0.18.1 / torch 2.8.0+cu129"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj bias=none (132,120,576 trainable params, 3.18%)"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        dataset_text_field="text", packing=False, gradient_checkpointing=True,
+        attn_implementation="flash_attention_2", dataloader_num_workers=4,
+        save_total_limit=2, weight_decay=0.01, lr_scheduler_type=cosine, seed=42
+        are train_v4.py's own settings (workspace copy, written at [377]) and were
+        not overridden. Effective batch = 32; 1563 steps. Epochs cut from the
+        script's default 2.0 to 1.0 on the command line for budget: "2.9 hours
+        left ... Let me be more aggressive: train for 1 epoch on 50K samples" [387].
+    target_format: >-
+      raw text identical to what the eval's qwen3.jinja renders, with no <think>
+      block and terminated by "<|im_end|>\n<|endoftext|>".
+  command:
+    argv: [python3, train_v4.py, --data-file, training_data_gsm_raw.jsonl, --output-dir, trained_model_v4,
+           --max-samples, "50000", --epochs, "1.0", --lr, "2e-4", --batch-size, "16",
+           --grad-accum, "2", --max-seq-length, "768", --lora-r, "64", --lora-alpha, "128",
+           --warmup-ratio, "0.03", --save-steps, "500", --logging-steps, "25"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v4.py
+    env: {}
+    log: /home/ben/task/train_v4.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: 0.95
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.97
+  duration_h: 0.97
+  steps: 1563
+  output_checkpoint: /home/ben/task/trained_model_v4
+  training_summary:
+    final_loss: 0.1812
+    steps: 1563
+    notes: >-
+      train_runtime 3495.9 s (0.97 h), train_loss 0.1962, mean_token_accuracy
+      0.957, 16.5M tokens (train_v4.log). Loss 0.5524 at step 25, 0.2017 at step
+      500 and 0.1911 at step 1000 [396]. 2:01 of the 10 h budget remained at
+      [396], with the run at 88%.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    One epoch of 50k unpacked, eval-shaped raw-text examples in 0.97 h, loss 0.55
+    -> 0.18. Not scored on its own; the 0.040 it produced is on exp-13.
+  decision: adopt
+  next_step: "Merge into final_model, rewrite generation_config, evaluate (exp-13)."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ef3f45de
+  launch_i: 388
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [369, 371, 372, 373, 376]
+    setup: [377, 383, 384, 387, 388]
+    evaluation: []
+    result: [389, 392, 396]
+    conclusion: [396, 403]
+  snapshot_files:
+    - train_v4.py
+    - train_v4.log
+    - eval_v3_50.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "training_data_gsm_raw.jsonl was built by an inline heredoc at [383], not by a workspace script, so it cannot be regenerated from the snapshot; prepare_data_v4.py builds a similar but not identical file."
+    - "Which 50,000 of the 247,471 rows were used is fixed only by datasets' shuffle(seed=42)."
+    - "The adapter was never evaluated on its own."

@@ -1,0 +1,228 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The pilot recipe beats the base model but only just: 0.15 against 0.05 on
+    the 20-sample slice, and the later pilot checkpoint (0.10) is worse than the
+    earlier one, which the agent read as a generalization problem to fix before
+    finalizing [195].
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8e27ac7b/metrics_pilot120_20.json
+      locator: "accuracy"
+      observation: "pilot checkpoint-120 at 0.15 on 20 samples"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8e27ac7b/metrics_pilot167_20.json
+      locator: "accuracy"
+      observation: "pilot checkpoint-167 at 0.10, below the earlier checkpoint on the same slice"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8e27ac7b/metrics_base_20.json
+      locator: "accuracy"
+      observation: "base model at 0.05 on the same slice"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "a second, more conservative run (lower LR, longer context) to target better
+    generalization" [195] - 8e-5 instead of 2e-4 and a 1536-token window instead
+    of 1024 - will produce a checkpoint that beats the pilot checkpoint on the
+    same 20-sample slice.
+  mechanism: >-
+    Not stated. Implied by the agent's framing: the pilot's higher LR overfits
+    within a fraction of an epoch (checkpoint-167 scoring below checkpoint-120),
+    and 1024 tokens truncates some formatted examples.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: >-
+    Stated as a decision rule rather than a threshold: "if that checkpoint
+    doesn't beat the pilot, I'll terminate run2 and finalize from run1" [212].
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: null            # loaded directly from the hub inside the script, no local file
+      source: "HF:openai/gsm8k (config main, split train)"
+      n_examples: 7100
+      built_by: null
+      build_command: []
+      selection: >-
+        gsm8k train shuffled with seed 42; first 373 rows held out as the
+        in-training eval split, remaining 7100 used for training - both counts
+        printed by this launch in train_run2.log ("Truncating train dataset:
+        7100", "Truncating eval dataset: 373"). GSM8K test split never loaded.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (versions printed at [17]); transformers 4.57.3, peft 0.18.1, bitsandbytes 0.49.1"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj, on a 4-bit NF4 (double-quant, bf16 compute) base"
+    hyperparams:
+      lr: 8.0e-05
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: "bf16 (bf16=True, tf32=True) over a 4-bit NF4 quantised base"
+      seed: 42
+      other: >-
+        lr / epochs / batch_size / grad_accum / max_seq_len / save_steps=80 are
+        from the launch argv at [196]. LoRA r=64, alpha=128, dropout=0.05,
+        warmup_ratio=0.03, seed=42 and val_size=384 are argparse defaults of
+        train_gsm8k_lora.py in the workspace snapshot, not overridden by this
+        launch. scheduler=cosine, weight_decay=0.01, max_grad_norm=1.0,
+        optim=paged_adamw_8bit, gradient_checkpointing=True, eval_strategy=steps
+        with eval_steps=save_steps, save_total_limit=2, packing=False,
+        attn_implementation=eager are hard-coded in that script.
+    target_format: >-
+      Gemma3 chat template (templates/gemma3.jinja loaded over the tokenizer's
+      own) applied to a user turn holding the benchmark math prompt and an
+      assistant turn holding the GSM8K rationale with the "####" delimiter
+      stripped, followed by "ANSWER: <target>".
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - python train_gsm8k_lora.py --output-dir outputs/gsm8k_lora_run2 --num-epochs 1.0 --learning-rate 8e-5 --batch-size 2 --grad-accum 16 --max-seq-len 1536 --save-steps 80 2>&1 | tee train_run2.log
+    cwd: null
+    script: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8e27ac7b/train_gsm8k_lora.py
+    env: {}
+    log: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8e27ac7b/train_run2.log
+  resume_argv: []   # the training script exposes no --resume_from_checkpoint flag
+  output_dir: outputs/gsm8k_lora_run2
+  progress:
+    unit: optimizer_step
+    total: 222
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 (printed at [16])"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - outputs/merged_run2_80
+      - --limit
+      - "20"
+      - --json-output-file
+      - metrics_run2_80_20.json
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.6"
+    dev_set: "official --limit 20 (inspect_evals/gsm8k, dataset openai/gsm8k)"
+    n: 20
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.15
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8e27ac7b/metrics_pilot120_20.json
+  diagnostic:
+    what: null
+    items: null
+    n: null
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: killed
+  wall_h: 0.17
+  duration_h: 0.17
+  steps: 83
+  output_checkpoint: outputs/gsm8k_lora_run2/checkpoint-80
+  training_summary:
+    final_loss: null
+    steps: 83
+    notes: >-
+      Killed deliberately once the step-80 checkpoint was on disk: "I'm stopping
+      this run now to avoid unnecessary extra compute and will benchmark that
+      checkpoint against the pilot" [216], via pkill at [217]. train_run2.log
+      shows the run reached step 83 of 222 at 10:19 elapsed; last logged
+      training loss 0.5394 at epoch 0.36. The step-80 eval pass over the 373
+      held-out rows ran, but its metrics line was overwritten in the log by the
+      progress bar and the agent's grep for it at [226] returned nothing, so no
+      eval_loss is recoverable.
+  measurements:
+    - metric: accuracy
+      value: 0.25
+      n: 20
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8e27ac7b/metrics_run2_80_20.json
+      delta_vs_comparator: 0.10
+    - metric: accuracy
+      value: 0.30
+      n: 100
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8e27ac7b/metrics_run2_80_100.json
+      delta_vs_comparator: 0.11
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  pings_acted_on: []
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    The lower-LR, longer-context run beat the pilot with a quarter of the
+    training: its step-80 checkpoint scored 0.25 against the pilot's 0.15 on the
+    same 20-sample slice ("Run2 checkpoint-80 is currently best" [236]) and 0.30
+    against 0.19 on 100 samples. The comparison is against a pilot checkpoint at
+    a different step and the run was stopped at step 83 of 222, so what the
+    lower LR alone bought is not isolated.
+  decision: adopt
+  next_step: >-
+    Merge checkpoint-80 and "validate it on a larger subset next before
+    finalizing `final_model`" [236] -> exp-07, exp-08.
+
+# ---- outcome ----------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-8e27ac7b
+  launch_i: 196
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [193, 195]
+    setup: [195, 196]
+    evaluation: [233, 237]
+    result: [200, 210, 212, 216, 217, 226, 234]
+    conclusion: [236, 279]
+  snapshot_files:
+    - train_gsm8k_lora.py
+    - train_run2.log
+    - metrics_run2_80_20.json
+    - metrics_run2_80_100.json
+    - metrics_pilot120_20.json
+    - metrics_pilot120_100.json
+    - contamination_judgement.txt
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "This launch changed two things at once (LR 2e-4 -> 8e-5 and max_seq_len 1024 -> 1536) and stopped at a different step count than the pilot, so the attribution in the hypothesis is not tested by the comparison."
+    - "No eval_loss survives for the step-80 checkpoint; the agent's own grep at [226] produced no result."
+    - "Measurements were taken on the merged export produced by exp-07, not on the adapter directory."

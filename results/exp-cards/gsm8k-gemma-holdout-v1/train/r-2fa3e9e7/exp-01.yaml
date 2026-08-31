@@ -1,0 +1,260 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.3
+problem:
+  statement: >-
+    The unmodified base checkpoint scores 14% on a 50-item probe of the
+    provided evaluator. It is a true base model with no chat template, so it
+    neither follows the evaluator's 'ANSWER: ...' contract nor stops after the
+    answer - generations drift on into fabricated follow-up turns.
+  evidence:
+    - path: /home/ben/task/baseline_50.json
+      locator: "[26], [45]"
+      observation: untouched base model scores 0.14 on 50 items
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-2fa3e9e7.md
+      locator: "[24], [28]"
+      observation: >-
+        tokenizer reports chat_template? False, so the evaluator's
+        conversation must be taught
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-2fa3e9e7.md
+      locator: "[45]"
+      observation: >-
+        printed base-model completions are unstructured and restate 'Answer:'
+        several times mid-solution
+  affected_share: null
+  failure_examples:
+    - id: gsm8k_3c472a74
+      source: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-2fa3e9e7.md
+      question: >-
+        Charlie wants to sell beeswax candles. For every pound of beeswax, he
+        can make 10 tapered candles...
+      gold: "20"
+      model_output: >-
+        'Vin or Win? ... Total sales =ancerSold x Priceper Candle = (20 x
+        $2.00) =Answer: $40 ... the net profit =Answer: $40/$0'
+      failure: no plan, repeated inline 'Answer:' fragments, never emits a final 'ANSWER:' line
+  watch_set: null
+hypothesis:
+  claim: >-
+    Full-parameter SFT on the GSM8K-train-derived MetaMathQA families,
+    rendered in the evaluator's ChatML conversation with an explicit 'ANSWER:'
+    suffix and a supervised <|im_end|><|end_of_text|> stop pair, will lift
+    accuracy far above the 14% base and remove the fabricated follow-up turns.
+  mechanism: >-
+    The published SmolLM3 result reports 65.8% after one full-parameter epoch
+    on 100k MetaMathQA, so the corpus is known to carry the reasoning; the two
+    evaluator-specific fixes (exact answer suffix, reliable stop token)
+    address the part of the loss that is formatting rather than mathematics.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: HF meta-math/MetaMathQA
+      n_examples: 160000
+      built_by: /home/ben/task/train_math.py
+      build_command:
+        - "python"
+        - "train_math.py"
+        - "--stage"
+        - "broad"
+        - "--output-dir"
+        - "stage1_model"
+      selection: >-
+        meta-math/MetaMathQA filtered to types GSM_AnsAug and GSM_Rephrased
+        (160,000 rows), shuffled with seed 42; each response split at '####'
+        into reasoning and final answer; loss over the whole sequence;
+        best-fit-decreasing packing into 1,024-token blocks.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: >-
+      transformers 4.57.3 Trainer + trl 0.27.2 (pack_dataset,
+      DataCollatorForLanguageModeling); torch 2.8.0+cu129
+    peft: none
+    hyperparams:
+      lr: 1e-05
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16 (tf32 matmul, gradient checkpointing, adamw_torch_fused, max_grad_norm 1.0)
+      seed: 42
+      other: >-
+        Values not on the command line are train_math.py defaults (script text
+        is in the snapshot and this launch did not override them): max_seq_len
+        1024, cosine schedule, warmup_ratio 0.03, weight_decay 0.01, seed 42,
+        1 epoch. lr/batch/grad_accum are the values the script printed at
+        launch: 'TRAIN_CONFIG stage=broad lr=1e-05 batch=8 grad_accum=2
+        effective_blocks=16 epochs=1.0 approx_updates=3211'
+        (stage1_train.log).
+    target_format: >-
+      ChatML: <|im_start|>system <careful-math-assistant> <|im_end|>
+      <|im_start|>user <evaluator-style instruction + problem + 'Reasoning:'>
+      <|im_end|> <|im_start|>assistant <reasoning> blank line 'ANSWER:
+      <value>' <|im_end|><|end_of_text|> - the same 'ANSWER:' suffix the
+      grader extracts, plus an explicit stop token pair.
+  command:
+    argv:
+      - "python"
+      - "train_math.py"
+      - "--stage"
+      - "broad"
+      - "--output-dir"
+      - "stage1_model"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_math.py
+    env: {}
+    log: /home/ben/task/stage1_train.log
+  budget:
+    gpu: 1x H100 80GB
+    planned_h: null
+evaluation:
+  protocol:
+    command:
+      - "python"
+      - "evaluate.py"
+      - "--model-path"
+      - "stage1_model"
+      - "--limit"
+      - "150"
+      - "--max-tokens"
+      - "1024"
+      - "--max-connections"
+      - "16"
+      - "--gpu-memory-utilization"
+      - "0.8"
+      - "--json-output-file"
+      - "stage1_150.json"
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: >-
+      analyze_eval.py: 'ANSWER:' suffix compliance, fake-follow-up rate and
+      output-length statistics on the evaluator log
+    command:
+      - "python"
+      - "analyze_eval.py"
+      - "<inspect log for this eval>"
+    path: null
+result:
+  execution: completed
+  wall_h: 0.854
+  output_checkpoint: /home/ben/task/stage1_model
+  training_summary:
+    final_loss: 0.17050131386925
+    steps: 3211
+    notes: >-
+      48,887,659 tokens seen in 51m14s over 51,367 packed blocks (0.9294
+      packing efficiency). Before evaluation the tokenizer was re-saved with
+      <|im_start|>/<|im_end|> registered as special tokens and
+      templates/smollm.jinja as the chat template; vocabulary size unchanged
+      and token ids verified identical to the base tokenizer [380], [390].
+  measurements:
+    - metric: accuracy
+      value: 0.5466666666666666
+      n: 150
+      path: /home/ben/task/stage1_150.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.76
+      n: 150
+      path: /home/ben/task/greedy_stage1_model_150.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.7452615617892343
+      n: 1319
+      path: /home/ben/task/greedy_stage1_model_full.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      On the full-set greedy run: answer_suffix_rate 0.960, fake_followup_rate
+      0.000, mean output 124.5 tokens, 983/1319 correct [1437]. The two later
+      measurements were taken after a zero-temperature generation default was
+      introduced.
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    'The first full SFT stage reached 54.7% on a 150-example evaluation and
+    eliminated nearly all prompt-followup failures' [388]. The formatting
+    mechanism clearly worked, but the base model was only ever measured at
+    --limit 50, so there is no same-protocol comparator for the 54.7%. Under
+    greedy decoding these same weights later measured 74.5% on all 1,319 items
+    [1371] and became the submission.
+  decision: adopt
+  next_step: >-
+    compare two Orca-Math continuation learning rates from this checkpoint and
+    advance the stronger one [388]
+outcome:
+  official_accuracy: null
+provenance:
+  kind: extracted
+  run_ref: r-2fa3e9e7
+  launch_i: 122
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem:
+      - 26
+      - 28
+      - 44
+      - 45
+    setup:
+      - 59
+      - 110
+      - 114
+      - 122
+    evaluation:
+      - 380
+      - 385
+    result:
+      - 386
+      - 388
+      - 1371
+      - 1437
+    conclusion:
+      - 388
+      - 1371
+      - 1433
+  snapshot_files:
+    - "train_math.py"
+    - "stage1_train.log"
+    - "stage1_150.json"
+    - "baseline_50.json"
+    - "greedy_stage1_model_150.json"
+    - "greedy_stage1_model_full.json"
+    - "analyze_eval.py"
+    - "evaluate.py"
+  smoke_runs:
+    - launch_i: 110
+      outcome: passed (--dry-run for the broad and align stages)
+    - launch_i: 114
+      outcome: passed (--max-steps 10 pipeline probe into probe_model, deleted before the real run)
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The base model was measured only at --limit 50 (0.14, baseline_50.json), so exp-01's --limit 150 result has no same-protocol comparator."
+    - "The exact accuracy printed by analyze_eval.py for the 54.7% run is not in the stream; only the raw score file survives."

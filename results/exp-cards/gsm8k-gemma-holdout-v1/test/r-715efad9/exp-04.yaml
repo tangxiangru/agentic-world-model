@@ -1,0 +1,230 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Scaling the previous mixture up made things slightly worse (50% vs 52%), and
+    the wrong answers are arithmetic/reasoning errors rather than formatting
+    errors. The agent also blamed the training targets themselves: they carry
+    GSM8K's "#### n" marker and MetaMathQA's non-word-problem rows, which it
+    judged noise for this benchmark.
+  evidence:
+    - path: /home/ben/task/eval_result_v2.json
+      locator: "whole file"
+      observation: "accuracy 0.50, stderr 0.0714 on 50 items - below exp-02's 0.52"
+    - path: /home/ben/task/logs/2026-03-17T04-50-11+01-00_gsm8k_VmyDJehZvtbpdZvFWUiRhW.json
+      locator: "[132], [133] - all 25 wrong items printed as target/answer pairs"
+      observation: "25 correct / 25 incorrect; wrong answers are numerically off, not malformed"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-03-17T04-50-11+01-00_gsm8k_VmyDJehZvtbpdZvFWUiRhW.json
+      question: null
+      gold: "30"
+      model_output: "ANSWER: 90"
+      failure: "printed at [133] as 'Target: 30, Got: 90'; only the target/answer pair was printed, not the question or the chain of thought"
+    - id: null
+      source: /home/ben/task/logs/2026-03-17T04-50-11+01-00_gsm8k_VmyDJehZvtbpdZvFWUiRhW.json
+      question: null
+      gold: "20"
+      model_output: "ANSWER: 380"
+      failure: "printed at [133] as 'Target: 20, Got: 380'"
+    - id: null
+      source: /home/ben/task/logs/2026-03-17T04-50-11+01-00_gsm8k_VmyDJehZvtbpdZvFWUiRhW.json
+      question: null
+      gold: "125"
+      model_output: "ANSWER: 2.5"
+      failure: "printed at [133] as 'Target: 125, Got: 2.5'"
+    - id: null
+      source: /home/ben/task/logs/2026-03-17T04-50-11+01-00_gsm8k_VmyDJehZvtbpdZvFWUiRhW.json
+      question: null
+      gold: "230"
+      model_output: "ANSWER: 80, 150"
+      failure: "printed at [133] as 'Target: 230, Got: 80, 150' - two numbers on the ANSWER line instead of one"
+    - id: null
+      source: /home/ben/task/logs/2026-03-17T04-50-11+01-00_gsm8k_VmyDJehZvtbpdZvFWUiRhW.json
+      question: null
+      gold: "70000"
+      model_output: "ANSWER: 142,000"
+      failure: "printed at [133] as 'Target: 70000, Got: 142,000'"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Cleaning the targets and narrowing the mixture will beat the 52% plateau:
+    keep only GSM8K train (repeated 3x, the highest-quality source) and the
+    MetaMathQA GSM rows, strip the "#### n" and "The answer is:" tails so the
+    target ends in a single "ANSWER: <n>" line, and go back to one epoch with the
+    r=64 adapter. The agent at [135]: "Let me try a different approach - focus on
+    data quality and format alignment"; prepare_data_v3.py's own header lists
+    "Clean ANSWER: format only (no #### markers which confuse the model)".
+  mechanism: >-
+    A target that ends in exactly the string the grader looks for, drawn only
+    from grade-school word problems, gives a cleaner signal than the mixed-format
+    corpus that produced the 52%/50% pair.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v3.jsonl
+      source: "HF: openai/gsm8k (main, train) + meta-math/MetaMathQA (train, GSM rows only)"
+      n_examples: 262417
+      built_by: /home/ben/task/prepare_data_v3.py
+      build_command:
+        - python3
+        - prepare_data_v3.py
+      selection: >-
+        Every GSM8K train item written three times (22,419 rows) plus 239,998
+        MetaMathQA rows whose type contains "GSM", with "#### n" and "The answer
+        is: n" stripped from the reasoning and any reasoning under 20 characters
+        dropped; shuffled with seed 42. Counts printed at [139]. This launch
+        subsamples 100,000 rows (shuffle seed 42) via MAX_SAMPLES in train_v3.py.
+        Note the GSM8K reasoning is repeated verbatim - the 3x is duplication,
+        not augmentation - and the stripping is applied to MetaMathQA only, so
+        GSM8K targets still contain "#### n" (visible in the model's own outputs
+        at [159]).
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer / SFTConfig 0.27.2 (transformers 4.57.3, peft 0.18.1)
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj; base loaded in 4-bit nf4 (double quant, bf16 compute)"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        All values are module-level constants in train_v3.py (the launch passed
+        no arguments, so nothing was overridden); script text at [141] and in the
+        workspace snapshot. packing=True, optim=paged_adamw_8bit,
+        gradient_checkpointing=True, MAX_SAMPLES=100000,
+        attn_implementation=flash_attention_2. The script's docstring says "Use
+        full fine-tuning (no LoRA) for maximum quality", but the code trains a
+        LoRA adapter on a 4-bit base - the docstring is wrong.
+    target_format: >-
+      Two-turn chat via templates/gemma3.jinja; assistant turn is the cleaned
+      reasoning, a blank line, then "ANSWER: <n>".
+  command:
+    argv:
+      - python3
+      - train_v3.py
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v3.py
+    env: {}
+    log: null
+  budget:
+    gpu: "H100 80GB (single GPU)"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python3
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - /home/ben/task/final_model
+      - --limit
+      - "50"
+      - --json-output-file
+      - /home/ben/task/eval_result_v3.json
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "2048"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.52
+    path: /home/ben/task/eval_result_v1.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Adapter saved to /home/ben/task/checkpoints_v3/final_adapter, merged and
+      written over /home/ben/task/final_model. No loss or step count in the
+      digest (the stdout block at [144] was truncated), though at [178] the agent
+      recalls the LoRA runs reaching a training loss of about 0.19. The timer at
+      [153], just after this evaluation, showed 4:24 of the 10 h budget left.
+  measurements:
+    - metric: accuracy
+      value: 0.52
+      n: 50
+      path: /home/ben/task/eval_result_v3.json
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-03-17T06-25-45+01-00_gsm8k_2BgJAfkH7G7saB76oMgdx9.json
+    notes: >-
+      Inspecting three samples at [157]/[159] the agent found the model emitting
+      "#### n" and then repeating the "ANSWER: n" line two to four times, and
+      noticed the model's generation_config.json still had do_sample=true with
+      top_k=64, top_p=0.95.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    52% on the same 50 items - identical to exp-02 and 2 pts above the rejected
+    exp-03, so cleaning and narrowing the data moved nothing. It nonetheless
+    became the incumbent: the agent applied its decode change (exp-05) on top of
+    this checkpoint and at [178] called it "the v3 LoRA model which was the best
+    so far".
+  decision: adopt
+  next_step: >-
+    Switch the merged model's generation_config.json to greedy decoding and
+    re-evaluate the same checkpoint ([160]).
+
+provenance:
+  kind: extracted
+  run_ref: r-715efad9
+  launch_i: 143
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [130, 132, 133, 135]
+    setup: [136, 138, 139, 141, 143]
+    evaluation: [149]
+    result: [144, 150, 153, 157, 159]
+    conclusion: [160, 165, 178]
+  snapshot_files:
+    - prepare_data_v3.py
+    - train_v3.py
+    - evaluate.py
+    - eval_result_v2.json
+    - eval_result_v3.json
+  smoke_runs: []
+  extractor: null                 # withheld: no model name is written into these cards
+  unresolved:
+    - "No loss or step count for this launch appears in the digest; the 0.19 figure at [178] is the agent's recollection, not a printed number."

@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "There's a second prompt-alignment issue beyond EOS: the eval harness always
+    provides a fixed 10-example GSM8K few-shot block in the system message ... the
+    current no-system training path is seeing a different template branch than
+    evaluation" [202].
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-94f796fd.md
+      locator: "[55], [202]"
+      observation: >-
+        the eval prompt is "10 GSM8K train few-shots in the system message, then a
+        step-by-step prompt ending with `ANSWER: ...`" [55], while training so far
+        used no system message at all
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-94f796fd/exp_plain_2k_50.json
+      locator: "[180]"
+      observation: "the no-system plain pilot scored 0.10 on 50 samples"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "This is the first run that matches the harness structurally: fixed eval
+    few-shots in the system prompt, EOS-terminated answers, and the same chat
+    template branch evaluation uses. If this works, the rest is just scaling and
+    possibly adding a broader synthetic warmup" [214]; "If it beats the
+    plain-format pilots, I'll switch the final training stack to a two-stage
+    `plain -> eval-matched fewshot` curriculum on the full 7.5k GSM8K train set"
+    [219].
+  mechanism: >-
+    Training on exactly the prompt shape the harness presents at inference (same
+    fixed 10-shot system block, same user prompt, same template branch) removes
+    the train/eval template mismatch, so supervised gains transfer to the
+    benchmark instead of being spent on an unseen prompt format [202], [301].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/exp_plain_eos_2k_merged
+    origin: exp-02
+    hash: null
+  data:
+    - path: "openai/gsm8k (main, split=train), loaded inside the training script"
+      source: "HF id: openai/gsm8k"
+      n_examples: 2048
+      built_by: /home/ben/task/train_gsm8k.py
+      build_command: []
+      selection: >-
+        --train-samples 2048 --val-samples 128 --fewshot-contexts 10
+        --fewshot-mode eval_fixed: every training example carries a system message
+        built from the SAME fixed 10 GSM8K train rows the harness uses
+        (load_dataset('openai/gsm8k','main',split='train').shuffle(seed=42).select(range(10))),
+        formatted "<question>\n\nReasoning:\n<reasoning>\n\nANSWER: <target>";
+        training rows shuffled with seed 42, EOS-terminated targets.
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57 + peft 0.18 LoRA (torch 2.8, datasets 4.5) [36]"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,up_proj,gate_proj,down_proj (script defaults, not overridden); a fresh adapter on top of the merged parent"
+    hyperparams:
+      lr: 8.0e-05
+      epochs: 0.5
+      batch_size: 1
+      grad_accum: 16
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        scheduler, warmup, weight_decay, precision, seed, LoRA shape and
+        append_eos are not on the command line; read from the argparse defaults /
+        TrainingArguments of task/train_gsm8k.py, not overridden by this launch
+        (lr_scheduler_type=cosine, warmup_ratio=0.03, weight_decay=0.0, bf16=True,
+        optim=adamw_torch_fused, gradient_checkpointing=True, seed=42, save/eval
+        strategy "epoch" with load_best_model_at_end on eval_loss, append_eos
+        default True, chat template templates/smollm.jinja).
+    target_format: >-
+      SmolLM chat template with a system message holding the harness's fixed 10
+      GSM8K few-shots; user turn = the harness math prompt; assistant turn =
+      "<reasoning>\n\nANSWER: <target>" + EOS; loss on the assistant turn only.
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - "python train_gsm8k.py --model-name exp_plain_eos_2k_merged --output-dir exp_evalfixed10_eos_2k --save-merged-dir exp_evalfixed10_eos_2k_merged --train-samples 2048 --val-samples 128 --fewshot-contexts 10 --fewshot-mode eval_fixed --num-train-epochs 0.5 --batch-size 1 --eval-batch-size 1 --gradient-accumulation-steps 16 --logging-steps 10 --max-length 4096 --learning-rate 8e-5 --answer-format plain"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [20]"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - /bin/bash
+      - -lc
+      - "python evaluate.py --model-path exp_evalfixed10_eos_2k_merged --limit 50 --json-output-file exp_evalfixed10_eos_2k_50.json --max-connections 2 --max-tokens 1200 --gpu-memory-utilization 0.6"
+    dev_set: "official --limit 50 (inspect_evals/gsm8k, openai/gsm8k test)"
+    n: 50
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.24
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-94f796fd/baseline_50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.0719
+  output_checkpoint: /home/ben/task/exp_evalfixed10_eos_2k_merged
+  training_summary:
+    final_loss: 0.26182224974036217
+    steps: 64
+    notes: "train_runtime 258.73 s, eval_loss 0.4756 at epoch 0.5 [220]"
+  measurements:
+    - metric: accuracy
+      value: 0.52
+      n: 50
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-94f796fd/exp_evalfixed10_eos_2k_50.json
+      delta_vs_comparator: 0.28
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "The eval-matched 2k recipe is the first credible winner: `52%` on the
+    50-sample slice, up from `24%` baseline" [227]. Matching the harness's fixed
+    10-shot system block plus EOS termination more than doubled the base model's
+    score on the same slice, and recovered the 10% collapse of the first pilot.
+  decision: reject
+  next_step: >-
+    "I'm scaling the curriculum now by extending the plain EOS stage to the full
+    7,473 GSM8K train set before a final full-data eval-matched adaptation pass"
+    [227]. This checkpoint was kept only as a fallback ("I already have a
+    known-strong fallback", [310]) and was never promoted.
+
+provenance:
+  kind: extracted
+  run_ref: r-94f796fd
+  launch_i: 213
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [55, 202]
+    setup: [212, 213]
+    evaluation: [222, 223]
+    result: [220, 227]
+    conclusion: [227, 309, 310]
+  snapshot_files:
+    - train_gsm8k.py
+    - evaluate.py
+    - exp_evalfixed10_eos_2k_50.json
+    - baseline_50.json
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "this launch changed two things at once relative to the measured 10% pilot (EOS termination and the fixed 10-shot system block), so the 52% cannot be attributed to either alone"
+    - "the 52% was measured at --limit 50 while the later full-data stages were measured at --limit 100, so the agent's [332] three-way comparison (64% vs 52% vs 41%) mixes slice sizes"
+    - "the run's evaluate.py launches use --max-connections 1 or 2 and --gpu-memory-utilization 0.5 or 0.6; whether these affect the score is not tested"

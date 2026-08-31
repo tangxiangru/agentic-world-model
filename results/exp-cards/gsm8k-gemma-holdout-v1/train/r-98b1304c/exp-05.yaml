@@ -1,0 +1,193 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null                        # the stream carries no timestamps
+
+problem:
+  statement: >-
+    "I found the failure mode: the model is over-generating repeated `ANSWER:`
+    lines" [158] - the chat-formatted LoRA model never stops after its first
+    answer, which cost it accuracy (0.125 on 40) against the base model.
+  evidence:
+    - path: null
+      locator: "[154]"
+      observation: "raw generations from the eval log: one solution followed by dozens of repeated `ANSWER:` lines, sometimes running on into a fresh copy of the prompt"
+    - path: /home/ben/task/runs/lora_run1_eval40.json
+      locator: "[152]"
+      observation: "merged LoRA checkpoint scored accuracy 0.125 on 40 samples"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: "/home/ben/task/logs/*EGHFqyLXoaFSXrCgvgmGj3.json"
+      question: null                   # the agent printed only target/score/output
+      gold: "75"
+      model_output: "2 x 4 = $8.00 worth of yogurts per day\\n$8.00 a day for 30 days is 30 * 8 = <<30*8=240.00>>240.00\\n\\nANSWER: 240\\nANSWER: 240\\nSolve the following math problem step by step. ... (prompt restarts)"
+      failure: "wrong answer, then repeats the ANSWER line and runs on into a new copy of the prompt template instead of stopping"
+    - id: null
+      source: "/home/ben/task/logs/*EGHFqyLXoaFSXrCgvgmGj3.json"
+      question: null
+      gold: "80"
+      model_output: "... The total is 180 because 40 + 80 + 50 = <<40+80+50=170>>170.\\nTheir average was 170 / 3 = 56.67\\n\\nANSWER: 56.67\\nANSWER: 57\\nANSWER: 56\\nANSWER: 57ANSWER: 55ANSWER: 56 ..."
+      failure: "arithmetic and setup wrong, then emits a long run of contradictory ANSWER lines with no EOS"
+    - id: null
+      source: "/home/ben/task/logs/*EGHFqyLXoaFSXrCgvgmGj3.json"
+      question: null
+      gold: null                       # target line was cut off in the printed output
+      model_output: "... Since $17/$8.50 = <<17/8.50=2>>2 boxes of pizza, she bought 2 boxes of pizza.\\n\\nANSWER: 2\\nANSWER: 2\\nANSWER: 2\\nANSWER: 2 ..."
+      failure: "solution reached, then the ANSWER line repeats until the token budget runs out"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Switching to a cleaner prompt-completion SFT setup (no chat templating
+    during training, strict EOS after one answer)" [158] will stop the
+    repeated `ANSWER:` lines and raise GSM8K accuracy.
+  mechanism: >-
+    Training on raw prompt + completion + explicit eos_token_id, with the loss
+    masked over the prompt, teaches the model to terminate right after the
+    single `ANSWER:` line instead of continuing.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split=train), loaded inside the training script"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_lora_plain.py
+      build_command: []
+      selection: >-
+        openai/gsm8k main/train shuffled with seed 42 and split by
+        --train_ratio 0.94; each row becomes a flat prompt-completion pair -
+        the benchmark's math prompt text (no chat template) then the gold
+        rationale with `####` stripped + `ANSWER: <final>` + EOS - with labels
+        masked over the prompt and only the prompt truncated when too long.
+        7473 source rows [55]; split sizes never printed.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 + peft 0.18.1, torch 2.8.0+cu129 [36]"
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=all nn.Linear suffixes found by find_target_modules() (script defaults, not overridden)"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 2
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/batch_size/grad_accum/max_seq_len from the launch argv; the
+        cosine schedule, bf16, warmup_ratio 0.05, weight_decay 0.0, seed 42
+        and the LoRA r/alpha/dropout are argparse defaults or literals in the
+        workspace copy of train_gsm8k_lora_plain.py and were not overridden
+        (that copy is the end-of-run version, patched at [180] to add
+        --fewshot_k after this launch). --fewshot_k defaults to 0, so this run
+        used no in-context exemplars. Also from the launch: --train_ratio
+        0.94, --eval_steps 50, --save_steps 50, --merged_dir
+        runs/plain_run2_merged.
+    target_format: >-
+      raw prompt text + gold rationale + blank line + `ANSWER: <final>` +
+      eos token; no chat template at training time
+  command:
+    argv:
+      - python
+      - train_gsm8k_lora_plain.py
+      - --output_dir
+      - runs/plain_run2
+      - --merged_dir
+      - runs/plain_run2_merged
+      - --num_train_epochs
+      - "2"
+      - --learning_rate
+      - "1e-4"
+      - --per_device_train_batch_size
+      - "8"
+      - --gradient_accumulation_steps
+      - "4"
+      - --max_length
+      - "1536"
+      - --train_ratio
+      - "0.94"
+      - --eval_steps
+      - "50"
+      - --save_steps
+      - "50"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_lora_plain.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [34]"
+    planned_h: null
+
+evaluation:
+  protocol: null                       # never scored on GSM8K
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/plain_run2/checkpoint-50
+  training_summary:
+    final_loss: null
+    steps: 50
+    notes: >-
+      Killed by the agent at [184] after one checkpoint. eval_loss 0.4747 at
+      step 50 (epoch 0.23), the only eval recorded and therefore
+      best_model_checkpoint [173].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Eval loss is flat so far" [177] and "current run2 hasn't improved beyond
+    its first checkpoint, so I'm stopping it" [183]. The repetition hypothesis
+    was never tested on GSM8K because no checkpoint was scored.
+  decision: abandon_line
+  next_step: >-
+    Launch an eval-aligned variant of the same script in which each training
+    prompt carries random GSM8K-train few-shot exemplars [177].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-98b1304c
+  launch_i: 167
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [152, 154, 158]
+    setup: [159, 167]
+    evaluation: []
+    result: [173, 184]
+    conclusion: [177, 183]
+  snapshot_files:
+    - train_gsm8k_lora_plain.py
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the eval log the failure examples were read from (logs/*EGHFqyLXoaFSXrCgvgmGj3.json) is not in the workspace snapshot; the first item's target line was cut off in the printed output"
+    - "the decision to stop rests on eval_loss at a single checkpoint; no GSM8K accuracy was measured for this run"

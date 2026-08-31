@@ -1,0 +1,181 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.12
+
+problem:
+  statement: >-
+    The base model scores 12% on 50 GSM8K samples. The task's scorer extracts the
+    last number in the completion and compares it numerically to the target, so the
+    model needs to end on a clean "ANSWER: X" line; the base model does not.
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[152]"
+      observation: "baseline eval of the base model at --limit 50 read as 12%"
+    - path: /home/ben/task/evaluate.py
+      locator: "[53]"
+      observation: >-
+        agent's reading of the scorer: it takes the LAST number in the completion,
+        so a clean `ANSWER: X` ending is ideal
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/train.jsonl
+      source: "openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/work/prep_data.py
+      build_command: [python, work/prep_data.py]
+      selection: >-
+        one record per GSM8K train item; `<<...>>` calculator annotations stripped,
+        whitespace collapsed, answer reformatted to end "ANSWER: <n>" with commas
+        removed; system prompt chosen 50/50 between a brief instruction and a random
+        k-shot (k=1-6) block of other train items; user turn is the eval's
+        MATH_PROMPT_TEMPLATE; random seed 42 [153]. n_examples is the agent's own
+        count of gold GSM8K-train items, stated at [885]; the script's "wrote N
+        examples" print at [155] is not in the digest.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr and epochs are positional launch args. The remaining values are the
+        SFTConfig literals in the training script as written at [160] (the script is
+        NOT in the workspace snapshot; the text is only in the digest write event):
+        packing=False, assistant_only_loss=True, gradient_checkpointing=True
+        (use_reentrant=False), optim=adamw_torch, max_grad_norm=1.0,
+        save_strategy="no", logging_steps=20, dataset_num_proc=8, bf16=True,
+        attn_implementation="flash_attention_2", dtype=bfloat16. No seed is set.
+    target_format: >-
+      the eval's chat template (templates/smollm.jinja); assistant turn is the cleaned
+      GSM8K rationale ending in "ANSWER: <n>", loss on assistant tokens only
+  command:
+    argv: [nohup, python, work/train_sft.py, work/sft_v1, "3", 1e-5]
+    cwd: /home/ben/task
+    script: /home/ben/task/work/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, work/sft_v1, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, logs/sft_v1.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.12
+    path: /home/ben/task/logs/baseline.json
+  diagnostic:
+    what: >-
+      read raw completions out of the v1 eval log to explain why the score was so low
+      [258]
+    command: [python, -, "<<'EOF'"]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.47
+  output_checkpoint: /home/ben/task/work/sft_v1
+  training_summary:
+    final_loss: 0.485
+    steps: null
+    notes: >-
+      "Training v1 done (final loss 0.485, token acc ~87%)" [238]. wall_h is derived
+      from event timestamps (launch [173] t=+0.12h, "done" [238] t=+0.59h); the agent
+      never printed a duration.
+  measurements:
+    - metric: accuracy
+      value: 0.213
+      n: 150
+      path: /home/ben/task/logs/sft_v1.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.533
+      n: 150
+      path: /home/ben/task/logs/sft_v1b.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      Completions ran past "ANSWER: X" into repeated garbage [259]. Cause identified
+      at [296]: the model's eos is `<|end_of_text|>` (128001) but the chat template
+      ends assistant turns with `<|im_end|>` (128012), which vllm did not stop on, so
+      the last-number scorer picked up trailing junk. The agent patched eos_token_id
+      and re-evaluated the SAME weights to 53.3% [318]; the patch command itself does
+      not appear in the digest.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    SFT on reformatted gold GSM8K raised the model well above the 12% base reading,
+    but the first eval (21.3%) was depressed by a stop-token bug rather than by the
+    model; after eos_token_id was patched the same weights read 53.3% at --limit 150
+    [318]. The comparator was measured at --limit 50, not 150, so no verdict is
+    claimed against it.
+  decision: adopt
+  next_step: >-
+    Copy the checkpoint to final_model as a safe fallback [320], then test greedy
+    decoding [345].
+
+# official_accuracy is joined by the pipeline, never written by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-1fff43fc
+  launch_i: 173
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [53, 152]
+    setup: [153, 155, 160, 173]
+    evaluation: [239, 299]
+    result: [238, 255, 258, 259, 296, 318]
+    conclusion: [318, 320]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The eos_token_id patch that lifted this checkpoint from 21.3% to 53.3% is not present as a command anywhere in the digest (it happened between [296] and [299])."
+    - "The workspace snapshot holds none of the training/data scripts or eval JSONs this card cites; their content is recovered only from digest write events."
+    - "work/prep_data.py never printed a record count in the digest; n_examples is the agent's own gold-item count from [885]."

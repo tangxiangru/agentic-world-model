@@ -1,0 +1,247 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The LoRA baseline has stopped improving: "the validation trend after epoch
+    one is flat-to-worse, which usually means this particular setup has mostly
+    extracted what it can from plain GSM8K SFT", leaving a ~4%-of-parameters
+    update as the binding constraint rather than the data [253], [254].
+  evidence:
+    - path: /home/ben/task/outputs/exp1_lora_nf/checkpoint-600/trainer_state.json
+      locator: "[225], [249], [264]"
+      observation: "eval_loss 0.5531 (step 200) -> 0.5571 (step 400) -> 0.6345 (step 600): best checkpoint is early"
+    - path: /home/ben/task/exp1_local_test100.json
+      locator: "[326], [329]"
+      observation: "LoRA baseline scores 60/100 on the local 100-item GSM8K test slice after strict re-parsing"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A full fine-tune on the same supervision - "same supervised signal, but
+    enough trainable capacity to improve reasoning and answer formatting beyond
+    what LoRA managed" - will beat the LoRA baseline on the 100-item local GSM8K
+    test slice [254], [338].
+  mechanism: >-
+    The LoRA run's validation loss plateaued after one epoch, so the limit is
+    trainable capacity, not the data; moving from a 4%-parameter adapter to
+    updating all 1.7B parameters is "the only change with a clearly different
+    capacity profile" [217], [253], [254].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF: openai/gsm8k (config main, split train), loaded in-process by the training script"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        load_records() splits each answer on "####"; split_records() holds out
+        --val-size 512 random items (seed 42) as validation and trains on the
+        rest; --train-samples -1 means the whole remainder. --train-fewshot 0 and
+        --eval-fewshot 0, so both training and validation prompts are the short
+        single-question form.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 5.0e-05
+      epochs: 2
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        warmup_ratio, weight_decay and seed are the argparse defaults of
+        train_gsm8k_sft.py (in task/) and were not overridden on this launch;
+        lr_scheduler_type="cosine", bf16=True, tf32=True,
+        optim="adamw_torch_fused", load_best_model_at_end=True with
+        metric_for_best_model="eval_loss" are hard-coded in that script. No
+        --gradient-checkpointing on this launch. --full-finetune, so all
+        parameters are trainable. Caveat: the snapshot of train_gsm8k_sft.py is
+        the end-of-run version, edited again after this launch for the stop-token
+        fix ([383], [388]).
+    target_format: >-
+      the evaluator's Qwen chat template (templates/qwen3.jinja); assistant turn =
+      GSM8K reference reasoning followed by "ANSWER: <n>", loss masked to the
+      assistant tokens.
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --full-finetune
+      - --output-dir
+      - outputs/exp2_full_nf
+      - --train-samples
+      - "-1"
+      - --eval-samples
+      - "128"
+      - --val-size
+      - "512"
+      - --num-train-epochs
+      - "2"
+      - --per-device-train-batch-size
+      - "4"
+      - --per-device-eval-batch-size
+      - "4"
+      - --gradient-accumulation-steps
+      - "4"
+      - --logging-steps
+      - "10"
+      - --save-steps
+      - "200"
+      - --eval-steps
+      - "200"
+      - --learning-rate
+      - "5e-5"
+      - --train-fewshot
+      - "0"
+      - --eval-fewshot
+      - "0"
+      - --max-length
+      - "1024"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - eval_gsm8k_local.py
+      - --model-path
+      - outputs/exp2_full_nf
+      - --split
+      - test
+      - --limit
+      - "100"
+      - --fewshot
+      - "10"
+      - --batch-size
+      - "8"
+      - --max-new-tokens
+      - "256"
+      - --output-file
+      - exp2_local_test100_stopfix.json
+    dev_set: "GSM8K test, first 100 items, 10-shot prompt built by eval_gsm8k_local.py"
+    n: 100
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.60
+    path: /home/ben/task/exp1_local_test100.json
+  diagnostic:
+    what: "held-out validation loss on the 512-item train holdout, compared with the LoRA baseline's best checkpoint"
+    command: []
+    path: /home/ben/task/outputs/exp2_full_nf/checkpoint-400/trainer_state.json
+
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/outputs/exp2_full_nf
+  training_summary:
+    final_loss: 0.2967
+    steps: null
+    notes: >-
+      train_runtime 359.83 s, train_loss 0.2967 over 2 epochs, ~2.4 optimizer
+      steps/s [339], [367]. Validation loss 0.3890 (step 200), 0.3702 (step 400),
+      0.3860 (step 600); load_best_model_at_end restored step 400, and the final
+      evaluate() reproduced 0.3702 [346], [354], [361], [367]. The first
+      test-slice score printed 0.0 because the checkpoint ran past its answer
+      into the next turn; the agent printed three such completions at [378] whose
+      "ANSWER:" lines were correct (18, 3) before the trailing text, then updated
+      the checkpoints to stop on both Qwen end tokens and reran [376], [388].
+  measurements:
+    - metric: accuracy
+      value: 0.0
+      n: 100
+      path: /home/ben/task/exp2_local_test100.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.66
+      n: 100
+      path: /home/ben/task/exp2_local_test100_stopfix.json
+      delta_vs_comparator: 0.06
+    - metric: accuracy
+      value: 0.63
+      n: 100
+      path: /home/ben/task/exp2_eval100_fast.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.3702
+    path: /home/ben/task/outputs/exp2_full_nf/checkpoint-400/trainer_state.json
+    notes: "best eval_loss 0.3702 vs 0.5531 for the best LoRA checkpoint, on the same 512-item validation holdout with the same 0-shot eval prompt [348], [355], [362]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "The full fine-tune is now clearly better than the LoRA baseline on the
+    100-example test slice: 66% versus 60%" [397], and the mechanism check agrees
+    - validation loss fell from 0.5531 to 0.3702 on the same holdout. A
+    confirmation run with the official evaluator returned 63/100, "close to the
+    local 66% read" [435].
+  decision: adopt
+  next_step: >-
+    One more branch: a full fine-tune with a 4-shot system prompt so the training
+    distribution matches the evaluator's few-shot prompt (exp-04) [397].
+
+provenance:
+  kind: extracted
+  run_ref: r-736cc5f9
+  launch_i: 335
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [253, 254, 264, 329]
+    setup: [334, 335]
+    evaluation: [369, 389, 422]
+    result: [346, 354, 361, 367, 374, 378, 393, 435]
+    conclusion: [397, 435]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - eval_gsm8k_local.py
+    - evaluate.py
+    - exp2_local_test100.json
+    - exp2_local_test100_stopfix.json
+    - exp2_eval100_fast.json
+    - contamination_judgement.txt
+  smoke_runs:
+    - {launch_i: 330, outcome: "passed: full-finetune smoke on 256 examples for 0.1 epoch, no OOM and fast enough for the full split"}
+  extractor: claude-opus-5
+  unresolved:
+    - "the stop-token fix applied between [383] and [388] changed the saved checkpoints' decoding config, but no command applying it appears in the stream; only the py_compile at [383] and the agent's statement at [388]"
+    - "the comparator (exp-02 at 0.60) came from an offline re-parse and was measured before the stop-token fix, so the +6 pt delta is not perfectly protocol-matched"
+    - "the official 63/100 was measured on outputs/exp2_full_nf with --max-connections 2 --max-tokens 768, not under the earlier --max-connections 1 --max-tokens 2000 settings used for the base-model baseline"
+    - "two cards carry decision: adopt - this one because its checkpoint became the submission's content and the parent of exp-05, and exp-05 because it staged final_model; the submitted artifact is final_model (exp-05)"
+
+outcome:
+  official_accuracy: null

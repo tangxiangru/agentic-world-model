@@ -1,0 +1,211 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The full fine-tuned model that was packaged into final_model scores 0.0, and
+    it overwrote the only working candidate: "0% accuracy! Something is
+    seriously wrong with the v2 model. Let me check the output and revert to the
+    v1 model which worked (23.3%)" [163]. The LoRA adapters were still on disk,
+    so the working model had to be rebuilt: "Let me rebuild the v1 model (the
+    final epoch at step 7029) by merging the LoRA adapter with the base model"
+    [170].
+  evidence:
+    - path: /home/ben/task/eval_result_v2_quick.json
+      locator: "[161]"
+      observation: "accuracy 0.000 on 20 samples for the full fine-tuned checkpoint packaged as final_model"
+    - path: /home/ben/task/checkpoints/checkpoint-7029
+      locator: "[171]-[172]"
+      observation: "the epoch-3 LoRA adapter (adapter_config.json + adapter_model.safetensors) survived and could be re-merged"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Merging the epoch-3 LoRA adapter back into the base model and writing it to
+    final_model will restore the working model - "revert to the v1 model which
+    worked (23.3%)" [163].
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/checkpoint-7029
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: merge
+    framework: peft 0.18.1 PeftModel.merge_and_unload (transformers 4.57.3, torch 2.8.0+cu129)
+    peft: "LoRA r=128 alpha=256 adapter from exp-01 (epoch 3, step 7029), merged into the base weights"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        No training. The base model is loaded in bfloat16 with device_map=auto,
+        the adapter is loaded onto it, merge_and_unload() is called and the
+        result is saved over /home/ben/task/final_model; the tokenizer is saved
+        from google/gemma-3-4b-pt and preprocessor_config.json /
+        processor_config.json are copied from the base snapshot.
+    target_format: null
+  command:
+    argv:
+      - python
+      - -c
+      - |-
+
+        import torch, shutil, os
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        from peft import PeftModel
+
+        FINAL_MODEL_DIR = '/home/ben/task/final_model'
+        MODEL_NAME = 'google/gemma-3-4b-pt'
+        ADAPTER_PATH = '/home/ben/task/checkpoints/checkpoint-7029'
+
+        # Remove old final_model
+        if os.path.exists(FINAL_MODEL_DIR):
+            shutil.rmtree(FINAL_MODEL_DIR)
+
+        print('Loading base model...')
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            torch_dtype=torch.bfloat16,
+            device_map='auto',
+        )
+
+        print('Loading LoRA adapter...')
+        model = PeftModel.from_pretrained(model, ADAPTER_PATH)
+
+        print('Merging...')
+        merged = model.merge_and_unload()
+
+        print('Saving...')
+        merged.save_pretrained(FINAL_MODEL_DIR)
+
+        # Save tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        tokenizer.save_pretrained(FINAL_MODEL_DIR)
+
+        # Copy preprocessor configs
+        orig = '/home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d'
+        for f in ['preprocessor_config.json', 'processor_config.json']:
+            shutil.copy(os.path.join(orig, f), os.path.join(FINAL_MODEL_DIR, f))
+
+        print('Done!')
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - /home/ben/task/final_model
+      - --limit
+      - "20"
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "2048"
+      - --json-output-file
+      - /home/ben/task/eval_result_v1_verify.json
+    dev_set: "official --limit 20"
+    n: 20
+    seed: null
+  comparator:
+    ref: exp-01
+    value: null
+    path: /home/ben/task/eval_result_quick.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Merge only, no training. These are the same weights exp-01 had already
+      merged and saved (epoch 3, step 7029) before final_model was overwritten
+      at [152], so the 0.200 measured here and the 0.233 measured in exp-01 are
+      two readings of one checkpoint at different --limit.
+  measurements:
+    - metric: accuracy
+      value: 0.2
+      n: 20
+      path: /home/ben/task/eval_result_v1_verify.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The rebuild worked and the model generates normally again: "the v1 model
+    scores ~20% on 20 samples (similar to the 23.3% earlier, within noise). This
+    is our baseline" [178]. The comparator was measured at --limit 30 and this
+    at --limit 20, so the restoration is confirmed only loosely; this checkpoint
+    was then dropped in favour of the epoch-2 adapter.
+  decision: reject
+  next_step: >-
+    Stated at [187]: "let me see if I can quickly improve it. Let me check the
+    v1 epoch 2 checkpoint (step 4686) to see if an earlier checkpoint performs
+    better."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ae9c94e6
+  launch_i: 173
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [161, 163, 170, 171, 172]
+    setup: [173]
+    evaluation: [176]
+    result: [174, 177]
+    conclusion: [178, 187]
+  snapshot_files:
+    - evaluate.py
+    - eval_result_v1_verify.json
+    - eval_result_quick.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "This launch reproduces the epoch-3 merge exp-01 had already produced; the stream never says whether the rebuilt weights are bit-identical, and no hash was computed on either."
+    - "The comparator (exp-01, 0.233) was measured at --limit 30 against this output's --limit 20, so no delta under a shared protocol exists; comparator.value is left null."
+    - "final_model written here was overwritten at [199] by the epoch-2 merge."

@@ -1,0 +1,201 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.18
+
+problem:
+  statement: >-
+    The base model scores 35.3% on the harness at --limit 150 and degenerates:
+    with no chat format it drifts into unrelated text and never emits the
+    required "ANSWER: $ANSWER" line.
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[338]"
+      observation: 'agent read the baseline eval and reported "Baseline: 35.3% - the base model degenerates badly (no chat format)"'
+    - path: /home/ben/task/logs/2026-07-27T19-24-22+02-00_gsm8k_hf4dmGzNfNosTk7mD9zn8N.json
+      locator: "[301]-[302], samples[0]"
+      observation: "first baseline sample runs off into unrelated prose ('(Scene: ...') with no ANSWER line"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-07-27T19-24-22+02-00_gsm8k_hf4dmGzNfNosTk7mD9zn8N.json
+      question: null
+      gold: null
+      model_output: "... (Scene: While they look lovely, blowing on the tinfoil hats doesn't seem to affect the outcome ... (Scene: MouseTCHList) (Scene: the answer key when there is the winners of the chicken"
+      failure: "free-running continuation, no reasoning and no ANSWER line; item id, question and gold were never printed"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full-parameter SFT of the base model on ~95k GSM8K-style solutions written in
+    the exact prompt/response wire format the harness feeds the model will stop
+    the degeneration and raise accuracy over the 35.3% baseline.
+  mechanism: >-
+    Agent's own note in train_sft.py at [268]: sequences are built manually rather
+    than via apply_chat_template "so that the training text matches byte-for-byte
+    what the evaluation harness feeds the model", with loss masked to the
+    assistant span.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft.jsonl
+      source: "derived: nvidia/OpenMathInstruct-2 (gsm8k + augmented_gsm8k, math + augmented_math) + microsoft/orca-math-word-problems-200k + openai/gsm8k train (few-shot pool)"
+      n_examples: null
+      repeats: null
+      built_by: /home/ben/task/build_sft.py
+      build_command:
+        - python
+        - build_sft.py
+        - --n-gsm
+        - "65000"
+        - --n-math
+        - "15000"
+        - --n-orca
+        - "15000"
+        - --fewshot-frac
+        - "0.35"
+        - --out
+        - data/sft.jsonl
+      selection: >-
+        OpenMathInstruct-2 rows first extracted by extract_omi2.py ([191]) into
+        data/omi2_gsm.jsonl (<=2 solutions per problem) and data/omi2_math.jsonl
+        (<=1, first 5 shards); build_sft.py keeps rows whose answer is numeric,
+        strips \boxed{}, appends "ANSWER: <n>", drops solutions >6000 chars; orca
+        answer taken as the last number in the solution; 35% of examples get a
+        system message of 1-10 gsm8k-train few-shot exemplars. Counts printed by
+        the build were not shown in the stream.
+      contamination_check: null
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum/max-len are from the launch argv. scheduler=cosine,
+        warmup_ratio=0.03, weight_decay=0.0, bf16=True, seed=0,
+        optim=adamw_bnb_8bit, adam_beta2=0.95, max_grad_norm=1.0,
+        group_by_length=True, gradient_checkpointing (use_reentrant=False),
+        flash_attention_2 are hard-coded in train_sft.py (workspace copy, not
+        CLI-settable, so not overridden by this launch). --save-steps 800.
+    target_format: >-
+      manual ChatML string
+      "<|im_start|>system\n{fewshot}<|im_end|>\n<|im_start|>user\n{templated
+      question}<|im_end|>\n<|im_start|>assistant\n{solution}<|im_end|>", loss on
+      the assistant span only; solution ends with "ANSWER: <n>".
+  command:
+    argv:
+      - python
+      - train_sft.py
+      - --data
+      - data/sft.jsonl
+      - --out
+      - runs/sft1
+      - --max-len
+      - "2560"
+      - --bs
+      - "8"
+      - --accum
+      - "4"
+      - --lr
+      - "1e-5"
+      - --epochs
+      - "1"
+      - --save-steps
+      - "800"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/sft1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator:
+    ref: base_model
+    value: 0.353
+    path: /home/ben/task/logs/baseline.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.16
+  duration_h: 0.16
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Killed at step 152/2922 with the ETA still climbing (03:49 remaining at
+      [593], 3:25:31 at [668]). runs/sft1 was deleted at [701]/[705]; no
+      checkpoint survives. Loss values for this run were never printed.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Killed after ~10 minutes: "ETA is drifting to >2h. I'll trim the SFT to
+    preserve time for RL, which has higher marginal value." [700]. No checkpoint
+    and no measurement, so the SFT hypothesis was not tested by this launch.
+  decision: abandon_line
+  next_step: >-
+    Rebuild a leaner corpus (--n-gsm 42000 --n-math 8000 --n-orca 8000
+    --fewshot-frac 0.25) and relaunch the same script - carried out as exp-02.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-96346341
+  launch_i: 418
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [301, 302, 338]
+    setup: [191, 238, 268, 339, 418]
+    evaluation: [98, 338]
+    result: [593, 668, 700, 701, 703]
+    conclusion: [700, 701]
+  snapshot_files:
+    - build_sft.py
+    - extract_omi2.py
+    - train_sft.py
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 357, outcome: "passed (--limit 1500, ~15 min cap; loss 0.40 -> 0.33 [417]); runs/smoke deleted at [418]"}
+  extractor: null
+  unresolved:
+    - "build_sft.py's per-source kept counts were never echoed, so the size of the 95k-target corpus is unknown"
+    - "the contamination check launched at [353] against ../test_data.json produced no output in the stream; its verdict is unknown"

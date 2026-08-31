@@ -1,0 +1,255 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The checkpoint can answer a single plain user prompt, but the evaluator
+    always wraps the question with a large system message containing 10
+    few-shot examples. My training data never exposed that structure, so the
+    model is likely misreading the eval prompt as continuation text" [181]. A
+    second, related defect: the fine-tune learned to terminate with the chat end
+    token rather than the configured EOS, so generation ran on past the correct
+    answer [164].
+  evidence:
+    - path: /home/ben/task/exp1_gsm100.json
+      locator: "[139] launch, [150] the agent's reading"
+      observation: "exp-01 scored 0.01 on --limit 100 with very long outputs"
+    - path: /home/ben/task/exp1_fix20.json
+      locator: "[172]"
+      observation: "0.00 on --limit 20 even after the stop-token config patch"
+    - path: null
+      locator: "[163], [183]"
+      observation: >-
+        direct generation probes: correct under a plain prompt but running on
+        into unrelated text, and degenerate under the evaluator-shaped 10-shot
+        prompt
+  affected_share: null
+  failure_examples:
+    - id: "ad-hoc probe, plain single-turn prompt [163]"
+      source: null
+      question: "Jan has three times the number of pets as Marcia. Marcia has two more pets than Cindy. If Cindy has four pets, how many total pets do the three have?"
+      gold: null
+      model_output: "Marcia has 4+2=6 pets. Jan has 3*6=18 pets. The three have 4+6+18=28 pets.\n\nANSWER: 28<|im_end|> </think> </think> </think> [then unrelated Chinese-language word problem text]"
+      failure: "solved correctly, then failed to stop at the configured EOS and kept generating"
+    - id: "ad-hoc probe, evaluator-shaped 10-shot prompt [183]"
+      source: null
+      question: "Jan has three times the number of pets as Marcia. Marcia has two more pets than Cindy. If Cindy has four pets, how many total pets do the three have?"
+      gold: null
+      model_output: "<think>\nANSWER: 26<|im_end|>"
+      failure: "under the evaluator's 10-shot system message the same checkpoint emits no reasoning and a different, wrong number than the chain it produces on a plain prompt"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Training on the exact evaluator conversation shape - every sample carrying
+    the same 10-shot system message the benchmark uses - will let the model
+    handle the eval prompt instead of misreading it as continuation text
+    [185][193].
+  mechanism: >-
+    The failure is a prompt-shape mismatch, not missing math ability: the model
+    was never shown the long few-shot system message at training time, so it
+    treats the eval prompt as text to continue [181].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm_only_evalstyle
+      source: "openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prepare_math_data.py
+      build_command:
+        - python
+        - scripts/prepare_math_data.py
+        - --output-dir
+        - data/gsm_only_evalstyle
+        - --metamath-types
+        - none
+        - --fewshot-system-count
+        - "10"
+        - --fewshot-system-seed
+        - "42"
+      selection: >-
+        official GSM8K train only; every sample prefixed with an
+        evaluator-style system message built from 10 GSM8K-train exemplars
+        (shuffle seed 42), each rendered as question / 'Reasoning:' / 'ANSWER: n'
+        [188][189]. Average example length about 2.3k tokens [193].
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, via the run's own scripts/train_sft.py [35][392]"
+    peft: none
+    hyperparams:
+      lr: 8.0e-06
+      epochs: 2
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --logging-steps 20. bf16/tf32/gradient checkpointing, adamw_torch_fused
+        and the cosine schedule are hardcoded in the training script [392].
+        save_strategy was not passed on the command line; the agent states the
+        run saved per epoch and used the resulting checkpoint-468 [199][254].
+        warmup_ratio, weight_decay and seed left at argparse defaults - the
+        script text is not in the workspace snapshot, so they are null.
+    target_format: >-
+      evaluator-shaped chat: 10-shot system message, the benchmark's user
+      instruction, assistant turn ending in 'ANSWER: <number>'.
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --dataset-dir
+      - data/gsm_only_evalstyle
+      - --output-dir
+      - runs/exp2_gsm_evalstyle
+      - --max-length
+      - "2560"
+      - --learning-rate
+      - "8e-6"
+      - --num-train-epochs
+      - "2"
+      - --per-device-train-batch-size
+      - "2"
+      - --gradient-accumulation-steps
+      - "8"
+      - --logging-steps
+      - "20"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/exp2_gsm_evalstyle/merged
+      - --limit
+      - "20"
+      - --json-output-file
+      - exp2_merged_20.json
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "512"
+      - --gpu-memory-utilization
+      - "0.55"
+    dev_set: "official --limit 20"
+    n: 20
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.1
+    path: /home/ben/task/baseline20.json
+  diagnostic:
+    what: >-
+      direct greedy generation on an evaluator-shaped prompt for both the
+      epoch-1 checkpoint and the final merged model, to check that prompt
+      handling was fixed before spending eval time [324][328]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.7
+  duration_h: 0.7
+  steps: 936
+  output_checkpoint: /home/ben/task/runs/exp2_gsm_evalstyle/merged
+  training_summary:
+    final_loss: null
+    steps: 936
+    notes: >-
+      42:12 wall for 936 steps at about 2.7 s/step [320]. The agent reported the
+      loss falling 1.14 -> 0.85 -> 0.73 -> 0.67 through the first epoch and
+      settling around 0.45 in the second [198][201][203][205][316][319]; no
+      final loss line appears in a result block. save_strategy=epoch also
+      produced runs/exp2_gsm_evalstyle/checkpoint-468 [254][257].
+  measurements:
+    - metric: accuracy
+      value: 0.1
+      n: 20
+      path: /home/ben/task/exp2_ckpt468_20.json
+      delta_vs_comparator: 0.0
+    - metric: accuracy
+      value: 0.1
+      n: 20
+      path: /home/ben/task/exp2_merged_20.json
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "The local sanity check passed for both candidates on an eval-shaped
+      prompt. That means the training-format fix worked" [328].
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: >-
+    The prompt-shape fix did what it was supposed to mechanically - both the
+    epoch-1 checkpoint and the 2-epoch merged model answer eval-shaped prompts
+    cleanly [328] - but neither moved the score: both sit at 0.10 on the
+    20-item slice, level with the base model, and the agent read this as "not
+    improved yet" [331] and "the prompt-aligned models are still not scoring
+    above the base slice" [347]. The remaining defect it named from the logs is
+    that the model "often gets the answer right and then keeps generating,
+    which hurts the scorer" [340].
+  decision: adopt
+  next_step: >-
+    One targeted data change - append an explicit EOS after every target answer
+    - then a short continuation fine-tune from this merged checkpoint rather
+    than discarding it [340][347] (launched as exp-03).
+
+provenance:
+  kind: extracted
+  run_ref: r-75836ae8
+  launch_i: 194
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [150, 163, 164, 181, 183]
+    setup: [185, 188, 189, 193, 194]
+    evaluation: [329, 332]
+    result: [254, 257, 320, 324, 328, 331]
+    conclusion: [331, 340, 347]
+  snapshot_files:
+    - exp2_ckpt468_20.json
+    - exp2_merged_20.json
+    - baseline20.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "elapsed_h unknown: no event timestamps; the nearest timer reading is 9:20 remaining of 10 h at [209], shortly after this launch."
+    - "The launch did not pass --model-name-or-path; the parent is recorded as the run's base model, consistent with the agent treating this as a fresh full fine-tune on the rebuilt data [185][193] and never referring to exp-01 weights."
+    - "The comparator (base, 0.10 on --limit 20) was run with --max-connections 1 --max-tokens 1200, while both measurements here used --max-connections 2 --max-tokens 512; the sample count matches but the decode budget does not."
+    - "checkpoint-468 (epoch 1) and the merged 2-epoch model tie at 0.10; the agent's stated tie-breaker was the benchmark score [268], and it carried the merged model forward at [348] without saying why."
+    - "The stop-token patch the agent applied to checkpoint-468 before evaluating it [263][265] appears in the digest as no command."

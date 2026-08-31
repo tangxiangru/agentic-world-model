@@ -1,0 +1,154 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 1.78
+
+problem:
+  statement: >-
+    "Baseline: 14.0%, Our model: 12.1% - we made it worse." [185] Three LoRA runs have all landed
+    at or below the untrained model on the full test set.
+  evidence:
+    - path: /home/ben/task/full_evaluation_results.json
+      locator: "[178]-[179]"
+      observation: "exp-06 scored 0.121 on all 1,319 items"
+    - path: /home/ben/task/baseline_full_results.json
+      locator: "[181]-[182]"
+      observation: "the base model scored 0.140 on the same 1,319 items under the same command"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Let me analyze the issue and try a better approach with full fine-tuning" [185]: full-parameter
+    fine-tuning for a single epoch at lr=1e-5 on the same plain-text data will align the model with
+    the evaluation format better than a LoRA adapter could - train_full.py's docstring: "Full
+    fine-tuning of Qwen/Qwen3-1.7B-Base on GSM8K. Uses exact evaluation format for better alignment."
+  mechanism: >-
+    A rank-16 adapter on the attention projections may be too small to move the model's answer
+    format; updating all parameters once, at a conservative learning rate, should adapt it without
+    the over-fitting the earlier high-capacity LoRA runs showed.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/gsm8k_train_simple.jsonl
+      source: "HF: gsm8k main, train split"
+      n_examples: 7473
+      built_by: /home/ben/task/prepare_data_v3.py
+      build_command: ["python3", "prepare_data_v3.py"]
+      selection: >-
+        every gsm8k train row as one plain-text field, "Question: <q>\n\nReasoning:\n<gold
+        rationale>\n\nANSWER: <gold>"; no chat template, no filtering, no dedup
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 512
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        the launch passed no arguments, so every value here is a module-level constant in
+        train_full.py (script text in the workspace, written at [186]); warmup is warmup_steps=50
+        (a step count, not a ratio), max_grad_norm=1.0, gradient_checkpointing=True,
+        device_map="cuda:0", DataCollatorForLanguageModeling(mlm=False, pad_to_multiple_of=8)
+    target_format: >-
+      full-sequence causal LM loss over the raw text field; sample ends in "ANSWER: <gold>"
+  command:
+    argv: ["python3", "train_full.py"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_full.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: ["python3", "evaluate.py", "--model-path", "final_model", "--limit", "-1", "--max-tokens", "4000", "--json-output-file", "full_ft_results.json"]
+    dev_set: "official --limit -1 (all 1,319 items)"
+    n: 1319
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.14025777103866566
+    path: /home/ben/task/baseline_full_results.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.11
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.32424613757011217
+    steps: 468
+    notes: >-
+      train_runtime 402.379 s, 18.572 samples/s, 1.163 steps/s, epoch 1.0; the full model (not an
+      adapter) was written to final_model
+  measurements:
+    - metric: accuracy
+      value: 0.07808946171341925
+      n: 1319
+      path: /home/ben/task/full_ft_results.json
+      delta_vs_comparator: -0.0622
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Full fine-tuning was the worst result of the run: 0.078 on all 1,319 items against the base
+    model's 0.140 under the identical command, and 629k output tokens, more than the base model
+    itself. "Full fine-tuning got 7.8%, worse than baseline 14%." [196] Capacity was not the
+    limiting factor; every attempt to train on this data hurt.
+  decision: reject
+  next_step: >-
+    "restore the best model (baseline) as final_model" [196] - that is exp-08.
+
+provenance:
+  kind: extracted
+  run_ref: r-e5ed6bd2
+  launch_i: 191
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [179, 182, 185]
+    setup: [138, 186, 191]
+    evaluation: [194]
+    result: [192, 195]
+    conclusion: [196]
+  snapshot_files:
+    - prepare_data_v3.py
+    - train_full.py
+    - full_ft_results.json
+    - baseline_full_results.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the checkpoint was deleted at [197] (rm -rf final_model) when the base model was packaged in its place"

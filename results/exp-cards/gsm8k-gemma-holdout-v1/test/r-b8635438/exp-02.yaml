@@ -1,0 +1,188 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The first LoRA SFT launch could not start: SFTConfig in the installed TRL 0.27.2
+    takes `max_length`, not `max_seq_length` ([52]). The base model still stands at
+    accuracy 0.033 on the 60-sample slice ([39], [41]).
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-b8635438.md
+      locator: "[50]"
+      observation: "TypeError: SFTConfig.__init__() got an unexpected keyword argument 'max_seq_length'"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-b8635438.md
+      locator: "[53], [54]"
+      observation: "agent printed inspect.signature(SFTConfig.__init__) and confirmed `max_length: int | None = 1024`, `packing: bool = False`"
+    - path: /home/ben/task/baseline_metrics.json
+      locator: "[39]"
+      observation: "accuracy 0.033, stderr 0.023 for the untuned base model on 60 samples"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Same claim as the [49] launch, which this one re-runs unchanged after the API
+    patch: LoRA SFT on the gsm8k train split with targets ending in the evaluator's
+    "ANSWER: <n>" line will raise accuracy above the 0.033 baseline ([41], [48]);
+    the patch to the TRL 0.27.2 interface is what lets it run ([52]).
+  mechanism: >-
+    Supervised fine-tuning on in-domain train questions whose targets carry the
+    reference chain of thought and the grader's exact answer line teaches both the
+    solution style and the output format the scorer matches on ([41]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF:openai/gsm8k (config 'main', train split), loaded in-script"
+      n_examples: 7473
+      built_by: /home/ben/task/train_gsm8k_lora.py
+      build_command: []
+      selection: >-
+        whole gsm8k train split, no filtering or dedup; each answer split on '####'
+        into reasoning and final; user turn = the evaluator's math prompt template,
+        assistant turn = reasoning + blank line + "ANSWER: <final>", rendered with
+        templates/gemma3.jinja
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (TRL 0.27.2, per the agent at [52])"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 1.5e-04
+      epochs: 3.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 (tf32 on); base weights loaded 4-bit NF4, double-quant, compute dtype bf16"
+      seed: 42
+      other: >-
+        Identical argv to [49]; lr / epochs / batch / grad_accum / max_seq_len /
+        lora_r / lora_alpha / save_steps=150 are from the launch at [57]. scheduler,
+        warmup, weight_decay, lora_dropout, seed, precision, 4-bit base loading and
+        the LoRA target list are argparse/SFTConfig values from the workspace copy of
+        train_gsm8k_lora.py, not overridden on the command line; that copy is the
+        end-of-run version and differs from the text that ran here. Sequence packing
+        was ON for this launch and the attention backend was not flash-attention:
+        TRL warned about packed sequences with non-flash attention at [61], and the
+        agent patched later runs in response ([65]).
+    target_format: >-
+      evaluator math prompt as the user turn under templates/gemma3.jinja; assistant
+      turn is the gsm8k reference reasoning followed by "ANSWER: <final>"
+  command:
+    argv:
+      - python
+      - train_gsm8k_lora.py
+      - --output-dir
+      - runs/gemma_gsm8k_exp1
+      - --num-train-epochs
+      - "3"
+      - --learning-rate
+      - "1.5e-4"
+      - --per-device-train-batch-size
+      - "8"
+      - --gradient-accumulation-steps
+      - "2"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --max-seq-length
+      - "1024"
+      - --save-steps
+      - "150"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_lora.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator:
+    ref: base_model
+    value: 0.033
+    path: /home/ben/task/baseline_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Trained normally but slowly; the agent reported "~14%" progress at [74] and
+      said repeatedly it would let the run finish as a reference point ([70], [74]).
+      It then killed it at [77] with `pkill -f train_gsm8k_lora.py` and checked the
+      GPU was free, without stating a reason in the stream. No loss line, step count
+      or saved adapter for this launch appears in the digest.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The re-launch cleared the TRL API error and trained, but the agent killed it at
+    ~14% ([74], [77]) rather than finishing, so no checkpoint and no measurement came
+    out of it. Its one product was the observation at [61] that packing was running
+    against a non-flash attention backend, which drove the next launch's config.
+  decision: abandon_line
+  next_step: >-
+    Per [65], "patched future runs to disable packing (safer with current attention
+    backend)... then I'll launch the corrected experiment and compare eval scores" -
+    realised as exp-03 ([92]), which ran 2 epochs at lr 2e-4 with an explicit
+    --packing flag against a flash-attention-2 backend.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-b8635438
+  launch_i: 57
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [50, 52, 53, 54]
+    setup: [57]
+    evaluation: [39]
+    result: [58, 61, 65, 70, 74, 77]
+    conclusion: [61, 65, 77]
+  snapshot_files:
+    - train_gsm8k_lora.py
+    - baseline_metrics.json
+    - evaluate.py
+    - contamination_judgement.txt
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The stream never says why the run was killed at [77]; the kill is inferred to be deliberate only from the `pkill -f train_gsm8k_lora.py` command itself."
+    - "Whether a partial adapter was written to runs/gemma_gsm8k_exp1 before the kill is not shown; save_steps was 150 and no checkpoint-save line for this launch appears."
+    - "The workspace copy of train_gsm8k_lora.py is the end-of-run version; the packing / attention settings actually in force here are known only from the TRL warning the agent reported at [61]."

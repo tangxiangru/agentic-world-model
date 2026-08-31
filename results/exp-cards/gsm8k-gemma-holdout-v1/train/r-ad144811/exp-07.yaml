@@ -1,0 +1,167 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 3.25
+
+problem:
+  statement: >-
+    The second-epoch run keeps only three rotating checkpoints (save_total_limit=3),
+    so the step-200 snapshot - the earliest point of a schedule whose benefit may
+    peak early - would be deleted before it could be benchmarked, and its tokenizer
+    metadata is the regenerated one that vLLM warns about.
+  evidence:
+    - path: /home/ben/task/sft_v1_eos_150.json
+      locator: "[237], [545]"
+      observation: >-
+        save_pretrained regenerates an 11 MB fast tokenizer that vLLM flags as
+        having an incorrect regex, whereas training used the original 7 MB base
+        tokenizer; every candidate has needed the base files restored.
+    - path: /home/ben/task/sft_v2_150.json
+      locator: "[545]"
+      observation: >-
+        "I preserved the step-200 full checkpoint outside the trainer's rotation so
+        it can be benchmarked against step 400, step 600, and the final model if the
+        learning curve turns non-monotonic."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A standalone copy of the second-epoch step-200 checkpoint, carrying the exact
+    base tokenizer and dual-EOS metadata, will score at least as well as the later
+    checkpoints of the same schedule under the fixed 150-example protocol.
+  mechanism: >-
+    Most of the gain from a low-rate second pass arrives early; preserving that
+    point makes an early optimum measurable instead of assumed away.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v2/checkpoint-200
+    origin: exp-06
+    hash: null
+  data: []
+  method:
+    family: other
+    framework: "coreutils cp (checkpoint preservation + tokenizer/serving-metadata normalization)"
+    peft: "none"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        No optimization; the weights are exp-06's step-200 shards copied verbatim.
+        tokenizer.json, tokenizer_config.json, vocab.json, merges.txt and
+        chat_template.jinja are taken from sft_v1 (which had already been restored
+        to the exact base-model tokenizer, sha256 verified at [242]). config and
+        generation_config carry eos_token_id [151643, 151645] and
+        max_new_tokens 2048, written by train_sft.py at save time.
+    target_format: "Unchanged from exp-06."
+  command:
+    argv: ["/bin/bash", "-lc", "cp -a --reflink=auto sft_v2/checkpoint-200 sft_v2_step200 && cp sft_v1/tokenizer.json sft_v2_step200/tokenizer.json && cp sft_v1/tokenizer_config.json sft_v2_step200/tokenizer_config.json && cp sft_v1/vocab.json sft_v2_step200/vocab.json && cp sft_v1/merges.txt sft_v2_step200/merges.txt && cp sft_v1/chat_template.jinja sft_v2_step200/chat_template.jinja && ls -lh sft_v2_step200 | head"]
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 (not used by this step)"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: ["python", "evaluate.py", "--model-path", "sft_v2_step200", "--limit", "150", "--json-output-file", "sft_v2_step200_150.json", "--max-connections", "16", "--max-tokens", "2048", "--gpu-memory-utilization", "0.55"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.7533
+    path: /home/ben/task/sft_v1_eos_150.json
+  diagnostic:
+    what: "Confirmation on the whole test split rather than the 150-example slice."
+    command: ["python", "evaluate.py", "--model-path", "sft_v2_step200", "--limit", "-1", "--json-output-file", "sft_v2_step200_full.json", "--max-connections", "16", "--max-tokens", "2048", "--gpu-memory-utilization", "0.55"]
+    path: /home/ben/task/sft_v2_step200_full.json
+
+result:
+  execution: completed
+  wall_h: 0.01
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/sft_v2_step200
+  training_summary:
+    final_loss: null
+    steps: 200
+    notes: "Weights are exp-06 at optimizer step 200; no training occurred here."
+  measurements:
+    - metric: accuracy
+      value: 0.82
+      n: 150
+      path: /home/ben/task/sft_v2_step200_150.json
+      delta_vs_comparator: 0.0667
+    - metric: accuracy
+      value: 0.761183
+      n: 1319
+      path: /home/ben/task/sft_v2_step200_full.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.761183
+    path: /home/ben/task/sft_v2_step200_full.json
+    notes: >-
+      76.12% on all 1,319 examples [833]. The same weights, re-measured later at the
+      evaluator's default two connections as final_model (exp-13), give 77.33%; the
+      82.0% peak was not reproducible under that concurrency [974].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "The early checkpoint is a substantial jump: 82.0% (123/150), versus 75.3%
+    before the second pass. That confirms a narrow optimum before overtraining"
+    [576]. This artifact became the champion, the parent of every later training
+    branch, and the source of the submitted final_model.
+  decision: adopt
+  next_step: >-
+    Run a LoRA-from-base control (exp-08) and two checkpoint interpolations around
+    the peak (exp-09), then reward refinement from this checkpoint.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ad144811
+  launch_i: 540
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [237, 512, 545]
+    setup: [540, 541]
+    evaluation: [570, 828]
+    result: [576, 581, 833, 835, 974]
+    conclusion: [576, 581, 893]
+  snapshot_files:
+    - sft_v2_step200_150.json
+    - sft_v2_step200_full.json
+    - sft_v1_eos_150.json
+    - EXPERIMENTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The 82.0% and 76.12% numbers were taken at --max-connections 16; the run later establishes that BF16 vLLM greedy trajectories vary with batch composition, so the 82.0% peak is not reproducible ([967], [974])."
+    - "The result block for the [570] evaluation is not in the digest; the 0.82 value comes from sft_v2_step200_150.json and from the agent's report at [576]."

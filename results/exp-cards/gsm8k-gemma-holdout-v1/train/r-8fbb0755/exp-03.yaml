@@ -1,0 +1,176 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 1.78
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: "The previous full run was killed mid-cosine-schedule with the learning rate still around 1.2e-5 instead of annealed to zero; its epoch-1 checkpoint scored 48% (42% on the first 50) against the annealed de-risk model's 56%, and produced far more garbled <<calc=...>> annotations (47% of completions vs 26%). The agent's reading: 'The dominant bug was killing mid-schedule.'"
+  evidence:
+    - path: /home/ben/task/v1ep1_metrics.json
+      locator: "[312], [316]"
+      observation: "Epoch-1 checkpoint of the killed run: 48% on limit 150, 42% on the first 50 items vs the de-risk's 56%."
+    - path: /home/ben/task/derisk_metrics.json
+      locator: "[318]"
+      observation: "Annealed de-risk model: 56% on 50 with <<>> annotations in 26% of completions; the killed run's checkpoint: 48% on 150 with 47%."
+  affected_share: null
+  failure_examples:
+    - id: "idx3"
+      source: null
+      question: null
+      gold: "40"
+      model_output: "On Friday, the mechanic repairs 12 car tires and earns a total of 40 * 12 = $480. The higher revenue day is Friday with a total of $480. The difference in revenue between the two days is 480 - 360 = $120. The mechanic earned $120 more on the day with higher revenue. ANSWER: 120"
+      failure: "Answered the wrong quantity (revenue difference instead of the asked-for value); last number 120 vs gold 40."
+    - id: "idx5"
+      source: null
+      question: null
+      gold: "50"
+      model_output: "Henry wants to make 2 * 35 = <35 x 2 = 70>>71 cookies. He ended up baking 85 because 70 + 15 = <<70+15=85>>85 He dropped 5 cookies, so that means he baked 85 + 5 = <<85+5=90>>90 cookies. Last year he made 35 cookies because 90 - 55 = <<90-55=35>>35 ANSWER: 35"
+      failure: "Garbled calculator annotation ('<35 x 2 = 70>>71') and an incoherent chain; last number 35 vs gold 50."
+    - id: "idx6"
+      source: null
+      question: null
+      gold: "40"
+      model_output: "Patchy has had 7 * 3 = 21 kittens. With the two house cats having 7 kittens each, the Doubtfire's family cat has 21 + 7 + 7 = 35 kittens in total. With the adopted kittens, the Doubtfire family now has 35 + 7 = 42. ANSWER: 42"
+      failure: "Arithmetic/setup slip in the middle of the chain; last number 42 vs gold 40."
+    - id: "idx7"
+      source: null
+      question: null
+      gold: "10000"
+      model_output: "...s 600 because 500 x 3 = <<500*3=1500>>1500 The cost of the doctor's time is 600 because 1500 x 0.40 = <<1500*0.40=600>>600 The cost to the patients is 600 because 1500 x 0.40 = <<1500*0.40=600>>600 The profit is 100 because the two cost add to 700 and 700 - 600 = 100 ANSWER: 100"
+      failure: "Self-contradictory arithmetic inside the <<>> annotations ('the two cost add to 700'); last number 100 vs gold 10000."
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: "A properly-annealed full run - one epoch over the same 167K examples with the cosine schedule taken to zero, run to completion - will recover the de-risk model's clean outputs and beat the killed run's 48%."
+  mechanism: "The de-risk model, which annealed to lr ~0, scored 56% with cleaner outputs; the killed run stopped at lr ~1.2e-5, so the weights were never settled and the model imitated the few-shot <<>> style badly. Letting the schedule finish should remove that."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--HuggingFaceTB--SmolLM3-3B-Base/snapshots/d78a42f79198603e614095753484a04c10c2b940
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "openai/gsm8k train + meta-math/MetaMathQA GSM_* subset"
+      n_examples: 167473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: "GSM8K train (7473) with <<calc>> annotations, '#### N' markers and residual 'The answer is:' lines stripped; MetaMathQA capped at GSM_Rephrased 50000, GSM_AnsAug 50000, GSM_FOBAR 30000, GSM_SV 30000, only numeric answers kept, MATH_* excluded; shuffled seed 0."
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-5
+      epochs: 1.0
+      batch_size: 48
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: "Full fine-tune, flash_attention_2, gradient_checkpointing, padding_free=True, packing=False, assistant_only_loss=True, group_by_length=False, optim=adamw_torch, max_grad_norm=1.0, save_steps 100000 (no intermediate checkpoints), python -u for unbuffered loss logging. scheduler, weight_decay, precision and seed are not on this launch's argv; they are constants in /home/ben/task/train_sft.py, which this launch did not override."
+    target_format: "chat messages rendered with templates/smollm.jinja: system = brief instruction, user = the inspect_evals MATH_PROMPT_TEMPLATE, assistant = reasoning ending in 'ANSWER: <number>'; loss on assistant tokens only."
+  command:
+    argv: [nohup, python, -u, train_sft.py, --data, train_data.jsonl, --epochs, "1", --bs, "48", --accum, "2", --max-len, "1024", --lr, "2e-5", --warmup-ratio, "0.03", --save-steps, "100000", --out, sft_v2]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_v2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.1
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [nohup, python, evaluate.py, --model-path, sft_v2, --limit, "150", --max-connections, "4", --json-output-file, v2_metrics.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.48
+    path: /home/ben/task/v1ep1_metrics.json
+  diagnostic:
+    what: "Split the 150 eval completions by whether they contain <<calc>> annotations and score each bucket; then read the clean-but-wrong completions to separate format damage from genuine reasoning error. Followed at [379] by eval_probe.py, which scores the same model under three system prompts (zero-shot brief, clean 10-shot, eval's <<>> 10-shot) on 120 GSM8K test items at temp 1.0."
+    command: [python, eval_probe.py, --model, sft_v2, --n, "120", --temp, "1.0", --gpu-mem, "0.5"]
+    path: /home/ben/task/eval_probe.py
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.095
+  duration_h: 1.095
+  steps: 1745
+  output_checkpoint: /home/ben/task/sft_v2
+  training_summary:
+    final_loss: 0.14004781369151906
+    steps: 1745
+    notes: "train_runtime 3942.86s, 42.5 samples/s, entropy 0.839, mean_token_accuracy 0.956, epoch 1.0; lr annealed to 6.2e-10 at the last logged step. generation_config eos_token_id=[128001,128012]."
+  measurements:
+    - metric: accuracy
+      value: 0.44666666666666666
+      n: 150
+      path: /home/ben/task/v2_metrics.json
+      delta_vs_comparator: -0.03333333333333333
+  diagnostic_result:
+    value: 0.408
+    path: null
+    notes: "Failure split [355]: 84/150 completions (56%) contained <<>> annotations and scored 34/84 (~40%); the 66 clean completions scored 33/66 (50%); 0 completions lacked an ANSWER line; output_tokens mean 91, p95 171, max 292. Probe at [379]/[384], 120 test items, temp 1.0: zero-shot brief ~70%, clean 10-shot ~47%, eval's <<>> 10-shot 40.8% - i.e. the few-shot context, not the model's reasoning, is what costs the accuracy."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The properly-annealed one-epoch run scored 44.7% on limit 150 - essentially the same as the killed run's 48% - so 'annealing was *not* the bottleneck' [353] and the de-risk's 56%-on-50 was noise. The probe then located the real bottleneck: the model is ~70% accurate zero-shot but collapses to ~41% under the eval's 10-shot <<>> prompt, because it was trained zero-shot only."
+  decision: reject
+  next_step: "Train with a mixture of system prompts - the eval's exact 10-shot prompt (which contains <<>>) and the brief instruction - with clean assistant targets throughout, so the model emits clean reasoning regardless of few-shot priming [384]."
+
+# ---- Outcome (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-8fbb0755
+  launch_i: 323
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [312, 314, 316, 318, 320]
+    setup: [323]
+    evaluation: [347, 379]
+    result: [344, 347, 353, 355, 359, 384]
+    conclusion: [353, 361, 384]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data.py
+    - train_v2.log
+    - v2_metrics.json
+    - v2_eval.log
+    - v1ep1_metrics.json
+    - eval_probe.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "eval_probe.py writes only to stdout, so the probe numbers (70% / 47% / 40.8%) exist in the stream at [384] but in no workspace file."
+    - "The failure_examples above are items from the official eval log of the previous checkpoint, printed by the agent at [314]; the agent printed indices and targets but not the questions, and logs/*.json is not in the workspace snapshot."

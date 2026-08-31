@@ -1,0 +1,174 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 4.63
+
+problem:
+  statement: >-
+    With 6 h 14 m of the budget left, the only round trained from base was round 1, which
+    was deliberately shrunk to ~130M tokens for speed and never saw the STaR data; the
+    round-2 model is a low-lr continuation of it rather than an independent fine-tune.
+    There is room for one larger from-base run on the combined data.
+  evidence:
+    - path: /home/ben/task/logs/build_r3.log
+      locator: "[41569]-[41570]"
+      observation: >-
+        round-3 dataset: gold items 22,419, star items 27,932, om2 kept 62,000
+        (635 contaminated, 41,887 unique, 342,135 scanned), 112,347 rows, 174.25M tokens
+    - path: /home/ben/task/RESULTS.md
+      locator: "[43891]"
+      observation: "round-1 endpoint 0.766 and round-2 endpoint 0.768 at limit 500 - a plateau"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Reconstructed from the launch and the plan the agent wrote at [40846] and [43891]:
+    a fresh from-base fine-tune on the round-1 recipe unioned with the STaR solutions and
+    fresh OpenMathInstruct-2 rows (150.3M tokens) will beat the round-1/round-2 endpoints
+    at limit 500.
+  mechanism: >-
+    More and better data seen from the base initialisation, rather than a low-lr
+    continuation, gives the STaR solutions full-strength gradient rather than a 5e-6 top-up.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_round3_150m
+      source: "derived:exp-03 (STaR) + local (openai/gsm8k train, nvidia/OpenMathInstruct-2)"
+      n_examples: 97000
+      built_by: null
+      build_command: []
+      selection: >-
+        a token-trimmed subset of data/sft_round3 - "Subset ready (97k rows / 150.3M
+        tokens)" [42512]. The parent set data/sft_round3 was built by build_data_round3.py
+        (["nohup", "python", "build_data_round3.py", "62000", "data/star_r1.jsonl"] at
+        [41076]) from GSM8K-train gold x3 (22,419), STaR 27,932 and 62,000 fresh
+        OpenMathInstruct-2 rows with the round-1 prompt mixture 35/20/15/30, MAX_LEN 3072
+        - 112,347 rows / 174.25M tokens, which the agent judged too large for the
+        remaining budget [42370]. The trimming step itself does not appear as an event.
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights, bf16 autocast (bf16=True), sdpa attention"
+      seed: null
+      other: >-
+        arguments taken from the trainer invocation inside after_round2.sh (in the
+        workspace, written at [42660]); gradient checkpointing off,
+        optim="adamw_torch_fused"; scheduler, warmup_ratio 0.03 and weight_decay 0.0 are
+        hard-coded in train_sft.py and were not overridden.
+    target_format: >-
+      "{solution}\n\nANSWER: {n}<|im_end|>", completion-only loss (prompt masked -100).
+  command:
+    argv: ["bash", "after_round2.sh"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/train_r3.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 2.8
+
+evaluation:
+  protocol:
+    command: ["python", "evaluate.py", "--model-path", "exports/r3_end", "--limit", "500", "--max-connections", "16", "--max-tokens", "2048", "--json-output-file", "results/r3_end_500.json"]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.766
+    path: /home/ben/task/results/r1_end_500.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 2.7
+  output_checkpoint: /home/ben/task/ckpt/round3/final
+  training_summary:
+    final_loss: null
+    steps: 3032
+    notes: >-
+      step total 3032 read off the agent's progress report "R3 nearly done (2897/3032)"
+      [46081]; no loss values printed. wall_h bounded by the round-2 handoff that launched
+      it (before [43431] t=+5.16h) and the results being in hand at [46441] t=+7.85h.
+  measurements:
+    - metric: accuracy
+      value: 0.760
+      n: 500
+      path: /home/ben/task/results/r3_end_500.json
+      delta_vs_comparator: -0.006
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    The bigger from-base run scored 0.760 at limit 500, below both the round-1 endpoint
+    (0.766) and the round-2 endpoint (0.768) under the same protocol: "All three rounds
+    plateau at 76-77%@500" [46441]. More data from base did not buy anything.
+  decision: adopt
+  next_step: >-
+    Stop training and move to checkpoint selection - weight-averaging the round endpoints,
+    which all descend from the same base initialisation [46441]. The round-3 endpoint was
+    never a standalone candidate again but was used as the third ingredient of the 3-way
+    soup (exp-08).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a759897f
+  launch_i: 42663
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [40846, 41569, 41570, 42370, 43891]
+    setup: [40847, 41076, 42512, 42660, 42663]
+    evaluation: [45451, 45453]
+    result: [46081, 46441]
+    conclusion: [46441, 43891]
+  snapshot_files:
+    - build_data_round3.py
+    - data_lib.py
+    - train_sft.py
+    - after_round2.sh
+    - after_round3.sh
+    - export_model.py
+    - evaluate.py
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the trainer was launched from inside after_round2.sh, so the launch event [42663] carries only 'bash after_round2.sh'; the exact trainer argv (--data data/sft_round3_150m --model Qwen/Qwen3-1.7B-Base --out ckpt/round3 --epochs 1 --lr 1e-5 --bs 2 --accum 16) is the script text written at [42660] and present in the workspace"
+    - "the command that trimmed data/sft_round3 to data/sft_round3_150m never appears as an event; only the agent's report of 97k rows / 150.3M tokens [42512]"
+    - "the printed contents of results/r3_end_500.json are not in the digest; 0.760 is the agent's figure at [46441] and in RESULTS.md"

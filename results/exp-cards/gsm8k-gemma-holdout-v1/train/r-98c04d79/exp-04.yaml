@@ -1,0 +1,196 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 0.80
+
+problem:
+  statement: >-
+    The graded field is not the one being trained: "the answer extraction is
+    looking for `#### X` format but the model is outputting `ANSWER: X`" [108],
+    and the harness "uses: 1. `ANSWER: $ANSWER` format (not `#### number`) 2. It
+    provides 10 fewshot examples from the training set... The problem seems to be
+    the strange characters" [115].
+  evidence:
+    - path: /home/ben/task/logs/2026-01-22T12-54-49+00-00_gsm8k_oBygWPPGtzHxRmzKYmWJFW.json
+      locator: "[107] - first 3 samples printed"
+      observation: >-
+        one sample scored C only because it happened to end "ANSWER: 30"; the others
+        carry leading Thai/Hebrew tokens and are scored on an intermediate number
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/__init__.py
+      locator: "[109], [110], [115]"
+      observation: "the eval task grades an 'ANSWER: $ANSWER' final line and prompts with 10 few-shot examples"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Let me try a different approach - train the model specifically in the format
+    that the evaluation expects" [118]; train_v3.py header: "Version 3: Match
+    evaluation format exactly - use ANSWER: X format."
+  mechanism: >-
+    Rewriting every training target so the reasoning ends in "ANSWER: n", inside the
+    exact instruction wrapper the harness sends, should make the scorer's regex land
+    on the model's own final line instead of an intermediate number.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF:openai/gsm8k (main, train split), loaded in-process by the training script"
+      n_examples: 7473
+      built_by: /home/ben/task/train_v3.py
+      build_command: []
+      selection: >-
+        all 7,473 train items; the answer is split on "####" and rewritten as
+        "{reasoning}\n\nANSWER: {n}"; --use_metamath not passed
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.0 (peft 0.18.1)"
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]"
+    hyperparams:
+      lr: 5.0e-05
+      epochs: 1
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        all of lr, epochs, batch_size, grad_accum, max_seq_length, lora_r,
+        lora_alpha, warmup_ratio are on the command line at [121];
+        lora_dropout=0.05 is the argparse default of train_v3.py (in the workspace)
+        and was not overridden; scheduler/bf16/optim are hard-coded in its SFTConfig.
+    target_format: >-
+      Qwen chat template; user turn is the harness's own wrapper ("Solve the
+      following math problem step by step. The last line of your response should be
+      of the form \"ANSWER: $ANSWER\"... Reasoning:"), assistant turn is
+      "{reasoning}\n\nANSWER: {n}"
+  command:
+    argv:
+      - rm
+      - -rf
+      - checkpoints_v2
+      - final_model
+      - "&&"
+      - python3
+      - train_v3.py
+      - --output_dir
+      - ./checkpoints_v3
+      - --final_model_dir
+      - ./final_model
+      - --batch_size
+      - "4"
+      - --gradient_accumulation_steps
+      - "8"
+      - --learning_rate
+      - "5e-5"
+      - --num_train_epochs
+      - "1"
+      - --max_seq_length
+      - "1024"
+      - --lora_r
+      - "32"
+      - --lora_alpha
+      - "64"
+      - --warmup_ratio
+      - "0.05"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v3.py
+    env: {}
+    log: null
+  budget:
+    gpu: "one H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, final_model, --limit, "50", --max-connections, "1", --max-tokens, "2048"]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.140
+    path: /home/ben/task/logs/2026-01-22T12-54-49+00-00_gsm8k_oBygWPPGtzHxRmzKYmWJFW.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.19
+  duration_h: 0.18
+  steps: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.3381
+    steps: null
+    notes: >-
+      train_runtime 648.9 s, 1.0 epoch, final logged loss 0.267,
+      mean_token_accuracy 0.944, 2,207,823 tokens seen [122]. Training loss fell
+      versus exp-03 while eval accuracy collapsed.
+  measurements:
+    - metric: accuracy
+      value: 0.020
+      n: 50
+      path: /home/ben/task/logs/2026-01-22T13-09-28+00-00_gsm8k_ShratXvbrfxAjsxyd9ZbNd.json
+      delta_vs_comparator: -0.120
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "Only 2% accuracy! Something is very wrong" [126]. The printed sample shows the
+    model re-emitting the instruction wrapper and inventing new problems instead of
+    answering, and output tokens rose from 12k to 81k on the same 50 items [125],
+    [128]. Training the eval wrapper inside the chat template made things worse,
+    not better: 0.020 against exp-03's 0.140 under the same --limit 50 protocol.
+  decision: reject
+  next_step: >-
+    "instead of SFT with chat template, use the raw model without chat formatting
+    and train with continuation-style prompts" [115] - train_v4.py, "Version 4: No
+    chat template - plain text completion style" [132].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-98c04d79
+  launch_i: 121
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [107, 108, 109, 110, 115]
+    setup: [119, 121]
+    evaluation: [124]
+    result: [122, 125]
+    conclusion: [126, 128, 132]
+  snapshot_files:
+    - train_v3.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the agent never inspected the harness source directly - it only located the module file at [110]; the description of the 10-shot prompt at [115] is not backed by a printed excerpt in the stream"
+    - "the eval logs named in the stream are not in the workspace snapshot"

@@ -1,0 +1,188 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.59
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The eval serves the checkpoint through a vLLM server and passes no
+    temperature, so the server samples at its default 1.0; the freshly fine-tuned
+    model then derails - it runs past its "ANSWER:" line into unrelated text and
+    other languages and never stops (stop_reason None, max_tokens hit). That, not
+    the weights, is why exp-01 scored 42.7% against a 44% base. [290], [294]
+  evidence:
+    - path: /home/ben/task/eval_sft_v1.json
+      locator: "[249], [258]"
+      observation: accuracy 0.4267 at limit 150, below the 0.44 base
+    - path: /home/ben/task/logs/2026-06-03T08-37-04+02-00_gsm8k_UHUm9TYenuBUp6k29yS8BU.json
+      locator: "[261] samples[0:3]; [291] the log's eval and plan config"
+      observation: >-
+        outputs run past ANSWER into new, unrelated problems; sample 0 stop_reason
+        is None; the recorded config sets limit/max_tokens/max_connections but no
+        temperature
+    - path: /home/ben/task/probe.py
+      locator: "[271], output at [276]"
+      observation: >-
+        the same checkpoint driven by the agent's own vLLM call at temperature 0
+        produced 3/3 correct, cleanly stopped answers
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-06-03T08-37-04+02-00_gsm8k_UHUm9TYenuBUp6k29yS8BU.json
+      question: null
+      gold: "17"
+      model_output: >-
+        "... .5 square centimeters. ANSWER: 40.5" and then, without stopping,
+        continues into an unrelated Chinese-language word problem and answers that
+        one too ("ANSWER: 450"), then starts a third problem.
+      failure: never stopped after its ANSWER line; ran on into new problems until max_tokens (scored I)
+    - id: null
+      source: /home/ben/task/logs/2026-06-03T08-37-04+02-00_gsm8k_UHUm9TYenuBUp6k29yS8BU.json
+      question: null
+      gold: "400"
+      model_output: >-
+        "There are 50 queens because 700 / 14 = 50. There are 100 baby bees because
+        50 x 2 = 100. There are 200 worker bees because 100 x 2 = 200. ANSWER: 200"
+      failure: stopped cleanly but the sampled chain is wrong - answered 200 against gold 400 (scored I)
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Baking greedy sampling defaults (temperature 0.0, top_p 1.0, top_k -1) and
+    eos_token_id 151645 into the checkpoint's generation_config.json - which the
+    vLLM server reads as its defaults - will stop the derailment and raise
+    accuracy far above the 42.7% exp-01 measured, without touching the weights.
+    [294], [316]
+  mechanism: >-
+    The eval sets no temperature, so the server falls back to 1.0; generation_config.json
+    supplies the server's own defaults, so writing greedy values there restores
+    greedy decoding for the eval without changing anything the model learned.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: vLLM server generation defaults, read from the checkpoint's generation_config.json
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        no training. The change is a generation_config.json in sft_v1 with
+        temperature 0.0, top_p 1.0, top_k -1 and eos_token_id 151645 (<|im_end|>);
+        its contents are stated by the agent at [316] and the identical file is
+        written by hand into sft_v2 at [503].
+    target_format: null
+  command:
+    argv: [timeout, "1800", python, evaluate.py, --model-path, sft_v1, --limit, "150", --max-connections, "8", --gpu-memory-utilization, "0.85", --json-output-file, eval_sft_v1_full.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/eval_sft_v1_full.log
+  budget:
+    gpu: 1x NVIDIA H100 80GB HBM3
+    planned_h: 0.5
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [timeout, "1800", python, evaluate.py, --model-path, sft_v1, --limit, "150", --max-connections, "8", --gpu-memory-utilization, "0.85", --json-output-file, eval_sft_v1_full.json]
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.4266666666666667
+    path: /home/ben/task/eval_sft_v1.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/sft_v1
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      no training; the same weights as exp-01 with a greedy generation_config.json
+      added to the checkpoint directory.
+  measurements:
+    - metric: accuracy
+      value: 0.8133333333333334
+      n: 150
+      path: /home/ben/task/eval_sft_v1_full.json
+      delta_vs_comparator: 0.3866666666666667
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    [311] "Greedy fix works: 78% on 50 samples (up from 42.7%). The temperature was
+    the whole problem." [335] "sft_v1 with greedy: 81.3% (up from 44% baseline)."
+    A 38.7-point swing on the same weights under the same --limit 150, from the
+    decode configuration alone.
+  decision: adopt
+  next_step: >-
+    [335] save this checkpoint as final_model, then pursue rejection-sampling
+    fine-tuning (STaR) to push higher.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-01ed5927
+  launch_i: 312
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [258, 261, 271, 276, 290, 291, 294]
+    setup: [294, 312, 316]
+    evaluation: [312]
+    result: [335]
+    conclusion: [311, 335]
+  snapshot_files:
+    - probe.py
+    - evaluate.py
+    - eval_sft_v1.json
+    - eval_sft_v1_greedy.json
+    - eval_sft_v1_full.json
+    - eval_sft_v1_full.log
+  smoke_runs:
+    - {launch_i: 297, outcome: "passed: 0.78 at --limit 50 after the config change (eval_sft_v1_greedy.json)"}
+  extractor: null
+  unresolved:
+    - "The command that wrote sft_v1/generation_config.json is not in the digest (it falls between [294] and [297]); its contents are known only from the agent's own description at [316] and the identical hand-written file for sft_v2 at [503]."
+    - "The eval sample log the failure examples come from is not in the workspace snapshot (logs/ was not preserved); the two items are quoted from the digest at [262] and have no item ids."

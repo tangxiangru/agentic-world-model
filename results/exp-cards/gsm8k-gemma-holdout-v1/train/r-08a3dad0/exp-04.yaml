@@ -1,0 +1,210 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 2.68
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The incumbent still gets 58 of 150 wrong, and several of those failures are
+    the model rambling past max_tokens on hard problems - it regenerates the
+    prompt template instead of finishing - so the training set looks too small /
+    not clean enough to teach both accuracy and reliable stopping.
+  evidence:
+    - path: /home/ben/task/eval_fixed.json
+      locator: "[621], [650]"
+      observation: "0.6133 at --limit 150; 58/150 wrong, 0 completions without 'ANSWER:', median length 333 chars, max 9219"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-08a3dad0.md
+      locator: "[678]"
+      observation: "agent: several failures are the model rambling past max_tokens (regenerating the template), so cleaner/larger training data should help both accuracy and clean stopping"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: null
+      question: null
+      gold: "17"
+      model_output: "... unripe oranges.\n2 oranges are sour.\nSo, the number of good oranges is "
+      failure: "cut off mid-sentence at the token limit; no final answer line reached [650]"
+    - id: null
+      source: null
+      question: null
+      gold: "40"
+      model_output: "... 26\nThe percentage of white cows is (26 / 52) * 100 = 5"
+      failure: "truncated mid-computation, last number is wrong [650]"
+    - id: null
+      source: null
+      question: null
+      gold: "221"
+      model_output: "... ng math problem step by step. The last line of your response should be"
+      failure: "the completion regenerated the prompt template instead of answering [650]"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "cleaner/larger training data should help both accuracy and clean stopping"
+    [678] - a v2 dataset with the full MetaMathQA GSM subset (240K) plus GSM8K
+    train plus 15K few-shot-prefixed copies, trained for 2 epochs, will beat the
+    61.3% incumbent on the same 150 items.
+  mechanism: >-
+    More GSM-style supervision, all of it terminated by <|im_end|>, gives more
+    coverage of hard problems and more evidence for stopping [678], [687].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_data2.jsonl
+      source: "local: built from HF openai/gsm8k (main, train) + meta-math/MetaMathQA (GSM_* types)"
+      n_examples: 262471
+      built_by: /home/ben/task/build_data2.py
+      build_command: [python, build_data2.py]
+      selection: >-
+        build_data.py with META_CAP raised 90000 -> 240000 [688] and the few-shot
+        block changed to draw 15000 copies from all sources rather than 50% of the
+        GSM8K-train items [699]; same formatting, same prompt template, same
+        "ANSWER: N" target.
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129, flash_attention_2, datasets 4.5.0)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum are the launch flags; max_seq_len(2048), cosine
+        schedule, warmup_ratio(0.03), weight_decay(0.0), bf16, seed(0),
+        group_by_length, gradient_checkpointing, save_strategy=epoch are train.py
+        values the launch did not override. This launch used the train.py revision
+        of [710], which additionally sets the tokenizer eos to <|im_end|> and
+        writes a greedy generation_config at save time.
+    target_format: >-
+      prompt = templates/qwen3.jinja chat template; completion = reasoning +
+      "ANSWER: N" + <|im_end|>; loss on the completion only; >2048-token examples
+      dropped.
+  command:
+    argv: [nohup, python, train.py, --data, sft_data2.jsonl, --out, sft_out2, --epochs, "2", --lr, "1e-5", --bs, "16", --accum, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/train2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_out2, --limit, "150", --json-output-file, eval_v2.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.6133333333333333
+    path: /home/ben/task/eval_fixed.json
+  diagnostic:
+    what: "stop_reason / completion-length distribution of the 150 eval completions, to separate rambling from genuine wrong answers [772]"
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.47
+  output_checkpoint: /home/ben/task/sft_out2
+  training_summary:
+    final_loss: 0.14148519721671166
+    steps: 15468
+    notes: >-
+      train_runtime 8909.17 s, 1.736 steps/s; "kept 247471/262471" after the
+      2048-token filter. The script then died writing the config: transformers'
+      GenerationConfig.save_pretrained rejects temperature=0.0 with do_sample
+      False [751]. Weights and tokenizer were already saved (tokenizer eos
+      <|im_end|>, config eos still 151643 [753]); config.json eos and a greedy
+      generation_config.json were written by hand between [756] and [759].
+  measurements:
+    - metric: accuracy
+      value: 0.47333333333333333
+      n: 150
+      path: /home/ben/task/eval_v2.json
+      delta_vs_comparator: -0.14
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "[773] median completion 455 chars, max 12123, 62/150 over 3000 chars" -
+      "V2 rambles far more ... 3 epochs (v1) learned the im_end stop far more
+      reliably than 2 epochs (v2)" [803].
+  watch_set_result: null
+  failure: >-
+    ValueError: GenerationConfig is invalid:
+    - `temperature`: `do_sample` is set to `False`. However, `temperature` is set
+    to `0.0` ... - `top_k`: `do_sample` is set to `False`. However, `top_k` is set
+    to `1` ... (train2.log, at gc.save_pretrained(args.out), train.py line 89)
+  
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    "V2 is worse: 47.3% vs v1's 61.3%. Surprising." [771]. The extra data did not
+    help either metric: 62 of 150 completions run past 3000 characters, i.e. the
+    stopping behaviour the larger set was supposed to reinforce got worse.
+  decision: reject
+  next_step: >-
+    "launch v3: full 247K data at 3 epochs, and first fix train.py's config-save
+    crash (write JSON directly)" [803].
+
+# ---- 6b. outcome ------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-08a3dad0
+  launch_i: 712
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [649, 650, 678, 687]
+    setup: [688, 689, 695, 699, 701, 709, 710, 712]
+    evaluation: [759]
+    result: [714, 735, 751, 752, 753, 756, 759, 771, 772, 773]
+    conclusion: [771, 803]
+  snapshot_files:
+    - build_data2.py
+    - train.py
+    - train2.log
+    - eval_v2.json
+    - eval_v2.log
+    - eval_fixed.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "n_examples 262471 is the denominator of train2.log's `kept 247471/262471`; the build script's own print at [701] is not in the digest (the agent reports '262K examples' at [709])."
+    - "The commands that repaired sft_out2's config.json / generation_config.json after the save crash are not blocks in the digest ([756] announces them, [759] is the eval), so they get no card."
+    - "build_data2.py in the snapshot is the post-[699] revision; the sed-generated intermediate (few-shot copies = 1.5x the GSM8K pool) was never run."
+    - "execution is recorded as completed because training finished and the checkpoint was saved and evaluated; the traceback in result.failure is from the post-training config write."

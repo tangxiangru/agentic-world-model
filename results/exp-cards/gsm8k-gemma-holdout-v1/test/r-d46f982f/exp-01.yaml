@@ -1,0 +1,212 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.24
+
+problem:
+  statement: >-
+    The un-tuned base model is near-useless on the benchmark: the agent's own
+    run of the task's evaluator on google/gemma-3-4b-pt scored 5.3% on 150
+    items ("Baseline (base model): 5.3%" [501]).
+  evidence:
+    - path: /home/ben/task/runs/baseline_pt.json
+      locator: "[492]"
+      observation: 'accuracy 0.05333333333333334, stderr 0.018407922296694253 on the 150-item eval launched at [119]'
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "HF nvidia/OpenMathInstruct-2 (gsm8k + augmented_gsm8k rows) + HF openai/gsm8k (config main, split train)"
+      n_examples: 115000
+      built_by: /home/ben/task/build_sft.py
+      build_command: [python, build_sft.py, --pool, data/pool_omi2.jsonl, --out, data/sft_v2.jsonl, --n, "115000", --max-per-problem, "2", --fewshot-frac, "0.10", --orig-repeat, "3"]
+      selection: >-
+        Two stages. prep_pool.py [228], fixed and re-run at [278], reads the cached
+        OpenMathInstruct-2 parquet shards, keeps rows whose problem_source is gsm8k or
+        augmented_gsm8k, unwraps the last \boxed{...} into plain text, drops rows whose
+        boxed value is not a plain number or does not match expected_answer to 1e-6,
+        drops problems outside 20-1500 chars and solutions outside 30-2500 chars, and
+        exact-dedupes -> 1,842,052 rows over 80.8k unique problems [394], [980].
+        build_sft.py [274] then caps the pool at 2 solutions per problem (--max-per-problem 2),
+        appends the original GSM8K train CoT (calculator <<...>> annotations stripped,
+        final number taken from after "####") repeated 3x (--orig-repeat 3), shuffles with
+        seed 0 and truncates to 115,000 rows. Each row is rendered as user = the evaluator's
+        math prompt template, response = solution + "\n\nANSWER: <n>"; 10% of rows
+        (--fewshot-frac 0.10) additionally carry, as a system message, the exact 10-shot
+        prefix the evaluator builds (hf_dataset openai/gsm8k main train, shuffle seed 42,
+        limit 10, joined by sample_to_fewshot).
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "gsm8k train CoT x3; at most 2 solutions kept per pool problem"
+  method:
+    family: sft
+    framework: >-
+      transformers.Trainer driven by the hand-written train_sft.py, with
+      flash_attention_2 and liger_kernel fused cross-entropy
+      (_apply_liger_kernel_to_instance). Library versions were queried at [91]
+      and [739] but neither result block is in the digest.
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: null
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: "cosine_with_min_lr (min_lr_rate 0.1)"
+      warmup: 30
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr 1e-5, epochs 1, --accum 4 and --warmup 30 come from the command line at [629].
+        max-len 3072, token-budget 24576, max-bs 48, min-lr-ratio 0.1, optim
+        adamw_torch_fused, attn flash_attention_2 and seed 0 are train_sft.py argparse
+        defaults; the script is in the workspace and the launch did NOT override them.
+        per_device_train_batch_size is fixed at 1 in the script: there is no fixed batch
+        size, the dataset yields pre-built micro-batches packed to a 24,576-token budget
+        (max 48 sequences), so effective batch size varies. adam_beta2 0.95,
+        weight_decay 0.0, max_grad_norm 1.0, bf16, gradient_checkpointing
+        (use_reentrant False) and save_strategy "no" are hardcoded. The vision tower and
+        multi_modal_projector are frozen; the agent reports 3.88B trainable parameters [1759].
+    target_format: >-
+      the gemma3 turn format rendered by hand -
+      "<bos><start_of_turn>user\n{system+\n\n}{prompt}<end_of_turn>\n<start_of_turn>model\n"
+      - with loss masked (-100) over the prompt span; the assistant span is the
+      solution text ending in "ANSWER: <n>" followed by <end_of_turn>.
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/sft_v2.jsonl, --out, ckpt/sft_v2, --accum, "4", --epochs, "1", --lr, "1e-5", --warmup, "30"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/runs/train_v2.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [timeout, "2400", bash, run_eval.sh, ckpt/sft_v2, sft_v2_greedy, "200", "32"]
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.05333333333333334
+    path: /home/ben/task/runs/baseline_pt.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: 841
+  output_checkpoint: /home/ben/task/ckpt/sft_v2
+  training_summary:
+    final_loss: null
+    steps: 841
+    notes: >-
+      841 total optimizer steps, read off the progress bar at [767] ("21/841") and
+      [967] ("53/841", 6.20 s/it). Launched at t=+0.24h [629]; the agent reports
+      "Training finished" at t=+2.05h [1032], so wall time is at most ~1.8 h. The
+      train_runtime / final-loss lines were grepped at [1013] but that result block
+      is not in the digest, so neither number is recorded. The checkpoint directory
+      is 8.1G and complete at [1039]. The agent describes the run as "115k examples /
+      62M tokens, full-parameter, liger fused CE, token-budget batching" [980].
+  measurements:
+    - metric: accuracy
+      value: 0.520
+      n: 200
+      path: null
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.665
+      n: 200
+      path: /home/ben/task/runs/sft_v2_greedy.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      The two numbers are the same checkpoint under two decode configs, reported
+      together at [1120] ("Greedy vs sampling: 66.5% vs 52.0%") and in the closing
+      table at [1759] (both n=200). 0.665 is the greedy eval launched at [1065];
+      the default-sampling eval that produced 0.520 has no event block in the digest
+      (the cleanup at [1757] removes a ckpt/sft_v2_sampling directory, so a sampling
+      variant of the checkpoint existed). The greedy/sampling contrast is carded
+      separately as exp-02.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    One epoch of full-parameter SFT on 115k GSM8K-style CoT rows took the base model
+    from 5.3% (n=150) to 52.0% under default sampling and 66.5% greedy (both n=200).
+    The comparator was measured at a different --limit than the result, and the agent
+    stated no hypothesis before launching, so the card records the jump without
+    calling it supported.
+  decision: adopt
+  next_step: >-
+    The agent kept ckpt/sft_v2 as the incumbent and moved to RL on top of it [1091].
+    Two prepared lines were never launched: gen_rft.py, the rejection-sampling
+    generator written at [650] ("build the self-sampling infrastructure for the next
+    phase" [649]), was never run; and data/sft_v3.jsonl, a larger 200k mixture adding
+    MetaMathQA-GSM, was built twice ([927], rebuilt at [962] after the agent dropped
+    orca-math for unreliable last-number labels) but never trained on.
+
+provenance:
+  kind: extracted
+  run_ref: r-d46f982f
+  launch_i: 629
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [492, 501]
+    setup: [228, 274, 278, 394, 568, 625, 629]
+    evaluation: [1065, 1120]
+    result: [767, 906, 967, 1032, 1039, 1120]
+    conclusion: [980, 1091, 1759]
+  snapshot_files:
+    - prep_pool.py
+    - build_sft.py
+    - train_sft.py
+    - run_eval.sh
+    - evaluate.py
+    - timer.sh
+    - system_monitor.log
+  smoke_runs:
+    - {launch_i: 502, outcome: "400-example smoke of train_sft.py into ckpt/smoke; no result block in the digest"}
+    - {launch_i: 507, outcome: "same 400-example smoke re-run into runs/smoke.log; no result block in the digest"}
+    - {launch_i: 527, outcome: "1200-example smoke at max-len 3072 into ckpt/smoke2, after making attn_implementation a flag defaulting to flash_attention_2; no result block in the digest"}
+    - {launch_i: 570, outcome: "3000-example smoke of the rewritten trainer (liger fused CE + token-budget micro-batches) into ckpt/smoke3; killed at [608]"}
+  extractor: null
+  unresolved:
+    - "the default-sampling eval that produced 52.0% is not in the digest; only its result is quoted, at [1120] and [1759]"
+    - "train_runtime, final training loss and the exact wall time are not in the digest (the grep at [1013] has no result block)"
+    - "the runs/ directory holding the agent's eval JSONs is not part of the workspace snapshot, so no measurement path can be opened"
+    - "prep_pool.py's contamination check [428] and the extra-pool check [834] have no result block; the 0-flagged-of-374k figure is the agent's summary at [980]"

@@ -1,0 +1,177 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.31
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The base model is a pretrained (non-instruction-tuned) checkpoint: on the
+    benchmark's prompt it "is generating very long outputs (not stopping
+    cleanly), making the baseline eval extremely slow" [166], and it does not
+    produce the required 'ANSWER: <num>' final line that the numeric matcher
+    scores [24].
+  evidence:
+    - path: /home/ben/task/logs/baseline_eval.log
+      locator: "[161], [166]"
+      observation: >-
+        Baseline eval of the base model at --limit 150 was still generating
+        after ~12 min of wall clock and was killed at [167] to free the GPU;
+        no baseline accuracy was ever produced.
+    - path: digest event stream (see provenance.run_ref)
+      locator: "[24]"
+      observation: >-
+        Agent's reading of the eval harness - 10 few-shot examples from the
+        train split in a system message, a step-by-step prompt template ending
+        in 'ANSWER: $ANSWER', scored with a numeric match.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft.jsonl
+      source: "derived: openai/gsm8k train + meta-math/MetaMathQA (GSM-derived subset)"
+      n_examples: null
+      built_by: /home/ben/task/scripts/prepare_data.py
+      build_command: [python, scripts/prepare_data.py, --metamath-n, "120000", --gsm8k-repeat, "2", --out, data/sft.jsonl]
+      selection: >-
+        GSM8K train answers split on '####', calculator annotations <<...>>
+        stripped, numeric target normalised; MetaMathQA filtered to type
+        starting with 'GSM', shuffled seed 42, capped at 120000, trailing
+        'The answer is X' / '#### X' lines removed; every record formatted as
+        the eval's user prompt template plus an assistant turn ending in
+        'ANSWER: <num>'. Agent's own quality check on 3000 sampled records
+        [136] - 100% end in 'ANSWER:<num>', mean 324 tokens, p99 621. Exact
+        record count never printed in the stream.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: "GSM8K train component duplicated x2 (--gsm8k-repeat 2)"
+  method:
+    family: sft
+    framework: transformers.Trainer (custom script), flash_attention_2, bitsandbytes adamw_8bit
+    peft: none
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr / epochs / batch_size / grad_accum / max_seq_len come from the launch
+        argv at [194]. scheduler, warmup, weight_decay, precision and seed are
+        not on the argv; they are read from the training script text as written
+        at [149] (TrainingArguments lr_scheduler_type='cosine',
+        warmup_ratio default 0.03, weight_decay=0.0, bf16=True, seed default 42)
+        and amended at [188]. That script is NOT in the workspace snapshot, so
+        these five values rest on the digest write events alone. Also from the
+        script - optim adamw_8bit, max_grad_norm 1.0, gradient checkpointing on,
+        group_by_length=True, save_total_limit 2, vision tower and multimodal
+        projector frozen (text-only training).
+    target_format: >-
+      Chat-formatted with the model's own chat template; prompt masked to -100
+      and loss taken only on the assistant turn, which is the cleaned reasoning
+      followed by a final 'ANSWER: <num>' line and the end-of-turn token.
+  command:
+    argv: [HF_HOME=/home/ben/hf_cache, nohup, python, scripts/train.py, --out, runs/v1, --data, data/sft.jsonl, --epochs, "2", --lr, 1e-5, --bs, "16", --grad-accum, "2", --max-len, "1024", --attn, flash_attention_2, --save-steps, "1500", --log-steps, "10", ">", logs/train_v1.log, "2>&1", "&"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: 1x 80GB GPU
+    planned_h: 3.0
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: killed
+  wall_h: 0.13
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Reached step ~82 of 8434 before being killed. Killed at [228] on a memory
+      argument, not a failure - "Peak hit 78.7GB - only 1.2GB headroom. Too
+      risky for a 3-hour run; a longer batch will OOM" [227]. wall_h derived
+      from the event timestamps ([194] t=+0.31h to [228] t=+0.44h).
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    A full 2-epoch SFT launch on the base model that was killed after ~8 minutes
+    because peak GPU memory reached 78.7GB of 80GB under length-grouped batching
+    at max_len 1024 [221][227]. No checkpoint, no measurement.
+  decision: abandon_line
+  next_step: >-
+    Relaunch with max_len capped at 640 - "The data has p99=621 tokens, so
+    capping at 640 loses <1% of data but eliminates the long-batch spikes" [227].
+
+# ---- outcome ----------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a88bb78b
+  launch_i: 194
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [24, 161, 166]
+    setup: [105, 113, 120, 125, 149, 153, 188, 194]
+    evaluation: []
+    result: [201, 207, 212, 213, 221, 227, 228]
+    conclusion: [227]
+  snapshot_files: []
+  smoke_runs:
+    - {launch_i: 182, outcome: "passed: prompt/completion masking verified on 50 records, forward+backward OK on a 3-example batch"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "None of the scripts this card cites (scripts/train.py, scripts/prepare_data.py) are in the workspace snapshot; their text is only in the digest write events [105][120][149][153][188]."
+    - "The record count of data/sft.jsonl was printed by prepare_data.py but the result block is not in the digest."
+    - "A baseline number for the base model was never obtained - the baseline eval [56] was killed at [167] before finishing."

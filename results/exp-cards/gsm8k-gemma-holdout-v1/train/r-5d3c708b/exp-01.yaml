@@ -1,0 +1,193 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.18
+
+problem:
+  statement: >-
+    The base model scores 38.3% because it does not stop: it rambles to
+    max_tokens, drifts into unrelated text and hallucinates a fresh problem,
+    and the grader's "last number in the output" scorer then picks up a number
+    from the rambling instead of the real answer ([82], [88]).
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[80]"
+      observation: "base model accuracy 0.3833 (stderr 0.0633) on 60 samples"
+    - path: /home/ben/task/logs/2026-06-06T22-17-14+02-00_gsm8k_XnFCuoYtdt8haAziPAZzZf.json
+      locator: "[86] - two INCORRECT samples printed"
+      observation: >-
+        outputs run to ~1100+ chars of unrelated text and a hallucinated new
+        problem before any ANSWER line
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-06-06T22-17-14+02-00_gsm8k_XnFCuoYtdt8haAziPAZzZf.json
+      question: null
+      gold: "8"
+      model_output: >-
+        "SupportedException NameFormatException when converting string map key
+        to integer / oeffner / NullException in C# isCanAdvance( ... / Frans was
+        putting up a photo of this fallout bunker he saw in a bookstore. ... If
+        the original stool was 40 cubic feet, how many cubic feet does the new
+        stool have? / Reasoning: ... 40 - 6 = 34 cubic feet. / ANSWER: 34"
+      failure: >-
+        never emitted a stop token; produced garbage, then invented a different
+        problem and answered that one, so the scorer read 34 against gold 8
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised fine-tuning on cleaned GSM8K-train solutions, with the assistant
+    turn terminated by <|im_end|> and that token set as the model's EOS, will
+    make the model stop cleanly and so fix the format/stopping failures ([71],
+    [88]).
+  mechanism: >-
+    The base EOS is <|endoftext|> (151643) while the eval's chat template
+    delimits turns with <|im_end|> (151645); training the model to emit
+    <|im_end|> and declaring it as EOS lets vLLM stop the generation at the end
+    of the answer ([71]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/gsm8k_train.jsonl
+      source: "openai/gsm8k main:train"
+      n_examples: null
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --out, work/gsm8k_train.jsonl]
+      selection: >-
+        every GSM8K train row; answer split at "####", <<calc>> annotations
+        stripped and whitespace tidied; completion = reasoning + "ANSWER:
+        <final>"; user turn = the eval's exact math prompt template
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer (transformers 4.57.3)"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        scheduler, warmup, weight_decay, precision, seed and optimiser were not
+        on the command line; taken from train_sft.py in the workspace, which the
+        launch did not override - lr_scheduler_type="cosine", warmup_ratio
+        default 0.03, weight_decay=0.0, bf16=True, seed=42,
+        optim="paged_adamw_8bit", gradient_checkpointing=True,
+        max_grad_norm=1.0, save_strategy="no", flash_attention_2. Loss is masked
+        to completion tokens only.
+    target_format: >-
+      eval chat template user turn + generation prompt, assistant text ending in
+      "ANSWER: <n>" followed by <|im_end|>; on save, config and generation_config
+      eos_token_id are set to 151645 (<|im_end|>)
+  command:
+    argv: [python, train_sft.py, --data, work/gsm8k_train.jsonl, --out, work/sft1, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2", --max_len, "1024", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/sft1.log
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, work/sft1, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, logs/iter1.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.3833333333333334
+    path: /home/ben/task/logs/baseline.json
+  diagnostic:
+    what: >-
+      output-length distribution and count of outputs over 1500 chars on the
+      same 150 samples, as a direct check that the model now stops
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.28
+  output_checkpoint: /home/ben/task/work/sft1
+  training_summary:
+    final_loss: null
+    steps: 702
+    notes: >-
+      702 optimizer steps at ~1.3 s/it; the Trainer's loss dict never reached the
+      redirected log, so no loss value was recorded ([141], [314]). Before the
+      eval the saved generation_config was patched by hand to do_sample=false,
+      temperature=0.0, top_p=1.0, eos_token_id=151645 ([197]).
+  measurements:
+    - metric: accuracy
+      value: 0.80
+      n: 150
+      path: /home/ben/task/logs/iter1.json
+      delta_vs_comparator: 0.4167
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      120 correct / 30 incorrect of 150; output length mean 289 chars, max 6259,
+      only 1 of 150 over 1500 chars - the model stops cleanly ([208])
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    "Iter1 SFT: 80.0% (up from 38.3% baseline). The SFT fixed stopping/format"
+    ([206]); the stopping diagnostic confirms the mechanism, but the comparator
+    was measured at --limit 60 and this output at --limit 150, so the delta is
+    not a same-protocol comparison.
+  decision: reject
+  next_step: >-
+    "remaining errors are genuine reasoning/comprehension mistakes, exactly what
+    RFT and RL target" ([210]) - use this checkpoint to rejection-sample its own
+    correct solutions and retrain (exp-02).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5d3c708b
+  launch_i: 113
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [80, 82, 86, 88]
+    setup: [72, 75, 101, 113]
+    evaluation: [197]
+    result: [196, 206, 207, 208]
+    conclusion: [206, 210]
+  snapshot_files:
+    - prepare_data.py
+    - train_sft.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "logs/iter1.json and logs/baseline.json are not in the workspace snapshot; the values are the numbers the agent printed at [80] and [206]."
+    - "n_examples for work/gsm8k_train.jsonl was never printed in the stream."
+    - "final training loss was never captured (the Trainer log never reached the redirected file)."

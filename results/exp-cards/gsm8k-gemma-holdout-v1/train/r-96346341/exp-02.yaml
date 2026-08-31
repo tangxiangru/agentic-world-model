@@ -1,0 +1,220 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.35
+
+problem:
+  statement: >-
+    The base model still degenerates (35.3% at --limit 150), and the first SFT
+    attempt (exp-01) was too large to fit the budget: its ETA drifted past 2 h,
+    which would leave no room for RL.
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[338]"
+      observation: "baseline 35.3% at --limit 150; base model emits no ANSWER line"
+    - path: /home/ben/task/logs/sft1.log
+      locator: "[668]"
+      observation: "exp-01 at step 152/2922 with 3:25:31 remaining; agent: 'ETA is drifting to >2h' [700]"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full-parameter SFT on a leaner corpus (42k OpenMathInstruct-2 gsm8k / 8k
+    math / 8k orca, few-shot fraction 0.25) at the same hyper-parameters will
+    finish in about an hour, teach the harness' exact wire format, and lift
+    accuracy well above the 35.3% baseline while preserving budget for RL.
+  mechanism: >-
+    Same as exp-01 - training sequences are built byte-identically to what the
+    harness feeds the model, loss masked to the assistant span - with the corpus
+    cut so one epoch fits the remaining budget ([700]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft.jsonl
+      source: "derived: nvidia/OpenMathInstruct-2 (gsm8k + augmented_gsm8k, math + augmented_math) + microsoft/orca-math-word-problems-200k + openai/gsm8k train (few-shot pool)"
+      n_examples: 57380
+      repeats: null
+      built_by: /home/ben/task/build_sft.py
+      build_command:
+        - python
+        - build_sft.py
+        - --n-gsm
+        - "42000"
+        - --n-math
+        - "8000"
+        - --n-orca
+        - "8000"
+        - --fewshot-frac
+        - "0.25"
+        - --out
+        - data/sft.jsonl
+      selection: >-
+        Same pipeline as exp-01 with smaller caps and fewshot-frac 0.25;
+        OpenMathInstruct-2 rows extracted by extract_omi2.py ([191]). n_examples
+        is the count the trainer loaded ("loaded 57380 examples (dropped 620
+        over-length)" [725]) at --max-len 2560; the build's own kept-counts were
+        not echoed.
+      contamination_check: null
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum/max-len are from the launch argv. scheduler=cosine,
+        warmup_ratio=0.03, weight_decay=0.0, bf16=True, seed=0,
+        optim=adamw_bnb_8bit, adam_beta2=0.95, max_grad_norm=1.0,
+        group_by_length=True, gradient_checkpointing (use_reentrant=False),
+        flash_attention_2 are hard-coded in train_sft.py (workspace copy, not
+        CLI-settable, so not overridden by this launch). --save-steps 600;
+        1794 optimizer steps for the epoch.
+    target_format: >-
+      manual ChatML string
+      "<|im_start|>system\n{fewshot}<|im_end|>\n<|im_start|>user\n{templated
+      question}<|im_end|>\n<|im_start|>assistant\n{solution}<|im_end|>", loss on
+      the assistant span only; solution ends with "ANSWER: <n>".
+  command:
+    argv:
+      - python
+      - -u
+      - train_sft.py
+      - --data
+      - data/sft.jsonl
+      - --out
+      - runs/sft1
+      - --max-len
+      - "2560"
+      - --bs
+      - "8"
+      - --accum
+      - "4"
+      - --lr
+      - "1e-5"
+      - --epochs
+      - "1"
+      - --save-steps
+      - "600"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/sft1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - bash
+      - run_eval.sh
+      - runs/sft1/final
+      - sft1_greedy
+      - "150"
+      - "0.0"
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.353
+    path: /home/ben/task/logs/baseline.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.18
+  duration_h: 1.18
+  steps: 1794
+  output_checkpoint: /home/ben/task/runs/sft1/final
+  training_summary:
+    final_loss: 0.26
+    steps: 1794
+    notes: >-
+      "SFT finished (loss 0.40 -> 0.26, 71 min)" [910]. run_eval.sh at [911]
+      passed the checkpoint through finalize.py first, which copies it to
+      evalmodels/sft1_greedy and rewrites generation_config.json
+      (eos_token_id=[151645,151643], do_sample=False, temperature=0.0) and
+      config/tokenizer eos to <|im_end|>; the measurement below is on that copy.
+  measurements:
+    - metric: accuracy
+      value: 0.887
+      n: 150
+      path: /home/ben/task/logs/sft1_greedy.json
+      delta_vs_comparator: 0.534
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      At [930] the agent inspected stop_reason counts, output lengths and one
+      wrong / one right completion from the eval log; no numbers from that
+      inspection appear in the stream.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "88.7% after SFT (baseline was 35.3%)" [949] - +53.4 pts over the base model
+    under the same --limit 150 protocol, so one epoch of format-matched SFT
+    removes the degeneration. The greedy-finalized copy of this checkpoint
+    became the starting point for every later launch.
+  decision: adopt
+  next_step: >-
+    GRPO (RLVR) on GSM8K train prompts starting from evalmodels/sft1_greedy
+    ([949], carried out as exp-03).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-96346341
+  launch_i: 713
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [338, 668, 700]
+    setup: [701, 705, 713, 725]
+    evaluation: [911, 930]
+    result: [910, 949]
+    conclusion: [949]
+  snapshot_files:
+    - build_sft.py
+    - extract_omi2.py
+    - train_sft.py
+    - finalize.py
+    - run_eval.sh
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the contamination check re-run at [709] against ../test_data.json produced no output in the stream; its verdict is unknown"
+    - "runs/sft1/final was never evaluated directly - 88.7% is measured on evalmodels/sft1_greedy, the finalize.py copy with greedy decoding and the <|im_end|> eos fix"

@@ -1,0 +1,181 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 2.76
+
+problem:
+  statement: >-
+    Same problem as exp-03: under the eval's 10-shot system prompt the exp-02
+    checkpoint does not emit <|im_end|> after 'ANSWER: X' at temp 1.0 and runs
+    on into a hallucinated next question (3.3% with the priming, 58.3% without)
+    [466][472]; the previous attempt at the fix was too slow to fit the budget
+    [525].
+  evidence:
+    - path: /home/ben/task/myeval.py
+      locator: "[466], [472]"
+      observation: "temp-1.0 accuracy of exp-02 collapses only when the few-shot system message is present"
+    - path: /home/ben/task/logs/sft_mix1_fs.log
+      locator: "[505], [525]"
+      observation: "exp-03's 50000-row version projected ~2.9h and was killed"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Continue-training exp-02's checkpoint on a focused 18000-row
+    few-shot-augmented set (p_fs 0.9) at lr 1e-5 will teach the model to stop
+    despite the eval's few-shot priming, raising temp-1.0 accuracy under the
+    real eval condition, and will fit the remaining budget. [525]
+  mechanism: >-
+    "the 'stop despite priming' behavior is format-learning that doesn't need
+    50K examples" [525]; a smaller set at a higher learning rate should install
+    the same stopping behaviour in a fraction of the time.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/work/sft_mix1
+    origin: exp-02
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_fs2.jsonl
+      source: derived:exp-02
+      n_examples: 18000
+      built_by: /home/ben/task/build_data_fs.py
+      build_command: [python, build_data_fs.py, --base, data/sft_mix1.jsonl, --out, data/sft_fs2.jsonl, --limit, "18000", --p_fs, "0.9", --kmin, "6", --kmax, "10", --seed, "1"]
+      selection: >-
+        18000 shuffled rows of the exp-02 mix; 90% get a system message of k
+        random GSM8K-train demonstrations (k uniform in 6..10) in the eval's
+        exact few-shot format; completions unchanged [477][545]
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers Trainer (full fine-tune, completion-only loss mask)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 8
+      grad_accum: 3
+      max_seq_len: 2816
+      scheduler: cosine_with_min_lr
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        scheduler, warmup, weight_decay, precision and seed are train_sft.py
+        defaults not overridden by the launch; --save_steps 375 was passed;
+        --init work/sft_mix1. The launch requested 2 epochs but the agent killed
+        it after checkpoint-750 (1 epoch), so the adopted checkpoint is 1 epoch.
+    target_format: >-
+      eval chat format with a k-shot system message on 90% of rows; assistant
+      turn is a CoT ending in 'ANSWER: <n>' plus <|im_end|>
+  command:
+    argv: [nohup, python, -u, train_sft.py, --init, work/sft_mix1, --data, data/sft_fs2.jsonl, --out, work/sft_mix1_fs, --epochs, "2", --lr, "1e-5", --bs, "8", --accum, "3", --max_len, "2816", --save_steps, "375"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/sft_mix1_fs.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [nohup, python, -u, myeval.py, eval, --model, work/sft_mix1_fs/checkpoint-750, --limit, "200", --temperature, "1.0", --max_tokens, "512", --out, logs/eval_fs750_t1.json]
+    dev_set: "GSM8K test split scored by myeval.py with the eval's 10-shot system prompt, --limit 200, temperature 1.0"
+    n: 200
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.033
+    path: null
+  diagnostic:
+    what: "cross-check of myeval.py against the benchmark's own evaluator on the same checkpoint and the same limit"
+    command: [nohup, python, evaluate.py, --model-path, work/sft_mix1_fs/checkpoint-750, --limit, "200", --json-output-file, logs/official_fs750_200.json]
+    path: /home/ben/task/logs/official_fs750_200.json
+
+result:
+  execution: killed
+  wall_h: 0.51
+  output_checkpoint: /home/ben/task/work/best_fs750
+  training_summary:
+    final_loss: null
+    steps: 750
+    notes: >-
+      deliberately stopped at checkpoint-750 (1 of 2 epochs) to leave budget for
+      RFT [570][576]; checkpoint-375 and checkpoint-750 were saved; tokenizer
+      files were missing from the intermediate checkpoint and were copied from
+      work/sft_mix1 at [601]; checkpoint-750 was then copied to work/best_fs750
+      with optimizer/scheduler state removed [615]
+  measurements:
+    - metric: accuracy
+      value: 0.595
+      n: 200
+      path: /home/ben/task/logs/eval_fs750_t1.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.595
+      n: 200
+      path: /home/ben/task/logs/official_fs750_200.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.595
+    path: /home/ben/task/logs/official_fs750_200.json
+    notes: "the benchmark's own evaluator returned exactly the same value as myeval.py at the same limit, so myeval.py was treated as a reliable proxy from here on [626]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    "The fix WORKED - checkpoint-750 scores 59.5% at temp 1.0 with few-shots (up
+    from 3.3% before the fix)" [612], confirmed at 0.595 by the benchmark's own
+    evaluator at the same limit [626]. Verdict is inconclusive only because the
+    comparator (exp-02) was measured at limit 30, not the limit 200 used here.
+  decision: adopt
+  next_step: >-
+    "push higher with RFT. First, sample the model's own solutions on GSM8K
+    train" [626]
+
+# ---- 7. Outcome (joined by the pipeline; never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-f099ff8e
+  launch_i: 551
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [466, 472, 525]
+    setup: [545, 551]
+    evaluation: [605, 615]
+    result: [570, 576, 601, 612, 626]
+    conclusion: [612, 626]
+  snapshot_files:
+    - build_data_fs.py
+    - train_sft.py
+    - myeval.py
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 577, outcome: "eval of checkpoint-750 crashed: tokenizer files absent from the intermediate checkpoint (Qwen2Tokenizer vocab_file=None) [596]"}
+    - {launch_i: 589, outcome: "same eval, same crash, before the tokenizer files were copied in at [601]"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "no training loss was printed for this launch"
+    - "work/best_fs750 (the copy at [615]) is the artefact used downstream; work/sft_mix1_fs/checkpoint-750 is the same weights"
+    - "this checkpoint was final_model from [684] until [734]"
+    - "logs/*.json referenced by this card are not present in the workspace snapshot"

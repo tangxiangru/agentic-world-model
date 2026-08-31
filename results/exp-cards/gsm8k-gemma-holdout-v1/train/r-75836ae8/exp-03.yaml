@@ -1,0 +1,247 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The model often gets the answer right and then keeps generating, which
+    hurts the scorer" [340]; the prompt-aligned checkpoints "often solve
+    correctly and then keep generating into a second problem, which poisons
+    numeric matching" [347]. The scorer takes the last numeric token in the
+    response, so any arithmetic after the final answer zeroes an otherwise
+    correct sample [499].
+  evidence:
+    - path: /home/ben/task/exp2_merged_20.json
+      locator: "[332], read at [340]"
+      observation: "the 2-epoch prompt-aligned model scores 0.10 on --limit 20, level with base"
+    - path: /home/ben/task/exp2_ckpt468_20.json
+      locator: "[329], read at [331]"
+      observation: "the epoch-1 checkpoint also scores 0.10 on --limit 20"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "One short continuation fine-tune from the stronger eval-style model with an
+    explicit EOS token appended after every target answer to teach hard
+    stopping, not to relearn math" will convert the model's "often right but too
+    verbose" behaviour into scorer-friendly outputs [347][350].
+  mechanism: >-
+    Appending a real EOS token after every training target teaches termination
+    directly, so generation stops at the answer line instead of running into a
+    second problem and displacing the last number the scorer reads [340][499].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/exp2_gsm_evalstyle/merged
+    origin: exp-02
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm_only_evalstyle_eos
+      source: "openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prepare_math_data.py
+      build_command:
+        - python
+        - scripts/prepare_math_data.py
+        - --output-dir
+        - data/gsm_only_evalstyle_eos
+        - --metamath-types
+        - none
+        - --fewshot-system-count
+        - "10"
+        - --fewshot-system-seed
+        - "42"
+        - --assistant-suffix
+        - "<|endoftext|>"
+      selection: >-
+        same build as exp-02's data (GSM8K train only, 10-shot evaluator-style
+        system message, seed 42) with '<|endoftext|>' appended to every
+        assistant target [342][343].
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, via the run's own scripts/train_sft.py [35][392]"
+    peft: none
+    hyperparams:
+      lr: 2.0e-06
+      epochs: 0.5
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2564
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --save-strategy epoch, --logging-steps 20. bf16/tf32/gradient
+        checkpointing, adamw_torch_fused and the cosine schedule are hardcoded
+        in the training script [392]. warmup_ratio, weight_decay and seed left
+        at argparse defaults - script text not in the workspace snapshot, so
+        null.
+    target_format: >-
+      evaluator-shaped chat as in exp-02, with the assistant turn ending
+      'ANSWER: <number><|endoftext|>'.
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --model-name-or-path
+      - runs/exp2_gsm_evalstyle/merged
+      - --dataset-dir
+      - data/gsm_only_evalstyle_eos
+      - --output-dir
+      - runs/exp3_eos_tune
+      - --max-length
+      - "2564"
+      - --learning-rate
+      - "2e-6"
+      - --num-train-epochs
+      - "0.5"
+      - --per-device-train-batch-size
+      - "2"
+      - --gradient-accumulation-steps
+      - "8"
+      - --logging-steps
+      - "20"
+      - --save-strategy
+      - epoch
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/exp3_eos_tune/merged
+      - --limit
+      - "20"
+      - --json-output-file
+      - exp3_20.json
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "512"
+      - --gpu-memory-utilization
+      - "0.55"
+    dev_set: "official --limit 20"
+    n: 20
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.1
+    path: /home/ben/task/exp2_merged_20.json
+  diagnostic:
+    what: >-
+      side-by-side greedy generation of the parent and the tuned model on the
+      same eval-shaped prompt, checking which end token each emits [377]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.18
+  duration_h: 0.18
+  steps: 234
+  output_checkpoint: /home/ben/task/runs/exp3_eos_tune/merged
+  training_summary:
+    final_loss: null
+    steps: 234
+    notes: "10:39 wall for 234 steps at about 2.7 s/step [375]; no loss line in a result block."
+  measurements:
+    - metric: accuracy
+      value: 0.35
+      n: 20
+      path: /home/ben/task/exp3_20.json
+      delta_vs_comparator: 0.25
+    - metric: accuracy
+      value: 0.34
+      n: 100
+      path: /home/ben/task/exp3_100.json
+      delta_vs_comparator: null
+    - metric: "accuracy (same weights, after the saved generation config was restored to non-greedy sampling defaults)"
+      value: 0.5
+      n: 100
+      path: /home/ben/task/exp3_sampled_100.json
+      delta_vs_comparator: null
+    - metric: "accuracy (same weights, restored non-greedy generation config, full test set)"
+      value: 0.4935557240333586
+      n: 1319
+      path: /home/ben/task/exp3_sampled_full.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      the parent ends its answer with the chat end token and the tuned model
+      ends it with '<|endoftext|>' on the same prompt [378], i.e. the EOS
+      behaviour the run was aiming at.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    Teaching a hard stop lifted the 20-item slice from 0.10 to 0.35 against the
+    parent under the same --limit, and the generation probe shows the intended
+    termination token, so the mechanism held; on 100 items it was 0.34, and the
+    agent judged that this "solved the stopping problem only partially" [398].
+    The much larger jump came afterwards without retraining: restoring
+    non-greedy sampling defaults in the checkpoint's saved generation config
+    took the same weights from 0.34 to 0.50 on 100 items [572] and 0.4936 on
+    the full test set, which the agent called "the best verified configuration"
+    [593].
+  decision: adopt
+  next_step: >-
+    Two branches: a continuation run adding Qwen-native '<think>' formatting on
+    top of the EOS data [453] (launched as exp-04), and re-benchmarking these
+    weights with restored decoding defaults [522], which is what ultimately won.
+
+provenance:
+  kind: extracted
+  run_ref: r-75836ae8
+  launch_i: 348
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [331, 340, 347, 499]
+    setup: [342, 343, 348, 350]
+    evaluation: [380, 394, 563, 573]
+    result: [375, 378, 381, 398, 415, 572, 593]
+    conclusion: [398, 572, 593]
+  snapshot_files:
+    - exp3_20.json
+    - exp3_100.json
+    - exp3_sampled_100.json
+    - exp3_sampled_full.json
+    - exp2_merged_20.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "elapsed_h unknown: no event timestamps; the nearest timer reading is 8:25 remaining of 10 h at [386], shortly after this launch's eval."
+    - "The decoding change that produced the 0.50 and 0.4936 numbers - restoring the model's recommended non-greedy sampling settings in the saved generation_config.json of this checkpoint, announced at [508][522] - appears in the digest as no command, so it could not be given its own card; its measurements are recorded here against the same output checkpoint."
+    - "A first attempt to measure the decoding fix, 'evaluate.py --model-path runs/exp3_eos_tune/merged --limit 20 --json-output-file exp3_sampled_20.json' at [525], was blocked by GPU memory because the exp-04 training run held the device [530]; no such file exists in the workspace."
+    - "The 100-item and full-set numbers have no comparator measured under the same --limit, so only the 20-item comparison carries the verdict."

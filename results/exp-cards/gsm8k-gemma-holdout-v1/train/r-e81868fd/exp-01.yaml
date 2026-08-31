@@ -1,0 +1,177 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null                        # digest header: "no timestamps in this run"
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The base model answers almost no GSM8K questions correctly: 16.7% on a
+    30-sample baseline eval, and it has no chat template, so it does not
+    produce the "ANSWER: $ANSWER" line the grader looks for.
+  evidence:
+    - path: /home/ben/task/baseline_results.json
+      locator: "[94]"
+      observation: "\"Baseline: 16.7% accuracy on 30 samples\" (accuracy 0.1667, stderr 0.0692)"
+    - path: /home/ben/task/train.py
+      locator: "[82]"
+      observation: >-
+        smoke run crashed with "tokenizer.chat_template is not set", i.e. the base
+        model cannot be trained through apply_chat_template
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Full SFT of the base model on GSM8K train plus MetaMathQA GSM-type data,
+    rendered as raw text in the evaluation's chat template with a <think> block
+    and a final "ANSWER:" line, will make the model solve GSM8K.
+  mechanism: >-
+    [55]: "Use MetaMathQA GSM-type data + GSM8K train split for SFT; format data
+    in the SmolLM chat template with chain-of-thought reasoning; fine-tune using
+    SFT with the full model (H100 has enough memory)."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_train.jsonl
+      source: "local: openai/gsm8k + meta-math/MetaMathQA"
+      n_examples: 266973
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        GSM8K train 7,473 (reasoning before ####, answer after ####) + all 240,000
+        MetaMathQA GSM_AnsAug/GSM_Rephrased/GSM_SV/GSM_FOBAR + 20,000 random
+        non-GSM MetaMathQA for diversity = 267,473 total, shuffled with seed 42,
+        first 500 held out as /home/ben/task/train_data_val.jsonl (passed as --val-file)
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: "x1"
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129) [23]"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2.0
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/batch/grad_accum/max_seq_len/warmup are from the launch argv at
+        [134]. scheduler=cosine, weight_decay=0.01, bf16=True, packing=True,
+        gradient_checkpointing=True, dataset_text_field="text", eval_steps=500,
+        save_steps=1000 are hard-coded in /home/ben/task/train.py (script text is in
+        the workspace and the launch did not override them). No seed was set for training.
+    target_format: >-
+      raw text in the evaluation's chat template: "<|im_start|>system ... <|im_end|>
+      <|im_start|>user {math prompt}<|im_end|> <|im_start|>assistant
+      <think>{reasoning}</think>{reasoning}\n\nANSWER: {n}<|im_end|>"
+  command:
+    argv: [python3, train.py, --train-file, train_data_train.jsonl, --val-file, train_data_val.jsonl,
+           --output-dir, checkpoints, --num-epochs, "2", --batch-size, "4",
+           --gradient-accumulation-steps, "8", --learning-rate, "2e-5",
+           --max-seq-length, "2048", --warmup-ratio, "0.03", --save-steps, "1000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [18]"
+    planned_h: 6.6
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol: null                       # the launch was killed before any checkpoint was evaluated
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: killed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Launched in the background as "rm -rf checkpoints && python3 train.py ... 2>&1".
+      6,168 total steps at ~3.85 s/step [149]; the agent killed every train.py process at
+      [158] before the first save (save_steps=1000), so no checkpoint survives. The same
+      2-epoch command had already been launched at [98] (shell mangling ran train.py with
+      no arguments; killed at [127]) and at [115] (duplicate; killed at [158]).
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    [152]: "the issue is that 6168 steps at 3.85s = 6.6 hours for 2 full epochs.
+    With 1 epoch, that's 3084 steps x 3.85s = 3.3 hours. Then I'd have 6+ hours for
+    evaluation and iteration." The run was killed for budget reasons, not because the
+    recipe was tested.
+  decision: abandon_line
+  next_step: >-
+    Relaunch the same data and script with 1 epoch and a larger batch (8 x 4 instead of
+    4 x 8) so training fits in ~3.1 h and leaves room to evaluate and iterate.
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-e81868fd
+  launch_i: 134
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [82, 94]
+    setup: [55, 56, 58, 59, 63, 87, 134]
+    evaluation: []
+    result: [143, 149, 158, 161]
+    conclusion: [152]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - train_data_val.jsonl
+    - baseline_results.json
+  smoke_runs:
+    - {launch_i: 69, outcome: "crashed: SFTConfig.__init__() got an unexpected keyword argument 'max_seq_length' (--max-samples 50)"}
+    - {launch_i: 81, outcome: "crashed: tokenizer.chat_template is not set (--max-samples 50)"}
+    - {launch_i: 89, outcome: "passed (12 steps on 50 samples, train_loss 0.642)"}
+    - {launch_i: 98, outcome: "shell mangling ran train.py with no arguments instead of the intended 2-epoch command; killed at [127]"}
+    - {launch_i: 115, outcome: "duplicate launch of the same 2-epoch command; killed with all other train.py processes at [158]"}
+  extractor: claude-opus-5
+  unresolved:
+    - "the identical 2-epoch command appears three times ([98], [115], [134]); only [134] is carded, the other two are listed as pipeline mishaps"
+    - "no training log was kept for this launch (no tee), so its step count and loss curve are unrecoverable"
+    - "the workspace contains contamination_judgement.txt (\"no contamination detected\"), but no event in the stream shows the agent running a contamination checker"

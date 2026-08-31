@@ -1,0 +1,223 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The un-tuned base model scores 13.3% on the benchmark's own scorer, which
+    requires a final line of the form "ANSWER: <number>"; the agent read this as
+    "substantial headroom" [62].
+  evidence:
+    - path: /home/ben/task/baseline_metrics.json
+      locator: "[30] launch, [48] result, [62]"
+      observation: >-
+        "gsm8k (120 samples): accuracy 0.133, stderr 0.031" on Qwen/Qwen3-1.7B-Base
+        with --limit 120 --max-tokens 1500.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    QLoRA SFT on the GSM8K train split, formatted to the exact evaluator prompt and
+    ending in an "ANSWER: <n>" line, will raise benchmark accuracy above the 13.3%
+    base-model control [40], [66].
+  mechanism: >-
+    The scorer matches only the final "ANSWER:" line, so training targets shaped like
+    the evaluator's own template should teach both the arithmetic reasoning style and
+    the answer format the grader needs [29], [40].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF: openai/gsm8k (config main, split=train, loaded in-process by the training script)"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        Whole train split, shuffled with seed 42 (--train-limit not passed, so no
+        subsetting). convert_example_prompt_completion() maps each row to
+        {prompt: [{user, MATH_PROMPT_TEMPLATE.format(question)}],
+        completion: [{assistant, "<gold rationale>\n\nANSWER: <target>"}]}, splitting
+        the gold answer on "####". 256 examples are held out of train as the val split
+        (--val-size 256).
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer (version printed at [43]; the digest truncates that result)
+    peft: "QLoRA: LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj over a 4-bit NF4 base (all four from train_gsm8k_sft.py defaults, none overridden at [67])"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 compute + tf32, 4-bit NF4 double-quant base weights"
+      seed: 42
+      other: >-
+        lr, epochs, batch-size, grad-accum, max-length, val-size, eval/save/logging
+        steps come from the argv at [67]. Taken from train_gsm8k_sft.py in task/
+        because [67] did not override them: --lora-r 64, --lora-alpha 128,
+        --lora-dropout 0.05, --target-modules all, --use-4bit True (NF4, double quant,
+        bf16 compute), --warmup-ratio 0.03, --weight-decay 0.0, --seed 42,
+        --gradient-checkpointing True, --merge-dtype bfloat16, and the script constants
+        lr_scheduler_type="cosine", max_grad_norm=1.0, bf16=True, tf32=True,
+        packing=False, completion_only_loss=True, assistant_only_loss=False,
+        attn_implementation="flash_attention_2", save_total_limit=3. eval_steps=80,
+        save_steps=80, logging_steps=5 from the argv.
+    target_format: >-
+      Chat prompt/completion pairs rendered through templates/qwen3.jinja: user turn is
+      the evaluator's math prompt, assistant turn is "<think>\n\n</think>\n\n<rationale>
+      \n\nANSWER: <n>" as printed by the dry run at [64]; loss on completion tokens only.
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --output-dir
+      - runs/exp1
+      - --merged-dir
+      - runs/exp1_merged
+      - --epochs
+      - "2.0"
+      - --lr
+      - "2e-4"
+      - --batch-size
+      - "16"
+      - --grad-accum
+      - "2"
+      - --max-length
+      - "1536"
+      - --val-size
+      - "256"
+      - --eval-steps
+      - "80"
+      - --save-steps
+      - "80"
+      - --logging-steps
+      - "5"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/exp1_merged
+      - --limit
+      - "100"
+      - --json-output-file
+      - runs/exp1_eval100_mt512.json
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --max-tokens
+      - "512"
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.133
+    path: /home/ben/task/baseline_metrics.json
+  diagnostic:
+    what: >-
+      Read back the eval log of the killed 60-sample run and printed, per sample, the
+      output length and whether it contains "ANSWER:" [139].
+    command: []
+    path: /home/ben/task/logs/2026-02-24T02-55-24+01-00_gsm8k_X3hCJuwYiZiu3GKNN7uT2J.json
+
+result:
+  execution: completed
+  wall_h: 0.13
+  duration_h: 0.13
+  steps: null
+  output_checkpoint: /home/ben/task/runs/exp1_merged
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "The first full run completed successfully in about 7.7 minutes with final eval
+      loss 0.522" [90]; train loss fell ~1.07 -> ~0.54 early [75] and eval_loss was
+      ~0.523 at step 320 [84]. The final train_loss was never printed.
+  measurements:
+    - metric: accuracy
+      value: 0.02
+      n: 100
+      path: /home/ben/task/runs/exp1_eval100_mt512.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-02-24T02-55-24+01-00_gsm8k_X3hCJuwYiZiu3GKNN7uT2J.json
+    notes: >-
+      Samples run to the token cap and contain multiple unrelated GSM8K-style QA
+      fragments plus non-English junk tokens; "len 1538 has ANSWER True" for the one
+      sample printed in full [140].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    Training converged (eval loss 0.522) but the merged model generates long
+    off-distribution continuations - "the first run clearly overfit/collapsed despite
+    low training loss" [148]. The only completed score, 2% at --limit 100 with
+    --max-tokens 512, is an artifact of truncation [129] and is not under the
+    comparator's protocol, so it settles nothing.
+  decision: reject
+  next_step: >-
+    "A more conservative second run (lower LR + fewer epochs + safer loss setup) to
+    preserve base behavior while adding GSM8K skill" [148], [155] - card exp-02.
+
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-1441f3c6
+  launch_i: 67
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [48, 62]
+    setup: [40, 58, 66, 67]
+    evaluation: [93, 122, 129, 130]
+    result: [75, 84, 90, 139, 140]
+    conclusion: [129, 148, 155]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - baseline_metrics.json
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 63, outcome: "passed (--dry-run, 20 train / 4 val examples: printed the formatted prompt, completion and rendered chat template)"}
+  extractor: claude-opus-5
+  unresolved:
+    - "Two evals of runs/exp1_merged were killed before scoring: [93] (--limit 120 --max-tokens 1500) and [130] (--limit 60 --max-tokens 2000), so this checkpoint was never measured under the baseline's protocol; only the truncated --max-tokens 512 run finished."
+    - "No contamination check appears in the stream; task/contamination_judgement.txt records 'no contamination detected' and task/disallowed_model_judgement.txt 'only allowed use detected', but the digest does not show the agent running either, so contamination_check is recorded as not_run."
+    - "The digest carries no per-event timestamps, so elapsed_h is null on every card; the only wall-clock anchors are bash timer.sh readings of 9:59 remaining at [5], 9:33 at [150] and 9:00 at [292] against a 10 h budget."

@@ -1,0 +1,189 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 2.45
+
+problem:
+  statement: >-
+    Training the model to emit <|im_end|> does not make the serving stack stop:
+    the OpenAI-compatible server takes the tokenizer's eos (<|endoftext|>,
+    151643) as its stop token, so a model trained to end on <|im_end|> runs on
+    and the last-number scorer reads a corrupted answer.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-6c4c222b.md
+      locator: "[499], [504]"
+      observation: >-
+        read the serving library's try_get_generation_config and
+        get_eos_token_id to find which eos actually reaches the stop tokens
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-6c4c222b/metrics_fs_smoke.json
+      locator: "[460], [465]"
+      observation: "few-shot-trained 5K smoke model at --limit 40 scored 0.075; still rambling"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Few-shot-context SFT whose responses are terminated with <|endoftext|>
+    (151643) rather than <|im_end|> will stop cleanly under the real eval, since
+    the server's stop token is always the tokenizer's eos.
+  mechanism: >-
+    Stated in full just after the launch [561]: "the vllm provider runs the
+    OpenAI server, whose get_eos_token_id() returns the tokenizer's eos (151643)
+    and that's always added to stop tokens ... The model emits the stop token it
+    was trained on - so train on 151643."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: >-
+    the model still fails to emit a stop token under the exact 10-shot eval
+    prompt (checked with a transformers generate probe before the eval).
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/train_fs.jsonl
+      source: "derived: meta-math/MetaMathQA (GSM subsets) targets + openai/gsm8k train demos"
+      n_examples: 60000
+      built_by: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-6c4c222b/prepare_data_fewshot.py
+      build_command: [python, prepare_data_fewshot.py, --max_targets, "60000", --out, data/train_fs.jsonl]
+      selection: >-
+        K in [3,10] random GSM8K-train demos in the system message in the eval's
+        exact few-shot format; MetaMathQA GSM-subset targets cut at the first
+        answer marker and closed with "ANSWER: <n>"; seed 1234. This launch used
+        15000 of the 60000 rows (--max_samples).
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer (full fine-tune, flash_attention_2)"
+    peft: none
+    hyperparams:
+      lr: 1.5e-05
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2048
+      scheduler: cosine_with_min_lr
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        --max_samples 15000, --grad_ckpt 1, --save_steps 0 (final save only),
+        --stop_token "<|endoftext|>" (sets config.json eos_token_id=151643 and
+        appends 151643 after each response). Not overridden and therefore taken
+        from the script text in the snapshot: min_lr_rate=0.1,
+        warmup_ratio=0.03, weight_decay=0.0, seed=42, optim=adamw_torch_fused,
+        max_grad_norm=1.0, group_by_length=True.
+    target_format: >-
+      pre-built few-shot prompt ending in <|im_start|>assistant\n, response
+      "{CoT}\nANSWER: X" + <|endoftext|>
+  command:
+    argv: [nohup, python, -u, train_sft.py, --data, data/train_fs.jsonl, --model,
+           Qwen/Qwen3-1.7B-Base, --output_dir, sft_val_eot, --epochs, "2",
+           --max_samples, "15000", --lr, "1.5e-5", --per_device_batch, "16",
+           --grad_accum, "2", --max_len, "2048", --grad_ckpt, "1", --save_steps, "0",
+           --stop_token, "<|endoftext|>"]
+    cwd: /home/ben/task
+    script: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-6c4c222b/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONUNBUFFERED: "1"}
+    log: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-6c4c222b/train_val_eot.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_val_eot, --limit, "200",
+              --max-connections, "16", --gpu-memory-utilization, "0.5",
+              --json-output-file, metrics_val_eot.json]
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.22
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-6c4c222b/metrics_sft_ep3.json
+  diagnostic:
+    what: >-
+      under the exact 10-shot eval prompt built with transformers generate, does
+      the checkpoint emit a stop token and end after one answer
+    command: [python, "-", "<<EOF (inline script at [541])"]
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/sft_val_eot
+  training_summary:
+    final_loss: null
+    steps: 770
+    notes: >-
+      Loss reported as ~0.13 during the run [521]; the progress line at [529]
+      shows 723/770 at 26 minutes, so the run took roughly half an hour. No
+      final_loss line is in the digest.
+  measurements:
+    - metric: accuracy
+      value: 0.695
+      n: 200
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-6c4c222b/metrics_val_eot.json
+      delta_vs_comparator: 0.475
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "the model now produces correct CoT, emits <|endoftext|>, and stops (109
+      tokens, clean 'ANSWER: 18') under the 10-fewshot prompt" [546].
+      Completions in the eval averaged 376 chars with 92% under 600 [552].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "Massive improvement: 69.5% accuracy (from 17% baseline / 22% broken SFT)"
+    [552], measured at the same --limit 200 as the comparator, with completions
+    now short and ending cleanly. The mechanism probe confirmed the model emits
+    <|endoftext|> and stops under the 10-shot prompt.
+  decision: adopt
+  next_step: >-
+    "This was only 15K x 2 epochs. Let me scale up to a stronger SFT run" [552];
+    this checkpoint was first copied to final_model as a fallback.
+
+# joined by the pipeline, never written by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-6c4c222b
+  launch_i: 510
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [460, 465, 499, 504]
+    setup: [480, 482, 510]
+    evaluation: [541, 547]
+    result: [529, 546, 547, 552]
+    conclusion: [552, 553]
+  snapshot_files:
+    - prepare_data_fewshot.py
+    - train_sft.py
+    - train_val_eot.log
+    - evaluate.py
+    - metrics_val_eot.json
+    - eval_val_eot.log
+    - metrics_sft_ep3.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the hypothesis is written out in full only just after the launch ([515], [561]); before it the digest carries the intent as the launch description and the --stop_token flag added at [480]"
+    - "this checkpoint was final_model only until [623], when it was replaced by exp-06's output"

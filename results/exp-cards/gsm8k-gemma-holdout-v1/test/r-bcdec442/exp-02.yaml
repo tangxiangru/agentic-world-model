@@ -1,0 +1,246 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.24
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The same LoRA SFT recipe had just been launched with --save-total-limit at its
+    default of 2, which would discard the early checkpoints and force the agent to
+    trust whatever the last epoch produced: "it preserves early checkpoints for
+    selection instead of forcing us to trust the final epoch" [86]. The underlying
+    benchmark problem is unchanged from exp-01 - the base model scores 0.000 and
+    does not follow the answer contract [52].
+  evidence:
+    - path: "digests/r-bcdec442.md"
+      locator: "[86], [94]"
+      observation: >-
+        agent stops the first long run specifically to restart it with all
+        intermediate checkpoints retained for selection
+    - path: "{dir}/runs_baseline_limit10.json"
+      locator: "[34], [35]"
+      observation: "base model accuracy 0.000 at --limit 10"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    The same r=128 LoRA SFT recipe run for 2 epochs with every intermediate
+    checkpoint retained will produce a candidate well above the 0.0 baseline and,
+    unlike exp-01, will let the best point on the curve be chosen after the fact
+    rather than assumed to be the last step [86][94].
+  mechanism: >-
+    Same as exp-01 - matching the evaluator's fixed 10-shot format and masking the
+    prompt teaches the answer contract; keeping checkpoints at steps 250/500/750
+    turns epoch choice into a measurement instead of a guess [96].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k
+      n_examples: 7473
+      built_by: "{dir}/train_gsm_sft.py"
+      build_command: []
+      selection: >-
+        main config, train split, loaded in-process by train_gsm_sft.py - no file
+        on disk. One record per train example: system = a fixed 10-shot prompt
+        built from the same split (--fewshot 10, --fewshot-seed 42), user = the
+        evaluator's math prompt template, target = the reference reasoning with
+        the "#### n" line split off, ending "ANSWER: n<end_of_turn>". Prompt
+        tokens masked to -100; over-length records dropped.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129, peft 0.18.1) [21]"
+    peft: >-
+      LoRA r=128 alpha=256 dropout=0.03, bias=none, task_type=CAUSAL_LM, targets
+      by regex .*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$
+      (regex hardcoded in train_gsm_sft.py); adapter merged into full bf16 weights
+      by the script at the end of training
+    hyperparams:
+      lr: 1.5e-04
+      epochs: 2
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.04
+      weight_decay: 0.0
+      precision: bf16
+      seed: 1234
+      other: >-
+        From train_gsm_sft.py argparse defaults (script text in the snapshot, not
+        overridden at launch): --max-length 3072, --weight-decay 0.0,
+        --max-grad-norm 1.0, --seed 1234, --optim paged_adamw_8bit, --fewshot 10,
+        --fewshot-seed 42, gradient checkpointing on, --template-path
+        templates/gemma3.jinja. Hardcoded in the script: lr_scheduler_type=cosine,
+        bf16=True, tf32=True, group_by_length=True. From the argv: --lr, --epochs,
+        --batch-size, --grad-accum, --warmup-ratio, --lora r/alpha/dropout,
+        --save-steps 250, --save-total-limit 10, --logging-steps 10.
+    target_format: >-
+      the evaluator's gemma3 chat template; assistant turn = GSM8K reference
+      reasoning followed by "ANSWER: <n>" and <end_of_turn>
+  command:
+    argv:
+      - python
+      - train_gsm_sft.py
+      - --output-dir
+      - runs/lora_r128_e2_fixed
+      - --epochs
+      - "2"
+      - --batch-size
+      - "2"
+      - --grad-accum
+      - "8"
+      - --lora
+      - --lora-r
+      - "128"
+      - --lora-alpha
+      - "256"
+      - --lora-dropout
+      - "0.03"
+      - --lr
+      - "1.5e-4"
+      - --warmup-ratio
+      - "0.04"
+      - --save-steps
+      - "250"
+      - --save-total-limit
+      - "10"
+      - --logging-steps
+      - "10"
+    cwd: "{dir}"
+    script: "{dir}/train_gsm_sft.py"
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB [8]"
+    planned_h: 2.0
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/lora_r128_e2_fixed
+      - --limit
+      - "150"
+      - --json-output-file
+      - eval_lora_r128_e2_limit150.json
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.55"
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0
+    path: "{dir}/runs_baseline_limit10.json"
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result (after) ------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.99
+  output_checkpoint: "{dir}/runs/lora_r128_e2_fixed"
+  training_summary:
+    final_loss: 0.3228208248813947
+    steps: 936
+    notes: >-
+      train_runtime 7149.03 s, 2.091 samples/s, epoch 2.0; the LoRA adapter was
+      merged into full weights and saved to the output dir [121]. Checkpoints 250,
+      500, 750 and 936 all retained [125]. The first evaluation attempt at [133]
+      died with "Failed to start vLLM server" because the merged Gemma3 directory
+      lacked the image-processor metadata vLLM expects; the agent patched the
+      saving path in train_gsm_sft.py / merge_lora_checkpoint.py and the same eval
+      command then ran clean at [142] - the weights themselves were not retrained.
+  measurements:
+    - metric: accuracy
+      value: 0.52
+      n: 50
+      path: "{dir}/eval_lora_r128_e2_limit50.json"
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.5
+      n: 150
+      path: "{dir}/eval_lora_r128_e2_limit150.json"
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.6133333333333333
+      n: 150
+      path: "{dir}/eval_lora_r128_e2_greedy_limit150.json"
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) --------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "The 2-epoch final checkpoint scores 52% on the first 50 GSM8K samples, a large
+    lift from 0%" [145], and 50.0% at --limit 150 [159]; the agent read this as
+    format-following solved with arithmetic/reasoning headroom left. Verdict is
+    inconclusive only because the base-model comparator exists at --limit 10 and
+    never at --limit 50 or 150, so no same-protocol comparison was ever run. This
+    output survived every later candidate and is the weights in the submitted
+    final_model.
+  decision: adopt
+  next_step: >-
+    Evaluate the retained intermediate checkpoints (exp-03, exp-04) and then test
+    whether full text-weight tuning beats LoRA (exp-05) [155][159].
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-bcdec442
+  launch_i: 95
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [52, 86, 94]
+    setup: [94, 95, 96]
+    evaluation: [142, 156, 340]
+    result: [121, 123, 125, 133, 135, 143, 157, 341]
+    conclusion: [145, 159, 343]
+  snapshot_files:
+    - train_gsm_sft.py
+    - evaluate.py
+    - eval_lora_r128_e2_limit50.json
+    - eval_lora_r128_e2_limit150.json
+    - eval_lora_r128_e2_greedy_limit150.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The 0.613 at [341] was measured after an explicit greedy generation_config (do_sample=false, temperature 0.0, top_p 1.0) was written into runs/lora_r128_e2_fixed between [338] and [340]; that edit is not a command in the digest, only its effect is visible in the generation_config.json printed at [345]. The 0.52 and 0.50 rows above predate it and used --max-tokens 1024, the 0.613 row used the evaluator default of 4000."
+    - "The fix that made the merged directory loadable by vLLM (adding the base processor files) was applied to the scripts between [135] and [142]; the edit itself is not in the digest."

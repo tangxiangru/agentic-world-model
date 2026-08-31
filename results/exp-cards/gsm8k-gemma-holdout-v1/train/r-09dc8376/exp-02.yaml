@@ -1,0 +1,209 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 3.74
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    After two SFT epochs the output contract is solved but the reasoning is not:
+    at limit 150 the model scores 0.767 and, in the agent's words at [39470],
+    'format failures are zero; all 35 misses are pure reasoning slips.'
+  evidence:
+    - path: /home/ben/task/eval_final.log
+      locator: "[39102], [39470]; accuracy 0.767 at limit 150"
+      observation: "35 of 150 wrong, all reasoning errors, no format failures"
+    - path: /home/ben/task/rft_gen.log
+      locator: "[39471]"
+      observation: >-
+        sampling K=8 at T=0.9 from runs/main/final solved 7306/7473 GSM8K-train
+        questions (97.8% pass@8) -- the model can reach the right answer far more
+        often than greedy decoding does
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Agent at [39470]: 'all 35 misses are pure reasoning slips. This is exactly
+    what on-policy RFT helps with' -- continuing training on the model's own
+    rejection-sampled, answer-verified solutions (plus a replay slice of stage-1
+    data) will raise limit-150 accuracy over exp-01.
+  mechanism: >-
+    Rejection sampling keeps only self-generated traces whose final ANSWER equals
+    the GSM8K-train gold, so training reinforces reasoning paths the model can
+    already reach under its own distribution instead of imitating a teacher's
+    style; the 20K stage-1 replay guards against drift.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/main/final
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/sft_data/packs_stage2.jsonl
+      source: derived:exp-01
+      n_examples: null
+      built_by: /home/ben/task/tokenize_packs.py
+      build_command: [PACK_IN=sft_data/pairs_stage2.jsonl, PACK_OUT=sft_data/packs_stage2.jsonl, SINGLE_ANCHOR_N=2500, python, tokenize_packs.py]
+      selection: "same packing as exp-01 but with SINGLE_ANCHOR_N=2500 single-turn eval-format anchor packs"
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+    - path: /home/ben/task/sft_data/pairs_stage2.jsonl
+      source: synthetic:self
+      n_examples: null
+      built_by: /home/ben/task/build_pairs_stage2.py
+      build_command: [python, build_pairs_stage2.py]
+      selection: >-
+        RFT_N=40000 cap over sft_data/rft_pairs.jsonl (27,934 kept solutions,
+        rft_gen.log) plus REPLAY_N=20000 rows sampled from the stage-1
+        sft_data/pairs.jsonl, exact (question, solution) dedupe, shuffled
+        (seed 41); caps read from build_pairs_stage2.py in the snapshot
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+    - path: /home/ben/task/sft_data/rft_pairs.jsonl
+      source: synthetic:self
+      n_examples: 27934
+      built_by: /home/ben/task/gen_rft.py
+      build_command: [python, gen_rft.py, --ckpt, runs/main/final, --k, "8", --temp, "0.9", --max-per-q, "4", --out, sft_data/rft_pairs.jsonl]
+      selection: >-
+        8 samples per GSM8K-train question at temperature 0.9, top_p 0.95,
+        max_tokens 512, stop at <|im_end|>/<|end_of_text|>, prompted with the
+        exact eval rendering; keep samples whose trailing 'ANSWER: N' matches
+        gold, <=1800 chars, deduped, at most 4 per question. 'kept 27934
+        solutions; solved 7306/7473 questions (97.8%)'
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: rft
+    framework: "transformers Trainer (custom ChunkedCETrainer subclass)"
+    peft: none
+    hyperparams:
+      lr: 7.0e-06
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 31
+      other: >-
+        lr/epochs/bs/accum/data/out/resume-from passed on the command line.
+        scheduler, warmup_ratio 0.03, weight_decay 0.0, seed 31,
+        optim=adamw_torch_fused, max_grad_norm 1.0, save_strategy=epoch are
+        hard-coded in TrainingArguments in /home/ben/task/train_sft.py (in the
+        snapshot; not overridden by this launch). max_seq_len from STATIC_PAD=4096.
+    target_format: >-
+      same as exp-01: eval-identical chat rendering, short CoT ending in
+      'ANSWER: N' + <|im_end|>, loss on the assistant span only
+  command:
+    argv: [python, train_sft.py, --data, sft_data/packs_stage2.jsonl, --epochs, "1", --lr, "7e-6", --bs, "8", --accum, "2", --out, runs/stage2, --resume-from, runs/main/final]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env:
+      GRAD_CKPT: "1"
+      COMPILE: "1"
+      STATIC_PAD: "4096"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    log: /home/ben/task/stage2_train.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol: null
+  comparator:
+    ref: exp-01
+    value: 0.7666666666666667
+    path: /home/ben/task/eval_final.log
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: failed
+  wall_h: 0.51
+  duration_h: 0.51
+  steps: 305
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 305
+    notes: >-
+      all 305 optimisation steps ran (30:48 at 6.06 s/step) but the end-of-run
+      save raised before any weights were written; runs/stage2/checkpoint-305
+      held only config.json and runs/stage2/final was empty ([41779]).
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    File "transformers/modeling_utils.py", line 3930, in save_pretrained
+      model_to_save.generation_config.save_pretrained(save_directory)
+    File "transformers/generation/configuration_utils.py", line 725, in save_pretrained
+      raise ValueError(str(exc) + "\n\nFix these issues to save the configuration.")
+    ValueError: GenerationConfig is invalid:
+    - `temperature`: `do_sample` is set to `False`. However, `temperature` is set
+      to `0.0` -- this flag is only used in sample-based generation modes.
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Training itself completed but the greedy generation_config that prepare_ckpt.py
+    had written into the parent checkpoint dir failed transformers' save-time
+    validation, so the save crashed before writing weights: 'Stage-2 weights were
+    lost' ([42604]). No checkpoint, no measurement.
+  decision: iterate
+  next_step: >-
+    'always reset a clean generation_config in the trainer after loading; the
+    greedy eval config is written post-hoc by prepare_ckpt anyway' ([42604]) --
+    relaunched unchanged otherwise as exp-03.
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-09dc8376
+  launch_i: 40548
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [39102, 39470, 39471]
+    setup: [21353, 39471, 40234, 40438, 40548]
+    evaluation: [39102]
+    result: [41777, 41778, 41779]
+    conclusion: [42604]
+  snapshot_files:
+    - gen_rft.py
+    - rft_gen.log
+    - build_pairs_stage2.py
+    - tokenize_packs.py
+    - train_sft.py
+    - stage2_train.log
+    - eval_final.log
+  smoke_runs: []
+  extractor: opus-5-1m          # the extracting model, not the run's agent
+  unresolved:
+    - "stage2_train.log in the snapshot is the relaunch's log (exp-03); this launch's log was overwritten by `rm -rf runs/stage2` + relaunch at [42608]. Its step count and runtime are read from the digest at [41779]"
+    - "the row counts printed by build_pairs_stage2.py and by the stage-2 packing run are not in the stream; n_examples for pairs_stage2.jsonl / packs_stage2.jsonl is unknown"
+
+# ---- outcome (joined by the pipeline; the extractor never writes it) --------
+outcome:
+  official_accuracy: null

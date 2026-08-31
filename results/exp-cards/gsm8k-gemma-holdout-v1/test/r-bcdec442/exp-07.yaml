@@ -1,0 +1,244 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 4.21
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    "The full-tune checkpoints do not beat LoRA (full step 500 48%, full final 46%,
+    LoRA final 52% on the same slice). Since the LoRA curve was still improving at
+    epoch 2..." [200] - every alternative to the r=128 LoRA recipe has now lost,
+    and the only unexplored direction on the winning curve is more epochs.
+  evidence:
+    - path: "{dir}/eval_full_step500_limit50.json"
+      locator: "[197], [198]"
+      observation: "full-SFT step 500: accuracy 0.480 at --limit 50"
+    - path: "{dir}/eval_full_e2_limit50.json"
+      locator: "[184], [185]"
+      observation: "full-SFT final: accuracy 0.460 at --limit 50"
+    - path: "{dir}/eval_lora_r128_step750_limit50.json"
+      locator: "[153], [154]"
+      observation: >-
+        the 2-epoch LoRA curve rises monotonically over the slice - step 500 0.380,
+        step 750 0.400, final (step 936) 0.520 - i.e. still improving at epoch 2
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    A 3-epoch LoRA schedule from the original base, same data and prompt format,
+    will score above the 2-epoch LoRA candidate, because the 2-epoch curve was
+    still improving at its end [200][202].
+  mechanism: >-
+    The step-500/750/936 sequence on the 2-epoch run improves monotonically, so the
+    adapter had not saturated; a longer cosine schedule should keep gaining, and
+    retained checkpoints let the true optimum be located after the fact.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k
+      n_examples: 7473
+      built_by: "{dir}/train_gsm_sft.py"
+      build_command: []
+      selection: >-
+        "same data and prompt format" as exp-02 [202]: main config, train split,
+        loaded in-process; system = the fixed 10-shot prompt from the same split
+        (--fewshot 10, --fewshot-seed 42), user = the evaluator's math prompt,
+        target = the reference reasoning ending "ANSWER: n<end_of_turn>"; prompt
+        tokens masked to -100.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129, peft 0.18.1) [21]"
+    peft: >-
+      LoRA r=128 alpha=256 dropout=0.03, bias=none, task_type=CAUSAL_LM, targets
+      by regex .*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$
+      (regex hardcoded in train_gsm_sft.py); merged into full bf16 weights at the end
+    hyperparams:
+      lr: 1.5e-04
+      epochs: 3
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.04
+      weight_decay: 0.0
+      precision: bf16
+      seed: 1234
+      other: >-
+        From train_gsm_sft.py argparse defaults (script text in the snapshot, not
+        overridden at launch): --max-length 3072, --weight-decay 0.0,
+        --max-grad-norm 1.0, --seed 1234, --optim paged_adamw_8bit, --fewshot 10,
+        --fewshot-seed 42, gradient checkpointing on, --template-path
+        templates/gemma3.jinja. Hardcoded: lr_scheduler_type=cosine, bf16=True,
+        tf32=True, group_by_length=True. From the argv: --lr, --epochs 3,
+        --batch-size, --grad-accum, --warmup-ratio, --lora r/alpha/dropout,
+        --save-steps 250, --save-total-limit 10, --logging-steps 20. Identical to
+        exp-02 except --epochs (3 vs 2) and --logging-steps (20 vs 10).
+    target_format: >-
+      the evaluator's gemma3 chat template; assistant turn = GSM8K reference
+      reasoning followed by "ANSWER: <n>" and <end_of_turn>
+  command:
+    argv:
+      - python
+      - train_gsm_sft.py
+      - --output-dir
+      - runs/lora_r128_e3_fixed_keep
+      - --epochs
+      - "3"
+      - --batch-size
+      - "2"
+      - --grad-accum
+      - "8"
+      - --lora
+      - --lora-r
+      - "128"
+      - --lora-alpha
+      - "256"
+      - --lora-dropout
+      - "0.03"
+      - --lr
+      - "1.5e-4"
+      - --warmup-ratio
+      - "0.04"
+      - --save-steps
+      - "250"
+      - --save-total-limit
+      - "10"
+      - --logging-steps
+      - "20"
+    cwd: "{dir}"
+    script: "{dir}/train_gsm_sft.py"
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB [8]"
+    planned_h: 3.0
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/lora_r128_e3_fixed_keep
+      - --limit
+      - "150"
+      - --json-output-file
+      - eval_lora_r128_e3_limit150.json
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.55"
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.5
+    path: "{dir}/eval_lora_r128_e2_limit150.json"
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result (after) ------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.98
+  output_checkpoint: "{dir}/runs/lora_r128_e3_fixed_keep"
+  training_summary:
+    final_loss: 0.2591494603289498
+    steps: 1404
+    notes: >-
+      train_runtime 10735.38 s, 2.088 samples/s, epoch 3.0; adapter merged and
+      saved to the output dir [228]. Checkpoints 250, 500, 750, 1000, 1250 and 1404
+      all retained [240]. Train loss ends far lower than the 2-epoch run
+      (0.259 vs 0.323 average; late steps around 0.07-0.13).
+  measurements:
+    - metric: accuracy
+      value: 0.5
+      n: 50
+      path: "{dir}/eval_lora_r128_e3_limit50.json"
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.48
+      n: 150
+      path: "{dir}/eval_lora_r128_e3_limit150.json"
+      delta_vs_comparator: -0.02
+    - metric: accuracy
+      value: 0.5466666666666666
+      n: 150
+      path: "{dir}/eval_lora_r128_e3_limit150_maxtok4000.json"
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) --------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Under the protocol the agent had been screening with, the third epoch did not
+    help: 0.500 vs 0.520 at --limit 50 [238] and "the 3-epoch final scored 0.480 on
+    limit 150, below the 2-epoch LoRA's 0.500" [254]. It briefly looked better once
+    the agent switched to the evaluator's default --max-tokens 4000 (0.547 vs the
+    staged model's 0.460, [306]), which is why it was staged into final_model at
+    [307], but the like-for-like greedy comparison at [340]/[341] put the 2-epoch
+    model at 0.613 against this model's 0.533, and it was dropped [343].
+  decision: reject
+  next_step: >-
+    Check the late third-epoch checkpoints in case the optimum is just after epoch
+    2 [238] - done as exp-08.
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-bcdec442
+  launch_i: 201
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [154, 185, 198, 200]
+    setup: [201, 202]
+    evaluation: [235, 251, 303]
+    result: [228, 236, 240, 252, 304]
+    conclusion: [238, 254, 306, 343]
+  snapshot_files:
+    - train_gsm_sft.py
+    - evaluate.py
+    - eval_lora_r128_e3_limit50.json
+    - eval_lora_r128_e3_limit150.json
+    - eval_lora_r128_e3_limit150_maxtok4000.json
+    - eval_lora_r128_e2_limit150.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The three measurements are not one protocol: 0.500 is --limit 50 with --max-tokens 1024, 0.480 is --limit 150 with --max-tokens 1024, 0.547 is --limit 150 at the evaluator's default --max-tokens 4000. Only the middle row shares a protocol with the comparator, so delta_vs_comparator is null on the other two."
+    - "This output was copied into final_model at [307] and overwritten at [344]; whether any part of it reached the submission is settled only by the final copy, which used exp-02's weights."
+    - "checkpoints 250, 500, 750 and 1250 were retained but never merged or evaluated."

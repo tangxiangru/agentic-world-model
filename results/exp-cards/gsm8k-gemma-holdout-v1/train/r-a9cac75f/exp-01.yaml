@@ -1,0 +1,155 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The base model answers only 12% of GSM8K correctly under the task's own
+    evaluator, and it does not produce answers in the shape the evaluator's
+    chat template expects.
+  evidence:
+    - path: /home/ben/task/baseline_results.json
+      locator: "[32] launch, agent's reading at [48]"
+      observation: "baseline Qwen3-1.7B-Base scores accuracy 0.120 (stderr 0.046) at --limit 50"
+    - path: /home/ben/task/evaluate.py
+      locator: "[37]"
+      observation: >-
+        agent: "the evaluate.py uses a Qwen3 chat template which includes
+        `<think>` blocks. I need to train the model to follow this format."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full supervised fine-tuning of the base model on GSM8K train plus
+    MetaMathQA's GSM subset plus Orca-Math, formatted as Qwen3 chat turns with
+    the reasoning inside a <think> block, will make the model follow the
+    evaluator's format and raise GSM8K accuracy above the 12% base.
+  mechanism: >-
+    The base model is not instruction-following; training on ~447K formatted
+    chain-of-thought examples in the chat template the evaluator uses should
+    teach both the reasoning and the surface form.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data/train.jsonl
+      source: "local (built from HF openai/gsm8k, meta-math/MetaMathQA, microsoft/orca-math-word-problems-200k)"
+      n_examples: 446933
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        GSM8K train 7473 (calculator annotations <<..>> stripped) + MetaMathQA
+        rows whose `type` contains "GSM" 240000 + Orca-Math 199460 (final number
+        regex-extracted); each rendered as system/user/assistant chat turns with
+        the assistant turn "<think>{reasoning}</think>\n\nThe answer is {X}."
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (full fine-tune)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        Values are the module-level constants of the script as written at [52];
+        the launch passed no arguments and so overrode nothing. Also set:
+        gradient_checkpointing=True, tf32=True, optim=adamw_torch_fused,
+        max_grad_norm=1.0, attn_implementation=flash_attention_2,
+        save_steps=2000, dynamic padding, loss masked to the assistant span.
+        Note the workspace copy of train.py is a later rewrite, not this text.
+    target_format: >-
+      Qwen3 chat markup; assistant turn = reasoning inside <think></think> then
+      "The answer is {X}." The evaluator instead asks for a final line
+      "ANSWER: $ANSWER".
+  command:
+    argv: [python3, train.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator:
+    ref: base_model
+    value: 0.12
+    path: /home/ben/task/baseline_results.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: null
+  training_summary: {final_loss: null, steps: null, notes: "no loss or step count for this launch appears in the stream; it was killed before any checkpoint was written"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Killed at [80] (`pkill -f "python3 train.py"`) roughly an hour into the run
+    without producing a checkpoint; the agent immediately rewrote the script
+    "Optimized for speed on H100 80GB" [88] with a shorter sequence length, a
+    larger batch and one epoch instead of two.
+  decision: abandon_line
+  next_step: >-
+    Relaunch the same data and objective at a configuration that fits the 10 h
+    budget (max_seq_len 768, per-device batch 16, grad_accum 4, 1 epoch).
+
+outcome:
+  official_accuracy: null   # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-a9cac75f
+  launch_i: 54
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [32, 37, 48]
+    setup: [41, 43, 52, 54]
+    evaluation: [32]
+    result: [66, 80, 82]
+    conclusion: [88]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - baseline_results.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the stream does not say why the run was killed; the rewrite at [88] is the only clue"
+    - "task/train.py is the version as of the [176] edit, not the text this launch ran; that text is only in the digest at [52]"
+    - "no contamination check was run by the agent; the workspace file contamination_judgement.txt reads 'contamination detected', but the stream contains no check"

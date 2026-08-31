@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Qwen/Qwen3-4B-Base is not a math instruction follower: on a 30-sample slice
+    of the official GSM8K eval it reaches only ~53.3%, so there is meaningful
+    headroom, and it has never been trained to emit the exact
+    "Reasoning ... ANSWER: <n>" format the grader matches on.
+  evidence:
+    - path: /home/ben/task/baseline30.json
+      locator: "[34], [84]"
+      observation: "base model scores 0.5333 (stderr 0.0926) on evaluate.py --limit 30"
+    - path: /home/ben/task/smoke_eval_base.json
+      locator: "[135], [138]"
+      observation: "base model scores 0.625 on the 8-example held-out dev probe (10-shot)"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised fine-tuning on GSM8K train only, formatted in the exact chat
+    template and "Reasoning ... ANSWER:" target used by the grader, will raise
+    held-out GSM8K accuracy well above the base model.
+  mechanism: >-
+    "answer formatting is critical" [30]; training the base model on the eval's
+    own prompt/answer shape turns it into a math instruction follower instead of
+    leaving the format to few-shot imitation.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--Qwen--Qwen3-4B-Base/snapshots/906bfd4b4dc7f14ee4320094d8b41684abff8539
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF id: openai/gsm8k (main, train)"
+      n_examples: 7217
+      built_by: /home/ben/task/scripts/train_sft.py
+      build_command: []
+      selection: >-
+        GSM8K train (7,473 rows, [31]) minus a 256-example held-out split
+        (--holdout-size 256); the "####" line is split off as the target and the
+        rest becomes the reasoning; loaded inside the training script, no
+        separate data file.
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer (scripts/train_sft.py, [137])"
+    peft: null
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        --holdout-size 256, --save-steps 400, --logging-steps 20. scripts/train_sft.py
+        is NOT in the workspace snapshot, so no argparse defaults were filled;
+        every value above is from the launch line at [143].
+    target_format: >-
+      Qwen3 chat template (templates/qwen3.jinja) with the inspect-evals GSM8K
+      MATH_PROMPT_TEMPLATE as the user turn and the GSM8K reasoning plus
+      "\n\nANSWER: <target>" as the assistant turn; prompt tokens masked out of
+      the loss [129].
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - python scripts/train_sft.py --output-dir runs/gsm8k_ft_e1 --holdout-size 256 --epochs 3 --learning-rate 1e-5 --train-batch-size 4 --gradient-accumulation-steps 4 --save-steps 400 --logging-steps 20
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - /bin/bash
+      - -lc
+      - python scripts/eval_dev.py --model-path runs/gsm8k_ft_e1/checkpoint-400 --limit 64 --batch-size 8 --output-json runs/gsm8k_ft_e1/checkpoint400_dev64.json
+    dev_set: "256-example held-out slice of GSM8K train, built inside scripts/eval_dev.py (seeded shuffle, 10-shot); no standalone file"
+    n: 64
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.625
+    path: /home/ben/task/smoke_eval_base.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/gsm8k_ft_e1/checkpoint-800
+  training_summary:
+    final_loss: null
+    steps: 800
+    notes: >-
+      Deliberately stopped at [240] once checkpoint-800 was saved, trading the
+      tail of the 3-epoch schedule for evaluation time [239]. Last logged loss
+      0.232 at step 400 ([205]). The first dev-64 scoring of checkpoint-400
+      returned 0.0469 at [253]; that was an evaluator bug (decoding with
+      skip_special_tokens=True ran past <|im_end|> into a synthetic next user
+      turn), fixed at [257] and rescored at [261].
+  measurements:
+    - metric: accuracy
+      value: 0.8125
+      n: 64
+      path: /home/ben/task/runs/gsm8k_ft_e1/checkpoint400_dev64.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.828125
+      n: 64
+      path: /home/ben/task/runs/gsm8k_ft_e1/checkpoint800_dev64.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    checkpoint-400 scored 81.25% and checkpoint-800 82.8% on the 64-example
+    held-out slice, a large jump over the base model, so the agent promoted
+    checkpoint-800 as "the GSM8K-only leader" [267], [269]. Verdict is
+    inconclusive because the base-model comparator was never measured under this
+    same protocol (limit 8 dev / limit 30 official, not limit 64).
+  decision: reject
+  next_step: >-
+    Anchor the choice against a short TemplateGSM -> GSM8K curriculum challenger
+    [277], then retrain the winning recipe on the full train split.
+
+outcome:
+  official_accuracy: null   # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-f238cc6e
+  launch_i: 143
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [30, 34, 63, 84]
+    setup: [129, 142, 143, 150]
+    evaluation: [244, 245, 261, 263]
+    result: [205, 239, 240, 253, 257, 262, 265]
+    conclusion: [264, 267, 269, 277]
+  snapshot_files:
+    - baseline30.json
+    - smoke_eval_base.json
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 135, outcome: "passed: dev evaluator on the base model, 8 examples, accuracy 0.625"}
+    - {launch_i: 136, outcome: "passed (2 steps, 32 examples): no template or loss-masking failure"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The dev-64 eval outputs (runs/gsm8k_ft_e1/checkpoint400_dev64.json, checkpoint800_dev64.json) are not in the workspace snapshot; the values come from the printed JSON at [262] and [265]."
+    - "The base-model dev number (0.625) was measured at --limit 8, not --limit 64, so the comparator is not under the same protocol; delta_vs_comparator left null."
+    - "An official evaluate.py --limit 50 anchor on checkpoint-800 was launched at [268] and killed at [278] before producing a score."
+    - "scripts/train_sft.py, scripts/eval_dev.py and scripts/common.py are not in the workspace snapshot, so scheduler, warmup, precision, seq len, seed and the exact holdout seed cannot be recovered."

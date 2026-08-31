@@ -1,0 +1,207 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The un-tuned base model answers GSM8K poorly: 10% on a 20-example official
+    slice and 25% on a 16-example local held-out train slice with 10-shot
+    prompting, so there is substantial headroom for supervised chat fine-tuning
+    that always ends in an "ANSWER:" line [54], [72].
+  evidence:
+    - path: /home/ben/task/baseline20.json
+      locator: "[24], [47]"
+      observation: "official evaluate.py slice on the base model: accuracy 0.100 (20 samples)"
+    - path: /home/ben/task/base_local16.json
+      locator: "[67], [72]"
+      observation: "local 10-shot eval of the base model on 16 held-out train items: accuracy 0.25"
+    - path: /home/ben/task/smoke_lora_local32.json
+      locator: "[98], [103]"
+      observation: "128-example LoRA smoke checkpoint reaches 0.344 on the same local probe, i.e. the pipeline moves the metric"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised chat fine-tuning of the base model on the full GSM8K train split
+    with a short (no-fewshot) training prompt, LoRA on all attention and MLP
+    projections, will give a first serious baseline; the alternative branch is a
+    fewshot-conditioned run that matches the evaluator's prompt more closely
+    [34], [103], [109].
+  mechanism: >-
+    "Evaluation uses 10-shot examples from GSM8K train in the system prompt and
+    scores only the final numeric match", so training the assistant to produce
+    reasoning plus a terminal "ANSWER:" line in the evaluator's chat template is
+    the direct high-yield path; the short prompt keeps sequences near 300 tokens
+    and so is the cheap branch of the speed-vs-alignment tradeoff [34], [109].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF: openai/gsm8k (config main, split train), loaded in-process by the training script"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        load_records() splits each answer on "####"; split_records() holds out
+        --val-size 512 random items (seed 42) as validation and trains on the
+        rest; --train-samples -1 means the whole remainder. --train-fewshot 0, so
+        each training example is user prompt + assistant "reasoning\n\nANSWER: n".
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + peft 0.18.1 (torch 2.8.0+cu129)"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        LoRA rank/alpha/dropout, warmup_ratio, weight_decay and seed are the
+        argparse defaults of train_gsm8k_sft.py (in task/) and were not overridden
+        on this launch; lr_scheduler_type="cosine", bf16=True, tf32=True,
+        optim="adamw_torch_fused", load_best_model_at_end=True with
+        metric_for_best_model="eval_loss" are hard-coded in that script.
+        --gradient-checkpointing on; --eval-fewshot 10, i.e. the validation
+        prompts carried 10 in-context exemplars while the training prompts had
+        none. Caveat: the snapshot of train_gsm8k_sft.py is the end-of-run
+        version; it was edited after this launch (deterministic generation_config
+        export, [150]-[169]).
+    target_format: >-
+      the evaluator's Qwen chat template (templates/qwen3.jinja); assistant turn =
+      GSM8K reference reasoning followed by "ANSWER: <n>", loss masked to the
+      assistant tokens.
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --output-dir
+      - outputs/exp1_lora_nf
+      - --save-merged-dir
+      - outputs/exp1_lora_nf_merged
+      - --train-samples
+      - "-1"
+      - --eval-samples
+      - "128"
+      - --val-size
+      - "512"
+      - --num-train-epochs
+      - "3"
+      - --per-device-train-batch-size
+      - "4"
+      - --per-device-eval-batch-size
+      - "4"
+      - --gradient-accumulation-steps
+      - "8"
+      - --logging-steps
+      - "10"
+      - --save-steps
+      - "200"
+      - --eval-steps
+      - "200"
+      - --learning-rate
+      - "2e-4"
+      - --train-fewshot
+      - "0"
+      - --eval-fewshot
+      - "10"
+      - --max-length
+      - "1024"
+      - --gradient-checkpointing
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No metric from this launch appears in the stream. It stops appearing after
+      the agent found that the exported generation_config left decoding to the
+      evaluator's sampling default and rewrote the export path ([150], [157],
+      [164]); at [170] the same output dir (outputs/exp1_lora_nf) is relaunched
+      with --eval-fewshot 0, which supersedes this run.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first full-data LoRA launch was superseded before producing any measured
+    result: the agent found that the official evaluator never forwards a
+    temperature and the serving backend defaults to temperature=1.0, so any
+    official score from this export would have been sampled rather than greedy
+    [150].
+  decision: abandon_line
+  next_step: >-
+    Relaunch the same configuration after the export writes a deterministic
+    generation_config, and with --eval-fewshot 0 (exp-02) [169].
+
+provenance:
+  kind: extracted
+  run_ref: r-736cc5f9
+  launch_i: 110
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [54, 72, 103]
+    setup: [109, 110]
+    evaluation: []
+    result: [150, 157, 164, 170]
+    conclusion: [150, 169]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - baseline20.json
+    - base_local16.json
+    - smoke_lora_local32.json
+    - contamination_judgement.txt
+  smoke_runs:
+    - {launch_i: 73, outcome: "crashed: TrainingArguments.__init__() got an unexpected keyword argument 'evaluation_strategy'"}
+    - {launch_i: 86, outcome: "passed (128 train / 32 eval examples, 16 steps), but eval_loss came back NaN"}
+  extractor: claude-opus-5
+  unresolved:
+    - "no explicit kill of this training process appears in the stream; it is inferred killed/superseded because [170] relaunches the same --output-dir"
+    - "the earlier local baseline command at [53] wrote base_local32.json, which is not in the workspace snapshot; it was killed at [60] over a left-padding bug"
+
+outcome:
+  official_accuracy: null

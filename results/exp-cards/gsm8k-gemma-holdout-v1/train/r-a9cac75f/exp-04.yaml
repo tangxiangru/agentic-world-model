@@ -1,0 +1,164 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The model gives the correct answer early... but then continues generating
+    and produces multiple ANSWER lines. The scorer takes the LAST answer. The
+    fundamental issue is that the model doesn't stop at `<|im_end|>` after the
+    first answer." The checkpoint's generation_config.json lists only
+    eos_token_id 151643 (<|endoftext|>), while every training target ends with
+    <|im_end|> = 151645, so the server never stops there.
+  evidence:
+    - path: /home/ben/task/eval_v2_50.json
+      locator: "[207]"
+      observation: "exp-03 output scores 0.060 at --limit 50 with 76,280 output tokens"
+    - path: /home/ben/task/logs/2026-02-13T15-21-39+01-00_gsm8k_bV3VrJdmyCKTkH5pczmhre.json
+      locator: "[209], [210] - first 5 items"
+      observation: >-
+        outputs of 4800-7000 characters that answer correctly, then invent new
+        questions and further ANSWER lines, some degenerating into repeated
+        non-English tokens
+    - path: /home/ben/task/final_model/generation_config.json
+      locator: "[212], [215]"
+      observation: >-
+        eos_token_id is [151643] and pad is 151643, while
+        tok.convert_tokens_to_ids('<|im_end|>') is 151645
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Adding 151645 (<|im_end|>) to the checkpoint's eos_token_id, with no change
+    to the weights, will make generation stop after the first ANSWER line and
+    raise GSM8K accuracy over the same checkpoint's 0.060.
+  mechanism: >-
+    The scorer reads the last ANSWER line in the completion; the model already
+    produces a correct one first, so stopping at the token the training targets
+    end with removes the wrong trailing answers.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-03
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "vLLM 0.11.0 serving the checkpoint's generation_config.json"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        The launch is an edit of /home/ben/task/final_model/generation_config.json
+        at [220]: eos_token_id [151643] -> [151643, 151645]. Nothing else in the
+        file changed; the weights are exp-03's, untouched.
+    target_format: "unchanged from exp-03: reasoning then a final line ANSWER: {X}"
+  command:
+    argv: []
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, /home/ben/task/final_model, --limit, "50", --max-connections, "2", --max-tokens, "4000", --json-output-file, eval_v2_fix_50.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.06
+    path: /home/ben/task/eval_v2_50.json
+  diagnostic:
+    what: "output-token count as a proxy for whether generation now stops at the first answer"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary: {final_loss: null, steps: null, notes: "no training; configuration change only"}
+  measurements:
+    - metric: accuracy
+      value: 0.38
+      n: 50
+      path: /home/ben/task/eval_v2_fix_50.json
+      delta_vs_comparator: 0.32
+    - metric: accuracy
+      value: 0.4333333333333333
+      n: 150
+      path: /home/ben/task/eval_v2_fix_150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 26647
+    path: /home/ben/task/eval_v2_fix_50.json
+    notes: >-
+      output tokens on the 50-item eval fell from 76,280 to 26,647 and wall time
+      from 2:08 to 0:46 [224], i.e. generation now stops after one answer.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "38% accuracy! That's a huge improvement from 12% baseline and 6% with the
+    wrong EOS. The model is now stopping properly." [225] The same weights go
+    from 0.060 to 0.380 at --limit 50 and reach 0.433 at --limit 150 - the whole
+    gain comes from the stop token, not from training.
+  decision: adopt
+  next_step: >-
+    "Now let me do a second epoch to improve further" - continue training these
+    weights on the same data at a lower learning rate with more GSM8K
+    repetitions [231].
+
+outcome:
+  official_accuracy: null   # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-a9cac75f
+  launch_i: 220
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [207, 210, 211, 213, 216]
+    setup: [220]
+    evaluation: [223, 229]
+    result: [224, 230]
+    conclusion: [225, 231]
+  snapshot_files:
+    - evaluate.py
+    - eval_v2_50.json
+    - eval_v2_fix_50.json
+    - eval_v2_fix_150.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "this launch is a file write, not a shell command, so setup.command.argv is empty; the change itself is quoted in hyperparams.other and is at [220]"
+    - "the 0.433 at --limit 150 has no comparator measured at that limit"

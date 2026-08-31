@@ -1,0 +1,255 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.21
+
+problem:
+  statement: >-
+    Unchanged from exp-01: the base model scores 0.400 at limit 150, with 25 of
+    150 completions never stopping, 14 missing the "ANSWER:" marker and 51 wrong
+    final numbers. The immediate blocker is that the first training launch died
+    of an out-of-memory error - "OOM from the 151k-vocab logits over 21k-token
+    rows" [17976] - so the flattened rows must be halved.
+  evidence:
+    - path: /home/ben/task/runs/base_150.json
+      locator: "[11336]"
+      observation: "baseline accuracy 0.400, stderr 0.040, on --limit 150"
+    - path: /home/ben/task/logs/2026-07-19T10-02-44+02-00_gsm8k_JE3GDzgkuALqWJX2ZMJSa3.json
+      locator: "[13474]"
+      observation: "90 wrong of 150: 25 truncated, 14 no ANSWER marker, 51 wrong final number"
+    - path: /home/ben/task/runs/sft1.log
+      locator: "[17976]"
+      observation: "exp-01 (--bs 12 --accum 11) OOMed within two minutes of launch"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SFT with verified CoT + greedy decoding + proper EOS addresses all three
+    classes" [13474] - supervised fine-tuning on rejection-sampled,
+    answer-verified chains of thought rendered in the exact eval prompt, with
+    targets ending "ANSWER: <n><|im_end|>", will raise accuracy over the base
+    model.
+  mechanism: >-
+    Training only on traces whose final answer matches gold, in the byte-exact
+    eval prompt format, teaches the format contract (ANSWER line, then stop at
+    <|im_end|>) and reinforces reasoning the model can already do; a
+    generation_config.json shipped in the checkpoint makes the server decode
+    greedily instead of at vLLM's temp-1.0 fallback.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/runs/sft_v1
+      source: synthetic:self
+      n_examples: null
+      built_by: /home/ben/task/build_sft.py
+      build_command:
+        - python
+        - build_sft.py
+        - --rs-files
+        - runs/rs1_sample.jsonl
+        - runs/rs1_greedy.jsonl
+        - runs/rs2_hot.jsonl
+        - --out
+        - runs/sft_v1
+        - --add-gold
+        - --max-traces-per-q
+        - "4"
+        - --max-len
+        - "2816"
+      selection: >-
+        Rejection-sampled traces from the base model under the byte-exact eval
+        prompt (rs1_sample: k=8 t=1.0 [13478]; rs1_greedy: greedy [15631];
+        rs2_hot: k=16 t=1.15 top-p 0.98 on questions unsolved by pass 1, +281
+        hard questions [17754]); kept only when the ANSWER line equals
+        gsm8k-train gold, deduped, degenerate/overlong traces dropped, <<...>>
+        annotations stripped, final line rewritten as "ANSWER: <gold>"; up to 4
+        traces per question plus 1 gold train solution (--add-gold); examples
+        over 2816 tokens dropped; 70% carry the exact eval system message, 30%
+        none (build_sft.py --no-system-frac default 0.3, not overridden).
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: "<=4 self-generated traces + 1 gold solution per train question"
+  method:
+    family: sft
+    framework: transformers.Trainer (DataCollatorWithFlattening packing, flash_attention_2)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 6
+      grad_accum: 22
+      max_seq_len: null
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        --bs is examples per flattened row (halved from exp-01 to fit memory);
+        examples were capped at 2816 tokens at dataset build. scheduler (cosine),
+        weight_decay 0.0, seed 42, bf16, optim adamw_torch_fused, max_grad_norm
+        1.0, gradient checkpointing and warmup 0.03 come from train_sft.py in the
+        workspace and were not overridden by this launch. 340 optimizer steps
+        over 2 epochs; --save-each-epoch wrote checkpoint-170 and checkpoint-340.
+    target_format: >-
+      eval chat template (templates/qwen3.jinja); prompt tokens masked with -100,
+      assistant target is the verified trace ending "ANSWER: <n>" plus the
+      <|im_end|> token (151645). train_sft.py also writes a greedy
+      generation_config.json (do_sample false, eos [151645, 151643]) into every
+      saved checkpoint.
+  command:
+    argv:
+      - nohup
+      - python
+      - train_sft.py
+      - --data
+      - runs/sft_v1
+      - --out
+      - runs/sft1
+      - --epochs
+      - "2"
+      - --lr
+      - 1e-5
+      - --bs
+      - "6"
+      - --accum
+      - "22"
+      - --save-each-epoch
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/runs/sft1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - bash
+      - eval_ckpt.sh
+      - runs/sft1/checkpoint-170
+      - "150"
+      - sft1e1_greedy
+      - "16"
+      - "1024"
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.4
+    path: /home/ben/task/runs/base_150.json
+  diagnostic:
+    what: "failure-class breakdown of the epoch-1 checkpoint's eval log (same categoriser used on the baseline)"
+    command:
+      - python
+      - analyze_log.py
+      - logs/2026-07-19T13-27-28+02-00_gsm8k_HShYYgCVVJfKJeAJuoamAL.json
+      - "5"
+    path: /home/ben/task/logs/2026-07-19T13-27-28+02-00_gsm8k_HShYYgCVVJfKJeAJuoamAL.json
+
+result:
+  execution: completed
+  wall_h: 2.3
+  duration_h: 2.3
+  steps: 340
+  output_checkpoint: /home/ben/task/runs/sft1/final
+  training_summary:
+    final_loss: null
+    steps: 340
+    notes: >-
+      Loss 0.397 at step 10 to 0.226 at step 160 in epoch 1
+      (runs/sft1/checkpoint-170/trainer_state.json, [23510]); the end-of-run loss
+      was never printed. wall_h is derived: launched at t=+1.21 h, the progress
+      bar read 328/340 at 2:11:28 elapsed [25036] and "DONE runs/sft1/final" was
+      observed at t=+3.58 h [25044]. Checkpoints written: checkpoint-170
+      (epoch 1), checkpoint-340 (epoch 2, same weights as final).
+  measurements:
+    - metric: accuracy
+      value: 0.9066666666666666
+      n: 150
+      path: /home/ben/task/runs/score_sft1e1_greedy.json
+      delta_vs_comparator: 0.5066666666666667
+      notes: "runs/sft1/checkpoint-170 (epoch 1), greedy, --max-tokens 1024; stderr 0.0238"
+    - metric: accuracy
+      value: 0.8666666666666667
+      n: 150
+      path: /home/ben/task/runs/score_sft1e2_greedy.json
+      delta_vs_comparator: 0.4666666666666667
+      notes: "runs/sft1/checkpoint-340 (epoch 2), greedy, --max-tokens 1024; stderr 0.0278"
+    - metric: accuracy
+      value: 0.8711144806671721
+      n: 1319
+      path: /home/ben/task/runs/score_fulleval_run1e1.json
+      delta_vs_comparator: null
+      notes: >-
+        checkpoint-170 on the full test set (--limit -1), launched at [31058];
+        no base-model number exists at this n, so no delta.
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-07-19T13-27-28+02-00_gsm8k_HShYYgCVVJfKJeAJuoamAL.json
+    notes: >-
+      "All format/stop failures are gone - remaining 14 errors are pure reasoning
+      slips" [26229]; the printed examples are all wrong_ANSWER_line.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    Epoch 1 reached 0.907 and epoch 2 fell back to 0.867 at limit 150, against a
+    0.400 base model under the same protocol, and the failure categoriser found
+    no truncation or missing-marker failures left - the format-contract half of
+    the mechanism is confirmed. The agent read epoch 2 as overfitting [25549],
+    kept checkpoint-170 as the incumbent and copied it to runs/best_sofar.
+  decision: reject
+  next_step: >-
+    Round-2 self-distillation from checkpoint-170 (greedy + hot resample of what
+    greedy misses, plus a k=6 t=0.8 diversity pass) and a single-epoch retrain on
+    the richer mixture (exp-03).
+
+provenance:
+  kind: extracted
+  run_ref: r-e79c6a8d
+  launch_i: 17977
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [11336, 13474, 17976]
+    setup: [13478, 15631, 17754, 17755, 17977]
+    evaluation: [23909, 24880, 31058]
+    result: [23510, 25036, 25044, 25140, 25551, 31529]
+    conclusion: [25549, 26229]
+  snapshot_files:
+    - train_sft.py
+    - build_sft.py
+    - rs_gen.py
+    - common.py
+    - analyze_log.py
+    - post_train1.sh
+    - eval_ckpt.sh
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "runs/sft_v1 example count was never printed; n_examples unknown."
+    - "End-of-training loss never printed; only epoch-1 history up to step 160."
+    - "checkpoint-340 and runs/sft1/final are the same weights by construction, but no check confirms it in the stream."

@@ -1,0 +1,192 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 5.01
+
+problem:
+  statement: >-
+    What the SFT model still gets wrong on the holdout are careful-execution
+    slips: the plan is right but a step is executed wrongly or the wrong
+    quantity is reported as the answer. The first GRPO attempt at this never
+    trained, because the trainer read the base model's eos and masked every
+    completion as truncated.
+  evidence:
+    - path: /home/ben/task/results/val1000.json
+      locator: "[394]-[395]"
+      observation: >-
+        the printed wrong holdout records are right-plan/wrong-execution answers
+    - path: /home/ben/task/logs/grpo.log
+      locator: "[503], [509]"
+      observation: >-
+        the first GRPO launch was killed as broken before any usable reward log
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Errors are careful-execution slips - ideal GRPO targets" [397]: GRPO with a
+    verified-correctness reward on GSM8K train prompts should raise accuracy over
+    the SFT model.
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/pkg2000_train
+    origin: exp-01
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (main, train split)"
+      n_examples: null
+      built_by: /home/ben/task/scripts/train_grpo.py
+      build_command: [python, scripts/train_grpo.py, --model, ckpts/pkg2000_train, --out, ckpts/grpo, --max-steps, "240", --save-steps, "60"]
+      selection: >-
+        GSM8K train questions minus the 250 held-out ones, shuffled; 15% of
+        prompts carry the eval's 10-shot system message, the rest are 0-shot;
+        prompts rendered with templates/smollm.jinja; built inside the training
+        script, not written to a file
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: trl.GRPOTrainer 0.27.2
+    peft: none
+    hyperparams:
+      lr: 2.0e-06
+      epochs: 1
+      batch_size: 16
+      grad_accum: 8
+      max_seq_len: 3040
+      scheduler: constant_with_warmup
+      warmup: 5
+      weight_decay: null
+      precision: bf16 (tf32 enabled)
+      seed: 17
+      other: >-
+        identical to exp-03 except the two fixes at [510] and [516]: the
+        tokenizer is now loaded from the packaged model (asserted eos == 128012)
+        and the generation_kwargs stop_token_ids override is removed. lr,
+        batch_size, grad_accum and the GRPOConfig block are the script's
+        argparse defaults / literals as written at [254] and edited at [273],
+        [401], [510], [516]; the launch overrode only --model, --out,
+        --max-steps 240 and --save-steps 60. num_generations 8,
+        generation_batch_size 256, max_prompt_length 2400,
+        max_completion_length 640, temperature 1.0, beta 0.0, epsilon 0.2,
+        loss_type dapo, mask_truncated_completions True, colocated vllm at 0.25
+        GPU memory. Reward: +1.0 for a final number matching the GSM8K train
+        answer, +0.1 for ending in the "ANSWER: <n>" format.
+    target_format: >-
+      same rendered chat prompt as the eval; completions rewarded on the last
+      number and on ending with "ANSWER: <n>"
+  command:
+    argv: [python, scripts/train_grpo.py, --model, ckpts/pkg2000_train, --out, ckpts/grpo, --max-steps, "240", --save-steps, "60"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_grpo.py
+    env: {}
+    log: /home/ben/task/logs/grpo.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/pkg_grpo240, --limit, "150", --json-output-file, results/grpo240_clean150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.873
+    path: /home/ben/task/results/final_default_150.json
+  diagnostic:
+    what: "holdout accuracy of every saved GRPO checkpoint (60, 120, 180, 240) on the 250 held-out train problems"
+    command: [bash, scripts/eval_grpo_ckpts.sh, "240", "180", "120", "60"]
+    path: /home/ben/task/results/val_grpo240.json
+
+result:
+  execution: completed
+  wall_h: 2.41
+  output_checkpoint: /home/ben/task/ckpts/grpo/checkpoint-240
+  training_summary:
+    final_loss: null
+    steps: 240
+    notes: >-
+      reward 0.900 at the first logged step with frac_reward_zero_std 0.333
+      [541], 0.914-0.929 around step 30 [550]; the agent reports the run
+      "completed... rewards hit 1.02/1.1 ~ 93% correct at temp 1.0" [570] and
+      "train reward 0.80->0.93" in README.md
+  measurements:
+    - metric: holdout_accuracy
+      value: 0.944
+      n: 250
+      path: /home/ben/task/results/val_grpo240.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.273
+      n: 150
+      path: /home/ben/task/results/grpo240_lim150.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.853
+      n: 150
+      path: /home/ben/task/results/grpo240_clean150.json
+      delta_vs_comparator: -0.020
+  diagnostic_result:
+    value: 0.944
+    path: /home/ben/task/results/val_grpo240.json
+    notes: >-
+      holdout 94.4% at step 240 versus 94.8% for the SFT checkpoint it started
+      from; the per-checkpoint numbers for steps 60/120/180 were printed by the
+      sweep at [576] but the output is not in the stream
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    GRPO ran its full 240 steps and clearly moved the training reward
+    (0.80 -> 0.93 at temperature 1.0), but under the same default eval command it
+    scored 85.3% at --limit 150 against the SFT model's 87.3%, and holdout was
+    flat (94.4% vs 94.8%). The agent's reading: "no gain over SFT -> not
+    shipped" (README.md), "SFT was already near the 3B greedy ceiling".
+  decision: reject
+  next_step: >-
+    Spend the remaining budget on the format gap instead: make the model emit
+    comma-separated thousands so the scorer stops missing comma-formatted
+    targets.
+
+# ---- official accuracy (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5dcadd31
+  launch_i: 518
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [394, 395, 397, 503, 509]
+    setup: [254, 273, 401, 510, 516, 518]
+    evaluation: [538, 576, 585, 637, 666]
+    result: [541, 550, 570, 590, 596]
+    conclusion: [590, 818, 852]
+  snapshot_files:
+    - README.md
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "ckpts/pkg2000_train is never created in any event in the stream; it first appears in the disk listing at [544]"
+    - "the 85.3% for results/grpo240_clean150.json is read at [666] but the JSON contents are not in the stream; the figure comes from README.md"
+    - "the 27.3% run at [585] used --max-connections 8 and is the corrupted-serving failure mode, not a property of the checkpoint"
+    - "the holdout numbers for GRPO checkpoints 60, 120 and 180 were measured at [576] but are not in the stream"

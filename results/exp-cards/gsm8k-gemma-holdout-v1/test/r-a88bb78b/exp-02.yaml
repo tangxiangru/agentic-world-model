@@ -1,0 +1,165 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.44
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    "Memory is stable at 75.6GB but that's close to the 80GB limit - I'm worried
+    about OOM on the longest length-grouped batches" [221]; monitoring over a
+    minute gave "Peak hit 78.7GB - only 1.2GB headroom. Too risky for a 3-hour
+    run; a longer batch will OOM" [227].
+  evidence:
+    - path: digest event stream (see provenance.run_ref)
+      locator: "[213], [221], [227]"
+      observation: >-
+        nvidia-smi during the exp-01 launch showed 75059 MiB used at 97%
+        utilisation, peaking at 78.7GB.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "Capping at 640 loses <1% of data but eliminates the long-batch spikes"
+    [227] - i.e. restarting with max_len 640 keeps the bs=16 throughput while
+    bounding peak memory below the OOM threshold.
+  mechanism: >-
+    Peak memory is set by the longest length-grouped batch; the data's p99 is
+    621 tokens, so a 640-token cap removes the rare long batches at the cost of
+    dropping the <1% of examples above the cap.
+  expected_effect:
+    metric: peak GPU memory
+    direction: lower
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft.jsonl
+      source: "derived: openai/gsm8k train + meta-math/MetaMathQA (GSM-derived subset)"
+      n_examples: null
+      built_by: /home/ben/task/scripts/prepare_data.py
+      build_command: [python, scripts/prepare_data.py, --metamath-n, "120000", --gsm8k-repeat, "2", --out, data/sft.jsonl]
+      selection: >-
+        Same file as exp-01. Records above the 640-token cap are dropped by the
+        dataset loader at training time rather than by the builder.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: "GSM8K train component duplicated x2 (--gsm8k-repeat 2)"
+  method:
+    family: sft
+    framework: transformers.Trainer (custom script), flash_attention_2, bitsandbytes adamw_8bit
+    peft: none
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 640
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr / epochs / batch_size / grad_accum / max_seq_len from the launch argv
+        at [238]; scheduler, warmup, weight_decay, precision, seed from the
+        training script text in the digest ([149], amended [188]) and not from
+        the workspace, which does not contain the script. Environment adds
+        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, new in this launch.
+    target_format: >-
+      As exp-01 - completion-only loss on reasoning plus a final 'ANSWER: <num>'
+      line and the end-of-turn token.
+  command:
+    argv: [HF_HOME=/home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, nohup, python, scripts/train.py, --out, runs/v1, --data, data/sft.jsonl, --epochs, "2", --lr, 1e-5, --bs, "16", --grad-accum, "2", --max-len, "640", --attn, flash_attention_2, --save-steps, "1500", --log-steps, "10", ">", logs/train_v1.log, "2>&1", "&"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: 1x 80GB GPU
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: killed
+  wall_h: 0.10
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Killed ~3 minutes in for an observability reason, not a failure - "No loss
+      is being logged to the file (a tqdm/redirect quirk). Since we're only ~3
+      minutes in, let me restart now with a proper logging callback and resume
+      support - cheap insurance to monitor learning" [268]. The memory cap
+      itself was never reported as failing. wall_h derived from the event
+      timestamps ([238] t=+0.44h to [269] t=+0.54h).
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Relaunch of the same 2-epoch SFT with max_len capped at 640 and expandable
+    CUDA segments. Killed at ~3 minutes because the trainer's loss lines were
+    not reaching the redirected log [261][268]; no checkpoint, no measurement,
+    so the memory claim was never confirmed on a full run here.
+  decision: abandon_line
+  next_step: >-
+    Restart again after adding a TrainerCallback that prints each log dict, a
+    --resume flag, and save_total_limit raised from 2 to 8 so several
+    checkpoints can be compared later [275][277][279][283].
+
+# ---- outcome ----------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a88bb78b
+  launch_i: 238
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [221, 227]
+    setup: [228, 234, 238]
+    evaluation: []
+    result: [242, 261, 262, 268]
+    conclusion: [268, 275, 283]
+  snapshot_files: []
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "Whether the 640-token cap actually held peak memory down was never measured - the run was killed for an unrelated reason."
+    - "scripts/train.py is not in the workspace snapshot; its text is only in the digest write events."

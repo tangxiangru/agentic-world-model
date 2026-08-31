@@ -1,0 +1,179 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 2.81
+
+problem:
+  statement: >-
+    "The model isn't learning to stop and is emitting concatenated problems -
+    likely a packing artifact." [189] Sequence packing concatenates independent
+    examples into one 1536-token block, and the <think> wrapper in the targets
+    does not match the eval's plain "Reasoning: ... ANSWER:" style.
+  evidence:
+    - path: /home/ben/task/eval_eos_fix.json
+      locator: "[186]"
+      observation: "accuracy 0.067 on 30 items after the stop token was fixed"
+    - path: /home/ben/task/eval_eos_fix.log
+      locator: "[187]"
+      observation: >-
+        completions hit output_tokens 1750-2048 and continue with new,
+        unrelated word problems and "#### n" lines after answering
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Retraining from the base model without packing, on GSM8K train only and with
+    targets in the eval's plain style (no <think> tags), will stop the model
+    running past its answer into further problems. [189], [190]
+  mechanism: >-
+    Packing concatenates unrelated examples in one block, teaching the model to
+    continue past the end of a solution; one example per sequence, with
+    <|im_end|> as eos from the start, gives it a clean stop to learn. [189]
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/gsm8k_train_clean.jsonl
+      source: "HF openai/gsm8k (main, train)"
+      n_examples: 7473
+      built_by: null
+      build_command: []
+      selection: >-
+        Built by an inline heredoc at [190]: GSM8K train with calculator <<>>
+        spans and the "#### n" line stripped, reasoning under 20 chars dropped,
+        shuffled with seed 42. Assistant target is "reasoning" then a blank line
+        and "ANSWER: n" with no <think> tags - "Match fewshot style: NO think
+        tags" [190]. This build applies no test-question filter (it reads only
+        the train split).
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 5.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        data, epochs, lr, batch-size, grad-accum, max-length, output-dir and
+        final-dir come from the launch argv. packing is False because --packing
+        was not passed and the flag defaults to False in train_sft_v2.py.
+        scheduler, warmup_ratio 0.05, weight_decay, bf16 and seed are SFTConfig
+        literals in train_sft_v2.py, not exposed as flags. Same source for
+        assistant_only_loss=True, gradient_checkpointing=True (use_reentrant
+        False), max_grad_norm=1.0, optim=adamw_torch_fused,
+        attn_implementation="flash_attention_2". The script sets tokenizer
+        eos_token to <|im_end|>, pad to <|endoftext|>, and writes
+        eos_token_id [151645, 151643] into the model config and generation
+        config before training, so the eos fix is baked in this time.
+    target_format: >-
+      chat turns via train_chat_template.jinja; assistant content is the plain
+      reasoning then a final "ANSWER: <n>" line, no <think> tags
+  command:
+    argv: [python, -u, train_sft_v2.py, --data, gsm8k_train_clean.jsonl, --epochs, "5", --lr, "2e-5", --batch-size, "16", --grad-accum, "2", --max-length, "1024", --output-dir, sft_output_gsm, --final-dir, final_model_gsm]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft_v2.py
+    env: {}
+    log: /home/ben/task/train_gsm.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model_gsm, --limit, "40", --max-connections, "2", --gpu-memory-utilization, "0.5", --json-output-file, eval_gsm40.json]
+    dev_set: "official --limit 40"
+    n: 40
+    seed: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.32
+  output_checkpoint: /home/ben/task/final_model_gsm
+  training_summary:
+    final_loss: 0.36716342176127637
+    steps: 1170
+    notes: >-
+      train_runtime 1165.14 s (wall_h is that runtime), 32.069 samples/s,
+      mean_token_accuracy 0.9074, 9,674,290 tokens, 5.0 epochs [228]. Saved
+      generation_config eos_token_id [151645, 151643] verified at [228].
+  measurements:
+    - metric: accuracy
+      value: 0.25
+      n: 40
+      path: /home/ben/task/eval_gsm40.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      Of the first 8 completions printed at [237], 1 was correct; several still
+      ran to output_tokens ~2042-2048 and continued into fresh invented problems,
+      so removing packing did not by itself fix the runaway generation.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    GSM8K-only, unpacked training with <|im_end|> as eos raised accuracy to 0.250
+    on 40 items from 0.067 on 30, but the printed completions at [237] still run
+    to the token cap and append new problems, so the packing explanation is only
+    partly borne out. Different --limit from the comparator, so no verdict.
+  decision: adopt
+  next_step: >-
+    Build few-shot-aware training data matching the eval's prompting
+    (prepare_fewshot_data.py, written at [243]) and continue from this
+    checkpoint.
+
+provenance:
+  kind: extracted
+  run_ref: r-78f13a5c
+  launch_i: 198
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [186, 187, 189]
+    setup: [190, 193, 194, 198]
+    evaluation: [230]
+    result: [221, 222, 227, 228, 236, 237]
+    conclusion: [237, 243]
+  snapshot_files:
+    - train_sft_v2.py
+    - train_gsm.log
+    - train_chat_template.jinja
+    - eval_gsm40.json
+    - eval_gsm40.log
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "gsm8k_train_clean.jsonl was built by an inline heredoc at [190], not by a script kept in the workspace, so build_command cannot be reproduced verbatim from task/"
+    - "the [195] rebuild of combined_math_clean.jsonl (247,470 rows, test-filtered) completed but was never used by any training launch"

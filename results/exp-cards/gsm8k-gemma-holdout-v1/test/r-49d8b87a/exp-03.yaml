@@ -1,0 +1,159 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 2.41
+
+problem:
+  statement: >-
+    Run 2 gained only ~4 pts over run 1, so more training data is not the
+    bottleneck. The candidate is being decoded stochastically: the model's
+    generation_config.json carries do_sample=true, top_k=64, top_p=0.95 and a
+    temperature defaulting to ~1.0, which hurts math accuracy - and the eval
+    reads that file from the model directory.
+  evidence:
+    - path: /home/ben/task/results/run2_mm.json
+      locator: "[403]"
+      observation: "exp-02 at 0.5067 on --limit 150, only marginally above exp-01's 0.4667"
+    - path: /home/ben/task/models/gsm8k_mm_lora/generation_config.json
+      locator: "[407]"
+      observation: >-
+        inherited config is do_sample true, top_k 64, top_p 0.95, temperature
+        defaulting to 1.0 - "it's sampling stochastically, which hurts math
+        accuracy"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Replacing the candidate's generation_config.json with a greedy one
+    (do_sample=false, temperature=0.0) and re-running the identical eval will
+    raise accuracy over the same checkpoint decoded stochastically, because the
+    eval respects the model's own generation_config.json.
+  mechanism: >-
+    "If it's sampling (temp>0) rather than greedy, that alone costs accuracy -
+    and I control generation_config.json in my model" [403]; math answers are
+    single-mode, so sampling at temperature ~1.0 throws away accuracy for free.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: >-
+    implied by [403]-[407]: if inspect/vllm overrides the model's
+    generation_config, the greedy re-eval would land on run 2's 50.7%.
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/models/gsm8k_mm_lora
+    origin: exp-02
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "generation_config.json read by the eval's vllm backend"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        weights unchanged; only models/gsm8k_mm_lora/generation_config.json is
+        rewritten to {"bos_token_id": 2, "cache_implementation": "hybrid",
+        "do_sample": false, "temperature": 0.0, "eos_token_id": [1, 106],
+        "pad_token_id": 0, "transformers_version": "4.57.3"}.
+    target_format: null
+  command:
+    argv:
+      - "cat > models/gsm8k_mm_lora/generation_config.json <<'EOF'"
+      - '"do_sample": false,'
+      - '"temperature": 0.0,'
+      - "nohup python evaluate.py --model-path models/gsm8k_mm_lora --limit 150 --max-connections 16 --max-tokens 1024 --gpu-memory-utilization 0.85 --json-output-file results/run2_greedy.json > logs/eval_run2_greedy.log 2>&1 &"
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: /home/ben/task/logs/eval_run2_greedy.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [nohup, python, evaluate.py, --model-path, models/gsm8k_mm_lora, --limit, "150", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.85", --json-output-file, results/run2_greedy.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.5066666666666667
+    path: /home/ben/task/results/run2_mm.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/models/gsm8k_mm_lora
+  training_summary: {final_loss: null, steps: null, notes: "no training; the exp-02 weights are re-used unchanged and only the decode config differs"}
+  measurements:
+    - metric: accuracy
+      value: 0.6466666666666666
+      n: 150
+      path: /home/ben/task/results/run2_greedy.json
+      delta_vs_comparator: 0.14
+    - metric: accuracy
+      value: 0.646
+      n: 500
+      path: /home/ben/task/results/run2_n500.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "Critical finding: greedy decoding gives 64.7% vs 50.7% sampled - a +14%
+    free gain. The eval respects the model's generation_config.json" [424].
+    Confirmed later at n=500 (64.6%, stderr 0.021) [821], and the agent's
+    closing note calls greedy decoding the single biggest lever of the run
+    [869].
+  decision: adopt
+  next_step: >-
+    "ALWAYS ship final_model with greedy generation_config.json" [425]; every
+    later candidate is given the same file before eval, and this checkpoint is
+    copied to final_model in exp-05.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-49d8b87a
+  launch_i: 412
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [403, 407]
+    setup: [412]
+    evaluation: [414, 418]
+    result: [424, 821, 864]
+    conclusion: [424, 425, 869]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The n=500 measurement at [809]/[821] was launched with --max-connections 24 instead of 16; the limit differs from the n=150 protocol, so it carries no delta."
+    - "The card is written as a decode/config change because it produced a distinct measured candidate on the same weights; the identical generation_config.json written before the exp-04, exp-06 and exp-07 evals is treated as part of those cards' eval protocol, not as separate launches."

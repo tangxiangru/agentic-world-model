@@ -1,0 +1,222 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 6.94
+
+problem:
+  statement: >-
+    Accuracy has plateaued at ~64-65% across LoRA variants: more data, more
+    adapter rank and more epochs all land in the same band, and full FT is
+    worse. The residual failures are genuine reasoning errors - misread
+    problems and wrong operations - not formatting: only 1 of 150 completions
+    lacks an ANSWER tag and none are truncated.
+  evidence:
+    - path: /home/ben/task/logs/2026-06-03T10-34-01+02-00_gsm8k_JvvvKK3nJuZUjVBC637PWt.json
+      locator: "[491]-[492]; 150 samples, 53 incorrect, 1 with no ANSWER tag, 0 long/truncated"
+      observation: >-
+        "Failures are genuine reasoning errors (misread problems, wrong
+        operations) - not format issues ... This is a capacity/reasoning
+        limit" [494]
+    - path: /home/ben/task/results/run4_r64_greedy.json
+      locator: "[545]"
+      observation: "r64/3-epoch LoRA ties the incumbent at 64.0% vs 64.7%; capacity and epochs are exhausted as levers"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-06-03T10-34-01+02-00_gsm8k_JvvvKK3nJuZUjVBC637PWt.json
+      question: null
+      gold: "17"
+      model_output: "There are 25 x 20/100 = <<25*20/100=5>>5 unripe oranges.\nThere are 25 - 1 - 5 - 2 - 2 = <<25-1-5-2-2=15>>15 good oranges.\nANSWER: 15"
+      failure: "subtracts one term too many; extracted 15 against gold 17"
+    - id: null
+      source: /home/ben/task/logs/2026-06-03T10-34-01+02-00_gsm8k_JvvvKK3nJuZUjVBC637PWt.json
+      question: null
+      gold: "400"
+      model_output: "There are 700 / 2 = 350 baby bees.\nThere are 350 / 2 = 175 queen bees.\nThere are 350 x 2 = 700 worker bees.\nANSWER: 700"
+      failure: "wrong relations between the bee counts; extracted 700 against gold 400"
+    - id: null
+      source: /home/ben/task/logs/2026-06-03T10-34-01+02-00_gsm8k_JvvvKK3nJuZUjVBC637PWt.json
+      question: null
+      gold: "10000"
+      model_output: "...,000>>18,720,000\nThe hospital makes a profit of $3,760,000 a year because 18,720,000 - 13,940,000 = <<18,720,000-13,940,000=4,780,000>>4,780,000\nANSWER: 4780000"
+      failure: "wrong quantity computed (and the stated profit contradicts its own subtraction); extracted 4780000 against gold 10000"
+    - id: null
+      source: /home/ben/task/logs/2026-06-03T10-34-01+02-00_gsm8k_JvvvKK3nJuZUjVBC637PWt.json
+      question: null
+      gold: "60"
+      model_output: "he total square footage is 16 + 8 + 4 + 2 = <<16+8+4+2=30>>30 square footage.\nThe average square footage is 30 / 4 = <<30/4=7.5>>7.5 square footage.\nANSWER: 7.5"
+      failure: "misread the problem's quantities; extracted 7.5 against gold 60"
+    - id: null
+      source: /home/ben/task/logs/2026-06-03T10-34-01+02-00_gsm8k_JvvvKK3nJuZUjVBC637PWt.json
+      question: null
+      gold: "5"
+      model_output: " food.\nIn total, Cecilia will use 180 + 730 = <<180+730=910>>910 cups of dog food.\nShe will need 8 bags of dog food because 910 / 110 = <<910/110=8>>8\nANSWER: 8"
+      failure: "wrong intermediate totals; extracted 8 against gold 5"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Rejection-sampling fine-tuning (RFT/STaR) - sampling several solutions per
+    GSM8K *train* question from the current model, keeping only those whose
+    final answer matches gold, and retraining LoRA on those self-verified
+    traces mixed with 22K MetaMath - will break the ~64.5% plateau by
+    attacking the reasoning-error failure mode directly.
+  mechanism: >-
+    "use my model to generate multiple solutions for GSM8K train questions,
+    keep only those reaching the correct gold answer, and retrain on these
+    self-verified reasoning paths. This directly targets the reasoning-error
+    failure mode" [545].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/rft_combined.jsonl
+      source: "synthetic:self (solutions sampled from the exp-06 checkpoint, verified against openai/gsm8k train gold) + HF meta-math/MetaMathQA via data/gsm8k_mm.jsonl"
+      n_examples: null
+      built_by: /home/ben/task/gen_rft.py
+      build_command: [nohup, python, gen_rft.py, --model, models/gsm8k_r64, --out, data/rft.jsonl, --n, "4", --temp, "0.7", --max-per-q, "2", --max-tokens, "320"]
+      selection: >-
+        gen_rft.py samples n solutions per GSM8K-train question from
+        models/gsm8k_r64 with vllm (top_p 0.95, top_k 64, stop
+        "<end_of_turn>"), keeps only completions containing "ANSWER:" whose
+        last number matches gold within 1e-4, dedups on the first 120
+        whitespace-collapsed characters and caps at 2 kept per question:
+        "6104/7473 q solved, 9890 clean sols" [713]. The kept solutions were
+        then truncated at the first "ANSWER:" line and re-verified into
+        data/rft_clean.jsonl (9890 rows) because "temp-sampled zero-shot output
+        RAMBLES past ANSWER ~74% of the time" [713]. The trainer file is
+        rft_clean + 22000 rows sampled from data/gsm8k_mm.jsonl, shuffled with
+        random.seed(42) [707].
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers.Trainer + peft LoRA, custom /home/ben/task/train.py; generation via vllm in /home/ben/task/gen_rft.py"
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/grad-accum/lora-r/lora-alpha all on the command line at
+        [707] (r=32, alpha=64 restated explicitly); max_seq_len 1024 and
+        warmup_ratio 0.03 are train.py argparse defaults not overridden.
+        Cosine scheduler, weight_decay 0.0, bf16, gradient checkpointing,
+        adamw_torch, save_strategy="no" fixed in the script. No training seed
+        is set; the data mix uses random.seed(42). Sampling for the RFT data:
+        n=4 per question, temperature 0.7, top_p 0.95, top_k 64, max_tokens
+        320, at most 2 kept per question.
+    target_format: >-
+      same gemma chat turns as exp-02; for the self-generated half the
+      assistant turn is the model's own accepted solution ending in
+      "ANSWER: <target>".
+  command:
+    argv: [nohup, python, train.py, --data, data/rft_combined.jsonl, --out, models/gsm8k_rft, --epochs, "2", --bs, "16", --grad-accum, "2", --lr, 2e-4, --lora-r, "32", --lora-alpha, "64"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/logs/train_rft.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.5
+
+evaluation:
+  protocol:
+    command: [nohup, python, evaluate.py, --model-path, models/gsm8k_rft, --limit, "150", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.85", --json-output-file, results/rft_greedy.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.6466666666666666
+    path: /home/ben/task/results/run2_greedy.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/models/gsm8k_rft
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No train_loss/train_runtime line appears in the digest; the last logged
+      step is {'loss': 0.1633, 'grad_norm': 0.2854, 'learning_rate': 1.06e-04,
+      'epoch': 0.99} at [756] (t=+7.77h), and the checkpoint is in place by
+      [793] (t=+8.23h).
+  measurements:
+    - metric: accuracy
+      value: 0.6266666666666667
+      n: 150
+      path: /home/ben/task/results/rft_greedy.json
+      delta_vs_comparator: -0.019999999999999907
+    - metric: accuracy
+      value: 0.644
+      n: 500
+      path: /home/ben/task/results/rft_n500.json
+      delta_vs_comparator: -0.0020000000000000018
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "RFT model: 62.7% - within noise of the others, no improvement" [804]; on
+    500 samples it lands at 64.4% +-2.1 against the incumbent's 64.6% +-2.1,
+    "tied" [842]. The plateau is unchanged, so the claim that self-verified
+    traces would break it is not supported, but the gap is inside the noise
+    band rather than a clear contradiction.
+  decision: reject
+  next_step: >-
+    "All plateau ~64.5%; the ~64% ceiling is the 4B model's reasoning capacity.
+    RFT/STaR did NOT beat plain MetaMath LoRA" [860]; the incumbent stays as
+    the submission.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-49d8b87a
+  launch_i: 707
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [491, 492, 494, 545]
+    setup: [547, 551, 595, 627, 707, 713]
+    evaluation: [793, 798]
+    result: [756, 804, 842, 864]
+    conclusion: [804, 842, 860]
+  snapshot_files:
+    - gen_rft.py
+    - train.py
+    - prepare_data.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "A first RFT generation pass (--n 6 --temp 0.8 --max-tokens 512) was launched at [551] and killed at [595] for being too slow; the relaunch at [595] did not execute because pkill took down its parent shell [607], a stale vllm engine holding 65GB was killed at [615]/[622], and the generation that produced the data actually ran from [627]. These are data-generation steps, not candidate-producing launches, so they are recorded here rather than as cards."
+    - "The truncate-at-first-ANSWER re-verification that turned data/rft.jsonl into data/rft_clean.jsonl has no event of its own in the digest; only its outcome (9890 clean solutions) is stated at [713]."
+    - "The row count of data/rft_combined.jsonl is not printed in the digest; the build at [707] combines rft_clean with 22000 MetaMath rows."

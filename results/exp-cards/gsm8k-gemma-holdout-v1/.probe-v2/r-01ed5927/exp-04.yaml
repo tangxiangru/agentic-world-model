@@ -1,0 +1,180 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 0.73
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: null
+  evidence:
+    - path: /home/ben/task/eval_sft_v1_full.json
+      locator: "[335]"
+      observation: "incumbent sft_v1 at 0.8133 (--limit 150); the agent moved to rejection sampling to 'push higher' without naming a failure mode"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    [70] "A strong technique beyond plain SFT is rejection-sampling fine-tuning
+    (STaR): generate multiple CoT solutions per train problem, keep correct ones,
+    and train on the model's own in-distribution reasoning" - [335] pursued "to
+    push higher" than the 81.3% incumbent.
+  mechanism: >-
+    [130] the sampled solutions are "diverse high-quality CoT from the model
+    itself", i.e. training targets already in the model's own distribution
+    rather than the human reference style.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_combined.jsonl
+      source: "derived:exp-01 (openai/gsm8k train) + synthetic:self (samples from the exp-02 checkpoint)"
+      n_examples: 27999
+      built_by: /home/ben/task/build_combined.py
+      build_command: []
+      selection: >-
+        build_combined.py ([346]) merges sft_gsm8k.jsonl with sft_rejection.jsonl
+        per problem, human reference first, dedups on whitespace/case-normalised
+        text and caps at --cap solutions per problem (script default 4); its
+        invocation is not in the digest. The rejection pool came from
+        "python gen_rejection.py --model sft_v1 --out sft_rejection.jsonl --n 6
+        --keep 4 --gpu 0.85" ([339]): 6 samples per GSM8K train question at
+        temperature 0.8 / top_p 0.95, kept only when the ANSWER value matches
+        gold, at most 4 per question - "kept 27582 solutions from 7473 problems"
+        (gen_rejection.log). n_examples is the trainer's own "dataset size 27999"
+        from train_v2.log.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers.Trainer
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/accum/maxlen are all from the launch argv at [401].
+        scheduler, warmup, weight_decay and precision are train_sft.py defaults
+        (script text in the snapshot, not overridden): cosine, warmup_ratio 0.03,
+        weight_decay 0.0, bf16, gradient_checkpointing, save_strategy=no. Trained
+        from the base model, which is the script's --model default and was not
+        overridden. After training, the greedy generation_config.json was written
+        into sft_v2 by hand at [503] (train_sft.py had not yet been patched to
+        emit it) before any evaluation.
+    target_format: >-
+      same hand-built chat turns as exp-01, assistant target ending in
+      "ANSWER: <final>" then <|im_end|>; loss on assistant tokens only
+  command:
+    argv: [timeout, "7200", python, train_sft.py, --data, sft_combined.jsonl, --out, sft_v2, --epochs, "2", --lr, 1e-5, --bs, "16", --accum, "2", --maxlen, "1024", ">", train_v2.log, "2>&1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_v2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 2.0
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [timeout, "1800", python, evaluate.py, --model-path, sft_v2, --limit, "150", --max-connections, "8", --gpu-memory-utilization, "0.85", --json-output-file, eval_sft_v2.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.8133333333333334
+    path: /home/ben/task/eval_sft_v1_full.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.594
+  output_checkpoint: /home/ben/task/sft_v2
+  training_summary:
+    final_loss: 0.18053775685174125
+    steps: 1750
+    notes: "train_v2.log: dataset size 27999, train_runtime 2139.85 s, epoch 2.0, 'saved to sft_v2'"
+  measurements:
+    - metric: accuracy
+      value: 0.82
+      n: 150
+      path: /home/ben/task/eval_sft_v2.json
+      delta_vs_comparator: 0.0066666666666666
+    - metric: accuracy
+      value: 0.8127369219105383
+      n: 1319
+      path: /home/ben/task/eval_sft_v2_full.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    [528] "sft_v2 (RFT): 82.0% vs v1 81.3% - within noise. The 150-sample eval
+    has high variance (stderr 3.1%)." The full 1319-sample rerun at [658] put it
+    at 81.27%, i.e. rejection sampling on the model's own correct solutions gave
+    no measurable gain over plain SFT.
+  decision: reject
+  next_step: >-
+    [528] "The bigger lever is MetaMath augmentation for phrasing diversity" -
+    train v3 on the RFT set plus 50k MetaMathQA GSM examples and evaluate
+    candidates on more samples for a reliable comparison (exp-05).
+
+# ---- Outcome (joined by the pipeline, never by the extractor) ---------------
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-01ed5927
+  launch_i: 401
+  stated_by_agent:
+    problem: false
+    hypothesis: true
+  anchors:
+    problem: [335]
+    setup: [131, 339, 346, 401, 503]
+    evaluation: [506, 658]
+    result: [498, 513, 528, 675]
+    conclusion: [528]
+  snapshot_files:
+    - gen_rejection.py
+    - gen_rejection.log
+    - build_combined.py
+    - train_sft.py
+    - train_v2.log
+    - eval_sft_v2.json
+    - eval_sft_v2_full.json
+  extractor: withheld
+  unresolved:
+    - "build_combined.py's invocation is not in the digest: the actual --cap and the orig/rejection split inside sft_combined.jsonl are not stated; only the trainer's 'dataset size 27999' is."
+    - "The 1319-sample eval of sft_v2 ([658]) has no same-n comparator for exp-02, so only the --limit 150 pair is directly comparable."

@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 1.12
+
+problem:
+  statement: >-
+    Two problems at once. (a) The base model still scores 0.100 because it solves the
+    problem, prints "ANSWER: <n>" and then never stops, so the scorer's last-number rule
+    reads trailing garbage. (b) The round-1 dataset as first built was ~220M tokens, which
+    projected to 4.9 h of training - too slow to leave room for a second round.
+  evidence:
+    - path: /home/ben/task/results/baseline_150.json
+      locator: "[11069]"
+      observation: "baseline accuracy 0.100, stderr 0.0246 at --limit 150"
+    - path: /home/ben/task/logs/train_r1.log
+      locator: "[30768]"
+      observation: "healthy training at ~47% MFU, but the 220M-token budget projects to 4.9 h"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full-parameter SFT on targets that end "ANSWER: <n><|im_end|>", with prompts rendered
+    byte-identically to the eval's chat template, will teach the model to stop and lift
+    accuracy far above the 0.100 baseline; rebalancing the mixture toward shorter prompts
+    (~130M tokens) and dropping activation recomputation keeps the run near 2.5 h without
+    changing that.
+  mechanism: >-
+    The base model's failure is a stopping/format failure rather than a knowledge failure,
+    so completion-only training on correctly terminated targets should convert most of the
+    reasoning it already does into scored answers. Fewer exact-eval-prefix rows (the eval
+    few-shot prefix alone is 2053 tokens) cuts tokens without cutting problems.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_round1
+      source: "local: openai/gsm8k train + nvidia/OpenMathInstruct-2 (gsm8k / augmented_gsm8k rows)"
+      n_examples: 84335
+      built_by: /home/ben/task/build_data_round1.py
+      build_command: ["nohup", "python", "build_data_round1.py"]
+      selection: >-
+        rebalanced build [31026]: GSM8K-train gold x3 (22.4k rows, <<..>> calculator
+        annotations stripped from targets but kept inside the few-shot system blocks) plus
+        62,000 OpenMathInstruct-2 rows (problem_source gsm8k/augmented_gsm8k only, no
+        <llm-code> and no ``` fences, exactly one \boxed{}, solution <= 2200 chars, <= 6
+        per problem, 41,887 unique problems, first 12 local parquet shards); prompt mixture
+        per row 35% exact eval few-shot system / 20% random-10-shot (pool 200) / 15%
+        random-k-shot k in 1..9 (pool 150) / 30% zero-shot; rows over MAX_LEN 3072 dropped.
+        Total 84,335 rows / 130.4M tokens [33409].
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights, bf16 autocast (bf16=True), sdpa attention"
+      seed: null
+      other: >-
+        gradient checkpointing off (--grad-ckpt not passed; the flag was added at [31048]
+        and defaults to False), optim="adamw_torch_fused". scheduler, warmup_ratio 0.03,
+        weight_decay 0.0, group_by_length, logging_steps 20 and save-every-0.5-epoch are
+        hard-coded in train_sft.py (in the workspace) and were not overridden at launch.
+    target_format: >-
+      prompt byte-identical to the eval's qwen3.jinja render (verified at [23677]:
+      "MATCH: True"); assistant target "{solution}\n\nANSWER: {n}<|im_end|>" with the
+      prompt masked to -100 (completion-only loss).
+  command:
+    argv: ["PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True", "nohup", "python", "train_sft.py", "--data", "data/sft_round1", "--out", "ckpt/round1", "--epochs", "1", "--lr", "1e-5", "--bs", "2", "--accum", "16"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/train_r1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 2.5
+
+evaluation:
+  protocol:
+    command: ["python", "evaluate.py", "--model-path", "exports/r1_end", "--limit", "500", "--max-connections", "16", "--max-tokens", "2048", "--json-output-file", "results/r1_end_500.json"]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator: null
+  diagnostic:
+    what: >-
+      classification of the 128 wrong items of the mid checkpoint at limit 500 into
+      no-answer-line / trailing-text / truncated / clean-format-wrong-math, to separate the
+      format failure from reasoning failure
+    command: ["python", "-", "<<'EOF'", "(inline failure classifier over the newest logs/2026-*.json)"]
+    path: /home/ben/task/logs/2026-07-17T01-24-37+02-00_gsm8k_8wRHQ6eqBRuTj3m4o7CfgY.json
+
+result:
+  execution: completed
+  wall_h: 2.3
+  output_checkpoint: /home/ben/task/ckpt/round1/final
+  training_summary:
+    final_loss: 0.2634
+    steps: 2636
+    notes: >-
+      last five logged losses 0.2506 / 0.2586 / 0.2477 / 0.2607 / 0.2634, final lr
+      1.09e-09 [37466]; loss 0.57 -> 0.28 by mid-epoch [37220]. Mid checkpoint saved at
+      step 1318. wall_h from the launch [31594] t=+1.12h to completion [37460] t=+3.38h.
+  measurements:
+    - metric: accuracy
+      value: 0.744
+      n: 500
+      path: /home/ben/task/results/r1_mid_500.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.766
+      n: 500
+      path: /home/ben/task/results/r1_end_500.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-07-17T01-24-37+02-00_gsm8k_8wRHQ6eqBRuTj3m4o7CfgY.json
+    notes: >-
+      mid checkpoint at limit 500: 372 correct / 128 wrong; of the 128 wrong, 125 are
+      clean-format wrong-math, 3 loop to max_tokens, 0 trailing text, 3 have no ANSWER
+      line [37557]. The format contract is essentially solved.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    Round-1 SFT completed and scored 0.744 (0.5 epoch) and 0.766 (1 epoch) at limit 500,
+    against a 0.100 base-model reading taken at limit 150 - a large jump, but never
+    measured against the base model under the same protocol, so the verdict stays
+    inconclusive. The mechanism is confirmed directly: the format failures the base model
+    made are gone (0 trailing-text failures) and 125 of 128 remaining errors are ordinary
+    wrong arithmetic/reasoning [37557], [37682].
+  decision: adopt
+  next_step: >-
+    "The lever now is reasoning quality -> STaR + more training" [37682]: rejection-sample
+    GSM8K train with the round-1 endpoint and continue-train on the verified solutions.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a759897f
+  launch_i: 31594
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [11069, 11722, 30768]
+    setup: [18879, 23677, 31026, 31048, 31050, 31052, 31594]
+    evaluation: [34788, 37472]
+    result: [37220, 37460, 37465, 37466, 37555, 37556, 37557, 38834]
+    conclusion: [37682, 38834]
+  snapshot_files:
+    - build_data_round1.py
+    - data_lib.py
+    - eval_fewshot_system.txt
+    - train_sft.py
+    - export_model.py
+    - after_round1.sh
+    - evaluate.py
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the two checkpoints were exported (bf16 + greedy generation_config, temperature 0.0, eos 151645) and evaluated by after_round1.sh, launched at [37472]; that export/eval step is folded into this card rather than carried as its own launch"
+    - "the base model was only ever measured at --limit 150 (0.100), never at --limit 500, so no same-protocol comparator exists for these numbers"
+    - "RESULTS.md [33409] reports 635 contaminated OM2 rows skipped for this build, while the final report [50345] attributes 823 to round-1 OM2 and 635 to round-3; the build log for this version is not in the digest"

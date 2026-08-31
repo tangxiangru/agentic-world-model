@@ -1,0 +1,184 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 3.95
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The 0-shot SFT checkpoint scores 11.5% at --limit 200 despite a healthy
+    training loss - "Accuracy is only 11.5% - far too low given the good
+    training loss. There's a format/mismatch issue" [421]. Diagnosed at [431] -
+    "0-shot, the model stops cleanly (stop_reason=106, emits <end_of_turn>);
+    with fewshots, it continues generating (mimicking the fewshot Q->A list).
+    My 0-shot training didn't make stopping robust to the 10-fewshot eval
+    context." The eval puts 10 few-shot question/answer pairs in a system
+    message with no turn boundaries, and the numeric scorer takes the last
+    number, so a fabricated continuation is what gets graded.
+  evidence:
+    - path: /home/ben/task/logs/eval_v1_final.json
+      locator: "[416], [421]"
+      observation: "accuracy 0.115 at --limit 200 for the checkpoint from exp-03."
+    - path: digest event stream (see provenance.run_ref)
+      locator: "[422], [423]"
+      observation: >-
+        Dump of eval samples showing the model finishing one answer with
+        'ANSWER: 1/216' and then inventing further problems and answers instead
+        of stopping.
+    - path: digest event stream (see provenance.run_ref)
+      locator: "[426], [431]"
+      observation: >-
+        Controlled 0-shot vs 3-few-shot generation from the same checkpoint -
+        0-shot stops on the end-of-turn token, few-shot does not.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "Train with fewshot context in the data so the model learns to stop after
+    its answer even when fewshots precede it. I'll continue-train from v1
+    (which already has the math ability) with fewshot-augmented data" [431].
+  mechanism: >-
+    "The few-shot block has no turn boundaries, so the model continues the
+    pattern instead of emitting <end_of_turn>" - prepending K random train
+    few-shots (K in 0..8) as a system message reproduces the eval's structure
+    during training, so the end-of-turn token is learned in that context
+    [438][445].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/v1
+    origin: exp-03
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_fs.jsonl
+      source: "derived:exp-03 data (data/sft.jsonl) + openai/gsm8k train few-shot pool"
+      n_examples: 18000
+      built_by: /home/ben/task/scripts/add_fewshot.py
+      build_command: [python, scripts/add_fewshot.py, --in, data/sft.jsonl, --out, data/sft_fs.jsonl, --n, "18000", --kmin, "0", --kmax, "8"]
+      selection: >-
+        data/sft.jsonl shuffled with seed 42 and truncated to the first 18000
+        records; for each record a K drawn uniformly from 0..8 few-shot examples
+        is sampled from a pool built from the GSM8K train split in the eval's
+        exact format (question, blank line, 'Reasoning:', cleaned reasoning,
+        blank line, 'ANSWER: target') and joined into a leading system message.
+        n_examples is the --n cap on the argv; the script's own '[done] wrote N'
+        line is not in the digest.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: transformers.Trainer (custom script), flash_attention_2, bitsandbytes adamw_8bit
+    peft: none
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 2.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1792
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr / epochs / batch_size / grad_accum / max_seq_len / save-steps 280
+        from the launch argv at [463]; scheduler, warmup, weight_decay,
+        precision and seed from the training script text in the digest ([149],
+        amended [188] [275] [279] [283] [441]) - the script is not in the
+        workspace snapshot. max_seq_len is raised to 1792 to fit the few-shot
+        system block. The prompt-masking fix at [441] (mask everything but the
+        last message) is what lets a leading system message be handled.
+    target_format: >-
+      System message of K in 0..8 eval-format few-shot examples, then the eval's
+      user prompt template, then the assistant turn (reasoning plus a final
+      'ANSWER: <num>' line plus the end-of-turn token). Loss on the assistant
+      turn only.
+  command:
+    argv: [HF_HOME=/home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, nohup, python, scripts/train.py, --out, runs/v2, --model, runs/v1, --data, data/sft_fs.jsonl, --epochs, "2", --lr, 1e-5, --bs, "8", --grad-accum, "4", --max-len, "1792", --attn, flash_attention_2, --save-steps, "280", --log-steps, "10", ">", logs/train_v2.log, "2>&1", "&"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: 1x 80GB GPU
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.115
+    path: /home/ben/task/logs/eval_v1_final.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: killed
+  wall_h: 0.05
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Killed ~3 minutes in - "Peak memory is 79.2GB - too close to OOM. Let me
+      kill and restart with a smaller batch size to be safe" [472]. wall_h
+      derived from the event timestamps ([463] t=+3.95h to [473] t=+4.00h).
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    First launch of the few-shot-augmented continuation from runs/v1, at bs=8 /
+    grad_accum=4 / max_len=1792. Killed after ~3 minutes because peak GPU memory
+    reached 79.2GB [472]; no checkpoint and no measurement, so the stopping
+    hypothesis was untested by this launch.
+  decision: abandon_line
+  next_step: "Relaunch the same recipe at bs=6 / grad_accum=6 to buy memory headroom."
+
+# ---- outcome ----------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a88bb78b
+  launch_i: 463
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [421, 422, 423, 426, 431]
+    setup: [438, 441, 445, 450, 463]
+    evaluation: []
+    result: [472, 473, 475]
+    conclusion: [472]
+  snapshot_files: []
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The peak-memory figure at [472] comes from a monitoring command whose result block is not in the digest."
+    - "scripts/train.py, scripts/add_fewshot.py and the eval JSONs are not in the workspace snapshot."

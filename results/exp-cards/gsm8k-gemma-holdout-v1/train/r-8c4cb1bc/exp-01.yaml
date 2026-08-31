@@ -1,0 +1,203 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The untouched base model scores 0.25 on a 20-item GSM8K slice and often keeps
+    generating past its answer into a fake next `user` turn instead of stopping,
+    so answers are not reliably delivered in the evaluator's required
+    `ANSWER: <n>` final line.
+  evidence:
+    - path: /home/ben/task/baseline20.json
+      locator: "[30]"
+      observation: "base-model baseline on 20 GSM8K items: accuracy 0.25, stderr 0.099"
+    - path: /home/ben/task/logs
+      locator: "[92]"
+      observation: >-
+        agent's reading of the baseline log: "the base model often keeps generating
+        past its answer into a fake next `user` turn"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A GSM8K-only LoRA SFT run in the evaluator's answer format ("answer-format
+    alignment plus supervised reasoning") will raise GSM8K accuracy over the
+    untouched base model, before any synthetic data is added [158].
+  mechanism: >-
+    Training the assistant span only, ending each target with "ANSWER: <n>" and
+    `<|im_end|>`, teaches the model both the required output shape and clean
+    termination while supervising step-by-step reasoning on the target domain.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF id: openai/gsm8k (main, train split)"
+      n_examples: 7217
+      built_by: /home/ben/task/train_math_sft.py
+      build_command: []
+      selection: >-
+        gsm8k train shuffled with seed 42; first 256 rows held out as the eval set,
+        the remainder used for training; target = reasoning with the "####" tail
+        rewritten as "\n\nANSWER: <n>" (commas stripped). Built in-process by the
+        training script, no separate prepare_data script. n_examples printed in
+        run_summary.json at [775] (train_examples 7217, eval_examples 256).
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 + peft 0.18.1 (torch 2.8.0+cu129) [13][20]"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=all-linear use_rslora=True"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        lr, epochs, batch sizes, grad_accum and max_length are from the launch argv
+        at [159]. scheduler (cosine), warmup_ratio 0.03, weight_decay 0.01, seed 42,
+        bf16, gradient_checkpointing, optim adamw_torch_fused and the LoRA config
+        (r=64, alpha=128, dropout=0.05, all-linear, rslora) are argparse/script
+        defaults read from the snapshot train_math_sft.py, which the launch did not
+        override; r=64/alpha=128 are independently confirmed by run_summary.json at
+        [775]. CAVEAT: the script was edited later in the run, and at [196] the agent
+        states this launch ran with save_total_limit=2 while the snapshot default is
+        4 - so snapshot defaults are not a fully reliable record of this launch.
+        effective batch size 64 [775].
+    target_format: >-
+      "simple" prompt mode: <|im_start|>system <fixed math system prompt>
+      <|im_end|> <|im_start|>user <MATH_PROMPT_TEMPLATE with the question>
+      <|im_end|> <|im_start|>assistant <reasoning>\n\nANSWER: <n> <|im_end|>;
+      prompt tokens masked to -100 so loss is on the assistant span only.
+  command:
+    argv:
+      - python
+      - train_math_sft.py
+      - --output-dir
+      - runs/pilot_gsm8k
+      - --dataset-mix
+      - gsm8k
+      - --max-length
+      - "1024"
+      - --num-train-epochs
+      - "3"
+      - --learning-rate
+      - "2e-4"
+      - --per-device-train-batch-size
+      - "16"
+      - --per-device-eval-batch-size
+      - "16"
+      - --gradient-accumulation-steps
+      - "4"
+      - --logging-steps
+      - "10"
+      - --save-strategy
+      - epoch
+      - --eval-strategy
+      - epoch
+    cwd: /home/ben/task
+    script: /home/ben/task/train_math_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [12]"
+    planned_h: 0.25
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.251
+  output_checkpoint: /home/ben/task/runs/pilot_gsm8k
+  training_summary:
+    final_loss: 0.27689398847146723
+    steps: 339
+    notes: >-
+      train_runtime 903.04 s; final eval_loss 0.6206 at epoch 3 [185][775]. The
+      epoch-1 adapter (the best by held-out loss) was pruned by save_total_limit
+      before it could be merged [196]; the retained checkpoints were
+      checkpoint-226 (epoch 2) and checkpoint-339 (epoch 3) [776].
+  measurements:
+    - metric: held_out_loss_epoch1
+      value: 0.4556
+      n: 256
+      path: null
+      delta_vs_comparator: null
+    - metric: held_out_loss_epoch2
+      value: 0.4566
+      n: 256
+      path: null
+      delta_vs_comparator: null
+    - metric: held_out_loss_epoch3
+      value: 0.6206
+      n: 256
+      path: null
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The run completed 339 steps in 15 minutes with held-out losses 0.4556 / 0.4566 /
+    0.6206 across epochs [187]; no benchmark eval was run on the adapter itself, so
+    the accuracy evidence for this recipe sits on the merge card (exp-02), where the
+    merged epoch-3 adapter scored 0.40 on 50 items [212]. This adapter stayed the
+    run's best candidate and is the source of the shipped model.
+  decision: adopt
+  next_step: >-
+    Merge the retained adapter and benchmark it [202][204]; separately, fix
+    checkpoint retention so the best epoch is not pruned again [196].
+
+provenance:
+  kind: extracted
+  run_ref: r-8c4cb1bc
+  launch_i: 159
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [30, 92]
+    setup: [158, 159]
+    evaluation: []
+    result: [185, 187, 775, 776]
+    conclusion: [187, 196, 212]
+  snapshot_files:
+    - train_math_sft.py
+    - baseline20.json
+  smoke_runs:
+    - {launch_i: 141, outcome: "crashed: RuntimeError: element 0 of tensors does not require grad (LoRA + gradient checkpointing, inputs not marked to require grads)"}
+    - {launch_i: 151, outcome: "passed (1 step, loss 0.7849)"}
+  extractor: "claude-opus-5[1m]"
+  unresolved:
+    - "The digest has no timestamps, so elapsed_h is null; the nearest timer.sh readings are 9:59 remaining at [6] and 9:18 remaining at [229]."
+    - "save_total_limit for this launch is stated only in prose at [196] (=2) and contradicts the snapshot script default (=4); the script was edited after this launch."
+    - "The workspace holds contamination_judgement.txt (\"no contamination detected\"), but no contamination-checker invocation appears in the stream, so contamination_check is recorded as not_run."

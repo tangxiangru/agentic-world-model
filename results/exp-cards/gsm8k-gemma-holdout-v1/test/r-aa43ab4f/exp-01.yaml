@@ -1,0 +1,222 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.15
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The un-post-trained base model scores 0% on the benchmark because it does not
+    follow the required output format: the agent's words at [70]/[74] were
+    "Baseline is 0%" / "base model doesn't follow format".
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[68]"
+      observation: "accuracy 0.000, stderr 0.000 over 50 samples"
+    - path: /home/ben/task/logs/2026-04-24T10-39-24+02-00_gsm8k_ZbmufWjGKWLKM2RW2jZbwn.json
+      locator: "[72]; samples[0]"
+      observation: >-
+        the first sample emits a doubled "ANSWER: ANSWER: 1.125" line and keeps the
+        <<...>> calculator markers, so the numeric matcher scores it incorrect
+  affected_share: null
+  failure_examples:
+    - id: "samples[0] of logs/2026-04-24T10-39-24+02-00_gsm8k_ZbmufWjGKWLKM2RW2jZbwn.json"
+      source: /home/ben/task/logs/2026-04-24T10-39-24+02-00_gsm8k_ZbmufWjGKWLKM2RW2jZbwn.json
+      question: "Marissa is hiking a 12-mile trail. She took 1 hour to walk the first 4 miles, then another hour to walk the next two miles. If she wants her average speed to be 4 miles per hour, what speed (in miles per hour) does she need to walk the remaining distance?"
+      gold: "6"
+      model_output: "The last mile of the hike should be done in 1 hour.\nWe can calculate 8/7 miles per hour to be <<8/7=1.142857>>1.142857 and 9/8 miles per hour to be <<9/8=1.125>>1.125 by computing the time it would take for a person walking at this speed to complete the full hike.\n\nANSWER: ANSWER: 1.125"
+      failure: "reasoning is unrelated to the question and the answer line is malformed (\"ANSWER: ANSWER:\"); scored I"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k (config main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prepare_data.py
+      build_command: [python, scripts/prepare_data.py]
+      selection: >-
+        every gsm8k train row reformatted to the eval prompt template; <<...>>
+        calculator markers stripped from the reasoning; the text after #### taken as
+        the final answer with commas removed; completion is
+        "\n{reasoning}\n\nANSWER: {final}" (script text at [50], run at [52], count
+        printed at [53]).
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer / TrainingArguments (version not stated in the stream)
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 512
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        Only the five values above were passed on the launch line at [96]; every other
+        field is left null because the training script is NOT present in the workspace
+        snapshot, so its argparse defaults may not be used per the extraction rules.
+        For reference only, the script text written at [60] (and edited at [81]/[83],
+        which did not touch these) hardcodes lr_scheduler_type="cosine",
+        warmup_ratio=--warmup (default 0.03), weight_decay=0.0, bf16=True,
+        max_grad_norm=1.0, optim="adamw_torch_fused", save_strategy="no",
+        gradient_checkpointing=True, logging_steps=20, and no explicit seed; the model
+        is loaded as Gemma3ForConditionalGeneration in bfloat16 with
+        attn_implementation="eager" and the vision_tower and multi_modal_projector
+        frozen (text-only full-weight training of the remaining parameters).
+    target_format: >-
+      chat format from templates/gemma3.jinja; user turn = the eval's
+      "Solve the following math problem step by step ... ANSWER: $ANSWER ... Reasoning:"
+      template around the question; assistant turn = reasoning followed by
+      "ANSWER: <number>" then <end_of_turn>; prompt tokens masked to -100 so loss is
+      completion-only.
+  command:
+    argv:
+      - nohup
+      - python
+      - scripts/train_sft.py
+      - --epochs
+      - "3.0"
+      - --output
+      - /home/ben/task/runs/sft_v1
+      - --bs
+      - "16"
+      - --ga
+      - "2"
+      - --lr
+      - "1e-5"
+      - --max_len
+      - "512"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_sft_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - nohup
+      - python
+      - evaluate.py
+      - --model-path
+      - /home/ben/task/runs/sft_v1
+      - --limit
+      - "150"
+      - --json-output-file
+      - logs/sft_v1_eval.json
+      - --max-connections
+      - "8"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.85"
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0
+    path: /home/ben/task/logs/baseline.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.29
+  output_checkpoint: /home/ben/task/runs/sft_v1
+  training_summary:
+    final_loss: null
+    steps: 702
+    notes: >-
+      Total step count 702 read off the progress bar at [105]; the last logged loss
+      visible in the stream is 0.4235 at epoch 1.97, the final loss was never printed.
+      wall_h is an upper bound from the timestamps: launch [96] t=+0.15h to the eval
+      launch [110] t=+0.44h; completion itself is not timestamped. The first eval
+      attempt [110] died with "RuntimeError: Failed to start vLLM server" [113]; the
+      identical command was rerun at [120] and succeeded. preprocessor_config.json was
+      copied into the checkpoint from the base-model snapshot [155] so vLLM could load it.
+  measurements:
+    - metric: accuracy
+      value: 0.36
+      n: 150
+      path: /home/ben/task/logs/sft_v1_eval.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Full-weight SFT of the base model on the 7,473 reformatted gsm8k train rows
+    completed and scored 0.360 (stderr 0.039) on --limit 150 [123]; the only baseline
+    the agent had was 0.000 on --limit 50 [68], a different protocol, so no like-for-like
+    delta exists. The agent made this checkpoint the initial final_model fallback at [157]
+    without comment, then analysed its 96 failures at [128].
+  decision: adopt
+  next_step: >-
+    Analysed the failures at [128] and moved to a larger, MetaMathQA-derived training
+    set for the next launch [147]; this checkpoint was displaced as final_model by
+    sft_v3 at [231].
+
+# ---- outcome (filled by the pipeline, never by the extractor) ---------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-aa43ab4f
+  launch_i: 96
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [68, 70, 72, 74]
+    setup: [50, 52, 53, 60, 81, 83, 96]
+    evaluation: [110, 113, 120]
+    result: [105, 123, 155]
+    conclusion: [123, 157, 231]
+  snapshot_files:
+    - evaluate.py
+    - contamination_judgement.txt
+    - timer.sh
+  smoke_runs:
+    - {launch_i: 89, outcome: "passed (38 steps at --epochs 0.02 --bs 4 --ga 1, train_loss 0.640, saved and exited cleanly)"}
+  extractor: null   # withheld: no model names are written into these cards
+  unresolved:
+    - "The workspace snapshot holds only contamination_judgement.txt, disallowed_model_judgement.txt, evaluate.py, system_monitor.log and timer.sh: no training script, no data-prep script and no eval output survives, so every /home/ben/task/... path cited here is the in-run path and its content is known only from the digest's write/print events."
+    - "The comparator is the base model at --limit 50 [68] while this card is measured at --limit 150 [123]; the agent never re-ran the base model at 150, so the two numbers are not a like-for-like pair and delta_vs_comparator is left null."
+    - "No final training loss for this launch appears anywhere in the stream."
+    - "Hyper-parameters other than the five launch flags cannot be filled: the training script is not in the workspace snapshot, so its argparse defaults are not admissible; they are recorded verbatim-as-read in hyperparams.other instead."

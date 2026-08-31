@@ -1,0 +1,197 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 0.47
+
+problem:
+  statement: >-
+    The base model scores 13.3% on the eval at limit 150: it rambles past its
+    answer, echoes the prompt and emits garbage after the answer line, and the
+    scorer takes the last number in the completion [8738], [11731]. The two
+    preceding launches of this recipe were killed for "packing fix" [18538],
+    [19148].
+  evidence:
+    - path: /home/ben/task/results/baseline_150.json
+      locator: "[8631]"
+      observation: "baseline accuracy 0.1333, stderr 0.0278 at limit 150"
+    - path: "/home/ben/task/logs/*.json (baseline eval log)"
+      locator: "[8740]"
+      observation: >-
+        printed baseline completions echo the prompt and continue past the
+        ANSWER line
+    - path: /home/ben/task/train_sft.py
+      locator: "[19151]"
+      observation: "packer rewritten a third time, to first-fit-decreasing with capacity buckets"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SFT with exact format + EOS + greedy decoding is the fix" [11731] -
+    fine-tuning the base model on GSM8K-train + MetaMathQA GSM rows rewritten
+    into the eval's exact prompt/response contract, with completion-only loss
+    and an <|im_end|> stop, will raise accuracy well above the 13.3% baseline.
+  mechanism: >-
+    The failures are contract failures, not math failures: teaching the model to
+    emit "reasoning ... ANSWER: X" and stop makes the last number in the
+    completion the intended answer, which is what the scorer reads.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: local
+      n_examples: 98205
+      built_by: /home/ben/task/scripts_prep_data.py
+      build_command: [python, scripts_prep_data.py, data/sft_v1.jsonl]
+      selection: >-
+        openai/gsm8k train (official solutions, <<>> annotations stripped) +
+        meta-math/MetaMathQA GSM_* rows; decontaminated against the gsm8k test
+        split by exact normalized match and 8-gram containment > 0.55;
+        per-question caps (gsm8k_train 2, metamath 1 forward + 1 backward);
+        rebalanced at [15021] (gsm8k_train x2, backward SV/FOBAR capped at
+        18000) to 98205 rows; "####" markers stripped from 83263 responses
+        [15254]; prompt variants at random - 12% the exact eval few-shot system
+        prompt (recovered from an eval log at [11762], built from train-split
+        examples), 8% a random 10-shot block, 13% a random 1-8-shot block, 67%
+        no system message.
+      repeats: "gsm8k_train rows x2 [15021]"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (custom packed Dataset), flash_attn 2.8.3, torch 2.8.0+cu129"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: "fp32 weights with bf16 autocast (dtype=torch.float32, bf16=True)"
+      seed: 7
+      other: >-
+        batch_size (--packs-per-micro 2), grad_accum (16), max_seq_len (4096)
+        and the 170M token/epoch budget are train_sft.py argparse defaults (as
+        edited at [16810]) that the launch did not override;
+        scheduler/warmup/weight_decay/max_grad_norm/seed/optim are hard-coded in
+        train_sft.py. --save-steps 320 from the launch. Packing:
+        first-fit-decreasing with 64-token capacity buckets, bins closed below
+        140 tokens of slack [19151]; achieved fill 0.983 over 1214 steps
+        [20044]. Completion-only loss (prompt tokens masked to -100).
+    target_format: >-
+      assistant turn = "<reasoning>\n\nANSWER: <n>" followed by <|im_end|>, rendered
+      in the eval's chat format; completion-only loss.
+  command:
+    argv: [nohup, env, "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True", python, train_sft.py, --data, data/sft_v1.jsonl, --out, ckpt/sft_v1, --epochs, "2", --lr, "1e-5", --save-steps, "320"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 2.2
+
+evaluation:
+  protocol:
+    command: [bash, run_evals.sh, "ckpt/sft_v1/checkpoint-640 ckpt/sft_v1/checkpoint-1214", v1, "150", "16"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.13333333333333333
+    path: /home/ben/task/results/baseline_150.json
+  diagnostic:
+    what: "failure-category breakdown (format failures vs reasoning errors) over the eval log"
+    command: [python, analyze_failures.py]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 2.16
+  duration_h: 2.16
+  steps: 1214
+  output_checkpoint: /home/ben/task/ckpt/sft_v1/checkpoint-1214
+  training_summary:
+    final_loss: null
+    steps: 1214
+    notes: >-
+      "Fill = 0.983, 1214 steps for 2 epochs (~2.2h)" [20044]; ~6.25 s/step
+      [21478]; "Training v1 complete" at [26354] (t=+2.63h). checkpoint-640 and
+      checkpoint-1214 were saved and both exported and evaluated; the digest
+      records a number only for checkpoint-1214. train_sft.py also writes
+      ckpt/sft_v1/final on completion, but every downstream use in the stream
+      names checkpoint-1214.
+  measurements:
+    - metric: accuracy
+      value: 0.727
+      n: 150
+      path: /home/ben/task/results/v1-ckpt-sft_v1-checkpoint-1214-limit150.json
+      delta_vs_comparator: 0.594
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "Format is 100% solved - all 41 failures are pure reasoning errors"
+      [27448]; the category counter line itself is not in the digest.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "v1: 13.3% -> 72.7% at limit 150 (2-epoch slightly ahead)" [26446]: the
+    format/stop hypothesis holds, and the failure breakdown shows no remaining
+    format failures, only reasoning errors [27448].
+  decision: adopt
+  next_step: >-
+    "The bottleneck is now math capability -> RFT (verified self-distillation) +
+    more high-quality data is the right lever" [27448]; the exported v1
+    checkpoint was used to generate rejection-sampled training data at [27452].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-89603e49
+  launch_i: 19154
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [8631, 8738, 8740, 11731, 19148]
+    setup: [12729, 13887, 15021, 15254, 16810, 19151, 19154, 20044]
+    evaluation: [25511, 26359, 26362]
+    result: [20044, 21478, 26354, 26446]
+    conclusion: [26446, 27448]
+  snapshot_files:
+    - train_sft.py
+    - scripts_prep_data.py
+    - data_exact_fewshot_system.txt
+    - run_evals.sh
+    - export_model.py
+    - evaluate.py
+    - analyze_failures.py
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "checkpoint-640 (1 epoch) was exported and evaluated at [26359] but its accuracy is never printed; the stream says only '2-epoch slightly ahead' [26446]"
+    - "no training loss values appear in the digest for this run"
+    - "the exact eval-log filenames behind results/*.json are not all printed"

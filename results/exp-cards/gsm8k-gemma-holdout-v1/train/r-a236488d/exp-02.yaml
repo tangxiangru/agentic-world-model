@@ -1,0 +1,227 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.98
+
+problem:
+  statement: >-
+    The first SFT launch OOM'd on step 1: the 128K-vocab logits plus uncheckpointed
+    activations at ~11.3K tokens per microbatch do not fit, and most training examples
+    spend ~1200 tokens on a few-shot system block that carries no loss (completion-only
+    loss), so the memory is being spent on tokens that teach nothing.
+  evidence:
+    - path: /home/ben/task/work/logs/train_v1.log
+      locator: "[18923]"
+      observation: "OOM on step 1 of the first SFT launch"
+    - path: /home/ben/task/work/scripts/prep_data.py
+      locator: "[18924]-[18925]"
+      observation: "system mix was fewshot10-frac 0.55 / fewshotk-frac 0.20 / plain-frac 0.10, i.e. most examples carried a long few-shot block"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/data/sft_v2.jsonl
+      source: "openai/gsm8k (train) + nvidia/OpenMathInstruct-2"
+      n_examples: null
+      built_by: /home/ben/task/work/scripts/prep_data.py
+      build_command:
+        - python
+        - prep_data.py
+        - --out
+        - /home/ben/task/work/data/sft_v2.jsonl
+        - --omi2-gsm8k-count
+        - "120000"
+        - --gold-repeat
+        - "2"
+        - --fewshot10-frac
+        - "0.22"
+        - --fewshotk-frac
+        - "0.03"
+        - --plain-frac
+        - "0.20"
+      selection: >-
+        Same builder as exp-01 (2x decontaminated GSM8K train gold with <<..>> stripped,
+        plus OpenMathInstruct-2 gsm8k/augmented_gsm8k rows, prompts rendered through the
+        eval's own jinja template with random dates) but with a cheaper system-prompt
+        mix: 22% eval-style 10-shot block, 3% k in {3,5,8}, 20% default long "think"
+        instructions, remainder one-line math system instructions added at [19477].
+        The row count printed by this run does not appear in the stream; the agent later
+        describes the SFT data as "86.7K" rows [38464], which is the exp-01 (v1) figure.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "gold x2"
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 24
+      grad_accum: 5
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=True (bfd), padding_free=True, completion_only_loss=True,
+        gradient_checkpointing=True, use_liger_kernel=True, optim=adamw_torch_fused,
+        max_grad_norm=1.0, attn_implementation=flash_attention_2, save_strategy="epoch",
+        save_total_limit=4, save_only_model=True, eos_token=<|im_end|>,
+        pad_token=<|end_of_text|>. scheduler / warmup / seed / precision / packing /
+        checkpointing / liger come from the train_sft.py source written at [13840] and
+        edited at [23051] and [23260]; the launch did not override them. That script is
+        NOT in the workspace snapshot, only in the stream's write events.
+    target_format: >-
+      prompt = the eval-rendered chat prompt; completion =
+      "reasoning\n\nANSWER: <n><|im_end|>", loss on the completion only.
+  command:
+    argv:
+      - python
+      - work/scripts/train_sft.py
+      - --data
+      - work/data/sft_v2.jsonl
+      - --out
+      - work/runs/sft_v1
+      - --epochs
+      - "2"
+      - --lr
+      - "1e-5"
+      - --max-length
+      - "2816"
+      - --per-device-bs
+      - "24"
+      - --grad-accum
+      - "5"
+    cwd: /home/ben/task
+    script: /home/ben/task/work/scripts/train_sft.py
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: /home/ben/task/work/pylibs
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    log: /home/ben/task/work/logs/train_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - work/runs/eval_ep1
+      - --limit
+      - "150"
+      - --max-connections
+      - "4"
+      - --gpu-memory-utilization
+      - "0.25"
+      - --json-output-file
+      - work/logs/sft_v1_ep1_150.json
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.2
+    path: /home/ben/task/work/logs/baseline_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.77
+  output_checkpoint: /home/ben/task/work/runs/sft_v1/checkpoint-408
+  training_summary:
+    final_loss: null
+    steps: 408
+    notes: >-
+      2 epochs, 204 optimizer steps per epoch; checkpoint-204 (epoch 1) and
+      checkpoint-408 (epoch 2) were both written. The convenience save in the script's
+      tail crashed, which the agent judged harmless because the epoch checkpoints were
+      already on disk [26884]. Each checkpoint was copied to an eval-ready dir
+      (work/runs/eval_ep1, work/runs/eval_ep2) by prepare_eval_dir.py, which adds the
+      tokenizer (eos=<|im_end|>) and a generation_config with
+      eos_token_id [128012, 128001] and temperature 0.0 [25823], [26113], [26885].
+      wall_h derived from the stream timestamps ([23266] t=+0.98h to [26884] t=+2.75h).
+  measurements:
+    - metric: accuracy
+      value: 0.74
+      n: 150
+      path: /home/ben/task/work/logs/sft_v1_ep1_150.json
+      delta_vs_comparator: 0.54
+    - metric: accuracy
+      value: 0.773
+      n: 150
+      path: /home/ben/task/work/logs/sft_v1_ep2_150.json
+      delta_vs_comparator: 0.573
+    - metric: accuracy
+      value: 0.7407
+      n: 1319
+      path: /home/ben/task/work/logs/sft_v1_ep2_full.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    Eval-aligned SFT took the model from 0.200 to 0.740 after epoch 1 and 0.773 after
+    epoch 2 at the same --limit 150 [26183], and the epoch-2 checkpoint scored 0.7407 on
+    the full 1,319-sample test [36064]. Reading the epoch-1 failures, the agent
+    concluded "All 39 failures are reasoning errors, zero format failures - format is
+    solved; capability is the bottleneck" [26700].
+  decision: adopt
+  next_step: >-
+    Rejection-sampling fine-tuning: sample k=8 solutions per GSM8K-train problem from the
+    epoch-2 checkpoint and continue training on the verified-correct ones [26700].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a236488d
+  launch_i: 23266
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [18923, 18925]
+    setup: [19477, 19488, 19694, 23051, 23260, 23263, 23266]
+    evaluation: [25823, 26113, 26118, 26885, 34909]
+    result: [26183, 26884, 36064]
+    conclusion: [26183, 26700, 29033]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The row count of work/data/sft_v2.jsonl was never printed; only the v1 build printed 86,759."
+    - "The 150-sample json files for epoch 1 and epoch 2 were never echoed; 0.74 and 0.773 are the agent's stated numbers at [26183], [29033] and [40359]."
+    - "The epoch-2 full-test number 0.7407 was produced through the safe_eval.sh wrapper (own vLLM server with --enforce-eager --no-enable-prefix-caching), launched at [34909]; the json content itself was not echoed."
+    - "Throughput probe launches (work/scripts/probe.py, written at [20678]) do not appear in the stream; only their outcome is quoted at [23050] (21.9K tok/s at bs 24), so they could not be recorded as smoke_runs with an event index."
+    - "The exact wall time and final loss of the training run are not stated; wall_h is derived from the launch and completion timestamps."

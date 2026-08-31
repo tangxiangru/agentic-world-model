@@ -1,0 +1,162 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.67
+
+problem:
+  statement: >-
+    GSM8K-train-only LoRA SFT reaches 46.7%: the output format is fixed, but
+    "there's headroom" - over half the items are still wrong, and GSM8K train
+    alone is a small and stylistically narrow supervision set.
+  evidence:
+    - path: /home/ben/task/results/run1_gsm8k.json
+      locator: "[255]"
+      observation: "exp-01 (GSM8K-only LoRA, 3 epochs) scores 0.4667 on --limit 150"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Adding 32K GSM-derived MetaMathQA examples to the GSM8K-train set ("the
+    proven lever", 39473 examples total) and re-running the same LoRA SFT will
+    raise accuracy above run 1's 46.7%.
+  mechanism: >-
+    MetaMathQA is rephrased GSM8K+MATH *train* data; its diverse, verbose
+    chains of thought should improve the reasoning/arithmetic errors that
+    remain now that formatting is solved [255], [265].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_mm.jsonl
+      source: "HF openai/gsm8k (main, train) + HF meta-math/MetaMathQA (train)"
+      n_examples: 39473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [nice, -n, "10", python, prepare_data.py, --out, data/gsm8k_mm.jsonl, --metamath, "32000", --mm-types, GSM, --mm-per-type, "8000"]
+      selection: >-
+        all GSM8K-train rows (as in exp-01) plus 32000 MetaMathQA rows
+        restricted to GSM* types, capped at 8000 per exact type, shuffled with
+        seed 42; MetaMath responses are cut at "The answer is:", <<...>>
+        annotations and leftover "#### N" delimiter lines stripped, only
+        numeric final answers kept, re-emitted as "\nANSWER: <num>". Same
+        user-turn template as exp-01.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer + peft LoRA, custom /home/ben/task/train.py (versions not printed in the digest)"
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/grad-accum on the command line at [256]; max_seq_len 1024,
+        warmup_ratio 0.03, lora_r 32, lora_alpha 64 are train.py argparse
+        defaults not overridden by this launch. Cosine scheduler,
+        weight_decay 0.0, bf16, gradient checkpointing, adamw_torch,
+        max_grad_norm 1.0, save_strategy="no" are fixed in the script. No seed
+        is set. LoRA merged into the base weights before saving.
+    target_format: >-
+      same as exp-01: gemma chat turns, assistant = cleaned reasoning +
+      "ANSWER: <target>", loss on the completion only.
+  command:
+    argv: [nohup, python, train.py, --data, data/gsm8k_mm.jsonl, --out, models/gsm8k_mm_lora, --epochs, "2", --bs, "16", --grad-accum, "2", --lr, 2e-4]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/logs/train_run2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.5
+
+evaluation:
+  protocol:
+    command: [nohup, python, evaluate.py, --model-path, models/gsm8k_mm_lora, --limit, "150", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.85", --json-output-file, results/run2_mm.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.4666666666666667
+    path: /home/ben/task/results/run1_gsm8k.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.65
+  output_checkpoint: /home/ben/task/models/gsm8k_mm_lora
+  training_summary:
+    final_loss: 0.15821899034119116
+    steps: null
+    notes: "train_runtime 5943.93s, train_samples_per_second 13.282, train_steps_per_second 0.415, epoch 2.0 [390]"
+  measurements:
+    - metric: accuracy
+      value: 0.5066666666666667
+      n: 150
+      path: /home/ben/task/results/run2_mm.json
+      delta_vs_comparator: 0.04
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Run 2: 50.7% - only a marginal gain over run 1 (within noise). MetaMath
+    data quantity isn't the bottleneck" [403]. +4.0 pts under the same
+    --limit 150 protocol, but the agent read it as inside the noise band
+    (stderr 0.041), so the data-augmentation claim is not settled here.
+  decision: adopt
+  next_step: >-
+    "Before scaling up training, let me check a critical factor: what decoding
+    the eval uses" [403] - which becomes exp-03 on this same checkpoint.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-49d8b87a
+  launch_i: 256
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [255]
+    setup: [134, 136, 138, 142, 152, 154, 256, 268]
+    evaluation: [392, 397]
+    result: [389, 390, 403, 864]
+    conclusion: [403]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The 39473-example count for data/gsm8k_mm.jsonl comes from the agent's own note at [268]; prepare_data.py's printed totals at [142]/[154] have no result block in the digest."
+    - "This checkpoint's generation_config.json was overwritten in place at [412] (exp-03), so /home/ben/task/models/gsm8k_mm_lora no longer holds the as-trained decode config; 0.5067 at [397] is the only measurement of it as trained."
+    - "A larger 60K-MetaMath dataset (data/gsm8k_mm_big.jsonl) was built at [294] but no launch in the digest ever trains on it."
+    - "decision: adopt - this checkpoint is the parent of exp-03 and, through it, the weights copied to final_model."

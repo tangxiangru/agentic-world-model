@@ -1,0 +1,176 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 1.38
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    [528] "sft_v2 (RFT): 82.0% vs v1 81.3% - within noise. The 150-sample eval
+    has high variance (stderr 3.1%)." Rejection sampling on the model's own
+    correct solutions added no measurable accuracy over plain GSM8K SFT.
+  evidence:
+    - path: /home/ben/task/eval_sft_v2.json
+      locator: "[513], [528]"
+      observation: "0.82 at --limit 150 with stderr 0.031, against 0.8133 for the SFT incumbent under the same limit"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    [528] "The bigger lever is MetaMath augmentation for phrasing diversity" -
+    training on the rejection-sampled set plus 50k MetaMathQA GSM examples
+    (78k total) will raise accuracy above the RFT and SFT models.
+  mechanism: >-
+    [698] the MetaMathQA GSM subset is a set of rephrasings/augmentations of
+    GSM8K train problems, so its "linguistic/structural diversity matches test
+    phrasing" in a way the self-generated data does not.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_v3.jsonl
+      source: "derived:exp-04 (sft_combined.jsonl) + meta-math/MetaMathQA (GSM-type rows)"
+      n_examples: 77999
+      built_by: null
+      build_command: []
+      selection: >-
+        [528] "RFT + 50k MetaMath, 78k total". The MetaMath side was prepared by
+        prep_metamath.py at [415]: rows whose type starts with GSM, final answer
+        taken from "The answer is:" or the "####" line, reasoning stripped of the
+        "####" tail and of <<...>> annotations, wrapped in the eval prompt
+        template with an "ANSWER: <final>" line, written to
+        sft_metamath_gsm.jsonl. How sft_metamath_gsm.jsonl and sft_combined.jsonl
+        were merged into sft_v3.jsonl (and how the 50k subset was chosen) is not
+        in the digest. n_examples is the trainer's own "dataset size 77999" from
+        train_v3.log.
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: transformers.Trainer
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/accum/maxlen from the launch argv at [529]; scheduler,
+        warmup, weight_decay, precision are train_sft.py defaults in the
+        snapshot, not overridden. Trained from the base model (script --model
+        default, not overridden). This launch used the version of train_sft.py
+        patched at [503], which set do_sample=False together with temperature
+        0.0 / top_k -1 on the model's generation_config before saving.
+    target_format: >-
+      same hand-built chat turns as exp-01, assistant target ending in
+      "ANSWER: <final>" then <|im_end|>; loss on assistant tokens only
+  command:
+    argv: [timeout, "14400", python, train_sft.py, --data, sft_v3.jsonl, --out, sft_v3, --epochs, "2", --lr, 1e-5, --bs, "16", --accum, "2", --maxlen, "1024", ">", train_v3.log, "2>&1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_v3.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 4.0
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: failed
+  wall_h: 2.106
+  output_checkpoint: null
+  training_summary:
+    final_loss: 0.13819236659778739
+    steps: 4876
+    notes: >-
+      train_v3.log: dataset size 77999, train_runtime 7583.06 s, epoch 2.0 - the
+      optimisation finished, but trainer.save_model then raised and no weights
+      were written ([566], [592]); the directory was deleted at [577].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    File "transformers/generation/configuration_utils.py", line 725, in
+    save_pretrained: raise ValueError(str(exc) + "\n\nFix these issues to save
+    the configuration.") / ValueError: GenerationConfig is invalid:
+    - `temperature`: `do_sample` is set to `False`. However, `temperature` is set
+    to `0.0` ... - `top_k`: `do_sample` is set to `False`. However, `top_k` is
+    set to `-1` ... Fix these issues to save the configuration.
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    [592] setting do_sample=False together with temperature 0.0 / top_k -1 on the
+    model's generation_config makes save_pretrained raise, "which aborts
+    trainer.save_model AFTER training completes - losing all trained weights
+    (only config.json gets written)". The MetaMath hypothesis was never measured
+    from this launch.
+  decision: iterate
+  next_step: >-
+    [574] patch train_sft.py to stop touching sampling fields on the
+    generation_config and instead write generation_config.json to disk by hand
+    after save_model, then relaunch the identical training (exp-06).
+
+# ---- Outcome (joined by the pipeline, never by the extractor) ---------------
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-01ed5927
+  launch_i: 529
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [513, 528]
+    setup: [415, 503, 528, 529]
+    evaluation: []
+    result: [559, 566, 592]
+    conclusion: [592, 574]
+  snapshot_files:
+    - prep_metamath.py
+    - train_sft.py
+    - train_v3.log
+    - eval_sft_v2.json
+  extractor: withheld
+  unresolved:
+    - "The command that built sft_v3.jsonl is not in the digest; the '50k MetaMath' figure is only the agent's statement at [528], and prep_metamath.py's printed row count never appears."
+    - "The wall time comes from train_v3.log (7583 s); the agent's own note calls it a '~1.6hr' run."

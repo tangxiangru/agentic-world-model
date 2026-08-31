@@ -1,0 +1,189 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 1.74
+
+problem:
+  statement: >-
+    Both v2 training attempts started with nohup inside a tool call died when
+    that call was killed: "No training process is alive - both died when my shell
+    call was killed. I'll relaunch using the background task mechanism (survives
+    tool timeouts) rather than nohup" [27472].
+  evidence:
+    - path: /home/ben/task/logs_train_v2.log
+      locator: "[26614], [26616]"
+      observation: "the launch at [26613] returned exit code 144 and no train_sft.py process remained"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Launching the same micro-batch-32 v2 command as a background task instead of
+    nohup will let it survive the tool-call timeouts and run to completion
+    [27472].
+  mechanism: >-
+    The background-task mechanism detaches the process from the shell call, so a
+    tool timeout no longer takes the trainer with it.
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/v2.jsonl
+      source: "local mixture of meta-math/MetaMathQA (GSM_AnsAug, GSM_Rephrased) and openai/gsm8k (config: main, split: train)"
+      n_examples: 108946
+      built_by: /home/ben/task/prep_data_v2.py
+      build_command:
+        - python
+        - prep_data_v2.py
+        - --out
+        - data/v2.jsonl
+      selection: >-
+        unchanged from exp-04: 60000 GSM_AnsAug + 30000 GSM_Rephrased rows
+        rewritten to end "ANSWER: n", the gsm8k train split twice, and 4000
+        gsm8k rows carrying the exact eval 10-shot prefix; shuffled seed 0.
+      repeats: 2
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel FLCE"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1.0
+      batch_size: 32
+      grad_accum: 1
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights, bf16=True autocast, 8-bit Adam"
+      seed: 42
+      other: >-
+        argv identical to exp-06; the change is how it was started (background
+        task, not nohup inside the tool call). scheduler, warmup 0.03,
+        weight_decay 0.0, bf16, seed 42, optim adamw_bnb_8bit are train_sft.py
+        values this launch did not override.
+    target_format: >-
+      eval-format chat; assistant turn ends "ANSWER: <n>" + <end_of_turn>, loss
+      on assistant tokens only.
+  command:
+    argv:
+      - python
+      - train_sft.py
+      - --data
+      - data/v2.jsonl
+      - --out
+      - runs/sft_v2
+      - --epochs
+      - "1"
+      - --lr
+      - "2e-5"
+      - --micro-batch
+      - "32"
+      - --grad-accum
+      - "1"
+      - --max-len
+      - "2816"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env:
+      PYTHONPATH: /home/ben/pylibs
+      TRITON_CACHE_DIR: /home/ben/.triton_cache
+    log: /home/ben/task/logs_train_v2.log
+  resume_argv: null
+  output_dir: /home/ben/task/runs/sft_v2
+  progress:
+    unit: optimizer_step
+    total: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    items: null
+    n: null
+    metric: null
+    direction: null
+
+result:
+  execution: failed
+  wall_h: 0.07
+  duration_h: 0.07
+  steps: 0
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 0
+    notes: >-
+      The detachment worked - the process outlived the tool call - but the run
+      itself OOM'd almost immediately. The agent's reading at [27761]: "OOM at
+      mb32 (worst-case long batch first + fragmentation)", i.e. group_by_length
+      puts the longest sequences in the first batch and the allocator had no
+      expandable segments.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  pings_acted_on: []
+  failure: >-
+    CUDA OOM at micro-batch 32 [27761]; the traceback itself is not in the
+    digest and logs_train_v2.log was overwritten by the run that finished.
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Running as a background task fixed the disappearing-process problem, but
+    micro-batch 32 does not fit: the launch OOM'd on the first, longest batch and
+    produced nothing.
+  decision: iterate
+  next_step: >-
+    Restart at micro-batch 16 / grad-accum 2 with
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True [27761] (exp-08).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-e3d4334d
+  launch_i: 27473
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [26614, 26616, 27472]
+    setup: [27473]
+    evaluation: []
+    result: [27761]
+    conclusion: [27761, 27762]
+  snapshot_files:
+    - train_sft.py
+    - prep_data_v2.py
+    - logs_train_v2.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "wall_h is the gap between this launch (+1.74h) and the OOM reading at [27761] (+1.81h), not a printed runtime"

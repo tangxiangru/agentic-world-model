@@ -1,0 +1,180 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The fine-tuned checkpoint underperformed badly, and inspection shows
+    garbled multilingual artifacts in outputs" [158]; the diagnosis: "the first
+    run trained on full concatenated text (including user prompt tokens), which
+    can destabilize generation style and hurt answer extraction" [166].
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-3fa66d9b/exp1_ep1_60.json
+      locator: "[153]"
+      observation: "accuracy 0.133 on the 60-sample slice against 0.450 for the untuned base model"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-3fa66d9b/baseline_60.json
+      locator: "[148]"
+      observation: "untuned base model accuracy 0.450, stderr 0.065, on the same 60-sample slice"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    LoRA SFT with loss on assistant tokens only, at a lower learning rate
+    (2e-5 instead of 1e-4) and one epoch instead of three, will beat both the
+    unmasked run and the untuned base model on the 60-sample slice [166].
+  mechanism: >-
+    "the first run trained on full concatenated text (including user prompt
+    tokens), which can destabilize generation style and hurt answer
+    extraction" [166]: masking the prompt keeps the model from imitating the
+    instruction text, so only the rationale-plus-ANSWER format is learned.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF id: openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: null
+      build_command: []
+      selection: >-
+        full train split loaded and mapped in-process, shuffled with the seed, no
+        --max-train-samples cap and no held-out split; prompt tokens labelled
+        -100 so loss falls only on the assistant completion; sequences longer
+        than --max-length 1536 are truncated from the left. The 7473 row count is
+        the map output printed for this same script at [171].
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers.Trainer with a custom padding collator, peft LoRA (versions not printed in the stream)"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr, epochs, batch_size, grad_accum, max_seq_len, --logging-steps 20 and
+        --save-steps 200 are from the launch argv. scheduler, warmup,
+        weight_decay, precision, seed and the LoRA config are defaults read from
+        the snapshot copy of train_gsm8k_masked_lora.py, which the launch did not
+        override. gradient_checkpointing is hard-coded on. The launch also merged
+        the adapter into standalone weights via --merge-output-dir
+        runs/exp2_masked_merged, and re-saved the untouched base tokenizer into
+        both directories to avoid tokenizer drift.
+    target_format: >-
+      prompt rendered through templates/qwen3.jinja with a generation prompt and
+      masked out; supervised completion = the gsm8k rationale with the "####"
+      line replaced by "ANSWER: <n>", plus EOS.
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - python train_gsm8k_masked_lora.py --output-dir runs/exp2_masked_adapter --merge-output-dir runs/exp2_masked_merged --num-train-epochs 1 --learning-rate 2e-5 --per-device-train-batch-size 8 --gradient-accumulation-steps 2 --max-length 1536 --logging-steps 20 --save-steps 200
+    cwd: null
+    script: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-3fa66d9b/train_gsm8k_masked_lora.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - /bin/bash
+      - -lc
+      - python evaluate.py --model-path runs/exp2_masked_merged --limit 60 --json-output-file exp2_masked_60.json --max-connections 1 --max-tokens 1024 --gpu-memory-utilization 0.5
+    dev_set: "official --limit 60"
+    n: 60
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.45
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-3fa66d9b/baseline_60.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: runs/exp2_masked_merged
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "training cleanly and faster than the prior setup" [177]; "finished and
+      merged successfully" [187]. No loss curve, step count or runtime was
+      printed for this launch.
+  measurements:
+    - metric: accuracy
+      value: 0.5833333333333334
+      n: 60
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-3fa66d9b/exp2_masked_60.json
+      delta_vs_comparator: 0.1333333333333334
+  diagnostic_result: {value: null, path: null, notes: "stderr 0.06418399868645064 in the same file"}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "`exp2` is clearly the best so far (`0.583` on the 60-sample slice vs `0.450`
+    baseline)" [197] - +0.133 over the untuned base model and +0.450 over the
+    unmasked run (exp-04) on the same 60-sample protocol, so masking the prompt
+    tokens and lowering the LR reversed the earlier degradation.
+  decision: adopt
+  next_step: >-
+    "promoting it to `final_model` and running a larger final eval (`limit 150`)
+    for the submission artifact" [197] (exp-07).
+
+provenance:
+  kind: extracted
+  run_ref: r-3fa66d9b
+  launch_i: 174
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [148, 153, 158, 166]
+    setup: [166, 167, 174]
+    evaluation: [188]
+    result: [177, 187, 197]
+    conclusion: [197, 216]
+  snapshot_files:
+    - train_gsm8k_masked_lora.py
+    - exp2_masked_60.json
+    - baseline_60.json
+    - exp1_ep1_60.json
+    - evaluate.py
+  extractor: claude-opus-5
+  unresolved:
+    - "the eval result block for [188] is not in the digest; 0.5833 is taken from exp2_masked_60.json and from the agent's own quotation of it at [197] and [216]"
+    - "no training loss, step count or wall time was printed for this launch, and the stream has no event timestamps"
+    - "the agent ran no contamination check in the stream; the workspace holds contamination_judgement.txt, which the digest does not show being produced"
+    - "the stream never states an absolute working directory; runs/ paths are recorded as they appear"
+    - "the mechanism (masking, not the LR change or the epoch change) was never isolated: the two runs differ in loss masking, LR, epochs and trainer at once"

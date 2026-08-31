@@ -1,0 +1,219 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.11
+
+problem:
+  statement: >-
+    The base model has had no post-training for the grader's interaction shape:
+    the GSM8K evaluator wraps each problem in a step-by-step prompt, prepends 10
+    training-set few-shot examples in the system message, and requires a final
+    "ANSWER: ..." line, none of which a base model reliably produces [41].
+  evidence:
+    - path: /home/ben/task/baseline_20.json
+      locator: "[42]"
+      observation: >-
+        baseline eval of the untrained base model at --limit 20; the digest
+        prints no result block for this event, the workspace file records
+        accuracy 0.15.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full-parameter bf16 SFT from the base model on all GSM8K train examples plus
+    the GSM_* rows of MetaMathQA, written in the evaluator's user-prompt shape
+    with "<think> ... </think>" reasoning followed by an "ANSWER:" line, will
+    teach the model both the interaction format and the answer marker and raise
+    GSM8K accuracy over the base model [41][62][69].
+  mechanism: >-
+    Matching the fine-tuning output format to the grader usually matters more
+    than raw loss, and the MetaMathQA GSM_* rows give broad math practice on
+    GSM8K-derived questions [23][62].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/proc_mix_think_plain_1024
+      source: "HF: openai/gsm8k (train) + meta-math/MetaMathQA (GSM_* rows)"
+      n_examples: 247468
+      built_by: null
+      build_command: []
+      selection: >-
+        MetaMathQA filtered to GSM_* rows plus all GSM8K train examples;
+        tokenized and rows over 1024 tokens dropped by the training script's
+        --processed-dir preprocessing; 247,468 examples survived the cap [75].
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers Trainer via scripts/train_sft.py; transformers 4.57.3 [244]"
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        scheduler=cosine, bf16=True, tf32=True, optim=adamw_torch_fused,
+        max_grad_norm=1.0, save_total_limit=2, group_by_length=True, gradient
+        checkpointing, attn_implementation=flash_attention_2 are read from the
+        train_sft.py source printed in the stream at [345], not from the launch
+        args; the script itself is not in the workspace snapshot. The seed value
+        is never printed.
+    target_format: >-
+      chat turn in the evaluator's user prompt shape (--prompt-shape plain);
+      assistant turn = "<think> ... </think>" reasoning then an "ANSWER: <n>"
+      line (--assistant-format think).
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --data
+      - mix
+      - --assistant-format
+      - think
+      - --prompt-shape
+      - plain
+      - --max-length
+      - "1024"
+      - --output-dir
+      - runs/stage1_metamath_gsm_think
+      - --processed-dir
+      - data/proc_mix_think_plain_1024
+      - --num-train-epochs
+      - "2"
+      - --learning-rate
+      - "2e-5"
+      - --warmup-ratio
+      - "0.03"
+      - --weight-decay
+      - "0.01"
+      - --per-device-train-batch-size
+      - "16"
+      - --gradient-accumulation-steps
+      - "2"
+      - --save-steps
+      - "2000"
+      - --logging-steps
+      - "20"
+      - --dataloader-num-workers
+      - "8"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - final_model
+      - --limit
+      - "50"
+      - --json-output-file
+      - eval_stage1_eos_50.json
+      - --max-connections
+      - "8"
+      - --max-tokens
+      - "2048"
+      - --gpu-memory-utilization
+      - "0.5"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.15
+    path: /home/ben/task/baseline_20.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 2.67
+  output_checkpoint: /home/ben/task/runs/stage1_metamath_gsm_think
+  training_summary:
+    final_loss: 0.12474055274191956
+    steps: 15468
+    notes: >-
+      train_runtime 9601.6453 s, 51.547 samples/s, epoch 2.0 [218]; final
+      checkpoint-15468 plus a top-level model save [219][227]. Logged step loss
+      stayed in the 0.10-0.15 band throughout [127][165][178][196][212].
+  measurements:
+    - metric: accuracy
+      value: 0.08
+      n: 50
+      path: /home/ben/task/eval_stage1_eos_50.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The broad pass trained cleanly to 2 epochs, but the packaged checkpoint
+    scored 0.00 at --limit 50 before the EOS fix (exp-02) and only 0.08 after it
+    (exp-03), against a base-model baseline of 0.15 measured at --limit 20 - a
+    different limit, so no comparison is decided. The agent read the errors as
+    the broad MetaMath format interfering with the evaluator's plain few-shot
+    format [257].
+  decision: adopt
+  next_step: >-
+    "the next likely step is a short exact-prompt GSM8K-train alignment pass"
+    [257] - launched as exp-04 from this checkpoint.
+
+# joined by the pipeline, never written by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-6dabe99e
+  launch_i: 70
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [41, 42]
+    setup: [62, 69, 70, 345]
+    evaluation: [234, 255]
+    result: [75, 218, 219, 227, 256]
+    conclusion: [257]
+  snapshot_files:
+    - baseline_20.json
+    - eval_stage1_50.json
+    - eval_stage1_eos_50.json
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 66, outcome: "passed (1 step, 16 examples, --num-train-epochs 0.01, saved smoke_model)"}
+  extractor: null   # withheld: cards must not contain a model name
+  unresolved:
+    - "the digest prints no result block for the baseline eval at [42]; the 0.15 comparator value is read from baseline_20.json in the workspace snapshot"
+    - "scripts/train_sft.py is not in the workspace snapshot, so data construction for --data mix is known only from the agent's prose at [62][69][75]"
+    - "the training seed is never printed"

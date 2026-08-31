@@ -1,0 +1,239 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 1.65
+
+problem:
+  statement: >-
+    Two problems at once. (1) The gold-only SFT still misses 23 of 150 and
+    "Remaining failures are genuine reasoning slips (not format)" [23144].
+    (2) The scorer mis-marks comma targets: "One failure stands out:
+    tgt=2,125 ans=2125 marked wrong - looks like a scoring-contract edge, not a
+    math error" [29344]; a target containing a comma is not isnumeric(), so the
+    scorer falls back to a literal endswith and the model must print the
+    thousands separator itself [32059].
+  evidence:
+    - path: /home/ben/task/results_phase1_150.json
+      locator: "[20871]"
+      observation: "0.8467 at --limit 150 for the gold-only SFT"
+    - path: /home/ben/task/logs
+      locator: "[28765]-[28766]; newest inspect log of the phase-1 eval"
+      observation: "23 wrong of 150; only 2 disagree with their own last calculation, so these are reasoning errors, not transcription errors"
+    - path: /home/ben/task/logs
+      locator: "[29345]-[29346]"
+      observation: "the target '2,125' sample: the completion ends 'ANSWER: 2125' and is scored I purely on the missing comma"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs
+      question: null
+      gold: "2,125"
+      model_output: >-
+        "The second box had 3*500=1500 pieces / The third box had 1/4*500=125
+        pieces / So in total Johnny picked up 500+1500+125=2125 pieces
+        ANSWER: 2125"
+      failure: "arithmetic fully correct; scored incorrect because the target carries a thousands separator and the scorer compares it literally [29346]"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Phase 2 (more + more careful CoT data) is the right next lever" [23144]:
+    2 copies of the gold set plus 45K decontaminated OpenMathInstruct-2
+    GSM8K-sourced solutions, with every answer of magnitude >= 1000 written in
+    GSM8K's comma convention, will beat the gold-only SFT at --limit 150 and stop
+    losing correct answers to the comma edge case.
+  mechanism: >-
+    External GSM8K-style solutions supply more careful step-by-step chains than
+    the terse gold rationales; and "Comma output is safe for both branches =>
+    always emit comma format for |x| >= 1000" [32059], so training the comma
+    convention in removes a scoring loss worth about 1% of targets.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_phase2.jsonl
+      source: "derived:exp-01 gold file + local (OpenMathInstruct-2 derivative)"
+      n_examples: null
+      built_by: /home/ben/task/build_mix_phase2.py
+      build_command: [python, build_mix_phase2.py, --gold-repeat, "2", --p-prefix, "0.15", --n-external, "45000", --out, data/sft_phase2.jsonl]
+      selection: >-
+        2 copies of the 7,473 gold rows (always with the eval system prefix) plus
+        45,000 shuffled external rows, each carrying the system prefix with
+        probability 0.15 and a bare user->assistant prompt otherwise; mix
+        reshuffled with seed 0. Rebuilt at [31582] after the comma fix, so gold
+        answers keep the dataset string verbatim and external answers are
+        canonicalised with f"{int(x):,}". The "wrote N rows" line is not in the
+        stream.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: 1
+    - path: /home/ben/task/data/omi2_gsm8k_clean.jsonl
+      source: "HF nvidia/OpenMathInstruct-2 (train_1M)"
+      n_examples: null
+      built_by: /home/ben/task/build_data_phase2.py
+      build_command: [python, build_data_phase2.py]
+      selection: >-
+        problem_source in {gsm8k, augmented_gsm8k}; deduped on normalized problem
+        text; dropped on exact match or any shared 8-gram with a GSM8K *test*
+        question (the agent reports 693 dropped [50705]); kept only solutions
+        whose last \boxed{} matches expected_answer after separator stripping,
+        cut just after that box; body 20-2400 chars, single box only; answer
+        written back in comma convention. Recorded by the agent as roughly 80K
+        rows [32061].
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+    - path: /home/ben/task/data/sft_gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/build_data_phase1.py
+      build_command: [python, build_data_phase1.py]
+      selection: >-
+        as exp-01, rebuilt at [31582] with norm_answer no longer stripping
+        commas; repeated twice inside the mix (--gold-repeat 2). 79 of the 7,473
+        train answers carry a comma [32059].
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 2
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full fine-tune, flash_attention_2, DataCollatorWithFlattening packing"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum and --pack are from the launch argv. max_seq_len 3072
+        and seed 0 are train_sft.py argparse defaults not overridden by this
+        launch; the script is in the snapshot. Script constants as in exp-01.
+    target_format: >-
+      eval-rendered chat prompt (system prefix on all gold rows, on external rows
+      with p=0.15); assistant turn ends "ANSWER: <target>" + <|im_end|>, with
+      thousands separators on answers of magnitude >= 1000
+  command:
+    argv: [python, train_sft.py, --data, data/sft_phase2.jsonl, --out, runs/phase2, --epochs, "1", --lr, "1e-5", --bs, "8", --accum, "8", --pack]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONUNBUFFERED: "1"}
+    log: /tmp/train_p2c.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: 1.8
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, models/phase2, --limit, "150", --max-connections, "16", --json-output-file, results_phase2_150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.8467
+    path: /home/ben/task/results_phase1_150.json
+  diagnostic:
+    what: "whether the comma-target scoring loss is gone: are all comma targets in the slice now correct, and do the remaining wrongs stop cleanly"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.83
+  duration_h: 1.83
+  steps: 937
+  output_checkpoint: /home/ben/task/runs/phase2/final
+  training_summary:
+    final_loss: null
+    steps: 937
+    notes: >-
+      937 total steps [33722]; the last loss line visible in the stream is
+      {'loss': 0.2993, 'epoch': 0.37} at step 347 [33722] - no final_loss was
+      printed. wall/duration derived from the event timestamps (launch t=+1.65h
+      [31855], packaged and evaluated at t=+3.48h [33936]). The checkpoint was
+      packaged to models/phase2 with greedy decoding and <|im_end|> EOS by
+      "python package_model.py --src runs/phase2/final --dst models/phase2
+      --temperature 0.0" in the same command as the eval [33936].
+  measurements:
+    - metric: accuracy
+      value: 0.88
+      n: 150
+      path: /home/ben/task/results_phase2_150.json
+      delta_vs_comparator: 0.0333
+    - metric: accuracy
+      value: 0.8415
+      n: 1319
+      path: /home/ben/task/results_phase2_full.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      18 wrong of 150, every one with stop_reason=stop and a well-formed ANSWER
+      line; the single comma target in the slice is still wrong but now computes
+      2025 - "the comma case computes 2025 (arithmetic, not format)" [34146],
+      i.e. the format loss is gone and only reasoning errors remain [34083].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "88.0% (+3.3 over Phase 1)" at the same --limit 150 protocol [34081], and the
+    failure analysis shows the remaining errors are pure reasoning slips with the
+    comma-format loss fixed [34146]. This checkpoint went on to score 0.8415 on
+    the complete 1319-sample test run [44609] and is the one packaged into
+    final_model.
+  decision: adopt
+  next_step: >-
+    "Launching RAFT generation from the Phase-2 model" [34146] - rejection-sample
+    self-solutions on the train questions and fine-tune this checkpoint on them.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-b8ac2f29
+  launch_i: 31855
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [23144, 28766, 29344, 29346, 32059]
+    setup: [31088, 31236, 31582, 31855]
+    evaluation: [33936]
+    result: [33722, 33936, 34081, 34083, 44609]
+    conclusion: [34081, 34146]
+  snapshot_files:
+    - build_mix_phase2.py
+    - build_data_phase1.py
+    - build_data_phase2.py
+    - train_sft.py
+    - package_model.py
+    - evaluate.py
+    - results_phase2_150.json
+    - results_phase2_full.json
+    - results_phase1_150.json
+    - RESULTS.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "no final training loss or row count for data/sft_phase2.jsonl appears in the stream"
+    - "the 1319-sample number is read from results_phase2_full.json; the stream shows the launch [44609] but not the printed result"

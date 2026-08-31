@@ -1,0 +1,161 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Cleaning the training data did not stop the model appending non-ASCII text
+    after "ANSWER: X"; the agent reads the cause as LoRA being too weak - "with
+    LoRA, only ~3% of parameters are trainable, and it's not enough to completely
+    override the base model's multilingual tendencies" ([193]).
+  evidence:
+    - path: /home/ben/task/logs/2026-02-17T04-08-44+01-00_gsm8k_Gny9GT7oTXc2rd3dwPVsm4.json
+      locator: "[191], [193]"
+      observation: "28% scored / 64% actually correct; trailing non-ASCII persists after clean-data retraining"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full-parameter fine-tuning of the base model on the same cleaned data, for 3
+    epochs, will override the base model's multilingual tendencies and make it stop
+    cleanly after the answer ([193], [196]).
+  mechanism: >-
+    "Use full fine-tuning instead of LoRA (since we have H100 with 80GB, this is
+    feasible for a 4B model) ... the key is to make the model stop cleanly after the
+    answer" ([193]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v2.jsonl
+      source: "HF: openai/gsm8k train + meta-math/MetaMathQA (GSM types) + microsoft/orca-math-word-problems-200k"
+      n_examples: 49892
+      built_by: /home/ben/task/prepare_data_v2.py
+      build_command: [python, prepare_data_v2.py]
+      selection: >-
+        ASCII-only; every item ends exactly with "ANSWER: {number}"; no system
+        message; gsm8k train x4 ([157]).
+      repeats: "gsm8k train x4"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3)
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.1
+      precision: bf16
+      seed: 42
+      other: >-
+        epochs from the launch argument ("train_full.py 3"); the rest are the
+        SFTConfig literals in the workspace copy of train_full.py, which the launch
+        did not override. packing=True, gradient_checkpointing=True,
+        max_grad_norm=1.0, optim=adamw_torch_fused, flash_attention_2.
+    target_format: >-
+      Qwen3 chat template over user/assistant only; assistant turn ends exactly with
+      "ANSWER: {number}".
+  command:
+    argv: [rm, -rf, /home/ben/task/sft_full_output, /home/ben/task/final_model, /home/ben/task/sft_output_v2, /home/ben/task/sft_output, python, train_full.py, "3"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_full.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 1.6
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "50", --max-connections, "2", --gpu-memory-utilization, "0.9"]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.280
+    path: /home/ben/task/logs/2026-02-17T04-08-44+01-00_gsm8k_Gny9GT7oTXc2rd3dwPVsm4.json
+  diagnostic:
+    what: "share of samples whose FIRST 'ANSWER:' is correct, versus the scored accuracy ([247])"
+    command: []
+    path: /home/ben/task/logs/2026-02-17T05-49-52+01-00_gsm8k_V9xpkPT9uhMwqGgUbJsGhE.json
+
+result:
+  execution: completed
+  wall_h: 1.6
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.084
+    steps: 2109
+    notes: >-
+      "Loss: 0.084 (final step), average 0.127; token accuracy 97.5%; total training
+      time ~1h 36min; 3 full epochs completed" ([224]).
+  measurements:
+    - metric: accuracy
+      value: 0.280
+      n: 50
+      path: /home/ben/task/logs/2026-02-17T05-49-52+01-00_gsm8k_V9xpkPT9uhMwqGgUbJsGhE.json
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.54
+    path: /home/ben/task/logs/2026-02-17T05-49-52+01-00_gsm8k_V9xpkPT9uhMwqGgUbJsGhE.json
+    notes: >-
+      "Correct (scored): 14/50 = 28%; Correct (first ANSWER:): 27/50 = 54%; Has
+      ANSWER: pattern: 40/50" ([248]) - the model runs past its own answer and
+      invents further problems, so the end-anchored numeric match reads the wrong
+      number ([234], [249]).
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    Full fine-tuning drove the training loss to 0.084 but scored the same 28.0% on
+    50 samples as the LoRA model; the model now chains whole new problems after its
+    answer instead of stopping ([229], [234], [249]).
+  decision: adopt
+  next_step: >-
+    "The model needs to stop generating after the first 'ANSWER: X' line ... needs to
+    properly use <|im_end|> to stop" - disable packing and fix the EOS token
+    handling ([249], [255]).
+
+provenance:
+  kind: extracted
+  run_ref: r-990a90a4
+  launch_i: 199
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [193]
+    setup: [196, 197, 199]
+    evaluation: [227, 228]
+    result: [224, 228, 233, 248]
+    conclusion: [229, 234, 249, 255]
+  snapshot_files:
+    - prepare_data_v2.py
+    - train_full.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "decision is adopt only in the sense that this checkpoint stayed in final_model and became the parent of exp-06 and exp-11; on its own measurement the agent read it as no better than exp-04"

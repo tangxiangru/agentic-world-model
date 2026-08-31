@@ -1,0 +1,207 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.91
+
+problem:
+  statement: >-
+    "We got 52.7% accuracy on 150 samples. That's a reasonable start." [104] -
+    the agent judged the v1 recipe's data too thin, wanting "better data and
+    longer chain-of-thought reasoning" and "more detailed reasoning" [104].
+  evidence:
+    - path: /home/ben/task/eval_results.json
+      locator: "[103]"
+      observation: "150-sample eval of the v1 checkpoint (as final_model): accuracy 0.527, stderr 0.041"
+    - path: /home/ben/task/logs/2026-01-20T14-35-02+00-00_gsm8k_QWJFAvBN7jhwRFTdVkTYa7.json
+      locator: "[99]-[100], first 3 samples of the 50-sample eval"
+      observation: "2 of the 3 printed samples wrong; the printed tails show only a bare 'The answer is <n>.' line"
+  affected_share: null
+  failure_examples:
+    - id: "50-sample eval, printed sample 1"
+      source: /home/ben/task/logs/2026-01-20T14-35-02+00-00_gsm8k_QWJFAvBN7jhwRFTdVkTYa7.json
+      question: "Marissa is hiking a 12-mile trail. She took 1 hour to walk the first 4 miles, then another hour to walk the next two miles. If she wants her average speed to be 4 miles per hour, what speed (in miles ..."
+      gold: "6"
+      model_output: "The answer is 4."
+      failure: "wrong final answer (4 vs 6); score I"
+    - id: "50-sample eval, printed sample 3"
+      source: /home/ben/task/logs/2026-01-20T14-35-02+00-00_gsm8k_QWJFAvBN7jhwRFTdVkTYa7.json
+      question: "Richard lives in an apartment building with 15 floors. Each floor contains 8 units, and 3/4 of the building is occupied. What's the total number of unoccupied units In the building?"
+      gold: "30"
+      model_output: "The answer is 60."
+      failure: "wrong final answer (60 vs 30); score I"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Retraining from the base model on "enhanced" data - GSM8K repeated 3x with
+    step-numbered thinking, MetaMathQA GSM-style rows reformatted the same way,
+    up to 20k OpenR1-Math traces with their own <think> reasoning, and three
+    re-phrasings of every GSM8K question - will raise GSM8K accuracy above the
+    52.7% the v1 recipe reached. Agent's words: "improve the model by training
+    with better data and longer chain-of-thought reasoning ... enhance our
+    training data with more detailed reasoning" [104]; the script it then wrote
+    is headed "Version 2: Better chain-of-thought formatting and more diverse
+    data" [105].
+  mechanism: >-
+    More detailed and more diverse reasoning traces (numbered steps, real
+    long-form R1 thinking, paraphrased prompts) should teach a better chain of
+    thought than the terse GSM8K rationales used in v1.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/math_training_data_v2
+      source: "local (built from HF gsm8k main/train + meta-math/MetaMathQA GSM_* types + open-r1/OpenR1-Math-220k)"
+      n_examples: 126764
+      built_by: /home/ben/task/prepare_data_v2.py
+      build_command: [python, prepare_data_v2.py]
+      selection: >-
+        GSM8K train repeated 3x with "Step i:" numbered thinking and <<..>>
+        markers rewritten as (expr); MetaMathQA GSM_* rows deduped and numbered
+        the same way; up to 20000 OpenR1-Math items restricted to problem_type
+        Algebra/Arithmetic/Number Theory, problem text under 500 chars, a
+        <think> block present, a numeric \boxed answer, thinking truncated at
+        2000 chars; plus three re-phrasings ("Problem: ...", "Math Question:
+        ...", "Calculate: ...") of every GSM8K item. Shuffled with
+        random.seed(42). Size read from "Dataset size: 126764" in
+        training_log_v2.txt; the per-source counts the script prints are not in
+        the digest (output truncated at [108]).
+      repeats: "GSM8K 3x, plus 3 phrasing variants of each GSM8K item"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.0
+    peft: "none"
+    hyperparams:
+      lr: 3.0e-05
+      epochs: 1
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/batch_size/grad_accum/max_seq_len are launch args. scheduler
+        (cosine), weight_decay (0.01) and bf16 are hardcoded in train_sft.py;
+        warmup 0.03 is the script's argparse default, not overridden by the
+        launch. Same script settings as exp-01 (packing=False,
+        group_by_length=True, gradient_checkpointing=True, adamw_torch_fused,
+        flash_attention_2, 1% eval split at seed 42, load_best_model_at_end on
+        eval_loss). Effective batch 32.
+    target_format: >-
+      same SmolLM3 chat-template text field as exp-01, but the thinking block is
+      "I need to solve this step by step. / Let me analyze the problem: /
+      Step 1: ... / Therefore, the final answer is <n>." before
+      "</think>\n\nThe answer is <n>."
+  command:
+    argv: [python, train_sft.py, --data_path, math_training_data_v2, --output_dir,
+           ./trained_model_v2, --batch_size, "4", --gradient_accumulation_steps, "8",
+           --learning_rate, "3e-5", --num_epochs, "1", --save_steps, "1000",
+           --logging_steps, "200", --max_length, "2048"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/training_log_v2.txt
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "150",
+              --max-connections, "2", --gpu-memory-utilization, "0.5",
+              --json-output-file, eval_results_v2.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.5266666666666666
+    path: /home/ben/task/eval_results.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.76
+  duration_h: 1.72
+  steps: 3922
+  output_checkpoint: /home/ben/task/trained_model_v2
+  training_summary:
+    final_loss: 0.175
+    steps: 3922
+    notes: >-
+      train_loss 0.17495, train_runtime 6187.32 s, mean_token_accuracy 0.9592,
+      last eval_loss 0.1413, 1.0 epoch - read from training_log_v2.txt; the
+      digest's copy of the run output is truncated. The checkpoint was copied
+      over final_model at [119] and the eval below ran on that copy; final_model
+      was rolled back to the exp-01 checkpoint at [124].
+  measurements:
+    - metric: accuracy
+      value: 0.32
+      n: 150
+      path: /home/ben/task/eval_results_v2.json
+      delta_vs_comparator: -0.2066666666666667
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    0.320 on 150 samples against exp-01's 0.527 under the same protocol - a
+    20.7-point loss, so the richer/more diverse data hurt badly. The agent
+    immediately restored the exp-01 checkpoint into final_model [124] and later
+    guessed "maybe the issue was the OpenR1 data not being as aligned with GSM8K
+    style" [128].
+  decision: reject
+  next_step: >-
+    "Let me create a simpler approach - focus only on GSM8K train data and
+    MetaMathQA with better formatting" [128] - the v3 data build.
+
+# ---- official result (joined by the pipeline; never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-b8779e0c
+  launch_i: 110
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [99, 100, 103, 104]
+    setup: [105, 107, 110]
+    evaluation: [121]
+    result: [111, 119, 122]
+    conclusion: [124, 128]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data_v2.py
+    - training_log_v2.txt
+    - eval_results_v2.json
+    - eval_results.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: "post-hoc extractor (identity withheld)"
+  unresolved:
+    - "The launch passed no --model_name, so it retrained from the base model (the script's argparse default), not from the exp-01 checkpoint; the agent never says which it intended."
+    - "prepare_data_v2.py caps OpenR1-Math at 20000 items and the per-source counts it prints were truncated out of the digest at [108], so the mixture actually used is known only as the 126764 total."
+    - "The rollback of final_model to the exp-01 checkpoint at [124] carries the reject decision; it is recorded here rather than as a card of its own, since it produced no new candidate and was never evaluated."

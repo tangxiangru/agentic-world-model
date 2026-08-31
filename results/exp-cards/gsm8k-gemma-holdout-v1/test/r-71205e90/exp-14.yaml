@@ -1,0 +1,210 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-14
+created_at: null
+elapsed_h: 6.34
+
+problem:
+  statement: >-
+    The bounded RL attempt has still produced no checkpoint: the previous 48-step
+    GRPO run trained fine but died at save time because the greedy
+    generation_config written by prep_ckpt.py (do_sample=false, temperature 0.0)
+    fails the save-time validation, and the SFT line remains saturated at 68.4%
+    on 500 samples.
+  evidence:
+    - path: null
+      locator: "[37631]"
+      observation: >-
+        agent: "GRPO ran fast (7.1s/step!) but crashed when saving: my greedy
+        generation_config.json (temperature=0.0) fails HF's save validation.
+        Checking reward trend, then relaunching with fixed config"
+    - path: /home/ben/task/results_v3b_500.json
+      locator: "[31959], read at [34194]"
+      observation: "the SFT line is saturated: v3b, v3 and v2e2 all at 0.684 on --limit 500"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    GRPO with a correctness reward, run for 96 steps from the v3 checkpoint,
+    will produce reasoning gains that supervised fine-tuning on the same data
+    can no longer deliver. (agent, [34194]: "one bounded RL attempt (GRPO) which
+    is the remaining lever for reasoning gains"; the fix at [37699] makes the
+    checkpoint saveable)
+  mechanism: >-
+    The reward is the eval's own criterion - the last number of the completion
+    must equal the gold answer, plus shaping for a well-formed ANSWER line and a
+    length penalty - so the policy is optimised directly against what the scorer
+    measures, on prompts weighted towards the questions the model still rarely
+    solves ([35791]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-08
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/v3_text
+    origin: exp-08
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, train split), prompts only; difficulty weighting from data/rs_v2.jsonl"
+      n_examples: 2913
+      built_by: /home/ben/task/train_grpo.py
+      build_command: []
+      selection: >-
+        built inline by train_grpo.py: all "hard" train questions (<= 2 kept
+        rows in data/rs_v2.jsonl) plus 2200 random easy ones, zero-shot prompts
+        with the leading <bos> stripped, shuffled with seed 0. train_grpo.log:
+        "GRPO prompts: 2913 (713 hard)". At 8 generations per prompt and an
+        effective 8 prompts per optimizer step, 96 steps cover 0.26 of the set.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl GRPOTrainer with colocated vLLM, liger-kernel shadowed from /home/ben/task/pylibs (versions not printed in the digest)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-06
+      epochs: 0.26
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: "max_prompt_length 1024 / max_completion_length 512"
+      scheduler: constant_with_warmup
+      warmup: "3 steps"
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        --steps 96 and --gpu-util 0.2 on the command line at [37704]. lr 1e-6,
+        --model ckpts/v3_text and --out ckpts/grpo are argparse defaults of
+        train_grpo.py, NOT overridden. Script body at this launch: num_generations
+        8, temperature 1.0, beta 0.0 (no KL term), vllm_mode="colocate" at 0.2 of
+        GPU memory, optim="adamw_torch_fused", gradient_checkpointing,
+        logging_steps 1, save_strategy="steps" with save_steps 24 ([37701]),
+        save_only_model, max_grad_norm 0.2, seed 42, and an explicit
+        GenerationConfig(bos_token_id=2, eos_token_id=[1,106], pad_token_id=0)
+        attached to the model to make the save pass ([37699]).
+        reward = 1.0 for a last-number match + 0.1 for a completion ending in an
+        "ANSWER:" line (0.05 if the marker is elsewhere) - 0.2 if the completion
+        exceeds 3000 characters. epochs 0.26 is the value the trainer printed,
+        not a setting.
+    target_format: >-
+      zero-shot eval-style prompt; completions scored by the eval's last-number
+      normaliser, so the training signal is the scorer's own criterion.
+  command:
+    argv: [PYTHONPATH=/home/ben/task/pylibs, PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, python3, train_grpo.py, --steps, "96", --gpu-util, "0.2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {PYTHONPATH: /home/ben/task/pylibs, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/train_grpo.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, run_eval.sh, ckpts/grpo/final, "500", grpo96_500]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-08
+    value: 0.684
+    path: /home/ben/task/results_v3_500.json
+  diagnostic:
+    what: >-
+      mean reward per quarter of the 96 logged steps, to see whether the policy
+      is actually learning from the correctness signal
+    command: [python3, -c, "quarter"]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.183
+  output_checkpoint: /home/ben/task/ckpts/grpo/final
+  training_summary:
+    final_loss: 0.0015379933878042114
+    steps: 96
+    notes: >-
+      train_grpo.log: train_runtime 658.13 s (0.183 h), 96 steps, epoch 0.26,
+      train_loss 0.00154, "done"; an intermediate checkpoint ckpts/grpo/checkpoint-48
+      was also saved. Before evaluation the agent overwrote the
+      generation_config.json of both checkpoint dirs with the greedy settings
+      (do_sample=false, temperature 0.0, top_p 1.0, top_k -1, eos_token_id
+      [1,106]) at [38170].
+  measurements:
+    - metric: accuracy
+      value: 0.672
+      n: 500
+      path: /home/ben/task/results_grpo96_500.json
+      delta_vs_comparator: -0.012
+    - metric: accuracy
+      value: 0.72
+      n: 150
+      path: /home/ben/task/results_grpo96_150.json
+      delta_vs_comparator: 0.0133333333333333
+    - metric: accuracy
+      value: 0.7133333333333334
+      n: 150
+      path: /home/ben/task/results_grpo48_150.json
+      delta_vs_comparator: 0.0066666666666667
+  diagnostic_result:
+    value: 0.848
+    path: null
+    notes: >-
+      [37978] mean reward by quarter of the run: 0.856 / 0.853 / 0.791 / 0.848.
+      Agent at [38169]: "Reward trajectory is flat - weak signal, but RL can
+      still shift greedy behavior."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    96 GRPO steps moved the 150-sample score from 70.7% to 72.0%, but the agent
+    checked at 500 and read the gain as noise: "67.2% @500 - 150-sample gains
+    were noise" ([38871]), 1.2 pts below the v3 parent under the same protocol
+    and inside the +-2.1 pt stderr. The reward curve is flat across the run, so
+    the mechanism the hypothesis rested on - the correctness signal actually
+    improving the policy - is not visible in the training log.
+  next_step: >-
+    "One final bounded experiment: continue GRPO 96 more steps at higher lr
+    (2e-6) from the GRPO checkpoint" ([38871], [38872]).
+  decision: adopt
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-71205e90
+  launch_i: 37704
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [34194, 37631]
+    setup: [35791, 37699, 37701, 37704]
+    evaluation: [38170, 38175, 38269]
+    result: [37926, 37976, 37977, 37978, 38268, 38871]
+    conclusion: [38169, 38871]
+  snapshot_files:
+    - train_grpo.py
+    - train_grpo.log
+    - run_eval.sh
+    - results_grpo96_150.json
+    - results_grpo48_150.json
+    - results_grpo96_500.json
+    - results_v3text_150.json
+    - results_v3_500.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the --limit 150 comparator for this card is the text-only extraction of v3 (0.7067, task/results_v3text_150.json), which has no card because its launch is not in the digest; the --limit 500 comparator is the full-architecture v3 (0.684)."
+    - "decision `adopt` records that ckpts/grpo/final became the parent of exp-15, not that it became the incumbent artifact - final_model still held the v3 weights at this point."
+    - "the intermediate checkpoint ckpts/grpo/checkpoint-48 was evaluated at --limit 150 only."

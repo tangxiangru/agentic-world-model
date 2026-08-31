@@ -1,0 +1,170 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.29
+
+problem:
+  statement: >-
+    The base model scores 11.3% on the benchmark's own evaluator at limit 150,
+    and its eos_token_id is <|endoftext|> (151643) rather than <|im_end|>
+    (151645), so an untrained model neither solves the problems nor stops
+    cleanly in the eval's chat format.
+  evidence:
+    - path: /home/ben/task/logs/baseline_150.json
+      locator: "[115], [120]"
+      observation: "baseline eval of the base model: 11.3% (limit 150, temp 1.0)"
+    - path: /home/ben/task/build_data.py
+      locator: "[132], [133]"
+      observation: >-
+        agent: base model eos is 151643, not <|im_end|> 151645; training must
+        teach the model to emit <|im_end|> and generation_config must list both
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: null
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --which, gsm8k]
+      selection: >-
+        every train row with a '####' answer; <<calc=...>> annotations stripped;
+        completion = reasoning + 'ANSWER: <target>'; prompt = the eval's
+        MATH_PROMPT_TEMPLATE wrapped as <|im_start|>user ... <|im_start|>assistant
+        with NO system message [133]
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers Trainer (full fine-tune, completion-only loss mask)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 768
+      scheduler: cosine_with_min_lr
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        scheduler, warmup, weight_decay, precision and seed are train_sft.py
+        argparse/TrainingArguments defaults that this launch did not override
+        (min_lr_rate 0.1, max_grad_norm 1.0, gradient_checkpointing,
+        group_by_length, adamw_torch_fused, flash_attention_2,
+        save_strategy=no); script text is in the workspace snapshot
+    target_format: >-
+      chat format with no system message; assistant turn is a CoT ending in
+      'ANSWER: <n>' with <|im_end|> (151645) appended as the training target's
+      final token; after training generation_config eos_token_id is patched to
+      [151643, 151645]
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/gsm8k_train.jsonl, --out, work/sft_gsm_only, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2", --max_len, "768"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/sft_gsm_only.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [nohup, python, myeval.py, eval, --model, work/sft_gsm_only, --limit, "300", --temperature, "1.0", --max_tokens, "512", --show_errors, "8", --out, logs/myeval_gsm_only_300.json]
+    dev_set: "GSM8K test split scored by myeval.py (inspect match_str, numeric, location=end) with the eval's 10-shot system prompt, --limit 300, temperature 1.0"
+    n: 300
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.113
+    path: /home/ben/task/logs/baseline_150.json
+  diagnostic:
+    what: "same eval at temperature 0.0 (greedy), to separate whether the model learned the task from whether it survives temp-1.0 sampling"
+    command: [nohup, python, myeval.py, eval, --model, work/sft_gsm_only, --limit, "100", --temperature, "0.0", --max_tokens, "512", --out, logs/myeval_gsm_only_greedy.json]
+    path: /home/ben/task/logs/myeval_gsm_only_greedy.json
+
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/work/sft_gsm_only
+  training_summary:
+    final_loss: 0.42
+    steps: 702
+    notes: "agent reported 'loss ~0.42, 343s' at [229]; final_loss is that approximate figure"
+  measurements:
+    - metric: accuracy
+      value: 0.1133
+      n: 300
+      path: /home/ben/task/logs/myeval_gsm_only_300.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.70
+    path: /home/ben/task/logs/myeval_gsm_only_greedy.json
+    notes: "70% greedy at limit 100 against 11.3% at temp 1.0 [333]; the agent also showed correct greedy generations on both the training-style and the eval-style prompt [300][306]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The GSM8K-only SFT model reached 70% greedy but 0.1133 (34/300) at temp 1.0,
+    which the agent called "identical to baseline, with garbage outputs" [294];
+    it read the gap as a distribution that is too flat for temp-1.0 sampling
+    [333]. The comparator was measured under a different protocol (official
+    evaluator, limit 150), so no delta is claimed.
+  decision: reject
+  next_step: >-
+    "train on far more data (MetaMath 240K + GSM8K) to sharpen, then
+    rejection-sampling fine-tune on the model's own correct samples" [333]
+
+# ---- 7. Outcome (joined by the pipeline; never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-f099ff8e
+  launch_i: 188
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [120, 132]
+    setup: [133, 136, 188]
+    evaluation: [289, 328]
+    result: [229, 294, 333]
+    conclusion: [294, 333]
+  snapshot_files:
+    - build_data.py
+    - train_sft.py
+    - myeval.py
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 157, outcome: "identical argv; no output in the stream, train_sft.py patched at [166]-[167] (lr_scheduler_type -> cosine_with_min_lr) before relaunch"}
+    - {launch_i: 180, outcome: "identical argv; no output in the stream, train_sft.py patched at [186] (--min_lr_ratio argument restored) before relaunch"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "[157] and [180] launched the same argv as this card and were relaunched after one-line script patches; the digest records no output for either, so they are listed as smoke_runs rather than separate cards"
+    - "official evaluate.py runs on this checkpoint at [230] and [237] were killed before producing a result; the only official number for this line is the base-model baseline"
+    - "logs/*.json referenced by this card are not present in the workspace snapshot (only *.py, *.txt, *.log, timer.sh are)"
+    - "n_examples for data/gsm8k_train.jsonl was never printed in the stream"

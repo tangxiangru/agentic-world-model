@@ -1,0 +1,187 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 4.97
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    After SFT the outputs are well formatted and stop correctly, so what is left are
+    genuine reasoning errors on hard multi-step problems (backward percentages,
+    multi-stage rates, compound word problems). Adding self-generated solutions on top
+    of the SFT data did not touch them.
+  evidence:
+    - path: /home/ben/task/logs/2026-06-15T07-03-29+02-00_gsm8k_5ssUpCSjXHzNiqTXD42Fua.json
+      locator: "[348], [349] - wrong items printed from the most recent eval log"
+      observation: >-
+        the surviving failures are fluent, correctly formatted solutions with a wrong
+        chain of reasoning, not formatting or stopping failures
+    - path: /home/ben/task/logs/eval_v2_checkpoint-4560.json
+      locator: "[499]"
+      observation: "v2 (RFT) scored 82 / 81.3 / 82 vs v1 epoch-2's 84.0 - the extra self-generated data did not help"
+  affected_share: null
+  failure_examples:
+    - id: null                 # the agent printed no item ids
+      source: /home/ben/task/logs/2026-06-15T07-03-29+02-00_gsm8k_5ssUpCSjXHzNiqTXD42Fua.json
+      question: "John likes to have a glass of water with breakfast, lunch and dinner.  Finally, he has one before he goes to bed as well"
+      gold: "26"
+      model_output: "... glasses of water in a week.\nOn the weekends, he has a soda with dinner instead, so he doesn't drink any water on those days.\nTherefore, John drinks a total of 45 glasses of water in a week.\nANSWER: 45"
+      failure: "mis-modelled the weekend substitution; answered 45 instead of 26"
+    - id: null
+      source: /home/ben/task/logs/2026-06-15T07-03-29+02-00_gsm8k_5ssUpCSjXHzNiqTXD42Fua.json
+      question: "Sasha notices that prices for lumber have gone up 50% in the last few months after she bought some lumber. Since she has"
+      gold: "90"
+      model_output: "... 4 x 10 boards for $16 each, so she spent 5 * $16 = $80 on these boards.\nIn total, Sasha spent $100 + $80 = $180 on the lumber.\nIf she sells all the boards, she will make a profit of $180.\nANSWER: 180"
+      failure: "reported total spend as the profit and mis-counted the boards; answered 180 instead of 90"
+    - id: null
+      source: /home/ben/task/logs/2026-06-15T07-03-29+02-00_gsm8k_5ssUpCSjXHzNiqTXD42Fua.json
+      question: "Adrien's total salary was 30 percent higher than Lylah's. Four years later, his salary had increased, and he was earning"
+      gold: "95200"
+      model_output: "Adrien's salary was 30% higher than Lylah's, then Lylah's salary was 100/130 * 56000 = $43076.92\nThe total salary the two were receiving four years later was 56000 + 43076.92 = $99076.92\nANSWER: 99076"
+      failure: "backward-percentage step applied to the wrong year's salary; answered 99076 instead of 95200"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    GRPO on the v1 epoch-2 SFT checkpoint, with a 0/1 reward on final-answer
+    correctness, will directly optimise the thing the metric measures and lift
+    accuracy above the 84% SFT plateau where imitation data has stalled.
+  mechanism: >-
+    Agent at [499]: "let me take the highest-upside swing: GRPO on the v1 epoch-2 model
+    to directly optimize answer correctness", and at [351] the remaining failures "are
+    genuine reasoning errors on hard multi-step problems - not formatting issues ...
+    This points to RFT (running in v2) and possibly GRPO as the levers."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/sft_v1/checkpoint-2968
+    origin: exp-01
+    hash: null
+  data:
+    - path: null              # loaded in-process from the HF hub, not written to disk
+      source: "openai/gsm8k (main, train split)"
+      n_examples: null        # the script prints the count but it never reached the stream
+      built_by: /home/ben/task/scripts/train_grpo.py
+      build_command: []
+      selection: >-
+        every GSM8K train question wrapped as a single user turn in the eval's math
+        prompt template; target = the gold answer after '####', normalised to 5
+        significant digits ([352])
+      contamination_check: not_run    # train split only; test never loaded
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl.GRPOTrainer (TRL 0.27, API verified at [439]) with vLLM colocate rollouts"
+    peft: "LoRA r=32 alpha=64 dropout=0.0 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: null
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 768        # max_completion_length; max_prompt_length 512
+      scheduler: constant_with_warmup
+      warmup: 10              # warmup_steps
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        max_steps=250, num_generations=8, rollout temperature=1.0, max_prompt_length=512
+        - all from the launch argv at [500]. scheduler, warmup_steps=10, bf16,
+        gradient_checkpointing, use_vllm with vllm_mode=colocate and
+        vllm_gpu_memory_utilization=0.3, save_steps=100, logging_steps=5 and the LoRA
+        config are literals in the script written at [352]; the script is not in the
+        workspace snapshot, so no argparse defaults are used (the launch overrode the
+        script's default lr of 1e-6 with 1e-5).
+    target_format: >-
+      chat-format rollouts; reward 1.0 when the number after "ANSWER:" (or the last
+      number) normalises to the gold answer, else 0.0
+  command:
+    argv: [nohup, python, scripts/train_grpo.py, --model, ckpts/sft_v1/checkpoint-2968, --out, ckpts/grpo,
+           --steps, "250", --lr, "1e-5", --num_gen, "8", --bs, "8", --accum, "2", --max_len, "768",
+           --max_prompt, "512", --temp, "1.0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_grpo.py
+    env: {}
+    log: /home/ben/task/logs/grpo.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 0.28          # "~4s/step, ETA ~17 min for 250 steps" [507]
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: []              # the adapter itself was never evaluated; it was merged first (exp-08)
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.84
+    path: /home/ben/task/logs/eval_v1_ep2.json
+  diagnostic:
+    what: "training reward (share of rollouts with the correct final answer) as a learning signal"
+    command: []
+    path: /home/ben/task/logs/grpo.log
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.34
+  duration_h: 0.34
+  steps: 250
+  output_checkpoint: /home/ben/task/ckpts/grpo
+  training_summary:
+    final_loss: null
+    steps: 250
+    notes: >-
+      LoRA adapter saved (ckpts/grpo/adapter_model.safetensors, [517]/[527]); ~4 s/step.
+      Reward on temperature-1.0 rollouts hovered around 0.8-0.94 with visible variance
+      ([516], [527]). wall_h from event timestamps [500] (t=+4.97h) to [527] (t=+5.31h,
+      completion confirmed).
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/grpo.log
+    notes: "reward ~0.8-0.94, described by the agent as a learning signal but noisy ([516], [527]); no numeric series in the stream"
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The run completed and saved an adapter, and the reward stayed high but noisy; the
+    hypothesis could not be judged from this launch because the adapter has to be
+    merged into a full model before the eval can load it ([444], [527]).
+  decision: adopt
+  next_step: "Merge the LoRA adapter into checkpoint-2968 and evaluate ([527])."
+
+provenance:
+  kind: extracted
+  run_ref: r-ee271986
+  launch_i: 500
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [348, 349, 351, 499]
+    setup: [352, 439, 500]
+    evaluation: []
+    result: [507, 516, 517, 527]
+    conclusion: [527]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The failure examples come from the official eval log the agent inspected, not from a held-out dev or probe set the agent built."
+    - "The GRPO training-set size, per-step reward series and final loss were never printed, only the agent's summary of the reward range."

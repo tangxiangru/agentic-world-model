@@ -1,0 +1,231 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.61
+
+problem:
+  statement: >-
+    The unmodified base model reaches 38% on the benchmark and "rambles without
+    clean formatting" [91]; the scorer extracts the LAST number in the
+    completion, so the model must terminate cleanly right after its final
+    answer or trailing numbers corrupt the score [30].
+  evidence:
+    - path: /home/ben/task/logs/baseline_base.json
+      locator: "[86], [91]"
+      observation: "baseline eval of the base model, limit 50: accuracy 0.38"
+    - path: /home/ben/task/logs/baseline_base.log
+      locator: "[30]"
+      observation: >-
+        the grader is match(location="end", numeric=True) - it takes the last
+        number in the completion
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full supervised fine-tuning on GSM8K-train plus MetaMathQA, with sequences
+    built to exactly match the eval's chat template and loss masked to the
+    assistant completion, will make the model emit a clean step-by-step
+    solution ending in "ANSWER: <n>" and beat the 38% base model [111], [112].
+  mechanism: >-
+    "Sequences are built to EXACTLY match what the eval's qwen3.jinja template
+    produces (single-turn: user -> assistant), so train/eval distributions
+    agree. Loss is masked to the assistant completion (+ trailing <|im_end|>)."
+    [112]
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_train.jsonl
+      source: "derived: openai/gsm8k train + meta-math/MetaMathQA"
+      n_examples: 127473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        GSM8K train (7473) with <<calc>> annotations stripped, plus 90K
+        MetaMathQA GSM_* and 30K MetaMathQA MATH_* items whose response ends in
+        a clean numeric answer; every question whose whitespace/case-normalised
+        form matches a GSM8K *test* question is dropped [92]. The trainer
+        further dropped 230 examples longer than 1024 tokens, loading 127243
+        [188].
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        scheduler/weight_decay/precision/seed and warmup 0.03 are not on the
+        command line; they are hard-coded or argparse defaults in
+        task/train_sft.py, which the launch did not override
+        (lr_scheduler_type="cosine", weight_decay=0.0, bf16=True, set_seed(0),
+        --warmup-ratio default 0.03). Also from the script and not overridden:
+        optim=adamw_torch_fused, gradient_checkpointing, flash_attention_2,
+        group_by_length=True, max_grad_norm=1.0, save_strategy="steps",
+        save_steps=600, save_total_limit=6.
+    target_format: >-
+      "<|im_start|>user\n{eval MATH_PROMPT_TEMPLATE}<|im_end|>\n<|im_start|>assistant\n"
+      as prompt (masked), completion = "{reasoning}\n\nANSWER: {n}<|im_end|>\n"
+  command:
+    argv:
+      - python
+      - -u
+      - train_sft.py
+      - --out
+      - runs/sft_v1
+      - --epochs
+      - "2"
+      - --lr
+      - 1e-5
+      - --bs
+      - "16"
+      - --accum
+      - "4"
+      - --max-len
+      - "1024"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/eval_ckpt600
+      - --limit
+      - "40"
+      - --max-tokens
+      - "1024"
+      - --max-connections
+      - "8"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --json-output-file
+      - logs/ckpt600.json
+    dev_set: "official --limit 40"
+    n: 40
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.38
+    path: /home/ben/task/logs/baseline_base.json
+  diagnostic:
+    what: >-
+      manual read of the first 6 completions for format / stop-token behaviour
+      [402]
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.41
+  output_checkpoint: /home/ben/task/runs/sft_v1/checkpoint-600
+  training_summary:
+    final_loss: null
+    steps: 600
+    notes: >-
+      Killed deliberately at checkpoint-600 (epoch ~0.30) to validate the
+      stop-token behaviour early [383]. Logged loss fell 0.25 -> 0.16 over the
+      first 125 steps [242]. ~3.9 s/step, so 2 epochs was projected at ~4.3 h
+      [230].
+  measurements:
+    - metric: accuracy
+      value: 0.375
+      n: 40
+      path: /home/ben/task/logs/ckpt600.json
+      delta_vs_comparator: -0.005
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      1 of the first 6 samples correct; completions produce "ANSWER: X" but
+      then keep generating hallucinated follow-up problems, so the last-number
+      grader reads a wrong number [403], [405]. Stop rate at this checkpoint was
+      later quoted as 67% [515].
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The pipeline trains and the model learns the target format, but at epoch 0.3
+    it "produces ANSWER: X but doesn't reliably emit a stop token - it continues
+    generating hallucinated problems, so the scorer extracts the last (wrong)
+    number" [405]. 37.5% at limit 40 is not comparable to the 38% baseline
+    (limit 50) and is not evidence either way.
+  decision: adopt
+  next_step: >-
+    "The fix is simply more training (vllm stopping is confirmed working). Let
+    me resume from checkpoint-600 and monitor - I'll verify stopping improves at
+    epoch ~0.9" [413].
+
+provenance:
+  kind: extracted
+  run_ref: r-049e5f94
+  launch_i: 252
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [30, 86, 91]
+    setup: [92, 112, 252]
+    evaluation: [396]
+    result: [383, 392, 402, 403, 515]
+    conclusion: [405, 413]
+  snapshot_files:
+    - prepare_data.py
+    - train_sft.py
+    - prep_checkpoint.py
+    - evaluate.py
+    - timer.sh
+    - contamination_judgement.txt
+  smoke_runs:
+    - {launch_i: 128, outcome: "killed after ~9 min: stdout block-buffered, no loss visible, and save_strategy was 'no' so nothing was checkpointed"}
+    - {launch_i: 168, outcome: "killed after ~10 min: still no visible loss; restarted for unbuffered stdout"}
+    - {launch_i: 208, outcome: "passed (loss ~0.2 visible, ~3.9 s/step); killed to switch from per-epoch to per-600-step checkpointing"}
+    - {launch_i: 233, outcome: "crashed: the launching shell matched its own 'pkill -f train_sft.py' and died (exit 144); training reached only epoch 0.06"}
+    - {launch_i: 245, outcome: "crashed: setsid nohup launch exited 1, no process and 0 MiB on the GPU"}
+  extractor: null
+  unresolved:
+    - >-
+      The 37.5% figure is quoted retrospectively at [515]; the contents of
+      logs/ckpt600.json are never printed in the stream.
+    - >-
+      logs/ and runs/ are not part of the workspace snapshot, so no eval JSON
+      cited by this card can be re-read.
+    - >-
+      Launches [128]-[245] are recorded as smoke_runs rather than cards: they
+      are the same command with the same data and hyper-parameters, killed or
+      crashed while the agent was fighting stdout buffering, checkpoint policy
+      and process detachment, and none produced a candidate.

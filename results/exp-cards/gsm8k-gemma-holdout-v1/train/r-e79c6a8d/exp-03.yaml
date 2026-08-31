@@ -1,0 +1,255 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 4.24
+
+problem:
+  statement: >-
+    Two things the agent named after exp-02: the second epoch regressed -
+    "Epoch 1: 90.7% - epoch 2 regressed to 86.7% (overfit)" [25549] - so the
+    two-epoch schedule costs accuracy; and the first-round training mixture was
+    built from base-model samples, which only covered part of the train set,
+    whereas the exp-02 checkpoint solves far more of it ("Round-2 coverage:
+    7357/7473 (98.4%) of train is now solvable by the SFT model" [27672]).
+  evidence:
+    - path: /home/ben/task/runs/score_sft1e1_greedy.json
+      locator: "[25140], [25549]"
+      observation: "epoch-1 checkpoint 0.9067 at limit 150"
+    - path: /home/ben/task/runs/score_sft1e2_greedy.json
+      locator: "[25140], [25549]"
+      observation: "epoch-2 checkpoint 0.8667 at limit 150 - read as overfitting"
+    - path: /home/ben/task/runs/rs_sft_greedy.jsonl
+      locator: "[27672]"
+      observation: "round-2 rejection sampling from checkpoint-170 covers 7357/7473 train questions (98.4%)"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/runs/sft_v2
+      source: derived:exp-02
+      n_examples: 34965
+      built_by: /home/ben/task/build_sft.py
+      build_command:
+        - python
+        - build_sft.py
+        - --rs-files
+        - runs/rs_sft_greedy.jsonl:1
+        - runs/rs_sft_sample.jsonl:2
+        - runs/rs_sft_hot.jsonl:2
+        - runs/rs1_sample.jsonl:1
+        - --out
+        - runs/sft_v2
+        - --add-gold
+        - --max-traces-per-q
+        - "5"
+        - --max-len
+        - "2816"
+      selection: >-
+        Prioritised per-question quotas over four verified-trace sources: 1
+        greedy trace from the exp-02 checkpoint (runs/rs_sft_greedy.jsonl,
+        --greedy --max-tokens 400), 2 from its k=6 t=0.8 diversity pass
+        (runs/rs_sft_sample.jsonl, [27673]), 2 from its k=8 t=1.0 hot pass over
+        the questions greedy missed (runs/rs_sft_hot.jsonl), and 1 base-model
+        trace (runs/rs1_sample.jsonl); the shortest trace of each source is
+        dropped as likely degenerate; at most 5 traces per question, plus 1 gold
+        train solution (--add-gold); every trace verified against gsm8k-train
+        gold by the scorer-identical checker; examples over 2816 tokens dropped;
+        70% carry the exact eval system message, 30% none. Example count 34,965
+        and the 70/30 split are the agent's own record in SUMMARY.md; the build's
+        stdout is not in the stream.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: "1 greedy + 2 sampled + 2 hard-question + 1 base-model trace + 1 gold solution per train question"
+  method:
+    family: sft
+    framework: transformers.Trainer (DataCollatorWithFlattening packing, flash_attention_2)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 6
+      grad_accum: 22
+      max_seq_len: null
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        --save-steps 66 (checkpoints at 66/132/198 plus final at 265).
+        --bs is examples per flattened row; examples capped at 2816 tokens at
+        dataset build. scheduler (cosine), weight_decay 0.0, seed 42, bf16,
+        optim adamw_torch_fused, max_grad_norm 1.0, gradient checkpointing and
+        warmup 0.03 come from train_sft.py in the workspace and were not
+        overridden by this launch.
+    target_format: >-
+      eval chat template (templates/qwen3.jinja); prompt tokens masked with -100,
+      assistant target is the verified trace ending "ANSWER: <n>" plus <|im_end|>
+      (151645); train_sft.py writes a greedy generation_config.json into every
+      saved checkpoint.
+  command:
+    argv:
+      - nohup
+      - python
+      - train_sft.py
+      - --data
+      - runs/sft_v2
+      - --out
+      - runs/sft2
+      - --epochs
+      - "1"
+      - --lr
+      - 1e-5
+      - --bs
+      - "6"
+      - --accum
+      - "22"
+      - --save-steps
+      - "66"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/runs/sft2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - bash
+      - eval_ckpt.sh
+      - runs/sft2/final
+      - "-1"
+      - fulleval_run2final
+      - "16"
+      - "1024"
+    dev_set: "official --limit -1 (full test, 1319 samples); also --limit 150 for the three checkpoints"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.8711144806671721
+    path: /home/ben/task/runs/score_fulleval_run1e1.json
+  diagnostic:
+    what: "failure-class breakdown of the full-test eval log"
+    command:
+      - python
+      - analyze_log.py
+      - logs/2026-07-19T16-08-03+02-00_gsm8k_7QzMSBpbqcS8tXXbPsopEq.json
+      - "3"
+    path: /home/ben/task/logs/2026-07-19T16-08-03+02-00_gsm8k_7QzMSBpbqcS8tXXbPsopEq.json
+
+result:
+  execution: completed
+  wall_h: 1.8
+  duration_h: 1.8
+  steps: 265
+  output_checkpoint: /home/ben/task/runs/sft2/final
+  training_summary:
+    final_loss: null
+    steps: 265
+    notes: >-
+      No loss history was printed for this run. wall_h is derived: launched at
+      t=+4.24 h, the progress bar read 185/265 at 1:14:04 elapsed [30230], and
+      "DONE runs/sft2/final" was observed at t=+6.15 h [30460].
+  measurements:
+    - metric: accuracy
+      value: 0.9
+      n: 150
+      path: /home/ben/task/runs/score_sft2_final_greedy.json
+      delta_vs_comparator: -0.006666666666666599
+      notes: "runs/sft2/final, greedy, --max-tokens 1024; stderr 0.0246; comparator at n=150 is exp-02 checkpoint-170 at 0.9067"
+    - metric: accuracy
+      value: 0.8866666666666667
+      n: 150
+      path: /home/ben/task/runs/score_sft2_checkpoint-198_greedy.json
+      delta_vs_comparator: null
+      notes: "step-198 checkpoint, greedy, --max-tokens 1024; stderr 0.0260"
+    - metric: accuracy
+      value: 0.8866666666666667
+      n: 150
+      path: /home/ben/task/runs/score_sft2_checkpoint-132_greedy.json
+      delta_vs_comparator: null
+      notes: "step-132 checkpoint, greedy, --max-tokens 1024; stderr 0.0260"
+    - metric: accuracy
+      value: 0.8794541319181198
+      n: 1319
+      path: /home/ben/task/runs/score_fulleval_run2final.json
+      delta_vs_comparator: 0.008339651250947704
+      notes: >-
+        runs/sft2/final on the full test set, greedy, --max-tokens 1024; stderr
+        0.0090; comparator is exp-02 checkpoint-170 at 0.8711 under the same
+        protocol.
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-07-19T16-08-03+02-00_gsm8k_7QzMSBpbqcS8tXXbPsopEq.json
+    notes: >-
+      1160 correct, 158 wrong_ANSWER_line, 1 truncated of 1319; mean output
+      length 214.3 tokens [32578].
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    One epoch on the round-2 mixture scored 0.900 at limit 150 and 0.8795 on the
+    full test, which the agent read as "statistically tied" with exp-02 at 150
+    [31057] but ahead of it on the full test (0.8795 vs 0.8711, +0.008 against a
+    0.009 stderr), and it selected these weights as final_model [32290]. No
+    pre-launch claim was stated and the full-test delta is inside one stderr, so
+    the comparison decides selection rather than confirming a hypothesis.
+  decision: adopt
+  next_step: >-
+    Copy runs/sft2/final to final_model and A/B the shipped decoding config
+    (exp-04 onwards).
+
+provenance:
+  kind: extracted
+  run_ref: r-e79c6a8d
+  launch_i: 28270
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [25549, 26229, 27672]
+    setup: [26230, 27673, 28047, 28264, 28267, 28270]
+    evaluation: [28887, 31058]
+    result: [30230, 30460, 31529, 32578]
+    conclusion: [31057, 32290]
+  snapshot_files:
+    - train_sft.py
+    - build_sft.py
+    - rs_gen.py
+    - round2_rs.sh
+    - common.py
+    - analyze_log.py
+    - eval_ckpt.sh
+    - evaluate.py
+    - SUMMARY.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "build_sft.py stdout for runs/sft_v2 is not in the stream; the 34,965 examples and 70/30 system-prompt split come from the agent's SUMMARY.md."
+    - "A decontaminated Orca-Math top-up (25.5k rows, runs/orca_clean.jsonl) and build_sft.py --orca-file support were prepared but no launch used them."
+    - "The step-66 checkpoint was written by --save-steps 66 but never evaluated."

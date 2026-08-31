@@ -1,0 +1,227 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem ----
+problem:
+  statement: "The first fine-tune scored 0.01 and its generations are corrupted rather than merely mis-formatted - multilingual gibberish, echoed questions, and self-invented 'ANSWER:' lines that do not answer the prompt. After repackaging with the base Qwen tokenizer only lifted it to 0.02, the agent concluded 'the issue is not tokenizer-only; the model behavior itself regressed' and that training had to be aligned to the evaluator's actual prompt shape (user-only vs system+user) [88], [99], [109]."
+  evidence:
+    - path: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46a821e3/run1_metrics_100.json"
+      locator: "[71], [88]"
+      observation: "exp-01 checkpoint scored accuracy 0.010 on --limit 100, against 0.120 for the base model"
+    - path: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46a821e3/run1_fixed_metrics_50.json"
+      locator: "[104], [109]"
+      observation: "same weights repackaged with the base Qwen tokenizer still scored only 0.02 on --limit 50, ruling out a tokenizer-only cause"
+    - path: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-46a821e3.md"
+      locator: "[92]"
+      observation: "dump of the first eval-log samples: the checkpoint emits mixed-script text, invents new questions, and answers them instead of the prompt"
+  affected_share: null
+  failure_examples:
+    - id: "eval-log sample 2 (logs/2026-02-12T19-21-16+01-00_gsm8k_*.json, printed at [92])"
+      source: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-46a821e3.md"
+      question: null
+      gold: "28"
+      model_output: |-
+        엨
+
+        .Resolve the variable g if 5*g = 375
+
+        Reasoning:
+
+        EGITIMI KURULU Soru ve Cevaplarini yazdin mi? :) Neden, tabby?
+
+        ANSWER: sayi degeri $\boxed{75}$
+      failure: "ignores the asked question, invents unrelated problems in another language and answers those; never emits a usable final answer for the target 28"
+    - id: "eval-log sample 3 (printed at [92])"
+      source: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-46a821e3.md"
+      question: null
+      gold: "40"
+      model_output: |-
+        Harrison, Josh, and Mia went shopping. Harrison purchased 4 brownies that he bought for $2 each. Josh bought 3 loaves of bread which cost $4.50 per loaf and a gallon of milk for $2. Mia bought 4 boxes of crackers which cost $3 each. What is the difference in the price that each person spends?
+
+        Reasoning:
+      failure: "continues as a text generator - writes a fresh word problem instead of solving the one it was given"
+    - id: "eval-log sample 4 (printed at [92])"
+      source: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-46a821e3.md"
+      question: null
+      gold: "221"
+      model_output: |-
+        [mixed Hebrew/Arabic/Persian token salad]
+
+        COMPLETE THE SENTENCE: Riding a bike is a sport you are most in or out
+
+        Reasoning:
+        Answer: out
+
+        ANSWER: out
+      failure: "degenerate multi-script output; produces 'ANSWER: out' for a numeric GSM8K item"
+  watch_set: null
+
+# ---- 2. Hypothesis ----
+hypothesis:
+  claim: "A LoRA fine-tune on plain-text GSM8K targets shaped exactly like the evaluator's own pattern - question, then 'Reasoning:', then 'ANSWER: <n>', with no system message and no chat template - will avoid the run1 regression and score above the 0.12 baseline [109], [120]."
+  mechanism: "run1's collapse is attributed to a training distribution that did not match what the evaluator sends; a low-rank adapter over frozen base weights on the evaluator's Reasoning/ANSWER pattern is the 'safer second training recipe' - it changes less of the model and matches the prompt shape exactly [109], [120]."
+  expected_effect:
+    metric: "accuracy"
+    direction: "higher"
+    against: "base_model"
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ----
+setup:
+  parent_checkpoint:
+    path: "Qwen/Qwen3-1.7B-Base"
+    origin: "base_model"
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (config main, split train)"
+      n_examples: null
+      built_by: "/home/ben/task/train_gsm8k_lora_reasoning.py"
+      build_command:
+        - "python"
+        - "train_gsm8k_lora_reasoning.py"
+        - "--output-dir"
+        - "runs/run2_lora"
+        - "--num-train-epochs"
+        - "3"
+        - "--learning-rate"
+        - "2e-4"
+        - "--max-length"
+        - "1024"
+        - "--train-batch-size"
+        - "16"
+        - "--eval-batch-size"
+        - "16"
+        - "--gradient-accumulation-steps"
+        - "2"
+        - "--eval-size"
+        - "512"
+        - "--save-steps"
+        - "70"
+        - "--eval-steps"
+        - "70"
+        - "--logging-steps"
+        - "5"
+      selection: "loaded in-process, shuffled with seed 42; the first eval_size = min(--eval-size 512, len(ds)//10) rows held out for validation, the rest trained on. The gold answer is split on '####' into reasoning and a final number, with commas stripped and the number re-extracted by regex. Row counts were never printed."
+      repeats: 1
+      contamination_check: "not_run"
+      mixture_weight: null
+  method:
+    family: "sft"
+    framework: "transformers.Trainer + peft LoRA (bf16 + tf32, gradient checkpointing, adamw_torch_fused, load_best_model_at_end on eval_loss)"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,up_proj,down_proj,gate_proj bias=none"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: "cosine"
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16"
+      seed: 42
+      other: "--eval-size 512 --save-steps 70 --eval-steps 70 --logging-steps 5 on the launch; epochs 3 was the nominal setting but the run was killed early at [134]. From train_gsm8k_lora_reasoning.py in the workspace snapshot, not overridden by this launch: the LoRA config above (r=64, alpha=128, dropout=0.05, seven target modules), lr_scheduler_type=cosine, warmup_ratio=0.03, weight_decay=0.0, seed=42, bf16=True, tf32=True, gradient_checkpointing, save_total_limit=2, load_best_model_at_end on eval_loss."
+    target_format: "no chat template and no system message: prompt = question.strip() + '\\n\\nReasoning:\\n', completion = the gold reasoning (the part before '####') + '\\n\\nANSWER: ' + the final number. Prompt tokens masked to -100 (completion-only loss)."
+  command:
+    argv:
+      - "python"
+      - "train_gsm8k_lora_reasoning.py"
+      - "--output-dir"
+      - "runs/run2_lora"
+      - "--num-train-epochs"
+      - "3"
+      - "--learning-rate"
+      - "2e-4"
+      - "--max-length"
+      - "1024"
+      - "--train-batch-size"
+      - "16"
+      - "--eval-batch-size"
+      - "16"
+      - "--gradient-accumulation-steps"
+      - "2"
+      - "--eval-size"
+      - "512"
+      - "--save-steps"
+      - "70"
+      - "--eval-steps"
+      - "70"
+      - "--logging-steps"
+      - "5"
+    cwd: "/home/ben/task"
+    script: "/home/ben/task/train_gsm8k_lora_reasoning.py"
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+# ---- 4. Evaluation ----
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result ----
+result:
+  execution: "killed"
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: "/home/ben/task/runs/run2_lora/checkpoint-210"
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "Killed by the agent at [134] with pkill -f train_gsm8k_lora_reasoning.py: 'I'm stopping run2 early since validation already peaked and later checkpoints were regressing' [138]. Two checkpoints survived, checkpoint-210 and checkpoint-350 [140]; the agent took checkpoint-210 forward. No loss numbers for this run appear in the digest - the only narration is that loss decreased steadily through epoch 2 with no instability [124], [130]. The adapter itself was never scored; it was merged in exp-03 first."
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----
+conclusion:
+  verdict: "inconclusive"
+  mechanism_verdict: not_tested
+  summary: "The LoRA run trained stably and was stopped early on the agent's reading that validation had peaked by checkpoint-210 [130], [138]. Nothing was measured on this output directly, so the claim that the Reasoning/ANSWER format fixes the run1 regression is not settled by this card - only by the merged checkpoint in exp-03."
+  decision: "adopt"
+  next_step: "Merge checkpoint-210 into a standalone model with merge_lora.py and benchmark it directly against the baseline [130], [138]."
+
+# ---- outcome (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ----
+provenance:
+  kind: extracted
+  run_ref: r-46a821e3
+  launch_i: 121
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [88, 92, 99, 104, 109]
+    setup: [114, 120, 121]
+    evaluation: []
+    result: [124, 130, 134, 138, 140]
+    conclusion: [138]
+  snapshot_files:
+    - "train_gsm8k_lora_reasoning.py"
+    - "run1_metrics_100.json"
+    - "run1_fixed_metrics_50.json"
+  digest: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-46a821e3.md"
+  extractor: "automated card extractor (model id omitted: these cards name no model other than the trained base model)"
+  unresolved:
+    - "the failure examples at [92] come from the evaluator's own log over the official GSM8K slice, not from a dev set the agent built; the question text was not printed, only the target and the generation"
+    - "no eval-loss numbers for run2 appear in the digest, so 'validation already peaked' [138] cannot be checked against a printed curve"
+    - "checkpoint-350 existed [140] but was never merged or scored"
+    - "the decision is adopt because this adapter is the parent of exp-03, whose merge became final_model; the adapter itself carries no measurement"

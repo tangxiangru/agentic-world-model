@@ -1,0 +1,184 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 5.39
+
+problem:
+  statement: >-
+    Training and evaluation see different prompt distributions: "Eval puts 10 gold
+    few-shots in SYSTEM msg; model trained without them" [623]. Every model so far
+    was fine-tuned with a one-line instruction as the system message, then graded
+    with ten worked examples there instead.
+  evidence:
+    - path: /home/ben/task/sft_common.py
+      locator: "SYS_INSTRUCTION / make_messages"
+      observation: >-
+        training always used the fixed one-line system instruction, never few-shot
+        examples
+    - path: /home/ben/task/cmp_gold_v1.json
+      locator: "[578], [584]"
+      observation: >-
+        the incumbent sits at 0.51 at --limit 300 and every data-side lever (RFT,
+        MetaMath, NEFTune) has been ruled out, leaving the prompt-distribution
+        mismatch as "the one remaining principled lever" [584]
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Fine-tuning on gold with k gold few-shot examples placed in the system message -
+    matching the eval's 10-shot system message - will beat the incumbent's 51.0% at
+    --limit 300.
+  mechanism: >-
+    "Build SFT data where the SYSTEM message contains k few-shot examples, matching
+    the eval distribution (eval puts 10 gold few-shots in the system message)" [591];
+    the model then sees at training time the same kind of context it is graded in,
+    instead of having to generalise from a bare instruction.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data_fewshot
+      source: "HF:openai/gsm8k (main, train split, gold solutions)"
+      n_examples: 22419
+      built_by: /home/ben/task/build_fewshot_data.py
+      build_command: [python, build_fewshot_data.py, --out, data_fewshot, --epochs-data, "3", --max-length, "2048"]
+      selection: >-
+        gold traversed 3 times with a reshuffle each pass; for 70% of examples the
+        system message is k in [2,5] other gold problems rendered as
+        "{question}\n\nReasoning:\n{reasoning}\n\nANSWER: {n}" joined by blank lines
+        (drawn from the first 200 shuffled indices), for the other 30% it is the
+        one-line instruction; examples over 2048 tokens dropped.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: "gold x3"
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum came from the launch (bs halved and accum doubled for
+        the longer few-shot sequences); no --save-epoch, so only the final model was
+        saved. scheduler, seed, max_grad_norm, group_by_length, adamw_torch_fused,
+        gradient_checkpointing and flash_attention_2 are hard-coded in train_sft.py
+        and warmup/weight_decay are its argparse defaults, not overridden here.
+        max_seq_len enforced at data-build time by build_fewshot_data.py
+        --max-length 2048. Three passes over gold at 1 epoch gives 701 optimiser
+        steps, about the same as exp-01's 702.
+    target_format: >-
+      smollm.jinja chat format with a few-shot system message; assistant turn =
+      gold reasoning + "\n\nANSWER: <n>"; assistant-only loss.
+  command:
+    argv: [python, train_sft.py, --data, data_fewshot, --out, runs/fewshot_v1, --epochs, "1", --lr, "2e-5", --bs, "8", --accum, "4"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_fewshot.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/fewshot_v1, --limit, "300", --max-connections, "8", --gpu-memory-utilization, "0.5", --json-output-file, cmp_fewshot.json]
+    dev_set: "official --limit 300"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.51
+    path: /home/ben/task/cmp_gold_v1.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.31
+  duration_h: 0.31
+  steps: 701
+  output_checkpoint: /home/ben/task/runs/fewshot_v1
+  training_summary: {final_loss: 0.3211, steps: 701, notes: "train_runtime 1102.3 s, 22419 train examples (train_fewshot.log)"}
+  measurements:
+    - metric: accuracy
+      value: 0.5467
+      n: 300
+      path: /home/ben/task/cmp_fewshot.json
+      delta_vs_comparator: 0.0367
+    - metric: accuracy
+      value: 0.535
+      n: 600
+      path: /home/ben/task/big_fsv1.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Few-shot training helps: fewshot_v1 = 54.7% vs gold_v1 = 51.0% at limit 300
+    (+3.7%, right direction)" [647], which the agent itself scored as "~0.9sigma"
+    [660] - a gain in the predicted direction but inside the noise of a 300-item
+    eval, so inconclusive rather than supported. The --limit 600 confirmation
+    (0.535) has no comparator because the matching gold_v1 eval crashed [706].
+  decision: adopt
+  next_step: >-
+    "rebuild with more diverse few-shot contexts (gold x4, more shots) and train one
+    epoch to maximize the effect" [647].
+
+outcome:
+  official_accuracy: null      # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-51c52152
+  launch_i: 617
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [584, 591, 623]
+    setup: [591, 611, 617]
+    evaluation: [642, 682]
+    result: [647, 699, 706]
+    conclusion: [647, 660, 708]
+  snapshot_files:
+    - build_fewshot_data.py
+    - train_sft.py
+    - sft_common.py
+    - train_fewshot.log
+    - cmp_fewshot.json
+    - eval_fewshot.log
+    - big_fsv1.json
+    - ev_fsv1.log
+    - cmp_gold_v1.json
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "build_fewshot_data.py has no test-split filter (unlike prepare_data.py), so contamination_check is not_run; it reads only the gsm8k train split"
+    - "the --limit 600 A/B was launched as a pair at [682] but the gold_v1 half died with a vLLM EngineDeadError [706], so 0.535 at n=600 has no same-protocol comparator"

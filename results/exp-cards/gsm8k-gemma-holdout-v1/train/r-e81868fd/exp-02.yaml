@@ -1,0 +1,196 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null                        # digest header: "no timestamps in this run"
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The 2-epoch configuration of exp-01 needs ~6.6 h of the 10 h budget (6,168 steps
+    at ~3.85 s/step) and leaves no time to evaluate or iterate; ~9.5 h remained when
+    the agent checked the timer.
+  evidence:
+    - path: /home/ben/task/timer.sh
+      locator: "[150], [151]"
+      observation: "\"Remaining time (hours:minutes): 9:32\""
+    - path: /home/ben/task/baseline_results.json
+      locator: "[94]"
+      observation: "base model at 16.7% on 30 samples - the model still has to be trained at all"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    [152]: "Use only 1 epoch (cutting training time in half). This gives us 3.3 hours
+    of training + evaluation time for iteration" - one epoch over the same 267K
+    mixture, at batch 8 x grad-accum 4, will still lift GSM8K accuracy far above the
+    16.7% baseline while finishing in ~3.1 h.
+  mechanism: >-
+    [146]: "MetaMathQA GSM-type data is directly derived from GSM8K train, so it is
+    maximally relevant. And with 267K samples, 2 epochs is probably overkill - 1 epoch
+    might be enough."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_train.jsonl
+      source: "local: openai/gsm8k + meta-math/MetaMathQA"
+      n_examples: 266973
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        GSM8K train 7,473 + all 240,000 MetaMathQA GSM_AnsAug/GSM_Rephrased/GSM_SV/
+        GSM_FOBAR + 20,000 random non-GSM MetaMathQA = 267,473, shuffled with seed 42,
+        first 500 held out as /home/ben/task/train_data_val.jsonl (passed as --val-file)
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: "x1"
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129) [23]"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/batch/grad_accum/max_seq_len/warmup from the launch argv at [163].
+        scheduler=cosine, weight_decay=0.01, bf16=True, packing=True,
+        gradient_checkpointing=True, dataset_text_field="text", eval_steps=500,
+        save_steps=500 hard-coded in or passed to /home/ben/task/train.py (script text
+        is in the workspace and the launch did not override them). No training seed set.
+    target_format: >-
+      raw text in the evaluation's chat template: "<|im_start|>system ... <|im_end|>
+      <|im_start|>user {math prompt}<|im_end|> <|im_start|>assistant
+      <think>{reasoning}</think>{reasoning}\n\nANSWER: {n}<|im_end|>"
+  command:
+    argv: [python3, train.py, --train-file, train_data_train.jsonl, --val-file, train_data_val.jsonl,
+           --output-dir, checkpoints, --num-epochs, "1", --batch-size, "8",
+           --gradient-accumulation-steps, "4", --learning-rate, "2e-5",
+           --max-seq-length, "2048", --warmup-ratio, "0.03", --save-steps, "500"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/training_run1.log
+
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [18]"
+    planned_h: 3.1
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, final_model, --limit, "30",
+              --max-connections, "1", --gpu-memory-utilization, "0.4",
+              --json-output-file, eval_run1_30.json]
+    dev_set: "official --limit 30"
+    n: 30
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.16666666666666666
+    path: /home/ben/task/baseline_results.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 3.16
+  duration_h: 3.16
+  steps: 3084
+  output_checkpoint: /home/ben/task/checkpoints/final
+  training_summary:
+    final_loss: 0.06
+    steps: 3084
+    notes: >-
+      [200]: "Training is complete! Final loss: 0.060, epoch: 1.0, token accuracy: 98.2%."
+      /home/ben/task/training_run1.log: train_runtime 11357.6 s, train_loss 0.0803,
+      mean_token_accuracy 0.9818 over 3084/3084 steps. Launched in the background as
+      "rm -rf checkpoints && python3 train.py ... | tee training_run1.log &".
+      Both evals below were run on /home/ben/task/final_model, the byte-copy of this
+      checkpoint made in exp-03.
+  measurements:
+    - metric: accuracy
+      value: 0.43333333333333335
+      n: 30
+      path: /home/ben/task/eval_run1_30.json
+      delta_vs_comparator: 0.2666666666666667
+    - metric: accuracy
+      value: 0.54
+      n: 150
+      path: /home/ben/task/eval_run1_150.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    [210]: "43.3% accuracy on 30 samples - a significant improvement from the baseline
+    16.7%!"; the 150-sample run put it at 54.0% [246]. One epoch over the GSM8K +
+    MetaMathQA-GSM mixture was enough to take the base model from near-zero to more
+    than half the dev items correct, and it finished in 3.2 h as planned.
+  decision: adopt
+  next_step: >-
+    [213]: look at what the model produces to find formatting/arithmetic failures, then
+    try richer data ("Use longer, more detailed reasoning chains", Orca-Math) for a
+    second run.
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-e81868fd
+  launch_i: 163
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [143, 146, 150, 151, 152]
+    setup: [58, 59, 87, 163]
+    evaluation: [208, 209, 234, 246]
+    result: [167, 177, 196, 200]
+    conclusion: [210, 213, 246]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - train_data_val.jsonl
+    - training_run1.log
+    - evaluate.py
+    - eval_run1_30.json
+    - eval_run1_150.json
+    - baseline_results.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the base model was never evaluated at --limit 150, so the 54.0% figure has no matched comparator; only the --limit 30 pair (0.433 vs 0.167) is a like-for-like comparison"
+    - "both evals were pointed at final_model rather than checkpoints/final; the stream shows the two directories as a plain cp, but no hash was computed"
+    - "the workspace contains contamination_judgement.txt (\"no contamination detected\"), but no event in the stream shows the agent running a contamination checker"

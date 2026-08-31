@@ -1,0 +1,189 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 4.00
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    Unchanged from exp-04 - the 0-shot SFT checkpoint scores 11.5% at
+    --limit 200 because, under the eval's 10-few-shot system message, it answers
+    correctly and then keeps generating fabricated follow-up problems instead of
+    stopping, and the numeric scorer grades the last number [421][431]. The
+    preceding launch of the fix was killed at 79.2GB peak memory [472].
+  evidence:
+    - path: /home/ben/task/logs/eval_v1_final.json
+      locator: "[416], [421]"
+      observation: "accuracy 0.115 at --limit 200 for the checkpoint from exp-03."
+    - path: digest event stream (see provenance.run_ref)
+      locator: "[426], [431]"
+      observation: >-
+        0-shot generation stops on the end-of-turn token (stop_reason 106);
+        3-few-shot generation from the same checkpoint does not stop.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "Train with fewshot context in the data so the model learns to stop after
+    its answer even when fewshots precede it. I'll continue-train from v1
+    (which already has the math ability) with fewshot-augmented data" [431].
+  mechanism: >-
+    "The few-shot block has no turn boundaries, so the model continues the
+    pattern instead of emitting <end_of_turn>" - prepending K random train
+    few-shots (K in 0..8) as a system message reproduces the eval's structure at
+    training time, so the end-of-turn token is learned in exactly that context
+    [438][445].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/v1
+    origin: exp-03
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_fs.jsonl
+      source: "derived:exp-03 data (data/sft.jsonl) + openai/gsm8k train few-shot pool"
+      n_examples: 18000
+      built_by: /home/ben/task/scripts/add_fewshot.py
+      build_command: [python, scripts/add_fewshot.py, --in, data/sft.jsonl, --out, data/sft_fs.jsonl, --n, "18000", --kmin, "0", --kmax, "8"]
+      selection: >-
+        data/sft.jsonl shuffled with seed 42 and truncated to 18000 records;
+        each record gets K drawn uniformly from 0..8 few-shot examples sampled
+        from a GSM8K-train pool formatted exactly as the eval formats them, and
+        joined into a leading system message. n_examples is the --n cap on the
+        argv; the script's own written count is not in the digest.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: transformers.Trainer (custom script), flash_attention_2, bitsandbytes adamw_8bit
+    peft: none
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 2.0
+      batch_size: 6
+      grad_accum: 6
+      max_seq_len: 1792
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr / epochs / batch_size / grad_accum / max_seq_len / save-steps 200
+        from the launch argv at [479]; scheduler, warmup, weight_decay,
+        precision and seed from the training script text in the digest ([149],
+        amended [188] [275] [279] [283] [441]) - the script is not in the
+        workspace snapshot. bs lowered from 8 to 6 and grad_accum raised from 4
+        to 6 relative to exp-04, for memory headroom.
+    target_format: >-
+      System message of K in 0..8 eval-format few-shot examples, then the eval's
+      user prompt template, then the assistant turn (reasoning, a final
+      'ANSWER: <num>' line, end-of-turn token). Loss on the assistant turn only.
+  command:
+    argv: [HF_HOME=/home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, nohup, python, scripts/train.py, --out, runs/v2, --model, runs/v1, --data, data/sft_fs.jsonl, --epochs, "2", --lr, 1e-5, --bs, "6", --grad-accum, "6", --max-len, "1792", --attn, flash_attention_2, --save-steps, "200", --log-steps, "10", ">", logs/train_v2.log, "2>&1", "&"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: 1x 80GB GPU
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [bash, scripts/eval_model.sh, runs/v2, "200", logs/eval_v2_final.json, "8", "1024"]
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.115
+    path: /home/ben/task/logs/eval_v1_final.json
+  diagnostic:
+    what: >-
+      Count of outputs that keep generating past their answer, plus mean output
+      length, on the same eval log [530].
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/v2
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Last logged state before completion was "Step 797 (81%), loss now ~0.076"
+      [514]; the train_runtime / final-loss lines were grepped at [515] but that
+      result block is not in the digest. The run started at [479] t=+4.00h and
+      had finished and saved by [515] t=+4.91h..[521] t=+5.23h.
+  measurements:
+    - metric: accuracy
+      value: 0.70
+      n: 200
+      path: /home/ben/task/logs/eval_v2_final.json
+      delta_vs_comparator: 0.585
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "Stopping is fully fixed: 0 continuations, clean concise outputs (avg 358
+      tokens), 70% accuracy" [530].
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "Massive improvement: 0.115 -> 0.70 accuracy! The fewshot-augmented training
+    fixed the stopping behavior" [526], measured against exp-03 under the same
+    --limit 200 protocol, with the mechanism confirmed by zero continuations in
+    the outputs [530]. Later low-noise full-set evaluation put this checkpoint
+    at 67.9% [616], i.e. the limit-200 number was on a slightly easier subset.
+  decision: adopt
+  next_step: >-
+    Package the checkpoint as the submission and confirm it under the exact
+    grader command [530], then "try to push higher via rejection sampling
+    (STaR/RFT) - generate solutions from v2 on GSM8K train, keep
+    verified-correct ones, and train on them" [540].
+
+# ---- outcome ----------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a88bb78b
+  launch_i: 479
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [421, 426, 431]
+    setup: [438, 441, 445, 450, 475, 479]
+    evaluation: [521]
+    result: [503, 509, 514, 515, 521, 526, 530]
+    conclusion: [526, 530, 540]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "Final training loss, step count and wall time for this run were grepped at [515] but the result block is not in the digest."
+    - "logs/eval_v2_final.json and the training scripts are not in the workspace snapshot; the 0.70 is the agent's reported number at [526]."

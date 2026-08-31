@@ -1,0 +1,217 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 6.20
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    Two problems stand. The reasoning problem from exp-03 is untouched (all of
+    the SFT checkpoint's misses are wrong numbers, not format failures), and the
+    rejection-sampling run that was meant to address it lost its weights:
+    "Checkpoint dir holds only config.json - v2 weights are lost (save-time
+    validation raised before weights were written)" [30847].
+  evidence:
+    - path: /home/ben/task/logs_sft_v2.txt
+      locator: "[30292] ls of ckpt/sft_v2/checkpoint-1243; traceback tail"
+      observation: >-
+        1243 steps of training completed, then save_pretrained raised
+        "GenerationConfig is invalid" (temperature 0.0 with do_sample False,
+        inherited from the bf16 export dir) and only config.json was written
+    - path: /home/ben/task/results_v1b_ep2_150.json
+      locator: "accuracy 0.6733 (limit 150)"
+      observation: "the incumbent this launch has to beat, and the source of the reasoning-error failures"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Continuing training on the SFT model's own gold-verified samples plus teacher
+    solutions for the hard questions (the exp-03 recipe, re-run) will raise
+    accuracy over the SFT epoch-2 checkpoint; the sampling round "mainly
+    consolidates + adds diversity". [29361][23378]
+  mechanism: >-
+    Same as exp-03: 57,010 verified-correct self-samples (capped at 4 per
+    question) reinforce the model's own correct traces, AnsAug teacher solutions
+    cover the questions it rarely solves, and a fresh MetaMath slice plus gold x2
+    keeps the mix from collapsing onto self-generated text.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/v1b_ep2
+    origin: exp-02
+    hash: null
+  data:
+    - path: /home/ben/task/data/rft_samples.jsonl
+      source: synthetic:self
+      n_examples: 57010
+      built_by: /home/ben/task/rft_generate.py
+      build_command: [python, rft_generate.py, ckpt/v1b_ep2, --out, data/rft_samples.jsonl, --k, "8", --temp, "1.0"]
+      selection: >-
+        k=8 per GSM8K train question (7473) at temperature 1.0, top_p 0.95,
+        max_tokens 512, stop [128012, 128001], vLLM seed 1234; kept only when the
+        last number equals gold. Printed: "total gens=59784 correct=57010
+        questions_covered=7462/7473". Input to build_rft_data.py, not fed to the
+        trainer directly.
+      repeats: null
+      contamination_check: passed
+      mixture_weight: null
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: derived:exp-02
+      n_examples: 81982
+      built_by: /home/ben/task/build_rft_data.py
+      build_command: [python, build_rft_data.py, --rft, data/rft_samples.jsonl, --out, data/sft_v2.jsonl, --cap-per-q, "4", --gold-repeats, "2", --metamath-cap, "40000"]
+      selection: >-
+        The same file exp-03 was trained on, unchanged: 25.6K verified
+        self-samples (deduped, at most 4 per question) + ~1.5K MetaMath AnsAug
+        teacher solutions for questions with fewer than 2 verified samples +
+        GSM8K train gold x2 + fresh 40K MetaMath GSM slice = 81,982 examples,
+        re-screened against the 1319 test questions. [29362][33246]
+      repeats: "gsm8k gold x2, up to 4 self-samples per question"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer (generation with vllm 0.11.0)"
+    peft: none
+    hyperparams:
+      lr: 8.0e-06
+      epochs: 1.0
+      batch_size: 6
+      grad_accum: 11
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "weights loaded fp32 from the bf16 export, bf16=True autocast, flash_attention_2, gradient checkpointing"
+      seed: 17
+      other: >-
+        Identical to exp-03 except that train_sft.py now resets
+        model.generation_config to GenerationConfig(bos_token_id=128000,
+        pad_token_id=128004, eos_token_id=128001) before training so the save
+        cannot fail [30848]. --max-len 2560 and --seed 17 not passed; argparse
+        defaults of /home/ben/task/train_sft.py, not overridden. Effective batch
+        66; 1243 steps. Trainer reported "dataset: 81981 examples, dropped 1 over
+        2560 tokens".
+    target_format: >-
+      eval-contract rendering through templates/smollm.jinja; completion =
+      reasoning then one final "ANSWER: <number>" line, then <|im_end|>.
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v2.jsonl, --out, ckpt/sft_v2b, --base, ckpt/v1b_ep2, --epochs, "1", --mbs, "6", --accum, "11", --lr, 8e-6]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs_sft_v2b.txt
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/v2b, --limit, "150", --json-output-file, results_v2b_150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.6733333333333333
+    path: /home/ben/task/results_v1b_ep2_150.json
+  diagnostic:
+    what: >-
+      per-item paired comparison against the epoch-2 checkpoint on the same 150
+      items (how many items flip each way, McNemar-style)
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.17
+  output_checkpoint: /home/ben/task/ckpt/sft_v2b/checkpoint-1243
+  training_summary:
+    final_loss: 0.0975
+    steps: 1243
+    notes: >-
+      train_runtime 4221.6 s (70 min), train_samples_per_second 19.42, train_loss
+      0.0975; the checkpoint saved cleanly this time. Exported to bf16 at
+      /home/ben/task/ckpt/v2b by export_model.py [31194], which writes the greedy
+      generation_config (temperature 0.0, eos_token_id [128012, 128001]) and sets
+      the tokenizer eos to <|im_end|>; the eval below ran on that export.
+  measurements:
+    - metric: accuracy
+      value: 0.74
+      n: 150
+      path: /home/ben/task/results_v2b_150.json
+      delta_vs_comparator: 0.0667
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      Paired on the same 150 items: vs epoch 2, "v2b-only=19 ep2-only=9 net=+10"
+      [31638]; vs epoch 1, "new-better=25 old-better=7" [31575].
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    74.0% at limit 150 against the 67.3% of the SFT epoch-2 checkpoint under the
+    same protocol (+6.7 pts), and the gain survives the per-item pairing: 19
+    items gained, 9 lost. The agent's reading: "v2b confirmed better (19 gained
+    vs 9 lost, paired)" [31744]. Nothing tested the stated mechanism
+    (consolidation of the model's own correct traces) apart from the score.
+  decision: adopt
+  next_step: >-
+    Copy the bf16 export to final_model and run the full official test set on it
+    (exp-05); if time remains, one more sampling round seeded from it. [31744]
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-628a7a20
+  launch_i: 30851
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [30292, 30293, 30847]
+    setup: [28660, 29362, 30848, 30851]
+    evaluation: [31194, 31574, 31637]
+    result: [31132, 31194, 31575, 31638]
+    conclusion: [31744, 33246]
+  snapshot_files:
+    - rft_generate.py
+    - build_rft_data.py
+    - train_sft.py
+    - export_model.py
+    - logs_rft_gen.txt
+    - logs_sft_v2b.txt
+    - logs_eval_v2b.txt
+    - results_v2b_150.json
+    - results_v1b_ep2_150.json
+    - EXPERIMENT_LOG.md
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      The agent said it was "re-running with step-wise saves for crash-safety"
+      [30847], but the launched command carries no save-step argument and the run
+      saved once, at the end of the single epoch.
+    - >-
+      The composition counts for data/sft_v2.jsonl were printed at [29362] but
+      the result block is not in the digest; the breakdown comes from the agent's
+      EXPERIMENT_LOG.md.

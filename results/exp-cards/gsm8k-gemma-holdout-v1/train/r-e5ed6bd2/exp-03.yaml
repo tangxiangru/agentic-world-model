@@ -1,0 +1,170 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 0.50
+
+problem:
+  statement: >-
+    "The accuracy dropped to 2.7% from the baseline 18%. Something is wrong." [82] The model
+    produces the correct answer and then keeps generating: "the model is generating the correct
+    answer (\boxed{72}) but then continues generating repetitive content" [90]. At [106] the
+    agent blames the training data: "the training data has incorrect formatting".
+  evidence:
+    - path: /home/ben/task/first_iteration_results.json
+      locator: "[77]-[78]"
+      observation: "exp-02 scored 0.027 on 150 items, with 295,117 output tokens vs 24,637 for the base model on 50 items"
+    - path: null
+      locator: "[90]"
+      observation: "agent's reading of the eval log: right answer, then repetitive continuation"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Retraining on data written in the evaluation's own answer format ("Reasoning: ... ANSWER: X",
+    no thinking tokens) with more conservative LoRA settings will stop the runaway generation and
+    recover accuracy - prepare_data_v2.py is described as re-preparing the data "with correct
+    format matching evaluation expectations", train_v2.py as using "more conservative settings to
+    avoid overfitting and hallucinations".
+  mechanism: >-
+    The v1 target ended in \boxed{} and carried the chat template's empty <think> block, which
+    does not match what the grader looks for; matching the grader's format and lowering the LoRA
+    capacity (r 64->32, lr 2e-4->1e-4, 3->2 epochs, dropout 0.05->0.1, wd 0.01->0.1) should keep
+    the model from drifting off-distribution.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/gsm8k_train_templated_v2.jsonl
+      source: "HF: gsm8k main, train split"
+      n_examples: 7473
+      built_by: /home/ben/task/prepare_data_v2.py
+      build_command: ["python3", "prepare_data_v2.py"]
+      selection: >-
+        every gsm8k train row as a 3-turn chat with the evaluation's system prompt ("The last
+        line of your response should be of the form 'ANSWER: $ANSWER'"); assistant turn =
+        "Reasoning:\n<gold rationale>\n\nANSWER: <gold>", rendered with the tokenizer's chat
+        template (which still inserts an empty <think></think> block, as printed at [111]);
+        no filtering or dedup
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer + peft 0.18.1"
+    peft: "LoRA r=32 alpha=64 dropout=0.1 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 2
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.1
+      weight_decay: 0.1
+      precision: bf16
+      seed: 42
+      other: >-
+        the launch passed no arguments, so every value here is a module-level constant in
+        train_v2.py (script text in the workspace, written at [101], DATA_FILE switched to the
+        v2 file at [113]); max_grad_norm=1.0, gradient_checkpointing=False, device_map="cuda:0",
+        no flash-attention override
+    target_format: >-
+      full-sequence causal LM loss over the chat-templated conversation (no completion-only
+      masking); assistant turn ends in "ANSWER: <gold>"
+  command:
+    argv: ["python3", "train_v2.py"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: ["python3", "evaluate.py", "--model-path", "final_model", "--limit", "150", "--max-tokens", "4000", "--json-output-file", "second_iteration_results.json"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.02666666666666667
+    path: /home/ben/task/first_iteration_results.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.30
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: 936
+    notes: >-
+      stdout truncated in the stream at [119]; total step count 936 read off the progress bar
+      there, last logged loss visible is 0.4369 at epoch 0.96. Script saves the adapter to
+      final_model/lora_adapter and the merged weights to final_model.
+  measurements:
+    - metric: accuracy
+      value: 0.02
+      n: 150
+      path: /home/ben/task/second_iteration_results.json
+      delta_vs_comparator: -0.0067
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      at [133] the agent reported, from the eval log, that "the model is corrupted and generating
+      concatenated training examples with foreign text artifacts"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Matching the grader's ANSWER format and halving the LoRA capacity did not help: accuracy went
+    from 0.027 to 0.020 on the same 150 items, and the agent's own read of the log at [130]/[133]
+    was that the model still generates concatenated training examples. "The training approach is
+    not working." [130]
+  decision: reject
+  next_step: >-
+    Drop the chat template entirely and train on plain "Question: ... Reasoning: ... ANSWER: X"
+    text (prepare_data_v3.py) with a much smaller LoRA - that is exp-04.
+
+provenance:
+  kind: extracted
+  run_ref: r-e5ed6bd2
+  launch_i: 118
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [78, 82, 90, 106]
+    setup: [101, 107, 110, 111, 113, 118]
+    evaluation: [128]
+    result: [119, 129]
+    conclusion: [130, 133]
+  snapshot_files:
+    - prepare_data_v2.py
+    - train_v2.py
+    - second_iteration_results.json
+    - first_iteration_results.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "final loss: the training stdout at [119] is truncated in the stream"
+    - "the checkpoint was deleted at [148] (rm -rf final_model qwen3-1.7b-gsm8k-v2)"

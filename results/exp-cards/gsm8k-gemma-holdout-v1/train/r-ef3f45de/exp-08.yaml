@@ -1,0 +1,217 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The model is not stopping properly - it generates a response, then continues
+    with random text/other languages/new questions ... The core issue is that the
+    model doesn't properly terminate its response with <|im_end|>" [232]. Because
+    the scorer's default location is the end of the completion [246], a correct
+    "ANSWER: {n}" buried before the continuation is not the number that gets
+    graded. The agent traced it to packing: "with packing, the model sees
+    sequences like ...<|im_end|>\n<|im_start|>user\n... So it learns to continue
+    generating after <|im_end|>, because in packed sequences there's always more
+    content after it. This is a classic packing problem" [246].
+  evidence:
+    - path: /home/ben/task/eval_v1_50.json
+      locator: "[225], [228]"
+      observation: "accuracy 0.080 (stderr 0.039) on 50 items for the merged v1 model"
+    - path: /home/ben/task/logs/2026-02-17T04-48-27+01-00_gsm8k_bfLAXWcPuGg3L5V6K95ovf.json
+      locator: "[230]-[231], first 10 samples"
+      observation: "1 of the first 10 correct; several produce a right-looking ANSWER line and then stray non-ASCII text and a fresh, self-invented problem"
+    - path: /home/ben/task/final_model/generation_config.json
+      locator: "[233]-[234]"
+      observation: "eos_token_id was 151643 (<|endoftext|>) only; <|im_end|> is 151645 and was not a stop token"
+  affected_share: null
+  failure_examples:
+    - id: "eval sample 7 of the 50-item run at [224]"
+      source: /home/ben/task/logs/2026-02-17T04-48-27+01-00_gsm8k_bfLAXWcPuGg3L5V6K95ovf.json
+      question: null
+      gold: "80"
+      model_output: >-
+        "...Reasoning:Boundedunseen / 0.4 of the 600 cars are hybrids, so there
+        are 600 x 0.4 = <<600*0.4=240>>240 hybrid cars. / 0.2 of these hybrids are
+        silver, so there are 240 x 0.2 = <<240*0.2=48>>48 silver hybrid cars. /
+        Therefore, there are 48 silver hybrid cars. / ANSWER: 48<non-ASCII>"
+      failure: "answers a different problem than the one scored, and glues a stray non-ASCII token onto the answer digits"
+    - id: "eval sample 8 of the 50-item run at [224]"
+      source: /home/ben/task/logs/2026-02-17T04-48-27+01-00_gsm8k_bfLAXWcPuGg3L5V6K95ovf.json
+      question: null
+      gold: "20"
+      model_output: >-
+        "...running the oven for a month will be $36000 * 30 =
+        $<<36000*30=1080000>>1080000. / ANSWER: 1080000<non-ASCII> / <a new,
+        self-generated question in Chinese> / Remember to put your answer on its
+        own line at the end in the form \"ANS..."
+      failure: "does not stop after the answer; starts generating a new question and its instruction wrapper"
+    - id: "eval sample 9 of the 50-item run at [224]"
+      source: /home/ben/task/logs/2026-02-17T04-48-27+01-00_gsm8k_bfLAXWcPuGg3L5V6K95ovf.json
+      question: null
+      gold: "8"
+      model_output: >-
+        "...how the answer to the above question is 17, what is the value of
+        unknown variable x? / Remember to put your answer on its own line at the
+        end ... / Reasoning:rgetStatusCode"
+      failure: "output ends mid-continuation with no ANSWER line for the graded item"
+    - id: "eval sample 10 of the 50-item run at [224]"
+      source: /home/ben/task/logs/2026-02-17T04-48-27+01-00_gsm8k_bfLAXWcPuGg3L5V6K95ovf.json
+      question: null
+      gold: "7"
+      model_output: >-
+        "...Let L = Lily's speed. Therefore, Wade's speed = L + 5. And Stella's
+        speed = 2L. If they are all driving at the same speed, then L + 5 = 2L. ...
+        Therefore, Stella's speed is 2L = 2(5) = <<2*5=10>>10 MPH. / ANSWER"
+      failure: "solves an invented variant; the printed excerpt is cut at the ANSWER token"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Formatting every training row as raw text that ends "<|im_end|>\n<|endoftext|>"
+    - prepare_data_v3.py's docstring: "raw text with proper EOS for packing"
+    [261] - will teach the model to emit a stop token after the answer, so the
+    scorer reads the answer it computed.
+  mechanism: >-
+    Under packing the model only ever sees <|im_end|> followed by more content, so
+    it never learns it as a terminator. Putting the tokenizer's real EOS
+    (<|endoftext|>, 151643) after each turn gives packing a boundary token the
+    model can learn to emit and that vLLM already stops on.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_v3.jsonl
+      source: "HF meta-math/MetaMathQA + HF openai/gsm8k (main, train)"
+      n_examples: 100000
+      built_by: /home/ben/task/prepare_data_v3.py
+      build_command: [python3, prepare_data_v3.py]
+      selection: >-
+        402,317 rows built (MetaMathQA GSM_* and MATH_* = 394,844; gsm8k train =
+        7,473) [264], shuffled seed 42, then cut to the first 100,000 by the
+        trainer's --max-samples (dataset.shuffle(seed=42).select). Each row is one
+        text field:
+        "<|im_start|>user\n{eval prompt}<|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n<|endoftext|>"
+        - the change from exp-06's data is the trailing <|endoftext|>, verified at
+        [264] ("Last token: <|endoftext|> (ID: 151643)").
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 / transformers 4.57.3 / peft 0.18.1 / torch 2.8.0+cu129"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj bias=none (132,120,576 trainable params, 3.18%)"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        --max-samples 100000 and --attn-impl flash_attention_2 on the command
+        line. packing=True, gradient_checkpointing=True, save_total_limit=3,
+        weight_decay=0.01, lr_scheduler_type=cosine, seed=42 are constants of the
+        train.py in the snapshot and were not overridden. Effective batch = 32;
+        1073 steps. Note the output directory is trained_model_v2 but the script
+        is still train.py - train_v2.py was written at [255] and never run.
+    target_format: >-
+      raw text, eval-template shaped, now terminated:
+      "<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n<|endoftext|>".
+  command:
+    argv: [python3, train.py, --data-file, training_data_v3.jsonl, --output-dir, trained_model_v2,
+           --epochs, "1.0", --lr, "2e-4", --batch-size, "16", --grad-accum, "2",
+           --max-seq-length, "1024", --lora-r, "64", --lora-alpha, "128",
+           --warmup-ratio, "0.03", --save-steps, "500", --logging-steps, "25",
+           --max-samples, "100000", --attn-impl, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/train_v2.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.17
+  duration_h: 1.17
+  steps: 1073
+  output_checkpoint: /home/ben/task/trained_model_v2
+  training_summary:
+    final_loss: 0.1924
+    steps: 1073
+    notes: >-
+      train_runtime 4222.6 s (1.17 h), train_loss 0.2029, mean_token_accuracy
+      0.952, 33.8M tokens (train_v2.log). Loss 0.5098 at step 25, ~0.192 at the
+      end. 5:24 of the 10 h budget remained at [272].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    One epoch of 100k EOS-terminated packed examples, loss 0.51 -> 0.19, finished
+    in 1.17 h. The adapter itself was not scored; its accuracy is the 0.040
+    recorded on exp-09, which merged it.
+  decision: adopt
+  next_step: "Merge into final_model_v2 and evaluate (exp-09)."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ef3f45de
+  launch_i: 266
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [226, 228, 230, 231, 232, 233, 234, 235, 243, 246]
+    setup: [261, 263, 264, 266]
+    evaluation: []
+    result: [267, 271, 272]
+    conclusion: [272, 276]
+  snapshot_files:
+    - prepare_data_v3.py
+    - train.py
+    - train_v2.log
+    - eval_v1_50.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The per-sample log the failure examples come from is named in the stream but is not in the workspace snapshot, so the four items cannot be re-read; their questions were never printed."
+    - "prepare_data_v3.py writes 402,317 rows; which 100,000 the trainer selected depends on datasets' shuffle(seed=42), not recorded row-by-row."
+    - "train_v2.py, written at [255] for a no-packing messages-format run, was never launched; this card's script is train.py despite the v2 output directory."

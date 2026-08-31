@@ -1,0 +1,260 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 2.95
+
+problem:
+  statement: >-
+    The base model scores 0.06 on the official eval: it does not answer in the
+    requested format but rambles past its answer, and the scorer takes the last
+    number in the output, so even a correct intermediate answer is not counted.
+  evidence:
+    - path: /home/ben/task/baseline.json
+      locator: "[117] launch, read back around [495]"
+      observation: "accuracy 0.06, stderr 0.019 for the base model on the official eval at --limit 150"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-adcf5bfb.md
+      locator: "[495]"
+      observation: "agent: 'Baseline: 6% (base model rambles past the answer; last-number matching fails).'"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_r1.jsonl
+      source: synthetic:self
+      n_examples: 15584
+      built_by: /home/ben/task/build_sft.py
+      build_command:
+        - python
+        - build_sft.py
+        - --gen
+        - gen_r1.jsonl
+        - gen_r1b.jsonl
+        - --out
+        - sft_r1.jsonl
+        - --keep
+        - "3"
+        - --fewshot-frac
+        - "0.3"
+      selection: >-
+        Rejection sampling over the 7,473 openai/gsm8k train questions with the
+        base model under a plain completion-style 8-shot prompt built from train
+        examples: gen.py 8 samples/question at T=1.0, max 400 tokens [687]
+        (solved 5324/7473 = 0.712, gen_r1.log), then 32 samples at T=1.1, max
+        480 tokens, --fewshot-seed 7 on the 2,148 unsolved questions [708]
+        (solved 1387/2149 = 0.645, gen_r1b.log); combined coverage 89.8% [743].
+        Kept only samples whose ANSWER line equals gold; calculator annotations
+        stripped, text truncated at the ANSWER line, degeneration/leakage
+        filters (<=25 lines, no line repeated >2x, 12-2500 chars, no
+        "Reasoning:"/turn markers), exact-dup drop, up to 3 solutions per
+        question spread over the length-sorted candidates [744]; questions no
+        sample solved fall back to the human-written train rationale.
+        30% of examples get the eval's exact 10-shot system prefix.
+        train_r1.log: 10911 of the 15584 examples were used, 4673 skipped as
+        longer than --max-len 1792.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers Trainer, full fine-tune via AutoModelForImageTextToText (transformers 4.57.3 per the saved generation_config.json [1200])"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1792
+      scheduler: cosine_with_min_lr
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr, epochs, batch_size, grad_accum and max_seq_len are from the launch
+        argv. seed=0 and warmup_ratio=0.03 are train_sft.py argparse defaults
+        that the launch did not override; scheduler cosine_with_min_lr with
+        min_lr_rate=0.1 (argparse default --min-lr-ratio), weight_decay=0.0,
+        max_grad_norm=1.0, adam_beta2=0.95, optim=adamw_torch_fused, bf16,
+        gradient_checkpointing, group_by_length, save_strategy=no and the
+        completion-only loss (prompt tokens masked to -100) are hard-coded in
+        train_sft.py [200,795]. --base was not passed, so the argparse default
+        google/gemma-3-4b-pt was used. The vision tower and multimodal
+        projector are frozen; attn_implementation was switched to sdpa just
+        before this launch [793].
+    target_format: >-
+      chat template (templates/gemma3.jinja); assistant turn is the cleaned
+      solution ending in "ANSWER: <n>" followed by <end_of_turn>, with the
+      eval's 10-shot system message present on 30% of examples.
+  command:
+    argv:
+      - nohup
+      - python
+      - train_sft.py
+      - --data
+      - sft_r1.jsonl
+      - --out
+      - ckpt_r1
+      - --epochs
+      - "2"
+      - --lr
+      - "1e-5"
+      - --bs
+      - "8"
+      - --accum
+      - "4"
+      - --max-len
+      - "1792"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_r1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - ckpt_r1
+      - --limit
+      - "150"
+      - --max-connections
+      - "16"
+      - --max-tokens
+      - "1024"
+      - --json-output-file
+      - eval_r1.json
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.06
+    path: /home/ben/task/baseline.json
+  diagnostic:
+    what: >-
+      how often the checkpoint keeps generating after its answer (the scorer
+      reads the last number), and how the score depends on the eval's 10-shot
+      system prefix
+    command:
+      - for m in chat chat_nosys plain; do timeout 900 python eval_local.py --model ckpt_r1 --limit 250 --mode $m 2>&1 | grep -E "^MODE"; done
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.21
+  output_checkpoint: /home/ben/task/ckpt_r1
+  training_summary:
+    final_loss: 0.5169582983965049
+    steps: null
+    notes: >-
+      train_r1.log: train_runtime 768.65 s, 28.39 samples/s, train_loss 0.5170
+      over 2 epochs on 10,911 examples; step count not printed, save_strategy
+      was "no" so only the final checkpoint exists.
+  measurements:
+    - metric: accuracy
+      value: 0.3466666666666667
+      n: 150
+      path: /home/ben/task/eval_r1.json
+      delta_vs_comparator: 0.2866666666666667
+    - metric: accuracy
+      value: 0.448
+      n: 250
+      path: null
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.56
+      n: 250
+      path: null
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.16666666666666666
+    path: null
+    notes: >-
+      At [864] the agent counted 25 of 150 official-eval outputs containing more
+      than one "ANSWER:" line, and 62/150 correct if scored on the first answer
+      instead of the last (vs 52/150 = 0.347 as scored). At [927] it reported
+      the local A/B: the eval's 10-shot system prefix costs ~11 points
+      (56% without it vs 45% with it, --limit 250). The exact per-mode lines
+      from [903] and the "plain" number are not in the stream; the 0.448 and
+      0.56 measurements above are the agent's own figures from [927] and
+      [1031], printed to stdout with no file written.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    The first rejection-sampling round took the model from 0.060 to 0.347 on the
+    same official eval (--limit 150), but the agent's inspection showed the
+    remaining failures are real: only 25/150 outputs rambled past their answer,
+    and scoring on the first answer would have given 62/150 - "Real accuracy is
+    the issue, not just formatting" [900]. The local A/B then showed the eval's
+    10-shot system prefix alone costs ~11 points [927].
+    No hypothesis was stated before the launch; the verdict records only the
+    measured comparison against the base model.
+  decision: reject
+  next_step: >-
+    Rebuild the SFT data with few-shot prefixes mixed in (both the exact harness
+    prefix and randomly sampled 3-10-shot prefixes) and retrain from the base
+    model [927,928,931].
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-adcf5bfb
+  launch_i: 797
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [117, 495]
+    setup: [687, 708, 743, 744, 747, 792, 793, 795, 797]
+    evaluation: [832, 903]
+    result: [828, 835, 848, 863, 864]
+    conclusion: [900, 927]
+  snapshot_files:
+    - train_sft.py
+    - build_sft.py
+    - gen.py
+    - common.py
+    - train_r1.log
+    - gen_r1.log
+    - gen_r1b.log
+    - unsolved_r1.jsonl
+    - eval_r1.json
+    - baseline.json
+    - evaluate.py
+    - eval_local.py
+  smoke_runs:
+    - {launch_i: 373, outcome: "passed: build_sft.py run on two hand-made records to check the SFT record shape"}
+    - {launch_i: 498, outcome: "killed: the first full generation run hung with a dead engine while its parent held the GPU; killed at [581] after ~2 h of wall clock and relaunched as [687]"}
+    - {launch_i: 544, outcome: "crashed: 20-question generation smoke run used to diagnose the vLLM engine-init failure"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the result blocks for the data build [747] and the local A/B [903] are not in the digest; sft_r1.jsonl is not in the workspace snapshot, so n_examples (15584 = 10911 loaded + 4673 skipped) is taken from train_r1.log"
+    - "the 0.448 / 0.56 local numbers are eval_local.py stdout quoted by the agent at [927] and [1031]; no file holds them and the third mode (plain) was never reported"
+    - "the contamination check on sft_r1.jsonl is only attested by the agent's 'No contamination' at [792]; the command and its output are not in the digest"

@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The un-finetuned base model reaches only 44% on the 10-shot GSM8K eval at
+    limit 150; nothing has been post-trained yet, so 44% is the level to beat
+    [98], [101].
+  evidence:
+    - path: /home/ben/task/baseline_metrics.json
+      locator: "[98]"
+      observation: "baseline eval of the base model: accuracy 0.44, stderr 0.0407, limit 150"
+    - path: /home/ben/task/baseline_eval.log
+      locator: "[31], [98]"
+      observation: "the baseline eval that produced that file (limit 150, harness defaults)"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: null                # the agent launched without stating an expectation
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_gsm8k.jsonl
+      source: openai/gsm8k (main, train)
+      n_examples: 7473
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py]
+      selection: >-
+        every GSM8K train row; the reference answer is split on "####", the
+        calculator annotations <<...>> are stripped from the rationale, the
+        question is wrapped in the eval's own prompt template, and the target is
+        "<rationale>\nANSWER: <final>"; shuffled with random.seed(0) [38].
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers Trainer, custom script (no version printed in the stream)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr / epochs / batch_size (per-device) / grad_accum are from the launch
+        argv at [102]. max_seq_len, scheduler, warmup, weight_decay and
+        precision are train_sft.py defaults that the launch did not override
+        (argparse --maxlen=1024; TrainingArguments lr_scheduler_type="cosine",
+        warmup_ratio=0.03, weight_decay=0.0, bf16=True), script text at [58] and
+        in the snapshot. Also from the script and not overridden:
+        gradient_checkpointing=True, save_strategy="no", logging_steps=10,
+        use_cache=False, attn_implementation="flash_attention_2". No seed was
+        ever stated.
+    target_format: >-
+      "<|im_start|>user\n<eval prompt><|im_end|>\n<|im_start|>assistant\n" with
+      the prompt tokens masked to -100; the assistant span is the cleaned
+      rationale ending in "ANSWER: <n>" followed by <|im_end|>, and the saved
+      model's eos is set to <|im_end|> so generation stops at the turn end [58].
+  command:
+    argv: [timeout, "7200", python, train_sft.py, --out, sft_v1, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_v1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 2.0
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_v1, --limit, "150", --max-connections, "4", --gpu-memory-utilization, "0.85", --json-output-file, eval_sft_v1.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.44
+    path: /home/ben/task/baseline_metrics.json
+  diagnostic:
+    what: >-
+      greedy vLLM probe of the trained checkpoint on 3 test questions built with
+      the eval's own 10-shot prompt, to see whether the model itself stops at
+      <|im_end|> and answers correctly [271].
+    command: [python, probe.py]
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: 702
+  output_checkpoint: /home/ben/task/sft_v1
+  training_summary:
+    final_loss: null
+    steps: 702
+    notes: >-
+      total step count taken from the agent's progress note "step 117/702" at
+      [136]; train_v1.log is not in the snapshot and no loss or wall time was
+      printed into the stream.
+  measurements:
+    - metric: accuracy
+      value: 0.4266666666666667
+      n: 150
+      path: /home/ben/task/eval_sft_v1.json
+      delta_vs_comparator: -0.0133333333333333
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      under greedy decoding the same checkpoint produced correct, correctly
+      stopped outputs on all 3 probe questions [276]; the per-item outputs were
+      printed but are not carried in the stream.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    SFT on the cleaned GSM8K-train rationales scored 42.7% at limit 150, 1.3 pts
+    under the 44% base-model baseline and well inside its stderr [258]. The
+    greedy probe showed the weights were fine [276], and the deficit was traced
+    to the eval's decoding rather than to training, so the launch itself proves
+    nothing either way about the SFT recipe.
+  decision: adopt
+  next_step: >-
+    re-evaluate the same checkpoint with greedy sampling defaults written into
+    generation_config.json [294]; also prepare rejection-sampling (STaR) data
+    from this checkpoint [130], [131].
+
+# ---- outcome ----------------------------------------------------------------
+outcome:
+  official_accuracy: null   # never written by the extractor; joined by the pipeline
+
+# ---- provenance (extraction only) ------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-01ed5927
+  launch_i: 102
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [98, 101]
+    setup: [38, 58, 102]
+    evaluation: [225, 271]
+    result: [136, 249, 258]
+    conclusion: [258, 276, 294]
+  snapshot_files:
+    - prep_data.py
+    - train_sft.py
+    - probe.py
+    - evaluate.py
+    - baseline_metrics.json
+    - baseline_eval.log
+    - eval_sft_v1.json
+    - eval_sft_v1.log
+  extractor: claude-opus-5
+  unresolved:
+    - "train_v1.log is not in the snapshot; final loss, wall time and the trainer's own printed dataset size are nowhere in the stream. n_examples=7473 is the agent's own figure at [785], not a trainer print."
+    - "the snapshot copy of train_sft.py is a later revision (edited at [574]); the [102] launch ran the version shown at [58], which did not write generation_config.json."
+    - "no seed is stated anywhere for this launch."

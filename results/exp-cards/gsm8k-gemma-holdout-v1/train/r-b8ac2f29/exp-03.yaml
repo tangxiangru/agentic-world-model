@@ -1,0 +1,196 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 1.56
+
+problem:
+  statement: >-
+    The same problem as exp-02 - "Remaining failures are genuine reasoning slips
+    (not format)" [23144] - plus a throughput problem: the unpacked phase-2 mix
+    did not fit the remaining budget, so the trainer had to be made faster
+    before the hypothesis could be tested at all.
+  evidence:
+    - path: /home/ben/task/results_phase1_150.json
+      locator: "[20871]"
+      observation: "0.8467 at --limit 150; 23 of 150 wrong, all with clean stops"
+    - path: /tmp/smoke.log
+      locator: "[25512], [26542]-[26543]"
+      observation: "packing at bs12 OOMs; bs8/accum8 with expandable_segments is the workable setting"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Phase 2 (more + more careful CoT data) is the right next lever" [23144] -
+    2 copies of the gold set plus 45K decontaminated OpenMathInstruct-2
+    GSM8K-sourced solutions will cut the reasoning slips left by exp-01, and
+    packed FA2 batches make it fit the budget.
+  mechanism: >-
+    External GSM8K-style solutions add more careful step-by-step chains than the
+    terse gold rationales; DataCollatorWithFlattening packs examples into one
+    varlen row so the padding waste disappears.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_phase2.jsonl
+      source: "derived:exp-01 gold file + local (OpenMathInstruct-2 derivative)"
+      n_examples: null
+      built_by: /home/ben/task/build_mix_phase2.py
+      build_command: [python, build_mix_phase2.py, --gold-repeat, "2", --p-prefix, "0.15", --n-external, "45000", --out, data/sft_phase2.jsonl]
+      selection: >-
+        2 copies of the 7,473 gold rows (always with the eval system prefix) plus
+        45,000 shuffled external rows, each carrying the system prefix with
+        probability 0.15 and a bare user->assistant prompt otherwise; the whole
+        mix reshuffled with seed 0. The "wrote N rows" line is not in the stream.
+        Answers in this build still had thousands separators stripped - the
+        scorer bug found at [29344] was fixed only for exp-04.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: 1
+    - path: /home/ben/task/data/omi2_gsm8k_clean.jsonl
+      source: "HF nvidia/OpenMathInstruct-2 (train_1M)"
+      n_examples: null
+      built_by: /home/ben/task/build_data_phase2.py
+      build_command: [python, build_data_phase2.py]
+      selection: >-
+        problem_source in {gsm8k, augmented_gsm8k}; deduped on normalized problem
+        text; dropped on exact match or any shared 8-gram with a GSM8K *test*
+        question; kept only solutions whose last \boxed{} equals expected_answer,
+        cut just after that box; body length 20-2400 chars, single box only. The
+        agent later recorded the file as roughly 80K rows [32061].
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+    - path: /home/ben/task/data/sft_gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/build_data_phase1.py
+      build_command: [python, build_data_phase1.py]
+      selection: "as exp-01; repeated twice inside the mix (--gold-repeat 2)"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 2
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full fine-tune, flash_attention_2, DataCollatorWithFlattening packing"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum and --pack are from the launch argv. max_seq_len 3072
+        and seed 0 are train_sft.py argparse defaults not overridden by this
+        launch; the script is in the snapshot. --pack replaces the padding
+        collator with DataCollatorWithFlattening (added at [25340]); script
+        constants as in exp-01.
+    target_format: >-
+      eval-rendered chat prompt (system prefix on all gold rows, on external rows
+      with p=0.15); assistant turn ends "ANSWER: <target>" + <|im_end|>
+  command:
+    argv: [python, train_sft.py, --data, data/sft_phase2.jsonl, --out, runs/phase2, --epochs, "1", --lr, "1e-5", --bs, "8", --accum, "8", --pack]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONUNBUFFERED: "1"}
+    log: /tmp/train_p2b.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: 1.9
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Last referenced at [28764] (t=+1.60h, "~1.9h for Phase 2"). Between then and
+      [31855] the agent found that the scorer compares comma targets literally
+      [29344]-[29346], rewrote the answer canonicalisation in
+      build_data_phase1.py / build_data_phase2.py [31088]-[31574], rebuilt every
+      dataset [31582] and relaunched phase 2 on the corrected data. This run was
+      therefore stopped mid-flight; no kill command is in the stream and nothing
+      was saved or evaluated.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Packed training was confirmed workable at bs8/accum8, but the run was thrown
+    away ~5 minutes in because its training data encoded answers without the
+    thousands separators the scorer needs; no checkpoint and no measurement came
+    out of it. The same recipe on corrected data is exp-04.
+  decision: abandon_line
+  next_step: >-
+    Rebuild every dataset so answers of magnitude >= 1000 carry GSM8K's comma
+    convention ("always emit comma format for |x| >= 1000" [32059]) and relaunch
+    the identical training command.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-b8ac2f29
+  launch_i: 26878
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [20871, 23144, 26542]
+    setup: [25340, 26878]
+    evaluation: []
+    result: [28764, 31582, 31855]
+    conclusion: [29344, 29346, 31088, 32059]
+  snapshot_files:
+    - build_mix_phase2.py
+    - build_data_phase1.py
+    - build_data_phase2.py
+    - train_sft.py
+  smoke_runs:
+    - {launch_i: 25512, outcome: "crashed: OOM at bs12 with packing (fp32 logits over 27K-position rows)"}
+    - {launch_i: 26543, outcome: "passed: packed bs8/accum8 with expandable_segments, throughput measured"}
+  extractor: null
+  unresolved:
+    - "the stream never shows this run being stopped, only that its data was rebuilt and the run relaunched at [31855]"
+    - "no row count was printed for data/sft_phase2.jsonl in this build"

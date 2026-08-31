@@ -1,0 +1,205 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The base model scores 0.567 on the 60-sample eval slice and no post-trained
+    candidate exists yet; the run needs a fine-tune that beats that anchor on the
+    same slice [66][91].
+  evidence:
+    - path: /home/ben/task/baseline_limit60.json
+      locator: "[39][66]"
+      observation: "baseline eval of the base model, --limit 60 --max-tokens 2048: accuracy 0.567"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    LoRA SFT of the base model on the GSM8K train split, with loss on the
+    assistant span only and prompts formatted to the eval template, will raise
+    accuracy above the base model on the same eval slice.
+  mechanism: >-
+    Training prompts are aligned to the exact eval template and loss is masked to
+    the assistant output, so the model learns to emit the graded
+    "ANSWER: <number>" form in the scoring format [45][59].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: gsm8k train split (loaded in the trainer script, no local file)
+      n_examples: null
+      built_by: null
+      build_command: []
+      selection: >-
+        reference answer split on "####" into reasoning and final target;
+        assistant text = reasoning + "ANSWER: <target>" [49]
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: transformers.Trainer + peft LoRA (versions not stated in the stream)
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=<not stated>"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 3
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        scheduler=cosine and bf16=True/tf32=True are hardcoded in the trainer's
+        TrainingArguments as printed at [330], not argparse defaults;
+        gradient checkpointing on. warmup, weight decay and seed were not passed
+        on the command line and the trainer script is not in the workspace
+        snapshot, so they are left null. ~132M trainable LoRA parameters,
+        702 optimizer steps [70].
+    target_format: >-
+      chat template with a user turn holding the eval math prompt and an
+      assistant turn ending in "ANSWER: <number>" [49]
+  command:
+    argv:
+      - python
+      - scripts/train_gsm8k_lora.py
+      - --output-dir
+      - checkpoints/exp1
+      - --merge-output-dir
+      - checkpoints/exp1_merged
+      - --num-epochs
+      - "3"
+      - --learning-rate
+      - "1e-4"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "8"
+      - --max-length
+      - "1536"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --lora-dropout
+      - "0.05"
+      - --gradient-checkpointing
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_lora.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - checkpoints/exp1_merged
+      - --limit
+      - "20"
+      - --json-output-file
+      - experiments/exp1_limit20.json
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "768"
+      - --gpu-memory-utilization
+      - "0.5"
+    dev_set: "official --limit 20"
+    n: 20
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.30
+    path: /home/ben/task/experiments/baseline_limit20.json
+  diagnostic:
+    what: >-
+      read the completions out of the eval log to see why nothing matched [184]
+    command: []
+    path: /home/ben/task/logs/2026-02-24T11-14-45+01-00_gsm8k_BXNJnhQWmoKCgEKearYwjw.json
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/checkpoints/exp1_merged
+  training_summary:
+    final_loss: 0.336
+    steps: 702
+    notes: >-
+      agent's report at [122]: final train loss ~0.336, epoch-3 loss cluster
+      0.23-0.26; trainer_state exp1/checkpoint-702 first loss 0.8534,
+      last logged loss 0.2341 [363]
+  measurements:
+    - metric: accuracy
+      value: 0.000
+      n: 20
+      path: /home/ben/task/experiments/exp1_limit20.json
+      delta_vs_comparator: -0.30
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-02-24T11-14-45+01-00_gsm8k_BXNJnhQWmoKCgEKearYwjw.json
+    notes: >-
+      completions solve the problem and emit "ANSWER: <n>" but do not stop; they
+      run on into unrelated multilingual and memorised-looking text, so the
+      matcher scores nothing [185]. The later generation scan reports this eval
+      as spill 0/20, "ANSWER:" present 20/20, mean output length 2144.9 chars
+      [417].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    The fine-tune scored 0.000 on the 20-sample slice against a 0.30 base model,
+    i.e. "exp1 collapsed to 0.00 on the quick eval, so the fine-tune
+    objective/format is misaligned with the scorer" [183]. Training loss fell
+    cleanly, so the loss is not the problem: the generations never terminate.
+  decision: reject
+  next_step: >-
+    "preserve the original tokenizer files exactly and update training to append
+    explicit EOS so responses terminate after the answer" [187]; the base
+    tokenizer files were copied over checkpoints/exp1_merged at [188] and the
+    trainer was patched before the next launch.
+provenance:
+  kind: extracted
+  run_ref: r-e2ebe966
+  launch_i: 67
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [39, 66, 91]
+    setup: [45, 49, 67, 70, 330]
+    evaluation: [173, 178, 179]
+    result: [122, 181, 184, 185, 363, 417]
+    conclusion: [183, 187]
+  snapshot_files:
+    - baseline_limit60.json
+    - evaluate.py
+    - contamination_judgement.txt
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "two earlier evals of this checkpoint (--limit 60 --max-tokens 2048 at [123], --limit 60 --max-tokens 768 at [148]) were killed by the agent at [142] and [156] before writing a metrics file, so this output has no 60-sample score"
+    - "the base tokenizer files were copied into checkpoints/exp1_merged at [188]; the repackaged checkpoint was never re-evaluated or used, so it is not carded"
+    - "contamination_check reads 'no contamination detected' from the workspace file contamination_judgement.txt; no contamination check appears in the stream"
+    - "cited experiments/*.json, logs/*.json and scripts/train_gsm8k_lora.py are not in the workspace snapshot; their values are read from the stream"

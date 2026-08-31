@@ -1,0 +1,254 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "Same accuracy (58.7%) for both LoRA and full fine-tune. Let me analyze what
+    is going wrong by looking at actual model outputs." [251] - two different
+    training regimes land on the same score, so the ceiling is in the data and
+    the output format, not the parameterisation.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-2354e591/eval_run2.json
+      locator: "[249], [251]"
+      observation: "full fine-tune 0.587, identical to the LoRA merge in eval_run1.json."
+    - path: /home/ben/task/logs/2026-03-20T04-22-00+01-00_gsm8k_bqPyq9ySHtDUHVvx8qEs4c.json
+      locator: "[254], [255] - four incorrect samples printed, last 200 chars each"
+      observation: >-
+        Failures are wrong quantities inside otherwise well-formed chains, and
+        several outputs emit GSM8K's "#### n" line before the required
+        "ANSWER: n"; both correct and incorrect outputs carry <<...>> calculator
+        annotations, which the training data had stripped.
+  affected_share: null
+  failure_examples:
+    - id: "[255] incorrect #1"
+      source: /home/ben/task/logs/2026-03-20T04-22-00+01-00_gsm8k_bqPyq9ySHtDUHVvx8qEs4c.json
+      question: null
+      gold: "400"
+      model_output: >-
+        "If there are 4 queens, there are 2 * 4 = <<4*2=8>>8 babies. There are
+        2 * 8 = <<2*8=16>>16 worker bees. ANSWER: 16"
+      failure: "answers 16 against gold 400 - the chain solves a different quantity than the question asks for"
+    - id: "[255] incorrect #2"
+      source: /home/ben/task/logs/2026-03-20T04-22-00+01-00_gsm8k_bqPyq9ySHtDUHVvx8qEs4c.json
+      question: null
+      gold: "40"
+      model_output: >-
+        "On Friday, fixing the tires made the mechanic $40/car tire * 12 car
+        tires = $<<40*12=480>>480. Friday was the higher revenue day making
+        $480 - $360 = <<480-360=120>>120 more. ANSWER: 120"
+      failure: "arithmetic inside the chain is right but the wrong difference is reported; gold 40"
+    - id: "[255] incorrect #3"
+      source: /home/ben/task/logs/2026-03-20T04-22-00+01-00_gsm8k_bqPyq9ySHtDUHVvx8qEs4c.json
+      question: null
+      gold: "10000"
+      model_output: >-
+        "200 hours a day * $150 an hour = $30,000 in costs. Then subtract the
+        cost of treatment from the amount charged by the hospital to find the
+        profit: $100,000 - $30,000 = $70,000 in profit. ANSWER: 70000"
+      failure: "sets up the wrong intermediate quantity, answers 70000 against gold 10000"
+    - id: "[255] incorrect #4"
+      source: /home/ben/task/logs/2026-03-20T04-22-00+01-00_gsm8k_bqPyq9ySHtDUHVvx8qEs4c.json
+      question: null
+      gold: "60"
+      model_output: >-
+        "The total square footage is 16 + 32 + 16 + 8 = <<16+32+16+8=72>>72
+        square footage. The average square footage per level is 72 square
+        footage / 4 levels = 18 square footage. #### 18 ANSWER: 18"
+      failure: "wrong quantity (18 vs gold 60), and the output emits GSM8K's '#### 18' line before the ANSWER line"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Let me try a different approach: keep `<<>>` annotations, add Orca-Math
+    data, use packing for efficiency, and train LoRA for 3 epochs" [257] - a
+    bigger, more varied mixture whose targets keep GSM8K's calculator
+    annotations, with a rank-128 adapter, will beat 0.587.
+  mechanism: >-
+    The agent's comment in train_v2.py at the GSM8K loader: "Load and format
+    GSM8K train data - KEEP <<>> annotations" / "# Keep <<>> annotations since
+    eval few-shots have them" [261] - the eval prompts the model with 10 GSM8K
+    few-shot examples that contain <<...>>, so stripping them in training pushed
+    the model off the eval's distribution. Orca-Math adds a third source of word
+    problems and packing raises tokens/second so 3 epochs fit the budget.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null                        # not materialised on disk; loaded from the hub inside the launch
+      source: openai/gsm8k
+      n_examples: 7473
+      repeats: 5
+      built_by: /home/ben/task/train_v2.py
+      build_command: []
+      selection: >-
+        gsm8k main/train with the <<...>> calculator annotations KEPT (the change
+        from train.py), ChatML with the plain system prompt (train_v2.py does not
+        carry the metadata-header prompt added to train.py at [212]); assistant
+        turn ends "ANSWER: <target>"; concatenated 5x.
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: meta-math/MetaMathQA
+      n_examples: null
+      repeats: 1
+      built_by: /home/ben/task/train_v2.py
+      build_command: []
+      selection: >-
+        30000 GSM_* and 5000 MATH_* requested, shuffle(seed=42).select; answer
+        regex-ed from "The answer is: <n>" or a \\boxed{...}, no-match dropped.
+        Post-filter count not printed.
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: microsoft/orca-math-word-problems-200k
+      n_examples: null
+      repeats: 1
+      built_by: /home/ben/task/train_v2.py
+      build_command: []
+      selection: >-
+        15000 examples, shuffle(seed=42).select; final number taken from an
+        "answer is / result is / equals / total is" regex, else the last number
+        in the answer text. Post-filter count not printed.
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2
+    peft: "LoRA r=128 alpha=256 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj dropout=0.05"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3.0
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=True (--packing). warmup (0.03) and weight_decay (0.01) are
+        train_v2.py argparse defaults, not overridden on this command line;
+        scheduler=cosine, bf16, seed=42, optim=adamw_torch,
+        gradient_checkpointing=True, save_strategy=epoch and flash_attention_2
+        are hard-coded in train_v2.py (script text in the snapshot). Effective
+        batch 32.
+    target_format: >-
+      ChatML; plain "You are a helpful assistant that solves math problems step
+      by step ..." system turn, evaluate.py's math prompt as the user turn,
+      assistant turn is reasoning WITH <<...>> annotations + "ANSWER: <n>".
+  command:
+    argv:
+      - python3
+      - /home/ben/task/train_v2.py
+      - --output-dir
+      - /home/ben/task/checkpoints/run3
+      - --num-epochs
+      - "3"
+      - --lr
+      - "2e-4"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "8"
+      - --max-length
+      - "1024"
+      - --lora-r
+      - "128"
+      - --lora-alpha
+      - "256"
+      - --gsm-metamath-count
+      - "30000"
+      - --math-metamath-count
+      - "5000"
+      - --orca-math-count
+      - "15000"
+      - --gsm8k-upsample
+      - "5"
+      - --packing
+      - 2>&1
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: exp-07
+    value: 0.5866666666666667
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-2354e591/eval_run2.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/checkpoints/run3/final
+  training_summary:
+    final_loss: 0.065
+    steps: 2964
+    notes: >-
+      "V2 at 36% (1076/2964), ~1.8 hours remaining. Loss ~0.17, accuracy ~95%"
+      [279]; 89% at loss ~0.065, token accuracy ~98% [282]; "V2 training
+      complete! Loss dropped from ~0.17 to ~0.065, token accuracy 98%" [286].
+      The agent's closing summary puts the mixture at ~87K examples and the run
+      at ~2.8 h [363].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The v2 adapter (rank 128, annotations kept, Orca-Math added, packing on)
+    trained to a much lower loss than either earlier run, 0.17 -> 0.065 with
+    ~98% token accuracy. It carries no score of its own: it was merged at [289]
+    (exp-09) and that merge is what scored 0.613.
+  decision: adopt
+  next_step: "Merge the adapter into the base weights and evaluate (exp-09)."
+
+provenance:
+  kind: extracted
+  run_ref: r-2354e591
+  launch_i: 265
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [249, 251, 254, 255]
+    setup: [257, 261, 265]
+    evaluation: []
+    result: [279, 282, 286]
+    conclusion: [286, 289, 378]
+  snapshot_files:
+    - train_v2.py
+    - eval_run2.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The failure examples were read off the eval log for the 150-sample official slice, not a held-out dev set the agent built; the item ids are positions in the agent's own printed list, and the questions were never printed."
+    - "The correct/incorrect counts printed at the top of [255] are cut off in the digest, so affected_share is unknown."
+    - "Three things changed at once against exp-07 (annotations kept, Orca-Math added, rank 128 + packing), so exp-09's delta cannot be attributed to any one of them."

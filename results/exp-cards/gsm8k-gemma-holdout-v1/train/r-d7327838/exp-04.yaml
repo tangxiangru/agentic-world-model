@@ -1,0 +1,223 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 0.79
+
+problem:
+  statement: >-
+    With format and stopping fixed, the model is at 33% and the remaining
+    failures are genuine reasoning and arithmetic errors; GSM8K-train on its own
+    is not enough data to fix them. [196] "remaining failures are genuine
+    reasoning errors. GSM8K-train alone caps at ~33%."
+  evidence:
+    - path: /home/ben/task/eval_v2.json
+      locator: "[187]"
+      observation: "33.3% at --limit 150"
+    - path: null
+      locator: "[194]"
+      observation: >-
+        "total 150 correct 50"; the four printed wrong completions are
+        well-formed, short and end at their own ANSWER line - the errors are in
+        the reasoning, not the format
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: null
+      question: null
+      gold: "20"
+      model_output: >-
+        "If each of the girls eats 5 heartstrings, the total number of
+        heartstrings that they eat is 5 + 5 = 10.\nSince Cassie eats 3 times as
+        many heartstrings as Billy, Billy eats 3 x 5 = 15 heartstrings.\nIn total,
+        the two girls eat 15 + 10 = 25 heartstrings.\nANSWER: 25"
+      failure: "misassigns the multiplier and double-counts; answers 25 instead of 20 [194]"
+    - id: null
+      source: null
+      question: null
+      gold: "17"
+      model_output: >-
+        "25 20% = 25 * 0.20 = 5, 1st group of unripe \n2 * 2 = 4, the 2 sour \n25
+        - 5 - 4 - 1 - 2 = 13 % of oranges are good \nANSWER: 13"
+      failure: "garbled setup, subtracts the wrong terms; answers 13 instead of 17 [194]"
+    - id: null
+      source: null
+      question: null
+      gold: "400"
+      model_output: >-
+        "There are 700/3 = 233 7/3 bees in the hive.\nThis means there are 233 + 7
+        = 240 bees in the hive that are babies.\nThere are 240/2 = 120 worker
+        bees.\nThere are 240/2 = 120 baby bees, so there are 120*2 = 240 queen
+        bees.\nThere are 120*2 = 240 worker bees.\nANSWER: 240"
+      failure: "wrong ratio decomposition and contradicts itself; answers 240 instead of 400 [194]"
+    - id: null
+      source: null
+      question: null
+      gold: "40"
+      model_output: >-
+        "On thursday the mechanic earned 60*6 = $360\nOn Friday the mechanic
+        earned 40*4 = $160\nTherefore on Thursday the mechanic earned 360-160
+        =$200 more than on Friday.\nANSWER: 200"
+      failure: "wrong rates taken from the problem; answers 200 instead of 40 [194]"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Adding MetaMathQA (GSM8K/MATH-train-derived, so permitted) to the SFT mixture
+    will substantially raise accuracy by improving reasoning quality and
+    diversity. [196] "MetaMathQA ... which is proven to boost small models
+    substantially."
+  mechanism: >-
+    More and more diverse correct chains of thought on the same problem
+    distribution give the small model better reasoning coverage than the 7.5K
+    GSM8K-train traces alone.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_pool.jsonl
+      source: "HF:meta-math/MetaMathQA + HF:openai/gsm8k main split=train"
+      n_examples: 50000
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --gsm_ansaug, "40000", --gsm_rephrased,
+                      "40000", --gsm_sv, "8000", --gsm_fobar, "8000", --gsm8k_repeat,
+                      "2", --out, train_pool.jsonl]
+      selection: >-
+        MetaMathQA rows of type GSM_AnsAug/GSM_Rephrased/GSM_SV/GSM_FOBAR (40000 /
+        40000 / 8000 / 8000 requested), answer taken from "####" or "The answer
+        is", "<<>>" and the answer trailer stripped, rows with a body under 5
+        chars dropped; plus the full clean GSM8K train set repeated x2; shuffled
+        with random.seed(42). The launch capped the trainer at --max_examples
+        50000, so 50000 of the pool's rows were used (train_v3.log "examples:
+        50000"); the pool's own total is not printed in the digest.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer (full fine-tune, custom padding collator)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1600
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        seed 42 is the --seed argparse default of train_pool.py (in task/, not
+        overridden by the launch); scheduler/warmup/weight_decay/bf16,
+        group_by_length=True, gradient_checkpointing=True, save_strategy='no',
+        logging_steps=25 are hardcoded in that script's TrainingArguments; the
+        script patches eos_token_id to [151643, 151645] in the saved config.json
+        and generation_config.json after training
+    target_format: >-
+      same few-shot-mixed chat format as exp-03, rebuilt in train_pool.py with
+      p=0.15 the exact 10-shot eval prefix, p=0.30 zero-shot, else k=1..5 random
+      GSM8K-train demos; completion "{body}\nANSWER: {N}<|im_end|>\n", loss masked
+      on the prompt, prompt left-truncated to fit --maxlen
+  command:
+    argv: [nohup, python, train_pool.py, --pool, train_pool.jsonl, --out, sft_v3,
+           --epochs, "2", --lr, "1e-5", --bs, "16", --accum, "2", --maxlen, "1600",
+           --max_examples, "50000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_pool.py
+    env: {}
+    log: /home/ben/task/train_v3.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [timeout, "1800", python, evaluate.py, --model-path, sft_v3, --limit,
+              "150", --max-connections, "16", --max-tokens, "1024",
+              --gpu-memory-utilization, "0.85", --json-output-file, eval_v3.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.3333
+    path: /home/ben/task/eval_v2.json
+  diagnostic:
+    what: >-
+      count correct, completions with no "ANSWER:" and completions over 1500
+      chars in the eval log, and print 5 wrong (target, model answer, length) [278]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.115
+  output_checkpoint: /home/ben/task/sft_v3
+  training_summary:
+    final_loss: 0.179
+    steps: 3126
+    notes: >-
+      last logged 'loss' 0.179, reported train_loss 0.1801, 2 epochs over 50000
+      examples (avg len 809.5 tokens, max 1600), train_runtime 4013.9 s
+      (train_v3.log); agent read it as "final loss ~0.17, much lower than v2's
+      0.43" [271]
+  measurements:
+    - metric: accuracy
+      value: 0.5333
+      n: 150
+      path: /home/ben/task/eval_v3.json
+      delta_vs_comparator: 0.20
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [279] "correct 80 of 150 | no-ANSWER 1 | long(>1500ch) 4"; wrong items are
+      plain value errors (target 40 got 120, 50/230, 40/55, 10000/91584, 60/7)
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    53.3% vs 33.3% under the same --limit 150 protocol - a 20 pt jump from adding
+    50K MetaMathQA GSM-derived examples. [281] "Format is clean (only 1/150 format
+    issue) - remaining failures are pure reasoning/arithmetic errors."
+  decision: adopt
+  next_step: >-
+    [281] scale up: more unique MetaMath data, AnsAug-heavy because it is most
+    on-distribution, plus some MATH for harder reasoning.
+
+provenance:
+  kind: extracted
+  run_ref: r-d7327838
+  launch_i: 224
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [192, 194, 196]
+    setup: [212, 215, 220, 224]
+    evaluation: [272]
+    result: [271, 277, 279]
+    conclusion: [277, 281]
+  snapshot_files:
+    - build_data.py
+    - train_pool.py
+    - train_v3.log
+    - eval_v3.json
+    - eval_v2.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "build_data.py's printed pool totals (AnsAug/Rephrased/SV/FOBAR kept counts, TOTAL) are not in the digest; only the trainer's 'examples: 50000' after the --max_examples cap is known"
+    - "the agent's own evals call evaluate.py on the official benchmark set (first N samples); no held-out dev set was built at any point in the run"

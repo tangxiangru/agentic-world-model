@@ -1,0 +1,204 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.23
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The un-tuned base checkpoint scores 47.3% on the fixed 150-example development
+    slice. Its formatting is already mostly compatible with the evaluator, so the
+    gap is genuine arithmetic/reasoning rather than merely teaching the answer tag.
+  evidence:
+    - path: /home/ben/task/baseline_150.json
+      locator: "[22], [39]"
+      observation: "Base model scores 0.4733 (accuracy) on the 150-example slice."
+    - path: /home/ben/task/logs
+      locator: "[40], [41]"
+      observation: >-
+        Failure dump over the baseline log: some completions drift into unrelated
+        text, others emit a well-formed 'ANSWER:' line; mean completion length and
+        the ANSWER-tag count were printed as aggregate diagnostics only.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    One epoch of completion-only supervised fine-tuning on a 122,419-row mixture of
+    official GSM8K-train answers (x3) and GSM8K-train-provenance MetaMathQA
+    augmentations, rendered in the evaluator's chat format, will raise accuracy on
+    the 150-example slice above the 47.3% base.
+  mechanism: >-
+    Aligning the response interface and supplying many verified rationales should
+    remove the interface gap first and add reasoning supervision second.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data
+      source: "local: openai/gsm8k train + meta-math/MetaMathQA (rows with exact GSM8K-train original_question)"
+      n_examples: 122419
+      built_by: /home/ben/task/prepare_train_data.py
+      build_command: ["python", "prepare_train_data.py", "--output", "train_data", "--gsm-repeats", "3", "--rephrased", "40000", "--ansaug", "40000", "--sv", "10000", "--fobar", "10000"]
+      selection: >-
+        GSM8K_train x3 = 22,419; GSM_AnsAug 40,000; GSM_Rephrased 40,000; GSM_SV
+        10,000; GSM_FOBAR 10,000. Every MetaMath row must have an original_question
+        that exactly matches a GSM8K-train question; rows matching a held-out
+        question are rejected; calculator annotations stripped; '####' rewritten to
+        'ANSWER:'.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "GSM8K train split repeated x3 (--gsm-repeats 3)"
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (custom packed, completion-only collator)"
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-5
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.1
+      precision: "bf16 (tf32 matmul), flash_attention_2, gradient checkpointing"
+      seed: 2026
+      other: >-
+        lr/epochs/batch/grad_accum/max_len/warmup come from the launch argv.
+        scheduler, weight_decay, precision, optim=adamw_torch_fused and
+        max_grad_norm=1.0 are hard-coded in train_sft.py (in the workspace, not
+        overridden by the launch). seed=2026 is the train_sft.py argparse default
+        and the launch did not pass --seed. save_steps 200, logging_steps 10 from
+        the launch.
+    target_format: >-
+      Chat turns rendered with Qwen im_start/im_end markers; loss on the assistant
+      completion only (prompt tokens masked to -100); examples densely packed to
+      2048 tokens. Assistant target ends with a final 'ANSWER: <value>' line.
+  command:
+    argv: ["/bin/bash", "-lc", "python train_sft.py --data train_data --output sft_v1 --max-length 2048 --epochs 1 --batch-size 8 --grad-accum 4 --learning-rate 2e-5 --warmup-ratio 0.03 --save-steps 200 --logging-steps 10"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.1
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: ["python", "evaluate.py", "--model-path", "sft_v1", "--limit", "150", "--json-output-file", "sft_v1_eos_150.json", "--max-connections", "16", "--max-tokens", "2048", "--gpu-memory-utilization", "0.55"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.4733
+    path: /home/ben/task/baseline_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.15
+  duration_h: 1.15
+  steps: 613
+  output_checkpoint: /home/ben/task/sft_v1
+  training_summary:
+    final_loss: 0.1432
+    steps: 613
+    notes: >-
+      36.95M packed tokens, one epoch, mean loss 0.1432, 61.05 GiB peak; checkpoints
+      at 200/400/600 plus the final step-613 export [207].
+  measurements:
+    - metric: accuracy
+      value: 0.0267
+      n: 150
+      path: /home/ben/task/sft_v1_150.json
+      delta_vs_comparator: -0.4466
+    - metric: accuracy
+      value: 0.7533
+      n: 150
+      path: /home/ben/task/sft_v1_eos_150.json
+      delta_vs_comparator: 0.28
+    - metric: accuracy
+      value: 0.70
+      n: 150
+      path: /home/ben/task/sft_v1_step400_150.json
+      delta_vs_comparator: 0.2267
+    - metric: accuracy
+      value: 0.733131
+      n: 1319
+      path: /home/ben/task/sft_v1_full.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    The first eval returned 2.7% because the export inherited an EOS list containing
+    only <|endoftext|> while training taught <|im_end|>, so every sample ran to the
+    2,048-token cap [221]. With both terminators accepted the same weights score
+    75.3%, "a 28-point gain over the 47.3% base" [232]; outputs average 113 tokens
+    and stop correctly, and the remaining 37 misses are word-problem interpretation
+    errors [237]. Step 400 scores 70.0%, so more training helped [250].
+  decision: adopt
+  next_step: >-
+    Short GSM8K-train-only specialization curriculum from this checkpoint (exp-02),
+    then exact-context alignment (exp-03).
+
+outcome:
+  official_accuracy: null
+
+# ---- provenance --------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-ad144811
+  launch_i: 79
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [22, 39, 40, 41]
+    setup: [66, 67, 79]
+    evaluation: [211, 225, 244]
+    result: [207, 209, 221, 232, 237, 250, 1092, 1100]
+    conclusion: [232, 237, 250]
+  snapshot_files:
+    - train_sft.py
+    - prepare_train_data.py
+    - evaluate.py
+    - baseline_150.json
+    - sft_v1_150.json
+    - sft_v1_eos_150.json
+    - sft_v1_step400_150.json
+    - sft_v1_full.json
+    - EXPERIMENTS.md
+  smoke_runs:
+    - {launch_i: 70, outcome: "passed (10 steps, --limit 3000, batch 2)"}
+    - {launch_i: 73, outcome: "passed (12 steps, --limit 5000, batch 8 throughput probe)"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The EOS-list correction between [221] and [225] has no shell command in the digest, so the exact edit that turned 2.7% into 75.3% cannot be cited as a launch."
+    - "The step-600 checkpoint of this run was never evaluated."
+    - "The tokenizer restored at [241] replaced the save_pretrained-regenerated tokenizer; the 2.7% and 75.3% evals straddle that change only for the tokenizer, not the weights."

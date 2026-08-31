@@ -1,0 +1,185 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.71
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    "the chat template adds `<think>\n\n</think>\n\n` before the assistant content during
+    training, but during eval the generation prompt doesn't include it, causing
+    distribution mismatch" ([143])
+  evidence:
+    - path: /tmp/eval_v1.json
+      locator: "[133] eval launch, [143] the agent's reading of it"
+      observation: "the first SFT checkpoint's eval led the agent to inspect the training text and find the <think> prefix"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Building the training strings by hand so they match the inference-time format exactly
+    (no <think> tags) will remove the train/inference mismatch and restore accuracy ([143], [147])
+  mechanism: >-
+    "Builds training strings manually to exactly match inference-time format (no <think>
+    tags)" - the assistant turn is trained in the same surface form the model is asked to
+    continue at eval ([147])
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "HF gsm8k (main) train split"
+      n_examples: 7473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        all 7473 GSM8K train rows, no filtering; answer split on "####" into reasoning and
+        target; user turn = the eval's math prompt template, assistant turn = reasoning +
+        "ANSWER: {target}" ([59], [62]). Same file as exp-01, unchanged.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 640
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr / epochs / batch_size / grad_accum / max_length are the launch args at [151].
+        scheduler=cosine, weight_decay=0.0, bf16, optim=adamw_torch, max_grad_norm=1.0,
+        gradient checkpointing, save_strategy=no are hard-coded in TrainingArguments in
+        train_sft.py, which is in the workspace snapshot. warmup=0.03, seed=42 and
+        --data are argparse defaults in that script which this launch did not override.
+    target_format: >-
+      raw string "<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n{assistant}<|im_end|>\n",
+      built without apply_chat_template; loss masked over the prompt span ([147])
+  command:
+    argv: [python, train_sft.py, --output, /home/ben/task/ckpt_sft_v2, --epochs, "3",
+           --lr, "1e-5", --batch_size, "8", --grad_accum, "2", --max_length, "640"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /tmp/train_v2.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpt_sft_v2, --limit, "150",
+              --json-output-file, /tmp/eval_v2b.json, --max-connections, "4"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.34
+    path: /tmp/baseline.json
+  diagnostic:
+    what: >-
+      inspection of the eval log's decoded outputs to see whether generation stops at the
+      answer ([191], [209])
+    command: []
+    path: /home/ben/task/logs/2026-04-16T18-09-14+02-00_gsm8k_dyKk4784xPKUoyMqts4o9E.json
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/ckpt_sft_v2
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      launched t=+0.71h, checkpoint complete at [183] t=+1.15h; no loss or step count in
+      the stream.
+  measurements:
+    - metric: accuracy
+      value: 0.040
+      n: 150
+      path: /tmp/eval_v2.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.480
+      n: 150
+      path: /tmp/eval_v2b.json
+      delta_vs_comparator: null      # comparator was measured at --limit 50, not 150
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-04-16T18-09-14+02-00_gsm8k_dyKk4784xPKUoyMqts4o9E.json
+    notes: >-
+      the first eval scored 0.040 with 291,554 output tokens; the decoded sample at [192]
+      shows the model running past its answer into unrelated text. The agent's later note
+      at [410] gives the cause: the base eos_token_id is 151643 while chat training teaches
+      <|im_end|> (151645), so the server never stops. Re-running with eos_token_id
+      [151643, 151645] gave 0.480 with 92,154 output tokens ([205], [206]).
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    The manual training format fixed the <think> mismatch, and a second decoding fix
+    (eos_token_id) was needed before the checkpoint could be scored: "48% accuracy, up from
+    4% (broken) and 34% (baseline)" ([208]). No same-protocol comparator exists - the base
+    line was measured at --limit 50, the checkpoint at --limit 150 - so the size of the gain
+    over the base model is not established here.
+  decision: adopt
+  next_step: >-
+    "Errors are actual reasoning errors. Let me save v2 as a baseline candidate, then train
+    v3 with additional math data (MetaMathQA)" ([212]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-2cd75f43
+  launch_i: 151
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [143]
+    setup: [147, 149, 151]
+    evaluation: [185, 205]
+    result: [183, 186, 192, 206]
+    conclusion: [208, 212]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null                # withheld: hard rule 5 forbids a model name in these cards
+  unresolved:
+    - "the edit that set generation_config.json eos_token_id to [151643, 151645] for this
+       checkpoint is not itself an event in the digest; only its effect, the re-eval at [205],
+       and the retrospective explanation at [410] appear"
+    - "no eval JSON or inspect log survives in the workspace snapshot; /tmp/eval_v2.json,
+       /tmp/eval_v2b.json and the logs/ paths are as they appear in the stream"
+    - "the comparator (base model, 0.34) was measured at --limit 50 while every checkpoint was
+       measured at --limit 150; the two are not the same protocol"

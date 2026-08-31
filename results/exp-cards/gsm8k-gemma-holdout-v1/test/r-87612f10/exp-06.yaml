@@ -1,0 +1,224 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The prompt-matched recipe is the best candidate on the official evaluator
+    (0.360 against 0.240 for its parent), but it was trained only on the GSM8K
+    split that excludes the 256 held-out dev rows and the 10 few-shot questions,
+    so the submission model has not seen all the available training data [712].
+  evidence:
+    - path: /home/ben/task/exp_full_promptmatch_e1_lr5e6_eval25.json
+      locator: "[708]"
+      observation: "accuracy 0.360, stderr 0.098 on the official 25-sample slice"
+    - path: /home/ben/task/exp_full_e3_lr2e5_eval25.json
+      locator: "[703]"
+      observation: "accuracy 0.240, stderr 0.087 for the parent under the same slice"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Continuing the prompt-matched checkpoint on all GSM8K train data at a lower
+    learning rate will fold in the remaining held-out examples without disrupting
+    the behaviour that improved official scoring, giving a final model at least
+    as good as the 0.360 checkpoint [712].
+  mechanism: >-
+    The extra 266 rows (the dev split plus the few-shot questions) add data the
+    recipe has not seen, and a 2e-6 learning rate for a single epoch is small
+    enough to absorb them without moving the model off the prompt-matched
+    behaviour that produced the gain.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/exp_full_promptmatch_e1_lr5e6
+    origin: exp-05
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: null
+      built_by: /home/ben/task/gsm8k_pipeline.py
+      build_command: []
+      selection: >-
+        --train-on-all takes load_gsm8k_train() whole, with no dev split and no
+        few-shot exclusion, so the 256 dev rows and the 10 few-shot questions are
+        now training data (the split has 7,473 rows, seen at [101] and [479], but
+        the trainer's own train_examples line for this launch is not in the
+        digest). --include-official-fewshots-system is kept, so every example
+        carries the evaluator's 10-shot system prompt.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129) [31]"
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-06
+      epochs: 1
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        model-name/dataset-source/mode/lr/epochs/batch_size/grad_accum/max_seq_len,
+        --train-on-all and --include-official-fewshots-system from the launch
+        argv. scheduler and precision are hard-coded in train_gsm8k.py; warmup
+        0.03 and weight_decay 0.01 are argparse defaults the launch did not
+        override. save_standalone_model also writes the processor and tokenizer
+        files and forces do_sample=False in the exported generation config.
+    target_format: >-
+      templates/gemma3.jinja chat format with the evaluator's 10 few-shot
+      examples as a system turn; assistant turn = the GSM8K rationale ending in
+      "ANSWER: n"; prompt and system tokens masked.
+  command:
+    argv:
+      - python
+      - train_gsm8k.py
+      - --model-name
+      - exp_full_promptmatch_e1_lr5e6
+      - --dataset-source
+      - gsm8k
+      - --train-on-all
+      - --include-official-fewshots-system
+      - --output-dir
+      - final_model
+      - --mode
+      - full
+      - --epochs
+      - "1"
+      - --batch-size
+      - "2"
+      - --grad-accum
+      - "16"
+      - --max-length
+      - "2560"
+      - --learning-rate
+      - "2e-6"
+      - --logging-steps
+      - "20"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - final_model
+      - --limit
+      - "25"
+      - --max-connections
+      - "1"
+      - --gpu-memory-utilization
+      - "0.45"
+      - --json-output-file
+      - final_eval25.json
+    dev_set: >-
+      official --limit 25 (the provided evaluator, 4000-token default cap);
+      followed by a wider confirmation at --limit 150 with
+      --json-output-file final_eval150.json [863]
+    n: 25
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.36
+    path: /home/ben/task/exp_full_promptmatch_e1_lr5e6_eval25.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.874
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.1534
+    steps: 234
+    notes: >-
+      last logged step loss 0.1534 (epoch 0.94); trainer-reported mean train_loss
+      0.1550, train_runtime 3147.76 s at 13.45 s/step, the same profile as the
+      prompt-matched split run. The export at [870] carries config, both
+      safetensors shards, the index, generation config, preprocessor and
+      processor configs and the tokenizer files - the processor metadata whose
+      absence broke the first official eval at [214].
+  measurements:
+    - metric: accuracy
+      value: 0.44
+      n: 25
+      path: /home/ben/task/final_eval25.json
+      delta_vs_comparator: 0.08
+    - metric: accuracy
+      value: 0.4933
+      n: 150
+      path: /home/ben/task/final_eval150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    The all-train continuation cleared the fallback on the official 25-sample
+    check, 0.440 against 0.360, and a wider 150-sample run put it at 0.4933
+    (stderr 0.041), so it stayed in place as the exported model [862], [868]. The
+    agent's own summary of the winning recipe: clean full SFT on GSM8K, one
+    prompt-matched polish epoch with the evaluator's exact 10-shot system prompt,
+    one low-learning-rate continuation on all GSM8K train data [872].
+  decision: adopt
+  next_step: null
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-87612f10
+  launch_i: 713
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [705, 712]
+    setup: [712, 713, 716]
+    evaluation: [857, 863]
+    result: [855, 860, 866, 870]
+    conclusion: [862, 868, 872]
+  snapshot_files:
+    - train_gsm8k.py
+    - gsm8k_pipeline.py
+    - evaluate.py
+    - final_eval25.json
+    - final_eval150.json
+    - exp_full_promptmatch_e1_lr5e6_eval25.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "This model is trained on the 256 rows that every earlier card used as its held-out dev set, so no local dev comparison against exp-01 to exp-04 is possible for it, and none was attempted."
+    - "The 0.440 at 25 samples and 0.4933 at 150 samples are the agent's own evaluator runs; the 25-sample delta over the fallback is +0.08 with stderr around 0.10, i.e. inside one standard error, and the fallback was never re-scored at 150 samples."
+    - "The submission is the directory this launch wrote directly (final_model); the digest shows no separate packaging or copy step, and no later launch overwrites it."

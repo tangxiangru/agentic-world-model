@@ -1,0 +1,215 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.42
+
+problem:
+  statement: >-
+    Same problem as exp-01 (base model at 16%, frequently omitting the required
+    ANSWER line [46]), plus the immediate blocker that the broad SFT pass runs
+    out of memory at an effective batch of 32 x 4 with 1024-token sequences
+    [118].
+  evidence:
+    - path: /home/ben/task/baseline50.json
+      locator: "[18], [26]; accuracy 0.16"
+      observation: "base model scores 16.0% on the evaluator's 50-item slice"
+    - path: null
+      locator: "[118]"
+      observation: >-
+        torch.OutOfMemoryError in the backward pass at step 100/1875 of the
+        exp-01 launch; 13.33 GiB requested with 10.06 GiB free
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Same claim as exp-01 - one full-parameter epoch over all 240k GSM-derived
+    MetaMathQA augmentations, rendered in the evaluator's exact format, raises
+    GSM8K accuracy far above the 16% base [46][75] - retried with a
+    memory-safe batch geometry.
+  mechanism: >-
+    MetaMathQA's GSM subset derives only from GSM8K/MATH training splits and the
+    original work reports large GSM8K gains from full-parameter fine-tuning
+    [75]; a smaller per-device batch with more accumulation keeps the effective
+    batch near 128 while fitting the worst-case length bucket [88].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: meta-math/MetaMathQA
+      n_examples: 240000
+      built_by: /home/ben/task/train_math.py
+      build_command: []
+      selection: >-
+        rows whose `type` starts with "GSM_" (GSM_Rephrased 80,000 + GSM_AnsAug
+        80,000 + GSM_SV 40,000 + GSM_FOBAR 40,000 = 240,000, counts printed at
+        [311]/[369]), shuffled with seed 42; filtered and tokenized in-process by
+        train_math.py, no intermediate file is written. The agent described these
+        as "240,000 uncontaminated GSM-derived examples" [167]
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129) [10]"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1
+      batch_size: 24
+      grad_accum: 5
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/batch_size/grad_accum/max_seq_len from the launch argv
+        (effective batch 120). scheduler=cosine, weight_decay=0.0, bf16=True,
+        tf32=True, optim=adamw_torch_fused, max_grad_norm=1.0,
+        gradient_checkpointing=True (use_reentrant=False), group_by_length=True,
+        save_only_model=True, attn_implementation=flash_attention_2 are
+        hard-coded in /home/ben/task/train_math.py [285][287]. warmup=0.03 and
+        seed=42 are the script's argparse defaults, not overridden here.
+        save_total_limit was not passed, so the script default of 1 applied.
+        CAVEAT: the snapshot's train_math.py is the end-of-run version; the
+        variant that ran here (shown at [79], still current at [285]) had no
+        comma-grouping of integer answers and no --metamath-types flag.
+    target_format: >-
+      "<think>\n{reasoning}\n</think>\nANSWER: {answer}\n<|im_end|>\n<|end_of_text|>"
+      appended to the evaluator's smollm.jinja system+user prefix rendered
+      verbatim by evaluator_chat_prefix(); prompt tokens masked to -100 [79]
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train_math.py --stage metamath --model HuggingFaceTB/SmolLM3-3B-Base --output-dir stage1_run --batch-size 24 --grad-accum 5 --epochs 1 --learning-rate 2e-5 --max-length 1024 --save-steps 1000 --logging-steps 25"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_math.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    log: null
+  budget:
+    gpu: "1x H100 80GB (81,559 MiB total) [107]"
+    planned_h: 2.0
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - stage1_run/final
+      - --limit
+      - "150"
+      - --max-connections
+      - "16"
+      - --max-tokens
+      - "800"
+      - --gpu-memory-utilization
+      - "0.55"
+      - --json-output-file
+      - eval_stage1_full150.json
+    dev_set: "official gsm8k test split via evaluate.py --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.16
+    path: /home/ben/task/baseline50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: 2000
+  output_checkpoint: /home/ben/task/stage1_run/final
+  training_summary:
+    final_loss: 0.132
+    steps: 2000
+    notes: >-
+      "The broad stage completed successfully: 240,000 uncontaminated GSM-derived
+      examples, one epoch, final mean training loss 0.132" [167]. Launched at
+      t=+0.42h and reported complete at t=+2.04h; no train_runtime line for this
+      run appears in the digest. checkpoint-1000
+      was moved aside to /home/ben/task/stage1_half at [152] (loss 0.127 [155])
+      and is the half-epoch arm; checkpoint-2000 and final also exist [169].
+      final/config.json has use_cache=true, the intermediate checkpoints false
+      [169].
+  measurements:
+    - metric: accuracy
+      value: 0.6733333333333333
+      n: 150
+      path: /home/ben/task/eval_stage1_half150.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.7066666666666667
+      n: 150
+      path: /home/ben/task/eval_stage1_full150.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    One broad epoch over the 240k GSM-derived MetaMathQA rows took the model from
+    16% to 70.7% on the evaluator's 150-item slice, and the preserved half-epoch
+    checkpoint to 67.3% [176][206], so the second half of the epoch is worth
+    about 3.3 points. The verdict is inconclusive only because the 16% base
+    number was measured with --limit 50 and the checkpoints with --limit 150, so
+    there is no comparator under the same protocol.
+  decision: adopt
+  next_step: >-
+    "a lower-rate stage on the original GSM8K training split rendered in the
+    evaluator's exact ... format" [75], which became exp-03; stage1_run/final was
+    also the parent of exp-04.
+
+provenance:
+  kind: extracted
+  run_ref: r-114ff7d5
+  launch_i: 117
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [46, 118]
+    setup: [75, 88, 117, 285, 287]
+    evaluation: [173, 177]
+    result: [152, 153, 155, 167, 169, 174, 206]
+    conclusion: [176, 206, 213]
+  snapshot_files:
+    - train_math.py
+    - evaluate.py
+    - eval_stage1_half150.json
+    - eval_stage1_full150.json
+    - baseline50.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - >-
+      The base-model comparator was measured with --limit 50 while every
+      checkpoint in this run was measured with --limit 150; the two are never put
+      under the same protocol anywhere in the stream.
+    - >-
+      No train_runtime line for this launch is in the digest; the 2000-step count
+      is inferred from the existence of checkpoint-1000, checkpoint-2000 and
+      final at [169] together with 240,000 rows at an effective batch of 120.

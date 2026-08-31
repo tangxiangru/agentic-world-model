@@ -1,0 +1,191 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The first SFT run "clearly overfit/collapsed despite low training loss": the merged
+    model emits long off-distribution continuations, often several unrelated QA
+    fragments, instead of one solution ending in an ANSWER line [148].
+  evidence:
+    - path: /home/ben/task/logs/2026-02-24T02-55-24+01-00_gsm8k_X3hCJuwYiZiu3GKNN7uT2J.json
+      locator: "[139] read, [140] print"
+      observation: >-
+        Per-sample dump of the killed 60-sample eval: outputs of ~1500 tokens containing
+        several unrelated GSM8K questions and non-English junk tokens.
+    - path: /home/ben/task/runs/exp1_eval100_mt512.json
+      locator: "[122] launch, [129]"
+      observation: "2% at --limit 100 --max-tokens 512; the agent attributes it to truncation."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "A conservative second experiment: lower LR, fewer update steps, and smaller LoRA
+    rank to avoid catastrophic drift while still adapting to GSM8K style" [155] - i.e.
+    less aggressive optimisation should keep base behaviour while adding the answer
+    format.
+  mechanism: >-
+    The collapse is read as too large an update (lr 2e-4, 2 epochs, LoRA r=64 on all
+    projections); cutting lr to 5e-5, epochs to 1 and rank to 32 shrinks the update and
+    should "preserve base behavior" [148], [155].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF: openai/gsm8k (config main, split=train, loaded in-process by the training script)"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        Whole train split, shuffled with seed 42; prompt/completion chat pairs built by
+        convert_example_prompt_completion() with the gold rationale re-ended as
+        "ANSWER: <target>"; 256 examples held out of train as the val split.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer (version printed at [43]; the digest truncates that result)
+    peft: "QLoRA: LoRA r=32 alpha=64 dropout=0.05 over a 4-bit NF4 base; targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj (--target-modules default 'all', not overridden at [156])"
+    hyperparams:
+      lr: 5.0e-05
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 compute + tf32, 4-bit NF4 double-quant base weights"
+      seed: 42
+      other: >-
+        lr, epochs, batch-size, grad-accum, max-length, val-size, lora-r, lora-alpha,
+        lora-dropout and the eval/save/logging steps come from the argv at [156].
+        From train_gsm8k_sft.py in task/, not overridden: --target-modules all,
+        --use-4bit True, --warmup-ratio 0.03, --weight-decay 0.0, --seed 42,
+        --gradient-checkpointing True, --dataset-format prompt_completion,
+        --completion-only-loss True, plus the script constants cosine schedule,
+        max_grad_norm 1.0, bf16/tf32, packing=False, flash_attention_2.
+    target_format: >-
+      Same chat prompt/completion shape as card exp-01 (templates/qwen3.jinja, assistant
+      turn ends in "ANSWER: <n>"), loss on completion tokens only.
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --output-dir
+      - runs/exp2
+      - --merged-dir
+      - runs/exp2_merged
+      - --epochs
+      - "1.0"
+      - --lr
+      - "5e-5"
+      - --batch-size
+      - "16"
+      - --grad-accum
+      - "2"
+      - --max-length
+      - "1536"
+      - --val-size
+      - "256"
+      - --eval-steps
+      - "80"
+      - --save-steps
+      - "80"
+      - --logging-steps
+      - "10"
+      - --lora-r
+      - "32"
+      - --lora-alpha
+      - "64"
+      - --lora-dropout
+      - "0.05"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  duration_h: null
+  steps: 0
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Died at step 0 of 226 with CUDA OOM. Cause diagnosed at [165]: "The OOM came from
+      leftover vLLM eval processes still holding most GPU memory" - the eval servers from
+      the previous card had not been reaped, so only 2.31 GiB of the 79.33 GiB card was
+      free.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    File ".../transformers/loss/loss_utils.py", line 55, in ForCausalLMLoss
+        logits = logits.float()
+    torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 3.88 GiB. GPU 0 has a
+    total capacity of 79.33 GiB of which 2.31 GiB is free. Process 3257638 has 71.83 GiB
+    memory in use. [157]
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The conservative-hyperparameter run never trained a step: an orphaned vLLM eval
+    server held the GPU and the trainer OOMed at 0/226 [157]. Nothing about the
+    hypothesis was tested.
+  decision: iterate
+  next_step: >-
+    "I've cleared all vllm/evaluate.py processes and the GPU is now free, so I'm
+    restarting the conservative training run cleanly" [165] - relaunched identically as
+    runs/exp2b at [167], card exp-03.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-1441f3c6
+  launch_i: 156
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [139, 140, 148]
+    setup: [155, 156]
+    evaluation: []
+    result: [157, 159, 165]
+    conclusion: [165, 167]
+  snapshot_files:
+    - train_gsm8k_sft.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "Neither the total step count nor a wall-clock duration was printed for this launch beyond the '0/226' progress bar in the traceback."

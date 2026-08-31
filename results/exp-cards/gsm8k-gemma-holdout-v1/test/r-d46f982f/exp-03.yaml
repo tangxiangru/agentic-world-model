@@ -1,0 +1,197 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 2.90
+
+problem:
+  statement: >-
+    After SFT the checkpoint's output format is no longer the bottleneck - the agent
+    tagged its greedy eval and found "Format compliance is perfect (0/67 failures are
+    formatting) - remaining errors are genuine reasoning mistakes" [1091].
+  evidence:
+    - path: /home/ben/task/runs/sft_v2_greedy.json
+      locator: "[1065], [1120]"
+      observation: "66.5% on 200 items, i.e. 67 wrong"
+    - path: /home/ben/task/logs/
+      locator: "[1081], [1082] - sorted(glob('logs/*.json'))[-1], the greedy sft_v2 eval log; the exact filename is not in the digest"
+      observation: "0 of the 67 failures lack the 'ANSWER:' line; the printed failures set the problem up correctly and then reason wrongly"
+  affected_share: 1.0
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/
+      question: "Sandra's flower order: 200 pink calla lilies, five times the number of white carnations; red roses four times the white carnations - how many red roses must she deliver?"
+      gold: "160"
+      model_output: "Let's denote the number of white carnations as x. Then, the number of red roses is 4x, and the number of pink calla lilies is 5x. ... total ... is 4x + x + 5x = 10x. ... Since the total number of flowers ordered is 200 ... 10x = 200 ... x = 20 ... 4x = 4(20) = 80. ANSWER: 80"
+      failure: "misreads which quantity the 200 attaches to; sets 10x = 200 instead of 5x = 200, so the roses come out at 80 instead of 160"
+    - id: null
+      source: /home/ben/task/logs/
+      question: "A hospital sees 500 people a day, each patient seen for an average of 24 minutes; doctors charge $150/hour and the hospital charges patients $200/hour - what profit does the hospital make?"
+      gold: "10000"
+      model_output: "each patient is seen for 24/60 = 0.4 hours ... total time ... 500 * 0.4 = 200 hours. ... doctors ... 200 * 150 = 30000 dollars. ... patients ... 200 * 500 = 100000 dollars. ... profit ... 100000 - 30000 = 70000. ANSWER: 70000"
+      failure: "bills the patients at 200 dollars x 500 people instead of 200 dollars/hour x 200 hours, inflating revenue tenfold"
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/sft_v2
+    origin: exp-02
+    hash: null
+  data:
+    - path: /home/ben/task/data/problem_bank.jsonl
+      source: local
+      n_examples: 3600
+      built_by: null
+      build_command: []
+      selection: >-
+        The first 3600 rows of data/problem_bank.jsonl (--n-problems 3600); the file is
+        train_grpo.py's --problems default and the launch did not override it. Nothing in
+        the digest builds problem_bank.jsonl. Only the {problem, answer} fields are used:
+        each row becomes a chat prompt with the evaluator's math template, and 15% of rows
+        (--fewshot-frac 0.15) additionally carry the evaluator's 10-shot system message,
+        rendered with build_sft.build_fewshot_system [1167].
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: "8 rollouts per problem (--num-generations 8)"
+  method:
+    family: grpo
+    framework: "trl GRPOTrainer with colocated vLLM generation; version queried at [739] but the result block is not in the digest"
+    peft: none
+    hyperparams:
+      lr: 2.0e-06
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 48
+      max_seq_len: "max_prompt_length 2048 + max_completion_length 400"
+      scheduler: constant_with_warmup
+      warmup: 5
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr 2e-6, --n-problems 3600, --gen-batch 24, --micro-bs 4, --num-generations 8,
+        --max-completion 400, --vllm-frac 0.22, --fewshot-frac 0.15, --save-steps 25 and
+        --epochs 1 come from the command line at [1323]. grad_accum is computed in the
+        script as gen_batch * num_generations // micro_bs = 24*8//4 = 48;
+        generation_batch_size = 24*8 = 192 rollouts per optimizer step, giving 150 steps
+        for 3600 problems. beta 0.0 (no KL term) and max_completion 400 are argparse
+        defaults not overridden. loss_type "dr_grpo", num_iterations 1, temperature 1.0,
+        top_p 1.0, optim adamw_bnb_8bit, adam_beta2 0.95, weight_decay 0.0,
+        max_grad_norm 0.5, gradient_checkpointing, vllm_mode "colocate",
+        vllm_max_model_length 2560 and max_prompt_length 2048 (both raised at [1169])
+        are hardcoded. scale_rewards was changed from "group" to "none" by a sed in this
+        same launch line [1323]. Reward: 1.0 for a final number matching the reference to
+        1e-4, plus 0.05 if the completion contains "ANSWER:".
+    target_format: >-
+      the evaluator's chat rendering via templates/gemma3.jinja, completions scored by
+      the last numeric token, mirroring match(location="end", numeric=True)
+  command:
+    argv: [nohup, python, train_grpo.py, --model, ckpt/sft_v2, --out, ckpt/grpo1, --n-problems, "3600", --gen-batch, "24", --micro-bs, "4", --num-generations, "8", --max-completion, "400", --vllm-frac, "0.22", --fewshot-frac, "0.15", --lr, "2e-6", --save-steps, "25", --epochs, "1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/runs/grpo1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.665
+    path: /home/ben/task/runs/sft_v2_greedy.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: 0.73
+  duration_h: 0.73
+  steps: 25
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 25
+    notes: >-
+      Reached 25 of 150 steps at 101.57 s/step ("25/150 [42:19<3:31:35" [1365], [1401])
+      and then died writing its first checkpoint. Training reward over the last 12 logged
+      steps ran 0.647-0.805, ending around 0.71 [1365]. ckpt/grpo1/checkpoint-25 contained
+      only config.json [1410]; the whole directory was deleted at [1432]. wall_h is derived
+      from the event timestamps: launched at t=+2.90h [1323], the log's last write is
+      13:05 and the crash is diagnosed at t=+5.79h [1400] after the agent had been blocked
+      on a wait loop. The agent scores the episode at [1759] as "~2h of GPU time was lost".
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    File "transformers/modeling_utils.py", line 3930, in save_pretrained
+    model_to_save.generation_config.save_pretrained(save_directory)
+    File "transformers/generation/configuration_utils.py", line 725, in save_pretrained
+    raise ValueError(str(exc) + "\n\nFix these issues to save the configuration.")
+    ValueError: GenerationConfig is invalid:
+    - `temperature`: `do_sample` is set to `False`. However, `temperature` is set to `0.0`
+    -- this flag is only used in sample-based generation modes. You should set
+    `do_sample=True` or unset `temperature`.
+    - `top_k`: `do_sample` is set to `False`. However, `top_k` is set to `1` ...
+    Fix these issues to save the configuration. [1410]
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first full GRPO run trained for 25 of 150 steps with reward climbing into the
+    0.7s and then crashed at its first checkpoint save, because the greedy
+    generation_config exp-02 shipped (do_sample false with temperature 0.0 and top_k 1)
+    fails the trainer's config validation [1408], [1431]. No weights survived and nothing
+    was evaluated.
+  decision: abandon_line
+  next_step: >-
+    Relax the generation_config to do_sample=true with temperature 0.0 (vLLM still decodes
+    greedily), stage the SFT checkpoint as final_model as a fallback, and restart RL with
+    the remaining budget [1431], [1436] - carded as exp-04 and exp-05.
+
+provenance:
+  kind: extracted
+  run_ref: r-d46f982f
+  launch_i: 1323
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [1081, 1082, 1091]
+    setup: [764, 1167, 1169, 1323]
+    evaluation: []
+    result: [1365, 1400, 1401, 1409, 1410]
+    conclusion: [1408, 1431, 1759]
+  snapshot_files:
+    - train_grpo.py
+    - build_sft.py
+    - finalize_ckpt.py
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 1169, outcome: "256-problem GRPO smoke into ckpt/grpo_smoke, after raising max_prompt_length to 2048 and vllm_max_model_length to 2560; no result block in the digest - the agent's next move was to embed the eval chat template in the checkpoint [1188]"}
+    - {launch_i: 1190, outcome: "same 256-problem smoke re-run after finalize_ckpt.py embedded templates/gemma3.jinja in the checkpoint; no result block in the digest - the agent's next move was to lower memory settings"}
+    - {launch_i: 1255, outcome: "passed: 512 problems at micro-bs 4, max-completion 320, vllm-frac 0.22 with expandable_segments - '~120s/step with reward ~0.55' [1322]"}
+  extractor: null
+  unresolved:
+    - "data/problem_bank.jsonl, the RL problem source, is never built in the digest: its size, provenance and contamination status are unknown"
+    - "no eval was run on this launch's output, and the output itself was deleted at [1432]"

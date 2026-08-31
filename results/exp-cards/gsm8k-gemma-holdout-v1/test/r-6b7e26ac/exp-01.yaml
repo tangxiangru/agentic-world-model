@@ -1,0 +1,205 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.30
+
+problem:
+  statement: >-
+    The un-post-trained base model scores 10% on the benchmark: it does not follow the
+    required output format and does not stop cleanly. Instead of a chain of thought ending
+    in "ANSWER: X" it rambles off-task (continuing with new questions, meta-commentary), so
+    the scorer - which takes the last number in the completion - almost never finds the
+    right one.
+  evidence:
+    - path: /home/ben/task/logs/baseline_metrics.json
+      locator: "[164]"
+      observation: "match accuracy 0.100 (stderr 0.030) over 100 samples for google/gemma-3-4b-pt"
+    - path: /home/ben/task/logs/2026-06-13T17-21-37+02-00_gsm8k_Fr2Bd3RofQ4S97r2LQsFe5.json
+      locator: "[164], samples 0 and 1"
+      observation: "both completions end mid-ramble with no 'ANSWER:' line at all"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-06-13T17-21-37+02-00_gsm8k_Fr2Bd3RofQ4S97r2LQsFe5.json
+      question: null
+      gold: "17"
+      model_output: >-
+        "... a waiter adds extra 60ml of water to each can and pours it into a glass with a
+        capacity of 550ml.\n\nWhat is the volume of drink remaining in the can after the
+        waiter refills it with water and drinks?\n\nAnswer in form of (N/D) (space not
+        needed, if any)"
+      failure: "never answers; drifts into inventing a new question. No 'ANSWER:' line."
+    - id: null
+      source: /home/ben/task/logs/2026-06-13T17-21-37+02-00_gsm8k_Fr2Bd3RofQ4S97r2LQsFe5.json
+      question: null
+      gold: "40"
+      model_output: >-
+        "... each person to do specific steps or parts of the problem to explain how they
+        thought through a specific part of the problem. This would be great if there's
+        something specific they're stuck on or if they need to think about the problem in
+        more detail."
+      failure: "meta-commentary about teaching, no arithmetic and no 'ANSWER:' line."
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full supervised fine-tuning on GSM8K-train plus MetaMathQA GSM data, formatted to match
+    the eval prompt exactly, will make the model emit a chain of thought that ends in
+    "ANSWER: X" and then stop, giving a large accuracy gain over the 10% base model.
+  mechanism: >-
+    The eval's scorer takes the last number in the completion, and vLLM stops on both <eos>
+    (1) and <end_of_turn> (106). Training with the eval's own chat template, with prompt
+    tokens masked so loss falls only on the chain of thought + "ANSWER: X" + <end_of_turn>,
+    teaches exactly the format the grader needs.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py]
+      selection: >-
+        split each gold answer on '####' into reasoning and final answer, strip <<..>>
+        calculator annotations, keep only integer-like finals; user turn = the eval's
+        MATH_PROMPT_TEMPLATE around the question, assistant turn = reasoning + blank line +
+        'ANSWER: <final>'
+      contamination_check: not_run
+      mixture_weight: null
+    - path: /home/ben/task/data/metamath_gsm.jsonl
+      source: "HF meta-math/MetaMathQA"
+      n_examples: 30000
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py]
+      selection: >-
+        types GSM_Rephrased and GSM_AnsAug only, capped 15000 per type at the time of this
+        launch; final answer read from '#### X' or 'The answer is: X' and kept only when
+        integer-like; that tail stripped out of the reasoning; same user/assistant format
+        as gsm8k_train.jsonl
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer, via /home/ben/task/train_sft.py (AutoModelForCausalLM, bf16, flash_attention_2 with sdpa fallback)"
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-5
+      epochs: 2.0
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bfloat16
+      seed: 0
+      other: >-
+        Only --epochs/--lr/--bs/--accum/--max_len/--save were on the launch line [181].
+        scheduler (cosine), warmup_ratio 0.03, weight_decay 0.0, seed 0, bf16, max_grad_norm
+        1.0, optim adamw_torch, gradient checkpointing (use_reentrant=False), group_by_length
+        and save_strategy='no' come from train_sft.py's argparse/TrainingArguments defaults
+        in the snapshot; the launch did not override them. Before this launch the script was
+        edited [177] to force model.generation_config.eos_token_id = [1, 106] on the saved
+        checkpoint.
+    target_format: >-
+      templates/gemma3.jinja chat template; user = MATH_PROMPT_TEMPLATE(question),
+      assistant = chain of thought + blank line + 'ANSWER: <integer>' terminated by
+      <end_of_turn>; prompt tokens set to -100 so loss is only on the completion.
+  command:
+    argv: [python, train_sft.py, --data, data/gsm8k_train.jsonl, data/metamath_gsm.jsonl, --output_dir, runs/v1, --epochs, "2", --lr, "2e-5", --bs, "8", --accum, "8", --max_len, "1024", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/v1, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.6", --json-output-file, logs/v1_metrics.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.10
+    path: /home/ben/task/logs/baseline_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.77
+  output_checkpoint: /home/ben/task/runs/v1
+  training_summary:
+    final_loss: 0.20
+    steps: 1172
+    notes: >-
+      1172 optimizer steps [227]; loss fell from ~0.68 at the smoke test to 0.20, no
+      instability, ~46 min runtime [347]. The first eval attempt [356] crashed because
+      vLLM could not serve the saved directory; the cause was the missing
+      preprocessor_config.json / processor_config.json, copied over from the base snapshot
+      [380-383], after which the eval was relaunched [388]. train_sft.py was then patched
+      [392] to copy those two files automatically on save.
+  measurements:
+    - metric: accuracy
+      value: 0.593
+      n: 150
+      path: /home/ben/task/logs/v1_metrics.json
+      delta_vs_comparator: 0.493
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    v1 scored 59.3% at --limit 150 against a 10% base model measured at --limit 100 [409];
+    the format problem is fixed (the model produces reasoning + 'ANSWER: X' and stops), and
+    the agent read the remaining errors as genuine reasoning mistakes rather than format
+    failures [413]. The comparator was not measured under the same --limit, so the delta is
+    not a like-for-like test.
+  decision: adopt
+  next_step: >-
+    Test greedy decoding on this checkpoint (exp-02), then scale the data and add
+    few-shot-structured examples for run 2 [426].
+
+provenance:
+  kind: extracted
+  run_ref: r-6b7e26ac
+  launch_i: 181
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [155, 164, 166]
+    setup: [98, 120, 177, 181]
+    evaluation: [356, 388]
+    result: [227, 347, 369, 383, 404]
+    conclusion: [409, 413]
+  snapshot_files:
+    - train_sft.py
+    - data_prep.py
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 167, outcome: "passed (64 examples, 1 epoch, bs 4; initial loss ~0.68 and decreasing, confirming the text-only load, tokenization and masking worked)"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The workspace snapshot has no logs/ directory, so every logs/*_metrics.json cited here is referenced by its run-time path and cannot be re-read from the snapshot."
+    - "The baseline comparator was run at --limit 100 while this output was evaluated at --limit 150; the stream never re-measures the base model at 150."
+    - "The workspace holds a run-level contamination_judgement.txt ('no contamination detected') and disallowed_model_judgement.txt ('only allowed use detected'), but the stream never shows a contamination checker being run, so contamination_check is recorded as not_run."
+    - "data_prep.py in the snapshot is its final state (per-type caps 45000/18000); it does not regenerate the 15000/15000-capped metamath_gsm.jsonl used by this launch."

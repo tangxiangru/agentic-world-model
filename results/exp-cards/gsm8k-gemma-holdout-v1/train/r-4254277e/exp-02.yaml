@@ -1,0 +1,179 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.35
+
+problem:
+  statement: >-
+    The zero-shot-trained model (exp-01) does not emit <|im_end|> when the eval's
+    10 few-shot demonstrations precede the question, so it never stops and the
+    scorer reads the wrong last number.
+  evidence:
+    - path: null
+      locator: "[186]"
+      observation: >-
+        offline probe (scripts/diag.py): zero-shot the model "stops cleanly and
+        answers correctly (finish=stop)"; few-shot, the actual eval condition,
+        it "never stops (finish=length)"
+    - path: /home/ben/task/logs/sft_v1_metrics.json
+      locator: "[168], [169], [170]"
+      observation: >-
+        exp-01 scored 5.3% at limit 150; printed completions answer the question
+        and then continue into invented problems and off-task text
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Train with few-shot context so the model learns to emit <|im_end|> and stop
+    even when demos precede it" [186] - injecting a system message of randomly
+    sampled GSM8K-train demos into a fraction of the SFT examples will restore
+    stopping in the eval's 10-shot condition and lift accuracy.
+  mechanism: >-
+    The 10 demos in the eval's system message show "ANSWER: X" followed by more
+    text and no stop token, which primes continuation; training with the same
+    kind of context teaches the model to stop after its own answer anyway [178],
+    [186].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--Qwen--Qwen3-1.7B-Base/snapshots/ea980cb0a6c2ae4b936e82123acc929f1cec04c1
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: openai/gsm8k (main, train split)
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: [python, scripts/prep_data.py]
+      selection: >-
+        as exp-01, plus an in-trainer few-shot wrapper added at [187]: with
+        probability 0.7 a system message of n demos (n uniform in 1..10, sampled
+        from a pool of all GSM8K train items formatted exactly like the eval's
+        demos) is prepended; demos are dropped if the example exceeds max_len
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: transformers Trainer (full fine-tune; version not stated in the stream)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --fewshot_max 10 --fewshot_prob 0.7 on the command line. scheduler=cosine,
+        bf16=True, group_by_length=True, gradient_checkpointing=False are
+        hard-coded in the script as written at [104]/[187]. warmup, weight_decay
+        and seed were not passed and the workspace snapshot retains no scripts/,
+        so they are left null.
+    target_format: >-
+      as exp-01, but a system message of 1-10 eval-style demos is prepended to
+      70% of the training prompts; loss still on the completion tokens only.
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --files
+      - data/gsm8k_train.jsonl
+      - --out
+      - work/sft_gsm8k_fs_v2
+      - --epochs
+      - "3"
+      - --lr
+      - "1e-5"
+      - --bs
+      - "16"
+      - --accum
+      - "4"
+      - --max_len
+      - "2048"
+      - --fewshot_max
+      - "10"
+      - --fewshot_prob
+      - "0.7"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  output_checkpoint: null
+  training_summary: {final_loss: null, steps: null, notes: "died during startup; no checkpoint written"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    "OOM - with max_len 2048 and group_by_length, the longest batch is too big"
+    [200]; the agent killed the process and cleared leftover GPU processes at
+    [201]. The traceback itself is not in the stream.
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The run went out of memory at startup with max_len 2048 at per-device batch
+    16 and never produced a checkpoint, so the few-shot hypothesis was not tested
+    here.
+  decision: abandon_line
+  next_step: >-
+    Relaunch the same recipe with --bs 8 --accum 8 and gradient checkpointing
+    (--grad_ckpt, added to the script at [208]/[210]) - done at [212] as exp-03.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-4254277e
+  launch_i: 195
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [178, 179, 186]
+    setup: [187, 190, 192, 195]
+    evaluation: []
+    result: [200, 201]
+    conclusion: [200, 208, 210, 212]
+  snapshot_files: []
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the OOM is only reported in the agent's own words at [200]; logs/train_v2.log is never shown"
+    - "this launch and exp-03 write to the same --out work/sft_gsm8k_fs_v2"

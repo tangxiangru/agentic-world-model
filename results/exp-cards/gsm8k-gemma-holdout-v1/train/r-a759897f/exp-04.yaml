@@ -1,0 +1,217 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 3.77
+
+problem:
+  statement: >-
+    After round-1 SFT the output-format problem is solved but the reasoning is not:
+    at limit 500, 125 of the mid checkpoint's 128 errors are clean-format wrong answers
+    (correct shape, wrong maths), 3 loop to max_tokens and 0 have trailing text. The
+    remaining headroom is reasoning quality, not the answer contract.
+  evidence:
+    - path: /home/ben/task/logs/2026-07-17T01-24-37+02-00_gsm8k_8wRHQ6eqBRuTj3m4o7CfgY.json
+      locator: "[37556]-[37557]"
+      observation: >-
+        500 samples, 372 correct / 128 wrong; failure classes
+        {no_answer_line: 3, trailing_text: 0, truncated: 3, wrong_math: 125}
+    - path: /home/ben/task/results/r1_end_500.json
+      locator: "[38834]"
+      observation: "round-1 endpoint 0.766 at limit 500, mid checkpoint 0.744"
+  affected_share: 0.977
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-07-17T01-24-37+02-00_gsm8k_8wRHQ6eqBRuTj3m4o7CfgY.json
+      question: "(item not identified in the print; limit-500 eval of the round-1 mid checkpoint)"
+      gold: "20"
+      model_output: "... ANSWER: 30 (stop_reason: stop)"
+      failure: "clean format, wrong arithmetic result"
+    - id: null
+      source: /home/ben/task/logs/2026-07-17T01-24-37+02-00_gsm8k_8wRHQ6eqBRuTj3m4o7CfgY.json
+      question: "(item not identified in the print; limit-500 eval of the round-1 mid checkpoint)"
+      gold: "17"
+      model_output: "... ANSWER: 12 (stop_reason: stop)"
+      failure: "clean format, wrong arithmetic result"
+    - id: null
+      source: /home/ben/task/logs/2026-07-17T01-24-37+02-00_gsm8k_8wRHQ6eqBRuTj3m4o7CfgY.json
+      question: "(item not identified in the print; limit-500 eval of the round-1 mid checkpoint)"
+      gold: "50"
+      model_output: >-
+        "... = 3.1$. Then the cost of a doll is $3*3.1 = 9.3$. ... The total cost of all
+        toys is $5*4 + 3*3.1 + 3*3.1 = 20 + 9.3 + 9.3 = 38.6$. This is close to $40$.
+        However, we can see that $38.6$ is close to $40$. So we can try $x = 3$. ..."
+        (stop_reason: max_tokens)
+      failure: "guess-and-check loop that never converges; hits max_tokens without an ANSWER line"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Continue-training the round-1 endpoint on its own rejection-sampled, answer-verified
+    GSM8K-train solutions (STaR) plus gold and fresh OpenMathInstruct-2 rows will raise
+    accuracy by improving reasoning quality, the class that now accounts for ~98% of
+    failures.
+  mechanism: >-
+    "The lever now is reasoning quality -> STaR + more training" [37682]: training on
+    on-policy solutions that were verified to reach the gold answer reinforces the model's
+    own correct reasoning paths instead of teacher style.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/round1/final
+    origin: exp-03
+    hash: null
+  data:
+    - path: /home/ben/task/data/star_r1.jsonl
+      source: synthetic:self
+      n_examples: 28256
+      built_by: /home/ben/task/star_sample.py
+      build_command: ["nohup", "python", "star_sample.py", "--model", "exports/r1_end", "--k", "8", "--temp", "0.8", "--max-per-q", "4", "--out", "data/star_r1.jsonl"]
+      selection: >-
+        vLLM offline sampling of the round-1 endpoint over all 7,473 GSM8K train questions,
+        k=8, temperature 0.8, top_p 0.95, max_tokens 768, stop on 151645/151643; half the
+        prompts use the exact eval few-shot system, half a random 10-shot; a sample is kept
+        only if its parsed "ANSWER:" value normalises to the gold number AND the scorer's
+        last-number rule on the reconstructed completion also returns gold; digit-masked
+        dedup, at most 4 per question. Reported: pass@8 = 85%, 7370/7473 questions covered,
+        28,256 solutions kept [43891].
+      contamination_check: passed
+      mixture_weight: null
+    - path: /home/ben/task/data/sft_round2
+      source: "derived:exp-03 (STaR) + local (openai/gsm8k train, nvidia/OpenMathInstruct-2)"
+      n_examples: null
+      built_by: /home/ben/task/build_data_round2.py
+      build_command: ["nohup", "python", "build_data_round2.py", "15000", "data/star_r1.jsonl"]
+      selection: >-
+        GSM8K-train gold x2 (GOLD_X set at [38832]) + all STaR rows that pass the 8-gram
+        decontamination filter + 15,000 fresh OpenMathInstruct-2 rows (same filters as
+        round 1, streamed over all shards); prompt mixture rebalanced at [39405] to 25%
+        exact eval system / 15% random-10-shot / 15% random-k-shot / 45% zero-shot;
+        MAX_LEN 3072. The agent's own summary: "STaR 28k + gold x2 + fresh OM2 15k = 58k
+        rows" [50345].
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129); sampling with vllm 0.11.0"
+    peft: none
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights, bf16 autocast (bf16=True), sdpa attention"
+      seed: null
+      other: >-
+        gradient checkpointing off, optim="adamw_torch_fused"; scheduler, warmup_ratio 0.03
+        and weight_decay 0.0 are hard-coded in train_sft.py (in the workspace) and were not
+        overridden at launch.
+    target_format: >-
+      "{solution}\n\nANSWER: {n}<|im_end|>", completion-only loss; for STaR rows the
+      solution is the model's own text before its ANSWER line.
+  command:
+    argv: ["PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True", "nohup", "python", "train_sft.py", "--data", "data/sft_round2", "--model", "ckpt/round1/final", "--out", "ckpt/round2", "--epochs", "1", "--lr", "5e-6", "--bs", "2", "--accum", "16"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/train_r2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.3
+
+evaluation:
+  protocol:
+    command: ["python", "evaluate.py", "--model-path", "exports/r2_end", "--limit", "500", "--max-connections", "16", "--max-tokens", "2048", "--json-output-file", "results/r2_end_500.json"]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.766
+    path: /home/ben/task/results/r1_end_500.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.35
+  output_checkpoint: /home/ben/task/ckpt/round2/final
+  training_summary:
+    final_loss: null
+    steps: 1809
+    notes: >-
+      step total 1809 read off the agent's progress report "R2 at 1100/1809" [42659];
+      no loss values were printed for this run. wall_h bounded by the launch [41076]
+      t=+3.77h and the completed handoff at [43431] t=+5.16h.
+  measurements:
+    - metric: accuracy
+      value: 0.768
+      n: 500
+      path: /home/ben/task/results/r2_end_500.json
+      delta_vs_comparator: 0.002
+    - metric: accuracy
+      value: 0.7536
+      n: 1319
+      path: /home/ben/task/results/r2_end_full.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    STaR continue-training landed at 0.768 at limit 500 against the round-1 endpoint's
+    0.766 - the agent's own reading was "plateau at n=500, stderr ~1.9" [43891], i.e. the
+    +0.2 pt delta is well inside noise, so the reasoning-quality claim is neither
+    confirmed nor refuted. Its later full-test number, 0.7536, was the losing side of the
+    final head-to-head [49211].
+  decision: adopt
+  next_step: >-
+    Run a third round from base on the union of the round-1 data and STaR, then decide
+    between the endpoints on full-test numbers [43891]; the round-2 endpoint went on to be
+    one of the two ingredients of the adopted soup (exp-07).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a759897f
+  launch_i: 41076
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [37556, 37557, 37682]
+    setup: [24153, 38781, 38832, 39405, 39548, 41076]
+    evaluation: [42660, 42663]
+    result: [42659, 43431, 43891, 48827, 49211]
+    conclusion: [43891, 46441, 49211]
+  snapshot_files:
+    - star_sample.py
+    - build_data_round2.py
+    - data_lib.py
+    - train_sft.py
+    - export_model.py
+    - after_round2.sh
+    - evaluate.py
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the row/token print of the data/sft_round2 build (logs/build_r2.log) never appears in the digest; 58k rows is the agent's rounded figure in the final report [50345]"
+    - "the export of ckpt/round2/final to exports/r2_end and its limit-500 eval ran inside after_round2.sh at [42663] and are folded into this card"
+    - "the full-set number 0.7536 is reported by the agent at [49211]; the printed contents of results/r2_end_full.json do not appear in the digest"

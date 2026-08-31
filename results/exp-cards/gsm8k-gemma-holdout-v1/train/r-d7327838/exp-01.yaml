@@ -1,0 +1,182 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.10
+
+problem:
+  statement: >-
+    The raw base model scores 1.7% on the benchmark eval: it does not follow the
+    required output format, does not reliably emit a stop token, and its
+    reasoning is weak. [44] "Baseline is only 1.7% - the base model doesn't
+    follow the format"; [54] "the base model doesn't reliably emit the stop
+    token or correct format, and reasoning is weak".
+  evidence:
+    - path: /home/ben/task/baseline.json
+      locator: "[42]"
+      observation: "accuracy 0.0167 (stderr 0.0167) on the base model at --limit 60"
+    - path: null
+      locator: "[48]"
+      observation: >-
+        agent read a completion: model follows the format but errs and emits
+        "$124" with a dollar sign, which may hurt numeric matching
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    SFT on GSM8K-train in the exact inference format (chat template, prompt
+    template, completion ending in "ANSWER: N") will fix format and stopping and
+    raise accuracy. [54] "SFT in the exact inference format will fix all of this."
+  mechanism: >-
+    Training the completion in the exact inference prompt format, with loss
+    masked on the prompt, teaches both the answer format and the turn-ending
+    token.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_gsm8k.jsonl
+      source: "HF:openai/gsm8k main split=train"
+      n_examples: 7473
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py]
+      selection: >-
+        all GSM8K train rows; "####" split into reasoning + target, "<<...>>"
+        calculator annotations stripped, commas removed from the target,
+        completion = "{reasoning}\nANSWER: {target}"; shuffled with random.seed(42)
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer (full fine-tune, custom padding collator)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        max_seq_len 1024 is the --maxlen argparse default of train_sft.py (in
+        task/, not overridden by the launch); scheduler/warmup/weight_decay/bf16
+        are hardcoded in that script's TrainingArguments (save_strategy='no',
+        gradient_checkpointing=False, logging_steps=20); no seed argument exists
+        in this script
+    target_format: >-
+      "<|im_start|>user\n{MATH_PROMPT_TEMPLATE}<|im_end|>\n<|im_start|>assistant\n"
+      then "{reasoning}\nANSWER: {N}<|im_end|>\n"; zero-shot only, loss masked on
+      the prompt
+  command:
+    argv: [nohup, python, train_sft.py, --data, sft_gsm8k.jsonl, --out, sft_v1,
+           --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_v1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [timeout, "1800", python, evaluate.py, --model-path, sft_v1, --limit,
+              "150", --max-connections, "16", --max-tokens, "1024",
+              --gpu-memory-utilization, "0.85", --json-output-file, eval_v1.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0167
+    path: /home/ben/task/baseline.json
+  diagnostic:
+    what: >-
+      inspection of the eval log's first 3 completions: last user message, the
+      completion, target and match score [121]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.097
+  output_checkpoint: /home/ben/task/sft_v1
+  training_summary:
+    final_loss: 0.4346
+    steps: 702
+    notes: >-
+      last logged 'loss' 0.4346, reported train_loss 0.4718, 3 epochs over 7473
+      examples (avg len 258.9 tokens), train_runtime 349.1 s (train_v1.log);
+      agent read it as "final loss ~0.43" [105]
+  measurements:
+    - metric: accuracy
+      value: 0.0267
+      n: 150
+      path: /home/ben/task/eval_v1.json
+      delta_vs_comparator: 0.010
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [122] completions run past their own "ANSWER: n" into unrelated text and
+      other languages; the scorer takes the last number, so correct answers are
+      lost. Diagnosis at [130]: the model emits <|im_end|> (151645) but vllm only
+      stops on <|endoftext|> (151643).
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    SFT trained cleanly but the eval was still ~3% [120] "Still 2.7% - something
+    is fundamentally wrong with the format match". The comparator (base model) was
+    measured at --limit 60 and this output at --limit 150, so the +1.0 pt delta is
+    not a like-for-like comparison; the run's real finding is the EOS mismatch
+    found by inspecting the completions [122][130].
+  decision: adopt
+  next_step: >-
+    Set the saved model's eos_token_id to include <|im_end|> (151645) and
+    re-evaluate the same checkpoint [130].
+
+provenance:
+  kind: extracted
+  run_ref: r-d7327838
+  launch_i: 65
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [42, 44, 48, 54]
+    setup: [55, 61, 65]
+    evaluation: [107, 114]
+    result: [105, 120]
+    conclusion: [120, 122, 130]
+  snapshot_files:
+    - prep_data.py
+    - train_sft.py
+    - train_v1.log
+    - baseline.json
+    - eval_v1.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "baseline.json was produced at --limit 60 and this card's eval at --limit 150; the comparator is not under the same protocol"
+    - "the agent's own evals call evaluate.py on the official benchmark set (first N samples); no held-out dev set was built at any point in the run"
+    - "prep_data.py's printed row count is not in the digest; n_examples 7473 is the 'examples:' line train_sft.py wrote to train_v1.log"
+    - "overlap_check.txt (0 overlapping questions between sft_gsm8k.jsonl and GSM8K test) is in the workspace but no event producing it appears in the digest, so when it was run is unknown"

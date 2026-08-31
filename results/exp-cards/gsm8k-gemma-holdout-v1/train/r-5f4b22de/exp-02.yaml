@@ -1,0 +1,228 @@
+# Reconstructed experiment card (extracted, not agent-written).
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.70
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    After exp-01 the formatting problem is gone and what is left is reasoning:
+    "all 150 stopped cleanly, 0 format/non-numeric issues - SFT completely fixed
+    formatting. The 32 errors are now *genuine reasoning mistakes*. So the
+    bottleneck is reasoning quality" ([287]). Sampling 8 completions per training
+    question from exp-01's checkpoint then shows the model can already reach the
+    right answer on almost every question - "pass@8 = 98.5% (7361/7473) ... the
+    model is highly capable; greedy decoding just doesn't always pick the right
+    path" ([358]).
+  evidence:
+    - path: /home/ben/task/runs/eval_v1_150.json
+      locator: "[283]"
+      observation: "exp-01's checkpoint measures 0.7867 at --limit 150"
+    - path: /home/ben/task/logs/
+      locator: "[284], [285]"
+      observation: >-
+        150/150 stop_reason 'stop', 0 non-numeric completions, 0 completions over
+        3000 characters, 32 wrong - the four printed are wrong numbers reached by
+        clean, well-formed reasoning.
+    - path: /home/ben/task/runs/rft_gen.log
+      locator: "[334], [358]"
+      observation: "questions solved (>=1 correct of 8 samples): 7361/7473 = 98.5%; 28099 correct solutions written to data/rft.jsonl"
+  affected_share: null
+  failure_examples:                    # the four items printed at [285]; the eval
+                                       # prints no question text, only the tail of
+                                       # the completion
+    - id: null
+      source: /home/ben/task/logs/
+      question: null
+      gold: "6"
+      model_output: "Marissa has 6 miles left to hike because 12 - 4 - 2 = 6 / She has 2 hours left to hike because 4 - 1 - 1 = 2 / She needs to hike at a speed of 3 miles per hour because 6 / 2 = 3 // ANSWER: 3"
+      failure: "answered the rate (3 mph) instead of the quantity asked for; extracted answer 3 vs target 6"
+    - id: null
+      source: /home/ben/task/logs/
+      question: null
+      gold: "6"
+      model_output: "Solo has to read 4 + 20 + 7 + 8 = 39 pages in total. / He has 4 more days to read 39 pages, so he needs to read 39 / 4 = 9.75 pages per day. // ANSWER: 9.75"
+      failure: "wrong page total and no rounding; extracted answer 9.75 vs target 6"
+    - id: null
+      source: /home/ben/task/logs/
+      question: null
+      gold: "72"
+      model_output: "The outer volume of each box is 5*6*4=120 cubic inches. / The inner volume of each box is 4*4*3=48 cubic inches. / The total inner volume of all 3 boxes is 144 cubic inches. // ANSWER: 144"
+      failure: "stopped at total inner volume instead of the requested difference; extracted answer 144 vs target 72"
+    - id: null
+      source: /home/ben/task/logs/
+      question: null
+      gold: "25000"
+      model_output: "After 20 years, she is entitled to 5% of the pension, so 5/100 * 50,000 = $2,500 per year. / After 30 years, she is entitled to 10% ... $5,000 per year. / Her annual pension after 30 years is $5,000. // ANSWER: 5000"
+      failure: "answered the annual amount, not the total asked for; extracted answer 5000 vs target 25000"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "rejection-sampling (RFT) to reinforce correct reasoning paths" ([287]):
+    adding exp-01's own 28099 verified-correct sampled solutions to the gold gsm8k
+    mixture and retraining from base will raise greedy accuracy above exp-01's
+    0.7867 by making the model's single greedy path land on the reasoning it can
+    already produce under sampling.
+  mechanism: >-
+    pass@8 is 98.5% while greedy is 78.7% ([358]), so the correct paths are inside
+    the model's distribution but not at the mode; training on those self-generated
+    correct paths, in the model's own style, moves probability mass onto them.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+    # no --model on the launch, so train_sft.py's BASE default applies: a fresh
+    # run from base, not a continuation of exp-01
+  data:
+    - path: /home/ben/task/data/sft_gsm8k.jsonl
+      source: "openai/gsm8k (main, train)"
+      n_examples: 7473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --out, data/sft_gsm8k.jsonl]
+      selection: "reused unchanged from exp-01: all gsm8k train rows, calculator markers stripped, completion ends 'ANSWER: <n><|im_end|>'"
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/rft.jsonl
+      source: "synthetic:self (sampled from exp-01's checkpoint sft_v1)"
+      n_examples: 28099                # "28,099 correct solutions collected" ([358])
+      built_by: /home/ben/task/rft_generate.py
+      build_command: [nohup, python, rft_generate.py, --model, sft_v1, --out, data/rft.jsonl, --k, "8", --temp, "1.0", --top_p, "0.95", --max_keep, "4", --max_tokens, "640", --gpu_mem, "0.85"]
+      selection: >-
+        8 completions per gsm8k train question from sft_v1 through offline vLLM at
+        temperature 1.0 / top_p 0.95, max 640 new tokens, stopping on
+        <|im_end|>/<|endoftext|>; a sample is kept only when its last numeric token
+        equals the gold answer under the eval scorer's own normalisation
+        (commas stripped, compared as %.5g); whitespace-normalised duplicates
+        dropped; at most 4 kept per question. Questions come from gsm8k TRAIN only.
+      contamination_check: not_run
+      mixture_weight: 1.0              # plain concatenation, no reweighting or repeats
+  method:
+    family: rft
+    framework: "transformers.Trainer 4.57 (hand-written tokenize/mask + DataCollatorForSeq2Seq; no TRL)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        Identical to exp-01 - lr / epochs / bs / accum / max_len from the launch
+        argv [359]; warmup_ratio 0.03 and weight_decay 0.0 are train_sft.py
+        argparse defaults, not overridden; cosine schedule, max_grad_norm 1.0,
+        bf16, gradient checkpointing, adamw_torch and seed 42 are hard-coded in the
+        script. Only --data and --out differ from exp-01, so this is a data-only
+        intervention. env TOKENIZERS_PARALLELISM=false.
+    target_format: "same as exp-01; the RFT rows carry the model's own wording, ending 'ANSWER: <n><|im_end|>'"
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/sft_gsm8k.jsonl, data/rft.jsonl, --out, sft_v2, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2", --max_len, "1024", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {TOKENIZERS_PARALLELISM: "false"}
+    log: /home/ben/task/runs/train_v2.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 1.17                    # "3336 steps, ~70 min ETA" ([368])
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_v2, --limit, "150", --max-connections, "16", --json-output-file, runs/eval_v2_150.json]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k, 10-shot, served through vllm)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.7867
+    path: /home/ben/task/runs/eval_v1_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/sft_v2
+  training_summary:
+    final_loss: 0.145                  # "final loss ~0.145" ([390])
+    steps: 3336                        # [368]
+    notes: >-
+      35572 examples loaded ([368]) = 7473 gold + 28099 rejection-sampled.
+      Launched [359] t=+0.70h, reported trained and saved at [390] t=+1.88h, so
+      wall time is at most 1.18 h against the ~70 min ETA; no train_runtime line is
+      in the digest.
+  measurements:
+    - metric: accuracy
+      value: 0.84
+      n: 150
+      path: /home/ben/task/runs/eval_v2_150.json
+      delta_vs_comparator: 0.0533
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "**v2 = 84.0%** - RFT gave +5.3% over v1" ([413]), measured against exp-01
+    under the identical --limit 150 protocol. Training on the model's own verified
+    solutions moved greedy accuracy toward the sampled ceiling, though the run
+    never re-measured pass@k on sft_v2, so how much of the 98.5%-to-78.7% gap
+    actually closed is not established.
+  decision: adopt
+  next_step: >-
+    "Now let me apply GRPO, which should be powerful given the 98.5% pass@8 (dense
+    reward)" ([413]) - sft_v2 becomes the starting checkpoint of exp-03.
+
+# ---- joined by the pipeline, never by the extractor --------------------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-5f4b22de
+  launch_i: 359
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [283, 284, 285, 287, 334, 358]
+    setup: [162, 292, 359, 368]
+    evaluation: [391, 407]
+    result: [368, 390, 413]
+    conclusion: [413]
+  snapshot_files:
+    - prepare_data.py
+    - rft_generate.py
+    - train_sft.py
+    - run_eval.sh
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the failure_examples come from the official eval slice (--limit 150) printed at [285], not from a held-out dev set the agent built; the eval prints no question text, so `question` and `id` are null on all four."
+    - "rft_generate.py is a data-generation launch ([292]), not a card: it produced training data, not a candidate. Its stats live in setup.data[].selection here."
+    - "no train_runtime for v2 in the digest; wall_h is only bounded by the [359] and [390] timestamps."
+    - "pass@8 was measured on exp-01's checkpoint only; sft_v2's own sampling ceiling was never measured, so the mechanism (mass moved onto already-reachable paths) is untested."

@@ -1,0 +1,171 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-11
+created_at: null
+elapsed_h: 3.35
+
+problem:
+  statement: >-
+    The previous GRPO launch ran out of GPU memory at a 24-example training micro-batch with a
+    48-prompt generation batch.
+  evidence:
+    - path: /home/ben/task/logs/grpo_v1.log
+      locator: "[1042], [1053] (the agent's own \"Inspect OOM context\" grep)"
+      observation: "OutOfMemory in the GRPO log of the launch at [1040]; no step completed"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt/sft_v1
+    origin: exp-06
+    hash: null
+  data:
+    - path: /home/ben/task/data/rl_pool_full.jsonl
+      source: "derived: data/rft_pool.jsonl + data/rl_pool.jsonl + unused meta-math/MetaMathQA GSM_Rephrased/GSM_AnsAug rows"
+      n_examples: 20000
+      built_by: /home/ben/task/make_rl_pool2.py
+      build_command: []
+      selection: >-
+        Prompts only (question + gold answer): GSM8K train questions, up to 22,000 OMI-2
+        augmented_gsm8k questions, and up to 20,000 MetaMathQA GSM rephrasings not already
+        present; the 600 dev questions are excluded. --n 20000 takes rows[:20000] after a
+        Random(5) shuffle. n_examples is the requested slice, not the file size; at 96 prompts
+        per step this is 208 steps, and the run was stopped at step 125 (~12,000 prompts).
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl.GRPOTrainer with colocated vLLM (versions not stated in the stream)"
+    peft: none
+    hyperparams:
+      lr: 1.5e-06
+      epochs: 1.0
+      batch_size: 12
+      grad_accum: 64
+      max_seq_len: 912
+      scheduler: constant_with_warmup
+      warmup: 5
+      weight_decay: null
+      precision: bf16
+      seed: 0
+      other: >-
+        --n 20000, --epochs 1, --lr 1.5e-6, --num-gen 8, --gen-batch 96, --micro-bs 12,
+        --max-completion 400, --save-steps 25, --vllm-frac 0.20 from the launch.
+        beta 0.0 (no KL) is a train_grpo.py default (script in the snapshot) not overridden
+        here. Hardcoded: loss_type dr_grpo, scale_rewards False, temperature 1.0, top_p 1.0,
+        max_prompt_length 512, warmup_steps 5, adam_beta2 0.95, max_grad_norm 1.0,
+        gradient_checkpointing True, save_only_model True ([1038]), seed 0.
+        grad_accum = gen_batch * num_gen // micro_bs = 64; 8 rollouts per prompt, 96 prompts
+        (768 rollouts) per optimizer step; max_seq_len shown is max_prompt_length 512 +
+        max_completion_length 400.
+    target_format: >-
+      no system message; completion must end "ANSWER: <number>". Reward = 1.0 for exact match
+      of the extracted answer against gold, plus 0.1 if the completion ends in an ANSWER line.
+  command:
+    argv: [python, train_grpo.py, --init, ckpt/sft_v1, --out, ckpt/grpo_v1, --pool, data/rl_pool_full.jsonl, --n, "20000", --epochs, "1", --lr, "1.5e-6", --num-gen, "8", --gen-batch, "96", --micro-bs, "12", --max-completion, "400", --save-steps, "25", --vllm-frac, "0.20"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/grpo_v1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/grpo_v1/checkpoint-125, --limit, "200", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, logs/test200_ckpt_grpo_v1_checkpoint-125.json]
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.695
+    path: /home/ben/task/logs/test_sft_v1_ep2.json
+  diagnostic:
+    what: >-
+      Training reward trend as a stopping signal: the agent tracked 'reward', 'entropy' and
+      'completions/mean_length' from the GRPO log rather than a separate probe.
+    command: [grep, -oE, "'reward': [0-9.]+", logs/grpo_v1.log]
+    path: /home/ben/task/logs/grpo_v1.log
+
+result:
+  execution: killed
+  wall_h: 2.84
+  output_checkpoint: /home/ben/task/ckpt/grpo_v1/checkpoint-125
+  training_summary: {final_loss: null, steps: 125, notes: "Killed at [1178] (\"Reward has plateaued. Stopping GRPO to evaluate checkpoints.\") after checkpoint-125 of a planned 208 steps; checkpoints were written every 25 steps, weights only. Launched +3.35 h, killed +6.19 h."}
+  measurements:
+    - metric: accuracy
+      value: 0.850
+      n: 200
+      path: /home/ben/task/logs/test200_ckpt_grpo_v1_checkpoint-125.json
+      delta_vs_comparator: 0.155
+    - metric: accuracy
+      value: 0.866
+      n: 800
+      path: /home/ben/task/logs/test800_ckpt_grpo_v1_checkpoint-125.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/grpo_v1.log
+    notes: >-
+      "Reward climbing steadily (0.88 -> 0.98)" over the first 25 steps [1133]; by [1177] the
+      agent reports it plateaued. RESULTS.md [1558] gives 0.88 -> 1.03 across the whole
+      SFT->GRPO line (max reward is 1.1 with the format bonus).
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "checkpoint-125 -> 85.0% on test (up from 69.5%)" [1216] - a +15.5-point gain over the SFT
+    parent at the same --limit 200, and 86.6% when re-scored at n=800. No hypothesis was stated
+    before the launch and no noise estimate accompanies the n=200 comparison, so the card
+    records the delta without a verdict on a claim.
+  decision: adopt
+  next_step: >-
+    Copy checkpoint-125 to final_model ([1245]) and continue GRPO from it on a fresh slice of
+    the prompt pool ([1247]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-4463b5d3
+  launch_i: 1079
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [1042, 1053]
+    setup: [720, 1038, 1079]
+    evaluation: [1184, 1186]
+    result: [1115, 1133, 1155, 1177, 1178, 1216, 1221, 1558]
+    conclusion: [1216, 1245]
+  snapshot_files:
+    - train_grpo.py
+    - make_rl_pool2.py
+    - eval_round.sh
+    - eval_ckpts.sh
+    - finalize_ckpt.py
+    - evaluate.py
+    - eval_dev.py
+    - promptlib.py
+    - RESULTS.md
+  extractor: null
+  unresolved:
+    - "eval_round.sh also ran eval_dev.py --limit 600 on this checkpoint; that dev accuracy is never printed in the stream (the log was inspected at [1200] only because eval_dev.py was not flushing its output)."
+    - "ckpt/grpo_v1/checkpoint-50 was evaluated in the same round ([1186]) but its n=200 score is never shown."
+    - "The n=800 value is read from the RESULTS.md row \"+ GRPO 125 steps (n=800) 86.6%\" [1558]; logs/ is not in the workspace snapshot."

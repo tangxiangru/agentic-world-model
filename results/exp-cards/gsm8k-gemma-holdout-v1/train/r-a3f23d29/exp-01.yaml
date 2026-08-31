@@ -1,0 +1,202 @@
+# Reconstructed experiment card (extracted, not agent-written).
+# Paths are relative to the run's working directory: the stream never states its
+# absolute location. Every cited file is in the run's workspace snapshot.
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.15
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The base model scores 45% on a 100-sample GSM8K probe. There is large
+    headroom, and part of the gap is that the base model does not reliably
+    follow or terminate the required "ANSWER: $ANSWER" output format.
+  evidence:
+    - path: baseline.json
+      locator: "[117] (baseline eval launched at [45])"
+      observation: >-
+        base model accuracy 0.45 (stderr 0.05) under
+        `evaluate.py --model-path Qwen/Qwen3-4B-Base --limit 100`.
+    - path: templates/qwen3.jinja
+      locator: "[147]"
+      observation: >-
+        the qwen3 chat template injects an empty <think> block when rendering an
+        assistant turn, while the eval's generation prompt is only
+        "<|im_start|>assistant\n"; a template-rendered SFT target would not match
+        what the grader prompts with.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Supervised fine-tuning of the base model on GSM8K-style question -> reasoning
+    pairs that end in "ANSWER: <number>" will raise accuracy substantially over
+    the 45% base ("SFT should help substantially", [117]).
+  mechanism: >-
+    The base model has the reasoning but not the format habit; training on
+    ANSWER-terminated solutions, with the training sequence hand-built to be
+    byte-identical to the eval prompt ("<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n")
+    rather than rendered through the chat template, teaches it to follow and to
+    terminate the required format ([117], [147]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: train.jsonl
+      source: "local (openai/gsm8k train + meta-math/MetaMathQA)"
+      n_examples: 43473                 # printed by the trainer: "examples 43473" (train_v1.log)
+      built_by: prep_data.py
+      build_command: [python, prep_data.py]
+      selection: >-
+        all of openai/gsm8k "main" train (calculator <<...>> annotations stripped,
+        "#### x" turned into a final "ANSWER: x" line) plus MetaMathQA GSM buckets
+        whose response ends in "The answer is: <number>": 14000 GSM_Rephrased,
+        14000 GSM_AnsAug, 4000 GSM_FOBAR, 4000 GSM_SV, sampled with random.seed(0)
+        and shuffled. Per-source kept counts were printed by prep_data.py at [118]
+        but that result block is not in the digest.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer (custom prompt/completion masking and pad collator; no TRL)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr / epochs / bs / accum are from the launch argv at [196]. max_seq_len is
+        train_sft.py's argparse default (--maxlen 1024), not overridden by the
+        launch; the script text is in the workspace. scheduler=cosine,
+        warmup_ratio=0.03, weight_decay=0.0, bf16=True, max_grad_norm=1.0,
+        optim=adamw_torch_fused, gradient_checkpointing=True (use_reentrant=False),
+        save_strategy=no, logging_steps=20 are hard-coded in train_sft.py's
+        TrainingArguments and are not exposed on the CLI. No seed is set anywhere
+        in the script or the launch. Single GPU, so effective batch = 16 x 2 = 32.
+        attn_implementation=flash_attention_2, dtype=bfloat16.
+    target_format: >-
+      hand-built sequence "<|im_start|>user\n{MATH_PROMPT_TEMPLATE}<|im_end|>\n<|im_start|>assistant\n"
+      + solution + <|im_end|>, loss masked (-100) over the prompt so only the
+      solution and the closing <|im_end|> are trained. Solution body ends with a
+      bare "ANSWER: <number>" line, which is what the grader's last-number scorer
+      reads ([84]).
+  command:
+    argv: [nohup, python, train_sft.py, --out, sft_v1, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2"]
+    cwd: null
+    script: train_sft.py
+    env: {}
+    log: train_v1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "150", --max-connections, "32", --json-output-file, eval_v1.json]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k, 10-shot, served through vllm)"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.45
+    path: baseline.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.72                          # train_runtime 6177.283 s (train_v1.log)
+  output_checkpoint: sft_v1             # packaged to final_model at [323]
+  training_summary:
+    final_loss: 0.1357                  # train_loss at epoch 3.0 (train_v1.log); last logged step loss 0.1175
+    steps: 4077
+    notes: >-
+      Launched at [196] t=+0.15h, found complete and packaged at [323] t=+1.87h.
+      package_model.py copied sft_v1 -> final_model and rewrote eos_token_id to
+      [151643, 151645] in config.json and generation_config.json so generation
+      stops at <|im_end|> or <|endoftext|>. At this point package_model.py did not
+      yet force greedy decoding; that change is exp-02.
+  measurements:
+    - metric: accuracy
+      value: 0.6266666666666667
+      n: 150
+      path: eval_v1.json
+      delta_vs_comparator: null         # base_model was measured at --limit 100, not 150
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Training loss converged to ~0.12 and the packaged model scored 62.7% at
+    --limit 150, which the agent read as "better than baseline but below
+    expectations for Qwen3-4B" ([339]). The only base-model number was taken at
+    --limit 100, so the +17.7 pt gap is not a same-protocol comparison and the
+    claim is not settled by this card.
+  decision: adopt
+  next_step: >-
+    "Let me inspect actual model outputs to find what's going wrong" ([339]) -
+    the failure analysis at [342]-[373] that led to the greedy-decoding fix
+    (exp-02).
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-a3f23d29
+  launch_i: 196
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [117, 147]
+    setup: [118, 192, 196]
+    evaluation: [329]
+    result: [264, 323, 324]
+    conclusion: [328, 339]
+  snapshot_files:
+    - prep_data.py
+    - train_sft.py
+    - train_v1.log
+    - package_model.py
+    - evaluate.py
+    - baseline.json
+    - baseline_eval.log
+    - eval_v1.json
+  smoke_runs: []
+  extractor: null                       # omitted: hard rule 5 forbids model names in the card
+  unresolved:
+    - "prep_data.py's stdout at [118] is not in the digest, so the per-source kept counts (gsm8k / GSM_Rephrased / GSM_AnsAug / GSM_FOBAR / GSM_SV) are unknown; only the trainer's total of 43473 examples is recorded."
+    - "The base-model comparator was measured at --limit 100 and this card at --limit 150, so no same-protocol delta exists for the SFT claim."
+    - "No contamination check appears in the stream. The workspace does contain contamination_judgement.txt ('no contamination detected'), disallowed_model_judgement.txt ('only allowed use detected') and data_source_notes.md, but nothing in the digest shows the agent producing or reading them, so contamination_check is recorded as not_run."
+    - "'final_model' is a moving target across this run: it holds v1 from [323], v3 from [693] and v4 from [774]. This card's output_checkpoint is recorded as sft_v1, the durable directory."
+
+# ---- joined by the pipeline, never by the extractor ------------------------
+outcome:
+  official_accuracy: null

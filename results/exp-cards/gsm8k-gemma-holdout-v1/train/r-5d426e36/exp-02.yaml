@@ -1,0 +1,203 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.81
+
+problem:
+  statement: null
+  evidence: []
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/math_train_100k_tokenized
+      source: nvidia/OpenMathInstruct-2
+      n_examples: 100000
+      built_by: /home/ben/task/prepare_data.py
+      build_command:
+        - python
+        - prepare_data.py
+        - --num-samples
+        - "100000"
+        - --output-file
+        - data/math_train_100k.jsonl
+        - --output-dir
+        - data/math_train_100k
+      selection: >-
+        shuffle(seed=42) over the OpenMathInstruct-2 train split, first 100000
+        rows, each rendered as
+        "Problem: {problem}\n\nLet's think step by step.\n\n{generated_solution}"
+        (prepare_data.py format_type=cot); tokenized to max_length 2048 with
+        truncation by `python tokenize_data.py --input-file
+        data/math_train_100k.jsonl --output-dir data/math_train_100k_tokenized
+        --max-length 2048` [124]. No dedup, no answer filtering.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: trl 0.27.0 SFTTrainer (transformers 4.57.6, peft 0.18.1, torch 2.8.0+cu129)
+    peft: >-
+      LoRA r=64 alpha=128 dropout=0.05
+      targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+      (132,120,576 trainable params, 3.18% of 4,154,588,672)
+    hyperparams:
+      lr: 5.0e-05
+      epochs: 3
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.1
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/batch_size/grad_accum and LoRA r,alpha come from the launch
+        argv, as do save_steps=500 and logging_steps=25. max_seq_len=2048 is the
+        train.py argparse default (--max-length) and was not overridden;
+        warmup_ratio=0.03 is the train() signature default and is not exposed on
+        the CLI; lora_dropout=0.05 is the argparse default and was not
+        overridden. scheduler=cosine, weight_decay=0.1, bf16=True,
+        max_grad_norm=1.0, optim=adamw_torch, packing=False,
+        dataset_text_field="text", save_total_limit=2 are hardcoded in the
+        SFTConfig block of train.py. seed never stated.
+    target_format: >-
+      raw completion text, no chat template:
+      "Problem: {q}\n\nLet's think step by step.\n\n{solution}". The eval
+      harness (evaluate.py -> vLLM) was never checked against this format.
+  command:
+    argv:
+      - nohup
+      - python
+      - train.py
+      - --data-path
+      - data/math_train_100k_tokenized
+      - --output-dir
+      - checkpoints/math_ft_100k
+      - --epochs
+      - "3"
+      - --batch-size
+      - "8"
+      - --grad-accum
+      - "4"
+      - --lr
+      - "5e-5"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --save-steps
+      - "500"
+      - --logging-steps
+      - "25"
+      - ">"
+      - training_100k.log
+      - "2>&1"
+      - "&"
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/training_100k.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 4.41
+  duration_h: 4.41
+  steps: 4715
+  output_checkpoint: /home/ben/task/checkpoints/math_ft_100k
+  training_summary:
+    final_loss: 0.315
+    steps: 4715
+    notes: >-
+      Rolling checkpoints only: save_steps=500 with save_total_limit=2, so at
+      any moment just the two latest checkpoint-N dirs existed
+      (checkpoint-500 [149]; 1500/2000 [200]; 2500/3000 [263]; 3000/3500 [291]).
+      checkpoint-500 is the only one that was merged and evaluated (exp-03,
+      exp-04). The last logged optimisation step in training_100k.log is
+      4715/9375 (~3.0 s/it, 4:24:45 elapsed) and the last logged loss is 0.315
+      at epoch 1.25; the run had NOT finished 3 epochs and was still running
+      when the digest ends at t=+5.12h. The agent believed otherwise: at [230]
+      and [255] it stated training had completed all 3 epochs at step 3125 and
+      at [357] reported "3 epochs completed in ~6.5 hours". 3 epochs over
+      100k rows at effective batch 32 is 9375 steps; 3125 is one epoch, and
+      being a non-multiple of save_steps=500 it was never written at all.
+      Loss fell from 0.507 at epoch 0.01 to ~0.31 at epoch 1.25;
+      mean_token_accuracy ~0.847 -> ~0.896.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The 100k LoRA SFT run trained steadily (loss 0.51 -> 0.31, token accuracy
+    0.85 -> 0.90) but never reached its 3-epoch target; it was at step
+    4715/9375 when the stream ends. Its step-500 checkpoint is the parent of
+    every downstream merge, and the only evaluated model in the run came from
+    it (exp-03, 0.380 on 50 gsm8k items).
+  decision: adopt
+  next_step: >-
+    "wait for the first checkpoint (step 500) and then evaluate" [145], which
+    became exp-03.
+
+provenance:
+  kind: extracted
+  run_ref: r-5d426e36
+  launch_i: 126
+  stated_by_agent:
+    problem: false
+    hypothesis: false
+  anchors:
+    problem: []
+    setup: [120, 124, 126]
+    evaluation: []
+    result: [149, 200, 229, 263, 291, 357]
+    conclusion: [145, 230, 255, 357]
+  snapshot_files:
+    - train.py
+    - prepare_data.py
+    - tokenize_data.py
+    - training_100k.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The digest ends at t=+5.12h of a 10 h budget with training still running at step 4715/9375; what happened over the remaining ~5 h, and whether the run ever finished, is not in the stream."
+    - "No single final checkpoint: save_total_limit=2 kept overwriting, and the stream never shows trainer.save_model writing checkpoints/math_ft_100k itself."
+    - "The agent's own summaries [230][255][357] claim 3 completed epochs and a checkpoint-3125; training_100k.log contradicts both."

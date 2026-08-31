@@ -1,0 +1,237 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 1.81
+
+problem:
+  statement: >-
+    Two things at once: the recipe problem carried since [24850] - "All failures
+    are genuine reasoning errors - format contract is solved. Now capability is
+    the bottleneck" - and the immediate one, that micro-batch 32 OOMs on the
+    first (longest) batch: "OOM at mb32 (worst-case long batch first +
+    fragmentation). Restart with mb16/ga2 and expandable_segments" [27761].
+  evidence:
+    - path: /home/ben/task/results_v1_150.json
+      locator: "[24357], failures printed at [24359]"
+      observation: "exp-03 at 0.60 on --limit 150, 90/150 correct, every inspected failure a reasoning error"
+    - path: /home/ben/task/logs_train_v2.log
+      locator: "[27761]"
+      observation: "the micro-batch-32 attempt (exp-07) OOM'd immediately"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Now capability is the bottleneck -> launch v2 with the 109K augmented
+    dataset" [24850]: training the base model on the GSM-derived subsets of an
+    external teacher-augmented math corpus, rewritten into the eval's answer
+    format, plus the gold gsm8k data, will raise accuracy over exp-03.
+  mechanism: >-
+    Format is already solved, so more supervision has to buy reasoning: ~90K
+    additional worked solutions over answer-augmented and rephrased gsm8k-style
+    questions give far more chains to imitate than the 7473 gold ones.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/v2.jsonl
+      source: "local mixture of meta-math/MetaMathQA (GSM_AnsAug, GSM_Rephrased) and openai/gsm8k (config: main, split: train)"
+      n_examples: 108946
+      built_by: /home/ben/task/prep_data_v2.py
+      build_command:
+        - python
+        - prep_data_v2.py
+        - --out
+        - data/v2.jsonl
+      selection: >-
+        prep_data_v2.py defaults, none overridden on the [22818] invocation:
+        60000 GSM_AnsAug + 30000 GSM_Rephrased rows whose response ends
+        "#### n\nThe answer is: n", rewritten to a final "ANSWER: n" (bodies
+        containing \boxed or a second ####, and non-numeric finals, dropped),
+        plus the gsm8k train split twice (14946) and 4000 further gsm8k rows
+        carrying the exact eval 10-shot prefix; shuffled seed 0.
+        60000+30000+14946+4000 = 108946 = the count the trainer loaded, 0
+        skipped as too long.
+      repeats: 2
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel FLCE, torch 2.8.0+cu129"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights, bf16=True autocast, 8-bit Adam"
+      seed: 42
+      other: >-
+        lr / epochs / micro-batch / grad-accum / max-len explicit on the argv at
+        [27762], plus PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True in the
+        environment - the two changes that made the run fit. scheduler cosine,
+        warmup_ratio 0.03, weight_decay 0.0, bf16=True, seed 42, optim
+        adamw_bnb_8bit, group_by_length=True, max_grad_norm 1.0, save_strategy
+        epoch are train_sft.py values this launch did not override. Trained from
+        the base model, not from exp-03.
+    target_format: >-
+      eval-format chat: prompt via the gemma3 template (+ the exact eval 10-shot
+      prefix on part of the gsm8k rows), assistant turn = reasoning then
+      "ANSWER: <n>" then <end_of_turn>; loss on assistant tokens only.
+  command:
+    argv:
+      - python
+      - train_sft.py
+      - --data
+      - data/v2.jsonl
+      - --out
+      - runs/sft_v2
+      - --epochs
+      - "1"
+      - --lr
+      - "2e-5"
+      - --micro-batch
+      - "16"
+      - --grad-accum
+      - "2"
+      - --max-len
+      - "2816"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      PYTHONPATH: /home/ben/pylibs
+      TRITON_CACHE_DIR: /home/ben/.triton_cache
+    log: /home/ben/task/logs_train_v2.log
+  resume_argv: null
+  output_dir: /home/ben/task/runs/sft_v2
+  progress:
+    unit: optimizer_step
+    total: 3405
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/sft_v2/final
+      - --limit
+      - "300"
+      - --max-connections
+      - "16"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --json-output-file
+      - results_v2_300.json
+    dev_set: "official --limit 300"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.6
+    path: /home/ben/task/results_v1_150.json
+  diagnostic:
+    what: >-
+      failure inspection with show_eval.py --wrong-only: are the remaining losses
+      format failures or reasoning errors?
+    items: 6
+    n: 300
+    metric: "share of inspected failures that are format failures"
+    direction: lower
+
+result:
+  execution: completed
+  wall_h: 1.98
+  duration_h: 1.98
+  steps: 3405
+  output_checkpoint: /home/ben/task/runs/sft_v2/final
+  training_summary:
+    final_loss: 0.19787849945818975
+    steps: 3405
+    notes: >-
+      train_runtime 7138.5 s, 15.26 samples/s, 1 epoch, 3405/3405 in 1:58:07;
+      last logged step losses 0.136 and 0.1368 (logs_train_v2.log). Saved at
+      +3.85h with "6:08 left" on the timer [29619]; the save now also copies the
+      processor files, after the [24297] patch.
+  measurements:
+    - metric: accuracy
+      value: 0.6033333333333334
+      n: 300
+      path: /home/ben/task/results_v2_300.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.0
+    path: null
+    notes: >-
+      6 wrong items printed at [30460], 181/300 correct; all end in a parseable
+      "ANSWER: <n>" with a clean stop. The agent's reading at [30905]: "Failures
+      remain reasoning slips, not format."
+  watch_set_result: null
+  pings_acted_on: []
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The 109K teacher-augmented run finished and scored 0.6033 on 300 items -
+    "v2: 60.3% - no improvement over v1 from teacher-data augmentation" [30458].
+    Because exp-03 was measured at --limit 150 and this at --limit 300, the two
+    numbers are not one protocol, so the flat result cannot be called a
+    contradiction; the agent nevertheless treated the augmentation line as
+    exhausted and moved on-policy.
+  decision: adopt
+  next_step: >-
+    "Time for on-policy rejection sampling - launch generation from v2 (8
+    samples/question on GSM8K train, keep verified-correct)" [30905]; this
+    checkpoint becomes both the sampler and the warm start for exp-09.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-e3d4334d
+  launch_i: 27762
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [24850, 27761]
+    setup: [22818, 27762]
+    evaluation: [29620]
+    result: [29619, 30458, 30459, 30460]
+    conclusion: [30458, 30905]
+  snapshot_files:
+    - train_sft.py
+    - prep_data_v2.py
+    - show_eval.py
+    - evaluate.py
+    - logs_train_v2.log
+    - logs_eval_v2.log
+    - results_v2_300.json
+    - results_v1_150.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the greedy generation_config.json rewrite at [29620] runs in the same event as the eval; it is recorded as part of the evaluation protocol, not as a decode-config card"
+    - "v2 was never measured at --limit 150 nor on the full test set, so its 0.6033 is only comparable to exp-09 and exp-11, which share --limit 300"

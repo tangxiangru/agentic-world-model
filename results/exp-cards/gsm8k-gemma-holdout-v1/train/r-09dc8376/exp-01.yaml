@@ -1,0 +1,254 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.71
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The base model scores 0.19 on the benchmark: it rambles, never emits
+    <|im_end|> so it does not stop, hallucinates extra user/assistant turns, and
+    buries the final numeric word, which the scorer (last whitespace-separated
+    numeric word of the completion) then reads wrong. Format and capability are
+    both unaddressed.
+  evidence:
+    - path: /home/ben/task/baseline_100.json
+      locator: "[20327], [20328]; accuracy 0.19"
+      observation: "base model at limit 100 scores 0.19 through the official eval path"
+    - path: /home/ben/task/baseline_eval.log
+      locator: "[20700]"
+      observation: >-
+        agent's reading: 'The base model rambles (never emits <|im_end|>),
+        hallucinates extra turns, and buries the final numeric word.'
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/baseline_100.json
+      question: "Oliver has n marbles. Anand has 4 times as many marbles as Oliver but 6 fewer than Samuel. How many marbles do all three boys have in total?"
+      gold: null
+      model_output: "... Circling back to Samuel's share, 123+375 equals 498 books Samuel has. The number of books that all three have together can be obtained from just computing; 123+369+498 equals 1020 books."
+      failure: >-
+        printed at [20328]: the completion runs on through hallucinated extra
+        turns, substitutes an unrelated entity/number, and never emits an
+        'ANSWER: N' line; scored incorrect with extracted answer 1020
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Full supervised fine-tuning on 122,883 decontaminated GSM-style pairs, each
+    rendered byte-identically to the eval chat template and ending in
+    'ANSWER: N' followed by <|im_end|>, will fix both the output contract and
+    grade-school math capability. Agent at [20700]: 'Huge headroom for SFT to
+    fix format + capability.'
+  mechanism: >-
+    Training prompts are the exact eval rendering (verified by assertion in
+    tokenize_packs.py), loss falls only on the solution plus <|im_end|>, so the
+    model learns to produce a short chain of thought, an 'ANSWER: N' line and
+    then stop -- which is exactly what the last-numeric-word scorer needs.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_data/packs.jsonl
+      source: derived:local
+      n_examples: 12999
+      built_by: /home/ben/task/tokenize_packs.py
+      build_command: [python, tokenize_packs.py]
+      selection: >-
+        pairs packed multi-turn into 12,999 sequences of <=4096 tokens
+        (48.1M tokens/epoch); system-prefix variants eval10 / none / fewshot_k
+        drawn from a 40/40/20 kind list; loss only on the assistant solution
+        plus <|im_end|>; ~3000 forced single-turn eval10 'anchor' packs;
+        items with >700 answer tokens or >3000 total tokens dropped
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+    - path: /home/ben/task/sft_data/pairs.jsonl
+      source: "openai/gsm8k train + meta-math/MetaMathQA + nvidia/OpenMathInstruct-2"
+      n_examples: 122883
+      built_by: /home/ben/task/build_pairs.py
+      build_command: [python, build_pairs.py]
+      selection: >-
+        70.5K OpenMathInstruct-2 gsm8k/augmented_gsm8k rows (single \boxed answer
+        matching expected_answer, boxed tail rewritten to 'ANSWER: N'), 45K
+        MetaMathQA GSM_AnsAug + GSM_Rephrased ('The answer is: X' -> 'ANSWER: X'),
+        7.4K GSM8K train gold (#### split, calculator annotations stripped in 50%);
+        question dedupe; agent's own decontamination = normalised word 8-gram
+        overlap against all GSM8K test questions, 3,677 dropped (RESULTS.md)
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers Trainer (custom ChunkedCETrainer subclass)"
+    peft: none
+    hyperparams:
+      lr: 1.5e-05
+      epochs: 2.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 31
+      other: >-
+        lr/epochs/bs/accum were passed on the command line. scheduler=cosine,
+        warmup_ratio=0.03, weight_decay=0.0, bf16=True, optim=adamw_torch_fused,
+        max_grad_norm=1.0, seed=31, save_strategy=epoch are hard-coded in
+        TrainingArguments in /home/ben/task/train_sft.py (script text is in the
+        snapshot; the launch did not override them). max_seq_len comes from the
+        STATIC_PAD=4096 env var on the launch line and MAXLEN=4096 in
+        tokenize_packs.py. Attention mask dropped in compute_loss (mask-free
+        SDPA flash path); chunked fp32 cross-entropy to avoid a full logits
+        upcast; torch.compile on (COMPILE=1); gradient checkpointing on
+        (GRAD_CKPT=1).
+    target_format: >-
+      the eval chat rendering: system prefix, '<|im_start|>user\n' + the eval
+      user template ending in 'Reasoning:', then '<|im_start|>assistant\n' +
+      short CoT + '\n\nANSWER: N' + <|im_end|>
+  command:
+    argv: [python, train_sft.py, --epochs, "2", --lr, "1.5e-5", --bs, "8", --accum, "2", --out, runs/main]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env:
+      GRAD_CKPT: "1"
+      COMPILE: "1"
+      STATIC_PAD: "4096"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    log: /home/ben/task/main_train.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 2.7
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [./eval_ckpt.sh, runs/main/final, "150", "16", "4000"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.19
+    path: /home/ben/task/baseline_100.json
+  diagnostic:
+    what: "failure classification of the misses (format vs reasoning) with analyze_log.py"
+    command: [python, analyze_log.py, "$LOG"]
+    path: /home/ben/task/analyze_log.py
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.71
+  duration_h: 2.71
+  steps: 1626
+  output_checkpoint: /home/ben/task/runs/main/final
+  training_summary:
+    final_loss: 0.2685
+    steps: 1626
+    notes: >-
+      train_loss 0.3018 over the run, last logged step loss 0.2685,
+      train_runtime 9772.2s; loss fell 1.298 -> ~0.29 across epoch 1
+      (max grad_norm 5.219, [38590]). checkpoint-813 saved at end of epoch 1.
+  measurements:
+    - metric: accuracy
+      value: 0.74
+      n: 150
+      path: /home/ben/task/eval_813.log
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.7666666666666667
+      n: 150
+      path: /home/ben/task/eval_final.log
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.7717968157695224
+      n: 1319
+      path: /home/ben/task/offline_runs_main_final_full.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      agent at [39470]: 'Epoch 1: 74.0%, Epoch 2: 76.7% -- format failures are
+      zero; all 35 misses are pure reasoning slips.'
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Two epochs of SFT took the model from a rambling non-stopping base to 0.767
+    at limit 150 with zero format failures ([39470]); the epoch-2 checkpoint beat
+    the epoch-1 checkpoint (0.767 vs 0.740). Marked inconclusive because the only
+    base-model comparator was measured at limit 100 (0.19), not under this card's
+    limit-150 protocol.
+  decision: adopt
+  next_step: >-
+    'This is exactly what on-policy RFT helps with' ([39470]) -- generate
+    rejection-sampled solutions from runs/main/final and continue training on
+    them (exp-02).
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-09dc8376
+  launch_i: 33772
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [20327, 20328, 20700]
+    setup: [16168, 16275, 18258, 18261, 19110, 33772]
+    evaluation: [39097, 39102]
+    result: [38590, 38848, 39470, 60741, 61938]
+    conclusion: [39470]
+  snapshot_files:
+    - build_pairs.py
+    - tokenize_packs.py
+    - train_sft.py
+    - prepare_ckpt.py
+    - eval_ckpt.sh
+    - analyze_log.py
+    - main_train.log
+    - eval_813.log
+    - eval_final.log
+    - baseline_100.json
+    - offline_runs_main_final_full.json
+    - offline_runs_main_final.log
+    - RESULTS.md
+  smoke_runs:
+    - {launch_i: 20881, outcome: "crashed: OOM -- bs=8 x 4096 logits in fp32 CE with a 128K vocab"}
+    - {launch_i: 21955, outcome: "killed at [23060] while switching the plan to pure bf16 training"}
+    - {launch_i: 25990, outcome: "ran ~7 s/step (grad-checkpoint-bound); killed at [27177] to try bs=4 without checkpointing"}
+    - {launch_i: 27188, outcome: "crashed: OOM at bs=4 with gradient checkpointing off"}
+    - {launch_i: 29763, outcome: "ran with grad-ckpt + mask-free SDPA flash path; superseded by the torch.compile test"}
+    - {launch_i: 30516, outcome: "crashed: KeyError 'input_ids' -- Trainer's RemoveColumnsCollator stripped the pre-tokenised columns"}
+    - {launch_i: 30664, outcome: "crashed: same KeyError 'input_ids'"}
+    - {launch_i: 31094, outcome: "passed (30 steps) after remove_unused_columns=False: 5.95 s/step, 34% faster with torch.compile"}
+    - {launch_i: 31990, outcome: "failed: eval of the compiled smoke checkpoint could not start a vLLM server"}
+    - {launch_i: 32094, outcome: "crashed: vLLM refused the checkpoint -- ValueError: There is no module or parameter named '_orig_mod' (torch.compile wrapper saved into the weights)"}
+    - {launch_i: 33211, outcome: "passed (60 steps) after unwrapping _orig_mod on save: clean safetensors keys, 0.65 at limit 20 vs 0.19 base"}
+  extractor: opus-5-1m          # the extracting model, not the run's agent
+  unresolved:
+    - "the printed row counts from build_pairs.py and tokenize_packs.py are not in the stream; 122,883 pairs / 12,999 packs / 48.1M tokens are taken from the agent's own RESULTS.md"
+    - "eval_ckpt.sh writes its json to <ckpt>/eval_<limit>.json under runs/, which is not in the workspace snapshot; the limit-150 numbers are cited from the eval logs"
+
+# ---- outcome (joined by the pipeline; the extractor never writes it) --------
+outcome:
+  official_accuracy: null

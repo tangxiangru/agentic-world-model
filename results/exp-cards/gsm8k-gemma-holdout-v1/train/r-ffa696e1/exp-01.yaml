@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.22
+
+problem:
+  statement: >-
+    The base model scores 18% on the benchmark. The scorer extracts the last
+    number in the output and compares it to the target, so the model has to end
+    its response with "ANSWER: <n>" and stop; the base model does neither
+    reliably, and its base eos (<|endoftext|>) differs from the <|im_end|> the
+    eval's chat template uses.
+  evidence:
+    - path: /home/ben/task/baseline_metrics.json
+      locator: "[76]"
+      observation: "base model accuracy 0.18 (stderr 0.055) at --limit 50"
+    - path: /home/ben/task/evaluate.py
+      locator: "[28]"
+      observation: "agent: scorer extracts the last number; clean 'ANSWER: X' at the end is key"
+    - path: /home/ben/task/evaluate.py
+      locator: "[47], [54]"
+      observation: "agent: base eos is <|endoftext|> (151643) but the chat template uses <|im_end|> (151645); the final model should set eos_token_id=[151643, 151645] and train to emit <|im_end|>"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full fine-tuning on GSM8K train, reformatted so the prompt is exactly the
+    eval's user turn and the completion ends "ANSWER: <target><|im_end|>", will
+    raise accuracy over the 18% base model.
+  mechanism: >-
+    Completion-only loss on the eval's exact surface form teaches the model to
+    emit the answer line the scorer looks for and to stop at <|im_end|>.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py, --metamath, --metamath-max, "200000"]
+      selection: >-
+        every train row with '####'; <<calc>> annotations deleted; prompt =
+        <|im_start|>user\n{MATH_PROMPT(q)}<|im_end|>\n<|im_start|>assistant\n,
+        completion = {reasoning}\n\nANSWER: {target}<|im_end|>
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer, custom tokenization + completion-only loss (prompt masked with -100)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        scheduler, warmup 0.03, weight_decay 0.0, seed 0, bf16, flash_attention_2,
+        optim adamw_torch_fused, max_grad_norm 1.0 are argparse/TrainingArguments
+        defaults in /home/ben/task/train_sft.py and were not overridden by this
+        launch. At this point the script had save_strategy="no" (changed to
+        "epoch" later, at [352]) and wrote only config.json eos_token_id, no
+        generation_config.json.
+    target_format: >-
+      single-turn chat: user = the eval's MATH_PROMPT, assistant = reasoning then
+      "ANSWER: <target>" then <|im_end|>
+  command:
+    argv: [nohup, python, train_sft.py, --train-files, data/gsm8k_train.jsonl, --epochs, "3",
+           --lr, "1e-5", --max-len, "1024", --per-device-batch-size, "16", --grad-accum, "2",
+           --output-dir, out_gsm_only]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/.cache/huggingface}
+    log: /home/ben/task/train_gsm_only.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, out_gsm_only, --limit, "150", --json-output-file, eval_gsm_only.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.18
+    path: /home/ben/task/baseline_metrics.json
+  diagnostic:
+    what: >-
+      local greedy generation with eos_token_id=[151643,151645] on 2 test items,
+      with and without the eval's 10 few-shot system block, to see whether the
+      model stops
+    command: [python, diagnose.py]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/out_gsm_only
+  training_summary:
+    final_loss: 0.4789
+    steps: null
+    notes: "train_runtime 343.7 s, 3.0 epochs, 7473 rows (train_gsm_only.log)"
+  measurements:
+    - metric: accuracy
+      value: 0.0467
+      n: 150
+      path: /home/ben/task/eval_gsm_only.json
+      delta_vs_comparator: -0.1333
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      agent at [229]: with eos_token_id=[151643,151645] passed explicitly the
+      model stops correctly and answers correctly, even with few-shots, so the
+      weights are fine; at [244] all 150 eval samples had stop_reason max_tokens
+      and none contained <|im_end|>; at [260] the agent concluded the eval samples
+      at temperature 1.0 because it omits temperature and vLLM defaults to 1.0
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    Agent at [217]: "4.67% - far worse than baseline! Something is broken." The
+    weights had learned the format (greedy local decoding stops cleanly, [229]),
+    but the eval decoded at temperature 1.0 so the model never emitted <|im_end|>
+    and every sample ran to max_tokens. Verdict inconclusive: the comparator was
+    measured at --limit 50 and this output at --limit 150.
+  decision: adopt
+  next_step: >-
+    Test whether shipping temperature 0.0 in the model's own generation_config.json
+    makes the eval decode greedily (exp-02).
+
+provenance:
+  kind: extracted
+  run_ref: r-ffa696e1
+  launch_i: 139
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [28, 47, 54, 76, 78]
+    setup: [97, 100, 110, 116, 138, 139]
+    evaluation: [185]
+    result: [208, 217, 219, 238, 239]
+    conclusion: [217, 229, 244, 260]
+  snapshot_files:
+    - data_prep.py
+    - train_sft.py
+    - diagnose.py
+    - evaluate.py
+    - train_gsm_only.log
+    - eval_gsm_only.json
+    - eval_gsm_only.log
+    - baseline_metrics.json
+  smoke_runs:
+    - {launch_i: 124, outcome: "no result in the stream; re-run at [129] without --logging-steps"}
+    - {launch_i: 129, outcome: "passed (200 examples, 1 epoch); agent at [138]: 'Config is correct'"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the number of optimizer steps was never printed; train_gsm_only.log records only train_runtime and train_loss"
+    - "the baseline comparator was measured at --limit 50, this output at --limit 150, so the -13.3 pt delta is not a like-for-like comparison"
