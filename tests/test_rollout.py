@@ -479,17 +479,213 @@ def test_exact_claude_cli_install_is_pinned_and_attested(
 
 def _write_valid_wma_session(root: Path) -> tuple[Path, list[dict]]:
     session = root / "session"
-    audit = session / "wm" / "cards" / "exp-01" / "wma-calls" / "call-1" / "audit.json"
-    audit.parent.mkdir(parents=True)
-    audit.write_text(json.dumps({"status": "success"}) + "\n")
+    card_id = "exp-01"
+    card_dir = session / "wm" / "cards" / card_id
+    checkpoint = session / "checkpoints" / "checkpoint-1"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(json.dumps({"model_type": "gemma3"}) + "\n")
+    base_checkpoint = root / "base-model"
+    base_checkpoint.mkdir()
+    (base_checkpoint / "config.json").write_text(json.dumps({"model_type": "gemma3"}) + "\n")
+
+    brief_audit = card_dir / "wma-calls" / "brief-1" / "audit.json"
+    observation_audit = card_dir / "wma-calls" / "observation-obs-1-1" / "audit.json"
+    for audit, phase in (
+        (brief_audit, "brief"),
+        (observation_audit, "observation-obs-1"),
+    ):
+        audit.parent.mkdir(parents=True)
+        audit.write_text(
+            json.dumps(
+                {
+                    "status": "success",
+                    "card_id": card_id,
+                    "phase": phase,
+                    "tool_event_count": 2,
+                    "citation_count": 1,
+                }
+            )
+            + "\n"
+        )
+
+    pings = card_dir / "pings"
+    replies = card_dir / "replies"
+    pings.mkdir()
+    replies.mkdir()
+    brief_ping = {
+        "schema_version": "awm-ping-v1",
+        "card_id": card_id,
+        "ping_id": "p-1",
+        "kind": "brief",
+        "reply_required": True,
+    }
+    decision_ping = {
+        "schema_version": "awm-ping-v1",
+        "card_id": card_id,
+        "ping_id": "p-3",
+        "kind": "decision",
+        "reply_required": True,
+        "observation": "obs-1",
+    }
+    (pings / "p-1.yaml").write_text(json.dumps(brief_ping) + "\n")
+    (pings / "p-3.yaml").write_text(json.dumps(decision_ping) + "\n")
+    (replies / "p-1.yaml").write_text(
+        json.dumps(
+            {
+                "card_id": card_id,
+                "ping_id": "p-1",
+                "choice": "accept",
+                "by": "scientist",
+            }
+        )
+        + "\n"
+    )
+    (replies / "p-3.yaml").write_text(
+        json.dumps(
+            {
+                "card_id": card_id,
+                "ping_id": "p-3",
+                "choice": "select:obs-1",
+                "by": "scientist",
+            }
+        )
+        + "\n"
+    )
+
+    observation_dir = card_dir / "observations" / "obs-1"
+    observation_dir.mkdir(parents=True)
+    observation = {
+        "card_id": card_id,
+        "obs_id": "obs-1",
+        "checkpoint": {"path": str(checkpoint), "step": 1},
+        "cause": {"final": True, "standing": [1.0], "requested": []},
+        "evaluators": {"dev4": {"value": 0.5}},
+    }
+    (observation_dir / "observation.json").write_text(json.dumps(observation) + "\n")
+    seal = {
+        "card_id": card_id,
+        "obs_id": "obs-1",
+        "checkpoint": {"path": str(checkpoint)},
+        "decision_ping": "p-3",
+    }
+    (card_dir / "seal.json").write_text(json.dumps(seal) + "\n")
+    state = {
+        "card_id": card_id,
+        "status": "closed",
+        "final_seen": True,
+        "aborted": False,
+        "seal": {"obs_id": "obs-1", "checkpoint": str(checkpoint)},
+    }
+    (card_dir / "state.json").write_text(json.dumps(state) + "\n")
+    card = {
+        "schema_version": "awm-experiment-card-v1",
+        "card_id": card_id,
+        "setup": {
+            "base_model": "google/gemma-3-4b-pt",
+            "parent_checkpoint": {"path": str(base_checkpoint), "origin": "base_model"},
+        },
+        "result": {
+            "execution": "completed",
+            "output_checkpoint": str(checkpoint),
+            "training_summary": {"steps": 1},
+        },
+        "conclusion": {"decision": "adopt"},
+    }
+    (card_dir / "card.yaml").write_text(json.dumps(card) + "\n")
+
     events = [
-        {"seq": 1, "event": "wma_call", "card_id": "exp-01", "path": str(audit)},
-        {"seq": 2, "event": "sealed", "card_id": "exp-01", "checkpoint": "ckpt"},
-        {"seq": 3, "event": "adopted", "card_id": "exp-01"},
+        {"seq": 1, "event": "session_init"},
+        {"seq": 2, "event": "card_proposed", "card_id": card_id},
+        {
+            "seq": 3,
+            "event": "wma_call",
+            "card_id": card_id,
+            "path": str(brief_audit),
+            "phase": "brief",
+            "tool_event_count": 2,
+            "citation_count": 1,
+        },
         {
             "seq": 4,
+            "event": "ping",
+            "card_id": card_id,
+            "ping_id": "p-1",
+            "kind": "brief",
+            "reply_required": True,
+            "path": str(pings / "p-1.yaml"),
+        },
+        {"seq": 5, "event": "reply", "card_id": card_id, "ping_id": "p-1", "choice": "accept"},
+        {"seq": 6, "event": "card_frozen", "card_id": card_id},
+        {"seq": 7, "event": "parent_scored", "card_id": card_id},
+        {"seq": 8, "event": "training_started", "card_id": card_id},
+        {"seq": 9, "event": "hook", "card_id": card_id, "step": 1, "code": 3, "final": True},
+        {"seq": 10, "event": "worker_spawned", "card_id": card_id},
+        {
+            "seq": 11,
+            "event": "observation",
+            "card_id": card_id,
+            "obs_id": "obs-1",
+            "step": 1,
+            "values": {"dev4": 0.5},
+        },
+        {
+            "seq": 12,
+            "event": "wma_call",
+            "card_id": card_id,
+            "path": str(observation_audit),
+            "phase": "observation-obs-1",
+            "tool_event_count": 2,
+            "citation_count": 1,
+        },
+        {
+            "seq": 13,
+            "event": "ping",
+            "card_id": card_id,
+            "ping_id": "p-3",
+            "kind": "decision",
+            "reply_required": True,
+            "path": str(pings / "p-3.yaml"),
+        },
+        {
+            "seq": 14,
+            "event": "reply",
+            "card_id": card_id,
+            "ping_id": "p-3",
+            "choice": "select:obs-1",
+        },
+        {
+            "seq": 15,
+            "event": "decision_applied",
+            "card_id": card_id,
+            "ping_id": "p-3",
+            "choice": "select:obs-1",
+        },
+        {
+            "seq": 16,
+            "event": "sealed",
+            "card_id": card_id,
+            "obs_id": "obs-1",
+            "checkpoint": str(checkpoint),
+        },
+        {
+            "seq": 17,
+            "event": "awaiting_review",
+            "card_id": card_id,
+            "via": "select",
+            "obs_id": "obs-1",
+        },
+        {
+            "seq": 18,
+            "event": "adopted",
+            "card_id": card_id,
+            "checkpoint": str(checkpoint),
+            "submission": str(session / "final_model"),
+            "mode": "copy",
+        },
+        {
+            "seq": 19,
             "event": "card_closed",
-            "card_id": "exp-01",
+            "card_id": card_id,
             "how": "finalize",
             "decision": "adopt",
         },
@@ -507,7 +703,7 @@ def test_wma_session_postcondition_requires_successful_call_and_adoption(tmp_pat
     session, _events = _write_valid_wma_session(tmp_path)
     evidence = validator.validate(session)
     assert evidence["adopted_card_ids"] == ["exp-01"]
-    assert evidence["successful_wma_call_count"] == 1
+    assert evidence["successful_wma_call_count"] == 2
 
 
 @pytest.mark.parametrize(
@@ -531,12 +727,171 @@ def test_wma_session_postcondition_rejects_incomplete_or_degraded(
         for seq, row in enumerate(events, 1):
             row["seq"] = seq
     if append_event:
+        append_event["seq"] = max(row["seq"] for row in events) + 1
         events.append(append_event)
     (session / "wm" / "events.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in events)
     )
     with pytest.raises(validator.ValidationError, match=message):
         validator.validate(session)
+
+
+def test_wma_smoke_postcondition_attests_correlated_full_lifecycle(tmp_path: Path) -> None:
+    validator = _load(REPO / "rollout" / "validate_wma_session.py")
+    session, _events = _write_valid_wma_session(tmp_path)
+    evidence = validator.validate(
+        session,
+        require_smoke_lifecycle=True,
+        expected_base_model="google/gemma-3-4b-pt",
+        expected_base_checkpoint=tmp_path / "base-model",
+    )
+    lifecycle = evidence["smoke_lifecycle"]
+    assert lifecycle["card_id"] == "exp-01"
+    assert lifecycle["brief_ping_id"] == "p-1"
+    assert lifecycle["decision_ping_id"] == "p-3"
+    assert lifecycle["observation_id"] == "obs-1"
+    assert lifecycle["training_steps"] == 1
+    assert lifecycle["base_model"] == "google/gemma-3-4b-pt"
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("missing_proposal", "missing card_proposed"),
+        ("brief_timeout", "missing explicit scientist brief reply"),
+        ("hook_not_final", "missing final checkpoint hook yield"),
+        ("observation_step", "missing observation for the final hook"),
+        ("observation_phase", "missing successful observation wma_call"),
+        ("decision_observation", "decision ping does not name"),
+        ("decision_timeout", "missing explicit scientist decision reply"),
+        ("wrong_selection", "missing explicit scientist decision reply"),
+        ("wrong_seal", "missing seal for the selected observation"),
+        ("unsloth_base", "base model is not google/gemma-3-4b-pt"),
+        ("wrong_base_checkpoint", "parent is not the expected official base checkpoint"),
+        ("zero_training_steps", "finalized card is incomplete"),
+    ],
+)
+def test_wma_smoke_postcondition_rejects_uncorrelated_or_wrong_base(
+    tmp_path: Path, damage: str, message: str
+) -> None:
+    validator = _load(REPO / "rollout" / "validate_wma_session.py")
+    session, events = _write_valid_wma_session(tmp_path)
+    card_dir = session / "wm" / "cards" / "exp-01"
+
+    if damage == "missing_proposal":
+        events = [row for row in events if row["event"] != "card_proposed"]
+    elif damage == "brief_timeout":
+        row = next(row for row in events if row["event"] == "reply" and row["ping_id"] == "p-1")
+        row["event"] = "timeout"
+        reply = json.loads((card_dir / "replies" / "p-1.yaml").read_text())
+        reply["by"] = "timeout"
+        (card_dir / "replies" / "p-1.yaml").write_text(json.dumps(reply) + "\n")
+    elif damage == "hook_not_final":
+        next(row for row in events if row["event"] == "hook")["final"] = False
+    elif damage == "observation_step":
+        next(row for row in events if row["event"] == "observation")["step"] = 2
+    elif damage == "observation_phase":
+        next(
+            row
+            for row in events
+            if row["event"] == "wma_call" and row.get("phase", "").startswith("observation-")
+        )["phase"] = "observation-obs-2"
+    elif damage == "decision_observation":
+        ping = json.loads((card_dir / "pings" / "p-3.yaml").read_text())
+        ping["observation"] = "obs-2"
+        (card_dir / "pings" / "p-3.yaml").write_text(json.dumps(ping) + "\n")
+    elif damage == "decision_timeout":
+        row = next(row for row in events if row["event"] == "reply" and row["ping_id"] == "p-3")
+        row["event"] = "timeout"
+        reply = json.loads((card_dir / "replies" / "p-3.yaml").read_text())
+        reply["by"] = "timeout"
+        (card_dir / "replies" / "p-3.yaml").write_text(json.dumps(reply) + "\n")
+    elif damage == "wrong_selection":
+        row = next(row for row in events if row["event"] == "reply" and row["ping_id"] == "p-3")
+        row["choice"] = "select:obs-2"
+        reply = json.loads((card_dir / "replies" / "p-3.yaml").read_text())
+        reply["choice"] = "select:obs-2"
+        (card_dir / "replies" / "p-3.yaml").write_text(json.dumps(reply) + "\n")
+    elif damage == "wrong_seal":
+        next(row for row in events if row["event"] == "sealed")["checkpoint"] = "other"
+    elif damage == "unsloth_base":
+        card = json.loads((card_dir / "card.yaml").read_text())
+        card["setup"]["base_model"] = "unsloth/gemma-3-4b-pt"
+        (card_dir / "card.yaml").write_text(json.dumps(card) + "\n")
+    elif damage == "wrong_base_checkpoint":
+        wrong = tmp_path / "other-base"
+        wrong.mkdir()
+        card = json.loads((card_dir / "card.yaml").read_text())
+        card["setup"]["parent_checkpoint"]["path"] = str(wrong)
+        (card_dir / "card.yaml").write_text(json.dumps(card) + "\n")
+    elif damage == "zero_training_steps":
+        card = json.loads((card_dir / "card.yaml").read_text())
+        card["result"]["training_summary"]["steps"] = 0
+        (card_dir / "card.yaml").write_text(json.dumps(card) + "\n")
+
+    (session / "wm" / "events.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in events)
+    )
+    with pytest.raises(validator.ValidationError, match=message):
+        validator.validate(
+            session,
+            require_smoke_lifecycle=True,
+            expected_base_model="google/gemma-3-4b-pt",
+            expected_base_checkpoint=tmp_path / "base-model",
+        )
+
+
+def test_wma_production_postcondition_keeps_broad_existing_semantics(tmp_path: Path) -> None:
+    validator = _load(REPO / "rollout" / "validate_wma_session.py")
+    session, events = _write_valid_wma_session(tmp_path)
+    events = [
+        next(row for row in events if row["event"] == "wma_call"),
+        next(row for row in events if row["event"] == "sealed"),
+        next(row for row in events if row["event"] == "adopted"),
+        next(row for row in events if row["event"] == "card_closed"),
+    ]
+    for seq, row in enumerate(events, 1):
+        row["seq"] = seq
+    (session / "wm" / "events.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in events)
+    )
+    study_input = session / "study-input.json"
+    study_input.write_text(json.dumps({"study_mode": "production"}) + "\n")
+    record = session / "wma-session-attestation.json"
+    assert validator.main(
+        [
+            str(session),
+            "--record",
+            str(record),
+            "--study-input",
+            str(study_input),
+        ]
+    ) == 0
+    assert json.loads(record.read_text())["adopted_card_ids"] == ["exp-01"]
+
+
+def test_wma_cli_enforces_correlated_lifecycle_only_for_smoke(tmp_path: Path) -> None:
+    validator = _load(REPO / "rollout" / "validate_wma_session.py")
+    session, _events = _write_valid_wma_session(tmp_path)
+    study_input = session / "study-input.json"
+    study_input.write_text(json.dumps({"study_mode": "smoke"}) + "\n")
+    record = session / "wma-session-attestation.json"
+    assert validator.main(
+        [
+            str(session),
+            "--record",
+            str(record),
+            "--study-input",
+            str(study_input),
+            "--expected-base-model",
+            "google/gemma-3-4b-pt",
+            "--expected-base-checkpoint",
+            str(tmp_path / "base-model"),
+        ]
+    ) == 0
+    evidence = json.loads(record.read_text())
+    assert evidence["smoke_lifecycle"]["card_id"] == "exp-01"
+    assert json.loads(study_input.read_text())["wma_session"] == evidence
 
 
 def test_cell_validator_attests_exact_card_scope(tmp_path: Path) -> None:
@@ -630,6 +985,9 @@ def test_build_prompts_renders_ptb_placeholders() -> None:
         assert leftover not in wm
     assert "/home/ben/task/final_model" in wm and "{num_hours} hours" in wm
     assert "{setup_other}{decontamination_tool}" in wm and "{model}" in wm and "{benchmark}" in wm
+    assert "larger of 10\nminutes or 10%" in wm
+    assert "60 minutes in a 10-hour production cell" in wm
+    assert "when fewer than 60 minutes remain" not in wm
     assert "## Prior runs" not in wm
     wm_ft = bp.wm_prompt(instruction, fulltraj=True)
     assert wm_ft.index("## Prior runs") < wm_ft.index("## The world-model agent")
@@ -639,9 +997,20 @@ def test_build_prompts_renders_ptb_placeholders() -> None:
     assert "Every run directory has exactly" in prior
     assert "Optional upstream artifacts and `task/` workspace snapshots" in prior
     assert "solve_parsed.txt" not in prior
-    for name in ("prompt_fulltraj.txt", "prompt_wm_fulltraj.txt"):
+    for name in (
+        "prompt_fulltraj.txt",
+        "prompt_wm_fulltraj.txt",
+        "prompt_wm_fulltraj_smoke.txt",
+    ):
         assert prior in (REPO / "rollout" / "prompts" / name).read_text()
     assert prior not in (REPO / "rollout" / "prompts" / "prompt_wm.txt").read_text()
+    smoke = (REPO / "rollout" / "prompts" / "prompt_wm_fulltraj_smoke.txt").read_text()
+    production = (REPO / "rollout" / "prompts" / "prompt_wm_fulltraj.txt").read_text()
+    for deadline in ("By minute 10", "By minute 35", "By minute 50"):
+        assert deadline in smoke and deadline not in production
+    assert "one optimizer step" in smoke
+    assert "/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d" in smoke
+    assert "unsloth/*" in smoke
     ptb = "intro {model}\n## Rules\n1. x\n"
     assert bp.ptb_fulltraj(ptb).index("## Prior runs") < bp.ptb_fulltraj(ptb).index("## Rules")
     with pytest.raises(SystemExit):
@@ -892,7 +1261,7 @@ def test_study_agent_streams_prompt_file_byte_exactly_to_claude(tmp_path: Path) 
         + "\nverify_study_prompt\n"
         + pipeline
         + "\npipeline_status=(\"${PIPESTATUS[@]}\")\n"
-        + "[ \"${pipeline_status[*]}\" = \"0 0 0\" ]\n"
+        + "[ \"${pipeline_status[*]}\" = \"0 0 0 0\" ]\n"
     )
     result = subprocess.run(
         ["bash", "-s"],
@@ -903,6 +1272,7 @@ def test_study_agent_streams_prompt_file_byte_exactly_to_claude(tmp_path: Path) 
             "MODEL": "claude-opus-4-6",
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "SCIENTIST_STREAM": str(stream),
+            "STREAM_REDACTOR": str(REPO / "rollout" / "redact_claude_stream.py"),
             "STUDY_PROMPT_SHA256": expected_sha,
             "STUDY_PROMPT_BYTES": str(len(prompt)),
         },
@@ -913,6 +1283,49 @@ def test_study_agent_streams_prompt_file_byte_exactly_to_claude(tmp_path: Path) 
     assert result.returncode == 0, result.stderr
     assert capture.read_bytes() == prompt
     assert stream.read_bytes() == prompt
+
+
+def test_claude_stream_redactor_scrubs_credentials_but_keeps_telemetry() -> None:
+    redactor = REPO / "rollout" / "redact_claude_stream.py"
+    event = {
+        "type": "user",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_result",
+                    "content": (
+                        "CLAUDE_CODE_MESSAGING_TOKEN=deadbeefdeadbeefdeadbeef\n"
+                        "HF_TOKEN=hf_abcdefghijklmnopqrstuvwxyz123456\n"
+                        "Authorization: Bearer bearer-secret-value\n"
+                        "safe=value"
+                    ),
+                }
+            ]
+        },
+        "usage": {"input_tokens": 17, "cache_read_input_tokens": 9},
+        "access_token": "persistent-secret-value",
+        "signature": "telemetry-signature",
+    }
+    source = json.dumps(event) + "\n" + "hf_abcdefghijklmnopqrstuvwxyz654321\n"
+    result = subprocess.run(
+        [sys.executable, str(redactor)],
+        input=source,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0 and result.stderr == ""
+    assert "deadbeef" not in result.stdout
+    assert "abcdefghijklmnopqrstuvwxyz" not in result.stdout
+    assert "bearer-secret-value" not in result.stdout
+    assert "persistent-secret-value" not in result.stdout
+    lines = result.stdout.splitlines()
+    clean = json.loads(lines[0])
+    assert clean["usage"] == {"input_tokens": 17, "cache_read_input_tokens": 9}
+    assert clean["signature"] == "telemetry-signature"
+    assert clean["access_token"] == "<redacted>"
+    assert clean["message"]["content"][0]["content"].endswith("safe=value")
+    assert lines[1] == "<redacted>"
 
 
 @pytest.mark.parametrize(
@@ -1170,7 +1583,6 @@ def test_claude_agents_use_vertex_passthrough_without_oauth() -> None:
     required_vertex = {
         "CLAUDE_CODE_USE_VERTEX",
         "ANTHROPIC_VERTEX_PROJECT_ID",
-        "GOOGLE_APPLICATION_CREDENTIALS",
         "VERTEX_REGION_CLAUDE_4_6_OPUS",
         "VERTEX_REGION_CLAUDE_4_8_OPUS",
         "VERTEX_REGION_CLAUDE_5_OPUS",
@@ -1198,7 +1610,8 @@ def test_claude_agents_use_vertex_passthrough_without_oauth() -> None:
         assert "CLAUDE_CODE_USE_VERTEX" in solve
         assert "ANTHROPIC_VERTEX_PROJECT_ID" in solve
         assert "metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" in solve
-        assert "Vertex needs ADC or an attached Google service account" in solve
+        assert "Vertex needs an attached Google service account" in solve
+        assert "persistent ADC files are forbidden" in solve
         for secret in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
             assert secret in solve
         assert json.loads((agent_root / agent / "api_keys.json").read_text()) == {
@@ -1225,10 +1638,18 @@ def test_claude_agents_use_vertex_passthrough_without_oauth() -> None:
     ):
         assert capability in setup
     assert 'archive --format=tar "$AWM_REPO_COMMIT"' in setup
-    assert "rollout/validate_study_corpus.py rollout/attest_claude_runtime.py" in setup
+    for packaged in (
+        "rollout/validate_study_corpus.py",
+        "rollout/validate_base_model_cache.py",
+        "rollout/attest_claude_runtime.py",
+    ):
+        assert packaged in setup
     assert setup.count('validate_study_corpus.py"') >= 2
+    assert setup.count('validate_base_model_cache.py"') >= 3
     assert setup.count('attest_claude_runtime.py"') >= 2
     assert setup.count('validate_wma_session.py"') >= 2
+    assert setup.count('redact_claude_stream.py"') >= 3
+    assert setup.count('sanitize_result_tree.py"') >= 3
     assert 'install -m 0755 "$HERE/pin_ptb_source.sh"' in setup
     assert 'install -m 0755 "$HERE/attest_ptb_surface.py"' in setup
     assert 'printf \'%s\\n\' "${AWM_REPO_COMMIT,,}"' in setup
@@ -1278,11 +1699,23 @@ def test_claude_agents_propagate_failure_and_require_submission() -> None:
         assert "Claude exited successfully without a non-empty final_model/" in solve
         assert "find /home/ben/task/final_model -mindepth 1 -print -quit" in solve
         assert "validate_study_corpus.py" in solve
+        assert "redact_claude_stream.py" in solve
+        assert 'python3 "${STREAM_REDACTOR}"' in solve
+        assert "redactor_rc" in solve
+        assert "sanitize_result_tree.py" in solve
+        assert 'python3 "${RESULT_SANITIZER}" /home/ben/task' in solve
+        assert "quarantining this cell" in solve
         assert "--require-readonly" in solve
         assert "--record /home/ben/task/study-input.json" in solve
     wm_solve = (agent_root / "claude_wm" / "solve.sh").read_text()
     assert "validate_wma_session.py" in wm_solve
     assert "wma-session-attestation.json" in wm_solve
+    assert "--expected-base-model google/gemma-3-4b-pt" in wm_solve
+    assert "--expected-base-checkpoint" in wm_solve
+    assert (
+        "/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d"
+        in wm_solve
+    )
 
 
 def test_wm_agent_separates_llm_raw_from_llm_cards_and_pins_models() -> None:
@@ -1319,7 +1752,8 @@ def test_pack_uses_explicit_conditions_and_no_site_slurm_config() -> None:
     assert 'GPU_SLOTS_RAW="${PTB_GPU_SLOTS:-${CUDA_VISIBLE_DEVICES:-}}"' in pack
     assert 'POST_TRAIN_BENCH_VISIBLE_GPUS="${GPU_SLOTS[$gpu]}"' in pack
     assert 'POST_TRAIN_BENCH_CUDA_VISIBLE_DEVICES="${GPU_SLOTS[$gpu]}"' in pack
-    assert '${VERTEX_ADC_FILE}:/home/ben/.config/gcloud/application_default_credentials.json:ro' in pack
+    assert "persistent ADC file credentials are forbidden" in pack
+    assert "vertex_auth=attached-service-account" in pack
     assert "PRIOR_RUNS_FOR" not in pack
     assert 'c1:<model>:<prior-scope>:<rep>' in pack
     assert 'c2:<model>:llm:<prior-scope>:<rep>' in pack
@@ -1344,9 +1778,13 @@ def test_pack_uses_explicit_conditions_and_no_site_slurm_config() -> None:
     assert "attest_study_surface.py" in pack
     assert "POST_TRAIN_BENCH_ISOLATE_GPUS=1" in pack
     assert "POST_TRAIN_BENCH_EVAL_GPU_REAP=own or none" in pack
+    assert "validate_base_model_cache.py" in pack
+    assert "BASE_MODEL_REVISION=cc012e0a6d0787b4adcc0fa2c4da74402494554d" in pack
+    assert "implicit container environment injection is forbidden" in pack
+    assert '"${MODEL_CACHE}:/home/ben/pinned-base:ro"' in pack
     assert 'cd "${PINNED_REPO}"' in pack
     assert "bash src/run_task.sh" in pack
-    bind_section = pack.split("binds=()", 1)[1]
+    bind_section = pack.split('binds=("${MODEL_CACHE}:/home/ben/pinned-base:ro")', 1)[1]
     c2_binds = bind_section.split("c2)", 1)[1].split(";;", 1)[0]
     c3_binds = bind_section.split("c3)", 1)[1].split(";;", 1)[0]
     assert "prior_runs:ro" in c2_binds and "wm-memory" not in c2_binds
@@ -1463,11 +1901,21 @@ def test_setup_fresh_private_clone_is_idempotent_and_removes_stale_auth(tmp_path
     assert first.returncode == 0, first.stderr
     for name in (
         "validate_study_corpus.py",
+        "validate_base_model_cache.py",
         "attest_claude_runtime.py",
         "validate_wma_session.py",
+        "redact_claude_stream.py",
+        "sanitize_result_tree.py",
     ):
         assert (private / "agents" / "claude_wm" / "payload" / name).is_file()
     assert (private / "agents" / "claude_fulltraj_noawm" / "payload" / "attest_claude_runtime.py").is_file()
+    assert (
+        private / "agents" / "claude_fulltraj_noawm" / "payload" / "validate_base_model_cache.py"
+    ).is_file()
+    assert (private / "agents" / "claude_fulltraj_noawm" / "payload" / "redact_claude_stream.py").is_file()
+    assert (
+        private / "agents" / "claude_fulltraj_noawm" / "payload" / "sanitize_result_tree.py"
+    ).is_file()
     assert (private / "src" / "commit_utils" / "pin_src_locally.sh").is_file()
     assert (
         private / "src" / "eval" / "tasks" / "gsm8k" / "test_data.json"

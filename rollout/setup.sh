@@ -200,19 +200,28 @@ PAYLOAD_ROOT="$DST/agents/claude_wm/payload"
 PAYLOAD_STAGE="$(mktemp -d "$DST/agents/claude_wm/.payload-stage.XXXXXX")"
 mkdir -p "$PAYLOAD_STAGE/awm-src"
 git -C "$AWM_SOURCE_DIR" archive --format=tar "$AWM_REPO_COMMIT" \
-    awm input .claude rollout/validate_study_corpus.py rollout/attest_claude_runtime.py rollout/validate_wma_session.py \
+    awm input .claude rollout/validate_study_corpus.py rollout/validate_base_model_cache.py rollout/attest_claude_runtime.py rollout/validate_wma_session.py rollout/redact_claude_stream.py rollout/sanitize_result_tree.py \
     | tar -x -C "$PAYLOAD_STAGE/awm-src"
 printf '%s\n' "${AWM_REPO_COMMIT,,}" > "$PAYLOAD_STAGE/awm-src/AWM_COMMIT"
 mv "$PAYLOAD_STAGE/awm-src/rollout/validate_study_corpus.py" \
     "$PAYLOAD_STAGE/validate_study_corpus.py"
+mv "$PAYLOAD_STAGE/awm-src/rollout/validate_base_model_cache.py" \
+    "$PAYLOAD_STAGE/validate_base_model_cache.py"
 mv "$PAYLOAD_STAGE/awm-src/rollout/attest_claude_runtime.py" \
     "$PAYLOAD_STAGE/attest_claude_runtime.py"
 mv "$PAYLOAD_STAGE/awm-src/rollout/validate_wma_session.py" \
     "$PAYLOAD_STAGE/validate_wma_session.py"
+mv "$PAYLOAD_STAGE/awm-src/rollout/redact_claude_stream.py" \
+    "$PAYLOAD_STAGE/redact_claude_stream.py"
+mv "$PAYLOAD_STAGE/awm-src/rollout/sanitize_result_tree.py" \
+    "$PAYLOAD_STAGE/sanitize_result_tree.py"
 rmdir "$PAYLOAD_STAGE/awm-src/rollout"
 chmod 0755 "$PAYLOAD_STAGE/validate_study_corpus.py"
+chmod 0755 "$PAYLOAD_STAGE/validate_base_model_cache.py"
 chmod 0755 "$PAYLOAD_STAGE/attest_claude_runtime.py"
 chmod 0755 "$PAYLOAD_STAGE/validate_wma_session.py"
+chmod 0755 "$PAYLOAD_STAGE/redact_claude_stream.py"
+chmod 0755 "$PAYLOAD_STAGE/sanitize_result_tree.py"
 
 # C1 has no AWM runtime but receives the same commit-pinned standalone
 # validator at /home/ben/agent/validate_study_corpus.py.
@@ -220,8 +229,14 @@ C1_PAYLOAD="$DST/agents/claude_fulltraj_noawm/payload"
 C1_PAYLOAD_STAGE="$(mktemp -d "$DST/agents/claude_fulltraj_noawm/.payload-stage.XXXXXX")"
 install -m 0755 "$PAYLOAD_STAGE/validate_study_corpus.py" \
     "$C1_PAYLOAD_STAGE/validate_study_corpus.py"
+install -m 0755 "$PAYLOAD_STAGE/validate_base_model_cache.py" \
+    "$C1_PAYLOAD_STAGE/validate_base_model_cache.py"
 install -m 0755 "$PAYLOAD_STAGE/attest_claude_runtime.py" \
     "$C1_PAYLOAD_STAGE/attest_claude_runtime.py"
+install -m 0755 "$PAYLOAD_STAGE/redact_claude_stream.py" \
+    "$C1_PAYLOAD_STAGE/redact_claude_stream.py"
+install -m 0755 "$PAYLOAD_STAGE/sanitize_result_tree.py" \
+    "$C1_PAYLOAD_STAGE/sanitize_result_tree.py"
 rm -rf "$C1_PAYLOAD"
 mv "$C1_PAYLOAD_STAGE" "$C1_PAYLOAD"
 
@@ -239,10 +254,15 @@ done
 # The study's prompt files.
 python3 "$HERE/build_prompts.py" --no-review "$DST"
 
-# Own results dir; everything else copied from the shared checkout's .env so the
-# container name and caches match what the corpus runs used.
+# Own results dir; copy only non-secret site settings from the shared checkout's
+# .env so the container name and caches match what the corpus runs used. Study
+# cells use attached Vertex identity and the submit wrapper's exact model-only
+# cache, so no token/password/key assignment belongs in the private checkout.
 mkdir -p "$RESULTS"
-sed -e "s#^POST_TRAIN_BENCH_RESULTS_DIR=.*#POST_TRAIN_BENCH_RESULTS_DIR=\"$RESULTS\"#" \
+sed -E \
+    -e '/^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY)[A-Za-z0-9_]*[[:space:]]*=/d' \
+    -e '/^[[:space:]]*(export[[:space:]]+)?(GOOGLE_APPLICATION_CREDENTIALS|VERTEX_ADC_FILE)[[:space:]]*=/d' \
+    -e "s#^POST_TRAIN_BENCH_RESULTS_DIR=.*#POST_TRAIN_BENCH_RESULTS_DIR=\"$RESULTS\"#" \
     -e 's#^POST_TRAIN_BENCH_EXPERIMENT_NAME=.*##' \
     "$SRC/.env" > "$DST/.env"
 chmod 600 "$DST/.env"

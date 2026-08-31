@@ -306,7 +306,8 @@ class LLMAgent(WorldModelAgent):
         stream_path = call_dir / "stream.jsonl"
         stderr_path = call_dir / "stderr.log"
         env = _vertex_subprocess_env(os.environ)
-        env["CLAUDE_CONFIG_DIR"] = str(call_dir / ".claude-config")
+        claude_config_dir = call_dir / ".claude-config"
+        env["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
         source_server = (Path(__file__).resolve().parents[1] / "scratch_server.py").resolve()
         from ..scratch_server import http_server
 
@@ -354,6 +355,7 @@ class LLMAgent(WorldModelAgent):
                 )
             except Exception as exc:
                 _redact_scratch_mcp_config(mcp_path)
+                shutil.rmtree(claude_config_dir, ignore_errors=True)
                 dump_json(
                     call_dir / "audit.json",
                     {
@@ -367,6 +369,7 @@ class LLMAgent(WorldModelAgent):
                     raise
                 raise WMError(f"WMA call failed; audit: {call_dir}: {exc}") from exc
         _redact_scratch_mcp_config(mcp_path)
+        shutil.rmtree(claude_config_dir, ignore_errors=True)
         if rc != 0:
             dump_json(
                 call_dir / "audit.json",

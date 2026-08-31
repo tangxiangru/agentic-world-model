@@ -3,11 +3,14 @@
 ``get_prompt.py`` loads ``src/eval/general/${POST_TRAIN_BENCH_PROMPT}.txt`` and
 fills ``{model} {benchmark} {num_hours} {gpu_info} {setup_other}
 {decontamination_tool} {eval_api_note}`` by plain replacement, so every prompt
-here is written in those placeholders. Four files:
+here is written in those placeholders. Five files (the C1 derivative is
+emitted when a PTB checkout is supplied):
 
     prompt_fulltraj.txt      PTB prompt + a "Prior runs" section          (C1: raw files, no WMA)
     prompt_wm.txt            our instruction.md in PTB placeholders        (C3: WMA, memory only)
     prompt_wm_fulltraj.txt   the same + the "Prior runs" section           (C2: raw files + WMA)
+    prompt_wm_smoke.txt      C3 prompt + a one-hour lifecycle directive    (optional smoke)
+    prompt_wm_fulltraj_smoke.txt  C2 prompt + that lifecycle directive     (release smoke)
 
 plus copies under rollout/prompts/ so the rendered text is reviewable in this
 repo. Run by rollout/setup.sh:
@@ -18,7 +21,6 @@ repo. Run by rollout/setup.sh:
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -33,6 +35,23 @@ PRIOR_RUNS_SECTION = """## Prior runs
 
 """
 
+PINNED_BASE_SECTION = """## Pinned base checkpoint
+- This study permits only the official `google/gemma-3-4b-pt` base at revision `cc012e0a6d0787b4adcc0fa2c4da74402494554d`. It is already complete at the immutable read-only path `/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d`.
+- Load that exact snapshot locally. Do not inspect cache credential files, authenticate to Hugging Face, download a substitute, or use any mirror, fork, repack, instruction-tuned model, or other revision (including an `unsloth/*` model).
+
+"""
+
+SMOKE_SECTION = """## One-hour smoke protocol
+This is a labelled integration smoke, not a production research cell. Exercise one complete WMA-controlled training lifecycle; do not spend the hour on a broad corpus survey or open a second card. The WMA remains autonomous and chooses which available precedents to inspect and cite.
+
+- By minute 10, create one minimal valid card from permitted train-derived evidence, propose it, read the brief, and explicitly reply `accept` or `override`.
+- Use exactly three train-derived watch examples, an official evaluator with `--limit 4`, and one optimizer step from the pinned official base. The smoke tests mechanics, not model quality.
+- By minute 35, save a complete loadable checkpoint and call the checkpoint hook with `step >= 1` and `final=True`; when it returns `3`, exit the trainer so the WMA worker can evaluate.
+- Read the resulting decision ping and explicitly reply `select:<obs-id>` for that observation. Do not rely on a timeout action.
+- By minute 50, fill card sections 5–6 and run `awm wm finalize ...` with decision `adopt`, leaving a complete `final_model/` for the official evaluator.
+
+"""
+
 # instruction.md placeholders -> PTB placeholders / sandbox constants
 INSTRUCTION_MAP = {
     "{dir}": "/home/ben/task",
@@ -43,11 +62,11 @@ INSTRUCTION_MAP = {
 
 
 def ptb_fulltraj(ptb_prompt: str) -> str:
-    """The PTB prompt with the prior-runs section inserted before ## Rules."""
+    """The PTB prompt with prior runs and the pinned-base rule before ## Rules."""
     anchor = "## Rules"
     if anchor not in ptb_prompt:
         raise SystemExit("PTB prompt.txt has no '## Rules' heading; update build_prompts.py")
-    return ptb_prompt.replace(anchor, PRIOR_RUNS_SECTION + anchor, 1)
+    return ptb_prompt.replace(anchor, PRIOR_RUNS_SECTION + PINNED_BASE_SECTION + anchor, 1)
 
 
 def wm_prompt(instruction: str, *, fulltraj: bool) -> str:
@@ -71,6 +90,14 @@ def wm_prompt(instruction: str, *, fulltraj: bool) -> str:
     return text
 
 
+def smoke_prompt(prompt: str) -> str:
+    """Add the release-smoke deadlines without changing production prompts."""
+    anchor = "## Research"
+    if anchor not in prompt:
+        raise SystemExit("WMA prompt changed: '## Research' heading missing")
+    return prompt.replace(anchor, SMOKE_SECTION + anchor, 1)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ptb", nargs="?", type=Path)
@@ -87,9 +114,13 @@ def main() -> int:
     out_review = None if args.no_review else HERE / "prompts"
     if out_review:
         out_review.mkdir(exist_ok=True)
+    wm = wm_prompt(instruction, fulltraj=False)
+    wm_fulltraj = wm_prompt(instruction, fulltraj=True)
     files = {
-        "prompt_wm.txt": wm_prompt(instruction, fulltraj=False),
-        "prompt_wm_fulltraj.txt": wm_prompt(instruction, fulltraj=True),
+        "prompt_wm.txt": wm,
+        "prompt_wm_fulltraj.txt": wm_fulltraj,
+        "prompt_wm_smoke.txt": smoke_prompt(wm),
+        "prompt_wm_fulltraj_smoke.txt": smoke_prompt(wm_fulltraj),
     }
     if ptb:
         ptb_prompt = (ptb / "src" / "eval" / "general" / "prompt.txt").read_text()

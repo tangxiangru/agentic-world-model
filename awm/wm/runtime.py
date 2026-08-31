@@ -12,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -46,6 +47,34 @@ from .schema import (
     validate_contract,
     validate_result,
 )
+
+
+_SENSITIVE_RESUME_ENV_NAME = re.compile(
+    r"(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|AUTHORIZATION|CREDENTIAL)", re.IGNORECASE
+)
+_SENSITIVE_RESUME_ENV_PREFIXES = (
+    "ANTHROPIC_",
+    "APPTAINERENV_",
+    "CLAUDE_CODE_",
+    "GOOGLE_",
+    "SINGULARITYENV_",
+    "VERTEX_",
+)
+_SENSITIVE_RESUME_ENV_VALUE = re.compile(
+    r"(?:\bhf_[A-Za-z0-9]{16,}\b|\bsk-[A-Za-z0-9_-]{16,}\b|"
+    r"\bya29\.[A-Za-z0-9._~-]{16,}\b|-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----)"
+)
+
+
+def _safe_resume_environment(environment: dict[str, str]) -> dict[str, str]:
+    """Keep trainer state while excluding credentials inherited from Claude/Vertex."""
+    return {
+        name: value
+        for name, value in environment.items()
+        if not name.startswith(_SENSITIVE_RESUME_ENV_PREFIXES)
+        and _SENSITIVE_RESUME_ENV_NAME.search(name) is None
+        and _SENSITIVE_RESUME_ENV_VALUE.search(value) is None
+    }
 
 HOOK_SRC = Path(__file__).with_name("hook_example.py")
 
@@ -436,7 +465,7 @@ class Session:
         trainer = {"pid": os.getppid(), "cwd": os.getcwd(), "seen_at": now()}
         env_path = self.card_dir(card_id) / "launch.env.json"
         if not env_path.exists():
-            dump_json(env_path, dict(os.environ))
+            dump_json(env_path, _safe_resume_environment(dict(os.environ)))
             os.chmod(env_path, 0o600)
         st["trainer"] = trainer
         contract = self.contract(card_id)

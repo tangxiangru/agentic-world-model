@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from awm.wm.runtime import Session
+from awm.wm.runtime import Session, _safe_resume_environment
 from awm.wm.schema import HOOK_CONTINUE, HOOK_YIELD, WMError
 
 REPO = Path(__file__).resolve().parent.parent
@@ -48,6 +48,23 @@ FAKE_SCORER = textwrap.dedent('''
             fh.write(json.dumps({"id": r["id"], "correct": i < k}) + "\\n")
     (out / "metrics.json").write_text(json.dumps({"value": k / len(rows), "n": len(rows)}))
 ''')
+
+
+def test_resume_environment_excludes_scientist_and_provider_credentials() -> None:
+    environment = {
+        "PATH": "/usr/bin",
+        "HF_HOME": "/home/ben/hf_cache",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "CLAUDE_CODE_MESSAGING_TOKEN": "job-scoped-secret",
+        "ANTHROPIC_VERTEX_PROJECT_ID": "project",
+        "MY_HF_TOKEN": "placeholder-secret",
+        "INNOCENT_NAME": "hf_abcdefghijklmnopqrstuvwxyz",
+    }
+    assert _safe_resume_environment(environment) == {
+        "PATH": "/usr/bin",
+        "HF_HOME": "/home/ben/hf_cache",
+        "CUDA_VISIBLE_DEVICES": "0",
+    }
 
 
 def make_session(tmp_path: Path, *, parent_score: float, arm: str = "null", memory_root: Path | None = None) -> tuple[Session, Path]:

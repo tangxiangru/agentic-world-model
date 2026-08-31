@@ -108,6 +108,22 @@ same Unix owner and inherited the cell's random launch token; the patched
 runner has no cluster-wide `nvidia-smi | kill` path. The legacy
 `POST_TRAIN_BENCH_KILL_GPU_PROCS` setting does not enable global cleanup.
 
+`HF_HOME` must point at the exact model-only cache view accepted by
+`validate_base_model_cache.py`. The launcher rejects extra files or directories,
+nested credentials, token environment variables, implicit Apptainer/Singularity
+environment injection, or an incomplete/changed base-model snapshot. It pins
+`google/gemma-3-4b-pt` to revision
+`cc012e0a6d0787b4adcc0fa2c4da74402494554d` and checks both weight shards,
+their index, configuration, tokenizer, exact cache topology, and sizes before
+consuming a GPU cell; smoke mode performs full content hashes of all 8.6 GB.
+The exact model cache root is also mounted read-only at `/home/ben/pinned-base`,
+and the first card must name its pinned snapshot as the parent. At a site with a
+credential-bearing cache, construct an untracked allowlisted view containing
+only this model's public artifacts (hard links are sufficient) and set
+`HF_HOME` to that view in the submit wrapper. Slurm exports the submit
+environment, so set it explicitly rather than relying on a private `.env` to
+override an inherited cluster-wide value.
+
 The two study agents receive the canonical generated prompt as the read-only
 file `/home/ben/task/instruction.md`, not through PTB's legacy multiline
 `PROMPT` environment value. Apptainer 1.5.3 truncates that value at the first
@@ -115,6 +131,16 @@ newline when the prompt contains multiple `=` characters. The runner passes an
 independent single-line SHA-256 and byte count instead; each solve verifies the
 file before and after Claude runs, and the instruction plus checksum remain in
 the task artifacts. Unrelated upstream PTB agents retain the legacy transport.
+Each study solve also filters the retained Claude JSONL stream through the
+commit-pinned `redact_claude_stream.py`: token-bearing environment assignments,
+common access-key forms, authorization headers, and sensitive JSON fields are
+replaced before `scientist-stream.jsonl` or PTB's `solve_out.txt` is written.
+The runtime also omits Claude/Vertex credentials from its trainer-resume
+environment, removes per-call Claude configuration, and scans every text
+artifact under the task before accepting a cell. Any late match is atomically
+redacted and the cell is quarantined rather than released. This protects
+stored/published trajectories; it is not a substitute for the model-only cache
+boundary.
 
 `AWM_REPO_COMMIT` is also the exact harness commit, not merely the WMA runtime
 revision. Setup refuses any live prompt builder, patcher, launcher, agent, or
@@ -139,9 +165,8 @@ uses the same configured Vertex provider and ambient ADC as
 the scientist, although its model is selected separately. No credential or
 OAuth token belongs in Git. On the configured H100 nodes, Claude obtains Vertex
 ADC from the node's attached Google service account; both solve scripts verify
-that metadata token endpoint before starting. A different site may instead
-bind a local ADC file by setting the untracked host path `VERTEX_ADC_FILE`; the
-launcher mounts it read-only and forwards only its fixed in-container path.
+that metadata token endpoint before starting. Persistent file-based ADC is
+rejected because the scientist has an arbitrary shell inside the sandbox.
 
 Before launching, define the exact scientist alias-to-provider-ID mapping and
 pin the Claude Code package in the untracked submit environment:
@@ -241,6 +266,11 @@ successful WMA-session postcondition, nonempty `final_model`, finite accuracy,
 and honest zero `solve_exit_code.txt` before releasing the production matrix.
 A C3 smoke is optional additional validation of the card-only protocol; it is
 not part of this initial one-GPU release gate.
+The production WMA prompt reserves the larger of ten minutes or ten percent of
+the cell for finalization: ten minutes in a one-hour cell and sixty minutes in a
+ten-hour production run. Smoke mode selects a separate attested prompt which
+requires one minimal card by minute 10, a one-step final checkpoint and WMA
+observation by minute 35, and explicit selection/adoption by minute 50.
 
 The condition prefix is mandatory. C1 fails if the raw mount is absent. C2
 requires that same raw mount, exposes it directly to the scientist, and gives
@@ -282,10 +312,13 @@ combined digest of the selected side manifests and their exact card/run counts
 after checking every card hash and rejecting an extra side/file. Every cell also
 records the exact PTB and harness commits, derived PTB-surface manifest digest,
 exact Claude CLI version, requested scientist alias, and all stream-reported
-provider model IDs. C2/C3 add `wma-session-attestation.json`; inclusion requires
-at least one successful audited `wma_call` on a card which was sealed, adopted,
-and closed by `finalize` with decision `adopt`, with no `agent_failed` or
-`agent_degraded` event. Missing/invalid finite `accuracy`, a timeout, or any
+provider model IDs. C2/C3 add `wma-session-attestation.json`; production
+inclusion requires at least one successful audited `wma_call` on a card which
+was sealed, adopted, and closed by `finalize` with decision `adopt`, with no
+`agent_failed` or `agent_degraded` event. The release smoke additionally
+requires one correlated propose/brief/reply/train/yield/observe/select/adopt
+lifecycle and rejects a substitute base ID or path. Missing/invalid finite
+`accuracy`, a timeout, or any
 scientist/WMA/attestation failure leaves diagnostic artifacts but returns a
 nonzero cell status.
 
@@ -298,10 +331,13 @@ nonzero cell status.
 | `attest_ptb_surface.py` | setup-time manifest and launch-time verification of the derived private PTB runner/prompts/agents |
 | `attest_claude_runtime.py` | exact npm CLI installation and requested-versus-reported scientist model attestation |
 | `validate_study_corpus.py` | standalone in-sandbox verifier/attestor packaged into C1/C2/C3 |
+| `validate_base_model_cache.py` | exact model-only cache allowlist and full-hash smoke attester |
 | `validate_wma_session.py` | fail-closed C2/C3 successful-call/seal/adopt/finalize postcondition |
+| `redact_claude_stream.py` | credential scrubber on the retained Claude JSONL/PTY trajectory stream |
+| `sanitize_result_tree.py` | final recursive text-artifact scrubber/attester; any redaction quarantines the cell |
 | `study_matrix.py` | emits or validates the exact 36 unique launcher specs |
 | `pin_ptb_source.sh` | creates the per-cell source snapshot and returns its root; cells execute relative dependencies only from that snapshot |
-| `build_prompts.py` | writes `prompt_fulltraj.txt`, `prompt_wm.txt`, `prompt_wm_fulltraj.txt` into the checkout; review copies under `prompts/` |
+| `build_prompts.py` | writes the C1/C2/C3 production prompts plus separate C2/C3 lifecycle-smoke prompts; review copies under `prompts/` |
 | `agents/claude_fulltraj_noawm/` | C1: Vertex Claude with a required read-only raw-runs mount |
 | `agents/claude_wm/` | C2/C3: verifies the minimal runtime payload archived from exact `AWM_REPO_COMMIT`, initializes the declared read-only WMA arm, then runs Vertex Claude |
 | `wm_pack.sbatch` | exactly one explicit `c1|c2|c3:<config>` cell per OS-isolated one-GPU invocation; fail-closed provenance, prompt, and mounts |

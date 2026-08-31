@@ -38,7 +38,7 @@ set -euo pipefail
 #   PTB_LOG_DIR   per-cell log directory (defaults inside the private checkout)
 #   AWM_STUDY_SMOKE=1 with explicit PTB_NUM_HOURS=1 runs a labelled smoke;
 #                  production rejects every duration other than 10 hours
-#   VERTEX_ADC_FILE optional host ADC JSON; otherwise use the node service account
+#   Vertex authentication comes only from the node's attached service account
 #   Vertex routing variables listed in agents/claude_*/env_passthrough.txt
 #
 # Example after a site wrapper has provided a one-GPU cgroup/allocation:
@@ -55,6 +55,7 @@ N="${#SPECS[@]}"
 REPO="${HV_PTB_DIR}"
 TASK="${PTB_TASK:-gsm8k}"
 MODEL_TO_TRAIN="${PTB_MODEL:-google/gemma-3-4b-pt}"
+BASE_MODEL_REVISION=cc012e0a6d0787b4adcc0fa2c4da74402494554d
 NUM_HOURS="${PTB_NUM_HOURS:-10}"
 STUDY_SMOKE="${AWM_STUDY_SMOKE:-0}"
 STAGGER="${PTB_STAGGER:-60}"
@@ -165,11 +166,19 @@ for spec in "${SPECS[@]}"; do
             agent=claude_wm
             config="${scientist}:${arm}:${declared_sides}:ro"
             if [ "${condition}" = c2 ]; then
-                prompt=prompt_wm_fulltraj
+                if [ "${STUDY_MODE}" = smoke ]; then
+                    prompt=prompt_wm_fulltraj_smoke
+                else
+                    prompt=prompt_wm_fulltraj
+                fi
                 need_prior=1
                 [ "${declared_sides}" = train,test ] && need_test_prior=1
             else
-                prompt=prompt_wm
+                if [ "${STUDY_MODE}" = smoke ]; then
+                    prompt=prompt_wm_smoke
+                else
+                    prompt=prompt_wm
+                fi
                 need_memory=1
                 [ "${declared_sides}" = train,test ] && need_test_side=1
             fi
@@ -211,9 +220,10 @@ done
     echo "FATAL: AWM_EXPECTED_CLAUDE_CLI_VERSION_OUTPUT must be the exact one-line output" >&2
     exit 2
 }
-if [ -n "${VERTEX_ADC_FILE}" ]; then
-    [ -f "${VERTEX_ADC_FILE}" ] || { echo "FATAL: VERTEX_ADC_FILE is not a file" >&2; exit 2; }
-fi
+[ -z "${VERTEX_ADC_FILE}" ] && [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || {
+    echo "FATAL: persistent ADC file credentials are forbidden; use the attached service account" >&2
+    exit 2
+}
 if [ "${need_prior}" = 1 ]; then
     [ -n "${PRIOR_RUNS}" ] || { echo "FATAL: C1/C2 requires PRIOR_RUNS" >&2; exit 2; }
     [ -f "${PRIOR_RUNS}/INDEX.md" ] && [ -s "${PRIOR_RUNS}/index.jsonl" ] || {
@@ -309,7 +319,7 @@ echo "node=$(hostname) run=${RUN_ID} start=$(date --iso-8601=seconds)"
 echo "cells=${N} mode=${STUDY_MODE} specs=${SPECS[*]} task=${TASK} model=${MODEL_TO_TRAIN} hours=${NUM_HOURS}"
 echo "gpu_slots=${GPU_SLOTS[*]}"
 echo "prior_runs=${PRIOR_RUNS:-<none>} wm_memory=${WM_MEMORY:-<none>} awm_commit=${AWM_REPO_COMMIT:-<none>} wma_model=${AWM_WMA_MODEL:-<none>}"
-echo "vertex_auth=$([ -n "${VERTEX_ADC_FILE}" ] && echo bound-adc || echo attached-service-account)"
+echo "vertex_auth=attached-service-account"
 
 cd "$REPO" || { echo "FATAL: no checkout at $REPO -- run rollout/setup.sh" >&2; exit 1; }
 export REPO_ROOT="$(pwd)"
@@ -345,7 +355,33 @@ AWM_PTB_SURFACE_MANIFEST_SHA256="$(python3 "${SURFACE_ATTESTER}" verify \
 }
 echo "ptb_surface_manifest_sha256=${AWM_PTB_SURFACE_MANIFEST_SHA256}"
 source src/commit_utils/set_env_vars.sh
+[ -z "${VERTEX_ADC_FILE:-}" ] && [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || {
+    echo "FATAL: private PTB environment introduced a persistent ADC file" >&2
+    exit 2
+}
 unset HUGGINGFACE_HUB_CACHE HF_HUB_CACHE
+for environment_name in $(compgen -e); do
+    case "${environment_name}" in
+        APPTAINERENV_*|SINGULARITYENV_*)
+            echo "FATAL: implicit container environment injection is forbidden: ${environment_name}" >&2
+            exit 2
+            ;;
+    esac
+    if [[ "${environment_name}" =~ (^|_)(HF|HUGGINGFACE|HUGGING_FACE)(_[A-Z0-9]+)*_?TOKEN$ ]]; then
+        echo "FATAL: Hugging Face token environment is forbidden: ${environment_name}" >&2
+        exit 2
+    fi
+done
+BASE_CACHE_VALIDATOR="${PACK_AWM_ROOT}/rollout/validate_base_model_cache.py"
+[ -x "${BASE_CACHE_VALIDATOR}" ] && \
+    git -C "${PACK_AWM_ROOT}" show "${AWM_REPO_COMMIT}:rollout/validate_base_model_cache.py" | \
+    cmp -s - "${BASE_CACHE_VALIDATOR}" || {
+    echo "FATAL: base-model cache validator is absent or differs from AWM_REPO_COMMIT" >&2
+    exit 2
+}
+python3 "${BASE_CACHE_VALIDATOR}" "${HF_HOME:-}" || exit 2
+MODEL_CACHE="${HF_HOME}/hub/models--google--gemma-3-4b-pt"
+echo "base_model_revision=${BASE_MODEL_REVISION} cache=exact-model-only"
 grep -q "POST_TRAIN_BENCH_EXTRA_BINDS" src/run_task.sh || { echo "FATAL: run_task.sh lacks the extra-binds patch -- run rollout/setup.sh" >&2; exit 1; }
 [ "${POST_TRAIN_BENCH_ISOLATE_GPUS:-}" = 1 ] || {
     echo "FATAL: private PTB .env must set POST_TRAIN_BENCH_ISOLATE_GPUS=1" >&2
@@ -431,10 +467,7 @@ for (( gpu=0; gpu<N; gpu++ )); do
     cfg="${CONFIGS[$gpu]}"
     prompt="${PROMPTS[$gpu]}"
     repetition="${REPETITIONS[$gpu]}"
-    binds=()
-    if [ -n "${VERTEX_ADC_FILE}" ]; then
-        binds+=("${VERTEX_ADC_FILE}:/home/ben/.config/gcloud/application_default_credentials.json:ro")
-    fi
+    binds=("${MODEL_CACHE}:/home/ben/pinned-base:ro")
     case "${condition}" in
         c1) binds+=("${PRIOR_RUNS}:/home/ben/prior_runs:ro");;
         c2)
@@ -468,11 +501,7 @@ for (( gpu=0; gpu<N; gpu++ )); do
         export AWM_EXPECTED_SCIENTIST_MODEL_ID="${EXPECTED_SCIENTIST_MODELS[$gpu]}"
         export AWM_CLAUDE_CLI_VERSION
         export AWM_EXPECTED_CLAUDE_CLI_VERSION_OUTPUT
-        if [ -n "${VERTEX_ADC_FILE}" ]; then
-            export GOOGLE_APPLICATION_CREDENTIALS=/home/ben/.config/gcloud/application_default_credentials.json
-        else
-            unset GOOGLE_APPLICATION_CREDENTIALS
-        fi
+        unset GOOGLE_APPLICATION_CREDENTIALS
         echo "cell start gpu=${gpu} repetition=${repetition} condition=${condition} agent=${agent} cfg=${cfg} prompt=${prompt} binds=${POST_TRAIN_BENCH_EXTRA_BINDS:-<none>} at $(date --iso-8601=seconds)"
         cd "${PINNED_REPO}" || exit 2
         bash src/run_task.sh "${TASK}" "${agent}" "${MODEL_TO_TRAIN}" "${cell}" "${NUM_HOURS}" "${cfg}" 1

@@ -56,27 +56,30 @@ done
     echo "ERROR: ANTHROPIC_VERTEX_PROJECT_ID was not forwarded" >&2
     exit 2
 }
-if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
-    [ -r "${GOOGLE_APPLICATION_CREDENTIALS}" ] || {
-        echo "ERROR: GOOGLE_APPLICATION_CREDENTIALS is not readable in the sandbox" >&2
-        exit 2
-    }
-else
-    curl -fsS --connect-timeout 3 -o /dev/null -H 'Metadata-Flavor: Google' \
-        http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token || {
-        echo "ERROR: Vertex needs ADC or an attached Google service account" >&2
-        exit 2
-    }
-fi
+[ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || {
+    echo "ERROR: persistent ADC files are forbidden in the scientist sandbox" >&2
+    exit 2
+}
+curl -fsS --connect-timeout 3 -o /dev/null -H 'Metadata-Flavor: Google' \
+    http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token || {
+    echo "ERROR: Vertex needs an attached Google service account" >&2
+    exit 2
+}
 [ "${AWM_STUDY_CONDITION:-}" = "c1" ] || {
     echo "ERROR: claude_fulltraj_noawm requires AWM_STUDY_CONDITION=c1" >&2
     exit 2
 }
 
 CORPUS_VALIDATOR=/home/ben/agent/validate_study_corpus.py
+BASE_CACHE_VALIDATOR=/home/ben/agent/validate_base_model_cache.py
 RUNTIME_ATTESTER=/home/ben/agent/attest_claude_runtime.py
+STREAM_REDACTOR=/home/ben/agent/redact_claude_stream.py
+RESULT_SANITIZER=/home/ben/agent/sanitize_result_tree.py
 [ -x "${CORPUS_VALIDATOR}" ] || { echo "ERROR: study corpus validator is missing" >&2; exit 2; }
+[ -x "${BASE_CACHE_VALIDATOR}" ] || { echo "ERROR: base-model cache validator is missing" >&2; exit 2; }
 [ -x "${RUNTIME_ATTESTER}" ] || { echo "ERROR: Claude runtime attester is missing" >&2; exit 2; }
+[ -x "${STREAM_REDACTOR}" ] || { echo "ERROR: Claude stream redactor is missing" >&2; exit 2; }
+[ -x "${RESULT_SANITIZER}" ] || { echo "ERROR: result-tree sanitizer is missing" >&2; exit 2; }
 python3 "${CORPUS_VALIDATOR}" raw /home/ben/prior_runs \
     --sides "${SIDES}" \
     --expected-manifest-sha256 "${AWM_PRIOR_CORPUS_MANIFEST_SHA256}" \
@@ -85,6 +88,11 @@ python3 "${CORPUS_VALIDATOR}" raw /home/ben/prior_runs \
     --ptb-commit "${AWM_PTB_COMMIT}" --harness-commit "${AWM_REPO_COMMIT}" \
     --ptb-surface-manifest-sha256 "${AWM_PTB_SURFACE_MANIFEST_SHA256}" \
     --record /home/ben/task/study-input.json || exit 2
+BASE_CACHE_ARGS=()
+[ "${AWM_STUDY_MODE}" = smoke ] && BASE_CACHE_ARGS+=(--full-hash)
+python3 "${BASE_CACHE_VALIDATOR}" "${HF_HOME}" "${BASE_CACHE_ARGS[@]}" \
+    --record /home/ben/task/base-model-attestation.json \
+    --study-input /home/ben/task/study-input.json || exit 2
 
 export BASH_MAX_TIMEOUT_MS="36000000"
 export CLAUDE_CODE_EFFORT_LEVEL="high"
@@ -121,15 +129,16 @@ verify_study_prompt || {
 }
 cat "${STUDY_PROMPT_FILE}" | claude --print --verbose --model "$MODEL" \
     --output-format stream-json --thinking-display summarized \
-    --dangerously-skip-permissions | tee "${SCIENTIST_STREAM}"
+    --dangerously-skip-permissions | python3 "${STREAM_REDACTOR}" | tee "${SCIENTIST_STREAM}"
 pipeline_status=("${PIPESTATUS[@]}")
 prompt_rc="${pipeline_status[0]}"
 claude_rc="${pipeline_status[1]}"
-tee_rc="${pipeline_status[2]}"
+redactor_rc="${pipeline_status[2]}"
+tee_rc="${pipeline_status[3]}"
 printf '%s\n' "${claude_rc}" > /home/ben/task/claude-exit-code.txt
-echo "claude exit ${claude_rc} (prompt=${prompt_rc} tee=${tee_rc})"
+echo "claude exit ${claude_rc} (prompt=${prompt_rc} redactor=${redactor_rc} tee=${tee_rc})"
 [ "${claude_rc}" -eq 0 ] || exit "${claude_rc}"
-[ "${prompt_rc}" -eq 0 ] && [ "${tee_rc}" -eq 0 ] || {
+[ "${prompt_rc}" -eq 0 ] && [ "${redactor_rc}" -eq 0 ] && [ "${tee_rc}" -eq 0 ] || {
     echo "ERROR: failed to preserve the complete Claude stream" >&2
     exit 1
 }
@@ -137,6 +146,16 @@ verify_study_prompt || {
     echo "ERROR: study prompt changed during Claude execution" >&2
     exit 2
 }
+python3 "${RESULT_SANITIZER}" /home/ben/task
+sanitizer_rc=$?
+case "${sanitizer_rc}" in
+    0) ;;
+    3)
+        echo "ERROR: credential material was removed from task artifacts; quarantining this cell" >&2
+        exit 3
+        ;;
+    *) exit 2 ;;
+esac
 python3 "${RUNTIME_ATTESTER}" model "${SCIENTIST_STREAM}" \
     --requested-alias "${MODEL}" \
     --expected-model-id "${AWM_EXPECTED_SCIENTIST_MODEL_ID}" \

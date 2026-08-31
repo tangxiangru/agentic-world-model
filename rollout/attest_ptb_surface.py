@@ -22,6 +22,8 @@ FIXED_FILES = (
     "src/eval/general/prompt_fulltraj.txt",
     "src/eval/general/prompt_wm.txt",
     "src/eval/general/prompt_wm_fulltraj.txt",
+    "src/eval/general/prompt_wm_smoke.txt",
+    "src/eval/general/prompt_wm_fulltraj_smoke.txt",
     "src/eval/tasks/gsm8k/test_data.json",
 )
 AGENTS = ("hv_recipe", "hv_noop", "claude_fulltraj_noawm", "claude_wm")
