@@ -37,6 +37,13 @@ declared corpus. There is no host-selected top-k. Scratch-local
 indexes or helper tools are allowed, but they must not mutate the read-only
 source corpus and must remain attributable to the WMA call.
 
+Model-written scratch tools run in nested user, mount, PID, and network
+namespaces. The jail recursively clones system and corpus mount trees (including
+Apptainer's injected NVIDIA child mounts), marks every read-only tree recursively
+read-only, and verifies every descendant in `/proc/self/mountinfo` before it
+drops all capabilities and enters the chroot. A failed isolation or mount-tree
+check prevents the WMA session from starting.
+
 ### One-time setup (host)
 
 ```bash

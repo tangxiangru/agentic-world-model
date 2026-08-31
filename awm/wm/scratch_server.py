@@ -59,6 +59,14 @@ SECBIT_NO_SETUID_FIXUP = 1 << 2
 SECBIT_NO_SETUID_FIXUP_LOCKED = 1 << 3
 LINUX_CAPABILITY_VERSION_3 = 0x20080522
 
+# mount_setattr(2), available since Linux 5.12.  The syscall number is shared
+# by the 64-bit architectures on which the PTB image is supported.
+SYS_MOUNT_SETATTR = 442
+AT_FDCWD = -100
+AT_RECURSIVE = 0x8000
+MOUNT_ATTR_RDONLY = 0x00000001
+MOUNT_SETATTR_ARCHES = {"aarch64", "arm64", "x86_64", "amd64"}
+
 TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "list_corpus",
@@ -491,9 +499,16 @@ def _run(arguments: dict[str, Any], scratch: Path, roots: list[Path]) -> dict[st
 
 def _mount(source: Path, target: Path, *, readonly: bool) -> None:
     target.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["mount", "--bind", str(source), str(target)], check=True)
+    # Apptainer injects NVIDIA libraries and other files as child mounts below
+    # system trees such as /usr.  Those children are locked when observed from
+    # this less-privileged user namespace: a non-recursive bind would split the
+    # locked tree and Linux rejects it with EINVAL.  Cloning the complete tree
+    # is both portable in an unprivileged Apptainer and preserves every child.
+    subprocess.run(["mount", "--rbind", str(source), str(target)], check=True)
     if readonly:
-        subprocess.run(["mount", "-o", "remount,ro,bind", str(target)], check=True)
+        # A top-level remount is insufficient after rbind: an injected child
+        # could otherwise remain writable below an apparently read-only root.
+        _make_mount_tree_readonly(target)
 
 
 def _mount_file(source: Path, target: Path, *, readonly: bool) -> None:
@@ -502,6 +517,89 @@ def _mount_file(source: Path, target: Path, *, readonly: bool) -> None:
     subprocess.run(["mount", "--bind", str(source), str(target)], check=True)
     if readonly:
         subprocess.run(["mount", "-o", "remount,ro,bind", str(target)], check=True)
+        _require_readonly_mount_tree(target)
+
+
+def _mountinfo_unescape(value: str) -> str:
+    """Decode the octal escapes used for paths in /proc/self/mountinfo."""
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+
+
+class _MountAttr(ctypes.Structure):
+    _fields_ = [
+        ("attr_set", ctypes.c_uint64),
+        ("attr_clr", ctypes.c_uint64),
+        ("propagation", ctypes.c_uint64),
+        ("userns_fd", ctypes.c_uint64),
+    ]
+
+
+def _mount_setattr_readonly_recursive(target: Path) -> None:
+    """Atomically mark a bind and all child mounts read-only."""
+    if os.uname().machine.lower() not in MOUNT_SETATTR_ARCHES:
+        raise OSError("mount_setattr syscall number is unknown on this architecture")
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    attributes = _MountAttr(attr_set=MOUNT_ATTR_RDONLY)
+    ctypes.set_errno(0)
+    result = libc.syscall(
+        ctypes.c_long(SYS_MOUNT_SETATTR),
+        ctypes.c_int(AT_FDCWD),
+        ctypes.c_char_p(os.fsencode(target)),
+        ctypes.c_uint(AT_RECURSIVE),
+        ctypes.byref(attributes),
+        ctypes.c_size_t(ctypes.sizeof(attributes)),
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(target))
+
+
+def _make_mount_tree_readonly(target: Path) -> None:
+    """Recursively remount read-only, with verification independent of method."""
+    try:
+        _mount_setattr_readonly_recursive(target)
+    except OSError:
+        # Older kernels can still use util-linux's per-mount recursive path.
+        # Verification below is load-bearing because some older mount builds
+        # return success after changing only the top-level bind.
+        subprocess.run(
+            ["mount", "-R", "-o", "remount,ro,bind", str(target)], check=True
+        )
+    _require_readonly_mount_tree(target)
+
+
+def _require_readonly_mount_tree(
+    target: Path, *, mountinfo: str | None = None
+) -> None:
+    """Fail unless the bind itself and every nested mount are read-only."""
+    root = target.resolve()
+    if mountinfo is None:
+        mountinfo = Path("/proc/self/mountinfo").read_text(errors="surrogateescape")
+
+    seen_root = False
+    writable: list[Path] = []
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if len(fields) < 6:
+            raise RuntimeError("malformed /proc/self/mountinfo entry")
+        mountpoint = Path(_mountinfo_unescape(fields[4]))
+        try:
+            mountpoint.relative_to(root)
+        except ValueError:
+            continue
+        if mountpoint == root:
+            seen_root = True
+        if "ro" not in fields[5].split(","):
+            writable.append(mountpoint)
+
+    if not seen_root:
+        raise RuntimeError(f"read-only bind is absent from mountinfo: {root}")
+    if writable:
+        rendered = ", ".join(str(path) for path in sorted(writable))
+        raise RuntimeError(
+            f"read-only bind contains writable mount(s) below {root}: {rendered}"
+        )
 
 
 def jail_run(root: Path, scratch: Path, roots: list[Path], argv: list[str]) -> int:

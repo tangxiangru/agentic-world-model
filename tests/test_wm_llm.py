@@ -770,6 +770,92 @@ def test_scratch_tools_are_auditable_and_execution_is_confined(tmp_path: Path) -
     assert malformed["error"]["code"] == -32602
 
 
+def test_directory_jail_mounts_clone_and_lock_the_complete_tree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    target = tmp_path / "target"
+    calls: list[list[str]] = []
+    verified: list[Path] = []
+
+    def fake_run(argv, *, check):
+        assert check is True
+        calls.append(argv)
+
+    monkeypatch.setattr(scratch_server.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        scratch_server, "_make_mount_tree_readonly", lambda path: verified.append(path)
+    )
+
+    scratch_server._mount(source, target, readonly=True)
+
+    assert calls == [
+        ["mount", "--rbind", str(source), str(target)],
+    ]
+    assert verified == [target]
+
+
+def test_recursive_readonly_fallback_is_still_verified(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    calls: list[list[str]] = []
+    verified: list[Path] = []
+
+    def unavailable(_target):
+        raise OSError("mount_setattr unavailable")
+
+    def fake_run(argv, *, check):
+        assert check is True
+        calls.append(argv)
+
+    monkeypatch.setattr(
+        scratch_server, "_mount_setattr_readonly_recursive", unavailable
+    )
+    monkeypatch.setattr(scratch_server.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        scratch_server,
+        "_require_readonly_mount_tree",
+        lambda path: verified.append(path),
+    )
+
+    scratch_server._make_mount_tree_readonly(target)
+
+    assert calls == [
+        ["mount", "-R", "-o", "remount,ro,bind", str(target)],
+    ]
+    assert verified == [target]
+
+
+def test_readonly_mount_verification_checks_nested_and_escaped_mounts(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "jail root"
+    target.mkdir()
+    child = target / "usr" / "injected library"
+    child.mkdir(parents=True)
+
+    def escaped(path: Path) -> str:
+        return str(path).replace("\\", r"\134").replace(" ", r"\040")
+
+    root_row = f"10 1 0:1 / {escaped(target)} ro,nosuid - tmpfs tmpfs rw"
+    child_ro = f"11 10 0:2 / {escaped(child)} ro,nodev - tmpfs tmpfs rw"
+    scratch_server._require_readonly_mount_tree(
+        target, mountinfo=f"{root_row}\n{child_ro}\n"
+    )
+
+    child_rw = f"11 10 0:2 / {escaped(child)} rw,nodev - tmpfs tmpfs rw"
+    with pytest.raises(RuntimeError, match=r"writable mount.*injected library"):
+        scratch_server._require_readonly_mount_tree(
+            target, mountinfo=f"{root_row}\n{child_rw}\n"
+        )
+
+    with pytest.raises(RuntimeError, match="absent from mountinfo"):
+        scratch_server._require_readonly_mount_tree(target, mountinfo=f"{child_ro}\n")
+
+
 def test_scratch_usage_caps_entries_and_depth(tmp_path: Path, monkeypatch) -> None:
     scratch = tmp_path / "scratch-limits"
     scratch.mkdir()
