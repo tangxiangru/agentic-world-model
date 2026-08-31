@@ -48,6 +48,8 @@ export PTB_SOURCE_DIR=/path/to/PostTrainBench
 export HV_PTB_DIR=/data/ptb-wm-study
 export PTB_RESULTS_DIR=/data/ptb-wm-study-results
 export AWM_REPO_COMMIT=<full-40-hex-commit-present-in-this-checkout>
+# PTB keeps this generated benchmark fixture outside Git. If it is absent:
+python "$PTB_SOURCE_DIR/src/judges/test_data_download/download_test_data.py" --tasks gsm8k
 bash rollout/setup.sh                       # HV_PTB_SHA can pin the PTB checkout
 
 # 2. the prior-runs directories (copies; about 0.6 and 0.8 GB)
@@ -80,7 +82,10 @@ applies the idempotent portable-runner and extra-bind patches only to its
 private clone, then probes payload installation, identifier-validated
 environment passthrough, prompt selection, explicit GPU isolation, safe
 evaluation cleanup, and honest solve-exit propagation. If the pinned runner's
-shape has changed, patching fails instead of guessing at a rewrite. Keep the
+shape has changed, patching fails instead of guessing at a rewrite. The GSM8K
+test copy used by PTB's contamination checker is generated and Git-ignored;
+setup requires a regular local copy, carries it through both private source
+snapshots, and includes its content hash in the PTB surface attestation. Keep the
 site values in the private PTB `.env`: this study requires
 `POST_TRAIN_BENCH_ISOLATE_GPUS=1` and
 `POST_TRAIN_BENCH_EVAL_GPU_REAP=own` (or `none`). The tracked launcher accepts

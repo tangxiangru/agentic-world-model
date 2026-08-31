@@ -131,6 +131,19 @@ rm -f "$DST/.git/awm-study-harness-commit"
 printf '%s\n' "${PIN_COMMIT,,}" > "$DST/.git/awm-study-ptb-commit"
 echo "pinned to ${PIN_COMMIT,,}"
 
+# PTB generates benchmark test copies locally and intentionally ignores them in
+# Git.  The GSM8K runner requires this file for the read-only contamination
+# checker exposed to the scientist, so carry the site's generated copy into the
+# private checkout explicitly.  It becomes part of the attested study surface
+# below; neither the bytes nor their site path enter this repository.
+STUDY_TEST_DATA_REL="src/eval/tasks/gsm8k/test_data.json"
+STUDY_TEST_DATA_SRC="$SRC/$STUDY_TEST_DATA_REL"
+[ -f "$STUDY_TEST_DATA_SRC" ] && [ ! -L "$STUDY_TEST_DATA_SRC" ] || {
+    echo "FATAL: PTB_SOURCE_DIR lacks regular $STUDY_TEST_DATA_REL; run src/judges/test_data_download/download_test_data.py --tasks gsm8k there first" >&2
+    exit 2
+}
+install -D -m 0600 "$STUDY_TEST_DATA_SRC" "$DST/$STUDY_TEST_DATA_REL"
+
 # Add the study contract to the private pinned checkout before probing it.  The
 # patchers are idempotent and fail if the upstream runner no longer has the
 # exact expected shape; neither one touches PTB_SOURCE_DIR.

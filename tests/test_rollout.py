@@ -914,6 +914,7 @@ def test_source_pin_snapshot_executes_only_snapshot_inputs(tmp_path: Path) -> No
     subprocess.run(["git", "init", "-q", str(source)], check=True)
     for directory in (
         "src/eval/general",
+        "src/eval/tasks/gsm8k",
         "agents/hv_recipe",
         "agents/hv_noop",
         "agents/claude_fulltraj_noawm",
@@ -928,6 +929,11 @@ def test_source_pin_snapshot_executes_only_snapshot_inputs(tmp_path: Path) -> No
     (source / "src" / "run_task.sh").chmod(0o755)
     for prompt in ("prompt_fulltraj.txt", "prompt_wm.txt", "prompt_wm_fulltraj.txt"):
         (source / "src" / "eval" / "general" / prompt).write_text("original prompt\n")
+    # PTB's generated test copies are deliberately untracked. The snapshot
+    # still has to preserve the setup-attested bytes.
+    test_data = source / "src" / "eval" / "tasks" / "gsm8k" / "test_data.json"
+    test_data.write_text('[{"question":"q","answer":"a"}]\n')
+    (source / ".gitignore").write_text("**/test_data.json\n")
     for agent in ("hv_recipe", "hv_noop", "claude_fulltraj_noawm", "claude_wm"):
         (source / "agents" / agent / "marker").write_text("original agent\n")
         (source / "agents" / agent / "auth.json").write_text("stale tracked auth\n")
@@ -951,10 +957,14 @@ def test_source_pin_snapshot_executes_only_snapshot_inputs(tmp_path: Path) -> No
     snapshot = Path(result.stdout.strip())
     assert snapshot == target
     assert not list(snapshot.glob("agents/*/auth.json"))
+    assert (
+        snapshot / "src" / "eval" / "tasks" / "gsm8k" / "test_data.json"
+    ).read_bytes() == test_data.read_bytes()
 
     (source / ".env").write_text("SNAPSHOT_VALUE=mutated\n")
     (source / "src" / "eval" / "general" / "prompt_fulltraj.txt").write_text("mutated prompt\n")
     (source / "agents" / "claude_fulltraj_noawm" / "marker").write_text("mutated agent\n")
+    test_data.write_text('[{"question":"mutated","answer":"fixture"}]\n')
     executed = subprocess.run(
         ["bash", "src/run_task.sh"], cwd=snapshot, text=True, capture_output=True, check=True
     )
@@ -962,6 +972,9 @@ def test_source_pin_snapshot_executes_only_snapshot_inputs(tmp_path: Path) -> No
     assert "SNAPSHOT_VALUE=original" in executed.stdout
     assert "original prompt" in executed.stdout and "original agent" in executed.stdout
     assert "mutated" not in executed.stdout
+    assert (
+        snapshot / "src" / "eval" / "tasks" / "gsm8k" / "test_data.json"
+    ).read_text() == '[{"question":"q","answer":"a"}]\n'
 
 
 def test_claude_agents_use_vertex_passthrough_without_oauth() -> None:
@@ -1209,6 +1222,9 @@ def test_setup_fresh_private_clone_is_idempotent_and_removes_stale_auth(tmp_path
             )
         )
     )
+    test_data = source / "src" / "eval" / "tasks" / "gsm8k" / "test_data.json"
+    test_data.parent.mkdir(parents=True, exist_ok=True)
+    test_data.write_text('[{"question":"q","answer":"a"}]\n')
 
     awm_source = tmp_path / "awm-source"
     awm_source.mkdir()
@@ -1260,6 +1276,9 @@ def test_setup_fresh_private_clone_is_idempotent_and_removes_stale_auth(tmp_path
         assert (private / "agents" / "claude_wm" / "payload" / name).is_file()
     assert (private / "agents" / "claude_fulltraj_noawm" / "payload" / "attest_claude_runtime.py").is_file()
     assert (private / "src" / "commit_utils" / "pin_src_locally.sh").is_file()
+    assert (
+        private / "src" / "eval" / "tasks" / "gsm8k" / "test_data.json"
+    ).read_bytes() == test_data.read_bytes()
     surface_manifest = private / ".git" / "awm-study-surface.json"
     assert surface_manifest.is_file()
 
@@ -1315,6 +1334,9 @@ def test_setup_fresh_private_clone_is_idempotent_and_removes_stale_auth(tmp_path
     assert pinned.returncode == 0, pinned.stderr
     assert Path(pinned.stdout.strip()) == snapshot
     assert not any(snapshot.glob("agents/claude_*/auth.json"))
+    assert (
+        snapshot / "src" / "eval" / "tasks" / "gsm8k" / "test_data.json"
+    ).read_bytes() == test_data.read_bytes()
 
     # A different claimed commit may exist locally, but setup must reject it
     # when any bootstrap byte differs from the files it is actually executing.

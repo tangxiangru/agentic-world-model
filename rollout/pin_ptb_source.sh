@@ -20,7 +20,8 @@ git -C "${SOURCE}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
 for path in .env src/run_task.sh \
     src/eval/general/prompt_fulltraj.txt \
     src/eval/general/prompt_wm.txt \
-    src/eval/general/prompt_wm_fulltraj.txt; do
+    src/eval/general/prompt_wm_fulltraj.txt \
+    src/eval/tasks/gsm8k/test_data.json; do
     [ -f "${SOURCE}/${path}" ] && [ ! -L "${SOURCE}/${path}" ] || {
         echo "FATAL: prepared PTB source lacks regular study file: ${path}" >&2
         exit 2
@@ -38,6 +39,10 @@ for prompt in prompt_fulltraj.txt prompt_wm.txt prompt_wm_fulltraj.txt; do
     install -m 0644 "${SOURCE}/src/eval/general/${prompt}" \
         "${STAGE}/src/eval/general/${prompt}"
 done
+# Generated benchmark test copies are Git-ignored, so the shared clone above
+# cannot carry them.  Copy the exact setup-attested GSM8K fixture explicitly.
+install -D -m 0600 "${SOURCE}/src/eval/tasks/gsm8k/test_data.json" \
+    "${STAGE}/src/eval/tasks/gsm8k/test_data.json"
 for agent in hv_recipe hv_noop claude_fulltraj_noawm claude_wm; do
     [ -d "${SOURCE}/agents/${agent}" ] && [ ! -L "${SOURCE}/agents/${agent}" ] || {
         echo "FATAL: prepared PTB source lacks study agent: ${agent}" >&2
