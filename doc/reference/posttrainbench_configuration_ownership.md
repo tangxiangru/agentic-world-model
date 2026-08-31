@@ -89,11 +89,16 @@ git add third_party/PostTrainBench
 4. **完整流程合同**：正式/pilot 需要完整权重、trace、monitor、provenance、四个 schema
    正确的 official canonical verdict、full-eval log 和数值 `metrics.json`，否则 job 失败。
 5. **冻结 source 与批量放行**：pilot/formal job 从 receipt 的 PTB commit 在 local scratch
-   物化 source；正式六格先全部 held submit，再共同 release，避免共享 worktree 和先后揭盲。
+   物化 source；正式十六格先全部 held submit，再共同 release，避免共享 worktree 和先后揭盲。
 6. **base-model revision**：顶层 manifest 固定 Hugging Face commit；共享 cache 中对应 snapshot
    和全部权重 shard 必须完整，agent prompt 使用该 local snapshot，provenance 记录 revision/config digest。
-7. **1M provider evidence**：真实 provider smoke 记录 model/effort/context/CLI/Vertex route 和实际
-   SIF digest；提交 receipt 冻结记录 SHA-256，正式 cell 与 research judge 启动时再次比对。
+7. **setup-specific provider evidence**：真实 provider smoke 记录 model/effort/context/CLI/Vertex
+   route 和实际 SIF digest；max/xhigh/high 1M 必须精确解析为 1M，max 200K 必须精确解析为
+   200K。提交 receipt 冻结记录 SHA-256，正式 cell 与 research judge 启动时再次比对。
+8. **共享账号 ownership**：Unix `UserId` 不代表项目归属。每个 Slurm job name 必须带当前
+   顶层 Git 分支；顶层 manifest/receipt 另外冻结 spec、batch、cell、两个 commit 和 job ID。
+   无匹配 receipt 的通用任务名一律视为他人或归属未知，不能取消。具体命名与历史队列审计
+   见 `posttrainbench_slurm_runbook.md` 第 0 节。
 
 详细配置、gate 和命令见 `third_party/PostTrainBench/src/commit_utils/slurm/README.md`。
 
@@ -154,9 +159,8 @@ GCE metadata ADC 使用 Claude Code 的 Vertex provider，`opus` 均解析为
 `src/judges/smoke_claude_vertex.sh`；它走与正式 Claude judge 相同的 isolated home、
 safe mode、clean environment、Vertex auth、模型解析和 metadata 路径。
 
-该四节点 smoke 只证明认证和模型路由可用，不证明 1M context。后续真实 provider
+该四节点 smoke 只证明认证和模型路由可用，不证明指定 context。后续真实 provider
 最小请求显示裸 `claude-opus-5` 的 `contextWindow=200000`；显式
-`claude-opus-5[1m]` 才返回 `contextWindow=1000000`。因此本批 Opus agent 和研究
-judge 都必须显式使用 `[1m]`。Fable 5 的同类请求目前被项目继承的
-`constraints/vertexai.allowedModels` 拒绝；在管理员解除
-`publishers/anthropic/models/claude-fable-5:predict` deny 之前，G4 和六格正式批次保持失败关闭状态。
+`claude-opus-5[1m]` 返回 `contextWindow=1000000`。本批把两者都作为有意设置：前三个
+setup 使用 `[1m]`，max/200K setup 使用裸模型名；G4 和正式提交对 resolved context
+执行精确匹配，禁止静默回退。研究 judge 仍固定使用 `claude-opus-5[1m]` xhigh。

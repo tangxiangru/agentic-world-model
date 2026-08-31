@@ -7,54 +7,108 @@ import pytest
 from awm import paths
 from awm import ptb_experiments as ptb
 
-MANIFEST = paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-claude5-1m-batch1.yaml"
+MANIFEST = paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-opus5-4x4-batch1.yaml"
 
 
 def test_manifest_is_exact_approved_matrix() -> None:
     data = ptb.load_manifest(MANIFEST)
+    assert data["ownership"] == {
+        "branch": "gangda_trial_0828",
+        "spec": "doc/spec/2026-08-30-ptb-gpu-slicing-and-gsm8k-batch1.md",
+    }
     launches = ptb.build_launches(data)
-    assert [launch.cell_id for launch in launches] == ["b1", "b2", "b3", "b4", "b5", "b6"]
+    assert [launch.cell_id for launch in launches] == [f"b{index:02d}" for index in range(1, 17)]
     assert all("official" in launch.command for launch in launches)
     assert all(
         launch.environment["POST_TRAIN_BENCH_REQUIRE_COMPLETE"] == "1" for launch in launches
     )
+    assert all(launch.environment["POST_TRAIN_BENCH_SKIP_CLI_UPDATE"] == "1" for launch in launches)
     assert all(
-        launch.environment["POST_TRAIN_BENCH_SKIP_CLI_UPDATE"] == "1" for launch in launches
+        launch.command[launch.command.index("--run-branch") + 1] == "gangda_trial_0828"
+        for launch in launches
     )
+    assert [launch.command[launch.command.index("--job-name") + 1] for launch in launches] == [
+        f"gangda_trial_0828.ptb.gsm8k-opus5-4x4-batch1.b{index:02d}.formal.r1"
+        for index in range(1, 17)
+    ]
+    assert [
+        launch.command[launch.command.index("--experiment-name") + 1] for launch in launches
+    ] == [
+        f"_gangda_trial_0828_gsm8k-opus5-4x4-batch1_b{index:02d}_formal_r1"
+        for index in range(1, 17)
+    ]
     assert all(
         launch.environment["POST_TRAIN_BENCH_EVALUATION_CONTAINER_SHA256"]
         == "72748f77f9fe5a1abe925bb532c1da64d80b1dcce7849179c9546700099448f8"
         for launch in launches
     )
     assert launches[0].environment["POST_TRAIN_BENCH_BASE_MODEL_REVISION"] == (
-        "cc012e0a6d0787b4adcc0fa2c4da74402494554d"
+        "ea980cb0a6c2ae4b936e82123acc929f1cec04c1"
     )
     assert launches[1].environment["POST_TRAIN_BENCH_BASE_MODEL_REVISION"] == (
         "906bfd4b4dc7f14ee4320094d8b41684abff8539"
     )
-    assert launches[2].environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD"].endswith(
-        "claude-opus-5-1m-max.json"
+    assert launches[2].environment["POST_TRAIN_BENCH_BASE_MODEL_REVISION"] == (
+        "d78a42f79198603e614095753484a04c10c2b940"
     )
-    assert launches[5].environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD"].endswith(
-        "claude-opus-5-1m-xhigh.json"
+    assert launches[3].environment["POST_TRAIN_BENCH_BASE_MODEL_REVISION"] == (
+        "cc012e0a6d0787b4adcc0fa2c4da74402494554d"
+    )
+    assert (
+        launches[0]
+        .environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD"]
+        .endswith("claude-opus-5-1m-max.json")
+    )
+    assert (
+        launches[4]
+        .environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD"]
+        .endswith("claude-opus-5-1m-xhigh.json")
+    )
+    assert (
+        launches[8]
+        .environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD"]
+        .endswith("claude-opus-5-1m-high.json")
+    )
+    assert (
+        launches[12]
+        .environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD"]
+        .endswith("claude-opus-5-200k-max.json")
+    )
+    assert all(
+        launch.environment["POST_TRAIN_BENCH_EXPECTED_CONTEXT_TOKENS"] == "1000000"
+        for launch in launches[:12]
+    )
+    assert all(
+        launch.environment["POST_TRAIN_BENCH_EXPECTED_CONTEXT_TOKENS"] == "200000"
+        for launch in launches[12:]
     )
     held = ptb.build_launches(data, hold=True)
     assert all("--hold" in launch.command for launch in held)
 
 
-def test_pilot_is_b6_shape_and_one_hour() -> None:
+def test_pilot_is_b06_shape_and_one_hour() -> None:
     (launch,) = ptb.build_launches(ptb.load_manifest(MANIFEST), pilot=True)
-    assert launch.cell_id == "b6"
+    assert launch.cell_id == "b06"
     assert launch.command[launch.command.index("--hours") + 1] == "1"
-    assert any("pilot_1h" in argument for argument in launch.command)
+    assert any("pilot-1h" in argument for argument in launch.command)
+    assert (
+        launch.command[launch.command.index("--job-name") + 1]
+        == "gangda_trial_0828.ptb.gsm8k-opus5-4x4-batch1.b06.pilot-1h.r1"
+    )
     assert "--hold" not in launch.command
 
 
-def test_manifest_rejects_non_1m_contract() -> None:
+def test_manifest_rejects_wrong_context_setup() -> None:
     data = ptb.load_manifest(MANIFEST)
-    data["contract"]["context_tokens"] = 200_000
-    with pytest.raises(ptb.ExperimentError, match="context_tokens"):
+    data["cells"][0]["context_tokens"] = 200_000
+    with pytest.raises(ptb.ExperimentError, match="4x4"):
         ptb.validate_manifest(data)
+
+
+def test_source_ownership_rejects_wrong_branch() -> None:
+    data = ptb.load_manifest(MANIFEST)
+    with pytest.raises(ptb.ExperimentError, match="does not match"):
+        ptb.assert_source_ownership(data, {"top_branch": "someone_else"})
 
 
 def test_manifest_pins_all_runtime_images() -> None:
@@ -66,12 +120,10 @@ def test_manifest_pins_all_runtime_images() -> None:
     }
     assert contract["official_judge_container_sha256"]
     assert contract["base_models"] == {
-        "google/gemma-3-4b-pt": {
-            "revision": "cc012e0a6d0787b4adcc0fa2c4da74402494554d"
-        },
-        "Qwen/Qwen3-4B-Base": {
-            "revision": "906bfd4b4dc7f14ee4320094d8b41684abff8539"
-        },
+        "Qwen/Qwen3-1.7B-Base": {"revision": "ea980cb0a6c2ae4b936e82123acc929f1cec04c1"},
+        "Qwen/Qwen3-4B-Base": {"revision": "906bfd4b4dc7f14ee4320094d8b41684abff8539"},
+        "HuggingFaceTB/SmolLM3-3B-Base": {"revision": "d78a42f79198603e614095753484a04c10c2b940"},
+        "google/gemma-3-4b-pt": {"revision": "cc012e0a6d0787b4adcc0fa2c4da74402494554d"},
     }
     assert contract["agent_cli_version"] == "2.1.219"
     assert contract["agent_auth"] == {
@@ -79,6 +131,13 @@ def test_manifest_pins_all_runtime_images() -> None:
         "project": "sercan-v1",
         "region": "global",
     }
+
+
+def test_base_model_snapshot_accepts_monolithic_safetensors(tmp_path: Path) -> None:
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+
+    assert ptb._base_model_snapshot_issues("Qwen/example", "a" * 40, tmp_path) == []
 
 
 def test_result_audit_requires_full_official_flow(tmp_path: Path) -> None:
@@ -89,8 +148,8 @@ def test_result_audit_requires_full_official_flow(tmp_path: Path) -> None:
 
 def test_receipt_validation(tmp_path: Path) -> None:
     receipt = tmp_path / "receipt.json"
-    receipt.write_text('{"schema_version": 1, "jobs": [{"cell_id": "b6", "job_id": "1"}]}')
-    assert ptb.load_receipt(receipt)["jobs"][0]["cell_id"] == "b6"
+    receipt.write_text('{"schema_version": 1, "jobs": [{"cell_id": "b06", "job_id": "1"}]}')
+    assert ptb.load_receipt(receipt)["jobs"][0]["cell_id"] == "b06"
 
 
 def test_formal_submit_holds_all_jobs_before_one_release(
@@ -99,14 +158,20 @@ def test_formal_submit_holds_all_jobs_before_one_release(
     data = ptb.load_manifest(MANIFEST)
     fake_launches = [
         ptb.Launch(
-            cell_id=f"b{index}",
-            command=("fake-submit", f"b{index}", "--hold"),
+            cell_id=f"b{index:02d}",
+            command=(
+                "fake-submit",
+                f"b{index:02d}",
+                "--job-name",
+                f"gangda_trial_0828.ptb.test.b{index:02d}.formal.r1",
+                "--hold",
+            ),
             environment={
                 "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": f"/evidence/b{index}.json",
                 "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256": f"{index:064x}",
             },
         )
-        for index in range(1, 7)
+        for index in range(1, 17)
     ]
     monkeypatch.setattr(ptb, "local_issues", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(ptb, "site_issues", list)
@@ -114,6 +179,7 @@ def test_formal_submit_holds_all_jobs_before_one_release(
         ptb,
         "source_snapshot",
         lambda: {
+            "top_branch": "gangda_trial_0828",
             "top_commit": "1" * 40,
             "ptb_commit": "2" * 40,
             "top_status": "",
@@ -127,7 +193,9 @@ def test_formal_submit_holds_all_jobs_before_one_release(
 
     commands: list[tuple[str, ...]] = []
 
-    def fake_run(command: list[str] | tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str] | tuple[str, ...], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         normalized = tuple(command)
         commands.append(normalized)
         if normalized[:2] == ("scontrol", "release"):
@@ -140,9 +208,16 @@ def test_formal_submit_holds_all_jobs_before_one_release(
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
 
     submitted = [command for command in commands if command[0] == "fake-submit"]
-    assert len(submitted) == 6
+    assert len(submitted) == 16
     assert all("--hold" in command for command in submitted)
-    assert commands[-1] == ("scontrol", "release", "9001,9002,9003,9004,9005,9006")
+    assert commands[-1] == (
+        "scontrol",
+        "release",
+        ",".join(str(job_id) for job_id in range(9001, 9017)),
+    )
     assert receipt["state"] == "submitted"
-    assert len(receipt["jobs"]) == 6
-    assert set(receipt["context_validation"]) == {f"b{index}" for index in range(1, 7)}
+    assert receipt["ownership"] == data["ownership"]
+    assert receipt["source"]["top_branch"] == "gangda_trial_0828"
+    assert len(receipt["jobs"]) == 16
+    assert receipt["jobs"][0]["job_name"] == ("gangda_trial_0828.ptb.test.b01.formal.r1")
+    assert set(receipt["context_validation"]) == {f"b{index:02d}" for index in range(1, 17)}

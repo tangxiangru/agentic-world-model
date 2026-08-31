@@ -1,4 +1,4 @@
-# PTB 单卡切分集群与 GSM8K 首批六实验 Spec
+# PTB 单卡切分集群与 GSM8K 首批十六实验 Spec
 
 - 状态：Accepted / implementation in progress
 - 日期：2026-08-30
@@ -10,7 +10,7 @@
 这项工作交付两个相互依赖的结果：
 
 1. 把四台 A3 计算节点配置成 GPU 可消费的 Slurm 资源池。一个 PTB job 只申请、锁定并看见一张 H100；同一节点可以同时运行八个互不干扰的 job。
-2. 在隔离验证通过后，同时启动 GSM8K 的首批六个正式 cell：三个 Claude Code agent 配置分别训练两个 4B base model。所有 Claude 5 agent cell 都使用 1M context；必须在提交前通过真实 provider 响应验证，并在结果里记录实际解析值。
+2. 在隔离验证通过后，同时启动 GSM8K 的首批十六个正式 cell：四个 Claude Opus 5 setup 分别训练四个官方 base model。setup 为 max/1M、xhigh/1M、high/1M 和 max/200K；每种 setup 都必须在提交前通过真实 provider 响应验证，并在结果里记录实际解析值。
 
 正式 cell 保留 PTB 的 benchmark 语义：同一官方任务 prompt、每个 agent 最多 10 小时、单张 H100、原始 evaluator 和 judge 输入。一次有效运行必须走完 PTB 官方完整流程：agent solve、trace parsing、workspace/final-model 收集、全部官方 reward-hacking judges、最终完整 evaluation 和 metrics 落盘。Slurm、Apptainer 和站点 scratch 只负责提供等价资源，不向 agent 添加解题策略。
 
@@ -53,7 +53,7 @@ Agent 不只是“设计一种数据提取方法”。它拿到 PTB 官方 promp
 | scratch reservation | 400 GB | 3.2 TB | 5.9 TB local SSD |
 | agent budget | 10 小时 | 各自独立计时 | 不共享 |
 
-四节点理论上可并行 32 个正式 cell。首批只运行 6 个，因此应能落在一台节点上，但调度器可以为了容量、故障域或公平性把它们分散到多台节点。
+四节点理论上可并行 32 个正式 cell。首批运行 16 个；按每节点 8 张 GPU 计算，至少需要两台节点的可用容量，但调度器可以为了容量、故障域或公平性把它们分散到更多节点。
 
 400 GB 与上游 HTCondor 的 `request_disk=400G` 同义：调度前保证容量并为每个 cell 提供独立目录。当前 ext4 local SSD 没有 project quota，因此第一版不声称这是硬写入上限；若必须硬限制，需要由站点管理员启用 filesystem quota。GPU、CPU 和 RAM 必须由 Slurm/cgroup 硬隔离。
 
@@ -132,7 +132,7 @@ CPUAlloc=16
 8. Judge 使用新的 isolated home，不加载 agent 留下的 `CLAUDE.md`、skills、plugins、hooks、MCP 或配置目录。
 9. 每个结果记录 Slurm job ID、node、GPU UUID、CPU/RAM 请求、顶层 commit、PTB commit、SIF SHA-256、CLI version、requested/resolved agent model、requested/resolved context window、effort、auth provider 和 judge profile。
 
-若使用 Vertex/GCE metadata ADC，各 cell 不共享可写 token 文件，适合并发。若改用 Claude OAuth，必须为每个 cell 复制独立的可写认证状态，或提供经过验证的并发锁；六个进程同时改写同一个 OAuth 文件不属于严格隔离。
+若使用 Vertex/GCE metadata ADC，各 cell 不共享可写 token 文件，适合并发。若改用 Claude OAuth，必须为每个 cell 复制独立的可写认证状态，或提供经过验证的并发锁；十六个进程同时改写同一个 OAuth 文件不属于严格隔离。
 
 ## 6. 代码与配置归属
 
@@ -155,11 +155,37 @@ CPUAlloc=16
 ### 6.3 agentic-world-model 顶层仓库
 
 - 本 spec；
-- `experiments/posttrainbench/*.yaml` 中的六-cell manifest；
+- `experiments/posttrainbench/*.yaml` 中的十六-cell manifest；
 - launcher、结果索引、holdout 纪律和分析代码；
 - PTB submodule commit 指针。
 
 `splits/posttrainbench/gsm8k-gemma-holdout-v1.yaml` 是历史公开 trace 的分析划分，不是运行配置，不能直接拿来提交 job。
+
+### 6.4 共享账号下的 Slurm 归属合同
+
+集群账号由多人共用，因此 `UserId`、Unix 用户名、partition 和 reservation 都不能证明
+job 属于本实验。每次提交（包括 gate、context smoke、pilot、formal 和 research judge）必须
+同时满足：
+
+1. Slurm `JobName` 以当前顶层 Git 分支名开头，并包含 batch、cell 和运行阶段；
+2. PTB `experiment_name` 以同一分支名开头，并包含 batch、cell 和 run index；
+3. launcher 在提交前断言当前分支等于 manifest 的 `ownership.branch`；
+4. pilot/formal/research receipt 冻结 branch、spec 路径、batch、cell、顶层 commit、PTB
+   commit、job name 和 job ID；gate/smoke 通过含相同 identity 的名称及独立输出目录留痕；
+5. runtime provenance 再记录实际 `SLURM_JOB_NAME`、branch、spec、batch 和 cell，并由 audit
+   与 receipt 交叉验证。
+
+本批命名格式为：
+
+```text
+gangda_trial_0828.ptb.gsm8k-opus5-4x4-batch1.<cell>.<purpose>.r1
+```
+
+例如正式 B01 是
+`gangda_trial_0828.ptb.gsm8k-opus5-4x4-batch1.b01.formal.r1`。不带分支前缀、没有本批
+receipt、或脚本/输出路径无法与 receipt 对上的 job 一律视为“归属未知”，不得查询其私有
+产物、发送 signal 或取消。取消操作只能使用 receipt 明确列出的 job ID，禁止按共享用户名、
+通用 `ptb-*` 名称或 partition 批量取消。
 
 ## 7. 快速、局部、无冲突的验证阶梯
 
@@ -170,7 +196,7 @@ CPUAlloc=16
 - shell/unit tests；
 - dry-run 检查每个 cell 是 `gpu:1 / cpu:16 / mem:128G`；
 - 断言命令中没有 `--exclusive` 或 `manual` GPU mode；
-- 断言六个 result/scratch ID 唯一。
+- 断言十六个 result/scratch ID 唯一。
 
 ### G1：两个 Slurm GPU canary（约 2–3 分钟）
 
@@ -197,24 +223,24 @@ CPUAlloc=16
 
 ### G4：单容器 PTB runtime smoke（约 5–10 分钟）
 
-只验证 SIF、GPU、cache、task assets、agent CLI 和认证；最多做一次最小模型请求，不训练、不跑全量 GSM8K、不生成可报告 score。该请求必须同时验证所选 Claude 5 model、effort 和 1M context 是否被当前 CLI/provider 接受；只看到本地 CLI `--help` 或假设 alias 默认值不算通过。
+只验证 SIF、GPU、cache、task assets、agent CLI 和认证；最多做一次最小模型请求，不训练、不跑全量 GSM8K、不生成可报告 score。四次代表性请求必须分别验证 Opus 5 的 max/1M、xhigh/1M、high/1M 和 max/200K 是否被当前 CLI/provider 接受，并要求实际 `contextWindow` 精确匹配 setup；只看到本地 CLI `--help` 或假设 alias 默认值不算通过。
 
 ### G5：单 cell 1 小时 pilot
 
 默认候选是 `Opus 5 xhigh 1M × Qwen3-4B-Base`。使用 `_pilot_1h` 结果命名，跑完整的官方 agent solve → trace parsing → workspace/final-model collection → 全部 official judges → full final evaluation → metrics 路径，确认 trace、`final_model`、所有 canonical judge files、metrics、清理和结果复制完整。pilot 不得设置 `POST_TRAIN_BENCH_SKIP_JUDGES`，也不得用 research-only Claude judge 代替 official judges；它不是正式十小时结果。
 
-### G6：六个正式 cell 同时提交
+### G6：十六个正式 cell 同时提交
 
 只有 G0–G5 全部通过才提交第 8 节矩阵。正式 cell 固定 10 小时 agent budget，不从 pilot resume，不复用 pilot workspace。
 
-## 8. 首批六实验矩阵
+## 8. 首批十六实验矩阵
 
 共同参数：
 
 ```text
 task = gsm8k
 agent_cli = Claude Code
-context_window = 1M
+context_window = setup 固定的 1M 或 200K
 agent_budget = 10h
 gpu = 1 × H100 80GB
 cpu = 16
@@ -223,29 +249,34 @@ scratch reservation = 400 GB
 run_index = 1
 ```
 
-矩阵是三个 agent 配置乘两个被训练的 base model：
+矩阵是四个 Opus 5 setup 乘四个被训练的 base model。每个 setup 内的 base model 顺序固定为 Qwen3-1.7B、Qwen3-4B、SmolLM3-3B、Gemma-3-4B：
 
-| Cell | Agent model | Context | Effort | 被训练模型 | 建议 agent scaffold |
+| Cells | Agent model | Context | Effort | Agent scaffold | 被训练模型 |
 |---|---|---:|---|---|---|
-| B1 | `claude-fable-5[1m]` | 1M | max | `google/gemma-3-4b-pt` | `claude_non_api_max` 或等价 Vertex scaffold |
-| B2 | `claude-fable-5[1m]` | 1M | max | `Qwen/Qwen3-4B-Base` | 同上 |
-| B3 | `claude-opus-5[1m]` | 1M | max | `google/gemma-3-4b-pt` | `claude_vertex_max` |
-| B4 | `claude-opus-5[1m]` | 1M | max | `Qwen/Qwen3-4B-Base` | 同上 |
-| B5 | `claude-opus-5[1m]` | 1M | xhigh | `google/gemma-3-4b-pt` | `claude_vertex_xhigh` |
-| B6 | `claude-opus-5[1m]` | 1M | xhigh | `Qwen/Qwen3-4B-Base` | 同上 |
+| B01–B04 | `claude-opus-5[1m]` | 1M | max | `claude_vertex_max` | 四个 base model 各一个 |
+| B05–B08 | `claude-opus-5[1m]` | 1M | xhigh | `claude_vertex_xhigh` | 四个 base model 各一个 |
+| B09–B12 | `claude-opus-5[1m]` | 1M | high | `claude_vertex_high` | 四个 base model 各一个 |
+| B13–B16 | `claude-opus-5` | 200K | max | `claude_vertex_max_200k` | 四个 base model 各一个 |
 
-Claude Code 2.1.219 的本地 `--help` 明确接受 `low, medium, high, xhigh, max`。正式 launcher 应显式传 `--effort` 并记录值，不能只依赖用户级默认配置。2026-08-30 的 Vertex 实测表明：裸 `claude-opus-5` 返回 `contextWindow=200000`，而 `claude-opus-5[1m]` 返回 `contextWindow=1000000`，所以正式 Opus cell 必须使用显式 `[1m]` 路由。不得静默回退到裸 alias 或非 1M context。
+四个 base model 为：
 
-这六个 cell 是 `n=1` 的首批描述性比较，不足以估计方差或作统计显著性结论。基础设施稳定后，复现实验至少增加到每格 3 次独立 run。
+1. `Qwen/Qwen3-1.7B-Base`
+2. `Qwen/Qwen3-4B-Base`
+3. `HuggingFaceTB/SmolLM3-3B-Base`
+4. `google/gemma-3-4b-pt`
+
+Claude Code 2.1.219 的本地 `--help` 明确接受 `low, medium, high, xhigh, max`。正式 launcher 显式传 `--effort` 并记录值，不能只依赖用户级默认配置。2026-08-30 的 Vertex 实测表明：裸 `claude-opus-5` 返回 `contextWindow=200000`，而 `claude-opus-5[1m]` 返回 `contextWindow=1000000`。两者都是本批有意设置的独立实验条件；provider gate 必须验证精确 context，禁止 200K/1M 之间静默回退。
+
+这十六个 cell 是每格 `n=1` 的首批描述性比较，不足以估计方差或作统计显著性结论。基础设施稳定后，复现实验至少增加到每格 3 次独立 run。
 
 ## 9. 公平性与复现口径
 
-六个正式 cell 必须在提交前一次性冻结：
+十六个正式 cell 必须在提交前一次性冻结：
 
 - 顶层 commit 和 PTB submodule commit；
 - agent prompt、task assets 和 evaluator；
 - agent CLI version；
-- requested/resolved model 与 1M context；
+- requested/resolved model、effort 与 setup 指定的 1M/200K context；
 - 容器 digest；
 - base model revision 与公共只读 cache snapshot；
 - agent auth provider/Vertex project 与 region；
@@ -254,16 +285,16 @@ Claude Code 2.1.219 的本地 `--help` 明确接受 `low, medium, high, xhigh, m
 
 正式批次默认关闭 CLI auto-update，避免先启动和后启动的 cell 得到不同 CLI。可以共享已经存在的 base-model blobs，但不得为某个 agent 预置专属训练数据、历史解法或公开 PTB trace。
 
-Judge 是官方完整流程的一部分，不是第 8 节的自变量。六个 cell 应使用完全相同的 judge 组合：每个 cell 在 `run_task.sh` 主流程中运行当前 PTB 启用的全部 official judges 并生成 canonical verdict，然后执行 full final evaluation；可再对同一不可变结果运行 Claude Opus 5 xhigh research profile，输出独立文件，不覆盖官方 verdict。缺少任一 required official verdict、只有 research verdict、跳过 judge 或没有 `metrics.json` 的 cell 都判为流程失败，不进入六格比较。
+Judge 是官方完整流程的一部分，不是第 8 节的自变量。十六个 cell 应使用完全相同的 judge 组合：每个 cell 在 `run_task.sh` 主流程中运行当前 PTB 启用的全部 official judges 并生成 canonical verdict，然后执行 full final evaluation；可再对同一不可变结果运行 Claude Opus 5 xhigh research profile，输出独立文件，不覆盖官方 verdict。缺少任一 required official verdict、只有 research verdict、跳过 judge 或没有 `metrics.json` 的 cell 都判为流程失败，不进入十六格比较。
 
 ## 10. Holdout 与“先理解、再复现”
 
 `gsm8k-gemma-holdout-v1` 把历史公开 trace 按被训练的 base model 划分：Qwen/SmolLM 是 train，Gemma 是 test。为了保留这个实验含义：
 
 1. 理解阶段只分析 split 的 train traces，不查看 Gemma test trace 的策略或结果细节。
-2. 六个 agent sandbox 都不得看到任何历史 PTB trace，也不得被提示历史 agent 的方法。
-3. 六个 cell 同时冻结和提交，保证先看到 Qwen 新结果的人无法据此修改本批 Gemma 配置。
-4. Gemma 的三个新结果一旦揭盲，就算消费了一次 holdout。之后根据这些结果改方法再跑 Gemma，必须标成开发迭代，不能继续声称是同一个 untouched holdout test。
+2. 十六个 agent sandbox 都不得看到任何历史 PTB trace，也不得被提示历史 agent 的方法。
+3. 十六个 cell 同时冻结和提交，保证先看到 Qwen/SmolLM 新结果的人无法据此修改本批 Gemma 配置。
+4. Gemma 的四个新结果一旦揭盲，就算消费了一次 holdout。之后根据这些结果改方法再跑 Gemma，必须标成开发迭代，不能继续声称是同一个 untouched holdout test。
 5. Qwen cells 可用于复现/开发诊断；Gemma cells用于检查 agent 方法对 held-out base-model family 的迁移。
 
 ## 11. 产物与第一批分析
@@ -280,9 +311,9 @@ Judge 是官方完整流程的一部分，不是第 8 节的自变量。六个 c
 
 第一批报告包括：
 
-- 六格 GSM8K accuracy；
-- 同 agent 配置下 Gemma 与 Qwen 的成对差异；
-- 同 base model 下 Fable max、Opus max、Opus xhigh 的描述性差异；
+- 十六格 GSM8K accuracy；
+- 同 agent setup 下四个 base model 的描述性差异；
+- 同 base model 下 Opus 5 max/xhigh/high（1M）以及 max 1M/200K 的描述性差异；
 - 成功率、实际用时、CLI tokens、GPU 利用率和训练/评测阶段占比；
 - 数据来源、过滤方法、训练方法、迭代次数的 trace-derived 摘要；
 - judge flags、基础设施异常和任何不满足官方口径的偏差。
@@ -291,15 +322,15 @@ Judge 是官方完整流程的一部分，不是第 8 节的自变量。六个 c
 
 ### D1：Agent 认证来源
 
-已确认：六个 agent 都使用 Claude Code + Vertex/GCE metadata ADC。四节点已验证 Opus 5/xhigh 认证路径，而且它避免六个 job 竞争写同一个 OAuth token 文件。
+已确认：十六个 agent 都使用 Claude Code + Vertex/GCE metadata ADC。四节点已验证 Opus 5/xhigh 认证路径，而且它避免十六个 job 竞争写同一个 OAuth token 文件。
 
-备选：严格沿用公开 trace 名称对应的 `claude_non_api*` OAuth scaffold。若选择它，必须先解决每-cell OAuth 状态隔离，并单独确认 Fable 5 与 Opus 5 的并发额度。
+备选：严格沿用公开 trace 名称对应的 `claude_non_api*` OAuth scaffold。若选择它，必须先解决每-cell OAuth 状态隔离，并单独确认 Opus 5 的并发额度。
 
 ### D2：容器口径
 
-已确认：六个 cell 使用同一个经过验证、钉 digest 的 `opus_5.sif`，从而把 agent model/effort 作为主要自变量。
+已确认：十六个 cell 使用同一个经过验证、钉 digest 的 `opus_5.sif`，从而把 context/effort setup 作为主要自变量。
 
-备选：复现历史公开配置——Fable 使用其历史 `standard.sif` 路径，Opus 5 使用上游 `single_task_opus5.sub` 指定的 `opus_5.sif`。这更接近各自历史 run，但 agent 比较会同时混入 container 差异；当前还需要构建缺失的 `standard.sif`。
+备选：按历史 run 使用不同容器。这样会把 container 差异混入 context/effort 比较，因此本批不采用。
 
 ### D3：Judge 组合
 
@@ -307,7 +338,7 @@ Judge 是官方完整流程的一部分，不是第 8 节的自变量。六个 c
 
 ### D4：正式预算
 
-本 spec 假设六个正式 cell 都是官方 10 小时、1M context、各 1 次；1 小时只用于 B6 形状的 pilot。10 小时只限制 agent solve 阶段；judges 和 final evaluation 按官方顺序在其后完成，Slurm walltime 需要另留明确的 harness overhead。如果目标不是这个预算，应在任何 pilot 前修改 manifest，而不是提交后临时覆盖。
+本 spec 假设十六个正式 cell 都是官方 10 小时、各 1 次；其中十二个是 1M context，四个是 200K context。1 小时只用于 B06（Opus 5 xhigh 1M × Qwen3-4B）形状的 pilot。10 小时只限制 agent solve 阶段；judges 和 final evaluation 按官方顺序在其后完成，Slurm walltime 需要另留明确的 harness overhead。如果目标不是这个预算，应在任何 pilot 前修改 manifest，而不是提交后临时覆盖。
 
 ## 13. 完成定义
 
@@ -317,8 +348,9 @@ Judge 是官方完整流程的一部分，不是第 8 节的自变量。六个 c
 - 单卡 job 不再锁整节点；
 - 八路 canary 和跨 cell cleanup conflict test 通过；
 - PTB fork 的 non-exclusive GRES adapter、per-GPU cleanup 和测试已提交；
-- 顶层六-cell manifest 可 dry-run、可逐 cell/整批提交；
+- 顶层十六-cell manifest 可 dry-run、可逐 cell/整批提交；
 - 单 cell pilot 端到端产物完整；
-- pilot 和六个正式 cell 均确认 resolved context 为 1M，并跑齐全部 official judges 与 full final evaluation；
-- 六个正式 job 在冻结的同一口径下并行启动并可追溯；
+- pilot 和十六个正式 cell 均确认 resolved context 精确匹配各自的 1M/200K setup，并跑齐全部 official judges 与 full final evaluation；
+- 十六个正式 job 在冻结的同一口径下并行启动并可追溯；
+- 所有 Slurm job 名称带当前分支前缀，receipt/runtime provenance 能回溯到本 spec；
 - 文档记录最终站点要求、运行命令、恢复/取消流程和已知限制。
