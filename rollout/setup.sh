@@ -171,7 +171,7 @@ grep -q 'POST_TRAIN_BENCH_JUDGE_AUTH_MODE' "$DST/src/run_task.sh" || {
     echo "FATAL: private PTB checkout lacks the portable source pin helper" >&2
     exit 2
 }
-for capability in 'agents/${AGENT}/payload' SOLVE_RC solve_exit_code.txt POST_TRAIN_BENCH_VISIBLE_GPUS POST_TRAIN_BENCH_ISOLATE_GPUS POST_TRAIN_BENCH_EVAL_GPU_REAP 'OS-visible GPU isolation probe' POST_TRAIN_BENCH_EXTRA_BINDS; do
+for capability in 'agents/${AGENT}/payload' instruction.sha256 PROMPT_ENV_ARGS PROMPT_BIND_ARGS 'prompt generation failed' SOLVE_RC solve_exit_code.txt POST_TRAIN_BENCH_VISIBLE_GPUS POST_TRAIN_BENCH_ISOLATE_GPUS POST_TRAIN_BENCH_EVAL_GPU_REAP 'OS-visible GPU isolation probe' POST_TRAIN_BENCH_EXTRA_BINDS; do
     grep -Fq "$capability" "$DST/src/run_task.sh" || {
         echo "FATAL: pinned PTB runner lacks required study capability: $capability" >&2
         exit 2

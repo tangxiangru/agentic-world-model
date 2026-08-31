@@ -21,6 +21,17 @@ set -uo pipefail
 : "${AWM_EXPECTED_SCIENTIST_MODEL_ID:?ERROR: exact reported scientist model ID was not forwarded}"
 : "${AWM_CLAUDE_CLI_VERSION:?ERROR: exact Claude CLI npm version was not forwarded}"
 : "${AWM_EXPECTED_CLAUDE_CLI_VERSION_OUTPUT:?ERROR: exact Claude CLI --version output was not forwarded}"
+: "${STUDY_PROMPT_SHA256:?ERROR: exact study prompt SHA-256 was not forwarded}"
+: "${STUDY_PROMPT_BYTES:?ERROR: exact study prompt byte length was not forwarded}"
+[[ "${STUDY_PROMPT_SHA256}" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "ERROR: invalid STUDY_PROMPT_SHA256" >&2
+    exit 2
+}
+[[ "${STUDY_PROMPT_BYTES}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: invalid STUDY_PROMPT_BYTES" >&2
+    exit 2
+}
+readonly STUDY_PROMPT_SHA256 STUDY_PROMPT_BYTES
 IFS=: read -r MODEL SIDES EXTRA <<< "${AGENT_CONFIG}"
 { [ "${SIDES}" = train ] || [ "${SIDES}" = train,test ]; } && [ -z "${EXTRA:-}" ] || {
     echo "ERROR: C1 AGENT_CONFIG must be <model>:<train|train,test>" >&2
@@ -90,7 +101,25 @@ python3 "${RUNTIME_ATTESTER}" install-cli \
     --study-input /home/ben/task/study-input.json || exit 2
 
 SCIENTIST_STREAM=/home/ben/task/scientist-stream.jsonl
-printf '%s' "$PROMPT" | claude --print --verbose --model "$MODEL" \
+STUDY_PROMPT_FILE=/home/ben/task/instruction.md
+STUDY_PROMPT_CHECKSUM=/home/ben/task/instruction.sha256
+verify_study_prompt() {
+    [ -f "${STUDY_PROMPT_FILE}" ] && [ ! -L "${STUDY_PROMPT_FILE}" ] && \
+        [ -s "${STUDY_PROMPT_FILE}" ] && [ -f "${STUDY_PROMPT_CHECKSUM}" ] && \
+        [ ! -L "${STUDY_PROMPT_CHECKSUM}" ] || return 1
+    local actual_sha actual_bytes checksum_line
+    actual_sha="$(sha256sum "${STUDY_PROMPT_FILE}" | cut -d' ' -f1)" || return 1
+    actual_bytes="$(wc -c < "${STUDY_PROMPT_FILE}")" || return 1
+    checksum_line="$(cat "${STUDY_PROMPT_CHECKSUM}")" || return 1
+    [ "${actual_sha}" = "${STUDY_PROMPT_SHA256}" ] && \
+        [ "${actual_bytes}" = "${STUDY_PROMPT_BYTES}" ] && \
+        [ "${checksum_line}" = "${STUDY_PROMPT_SHA256}  instruction.md" ]
+}
+verify_study_prompt || {
+    echo "ERROR: study prompt checksum failed before Claude launch" >&2
+    exit 2
+}
+cat "${STUDY_PROMPT_FILE}" | claude --print --verbose --model "$MODEL" \
     --output-format stream-json --thinking-display summarized \
     --dangerously-skip-permissions | tee "${SCIENTIST_STREAM}"
 pipeline_status=("${PIPESTATUS[@]}")
@@ -103,6 +132,10 @@ echo "claude exit ${claude_rc} (prompt=${prompt_rc} tee=${tee_rc})"
 [ "${prompt_rc}" -eq 0 ] && [ "${tee_rc}" -eq 0 ] || {
     echo "ERROR: failed to preserve the complete Claude stream" >&2
     exit 1
+}
+verify_study_prompt || {
+    echo "ERROR: study prompt changed during Claude execution" >&2
+    exit 2
 }
 python3 "${RUNTIME_ATTESTER}" model "${SCIENTIST_STREAM}" \
     --requested-alias "${MODEL}" \

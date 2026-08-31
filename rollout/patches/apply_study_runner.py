@@ -14,6 +14,8 @@ second complete application is a no-op.  It adds:
 * an identifier-only ``agents/<agent>/env_passthrough.txt`` allowlist whose
   values are forwarded as individual argv entries through ``--cleanenv``;
 * ``agents/<agent>/payload/`` copied to ``/home/ben/agent``;
+* a checksummed ``/home/ben/task/instruction.md`` prompt handoff which does not
+  depend on Apptainer preserving newlines in an ``--env`` value;
 * explicit, validated per-cell GPU visibility/isolation;
 * preservation and result-side recording of the real agent ``SOLVE_RC``; and
 * evaluation cleanup modes ``none`` and ``own``.  ``own`` can only signal a
@@ -30,12 +32,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-
 MARK = "# --- awm: portable study runner (rollout/patches/apply_study_runner.py) ---"
 
 COMPLETE_NEEDLES = (
     "env_passthrough.txt",
     'agents/${AGENT}/payload',
+    "instruction.sha256",
+    "PROMPT_ENV_ARGS",
+    "PROMPT_BIND_ARGS",
+    "prompt generation failed",
     "SOLVE_RC",
     "solve_exit_code.txt",
     "POST_TRAIN_BENCH_VISIBLE_GPUS",
@@ -78,7 +83,7 @@ if [ -f "$AGENT_ENV_FILE" ]; then
             exit 2
         fi
         case "$_env_name" in
-            CUDA_VISIBLE_DEVICES|NVIDIA_VISIBLE_DEVICES|POST_TRAIN_BENCH_VISIBLE_GPUS|POST_TRAIN_BENCH_CUDA_VISIBLE_DEVICES|POST_TRAIN_BENCH_ISOLATE_GPUS|POST_TRAIN_BENCH_CELL_TOKEN|PATH|HOME|HF_HOME|NUM_GPUS|PROMPT|AGENT_CONFIG)
+            CUDA_VISIBLE_DEVICES|NVIDIA_VISIBLE_DEVICES|POST_TRAIN_BENCH_VISIBLE_GPUS|POST_TRAIN_BENCH_CUDA_VISIBLE_DEVICES|POST_TRAIN_BENCH_ISOLATE_GPUS|POST_TRAIN_BENCH_CELL_TOKEN|PATH|HOME|HF_HOME|NUM_GPUS|PROMPT|STUDY_PROMPT_SHA256|STUDY_PROMPT_BYTES|AGENT_CONFIG)
                 echo "ERROR: reserved runner variable in $AGENT_ENV_FILE: $_env_name" >&2
                 exit 2
                 ;;
@@ -110,6 +115,90 @@ if [ -e "agents/${AGENT}/payload" ]; then
     cp -a "agents/${AGENT}/payload/." "${JOB_DIR}/agent/"
 fi
 '''
+
+
+PROMPT_COMMAND = (
+    'python src/eval/general/get_prompt.py --model-to-train "$MODEL_TO_TRAIN" '
+    '--benchmark-id "$EVALUATION_TASK" --num-hours "$NUM_HOURS" '
+    '--num-gpus "$NUM_GPUS" --agent "${AGENT}"'
+)
+PROMPT_LOAD_ANCHOR = f"PROMPT=$({PROMPT_COMMAND})\n"
+PROMPT_LOAD_REPLACEMENT = (
+    f'if ! PROMPT="$({PROMPT_COMMAND})"; then\n'
+    '    echo "ERROR: prompt generation failed" >&2\n'
+    "    exit 2\n"
+    "fi\n"
+    'if [[ ! "$PROMPT" =~ [^[:space:]] ]]; then\n'
+    '    echo "ERROR: prompt generation returned only whitespace" >&2\n'
+    "    exit 2\n"
+    "fi\n"
+)
+
+PROMPT_ANCHOR = 'echo "$PROMPT" > "${EVAL_DIR}/prompt.txt"\n'
+
+PROMPT_BLOCK = '''\
+# Apptainer 1.5.3 parses a --env value containing multiple '=' characters as
+# CSV and retains only its first newline-delimited record. Give study agents an
+# exact file plus independent, single-line checksum/length values. Preserve the
+# legacy PROMPT environment transport only for unrelated upstream agents.
+STUDY_PROMPT_FILE="${JOB_DIR}/task/instruction.md"
+install -m 0444 "${EVAL_DIR}/prompt.txt" "$STUDY_PROMPT_FILE" || {
+    echo "ERROR: failed to install the canonical study prompt" >&2
+    exit 2
+}
+STUDY_PROMPT_SHA256="$(sha256sum "$STUDY_PROMPT_FILE" | cut -d' ' -f1)" || {
+    echo "ERROR: failed to hash the canonical study prompt" >&2
+    exit 2
+}
+STUDY_PROMPT_BYTES="$(wc -c < "$STUDY_PROMPT_FILE")" || {
+    echo "ERROR: failed to measure the canonical study prompt" >&2
+    exit 2
+}
+[[ "$STUDY_PROMPT_SHA256" =~ ^[0-9a-f]{64}$ ]] && \
+    [[ "$STUDY_PROMPT_BYTES" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: invalid canonical study prompt digest or length" >&2
+    exit 2
+}
+(
+    cd "${JOB_DIR}/task"
+    sha256sum instruction.md > instruction.sha256
+) || {
+    echo "ERROR: failed to write the study prompt checksum" >&2
+    exit 2
+}
+chmod 0444 "${JOB_DIR}/task/instruction.sha256" || {
+    echo "ERROR: failed to protect the study prompt checksum" >&2
+    exit 2
+}
+cmp -s "${EVAL_DIR}/prompt.txt" "$STUDY_PROMPT_FILE" || {
+    echo "ERROR: study prompt file does not match the recorded prompt" >&2
+    exit 2
+}
+PROMPT_ENV_ARGS=()
+PROMPT_BIND_ARGS=()
+case "$AGENT" in
+    claude_fulltraj_noawm|claude_wm)
+        PROMPT_ENV_ARGS+=(
+            --env "STUDY_PROMPT_SHA256=${STUDY_PROMPT_SHA256}"
+            --env "STUDY_PROMPT_BYTES=${STUDY_PROMPT_BYTES}"
+        )
+        PROMPT_BIND_ARGS+=(
+            --bind "${JOB_DIR}/task/instruction.md:/home/ben/task/instruction.md:ro"
+            --bind "${JOB_DIR}/task/instruction.sha256:/home/ben/task/instruction.sha256:ro"
+        )
+        ;;
+    *) PROMPT_ENV_ARGS+=(--env "PROMPT=${PROMPT}") ;;
+esac
+echo "Study prompt file: ${STUDY_PROMPT_BYTES} bytes, sha256=${STUDY_PROMPT_SHA256}"
+'''
+
+PROMPT_ARG_ANCHOR = '        --env PROMPT="${PROMPT}" \\\n'
+PROMPT_ARG_LINE = '        "${PROMPT_ENV_ARGS[@]}" \\\n'
+
+
+SHELL_CONTINUATION = " \\" + "\n"
+HOME_ARG_ANCHOR = '        --home "${JOB_DIR}:/home/ben"' + SHELL_CONTINUATION
+PROMPT_BIND_LINE = '        "${PROMPT_BIND_ARGS[@]}"' + SHELL_CONTINUATION
 
 
 UUID_ANCHOR = "RANDOM_UUID=$(uuidgen)\n"
@@ -432,12 +521,45 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def _prompt_handoff_is_complete(text: str) -> bool:
+    return (
+        text.count(PROMPT_LOAD_REPLACEMENT) == 1
+        and text.count(PROMPT_ANCHOR + PROMPT_BLOCK) == 1
+        and text.count(PROMPT_ARG_LINE) == 1
+        and text.count(PROMPT_BIND_LINE) == 1
+        and text.count(PROMPT_LOAD_ANCHOR) == 0
+        and text.count(PROMPT_ARG_ANCHOR) == 0
+    )
+
+
+def _prompt_handoff_is_absent(text: str) -> bool:
+    return (
+        text.count(PROMPT_LOAD_ANCHOR) == 1
+        and text.count(PROMPT_ANCHOR) == 1
+        and text.count(PROMPT_ARG_ANCHOR) == 1
+        and text.count(HOME_ARG_ANCHOR) == 1
+        and not any(
+            token in text
+            for token in (
+                "instruction.sha256",
+                "PROMPT_ENV_ARGS",
+                "PROMPT_BIND_ARGS",
+                "prompt generation failed",
+            )
+        )
+    )
+
+
 def apply(text: str) -> str:
     if MARK in text:
         # A marker on its own (or an otherwise damaged earlier patch) is not an
         # upgrade candidate.  Check every stable capability before looking for
         # the two revisions which this patcher knows how to upgrade exactly.
         upgrade_needles = {
+            "instruction.sha256",
+            "PROMPT_ENV_ARGS",
+            "PROMPT_BIND_ARGS",
+            "prompt generation failed",
             "OS-visible GPU isolation probe",
             "skipping optional judges and evaluating the preserved final_model",
             "deterministic evaluation produced no valid metrics.json",
@@ -455,6 +577,35 @@ def apply(text: str) -> str:
             )
         # Upgrade earlier complete revisions of this local patch in place. The
         # private checkout is intentionally reusable across setup invocations.
+        prompt_complete = _prompt_handoff_is_complete(text)
+        prompt_absent = _prompt_handoff_is_absent(text)
+        if not prompt_complete and not prompt_absent:
+            raise SystemExit("run_task.sh: portable study prompt handoff is incomplete")
+        if prompt_absent:
+            text = _replace_once(
+                text,
+                PROMPT_LOAD_ANCHOR,
+                PROMPT_LOAD_REPLACEMENT,
+                "checked prompt generation",
+            )
+            text = _replace_once(
+                text,
+                PROMPT_ANCHOR,
+                PROMPT_ANCHOR + PROMPT_BLOCK,
+                "multiline prompt handoff",
+            )
+            text = _replace_once(
+                text,
+                PROMPT_ARG_ANCHOR,
+                PROMPT_ARG_LINE,
+                "prompt argv",
+            )
+            text = _replace_once(
+                text,
+                HOME_ARG_ANCHOR,
+                PROMPT_BIND_LINE + HOME_ARG_ANCHOR,
+                "read-only prompt binds",
+            )
         if "skipping optional judges and evaluating the preserved final_model" not in text:
             text = _replace_once(
                 text,
@@ -483,6 +634,8 @@ def apply(text: str) -> str:
                 NEW_SOLVE_LINE,
                 "v2 OS-visible GPU isolation",
             )
+        if not _prompt_handoff_is_complete(text):
+            raise SystemExit("run_task.sh: portable study prompt handoff is incomplete")
         missing = [needle for needle in COMPLETE_NEEDLES if needle not in text]
         if missing:
             raise SystemExit(
@@ -493,6 +646,25 @@ def apply(text: str) -> str:
 
     text = _replace_once(text, UUID_ANCHOR, UUID_ANCHOR + UUID_BLOCK, "UUID")
     text = _replace_once(text, ENV_ANCHOR, ENV_ANCHOR + ENV_BLOCK, "API allowlist")
+    text = _replace_once(
+        text,
+        PROMPT_LOAD_ANCHOR,
+        PROMPT_LOAD_REPLACEMENT,
+        "checked prompt generation",
+    )
+    text = _replace_once(
+        text,
+        PROMPT_ANCHOR,
+        PROMPT_ANCHOR + PROMPT_BLOCK,
+        "multiline prompt handoff",
+    )
+    text = _replace_once(text, PROMPT_ARG_ANCHOR, PROMPT_ARG_LINE, "prompt argv")
+    text = _replace_once(
+        text,
+        HOME_ARG_ANCHOR,
+        PROMPT_BIND_LINE + HOME_ARG_ANCHOR,
+        "read-only prompt binds",
+    )
     text = _replace_once(text, PAYLOAD_ANCHOR, PAYLOAD_ANCHOR + PAYLOAD_BLOCK, "agent solve")
     text = _replace_once(text, OLD_GPU_BLOCK, NEW_GPU_BLOCK, "GPU pin")
     text = _replace_once(text, API_ARG_ANCHOR, API_ARG_ANCHOR + AGENT_ARG_LINE, "API argv")
@@ -513,6 +685,8 @@ def apply(text: str) -> str:
         "task artifact copy",
     )
     text = _replace_once(text, EOF_ANCHOR, EOF_REPLACEMENT, "evaluation footer")
+    if not _prompt_handoff_is_complete(text):
+        raise SystemExit("run_task.sh: portable study prompt handoff is incomplete")
     return text
 
 

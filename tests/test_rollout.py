@@ -662,7 +662,8 @@ def test_extra_binds_patch_is_idempotent(tmp_path: Path) -> None:
 
 
 def _pinned_ptb_run_task() -> str:
-    ptb = REPO / "third_party" / "PostTrainBench"
+    configured = os.environ.get("PTB_SOURCE_DIR")
+    ptb = Path(configured) if configured else REPO / "third_party" / "PostTrainBench"
     if not (ptb / ".git").exists():
         pytest.skip("PostTrainBench submodule not checked out")
     result = subprocess.run(
@@ -689,6 +690,13 @@ def test_study_runner_patch_applies_to_pinned_head_and_is_idempotent(tmp_path: P
     subprocess.run(["bash", "-n", str(candidate)], check=True)
 
     assert 'agents/${AGENT}/payload/." "${JOB_DIR}/agent/' in combined
+    assert 'STUDY_PROMPT_FILE="${JOB_DIR}/task/instruction.md"' in combined
+    assert "sha256sum instruction.md > instruction.sha256" in combined
+    assert '"${PROMPT_ENV_ARGS[@]}" \\' in combined
+    assert '"${PROMPT_BIND_ARGS[@]}" \\' in combined
+    assert "/home/ben/task/instruction.md:ro" in combined
+    assert "prompt generation failed" in combined
+    assert patcher.PROMPT_ARG_ANCHOR not in combined
     assert '"${AGENT_ENV_ARGS[@]}" \\' in combined
     assert 'bash -o pipefail -c "{ echo OS-visible GPU isolation probe' in combined
     assert "SOLVE_RC=\\$?" in combined
@@ -722,13 +730,189 @@ def test_study_runner_patch_rejects_partial_or_changed_runner() -> None:
     with pytest.raises(SystemExit, match="GPU pin anchor"):
         patcher.apply(changed)
 
+    current = patcher.apply(original)
+    damaged = current.replace(patcher.PROMPT_BIND_LINE, "", 1)
+    with pytest.raises(SystemExit, match="prompt handoff is incomplete"):
+        patcher.apply(damaged)
+
 
 def test_study_runner_patch_upgrades_known_earlier_revision() -> None:
     patcher = _load(REPO / "rollout" / "patches" / "apply_study_runner.py")
     current = patcher.apply(_pinned_ptb_run_task())
-    older = current.replace(patcher.NEW_SOLVE_LINE, patcher.NEW_SOLVE_LINE_V2)
+    older = current.replace(patcher.PROMPT_LOAD_REPLACEMENT, patcher.PROMPT_LOAD_ANCHOR)
+    older = older.replace(patcher.PROMPT_ANCHOR + patcher.PROMPT_BLOCK, patcher.PROMPT_ANCHOR)
+    older = older.replace(patcher.PROMPT_ARG_LINE, patcher.PROMPT_ARG_ANCHOR)
+    older = older.replace(patcher.PROMPT_BIND_LINE, "")
+    older = older.replace(patcher.NEW_SOLVE_LINE, patcher.NEW_SOLVE_LINE_V2)
     older = older.replace(patcher.EOF_REPLACEMENT, patcher.EOF_REPLACEMENT_V2)
     assert patcher.apply(older) == current
+
+
+@pytest.mark.parametrize(("command", "expected"), (("false", 2), ("true", 2)))
+def test_study_runner_rejects_failed_or_blank_prompt_generation(
+    command: str, expected: int
+) -> None:
+    patcher = _load(REPO / "rollout" / "patches" / "apply_study_runner.py")
+    block = patcher.PROMPT_LOAD_REPLACEMENT.replace(patcher.PROMPT_COMMAND, command)
+    result = subprocess.run(
+        ["bash", "-s"],
+        input="set -uo pipefail\n" + block + "printf 'unexpected=<%s>\\n' \"$PROMPT\"\n",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == expected
+    assert "ERROR: prompt generation" in result.stderr
+
+
+@pytest.mark.parametrize("agent", ("claude_wm", "hv_noop"))
+def test_study_runner_prompt_handoff_preserves_exact_multiline_bytes(
+    tmp_path: Path, agent: str
+) -> None:
+    patcher = _load(REPO / "rollout" / "patches" / "apply_study_runner.py")
+    eval_dir = tmp_path / "results"
+    job_dir = tmp_path / "job"
+    eval_dir.mkdir()
+    (job_dir / "task").mkdir(parents=True)
+    prompt = "## Parameters\n\n- internal: a=b\n- shell data: $(touch never) * ' \"\n"
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=(
+            "set -euo pipefail\n"
+            + patcher.PROMPT_ANCHOR
+            + patcher.PROMPT_BLOCK
+            + "printf 'ARG=<%s>\\n' \"${PROMPT_ENV_ARGS[@]}\"\n"
+        ),
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "AGENT": agent,
+            "EVAL_DIR": str(eval_dir),
+            "JOB_DIR": str(job_dir),
+            "PROMPT": prompt,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    recorded = (eval_dir / "prompt.txt").read_bytes()
+    instruction = (job_dir / "task" / "instruction.md").read_bytes()
+    assert recorded == instruction == (prompt + "\n").encode()
+    subprocess.run(
+        ["sha256sum", "--strict", "--check", "instruction.sha256"],
+        cwd=job_dir / "task",
+        check=True,
+        capture_output=True,
+    )
+    if agent == "claude_wm":
+        assert "ARG=<STUDY_PROMPT_SHA256=" in result.stdout
+        assert "ARG=<STUDY_PROMPT_BYTES=" in result.stdout
+        assert "ARG=<PROMPT=" not in result.stdout
+    else:
+        assert "ARG=<PROMPT=## Parameters" in result.stdout
+        assert "ARG=<STUDY_PROMPT_SHA256=" not in result.stdout
+    assert not (tmp_path / "never").exists()
+
+
+def _study_prompt_verifier_block(solve: str) -> str:
+    start = solve.index("STUDY_PROMPT_FILE=/home/ben/task/instruction.md")
+    end = solve.index("\nverify_study_prompt || {", start)
+    return solve[start:end]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    (("none", 0), ("truncate", 1), ("checksum", 1), ("symlink", 1)),
+)
+def test_study_prompt_verifier_fails_closed(
+    tmp_path: Path, mutation: str, expected: int
+) -> None:
+    agent_root = REPO / "rollout" / "agents"
+    solves = [
+        (agent_root / agent / "solve.sh").read_text()
+        for agent in ("claude_fulltraj_noawm", "claude_wm")
+    ]
+    blocks = [_study_prompt_verifier_block(solve) for solve in solves]
+    assert blocks[0] == blocks[1]
+
+    task = tmp_path / "task"
+    task.mkdir()
+    prompt = "## Parameters\n\n- internal: a=b\n- Unicode: λ\n\n".encode()
+    expected_sha = hashlib.sha256(prompt).hexdigest()
+    instruction = task / "instruction.md"
+    if mutation == "symlink":
+        (task / "prompt-target").write_bytes(prompt)
+        instruction.symlink_to("prompt-target")
+    else:
+        instruction.write_bytes(prompt[:-1] if mutation == "truncate" else prompt)
+    checksum = expected_sha if mutation != "checksum" else "0" * 64
+    (task / "instruction.sha256").write_text(f"{checksum}  instruction.md\n")
+
+    block = blocks[0].replace("/home/ben/task", str(task))
+    result = subprocess.run(
+        ["bash", "-s"],
+        input="set -uo pipefail\n" + block + "\nverify_study_prompt\n",
+        env={
+            **os.environ,
+            "STUDY_PROMPT_SHA256": expected_sha,
+            "STUDY_PROMPT_BYTES": str(len(prompt)),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == expected
+
+
+def test_study_agent_streams_prompt_file_byte_exactly_to_claude(tmp_path: Path) -> None:
+    solve = (REPO / "rollout" / "agents" / "claude_wm" / "solve.sh").read_text()
+    verifier = _study_prompt_verifier_block(solve)
+    pipeline_start = solve.index('cat "${STUDY_PROMPT_FILE}" | claude --print')
+    pipeline_end = solve.index('\npipeline_status=("${PIPESTATUS[@]}")', pipeline_start)
+    pipeline = solve[pipeline_start:pipeline_end]
+
+    task = tmp_path / "task"
+    fake_bin = tmp_path / "bin"
+    task.mkdir()
+    fake_bin.mkdir()
+    prompt = "## Parameters\n\n- internal: a=b\n- shell: $(false) * ' \"\n- Unicode: λ\n\n".encode()
+    expected_sha = hashlib.sha256(prompt).hexdigest()
+    (task / "instruction.md").write_bytes(prompt)
+    (task / "instruction.sha256").write_text(f"{expected_sha}  instruction.md\n")
+    fake_claude = fake_bin / "claude"
+    fake_claude.write_text("#!/bin/bash\nset -euo pipefail\ntee \"$CAPTURE\"\n")
+    fake_claude.chmod(0o755)
+    capture = tmp_path / "claude-stdin.bin"
+    stream = tmp_path / "scientist-stream.bin"
+
+    script = (
+        "set -uo pipefail\n"
+        + verifier.replace("/home/ben/task", str(task))
+        + "\nverify_study_prompt\n"
+        + pipeline
+        + "\npipeline_status=(\"${PIPESTATUS[@]}\")\n"
+        + "[ \"${pipeline_status[*]}\" = \"0 0 0\" ]\n"
+    )
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=script,
+        env={
+            **os.environ,
+            "CAPTURE": str(capture),
+            "MODEL": "claude-opus-4-6",
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SCIENTIST_STREAM": str(stream),
+            "STUDY_PROMPT_SHA256": expected_sha,
+            "STUDY_PROMPT_BYTES": str(len(prompt)),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert capture.read_bytes() == prompt
+    assert stream.read_bytes() == prompt
 
 
 @pytest.mark.parametrize(
@@ -1080,6 +1264,11 @@ def test_claude_agents_propagate_failure_and_require_submission() -> None:
     for agent in ("claude_fulltraj_noawm", "claude_wm"):
         solve = (agent_root / agent / "solve.sh").read_text()
         assert 'pipeline_status=("${PIPESTATUS[@]}")' in solve
+        assert 'cat "${STUDY_PROMPT_FILE}" | claude --print' in solve
+        assert "verify_study_prompt" in solve
+        assert '"$PROMPT"' not in solve
+        assert "STUDY_PROMPT_SHA256" in solve
+        assert "STUDY_PROMPT_BYTES" in solve
         assert "claude-exit-code.txt" in solve
         assert "attest_claude_runtime.py" in solve
         assert "scientist-model-attestation.json" in solve

@@ -108,6 +108,14 @@ same Unix owner and inherited the cell's random launch token; the patched
 runner has no cluster-wide `nvidia-smi | kill` path. The legacy
 `POST_TRAIN_BENCH_KILL_GPU_PROCS` setting does not enable global cleanup.
 
+The two study agents receive the canonical generated prompt as the read-only
+file `/home/ben/task/instruction.md`, not through PTB's legacy multiline
+`PROMPT` environment value. Apptainer 1.5.3 truncates that value at the first
+newline when the prompt contains multiple `=` characters. The runner passes an
+independent single-line SHA-256 and byte count instead; each solve verifies the
+file before and after Claude runs, and the instruction plus checksum remain in
+the task artifacts. Unrelated upstream PTB agents retain the legacy transport.
+
 `AWM_REPO_COMMIT` is also the exact harness commit, not merely the WMA runtime
 revision. Setup refuses any live prompt builder, patcher, launcher, agent, or
 instruction byte which differs from that commit. It writes a manifest of the
