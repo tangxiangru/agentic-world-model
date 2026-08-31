@@ -2,50 +2,160 @@
 # claude_wm — study conditions C2 (raw files + WMA) and C3 (WMA with seeded memory).
 #
 # The same Claude Code invocation as claude_non_api, plus the world-model
-# runtime beside it: this script clones the awm repo at a pinned ref, puts
+# runtime beside it: this script loads an awm payload from an immutable commit, puts
 # `awm` on PATH, initialises /home/ben/task/wm, installs the scientist's
 # skill and Stop hook, and hands the agent our prompt (POST_TRAIN_BENCH_PROMPT
 # = prompt_wm or prompt_wm_fulltraj, chosen by the pack script). Whether the
 # prior runs are mounted at /home/ben/prior_runs is likewise the pack's call.
 #
-# AGENT_CONFIG = <claude model>[:<arm>[:<memory sides>[:ro]]]
-#   claude-opus-4-8                      null arm, memory sides train, read-write
-#   claude-opus-4-8:traj                 C2: autonomous agent over the raw prior runs (needs /home/ben/prior_runs)
-#   claude-opus-4-8:retrieval            C3: deterministic retrieval over WMA memory
-#   claude-opus-4-8:llm:train,test       autonomous agent over memory + prior runs, both split sides
-#   claude-opus-4-6:retrieval:train:ro   held-out cell: reads memory, never writes
+# AGENT_CONFIG = <claude model>:<arm>:<scope>:ro
+#   claude-opus-4-6:llm:train:ro    C2, raw priors + autonomous WMA
+#   claude-opus-4-6:llm:train:ro    C3, card corpus + autonomous WMA
 #
-# The agent's own model is WMA_MODEL (fixed across cells; baked in by setup.sh), not the scientist's.
-#
-# WMA memory is expected at /home/ben/wm-memory (bind it with
-# POST_TRAIN_BENCH_EXTRA_BINDS). If it is absent the session gets a private,
-# empty memory under /home/ben/wm-memory-local and says so.
+# C2 must not receive /home/ben/wm-memory. C3 expects it as a read-only bind and
+# must not receive /home/ben/prior_runs. Both fail if their declared input is
+# absent or the other condition's input leaks in.
 set -uo pipefail
-AWM_REPO_URL="${AWM_REPO_URL:-https://github.com/JerrrrryL/agentic-world-model.git}"
-AWM_REPO_REF="${AWM_REPO_REF:-wm-runtime}"
-WMA_MODEL="${WMA_MODEL:-claude-opus-4-8}"
+: "${AWM_REPO_COMMIT:?ERROR: AWM_REPO_COMMIT must be an immutable 40-hex commit}"
+: "${AWM_WMA_MODEL:?ERROR: AWM_WMA_MODEL must pin the autonomous WMA Vertex model}"
+: "${AWM_STUDY_REPETITION:?ERROR: explicit study repetition was not forwarded}"
+: "${AWM_STUDY_MODE:?ERROR: production/smoke study mode was not forwarded}"
+: "${AWM_STUDY_NUM_HOURS:?ERROR: study duration was not forwarded}"
+: "${AWM_PTB_COMMIT:?ERROR: exact PostTrainBench commit was not forwarded}"
+: "${AWM_PTB_SURFACE_MANIFEST_SHA256:?ERROR: PTB study-surface attestation was not forwarded}"
+: "${AWM_EXPECTED_SCIENTIST_MODEL_ID:?ERROR: exact reported scientist model ID was not forwarded}"
+: "${AWM_CLAUDE_CLI_VERSION:?ERROR: exact Claude CLI npm version was not forwarded}"
+: "${AWM_EXPECTED_CLAUDE_CLI_VERSION_OUTPUT:?ERROR: exact Claude CLI --version output was not forwarded}"
+[[ "${AWM_REPO_COMMIT}" =~ ^[0-9a-fA-F]{40}$ ]] || {
+    echo "ERROR: AWM_REPO_COMMIT must be a full 40-hex commit, got ${AWM_REPO_COMMIT}" >&2
+    exit 2
+}
 
 echo "claude_wm starting: AGENT_CONFIG=${AGENT_CONFIG}"
 IFS=: read -r MODEL ARM SIDES RO <<< "${AGENT_CONFIG}"
 ARM="${ARM:-null}"; SIDES="${SIDES:-train}"
 echo "model=${MODEL} arm=${ARM} memory_sides=${SIDES} readonly=${RO:-no}"
 
-if [ -f /home/ben/oauth_token ]; then
-    export CLAUDE_CODE_OAUTH_TOKEN="$(cat /home/ben/oauth_token)"
+# Vertex cells must never inherit a direct Anthropic/subscription credential,
+# including one injected through APPTAINERENV_/SINGULARITYENV_ by the host.
+for secret_name in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
+    if [[ -v "${secret_name}" ]]; then
+        echo "ERROR: direct Claude credential is present in the Vertex-only sandbox: ${secret_name}" >&2
+        exit 2
+    fi
+done
+
+[ "${CLAUDE_CODE_USE_VERTEX:-}" = 1 ] || {
+    echo "ERROR: CLAUDE_CODE_USE_VERTEX=1 was not forwarded" >&2
+    exit 2
+}
+[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ] || {
+    echo "ERROR: ANTHROPIC_VERTEX_PROJECT_ID was not forwarded" >&2
+    exit 2
+}
+if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
+    [ -r "${GOOGLE_APPLICATION_CREDENTIALS}" ] || {
+        echo "ERROR: GOOGLE_APPLICATION_CREDENTIALS is not readable in the sandbox" >&2
+        exit 2
+    }
 else
-    echo "ERROR: No oauth_token file found at /home/ben/oauth_token" >&2
-    exit 1
+    curl -fsS --connect-timeout 3 -o /dev/null -H 'Metadata-Flavor: Google' \
+        http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token || {
+        echo "ERROR: Vertex needs ADC or an attached Google service account" >&2
+        exit 2
+    }
+fi
+case "${AWM_STUDY_CONDITION:-}" in
+    c2)
+        : "${AWM_PRIOR_CORPUS_MANIFEST_SHA256:?ERROR: expected raw corpus manifest SHA-256 was not forwarded}"
+        [ -f /home/ben/prior_runs/INDEX.md ] && [ -s /home/ben/prior_runs/index.jsonl ] || {
+            echo "ERROR: C2 requires the read-only /home/ben/prior_runs mount with a non-empty index" >&2
+            exit 2
+        }
+        [ ! -e /home/ben/wm-memory ] || {
+            echo "ERROR: C2 must not receive historical card memory" >&2
+            exit 2
+        }
+        [ "${ARM}" = llm ] || { echo "ERROR: C2 requires arm=llm" >&2; exit 2; }
+        ;;
+    c3)
+        : "${AWM_CARD_CORPUS_MANIFEST_SHA256:?ERROR: expected card corpus manifest SHA-256 was not forwarded}"
+        [ ! -e /home/ben/prior_runs ] || {
+            echo "ERROR: C3 must not receive the direct prior-runs mount" >&2
+            exit 2
+        }
+        [ "${ARM}" = llm ] || { echo "ERROR: C3 requires arm=llm" >&2; exit 2; }
+        [ -s /home/ben/wm-memory/structured/cards.jsonl ] || {
+            echo "ERROR: C3 requires seeded card memory at /home/ben/wm-memory" >&2
+            exit 2
+        }
+        ;;
+    *)
+        echo "ERROR: claude_wm requires AWM_STUDY_CONDITION=c2 or c3" >&2
+        exit 2
+        ;;
+esac
+[ "${SIDES}" = train ] || [ "${SIDES}" = train,test ] || {
+    echo "ERROR: memory sides must be train or train,test" >&2
+    exit 2
+}
+[ "${RO:-}" = "ro" ] || { echo "ERROR: held-out Gemma WMA cells must be read-only (:ro)" >&2; exit 2; }
+CORPUS_VALIDATOR=/home/ben/agent/validate_study_corpus.py
+RUNTIME_ATTESTER=/home/ben/agent/attest_claude_runtime.py
+WMA_VALIDATOR=/home/ben/agent/validate_wma_session.py
+[ -x "${CORPUS_VALIDATOR}" ] || { echo "ERROR: study corpus validator is missing" >&2; exit 2; }
+[ -x "${RUNTIME_ATTESTER}" ] || { echo "ERROR: Claude runtime attester is missing" >&2; exit 2; }
+[ -x "${WMA_VALIDATOR}" ] || { echo "ERROR: WMA session validator is missing" >&2; exit 2; }
+if [ "${AWM_STUDY_CONDITION}" = c2 ]; then
+    python3 "${CORPUS_VALIDATOR}" raw /home/ben/prior_runs \
+        --sides "${SIDES}" \
+        --expected-manifest-sha256 "${AWM_PRIOR_CORPUS_MANIFEST_SHA256}" \
+        --require-readonly --condition c2 --repetition "${AWM_STUDY_REPETITION}" \
+        --study-mode "${AWM_STUDY_MODE}" --num-hours "${AWM_STUDY_NUM_HOURS}" \
+        --ptb-commit "${AWM_PTB_COMMIT}" --harness-commit "${AWM_REPO_COMMIT}" \
+        --ptb-surface-manifest-sha256 "${AWM_PTB_SURFACE_MANIFEST_SHA256}" \
+        --record /home/ben/task/study-input.json || exit 2
+else
+    python3 "${CORPUS_VALIDATOR}" cards /home/ben/wm-memory \
+        --sides "${SIDES}" \
+        --expected-manifest-sha256 "${AWM_CARD_CORPUS_MANIFEST_SHA256}" \
+        --require-readonly \
+        --condition c3 --repetition "${AWM_STUDY_REPETITION}" \
+        --study-mode "${AWM_STUDY_MODE}" --num-hours "${AWM_STUDY_NUM_HOURS}" \
+        --ptb-commit "${AWM_PTB_COMMIT}" --harness-commit "${AWM_REPO_COMMIT}" \
+        --ptb-surface-manifest-sha256 "${AWM_PTB_SURFACE_MANIFEST_SHA256}" \
+        --record /home/ben/task/study-input.json || exit 2
 fi
 
+# The autonomous WMA invokes the same installed Claude CLI before the scientist
+# starts, so update/verify it before `awm wm init` validates the llm arm.
+[ "${POST_TRAIN_BENCH_SKIP_CLI_UPDATE:-}" = 1 ] || {
+    echo "ERROR: POST_TRAIN_BENCH_SKIP_CLI_UPDATE=1 is required for a reproducible cell" >&2
+    exit 2
+}
+python3 "${RUNTIME_ATTESTER}" install-cli \
+    --version-file /home/ben/cli_version.txt \
+    --package-version "${AWM_CLAUDE_CLI_VERSION}" \
+    --expected-version-output "${AWM_EXPECTED_CLAUDE_CLI_VERSION_OUTPUT}" \
+    --record /home/ben/task/claude-cli-attestation.json \
+    --study-input /home/ben/task/study-input.json || exit 2
+
 # --- the runtime -----------------------------------------------------------
-# PYTHONNOUSERSITE=1 is set in the sandbox, so `pip install --user` would be
-# invisible; a clone on PYTHONPATH needs nothing but PyYAML, which transformers
-# already pulls in.
-git clone --quiet --depth 1 --branch "${AWM_REPO_REF}" "${AWM_REPO_URL}" /home/ben/awm \
-    || { echo "ERROR: could not clone ${AWM_REPO_URL}@${AWM_REPO_REF}" >&2; exit 1; }
-AWM_SHA="$(git -C /home/ben/awm rev-parse HEAD)"
-echo "awm ${AWM_REPO_REF} @ ${AWM_SHA}"
-export PYTHONPATH="/home/ben/awm${PYTHONPATH:+:$PYTHONPATH}"
+# setup.sh packages only awm/, input/, and .claude/ from the exact Git commit
+# into PTB's agent payload.  No results tree or Git object database enters the
+# sandbox, so a C2 scientist cannot discover the historical cards indirectly.
+AWM_SRC=/home/ben/agent/awm-src
+[ -f "${AWM_SRC}/awm/cli.py" ] && [ -f "${AWM_SRC}/AWM_COMMIT" ] || {
+    echo "ERROR: missing packaged awm runtime; rerun rollout/setup.sh" >&2
+    exit 1
+}
+AWM_SHA="$(tr -d '[:space:]' < "${AWM_SRC}/AWM_COMMIT")"
+[ "${AWM_SHA}" = "${AWM_REPO_COMMIT,,}" ] || {
+    echo "ERROR: packaged awm ${AWM_SHA}, expected ${AWM_REPO_COMMIT}" >&2
+    exit 1
+}
+echo "awm commit ${AWM_SHA}"
+export PYTHONPATH="${AWM_SRC}${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p /home/ben/.local/bin
 printf '#!/bin/bash\nexec python3 -m awm.cli "$@"\n' > /home/ben/.local/bin/awm
 chmod +x /home/ben/.local/bin/awm
@@ -53,52 +163,69 @@ export PATH="/home/ben/.local/bin:${PATH}"
 python3 -c "import awm.wm.runtime, yaml; print('awm import ok')" || { echo "ERROR: awm does not import" >&2; exit 1; }
 
 export AWM_SESSION_DIR=/home/ben/task
-cp /home/ben/awm/input/exp-card.template.yaml /home/ben/task/exp-card.template.yaml
-rm -rf /home/ben/task/.claude && cp -r /home/ben/awm/.claude /home/ben/task/.claude
+cp "${AWM_SRC}/input/exp-card.template.yaml" /home/ben/task/exp-card.template.yaml
+rm -rf /home/ben/task/.claude && cp -r "${AWM_SRC}/.claude" /home/ben/task/.claude
 
-# A cell's label must equal what ran: arms that read memory get no silent
-# fallback to an empty one, and the autonomous arms run strict (a failed agent
-# call fails the brief loudly instead of quietly answering as the null arm).
-MEM=/home/ben/wm-memory
-case "${ARM}" in
-    retrieval|llm)
-        [ -d "$MEM" ] || { echo "ERROR: arm ${ARM} reads WMA memory but /home/ben/wm-memory is not mounted (WM_MEMORY in the pack)" >&2; exit 1; } ;;
-    *)
-        if [ ! -d "$MEM" ]; then MEM=/home/ben/wm-memory-local; mkdir -p "$MEM"; RO=""; echo "memory: none mounted; arm ${ARM} does not read it (private empty store for the ledger)"; fi ;;
-esac
+if [ "${AWM_STUDY_CONDITION}" = c2 ]; then
+    MEM=/home/ben/wm-empty-memory
+    CORPUS_ARGS=(--wma-corpus-kind raw --wma-corpus-root /home/ben/prior_runs)
+else
+    MEM=/home/ben/wm-memory
+    CORPUS_ARGS=(--wma-corpus-kind cards)
+fi
 INIT_ARGS=(--arm "${ARM}" --submission /home/ben/task/final_model --submission-mode copy
-           --memory-root "${MEM}" --memory-sides "${SIDES}" --wma-model "${WMA_MODEL}")
-[ "${RO:-}" = "ro" ] && INIT_ARGS+=(--memory-readonly --split-side test)
-case "${ARM}" in
-    traj|llm)
-        INIT_ARGS+=(--wma-strict)
-        [ -d /home/ben/prior_runs ] || [ "${ARM}" = "llm" ] || { echo "ERROR: arm traj needs /home/ben/prior_runs mounted (PRIOR_RUNS in the pack)" >&2; exit 1; } ;;
-esac
-[ -d /home/ben/prior_runs ] && INIT_ARGS+=(--prior-runs /home/ben/prior_runs)
+           --memory-root "${MEM}" --memory-sides "${SIDES}"
+           --wma-model "${AWM_WMA_MODEL}" "${CORPUS_ARGS[@]}")
+INIT_ARGS+=(--memory-readonly --split-side test)
 awm wm --dir /home/ben/task init "${INIT_ARGS[@]}" || { echo "ERROR: awm wm init failed" >&2; exit 1; }
 echo "${AWM_SHA}" > /home/ben/task/wm/awm_sha.txt
 awm wm --dir /home/ben/task memory stats
 
-if [ -d /home/ben/prior_runs ]; then
+if [ "${AWM_STUDY_CONDITION}" = "c2" ]; then
     echo "prior_runs: $(find /home/ben/prior_runs -maxdepth 2 -mindepth 2 -type d | wc -l) run dirs"
 else
-    echo "prior_runs: not mounted"
+    echo "prior_runs: intentionally not mounted (C3)"
 fi
 
 # --- the scientist ----------------------------------------------------------
 export BASH_MAX_TIMEOUT_MS="36000000"
 export CLAUDE_CODE_EFFORT_LEVEL="high"
-bash /home/ben/update_agent_cli.sh claude
 
+SCIENTIST_STREAM=/home/ben/task/scientist-stream.jsonl
 printf '%s' "$PROMPT" | claude --print --verbose --model "$MODEL" \
     --output-format stream-json --thinking-display summarized \
-    --dangerously-skip-permissions
-rc=$?
-echo "claude exit ${rc}"
+    --dangerously-skip-permissions | tee "${SCIENTIST_STREAM}"
+pipeline_status=("${PIPESTATUS[@]}")
+prompt_rc="${pipeline_status[0]}"
+rc="${pipeline_status[1]}"
+tee_rc="${pipeline_status[2]}"
+printf '%s\n' "${rc}" > /home/ben/task/claude-exit-code.txt
+echo "claude exit ${rc} (prompt=${prompt_rc} tee=${tee_rc})"
 
 # --- what the runtime knows at the end ------------------------------------
 awm wm --dir /home/ben/task status || true
-echo "degraded agent calls: $(grep -c '"event": "agent_degraded"' /home/ben/task/wm/events.jsonl 2>/dev/null || echo 0)  (a cell with any is not a clean ${ARM} cell)"
 awm wm --dir /home/ben/task pending || true
-ls -la /home/ben/task/final_model 2>/dev/null || echo "no final_model/"
+[ "${rc}" -eq 0 ] || exit "${rc}"
+[ "${prompt_rc}" -eq 0 ] && [ "${tee_rc}" -eq 0 ] || {
+    echo "ERROR: failed to preserve the complete Claude stream" >&2
+    exit 1
+}
+python3 "${RUNTIME_ATTESTER}" model "${SCIENTIST_STREAM}" \
+    --requested-alias "${MODEL}" \
+    --expected-model-id "${AWM_EXPECTED_SCIENTIST_MODEL_ID}" \
+    --record /home/ben/task/scientist-model-attestation.json \
+    --study-input /home/ben/task/study-input.json || exit 2
+if grep -Eq '"event"[[:space:]]*:[[:space:]]*"agent_(degraded|failed)"' \
+    /home/ben/task/wm/events.jsonl 2>/dev/null; then
+    echo "ERROR: autonomous WMA degraded or failed; censoring this labelled cell" >&2
+    exit 3
+fi
+[ -d /home/ben/task/final_model ] && [ -n "$(find /home/ben/task/final_model -mindepth 1 -print -quit)" ] || {
+    echo "ERROR: Claude exited successfully without a non-empty final_model/" >&2
+    exit 1
+}
+python3 "${WMA_VALIDATOR}" /home/ben/task \
+    --record /home/ben/task/wma-session-attestation.json \
+    --study-input /home/ben/task/study-input.json || exit 2
+ls -la /home/ben/task/final_model
 echo "claude_wm done"

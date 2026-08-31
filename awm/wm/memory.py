@@ -16,12 +16,13 @@ Every row carries ``provenance: {session, arm, split_side}``. A memory opened
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path
 from typing import Any
 
-from .schema import dump_json, now, read_jsonl
+from .schema import WMError, dump_json, inside, now, read_jsonl, sha256_file
 
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-_.]{2,}")
 
@@ -44,6 +45,38 @@ class Memory:
             (self.root / "raw").mkdir(parents=True, exist_ok=True)
             self.structured.mkdir(parents=True, exist_ok=True)
             (self.root / "notes").mkdir(parents=True, exist_ok=True)
+
+    def card_corpus_roots(self, *, require: bool = False) -> list[Path]:
+        """Return the complete reconstructed-card roots visible to this session.
+
+        The LLM arm receives these directories directly.  Unlike ``precedents``,
+        this is not a ranked or truncated view: every YAML card for every visible
+        side is present below the returned roots.  ``require`` makes a missing or
+        empty side a hard error so an experiment cannot silently become a
+        no-memory control.
+        """
+        roots: list[Path] = []
+        for side in self.visible_sides:
+            if side not in ("train", "test"):
+                raise WMError(f"invalid memory side {side!r}; choose train or test")
+            root = self.root / "corpus" / side
+            has_cards = root.is_dir() and next(root.glob("r-*/exp-*.yaml"), None) is not None
+            if require and not root.is_dir():
+                raise WMError(
+                    f"llm memory side {side!r} has no full experiment-card corpus under {root}; "
+                    "re-seed it with `awm wm memory seed <results-dir> --side " + side + "`"
+                )
+            if require:
+                # Re-attest on every autonomous call.  Production mounts this
+                # corpus read-only as well, but audit validity must not depend
+                # on a stale in-process cache.
+                _validate_card_corpus_root(root, side)
+                roots.append(root.resolve())
+            elif has_cards:
+                roots.append(root.resolve())
+        if require and not roots:
+            raise WMError(f"no full experiment-card corpus is visible under {self.root}")
+        return roots
 
     # ---- provenance
 
@@ -189,21 +222,47 @@ class Memory:
     # ---- seeding from reconstructed cards
 
     def seed_from_exp_cards(self, results_dir: Path, *, side: str = "train") -> int:
-        """Load ``results/exp-cards/<split>/<side>/<run_ref>/exp-*.yaml`` as precedent rows.
+        """Materialise full cards and structured rows from an experiment-card split.
 
-        These are reconstructions, so they are tagged ``reconstructed: true``
-        and ``split_side`` from the directory, never mixed into live evidence.
+        The exact YAML files are copied to ``corpus/<side>`` for the autonomous
+        LLM arm.  The structured rows remain available to the deterministic
+        retrieval arm.  Re-seeding a side replaces that side atomically instead
+        of appending duplicate rows.
         """
         import yaml
 
-        n = 0
-        for path in sorted((results_dir / side).glob("r-*/exp-*.yaml")):
+        if self.readonly:
+            raise WMError("cannot seed a read-only memory")
+        if side not in ("train", "test"):
+            raise WMError(f"invalid seed side {side!r}; choose train or test")
+        source_root = Path(results_dir) / side
+        paths = sorted(source_root.glob("r-*/exp-*.yaml"))
+        if not paths:
+            raise WMError(f"no experiment cards found under {source_root}")
+
+        corpus_parent = self.root / "corpus"
+        corpus_parent.mkdir(parents=True, exist_ok=True)
+        stage = corpus_parent / f".{side}.tmp-{os.getpid()}"
+        if stage.exists():
+            shutil.rmtree(stage)
+        stage.mkdir(parents=True)
+
+        seeded: list[dict[str, Any]] = []
+        manifest: list[dict[str, Any]] = []
+        for path in paths:
             try:
                 card = yaml.safe_load(path.read_text())
-            except yaml.YAMLError:
-                continue
+            except yaml.YAMLError as exc:
+                shutil.rmtree(stage, ignore_errors=True)
+                raise WMError(f"invalid experiment card {path}: {exc}") from exc
             if not isinstance(card, dict) or "setup" not in card:
-                continue
+                shutil.rmtree(stage, ignore_errors=True)
+                raise WMError(f"invalid experiment card {path}: expected a mapping with setup")
+
+            rel = path.relative_to(source_root)
+            dest = stage / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, dest)
             setup = card.get("setup") or {}
             res = card.get("result") or {}
             con = card.get("conclusion") or {}
@@ -226,14 +285,95 @@ class Memory:
                 "verdict": con.get("verdict"),
                 "decision": con.get("decision"),
                 "reconstructed": True,
-                "raw_dir": str(path.parent),
+                "corpus_path": str(Path("corpus") / side / rel),
+                "source_path": str(Path(side) / rel),
+                "content_sha256": sha256_file(dest),
+                "raw_dir": str(self.root / "corpus" / side / rel.parent),
             }
-            saved_side = self.split_side
-            self.split_side = side
-            self._append("cards", row)
-            self.split_side = saved_side
-            n += 1
-        return n
+            row["provenance"] = {
+                "session": self.session,
+                "arm": self.arm,
+                "split_side": side,
+                "at": now(),
+            }
+            seeded.append(row)
+            manifest.append({
+                "card_id": row["card_id"],
+                "path": str(rel),
+                "sha256": row["content_sha256"],
+                "run_ref": path.parent.name,
+                "side": side,
+            })
+
+        _write_jsonl(stage / "manifest.jsonl", manifest)
+        coverage_path = Path(results_dir) / "coverage.json"
+        source_coverage: dict[str, Any] = {}
+        if coverage_path.is_file():
+            try:
+                source_coverage = json.loads(coverage_path.read_text())
+            except json.JSONDecodeError as exc:
+                shutil.rmtree(stage, ignore_errors=True)
+                raise WMError(f"invalid corpus coverage metadata {coverage_path}: {exc}") from exc
+        card_runs = sorted({row["run_ref"] for row in manifest})
+        missing = (
+            (source_coverage.get("runs_without_cards") or {}).get("by_side", {}).get(side)
+            or []
+        )
+        missing = sorted(str(run_ref) for run_ref in missing)
+        expected_runs = (source_coverage.get("expected_runs_by_side") or {}).get(side)
+        if expected_runs is not None and int(expected_runs) != len(card_runs) + len(missing):
+            shutil.rmtree(stage, ignore_errors=True)
+            raise WMError(
+                f"coverage for {side} says {expected_runs} expected runs, but the corpus has "
+                f"{len(card_runs)} card-bearing plus {len(missing)} recorded missing runs"
+            )
+        corpus_manifest = {
+            "schema_version": "awm-exp-card-corpus-v1",
+            "side": side,
+            "card_count": len(seeded),
+            "card_bearing_run_count": len(card_runs),
+            "card_bearing_run_refs": card_runs,
+            "expected_run_count": int(expected_runs) if expected_runs is not None else None,
+            "expected_run_refs": sorted(set(card_runs) | set(missing)) if expected_runs is not None else None,
+            "missing_run_count": len(missing) if expected_runs is not None else None,
+            "missing_run_refs": missing if expected_runs is not None else None,
+            "missing_cause": (
+                (source_coverage.get("runs_without_cards") or {}).get("cause")
+                if expected_runs is not None
+                else "coverage metadata unavailable"
+            ),
+            "coverage_evidence": (
+                (source_coverage.get("runs_without_cards") or {}).get("evidence")
+                if expected_runs is not None
+                else None
+            ),
+            "source_coverage_sha256": sha256_file(coverage_path) if coverage_path.is_file() else None,
+            "cards_manifest": "manifest.jsonl",
+        }
+        dump_json(stage / "manifest.json", corpus_manifest)
+        final = corpus_parent / side
+        backup = corpus_parent / f".{side}.old-{os.getpid()}"
+        try:
+            if final.exists():
+                os.replace(final, backup)
+            os.replace(stage, final)
+        except Exception:
+            if backup.exists() and not final.exists():
+                os.replace(backup, final)
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
+        else:
+            shutil.rmtree(backup, ignore_errors=True)
+
+        existing = [
+            row for row in self._rows("cards")
+            if not (
+                row.get("reconstructed") is True
+                and row.get("provenance", {}).get("split_side") == side
+            )
+        ]
+        _write_jsonl(self.structured / "cards.jsonl", existing + seeded)
+        return len(seeded)
 
 
 def _base_model(card: dict[str, Any]) -> str | None:
@@ -244,3 +384,102 @@ def _base_model(card: dict[str, Any]) -> str | None:
 
 def dump_debug(path: Path, value: Any) -> None:
     dump_json(path, value)
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Atomically write deterministic JSONL without exposing a partial corpus index."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with tmp.open("w") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+    os.replace(tmp, path)
+
+
+def _validate_card_corpus_root(root: Path, side: str) -> None:
+    """Verify the seeded manifest, inventory, side coverage and every card hash."""
+    if root.is_symlink() or not root.is_dir():
+        raise WMError(f"full card corpus root is missing or symlinked: {root}")
+    manifest_path = root / "manifest.json"
+    cards_path = root / "manifest.jsonl"
+    if (
+        manifest_path.is_symlink()
+        or cards_path.is_symlink()
+        or not manifest_path.is_file()
+        or not cards_path.is_file()
+    ):
+        raise WMError(f"full card corpus {root} is missing manifest.json or manifest.jsonl")
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        rows = read_jsonl(cards_path)
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise WMError(f"invalid card-corpus manifest under {root}: {exc}") from exc
+    if manifest.get("schema_version") != "awm-exp-card-corpus-v1":
+        raise WMError(f"invalid card-corpus schema under {root}")
+    if manifest.get("side") != side:
+        raise WMError(f"card-corpus manifest side is {manifest.get('side')!r}, expected {side!r}")
+    actual = {path.relative_to(root).as_posix(): path for path in root.glob("r-*/exp-*.yaml")}
+    expected_dirs = {root.resolve()}
+    expected_dirs.update(path.parent.resolve() for path in actual.values())
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise WMError(f"card corpus contains a symlink: {path}")
+        if path.is_dir() and path.resolve() not in expected_dirs:
+            raise WMError(f"card corpus contains an unexpected directory: {path}")
+        if path.is_file():
+            rel = path.relative_to(root)
+            allowed = (
+                (len(rel.parts) == 1 and rel.name in ("manifest.json", "manifest.jsonl"))
+                or (
+                    len(rel.parts) == 2
+                    and rel.parts[0].startswith("r-")
+                    and rel.name.startswith("exp-")
+                    and rel.suffix == ".yaml"
+                )
+            )
+            if not allowed:
+                raise WMError(f"card corpus contains an unexpected file: {path}")
+    indexed: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        rel = row.get("path")
+        digest = row.get("sha256")
+        if not isinstance(rel, str) or not isinstance(digest, str):
+            raise WMError(f"invalid card entry in {cards_path}")
+        candidate = (root / rel).resolve()
+        if not inside(candidate, root) or candidate.suffix != ".yaml":
+            raise WMError(f"unsafe card path {rel!r} in {cards_path}")
+        if rel in indexed:
+            raise WMError(f"duplicate card path {rel!r} in {cards_path}")
+        indexed[rel] = row
+    if set(indexed) != set(actual):
+        missing = sorted(set(indexed) - set(actual))
+        extra = sorted(set(actual) - set(indexed))
+        raise WMError(f"card corpus inventory mismatch under {root}: missing={missing}, extra={extra}")
+    if manifest.get("card_count") != len(rows):
+        raise WMError(f"card corpus {root} says {manifest.get('card_count')} cards, found {len(rows)}")
+    for rel, path in actual.items():
+        if path.is_symlink() or not path.is_file():
+            raise WMError(f"card corpus entry is not a regular copied file: {path}")
+        if sha256_file(path) != indexed[rel]["sha256"]:
+            raise WMError(f"card corpus hash mismatch: {path}")
+
+    card_runs = sorted({Path(rel).parent.name for rel in actual})
+    if manifest.get("card_bearing_run_refs") != card_runs:
+        raise WMError(f"card-bearing run refs do not match card inventory under {root}")
+    if manifest.get("card_bearing_run_count") != len(card_runs):
+        raise WMError(f"card-bearing run count does not match card inventory under {root}")
+    expected = manifest.get("expected_run_count")
+    expected_refs = manifest.get("expected_run_refs")
+    missing_refs = manifest.get("missing_run_refs")
+    if not isinstance(expected, int) or not isinstance(expected_refs, list) or not isinstance(missing_refs, list):
+        raise WMError(f"card corpus {root} lacks expected/missing-run coverage; re-seed from published metadata")
+    if len(expected_refs) != expected or len(set(expected_refs)) != expected:
+        raise WMError(f"expected run refs/count are inconsistent under {root}")
+    if set(expected_refs) != set(card_runs) | set(missing_refs):
+        raise WMError(f"expected run refs are not card-bearing plus missing refs under {root}")
+    if set(card_runs) & set(missing_refs):
+        raise WMError(f"a run is both card-bearing and missing under {root}")
+    if manifest.get("missing_run_count") != len(missing_refs):
+        raise WMError(f"missing run refs/count are inconsistent under {root}")
+    if not manifest.get("source_coverage_sha256"):
+        raise WMError(f"card corpus {root} has no source coverage hash")

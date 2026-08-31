@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from argparse import Namespace
 
 import pytest
 
@@ -191,9 +192,16 @@ def fake_hub_rev(tmp_path, listing, monkeypatch) -> list[tuple[str, str | None]]
         out = tmp_path / filename
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text("{}")
+        fetch._write_testable_download_metadata(tmp_path, filename, revision)
         return str(out)
 
-    monkeypatch.setattr(fetch, "ptb_list_files", lambda *a, **kw: listing)
+    monkeypatch.setattr(
+        fetch,
+        "ptb_list_run_files",
+        lambda runs, revision, files=fetch.PTB_RUN_FILES, workers=12: fetch.ptb_select_runs(
+            listing, runs, files
+        ),
+    )
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
     return asked
 
@@ -214,3 +222,149 @@ class TestFetchRuns:
         fake_hub_rev.clear()
         fetch.fetch_ptb_runs([RUN], revision="39d3fcd", dest=tmp_path, workers=2)
         assert fake_hub_rev == []
+
+    def test_an_unproven_existing_file_is_re_downloaded(self, tmp_path, fake_hub_rev):
+        path = tmp_path / RUN / "solve_out.txt"
+        path.parent.mkdir(parents=True)
+        path.write_text("stale")
+
+        fetch.fetch_ptb_runs([RUN], revision="39d3fcd", dest=tmp_path, workers=2)
+
+        assert (f"{RUN}/solve_out.txt", "39d3fcd") in fake_hub_rev
+
+    def test_a_different_pinned_revision_re_downloads_every_file(
+        self, tmp_path, fake_hub_rev
+    ):
+        fetch.fetch_ptb_runs([RUN], revision="39d3fcda", dest=tmp_path, workers=2)
+        fake_hub_rev.clear()
+
+        fetch.fetch_ptb_runs([RUN], revision="49d3fcdb", dest=tmp_path, workers=2)
+
+        assert set(fake_hub_rev) == {
+            (f"{RUN}/solve_out.txt", "49d3fcdb"),
+            (f"{RUN}/metrics.json", "49d3fcdb"),
+            (fetch.PTB_CATALOG, "49d3fcdb"),
+        }
+
+    def test_cached_listing_restores_an_optional_file_after_interruption(
+        self, tmp_path, fake_hub_rev, monkeypatch
+    ):
+        optional = f"{RUN}/solve_parsed.txt"
+        listing_calls = 0
+
+        def list_files(runs, revision, files=fetch.PTB_RUN_FILES, workers=12):
+            nonlocal listing_calls
+            listing_calls += 1
+            return [(f"{RUN}/solve_out.txt", 10), (f"{RUN}/metrics.json", 2), (optional, 20)]
+
+        monkeypatch.setattr(fetch, "ptb_list_run_files", list_files)
+        fetch.fetch_ptb_runs([RUN], revision="39d3fcd", dest=tmp_path, workers=2)
+        (tmp_path / optional).unlink()
+        fake_hub_rev.clear()
+
+        fetch.fetch_ptb_runs([RUN], revision="39d3fcd", dest=tmp_path, workers=2)
+
+        assert listing_calls == 1
+        assert fake_hub_rev == [(optional, "39d3fcd")]
+
+    def test_split_fetch_does_not_scan_the_dataset_wide_tree(
+        self, tmp_path, fake_hub_rev, monkeypatch
+    ):
+        monkeypatch.setattr(
+            fetch,
+            "ptb_list_files",
+            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("scanned full dataset tree")),
+        )
+        fetch.fetch_ptb_runs([RUN], revision="39d3fcd", dest=tmp_path, workers=2)
+        assert (tmp_path / RUN / "solve_out.txt").is_file()
+
+
+class TestRunCorpusValidation:
+    def test_requires_all_mandatory_files_at_the_same_revision(self, tmp_path):
+        for name in fetch.PTB_REQUIRED_RUN_FILES:
+            path = tmp_path / RUN / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}")
+            fetch._write_testable_download_metadata(tmp_path, f"{RUN}/{name}", "39d3fcd")
+
+        assert fetch.check_ptb_run_files([RUN], "39d3fcd", tmp_path) == []
+
+        (tmp_path / RUN / "metrics.json").unlink()
+        problems = fetch.check_ptb_run_files([RUN], "39d3fcd", tmp_path)
+        assert problems == [f"{RUN}: required metrics.json is missing"]
+
+    def test_rejects_a_file_from_another_revision(self, tmp_path):
+        for name in fetch.PTB_REQUIRED_RUN_FILES:
+            path = tmp_path / RUN / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}")
+            revision = "49d3fcdb" if name == "time_taken.txt" else "39d3fcd"
+            fetch._write_testable_download_metadata(tmp_path, f"{RUN}/{name}", revision)
+
+        problems = fetch.check_ptb_run_files([RUN], "39d3fcd", tmp_path)
+        assert len(problems) == 1
+        assert "time_taken.txt is not proven" in problems[0]
+
+
+class TestSplitFetchValidation:
+    def test_cli_fails_when_the_pinned_catalog_or_declared_runs_do_not_validate(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from awm import cli, splits
+
+        catalog = tmp_path / fetch.PTB_CATALOG
+        catalog.parent.mkdir(parents=True)
+        catalog.write_text('{"runs": []}')
+        split = splits.Split(
+            id="posttrainbench/test",
+            dataset={"revision": "39d3fcd", "catalog_sha256": "pinned"},
+            benchmark="gsm8k",
+            rule={},
+            train=(RUN,),
+            test=(),
+        )
+        monkeypatch.setattr(splits, "load", lambda _id: split)
+        monkeypatch.setattr(
+            fetch,
+            "fetch_ptb_runs",
+            lambda *args, **kwargs: fetch.FetchResult("posttrainbench", tmp_path, 1, 12),
+        )
+        monkeypatch.setattr(splits, "check", lambda *args, **kwargs: ["catalog mismatch"])
+        monkeypatch.setattr(
+            fetch, "check_ptb_run_files", lambda *args, **kwargs: ["required file missing"]
+        )
+
+        assert cli._split_fetch(Namespace(id="posttrainbench/test")) == 1
+        err = capsys.readouterr().err
+        assert "catalog mismatch" in err
+        assert "required file missing" in err
+
+    def test_cli_reports_a_fully_validated_pinned_split(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from awm import cli, splits
+
+        catalog = tmp_path / fetch.PTB_CATALOG
+        catalog.parent.mkdir(parents=True)
+        catalog.write_text('{"runs": []}')
+        split = splits.Split(
+            id="posttrainbench/test",
+            dataset={"revision": "39d3fcd", "catalog_sha256": "pinned"},
+            benchmark="gsm8k",
+            rule={},
+            train=(RUN,),
+            test=("cfg/gsm8k_google_gemma-3-4b-pt_2",),
+        )
+        monkeypatch.setattr(splits, "load", lambda _id: split)
+        monkeypatch.setattr(
+            fetch,
+            "fetch_ptb_runs",
+            lambda *args, **kwargs: fetch.FetchResult("posttrainbench", tmp_path, 1, 12),
+        )
+        monkeypatch.setattr(splits, "check", lambda *args, **kwargs: [])
+        monkeypatch.setattr(fetch, "check_ptb_run_files", lambda *args, **kwargs: [])
+
+        assert cli._split_fetch(Namespace(id="posttrainbench/test")) == 0
+        out = capsys.readouterr().out
+        assert "1 train + 1 test runs" in out
+        assert "39d3fcd" in out

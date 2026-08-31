@@ -62,13 +62,14 @@ def default_config(session_dir: Path, arm: str = "null") -> dict[str, Any]:
         "submission": str(session_dir / "submission"),
         "submission_mode": "symlink",   # or "copy": adopt copies the sealed checkpoint into `submission`
         "memory_sides": ["train"],      # which split sides the agent may retrieve from
-        "prior_runs_root": None,        # raw prior runs the llm/traj arms may read (e.g. /home/ben/prior_runs)
-        "wma_backend": "claude-cli",    # llm/traj arms: claude-cli | fake
-        "wma_model": "claude-opus-4-8",  # the agent's own model; fixed across cells
-        "wma_call_timeout_s": 900,
-        "wma_max_turns": 40,
-        "wma_strict": False,            # autonomous arms: fail the brief instead of falling back silently
-        "retrieval_k": 5,               # top-k precedents the retrieval/llm arms pull from memory
+        "wma_provider": "vertex",
+        "wma_model": os.environ.get("AWM_WMA_MODEL"),
+        "wma_corpus_kind": "cards",
+        "wma_corpus_root": os.environ.get("AWM_WMA_CORPUS_ROOT"),
+        "wma_command": "claude",
+        "wma_effort": "high",
+        "wma_max_budget_usd": 1.0,
+        "wma_timeout_s": 900,
         "official_argv": None,      # default: python evaluate.py --model-path {checkpoint} --limit {n} --json-output-file {out}/metrics.json
         "official_cwd": None,       # default: the session dir
         "custom_argv": None,        # default: python -m awm.wm.score_items ...
@@ -109,8 +110,7 @@ class Session:
                              arm=self.config["arm"], split_side=self.config.get("split_side", "train"),
                              readonly=bool(self.config.get("memory_readonly")),
                              visible_sides=tuple(self.config.get("memory_sides") or ["train"]))
-        self.config["_session_dir"] = str(self.dir)
-        self.agent = make_agent(self.config["arm"])
+        self.agent = make_agent(self.config["arm"], session_dir=self.dir)
 
     # ------------------------------------------------------------ init
 
@@ -133,6 +133,8 @@ class Session:
         shutil.copy2(HOOK_SRC, wm / "hook_example.py")
         (wm / "cards").mkdir(exist_ok=True)
         s = cls(d)
+        if hasattr(s.agent, "validate"):
+            s.agent.validate(s.memory, s.config)
         s.ledger.append("session_init", arm=arm, config=str(cfg_path))
         return s
 
@@ -218,13 +220,31 @@ class Session:
         try:
             brief: Brief = self.agent.on_proposal(card, grounding, self.memory, self.config)
         except Exception as exc:
-            self.ledger.append("agent_failed", card_id=card_id, where="brief", error=repr(exc)[:300])
-            raise WMError(f"the world-model agent could not produce the brief ({exc}); "
-                          f"wma_strict is on, so the card stays a draft — fix the agent setup and re-propose") from exc
+            self.ledger.append(
+                "agent_failed",
+                card_id=card_id,
+                where="brief",
+                arm=self.config["arm"],
+                corpus_kind=self.config.get("wma_corpus_kind"),
+                model=self.config.get("wma_model"),
+                produced_by="none",
+                degraded=f"{type(exc).__name__}: {exc}"[:500],
+            )
+            raise WMError(
+                "the autonomous world-model could not produce a validated brief; "
+                "the cell failed closed and must not be labelled as an llm-arm result"
+            ) from exc
+        agent_meta = self._agent_meta(brief)
+        if self.agent.arm == "llm" and (
+            brief.produced_by != "llm" or brief.degraded is not None
+        ):
+            self.ledger.append("agent_degraded", card_id=card_id, where="brief", **agent_meta)
+            raise WMError("the llm arm degraded; refusing a mislabeled study cell")
         validate_contract(brief.contract)
         dump_yaml(cdir / "contract.proposed.yaml", brief.contract)
         dump_json(cdir / "grounding" / f"brief-{st['brief_rounds'] + 1}.json", {
             "precedents": brief.precedents, "objections": brief.objections, "prediction": brief.prediction,
+            "evidence": brief.evidence, "audit": brief.audit, "agent": agent_meta,
         })
         blocking = [o for o in brief.objections if o.get("severity") == "blocking"]
         evidence = [{"path": str(cdir / "grounding" / "report.json"), "locator": "checks",
@@ -236,10 +256,20 @@ class Session:
         for o in brief.objections:
             evidence.append({"path": str(cdir / "card.yaml"), "locator": o.get("field"),
                              "observation": f"[{o.get('severity')}] {o.get('fix')}"})
-        agent_evidence = _lint_evidence(brief.evidence, self.dir, self.config.get("memory_root"), self.config.get("prior_runs_root"))
-        if len(agent_evidence) < len(brief.evidence):
-            self.ledger.append("lint", card_id=card_id, dropped=len(brief.evidence) - len(agent_evidence), where="brief")
-        evidence += agent_evidence
+        agent_evidence = _lint_evidence(
+            brief.evidence,
+            self.dir,
+            Path(self.config["memory_root"]),
+            extra_roots=_wma_evidence_roots(self.config),
+        )
+        if len(agent_evidence) != len(brief.evidence):
+            self.ledger.append("lint", card_id=card_id,
+                               dropped=len(brief.evidence) - len(agent_evidence), phase="brief")
+            if self.agent.arm == "llm":
+                raise WMError("llm brief contained evidence outside the session or visible memory")
+        evidence.extend(agent_evidence)
+        if brief.audit:
+            self.ledger.append("wma_call", card_id=card_id, **brief.audit)
         options = [
             {"id": "accept", "label": "freeze the card and contract as proposed", "consequence": "parent is scored; you may launch"},
             {"id": "amend", "label": "submit a revised evaluation section (--amend FILE)", "consequence": f"new brief; {self.config['amend_limit'] - st['brief_rounds'] - 1} rounds left"},
@@ -248,25 +278,26 @@ class Session:
         ]
         st["brief_rounds"] += 1
         self._save_state(st)
-        agent_meta = self._agent_meta(brief.produced_by, brief.degraded)
-        if brief.degraded:
-            self.ledger.append("agent_degraded", card_id=card_id, where="brief", reason=brief.degraded)
-            st["degraded_calls"] = int(st.get("degraded_calls", 0)) + 1
-            self._save_state(st)
         ping = self.mailbox(card_id).send(
             "brief", brief.summary, evidence=evidence, prediction=brief.prediction, options=options,
             timeout_action={"action": "remain_draft", "after_s": self.config["timeouts_s"]["brief"]},
             raised_by="runtime", extra={"contract_path": str(cdir / "contract.proposed.yaml"),
                                         "blocking_objections": len(blocking), "arm_disclosed": False,
-                                        "agent": agent_meta})
+                                        "wma_audit": brief.audit, "agent": agent_meta})
         return ping
 
-    def _agent_meta(self, produced_by: str, degraded: str | None) -> dict[str, Any]:
-        return {"arm": self.config["arm"], "sources": list(getattr(self.agent, "sources", ()) or []),
-                "backend": self.config.get("wma_backend") if self.config["arm"] in ("llm", "traj") else None,
-                "model": self.config.get("wma_model") if self.config["arm"] in ("llm", "traj") else None,
-                "retrieval_k": self.config.get("retrieval_k") if self.config["arm"] in ("retrieval", "llm") else None,
-                "produced_by": produced_by, "degraded": degraded}
+    def _agent_meta(self, result: Brief | Advice) -> dict[str, Any]:
+        return {
+            "arm": self.config["arm"],
+            "corpus_kind": (
+                self.config.get("wma_corpus_kind") if self.config["arm"] == "llm" else None
+            ),
+            "provider": self.config.get("wma_provider") if self.config["arm"] == "llm" else None,
+            "model": self.config.get("wma_model") if self.config["arm"] == "llm" else None,
+            "produced_by": result.produced_by,
+            "degraded": result.degraded,
+            "strict": self.config["arm"] == "llm",
+        }
 
     # ------------------------------------------------------------ replies
 
@@ -547,15 +578,45 @@ class Session:
     def _advise_and_act(self, st, card, contract, obs) -> dict[str, Any]:
         card_id = st["card_id"]
         history = [self._load_obs(card_id, o["obs_id"]) for o in st["observations"][:-1]]
-        advice: Advice = self.agent.on_observation(obs, history, contract, card, self.memory, self.config)
-        agent_meta = self._agent_meta(advice.produced_by, advice.degraded)
-        if advice.degraded:
-            self.ledger.append("agent_degraded", card_id=card_id, where=obs["obs_id"], reason=advice.degraded)
-            st["degraded_calls"] = int(st.get("degraded_calls", 0)) + 1
-            self._save_state(st)
-        evidence = _lint_evidence(advice.evidence, self.dir, self.config.get("memory_root"), self.config.get("prior_runs_root"))
+        try:
+            advice: Advice = self.agent.on_observation(
+                obs, history, contract, card, self.memory, self.config
+            )
+        except Exception as exc:
+            self.ledger.append(
+                "agent_failed",
+                card_id=card_id,
+                where=obs["obs_id"],
+                arm=self.config["arm"],
+                corpus_kind=self.config.get("wma_corpus_kind"),
+                model=self.config.get("wma_model"),
+                produced_by="none",
+                degraded=f"{type(exc).__name__}: {exc}"[:500],
+            )
+            raise WMError(
+                "the autonomous world-model could not produce validated observation advice; "
+                "the cell failed closed and must not be labelled as an llm-arm result"
+            ) from exc
+        agent_meta = self._agent_meta(advice)
+        if self.agent.arm == "llm" and (
+            advice.produced_by != "llm" or advice.degraded is not None
+        ):
+            self.ledger.append(
+                "agent_degraded", card_id=card_id, where=obs["obs_id"], **agent_meta
+            )
+            raise WMError("the llm arm degraded; refusing a mislabeled study cell")
+        if advice.audit:
+            self.ledger.append("wma_call", card_id=card_id, **advice.audit)
+        evidence = _lint_evidence(
+            advice.evidence,
+            self.dir,
+            Path(self.config["memory_root"]),
+            extra_roots=_wma_evidence_roots(self.config),
+        )
         if len(evidence) < len(advice.evidence):
             self.ledger.append("lint", card_id=card_id, dropped=len(advice.evidence) - len(evidence))
+            if self.agent.arm == "llm":
+                raise WMError("llm advice contained evidence outside the session or allowed corpus")
         evidence = [{"path": str(self.card_dir(card_id) / "observations" / obs["obs_id"] / "observation.json"),
                      "locator": "evaluators", "observation": _obs_line(obs)}] + evidence
         for p in advice.precedents[:3]:
@@ -595,7 +656,8 @@ class Session:
             ping = mb.send("decision", f"{head} {advice.summary}", evidence=evidence, prediction=advice.prediction,
                            options=options, timeout_action={"action": default, "after_s": self.config["timeouts_s"]["decision"]},
                            raised_by=raised, observation=obs["obs_id"],
-                           extra={"recommendation": advice.recommendation, "best_observation": best, "agent": agent_meta})
+                           extra={"recommendation": advice.recommendation, "best_observation": best,
+                                  "agent": agent_meta})
             reply = self._await_reply(mb, ping)
             self.memory.record_interaction(card_id, ping, reply)
             return self._apply_decision(self.state(card_id), ping, reply["choice"])
@@ -610,15 +672,18 @@ class Session:
                                          "consequence": "one extra yield, charged to the WMA budget"},
                                         {"id": "reject", "label": "keep training", "consequence": "nothing happens"}],
                                timeout_action={"action": "reject", "after_s": self.config["timeouts_s"]["yield_request"]},
-                               raised_by="agent", observation=obs["obs_id"], extra={"evaluators": allowed, "agent": agent_meta})
+                               raised_by="agent", observation=obs["obs_id"],
+                               extra={"evaluators": allowed, "agent": agent_meta})
             else:
                 self.ledger.append("request_dropped", card_id=card_id, wanted=advice.request_evaluators,
                                    allowed=allowed, cost_min=cost, remaining_min=remaining)
                 mb.send("notice", advice.summary, evidence=evidence, prediction=advice.prediction,
-                        raised_by=self.agent.arm, observation=obs["obs_id"], extra={"agent": agent_meta})
+                        raised_by=self.agent.arm, observation=obs["obs_id"],
+                        extra={"agent": agent_meta})
         else:
             mb.send("notice", advice.summary, evidence=evidence, prediction=advice.prediction,
-                    raised_by=self.agent.arm, observation=obs["obs_id"], extra={"agent": agent_meta})
+                    raised_by=self.agent.arm, observation=obs["obs_id"],
+                    extra={"agent": agent_meta})
         return self._resume(self.state(card_id), obs)
 
     def _est_cost(self, st, names: list[str]) -> float:
@@ -837,13 +902,15 @@ class Session:
             return {**st, "pending_replies": [p["ping_id"] for p in self.mailbox(card_id).pending()]}
         return {"session": self.config["session_id"], "arm": self.config["arm"],
                 "cards": [{"card_id": s["card_id"], "status": s["status"], "observations": len(s["observations"]),
-                           "degraded_calls": int(s.get("degraded_calls", 0)),
                            "pending_replies": [p["ping_id"] for p in self.mailbox(s["card_id"]).pending()]}
                           for s in self.cards()],
-                "agent": {"arm": self.config["arm"], "backend": self.config.get("wma_backend"),
-                          "model": self.config.get("wma_model"), "strict": bool(self.config.get("wma_strict")),
-                          "prior_runs_root": self.config.get("prior_runs_root"),
-                          "retrieval_k": self.config.get("retrieval_k")},
+                "agent": {
+                    "arm": self.config["arm"],
+                    "corpus_kind": self.config.get("wma_corpus_kind"),
+                    "provider": self.config.get("wma_provider"),
+                    "model": self.config.get("wma_model"),
+                    "strict": self.config["arm"] == "llm",
+                },
                 "memory": self.memory.stats()}
 
 
@@ -902,18 +969,31 @@ def _fire_rules(contract: dict[str, Any], observations: list[dict[str, Any]]) ->
     return fired
 
 
-def _lint_evidence(evidence: list[dict[str, Any]], *roots: Path | str | None) -> list[dict[str, Any]]:
-    """Grounding lint: keep only evidence whose path exists under one of the allowed roots."""
-    allowed = [Path(str(r)) for r in roots if r]
+def _lint_evidence(
+    evidence: list[dict[str, Any]],
+    session_dir: Path,
+    memory_root: Path,
+    *,
+    extra_roots: tuple[Path, ...] = (),
+) -> list[dict[str, Any]]:
+    """Grounding lint: keep only evidence whose path exists under the session or memory."""
     kept = []
+    roots = (session_dir, memory_root, *extra_roots)
     for e in evidence:
         p = e.get("path")
         if not p:
             continue
         path = Path(str(p))
-        if path.exists() and any(inside(path, r) for r in allowed):
+        if path.exists() and any(inside(path, root) for root in roots):
             kept.append(e)
     return kept
+
+
+def _wma_evidence_roots(config: dict[str, Any]) -> tuple[Path, ...]:
+    if config.get("arm") != "llm" or config.get("wma_corpus_kind", "cards") != "raw":
+        return ()
+    root = config.get("wma_corpus_root") or os.environ.get("AWM_WMA_CORPUS_ROOT")
+    return (Path(str(root)).expanduser().resolve(),) if root else ()
 
 
 def _obs_line(obs: dict[str, Any]) -> str:

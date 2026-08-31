@@ -15,15 +15,15 @@ ARMS = {
 def make_agent(arm: str, **kwargs) -> WorldModelAgent:
     if arm in ARMS:
         return ARMS[arm](**kwargs)
-    if arm in ("llm", "traj"):
-        from .llm import LLMAgent, TrajAgent
+    if arm == "llm":
+        from .llm import LLMAgent
 
-        return (TrajAgent if arm == "traj" else LLMAgent)(**kwargs)
+        return LLMAgent(**kwargs)
     if arm == "predictor":
         from .predictor import PredictorAgent
 
         return PredictorAgent(**kwargs)
-    raise ValueError(f"unknown arm {arm!r}; choose from null, retrieval, llm, traj, predictor")
+    raise ValueError(f"unknown arm {arm!r}; choose from null, retrieval, llm, predictor")
 
 
 __all__ = ["ARMS", "Brief", "NullAgent", "RetrievalAgent", "WorldModelAgent", "make_agent"]

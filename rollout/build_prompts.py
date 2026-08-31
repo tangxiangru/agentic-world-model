@@ -17,6 +17,7 @@ repo. Run by rollout/setup.sh:
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -24,9 +25,10 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
 PRIOR_RUNS_SECTION = """## Prior runs
-- `/home/ben/prior_runs/` holds the complete, read-only records of previous attempts at this same task (post-training a base model for {benchmark} under these rules) by other autonomous agents. Start with `/home/ben/prior_runs/INDEX.md`: one row per run with its base model, the agent that ran it, its official accuracy, and its path.
-- Each run directory has `solve_out.txt` (the agent's full session trace), `solve_parsed.txt` (the same, condensed), `task/` (every script it wrote: data preparation, training, its own eval outputs), `metrics.json` (its official score), and `time_taken.txt`.
-- You may read anything there and reuse any idea, script, or recipe. Every rule below still applies to what you do with it: a prior run's training data is not exempt from the contamination rules, and a prior run's base model is not yours unless it is `{model}`.
+- `/home/ben/prior_runs/` holds read-only published trajectory records of previous attempts at this same task (post-training a base model for {benchmark} under these rules) by other autonomous agents. Start with `/home/ben/prior_runs/INDEX.md`: one row per run with its base model, the agent that ran it, its official accuracy, and its path.
+- Every run directory has exactly `solve_out.txt` (the complete session trajectory), `metrics.json` (the official score), and `time_taken.txt`. Optional upstream artifacts and `task/` workspace snapshots are deliberately excluded.
+- The fetched corpus does not include prior `task/` workspace snapshots, scripts, checkpoints, or private caches. Reimplement any idea or recipe you infer from a trace in your own workspace; do not assume a referenced prior-run file is available.
+- You may read anything that is present there and reuse any idea or recipe. Every rule below still applies to what you do with it: a prior run's training data is not exempt from the contamination rules, and a prior run's base model is not yours unless it is `{model}`.
 - Reading files under `/home/ben/prior_runs` is an allowed exception to the working-directory rule.
 
 """
@@ -70,10 +72,21 @@ def wm_prompt(instruction: str, *, fulltraj: bool) -> str:
 
 
 def main() -> int:
-    ptb = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else None
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("ptb", nargs="?", type=Path)
+    parser.add_argument(
+        "--no-review",
+        action="store_true",
+        help="write only into the supplied private PTB checkout",
+    )
+    args = parser.parse_args()
+    ptb = args.ptb.resolve() if args.ptb else None
+    if args.no_review and ptb is None:
+        parser.error("--no-review requires a PTB checkout")
     instruction = (ROOT / "input" / "instruction.md").read_text()
-    out_review = HERE / "prompts"
-    out_review.mkdir(exist_ok=True)
+    out_review = None if args.no_review else HERE / "prompts"
+    if out_review:
+        out_review.mkdir(exist_ok=True)
     files = {
         "prompt_wm.txt": wm_prompt(instruction, fulltraj=False),
         "prompt_wm_fulltraj.txt": wm_prompt(instruction, fulltraj=True),
@@ -82,11 +95,16 @@ def main() -> int:
         ptb_prompt = (ptb / "src" / "eval" / "general" / "prompt.txt").read_text()
         files["prompt_fulltraj.txt"] = ptb_fulltraj(ptb_prompt)
     for name, text in files.items():
-        (out_review / name).write_text(text)
+        if out_review:
+            (out_review / name).write_text(text)
         if ptb:
             (ptb / "src" / "eval" / "general" / name).write_text(text)
-    where = f" and {ptb / 'src/eval/general'}" if ptb else " (no checkout given: PTB variant skipped)"
-    print(f"wrote {', '.join(files)} to {out_review}{where}")
+    destinations = []
+    if out_review:
+        destinations.append(str(out_review))
+    if ptb:
+        destinations.append(str(ptb / "src/eval/general"))
+    print(f"wrote {', '.join(files)} to {' and '.join(destinations)}")
     return 0
 
 

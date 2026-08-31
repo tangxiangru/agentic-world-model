@@ -10,17 +10,19 @@ block defined in `doc/exp-card-specs/extraction-protocol.md`.
 
 ```text
 card.template.yaml               the frozen schema every card follows
-train/<run_ref>/exp-NN.yaml      143 runs — Qwen3-4B, Qwen3-1.7B, SmolLM3-3B   (1,591 cards)
+train/<run_ref>/exp-NN.yaml      143 runs — Qwen3-4B, Qwen3-1.7B, SmolLM3-3B   (1,580 cards)
 train/<run_ref>/index.md         the extractor's per-run summary table
-test/<run_ref>/exp-NN.yaml        50 runs — gemma-3-4b-pt, the held-out side    (439 cards)
+test/<run_ref>/exp-NN.yaml        50 runs — gemma-3-4b-pt, the held-out side    (450 cards)
 index.md                         one line per card, all 2,030
 coverage.json                    field coverage counts + the checker's flag list
 ```
 
 `run_ref → run path` lives outside this directory, in
 `data/exp-cards/gsm8k-gemma-holdout-v1/sources.json` (gitignored), for audit
-only. **Never seed a memory for a gemma run from `test/`** — that is the split's
-answer key.
+only. The `test/` cards are the Gemma-side answer key, so seeding them is data
+leakage in an ordinary held-out evaluation. This study uses them only in the
+explicit, controlled **Gemma-in** ablation; every other condition must exclude
+`test/` and seed `train/` only.
 
 ## How they were made
 

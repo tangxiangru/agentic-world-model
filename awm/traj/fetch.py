@@ -17,7 +17,9 @@ Sizes, measured 2026-08-24:
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -87,6 +89,10 @@ ALL_CONFIGS: tuple[str, ...] = ()
 #: catalogue-derived split cannot pin a run we are unable to read.
 PTB_CATALOG = "viewer_data/index.json"
 
+# Every run in the committed GSM8K study split publishes these three artifacts.
+# Other entries in ``PTB_RUN_FILES`` are useful but optional upstream.
+PTB_REQUIRED_RUN_FILES = ("solve_out.txt", "metrics.json", "time_taken.txt")
+
 
 @dataclass
 class FetchResult:
@@ -107,6 +113,73 @@ def _tree_size(path: Path) -> tuple[int, int]:
             n += 1
             total += p.stat().st_size
     return n, total
+
+
+def _local_download_metadata(dest: Path, filename: str) -> Path:
+    """The sidecar written by ``hf_hub_download(..., local_dir=...)``."""
+    return dest / ".cache" / "huggingface" / "download" / f"{filename}.metadata"
+
+
+def _file_is_from_revision(dest: Path, filename: str, revision: str) -> bool:
+    """Prove that a local file was downloaded at the requested Hub commit.
+
+    Existence alone is insufficient: a resumed fetch may point the same local
+    directory at a different dataset revision.  Hugging Face records the
+    resolved commit, etag, and download timestamp beside every local-dir file.
+    Treat a missing, malformed, stale, or differently pinned sidecar as a cache
+    miss so it is downloaded again.
+    """
+    path = dest / filename
+    metadata = _local_download_metadata(dest, filename)
+    if not path.is_file() or not metadata.is_file():
+        return False
+    try:
+        lines = metadata.read_text().splitlines()
+        commit = lines[0].strip()
+        downloaded_at = float(lines[2])
+        # HF allows a one-second tolerance for coarse filesystem mtimes.
+        unmodified = path.stat().st_mtime - 1 <= downloaded_at
+    except (IndexError, OSError, ValueError):
+        return False
+    # Production split revisions are full 40-character commits.  Prefixes of
+    # at least seven characters remain useful for direct/library smoke tests.
+    pinned = commit == revision or (len(revision) >= 7 and commit.startswith(revision))
+    return pinned and unmodified
+
+
+def _write_testable_download_metadata(
+    dest: Path, filename: str, revision: str, etag: str = "unknown"
+) -> None:
+    """Write an HF-compatible sidecar for non-Hub importers and test fixtures.
+
+    The production downloader writes this itself.  Keeping the tiny helper here
+    makes the provenance format explicit for tools that stage already-verified
+    artifacts without reaching the Hub.
+    """
+    metadata = _local_download_metadata(dest, filename)
+    ensure(metadata.parent)
+    metadata.write_text(f"{revision}\n{etag}\n{time.time()}\n")
+
+
+def check_ptb_run_files(
+    runs: Iterable[str],
+    revision: str,
+    dest: Path,
+    required_files: tuple[str, ...] = PTB_REQUIRED_RUN_FILES,
+) -> list[str]:
+    """Return provenance/completeness problems for a declared run corpus."""
+    problems: list[str] = []
+    for run in dict.fromkeys(runs):
+        for name in required_files:
+            filename = f"{run}/{name}"
+            path = dest / filename
+            if not path.is_file():
+                problems.append(f"{run}: required {name} is missing")
+            elif not _file_is_from_revision(dest, filename, revision):
+                problems.append(
+                    f"{run}: {name} is not proven to come from revision {revision}"
+                )
+    return problems
 
 
 def fetch_pi(dest: Path | None = None) -> FetchResult:
@@ -209,6 +282,49 @@ def ptb_select_runs(
     ]
 
 
+def ptb_list_run_files(
+    runs: Iterable[str],
+    revision: str,
+    files: tuple[str, ...] = PTB_RUN_FILES,
+    workers: int = 12,
+) -> list[tuple[str, int]]:
+    """List only the direct files of named run directories at ``revision``.
+
+    The dataset-wide recursive tree contains more than 200,000 files and can
+    take minutes (or stall behind a proxy) before a split fetch starts.  A
+    committed split already names its run directories, so query those small
+    trees directly and keep the same explicit file allowlist.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from huggingface_hub import HfApi
+
+    wanted = set(files)
+    unique_runs = tuple(dict.fromkeys(runs))
+
+    def one(run: str) -> list[tuple[str, int]]:
+        rows = HfApi().list_repo_tree(
+            repo_id=PTB_DATASET,
+            path_in_repo=run,
+            recursive=False,
+            expand=False,
+            revision=revision,
+            repo_type="dataset",
+        )
+        return [
+            (entry.path, int(getattr(entry, "size", 0) or 0))
+            for entry in rows
+            if entry.path.rsplit("/", 1)[-1] in wanted
+            and getattr(entry, "size", None) is not None
+        ]
+
+    out: list[tuple[str, int]] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for fut in as_completed(pool.submit(one, run) for run in unique_runs):
+            out.extend(fut.result())
+    return sorted(out)
+
+
 def fetch_ptb_runs(
     runs: Iterable[str],
     revision: str,
@@ -228,9 +344,27 @@ def fetch_ptb_runs(
 
     dest = dest or raw_dir("posttrainbench")
     ensure(dest)
-    wanted = ptb_select_runs(ptb_list_files(), runs, files)
-    todo = [p for p, _ in wanted if not (dest / p).exists()]
-    if not (dest / PTB_CATALOG).exists():
+    runs = tuple(dict.fromkeys(runs))
+    # Cache the pinned remote listing, not merely a "mandatory files exist"
+    # sentinel.  Some wanted artifacts (for example solve_parsed.txt) are
+    # optional upstream.  Remembering the exact listing lets an interrupted
+    # fetch restore one of those files without relisting 193 directories, while
+    # never inventing a path for a file the run did not publish.
+    selection = json.dumps(
+        {"revision": revision, "runs": sorted(runs), "files": sorted(files)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    cache_key = hashlib.sha256(selection.encode()).hexdigest()
+    cache = dest / ".split_file_lists" / f"{cache_key}.json"
+    if cache.is_file():
+        wanted = [(str(path), int(size)) for path, size in json.loads(cache.read_text())]
+    else:
+        wanted = ptb_list_run_files(runs, revision, files, workers)
+        ensure(cache.parent)
+        cache.write_text(json.dumps(wanted, sort_keys=True))
+    todo = [p for p, _ in wanted if not _file_is_from_revision(dest, p, revision)]
+    if not _file_is_from_revision(dest, PTB_CATALOG, revision):
         todo.append(PTB_CATALOG)
     print(f"posttrainbench@{revision[:12]}: {len(wanted)} files selected, {len(todo)} to download")
 
@@ -246,6 +380,19 @@ def fetch_ptb_runs(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for fut in as_completed({pool.submit(one, p) for p in todo}):
             fut.result()
+
+    unverified = [
+        path
+        for path in [*(p for p, _ in wanted), PTB_CATALOG]
+        if not _file_is_from_revision(dest, path, revision)
+    ]
+    if unverified:
+        preview = ", ".join(unverified[:5])
+        suffix = " ..." if len(unverified) > 5 else ""
+        raise RuntimeError(
+            f"{len(unverified)} downloaded file(s) lack matching revision metadata: "
+            f"{preview}{suffix}"
+        )
 
     n, total = _tree_size(dest)
     return FetchResult("posttrainbench", dest, n, total)
