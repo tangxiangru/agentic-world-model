@@ -1,0 +1,224 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.11
+
+problem:
+  statement: >-
+    "At epoch 0.3 the model produces `ANSWER: X` but doesn't reliably emit a
+    stop token - it continues generating hallucinated problems, so the scorer
+    extracts the *last* (wrong) number. The few-shot priming encourages
+    continuation." [405]
+  evidence:
+    - path: /home/ben/task/logs/ckpt600.json
+      locator: "[396], [402], [403]"
+      observation: >-
+        eval of checkpoint-600 at limit 40; 1 of the first 6 inspected samples
+        correct, several completions run past their ANSWER line
+    - path: /home/ben/task/logs/baseline_base.log
+      locator: "[30], [293]"
+      observation: >-
+        the grader takes the last number in the completion; the base model
+        stopped cleanly because it emits <|endoftext|> (151643), while the SFT
+        model emits <|im_end|> (151645)
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/ckpt600.json
+      question: "(printed only as the completion; gold answer 80)"
+      gold: "80"
+      model_output: "... The average guess, from this sample, is 280/3=93.333333\n\nANSWER: 93.333333 asama\n...\nSolve the following math problem step by step. The last line of yo..."
+      failure: >-
+        emits its answer, then keeps generating a new problem, so the
+        last-number grader scores a number from the continuation [403]
+    - id: null
+      source: /home/ben/task/logs/ckpt600.json
+      question: "(printed only as the completion; gold answer 7)"
+      gold: "7"
+      model_output: "There is 1 omelet every morning, every day.\nIf there are 7 x 4 = 28 days in 4 weeks.\nClaire will eat 1 x 28 = <<1*28=28>>28 omelets in 4 weeks.\n28 omelets is 28/12 = <<28/12=2.3333333333333334>>2.33 dozen of eggs per day.\n\nANSWER: 2.33"
+      failure: >-
+        stops cleanly but the reasoning is wrong, and <<calc>> annotations leak
+        into the output [403]
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "The fix is simply more training (vllm stopping is confirmed working). Let
+    me resume from checkpoint-600 and monitor - I'll verify stopping improves at
+    epoch ~0.9" [413].
+  mechanism: >-
+    More SFT steps on completions that always terminate with <|im_end|> should
+    strengthen the stop token against the 10-shot prompt's priming to continue
+    [405], [413].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/sft_v1/checkpoint-600
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_train.jsonl
+      source: "derived: openai/gsm8k train + meta-math/MetaMathQA"
+      n_examples: 127473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        unchanged from exp-01: GSM8K train cleaned of <<calc>> + 90K MetaMathQA
+        GSM_* + 30K MetaMathQA MATH_*, filtered against normalised GSM8K test
+        questions [92]
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        same run continued via --resume, so the cosine schedule and optimizer
+        state carry over from exp-01. Scheduler, warmup, weight decay,
+        precision and seed come from task/train_sft.py and were not overridden
+        on the command line.
+    target_format: >-
+      "<|im_start|>user\n{eval MATH_PROMPT_TEMPLATE}<|im_end|>\n<|im_start|>assistant\n"
+      as prompt (masked), completion = "{reasoning}\n\nANSWER: {n}<|im_end|>\n"
+  command:
+    argv:
+      - python
+      - -u
+      - train_sft.py
+      - --out
+      - runs/sft_v1
+      - --epochs
+      - "2"
+      - --lr
+      - 1e-5
+      - --bs
+      - "16"
+      - --accum
+      - "4"
+      - --max-len
+      - "1024"
+      - --resume
+      - runs/sft_v1/checkpoint-600
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/eval_ckpt1200
+      - --limit
+      - "50"
+      - --max-tokens
+      - "1024"
+      - --max-connections
+      - "8"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --json-output-file
+      - logs/ckpt1200.json
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.375
+    path: /home/ben/task/logs/ckpt600.json
+  diagnostic:
+    what: "stop_reason distribution and count of completions with more than one ANSWER line"
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.41
+  output_checkpoint: /home/ben/task/runs/sft_v1/checkpoint-1200
+  training_summary:
+    final_loss: null
+    steps: 1200
+    notes: >-
+      Resumed cleanly and killed at checkpoint-1200 (epoch ~0.60) [497], [498];
+      logged loss ~0.14 at epoch 0.34 [432].
+  measurements:
+    - metric: accuracy
+      value: 0.54
+      n: 50
+      path: /home/ben/task/logs/ckpt1200.json
+      delta_vs_comparator: 0.165
+  diagnostic_result:
+    value: 0.88
+    path: /home/ben/task/logs/ckpt1200.json
+    notes: >-
+      "stop_reasons: Counter({'stop': 44, 'max_tokens': 6}); continued (>1
+      ANSWER): 9 / 50; len: min 120 max 4356" [513] - 88% clean stops, up from
+      67% at epoch 0.3.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    "Stopping is clearly improving: 88% stop at epoch 0.6 (up from 67% at 0.3),
+    accuracy 54% (up from 37.5%). The approach is converging correctly. The
+    continuation (few-shot priming) is the main limiter." [515]. The accuracy
+    numbers are from different sample counts (50 vs 40), so the +16.5 pt delta
+    is not a like-for-like comparison, but the stop-rate diagnostic moves in the
+    predicted direction.
+  decision: adopt
+  next_step: >-
+    "Let me resume training and check at epoch ~1.2" [515].
+
+provenance:
+  kind: extracted
+  run_ref: r-049e5f94
+  launch_i: 414
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [402, 403, 405]
+    setup: [414]
+    evaluation: [505]
+    result: [497, 505, 512, 513]
+    conclusion: [515]
+  snapshot_files:
+    - train_sft.py
+    - prep_checkpoint.py
+    - prepare_data.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - >-
+      logs/ckpt1200.json is never printed; 54% is quoted by the agent at [515].
+    - >-
+      The comparator (exp-01) was measured at limit 40 and this output at limit
+      50, so the verdict cannot be supported/contradicted.

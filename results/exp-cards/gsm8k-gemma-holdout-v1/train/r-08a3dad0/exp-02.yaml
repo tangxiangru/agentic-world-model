@@ -1,0 +1,209 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 2.51
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The eval client sends no temperature, so the vLLM server falls back to
+    sampling (~temp 1.0); the model then occasionally samples a stray token after
+    "ANSWER: N", derails and never stops (finish_reason=length), and the
+    last-number scorer reads a wrong trailing number. evaluate.py cannot be
+    modified, so the fix has to live in the served model's own defaults.
+  evidence:
+    - path: /home/ben/task/eval_sftout.json
+      locator: "[314]"
+      observation: "sft_out with eos=151645 still scores 0.1133 at --limit 150"
+    - path: /home/ben/task/eval_clean.json
+      locator: "[509]"
+      observation: "a clean re-eval of the same checkpoint scores 0.0467"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-08a3dad0.md
+      locator: "[320], [321]"
+      observation: "completion char lengths median 2387, max 22811; sampled completions run past the answer into unrelated text"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-08a3dad0.md
+      locator: "[575]"
+      observation: "agent: with temperature=0 the model stops perfectly; the eval sends no temperature so the server samples"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-06-02T21-22-01+02-00_gsm8k_3WUr7Ce3efXReBzq9rKdzn.json
+      question: null
+      gold: "400"
+      model_output: "... The square root of this age difference is sqrt(45) ~ 6.708. If we increase this value by 3, we get 6.708 + 3 ~ 9.708.\nANSWER: 9.7.debugLineameron"
+      failure: "the completion has drifted into a different, self-generated problem and ends on a stray token; last number 9.7"
+    - id: null
+      source: /home/ben/task/logs/2026-06-02T21-22-01+02-00_gsm8k_3WUr7Ce3efXReBzq9rKdzn.json
+      question: null
+      gold: "20"
+      model_output: "... n $\\frac{7}{40}$ is expressed as a decimal? ... So, the final answer is $\\boxed{5}$.\nThe answer is: 5"
+      failure: "did not stop after its own answer; continued into an invented problem, so the last number is 5"
+    - id: null
+      source: null
+      question: null
+      gold: "40"
+      model_output: "The mechanic earned $60 x 6 = 360 more on Thursday compared to Friday ...\nANSWER: 360.final_image ..."
+      failure: "stray token after the answer, then a new invented problem [370]"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "Since I can't modify evaluate.py, the fix is to bake a low/zero default
+    temperature into generation_config.json - vLLM serve uses it as the request
+    default" [575]; with a greedy default the model will stop at <|im_end|> and
+    accuracy on the same 150 items will rise sharply over the 11.3% just measured
+    on these weights.
+  mechanism: >-
+    vLLM serve reads generation_config.json for request defaults, so a request
+    that omits temperature gets greedy decoding; under greedy the model already
+    stops cleanly at "ANSWER: N<|im_end|>" [354], [575].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_out
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "vLLM 0.11.0 server request defaults via generation_config.json (transformers 4.57.3)"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        weights unchanged; sft_out/generation_config.json set to temperature=0.0,
+        top_p=1.0, top_k=1, do_sample=False. eos_token_id=151645 (<|im_end|>) was
+        already in config.json/generation_config.json [312] and the tokenizer eos
+        had been switched to <|im_end|> before [361].
+    target_format: null
+  command:
+    argv:
+      - python
+      - -c
+      - |
+        import json
+        p='sft_out/generation_config.json'
+        g=json.load(open(p))
+        g['temperature']=0.0
+        g['top_p']=1.0
+        g['top_k']=1
+        g['do_sample']=False
+        json.dump(g,open(p,'w'),indent=2)
+        print(json.load(open(p)))
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_out, --limit, "150", --json-output-file, eval_fixed.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.11333333333333333
+    path: /home/ben/task/eval_sftout.json
+  diagnostic:
+    what: >-
+      a chat-completions request to a locally served sft_out that omits
+      temperature, checking finish_reason and the tail of the completion [588]
+    command: []
+    path: /home/ben/task/vllm_serve.log
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/sft_out
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No training - configuration change only, on the exp-01 weights in place.
+      The first attempt at [576] did not apply because the preceding `kill`
+      returned non-zero and aborted the command chain [584]; it was re-issued
+      cleanly before [588], and that re-issued command is not itself a block in
+      the digest.
+  measurements:
+    - metric: accuracy
+      value: 0.6133333333333333
+      n: 150
+      path: /home/ben/task/eval_fixed.json
+      delta_vs_comparator: 0.5
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/vllm_serve.log
+    notes: >-
+      "[594] The greedy default is now applied (no-temp request stops with
+      `ANSWER: 20`). vLLM confirms it overrides defaults from the generation
+      config."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "Breakthrough: 61.3% (up from 14% baseline). The greedy-default fix was
+    critical" [636] - the same weights that scored 11.3% under sampled decoding
+    score 61.3% on the same 150 items once generation_config.json defaults to
+    greedy, confirming the failure was in the decode defaults, not the training.
+  decision: adopt
+  next_step: >-
+    "Let me lock this in as final_model, then analyze failures and iterate" [636].
+
+# ---- 6b. outcome ------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-08a3dad0
+  launch_i: 576
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [314, 319, 320, 321, 341, 370, 385, 429, 430, 509, 575]
+    setup: [575, 576, 584, 587]
+    evaluation: [588, 594, 621]
+    result: [594, 621, 636]
+    conclusion: [636]
+  snapshot_files:
+    - eval_fixed.json
+    - eval_fixed.log
+    - eval_sftout.json
+    - eval_clean.json
+    - vllm_serve.log
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The command block at [576] is the attempt that silently failed; the successful re-application ([587] 'Let me set it cleanly') is not a block in the digest, so argv here is the [576] text."
+    - "An earlier decode/config change on the same weights - switching the tokenizer eos to <|im_end|> before [361] - has no command block in the digest and therefore has no card; its evals (eval_sftout2.json, eval_clean.json, both 0.0467) are recorded on exp-01."
+    - "The failure examples come from task/logs/*.json eval logs that are not part of the workspace snapshot; the second one's log file is not named in the stream."

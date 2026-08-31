@@ -1,0 +1,186 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 0.68
+
+problem:
+  statement: >-
+    Training targets wrote bare integers, but the eval's match scorer needs a
+    literal suffix match for comma-formatted gold answers, so a model taught to
+    print "1080" scores zero on a target of "1,080".
+  evidence:
+    - path: /home/ben/task/data/eval_system_message.txt
+      locator: "[347], [348]"
+      observation: "the 10 few-shot exemplars all end in small comma-free answers, so they neither teach nor forbid comma grouping"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Emitting the answer with thousands commas matches both plain and
+    comma-formatted targets under the eval's match scorer.
+  mechanism: >-
+    The scorer compares the last number in the completion to the gold string
+    with numeric normalization, and a comma-grouped output normalizes to both
+    forms while a bare integer does not match a comma-grouped target.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_mix.jsonl
+      source: "mixture of HF sets: nvidia/OpenMathInstruct-2 (gsm8k- and math-sourced), microsoft/orca-math-word-problems-200k, meta-math/MetaMathQA, openai/gsm8k train"
+      n_examples: 284000
+      built_by: /home/ben/task/scripts/prep_sft_data.py
+      build_command: [python3, scripts/prep_sft_data.py]
+      selection: >-
+        Rebuilt at [333] with comma-grouped answers. Per-source counts, from the
+        agent's RESULTS.md: OpenMathInstruct-2 gsm8k-sourced 85.6k (<=4 solutions
+        per original problem, 1 per augmented), Orca-Math 98.5k (kept only
+        solutions whose final sentence holds exactly one distinct integer),
+        MetaMathQA GSM 60k, OMI2 math-sourced 25k, GSM8K train x2 14.9k.
+        Integer-normalizable answers only; \boxed / code / over-long solutions
+        dropped; dedup by normalized question and by the first 400 chars of the
+        solution; 10-gram decontamination against the test questions. Prompt
+        mirrors the eval: 8% carry the exact 10-shot system message, 12% a random
+        k-shot system message, 80% none; 80% use the MATH_PROMPT_TEMPLATE user
+        wrapper. ~192M training tokens.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "GSM8K train x2; up to 4 OMI2 solutions per original gsm8k problem"
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129)
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 17
+      other: >-
+        batch_size and grad_accum are the launch's --bsz 4 --grad-accum 8
+        (~131k tokens/step); the rest are the SFTConfig literals of
+        scripts/train_sft.py as written at [226] and not overridden.
+        packing=True (bfd), completion_only_loss=True, eos_token=<|im_end|>,
+        max_grad_norm=1.0, optim=adamw_torch_fused, save_steps=600,
+        attn_implementation=flash_attention_2.
+    target_format: >-
+      prompt = optional <|im_start|>system few-shot block + <|im_start|>user
+      MATH_PROMPT_TEMPLATE + <|im_start|>assistant; completion = CoT +
+      "\n\nANSWER: <int with thousands commas>" + <|im_end|>, loss on the
+      completion only.
+  command:
+    argv: [nohup, python3, scripts/train_sft.py, --bsz, "4", --grad-accum, "8"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs_sft1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, runs/qwen3_sft1_packaged, --limit, "150", --max-connections, "16", --json-output-file, results_sft1_greedy150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.11
+    path: /home/ben/task/results_baseline.json
+  diagnostic:
+    what: >-
+      offline vLLM generation on the last 60 GSM8K train questions: does the
+      model stop at <|im_end|>, end in "ANSWER: <n>", and get them right
+    command: [python3, scripts/smoke_gen.py, --model, runs/qwen3_sft1_packaged, --n, "60"]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 2.66
+  duration_h: 2.66
+  output_checkpoint: /home/ben/task/runs/qwen3_sft1/final
+  steps: 1479
+  training_summary:
+    final_loss: 0.23918227685150703
+    steps: 1479
+    notes: >-
+      train_runtime 9572.4 s, 192.6M tokens, mean_token_accuracy 0.9197,
+      entropy 0.592, 1 epoch [396]. Checkpoints 600/1200/1479 plus final; the
+      intermediate ones were deleted in the disk cleanup at [780].
+  measurements:
+    - metric: accuracy
+      value: 0.8066666666666666
+      n: 150
+      path: /home/ben/task/results_sft1_greedy150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.83
+    path: null
+    notes: >-
+      "83% on held-out-ish train sample, stopping clean, comma-grouping works"
+      [408]; the with-system-message rerun was reported as fine [409], [414].
+      smoke_gen.py prints nothing to a file, so only the agent's summary survives.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    SFT took the model from a chaotic base to 0.807 on the eval at --limit 150,
+    with clean <|im_end|> stopping and the comma-grouped ANSWER line working as
+    intended. Not "supported" because the only comparator, the base model's
+    0.110, was measured at --limit 100 with default decoding, not under this
+    protocol.
+  decision: adopt
+  next_step: >-
+    Analyze the 29 remaining errors [421], then run GRPO on GSM8K train prompts
+    with the eval scorer as reward.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-06a66e16
+  launch_i: 337
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [325, 347, 348]
+    setup: [325, 333, 337]
+    evaluation: [399, 403, 408, 409, 414, 415]
+    result: [382, 383, 395, 396]
+    conclusion: [390, 398, 408, 415]
+  snapshot_files:
+    - logs_sft1.log
+    - results_sft1_greedy150.json
+    - logs_eval_sft1_greedy150.log
+    - results_baseline.json
+    - evaluate.py
+    - RESULTS.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The evaluated artifact is runs/qwen3_sft1_packaged, produced at [399] by scripts/package_model.py --src runs/qwen3_sft1/final --temperature 0.0 (tokenizer eos -> <|im_end|>, generation_config eos_token_id [151645, 151643]); the packaging is a decode-config change on top of this checkpoint, not a separate training run."
+    - "Per-source data counts come from the agent's RESULTS.md, written at [454] after the launch; the prep script's own printed counts are not in the stream."
+    - "data/sft_mix.jsonl was truncated at [773] during the disk-full incident, so the exact mix cannot be recounted."
+    - "The comparator was run at --limit 100 on the unpackaged base model, so the +0.70 gap mixes the recipe with a protocol change."

@@ -1,0 +1,158 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 6.10
+
+problem:
+  statement: >-
+    "RFT has plateaued at ~62%" - two rounds of rejection-sampling fine-tuning
+    land within noise of each other (60.6% and 63.2% on the same 500), so
+    supervised training on self-samples has stopped paying. [907][913]
+  evidence:
+    - path: /home/ben/task/logs/eval_rft1_500.json
+      locator: "[902], [907]"
+      observation: "exp-05 checkpoint: 0.606 on 500 at temp 1.0"
+    - path: /home/ben/task/logs/eval_rft2_t1.json
+      locator: "[907]"
+      observation: "exp-06 checkpoint: 0.632 on the same 500 - the agent called the two 'essentially tied'"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "GRPO directly optimizes temp-1.0 correctness and could break past it"
+    [913] - DAPO-style GRPO on GSM8K train, run in the exact few-shot eval
+    condition with reward = answer match, will lift accuracy above the ~62% RFT
+    plateau.
+  mechanism: >-
+    RFT can only reinforce trajectories the model already samples correctly; RL
+    with a correctness reward optimises the temp-1.0 sampling distribution
+    itself, in the same prompt condition the eval uses. [913][914]
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/work/rft2
+    origin: exp-06
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: null
+      built_by: /home/ben/task/grpo.py
+      build_command: []
+      selection: >-
+        every train question rendered in-memory by grpo.py render_prompt as
+        system(the eval's 10 few-shot demonstrations, data/inspect_fewshot_system.txt)
+        + user(MATH_PROMPT_TEMPLATE) + assistant header; only the gold final
+        answer is carried, as the reward target - reward 1.0 when inspect's
+        match_str (numeric, location=end) matches the sampled completion [914]
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: grpo
+    framework: "trl GRPOTrainer with colocated vLLM generation"
+    peft: none
+    hyperparams:
+      lr: 3.0e-06
+      epochs: 1
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 2400
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --lr and --max_steps 160 came from the launch; batch_size, grad_accum
+        and num_generations 8 are grpo.py argparse defaults the launch did not
+        override; GRPOConfig literals in grpo.py: temperature 1.0,
+        max_completion_length 400, max_prompt_length 2400, beta 0.0,
+        loss_type 'dapo', scale_rewards 'group', warmup_steps 5, save_steps 60,
+        num_train_epochs 1, use_vllm colocate at
+        vllm_gpu_memory_utilization 0.30, bf16, gradient_checkpointing. This
+        launch predates the generation_kwargs stop_token_ids patch [932].
+    target_format: >-
+      the exact eval condition - 10-shot system message, MATH_PROMPT_TEMPLATE
+      user turn, completion scored on its final 'ANSWER:' line
+  command:
+    argv: [nohup, python, -u, grpo.py, --init, work/rft2, --out, work/grpo1, --lr, "3e-6", --max_steps, "160"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo.py
+    env: {}
+    log: /home/ben/task/logs/grpo1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.05
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      ran at ~16 s/step with reward ~0.7 but with
+      completions/clipped_ratio 1.0 and mean_terminated_length 0.0 - "none of
+      the generations terminate ... TRL re-aligned eos_token_id to 151643,
+      dropping <|im_end|> (151645), so the model doesn't stop" [923]; killed at
+      [924] before any checkpoint
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Killed a few steps in: every generation ran to the 400-token cap because the
+    trainer had reset the stop tokens, which "makes the reward signal noisy and
+    could teach rambling" [923]. Nothing about the hypothesis was measured.
+  decision: abandon_line
+  next_step: >-
+    pass generation_kwargs={"stop_token_ids":[151643,151645]} to GRPOConfig and
+    relaunch the same run [932]
+
+# ---- 7. Outcome (joined by the pipeline; never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-f099ff8e
+  launch_i: 918
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [907, 913]
+    setup: [914, 918]
+    evaluation: []
+    result: [923, 924]
+    conclusion: [923, 932]
+  snapshot_files:
+    - grpo.py
+    - myeval.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the step at which the run was killed is not stated; only '~16s/step, reward ~0.7' [923]"
+    - "grpo.py in the workspace snapshot is the patched version (generation_kwargs present); this launch ran the pre-patch text"

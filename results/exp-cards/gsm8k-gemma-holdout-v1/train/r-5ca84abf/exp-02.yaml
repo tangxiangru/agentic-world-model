@@ -1,0 +1,169 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The base model answers only 25% of GSM8K items correctly under the task's
+    own evaluator, and it does not produce the reasoning-then-"ANSWER: N"
+    shape the scorer matches on.
+  evidence:
+    - path: /home/ben/task/baseline_results.json
+      locator: "[44], [46], [48]"
+      observation: "baseline eval of the base model, --limit 20: accuracy 0.250 (stderr 0.099)"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised fine-tuning with LoRA on GSM8K train plus GSM-type MetaMathQA,
+    formatted in the evaluator's chat template with a <think> block ending in
+    "ANSWER: <number>", will raise accuracy over the 25% base model.
+  mechanism: >-
+    The evaluator prompts in /think mode and scores a numeric match on the last
+    "ANSWER:" line, so training targets shaped exactly that way teach both the
+    reasoning and the output contract the scorer needs. [31] [49] [67]
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "gsm8k (main/train) + meta-math/MetaMathQA"
+      n_examples: 27473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        all 7473 gsm8k train items, <<calc>> markers stripped from the rationale,
+        plus 20000 randomly sampled (seed 42) MetaMathQA items of types
+        GSM_Rephrased/GSM_AnsAug/GSM_SV/GSM_FOBAR whose response ends in
+        "The answer is: <number>"; shuffled. [70] [71]
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3, peft 0.18.1)
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        gradient_checkpointing=True (use_reentrant=False), optim=adamw_torch_fused,
+        save_steps=500, logging_steps=20, no assistant_only_loss, no generation
+        config written after the merge. All values read from the script text of
+        /home/ben/task/train.py ([73] plus the max_length edit at [87]); the
+        launch passed no overrides.
+    target_format: >-
+      chat messages [user, assistant]; assistant = "<think>\n{rationale}\n</think>\n\nANSWER: {n}"
+  command:
+    argv: [python3, train.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, /home/ben/task/evaluate.py, --model-path, /home/ben/task/final_model, --limit, "50", --max-connections, "2", --gpu-memory-utilization, "0.5", --json-output-file, /home/ben/task/eval_iter1.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.25
+    path: /home/ben/task/baseline_results.json
+  diagnostic:
+    what: >-
+      count of distinct "ANSWER:" lines per sample in the eval log, to see whether
+      the model stops after its answer [152] [155]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      checkpoint-500 log_history: loss 1.8536 at step 20 falling to 0.1297 at
+      step 500 [125]; the agent reported the loss ending near 0.07 [143].
+  measurements:
+    - metric: accuracy
+      value: 0.08
+      n: 50
+      path: /home/ben/task/eval_iter1.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      196,831 output tokens for 50 samples; samples carry three or more "ANSWER:"
+      lines each because the model keeps generating new problems after its
+      answer instead of stopping [150] [153] [156]
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    "Accuracy dropped to 8%! That's worse than baseline (25%)" [151]; the model
+    never emits the chat template's stop token, so it runs on past its answer
+    and the numeric match picks up the wrong line. The comparator was measured
+    at --limit 20 and this eval at --limit 50, so the two numbers are not under
+    the same protocol.
+  decision: reject
+  next_step: >-
+    retrain with the <|im_end|> id added to the saved generation config and with
+    assistant_only_loss=True so the loss is taken on the assistant turn only [163]
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5ca84abf
+  launch_i: 89
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [44, 46, 48]
+    setup: [68, 70, 71, 73, 87, 89]
+    evaluation: [149, 150]
+    result: [125, 143, 147, 150, 153, 156]
+    conclusion: [151, 163]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - evaluate.py
+    - baseline_results.json
+    - eval_iter1.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "no contamination check appears in the stream; the workspace file contamination_judgement.txt reads 'no contamination detected' but the stream does not show who ran it, so every data entry in this run is recorded as not_run"
+    - "the eval log with the per-sample outputs (logs/2026-02-15T15-51-59+01-00_...json) is not in the workspace snapshot"

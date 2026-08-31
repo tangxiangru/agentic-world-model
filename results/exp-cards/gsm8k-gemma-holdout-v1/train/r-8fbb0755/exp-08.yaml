@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 6.73
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: "The incumbent decodes at ~80% greedily but the eval samples at temperature 1.0 and it scores ~71% there; rejection-sampling sharpened the distribution (entropy 0.83 -> 0.77) without moving few-shot probe accuracy, so supervised sharpening does not close the remaining sampling gap."
+  evidence:
+    - path: /home/ben/task/v4_metrics.json
+      locator: "[514], [520]"
+      observation: "71.3% on limit 150; the probe under the eval condition was flat at 66.7% vs the parent's 67.5% despite lower entropy."
+    - path: /home/ben/task/eval_probe.py
+      locator: "[460]"
+      observation: "Greedy 80.8% vs temp-1.0 67.5% on the same 120 probe items - the gap GRPO is meant to close."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: "GRPO on GSM8K-train questions, generating at temperature 1.0 under the eval's exact 10-shot prompt and rewarding a correct final number, will raise accuracy under the eval's own sampling conditions where supervised sharpening could not."
+  mechanism: "'It directly optimizes temp-1.0 correctness, the precise tool for closing the greedy<->temp gap' [480]: the objective is evaluated on samples drawn the way the eval draws them, so it raises the probability of the paths that actually score."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v4
+    origin: exp-06
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k train (prompts only, built in-process by grpo.py)"
+      n_examples: 7473
+      built_by: /home/ben/task/grpo.py
+      build_command: null
+      selection: "Every GSM8K train row with a numeric gold answer, rendered as system = the eval's exact 10-shot prompt (train shuffled seed 42, first 10, <<>> kept) + user = MATH_PROMPT_TEMPLATE. No assistant targets; rewards are 1.0 for a last number matching gold and +/-0.1 for the presence of an 'ANSWER:' line."
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+  method:
+    family: grpo
+    framework: trl.GRPOTrainer
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-6
+      epochs: null
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2048
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: "max_steps 120, num_generations 8, temperature 1.0, beta 0.04 (reference model kept, loss_type bnpo), max_completion_length 384, max_prompt_length 2048, scale_rewards=True, mask_truncated_completions=True, warmup_steps 10, use_vllm=True in colocate mode with vllm_gpu_memory_utilization 0.3 and vllm_max_model_length 2560, bf16, gradient_checkpointing. max_prompt_length, scale_rewards, warmup_steps, seed, precision and loss_type are constants in /home/ben/task/grpo.py that this launch did not override."
+    target_format: "Sampled completions scored by a rule reward: last number in the completion must equal the gold answer; small bonus for containing 'ANSWER:'."
+  command:
+    argv: [nohup, python, -u, grpo.py, --init, sft_v4, --out, grpo_v5, --fewshot, "10", --steps, "120", --lr, "1e-6", --num-gen, "8", --temp, "1.0", --beta, "0.04", --bs, "16", --accum, "2", --max-completion, "384", --vllm-gpu, "0.3"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo.py
+    env: {}
+    log: /home/ben/task/grpo_v5.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: failed
+  wall_h: null
+  duration_h: null
+  steps: 0
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 0
+    notes: "Never reached step 1. The agent's reading at [531]: 'GRPO OOM'd (ref model + policy + vLLM + AdamW too much for 80GB).'"
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: "torch.OutOfMemoryError: CUDA out of memory (reported by the agent at [531]; grpo_v5.log was overwritten by the two later attempts, which failed with the same error - 'Tried to allocate 794.00 MiB. GPU 0 has a total capacity of 79.18 GiB of which 502.31 MiB is free ... 74.38 GiB is allocated by PyTorch')."
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "The run OOM'd before the first optimisation step, so the hypothesis was never tested. The agent attributed it to holding the reference model, the policy, AdamW states and a colocated vLLM engine on one 80GB card."
+  decision: abandon_line
+  next_step: "Retry with beta=0 so no reference model is held, a smaller microbatch, lower vLLM memory and expandable_segments [531]."
+
+# ---- Outcome (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-8fbb0755
+  launch_i: 521
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [460, 474, 480, 514]
+    setup: [481, 521]
+    result: [525, 531]
+    conclusion: [531]
+  snapshot_files:
+    - grpo.py
+    - grpo_v5.log
+    - v4_metrics.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "All three GRPO attempts wrote to the same grpo_v5.log, so the file in the workspace holds only the last attempt's traceback; this attempt's failure is known from the agent's report at [531], not from a preserved log."

@@ -1,0 +1,171 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.86
+
+problem:
+  statement: >-
+    The base model usually solves the word problem and prints "ANSWER: <n>", but
+    it never stops: it keeps generating further text and numbers, and the scorer
+    (numeric match on the last number of the completion) therefore reads a number
+    from the trailing garbage. Baseline accuracy is 0.100.
+  evidence:
+    - path: /home/ben/task/results/baseline_150.json
+      locator: "[11069]"
+      observation: "baseline Qwen/Qwen3-1.7B-Base at --limit 150: accuracy 0.100, stderr 0.0246"
+    - path: /home/ben/task/logs/2026-07-16T22-05-45+02-00_gsm8k_UhVoUCdZRaCMgpup6v9y4H.json
+      locator: "[11203]-[11204], sample 0"
+      observation: >-
+        the completion contains the correct "ANSWER: 20" and then rambles on into
+        unrelated problems; the scorer's extracted answer is "6", stop_reason "stop"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-07-16T22-05-45+02-00_gsm8k_UhVoUCdZRaCMgpup6v9y4H.json
+      question: "(sample 0 of the limit-150 baseline eval; question text not printed in the stream)"
+      gold: "20"
+      model_output: >-
+        "Since Cody eats three times as many cookies as Amir eats, Cody eats 5 * 3 =
+        <<5*3=15>>15 cookies.\nTogether, Amir and Cody eat 5 + 15 = <<5+15=20>>20
+        cookies.\nANSWER: 20" followed by several further invented problems and numbers
+      failure: "correct answer produced, then no EOS; scorer's last-number extraction returned 6"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full-parameter SFT on GSM8K-format targets that end in "ANSWER: <n><|im_end|>"
+    will teach the model to stop after the answer line, so the last number in the
+    completion is the intended answer, lifting accuracy far above the 0.100 baseline.
+  mechanism: >-
+    The failure is a stopping/format failure, not a knowledge failure: the model
+    already reaches the right answer. Training completion-only on targets that
+    terminate with the eval's answer line plus <|im_end|> supplies the EOS behaviour
+    the base model lacks.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_round1
+      source: "local: openai/gsm8k train + nvidia/OpenMathInstruct-2 (gsm8k / augmented_gsm8k rows)"
+      n_examples: null
+      built_by: /home/ben/task/build_data_round1.py
+      build_command: ["python", "build_data_round1.py"]
+      selection: >-
+        GSM8K-train gold upsampled x4 with the <<..>> calculator annotations stripped
+        from targets, plus OpenMathInstruct-2 rows restricted to problem_source
+        gsm8k/augmented_gsm8k, code-free, exactly one \boxed{}, solution <= 2200 chars,
+        <= 6 solutions per problem, capped at 80000 rows from the first 12 local parquet
+        shards; prompt mixture per row 55% exact eval few-shot system / 25% random-10-shot
+        / 10% random-k-shot / 10% zero-shot; rows longer than MAX_LEN 3072 tokens dropped.
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 6
+      grad_accum: 6
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights, bf16 autocast (TrainingArguments bf16=True), sdpa attention"
+      seed: null
+      other: >-
+        scheduler/warmup/weight_decay/precision are hard-coded in train_sft.py as written
+        at [12874] and edited at [13890]-[13893] (fp32 load, gradient_checkpointing removed);
+        the launch did not override them. group_by_length=True, logging_steps=20,
+        save_total_limit=4, save every 0.5 epoch. --max-len is parsed but unused (the
+        dataset is pre-tokenized; 3072 is the data-build cap). No optim= was set yet.
+    target_format: >-
+      prompt rendered byte-identically to the eval's qwen3.jinja chat render; assistant
+      target is "{solution}\n\nANSWER: {n}<|im_end|>" with the prompt masked to -100
+      (completion-only loss).
+  command:
+    argv: ["nohup", "python", "train_sft.py", "--data", "data/sft_round1", "--out", "ckpt/round1", "--epochs", "1", "--lr", "1e-5", "--bs", "6", "--accum", "6"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_r1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: 0.01
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 0
+    notes: "died in the first forward pass; the progress bar read 0/3049 steps after 24 s [24177]"
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    File "transformers/models/qwen3/modeling_qwen3.py", line 62, in forward
+    variance = hidden_states.pow(2).mean(-1, keepdim=True)
+    torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 144.00 MiB. GPU 0 has a
+    total capacity of 79.18 GiB of which 144.31 MiB is free. ... 0%| | 0/3049 [00:24<?, ?it/s]
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The run OOM'd at the first step, so the format hypothesis was not tested at all.
+    The agent read the cause as "fp32 master states + logits + long-seq activations
+    exceeded 79GB" [26243].
+  decision: iterate
+  next_step: >-
+    Relaunch the same recipe with gradient checkpointing (use_reentrant False),
+    optim adamw_torch_fused and PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,
+    at bs 8 / accum 4 [26243]-[26284].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a759897f
+  launch_i: 23924
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [11069, 11203, 11204, 11722]
+    setup: [12023, 12874, 13890, 13892, 18879, 22773, 23924]
+    evaluation: []
+    result: [24172, 24173, 24176, 24177]
+    conclusion: [26243]
+  snapshot_files:
+    - build_data_round1.py
+    - data_lib.py
+    - eval_fewshot_system.txt
+    - train_sft.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "row and token counts of this first data/sft_round1 build were never printed; only the later rebalanced build reports 84,335 rows / 130.4M tokens"
+    - "the snapshot copies of build_data_round1.py and train_sft.py are their final (post-rebalance, post-fix) versions, not the text this launch ran; the launch-time text is in the digest write events cited in anchors.setup"
+    - "results/, logs/ and ckpt/ are not part of the workspace snapshot, so the cited eval/log paths cannot be re-read"

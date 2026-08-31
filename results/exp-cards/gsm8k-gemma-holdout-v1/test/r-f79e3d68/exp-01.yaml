@@ -1,0 +1,176 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.17
+
+problem:
+  statement: >-
+    The base model scores 2% on the benchmark: it "barely follows the format" —
+    it does not produce step-by-step reasoning terminated by an "ANSWER: X" line
+    under the chat template the grader uses.
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[286]"
+      observation: "baseline eval of the base model (10-shot, --limit 50) = 2% accuracy"
+    - path: /home/ben/task/logs/baseline_eval.log
+      locator: "[166]"
+      observation: "eval config as run: gsm8k, 50 samples, max_tokens 4000, max_connections 2"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full-parameter SFT on the GSM8K train split, with the loss masked to the
+    completion and the <end_of_turn> stop token, will teach the eval's
+    reasoning-then-"ANSWER: X" format and lift accuracy far above the 2%
+    baseline.
+  mechanism: >-
+    The 2% baseline is a format/instruction-following failure, not a reasoning
+    ceiling, so supervising on gold GSM8K solutions in the exact prompt shape
+    should recover most of the headroom.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/gsm8k_train.jsonl
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: null
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py]
+      selection: >-
+        one record per GSM8K train row; answer split on "####" into reasoning +
+        target; <<...>> calculator annotations stripped; question wrapped in the
+        eval's math prompt template; assistant = reasoning + "\nANSWER: <target>".
+        Agent noted at [109] that the test split is forbidden and train is allowed.
+      contamination_check: not_run
+      repeats: 1
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (AutoModelForImageTextToText, eager attention)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/accum are from the launch argv. max_seq_len, scheduler,
+        warmup, weight_decay and precision are train.py values not overridden by
+        this launch (--maxlen default 1024, --warmup default 0.03,
+        lr_scheduler_type="cosine", weight_decay=0.0, bf16=True);
+        also from the script: optim=paged_adamw_8bit, max_grad_norm=1.0,
+        gradient_checkpointing=True, dataloader_num_workers=4, use_cache=False,
+        vision_tower and multi_modal_projector frozen (language model only).
+        NOTE the train.py in the snapshot is the end-of-run version: at this
+        launch save_strategy was "no" (changed to "epoch" at [393] and to
+        "steps"/save_steps=400 at [846]), so this run saved only the final model.
+        seed never set in the script or the launch.
+    target_format: >-
+      "<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n" then
+      "{reasoning}\nANSWER: {target}<end_of_turn>"; labels -100 over the prompt,
+      loss on the completion and the stop token only.
+  command:
+    argv: [nohup, python, train.py, --data, work/gsm8k_train.jsonl, --out, work/sft1,
+           --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/logs/train1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [nohup, python, evaluate.py, --model-path, work/sft1, --limit, "150",
+              --json-output-file, logs/sft1.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.02
+    path: /home/ben/task/logs/baseline.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.29
+  output_checkpoint: /home/ben/task/work/sft1
+  training_summary:
+    final_loss: 0.455
+    steps: null
+    notes: >-
+      "Loss dropping well (0.99->0.49)" [306]; "Training done (final loss 0.455)"
+      [312]. wall_h derived from the event timestamps [287] t=+0.17h ->
+      [312] t=+0.46h; the agent never printed a duration or a step count.
+  measurements:
+    - metric: accuracy
+      value: 0.427
+      n: 150
+      path: /home/ben/task/logs/sft1.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "SFT1 = 42.7% (up from 2%)" [338]; the agent read this as validating that the
+    pipeline works [505]. The comparison is not protocol-matched: the baseline was
+    measured at --limit 50 and this at --limit 150, so the delta is not scored here.
+  decision: adopt
+  next_step: >-
+    The agent immediately questioned decoding ("generation_config uses
+    do_sample=true ... greedy decoding is much better" [338]) and then moved to a
+    larger MetaMathQA-augmented mix for reasoning quality [392].
+
+outcome:
+  official_accuracy: null   # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-f79e3d68
+  launch_i: 287
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [286, 166]
+    setup: [116, 118, 150, 287]
+    evaluation: [315]
+    result: [306, 312, 338, 936]
+    conclusion: [338, 505, 936]
+  snapshot_files:
+    - train.py
+    - prep_data.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The agent never stated an expectation before this launch; the hypothesis is a minimal reconstruction from what was launched (stated_by_agent.hypothesis: false)."
+    - "n_examples for work/gsm8k_train.jsonl was never printed in the stream (prep_data.py's 'wrote N examples' line is not in the digest)."
+    - "The agent's logs/ directory (baseline.json, sft1.json) is not in the workspace snapshot; the accuracies are the values the agent printed at [936]."
+    - "Comparator measured under a different protocol (--limit 50 vs 150), so no delta is recorded."

@@ -1,0 +1,215 @@
+# Reconstructed experiment card (extracted, not agent-written).
+# Paths are relative to the run's working directory: the stream never states its
+# absolute location. Every cited file is in the run's workspace snapshot.
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 2.11
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    With decoding fixed, the incumbent sits at 83.3% and every remaining failure
+    is a genuine reasoning error with clean termination - there are no
+    formatting or extraction points left to recover, so the next gain has to come
+    from better reasoning.
+  evidence:
+    - path: eval_v1_greedy.json
+      locator: "[429] (analysis at [411], [412])"
+      observation: >-
+        "All 25 failures are now genuine reasoning errors with clean termination
+        - 83.3%."; the printed failures are wrong intermediate steps and wrong
+        rounding, not malformed output.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "Now I'll improve reasoning quality via rejection-sampling fine-tuning
+    (STaR/RFT): use v1 to generate diverse correct solutions on GSM8K train, then
+    retrain." ([429]) Adding the incumbent's own answer-verified solutions to the
+    training mixture will raise accuracy over the incumbent.
+  mechanism: >-
+    Sampling 6 solutions per GSM8K training question from the incumbent at
+    temperature 0.8, keeping only those whose final number matches gold, and
+    retraining on them puts correct traces in the model's own distribution
+    alongside the gold and MetaMath data ([429], gen_rs.py).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+    # the launch passes no --model, so train_sft.py's argparse default
+    # (Qwen/Qwen3-4B-Base) applies: this is a fresh run from base, not a
+    # continuation of exp-02. exp-02's checkpoint is used only as the sampler
+    # that produced rs.jsonl.
+  data:
+    - path: train_v2.jsonl
+      source: "local (openai/gsm8k train + synthetic:self + meta-math/MetaMathQA)"
+      n_examples: 39916                 # printed by the trainer: "examples 39916" (train_v2.log)
+      built_by: prep_data_v2.py
+      build_command: [python, prep_data_v2.py]
+      selection: >-
+        all 7473 openai/gsm8k train items as gold solutions (<<...>> stripped,
+        "#### x" -> "ANSWER: x"), plus all 14443 rows of rs.jsonl, plus
+        MetaMathQA GSM_Rephrased[:9000] and GSM_AnsAug[:9000] under random.seed(1),
+        shuffled. The three component counts sum exactly to the 39916 the trainer
+        reported. prep_data_v2.py's own stdout at [493] is not in the digest.
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: rs.jsonl
+      source: "synthetic:self (sampled from exp-02's checkpoint)"
+      n_examples: 14443                 # "kept 14443 from 7473 questions" (gen_rs.log)
+      built_by: gen_rs.py
+      build_command: [nohup, python, gen_rs.py, --model, final_model, --n, "6", --temp, "0.8", --keep, "2", --out, rs.jsonl, --gpu, "0.9"]
+      selection: >-
+        6 samples per openai/gsm8k train question at temperature 0.8, top_p 0.95,
+        max_tokens 768, stopping on <|im_end|>/<|endoftext|>; keep a sample only
+        if its last number equals gold within 1e-6; deduplicate on the first 80
+        characters and keep at most 2 per question. 44838 prompts were generated
+        in ~6.6 min (gen_rs.log).
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: rft
+    framework: "transformers.Trainer (custom prompt/completion masking and pad collator; no TRL)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        Identical to exp-01: lr / epochs / bs / accum from the launch argv at
+        [501]; max_seq_len 1024 is train_sft.py's --maxlen default, not
+        overridden; scheduler, warmup_ratio, weight_decay, bf16, max_grad_norm,
+        optim and gradient checkpointing are hard-coded in the script. No seed is
+        set. Effective batch 16 x 2 = 32 on one GPU. Only --data and --out differ
+        from exp-01, so this is a data-only intervention.
+    target_format: >-
+      same hand-built "<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n"
+      sequence with prompt tokens masked; solutions end in a bare "ANSWER: <n>"
+      line.
+  command:
+    argv: [nohup, python, train_sft.py, --data, train_v2.jsonl, --out, sft_v2, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2"]
+    cwd: null
+    script: train_sft.py
+    env: {}
+    log: train_v2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, model_v2, --limit, "500", --max-connections, "48", --json-output-file, eval_v2_500.json]
+    dev_set: "official --limit 500 (inspect_evals/gsm8k, 10-shot, served through vllm)"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.84
+    path: eval_v1_500.json              # exp-02's checkpoint re-measured at --limit 500 at [530]
+  diagnostic:
+    what: >-
+      re-split the failures into "answer right but marked wrong" (recoverable
+      formatting/extraction) versus genuine wrong answers, the same split used at
+      [373], to see whether any of the remaining 16 points are cheap.
+    command: []                          # inline heredoc at [550]
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.33                          # train_runtime 4772.678 s (train_v2.log)
+  output_checkpoint: sft_v2             # packaged to model_v2 at [523]
+  training_summary:
+    final_loss: 0.1439                  # train_loss at epoch 3.0 (train_v2.log); last logged step loss 0.1148
+    steps: 3744
+    notes: >-
+      Launched at [501] t=+2.11h, found complete, packaged and evaluated at [523]
+      t=+3.45h. package_model.py wrote model_v2 with the greedy generation_config
+      from exp-02.
+  measurements:
+    - metric: accuracy
+      value: 0.84
+      n: 500
+      path: eval_v2_500.json
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.0
+    path: null
+    notes: >-
+      At [551]: 420 correct / 80 incorrect, all with stop_reason "stop";
+      "recoverable (ans right but marked wrong): 0, genuine wrong: 80". No
+      formatting points left to recover.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "Both v1 and v2 plateau at exactly 84.0% on 500 samples - RS didn't move the
+    needle." ([549]) Measured against exp-02 under the identical --limit 500
+    protocol the delta is exactly 0.0, so adding 14443 self-generated
+    answer-verified solutions bought nothing, contradicting the RFT claim. The
+    diagnostic shows why the ceiling is real rather than clerical: all 80
+    failures are genuine reasoning errors.
+  decision: reject
+  next_step: >-
+    "84% is the capability ceiling of this data. To improve generalization, I'll
+    add high-quality diverse solutions from OpenMathInstruct-2 (GSM-augmented,
+    405B-generated)." ([565])
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-a3f23d29
+  launch_i: 501
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [429]
+    setup: [430, 449, 493, 501]
+    evaluation: [523, 530]
+    result: [523, 530, 550, 551]
+    conclusion: [549, 565]
+  snapshot_files:
+    - gen_rs.py
+    - gen_rs.log
+    - prep_data_v2.py
+    - train_sft.py
+    - train_v2.log
+    - package_model.py
+    - eval_v2_500.json
+    - eval_v1_500.json
+  smoke_runs: []
+  extractor: null                       # omitted: hard rule 5 forbids model names in the card
+  unresolved:
+    - "prep_data_v2.py's stdout at [493] is not in the digest; the component counts are taken from gen_rs.log and the script's fixed caps and checked against the trainer's 39916 total."
+    - "The rejection-sampling data was generated from exp-02's checkpoint, but this training run starts from the base model, so the card cannot separate 'RS data does not help' from 'RS data does not help when training from base'. The agent never ran the RFT continuation from exp-02's weights."
+    - "The 0.0 delta is a point estimate on 500 items (stderr 0.0164 on each side); the stream contains no repeat run or seed sweep."
+
+# ---- joined by the pipeline, never by the extractor ------------------------
+outcome:
+  official_accuracy: null

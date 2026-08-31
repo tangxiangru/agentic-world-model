@@ -1,0 +1,259 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.22
+
+problem:
+  statement: >-
+    The base model scores 9.3% on the benchmark. Two causes named at [100] and
+    [106]: (1) it does not stop - its EOS is <|endoftext|> while the chat format
+    ends turns with <|im_end|>, so it rambles and repeats past the answer and the
+    scorer (which takes the LAST number) picks up a wrong number; (2) its
+    reasoning is mediocre.
+  evidence:
+    - path: /home/ben/task/baseline.json
+      locator: "[98]"
+      observation: 'baseline eval at --limit 150 returns {"accuracy": 0.0933, "stderr": 0.0238}'
+    - path: /home/ben/task/logs/2026-06-07T23-37-51+02-00_gsm8k_3AKE7RMrZVUPhNhgkrZBnG.json
+      locator: "[104] - first 4 samples printed"
+      observation: >-
+        printed completions show code, stray text and a verbatim repeat of the
+        prompt+answer block, so the last number in the completion is not the answer
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-06-07T23-37-51+02-00_gsm8k_3AKE7RMrZVUPhNhgkrZBnG.json
+      question: null
+      gold: "17"
+      model_output: "So,\nANSWER: 22"
+      failure: "no reasoning at all, wrong answer (printed at [104])"
+    - id: null
+      source: /home/ben/task/logs/2026-06-07T23-37-51+02-00_gsm8k_3AKE7RMrZVUPhNhgkrZBnG.json
+      question: null
+      gold: "400"
+      model_output: >-
+        // Function to check if 'number' is a perfect square
+        function isPerfectSquare(number) { const squareRoot = Math.sqrt(number);
+        return Number.isInteger(squareRoot); }
+
+        ANSWER: $ANSWER
+      failure: "emitted JavaScript and the literal placeholder ANSWER: $ANSWER (printed at [104])"
+    - id: null
+      source: /home/ben/task/logs/2026-06-07T23-37-51+02-00_gsm8k_3AKE7RMrZVUPhNhgkrZBnG.json
+      question: "Clare's mom has 5 cans of tomato filling.  She needs them to make 160 tacos.  Each full can makes 12 tacos.  How many additional cans are needed to make all 160 tacos?"
+      gold: "40"
+      model_output: >-
+        ... ANSWER: 14  <then repeats the whole question + reasoning + "ANSWER: 14"
+        a second time, 1072 chars>
+      failure: >-
+        did not stop after the answer line; repeated the block, and the answer it
+        gave (14) is wrong (printed at [104])
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SFT fixes both" [106]: supervised fine-tuning on GSM8K train reformatted to
+    the exact eval prompt format, with the checkpoint patched to eos=<|im_end|>,
+    will make the model stop after its ANSWER line and raise accuracy well above
+    the 9.3% baseline.
+  mechanism: >-
+    Training targets end in "ANSWER: <n><|im_end|>" and the saved config sets
+    eos_token_id=151645, so vLLM stops at the answer and the scorer's last-number
+    rule sees the intended number; the GSM8K reference solutions also supply
+    step-by-step reasoning.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_sft.jsonl
+      source: "HF openai/gsm8k (main, split=train)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command:
+        - python
+        - scripts/prep_data.py
+        - --out
+        - data/gsm8k_sft.jsonl
+      selection: >-
+        GSM8K train reference answers split at "####", <<...>> calculator
+        annotations stripped, whitespace collapsed; target normalised (commas/$
+        removed); prompt built with the eval's MATH_PROMPT_TEMPLATE through
+        qwen3.jinja; with p=0.4 a system block of 1-6 random few-shot
+        demonstrations from the same pool is prepended; completion is
+        "<reasoning>\n\nANSWER: <t><|im_end|>". Script defaults --fewshot-prob 0.4
+        --max-fewshot 6 --seed 0 were not overridden on the [113] invocation.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (full fine-tune, completion-only loss)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum are from the launch line. max_seq_len(1536),
+        scheduler(cosine), warmup(0.03), weight_decay(0.0), bf16, seed(0),
+        save_strategy=epoch, save_total_limit=4, optim=adamw_torch,
+        gradient_checkpointing=True, dataloader_num_workers=4,
+        flash_attention_2 are read from the train_sft.py source written at [131]
+        and edited at [135]/[141] (not in the workspace snapshot; not overridden
+        on the launch line). 6 of 7473 examples dropped for length>1536
+        (runs_sft1.log).
+    target_format: >-
+      eval prompt format: user turn = MATH_PROMPT_TEMPLATE ending in "Reasoning:",
+      assistant turn = cleaned reasoning + "\n\nANSWER: <n><|im_end|>"; labels
+      -100 on the prompt so loss is on the completion only.
+  command:
+    argv:
+      - nohup
+      - python
+      - scripts/train_sft.py
+      - --data
+      - data/gsm8k_sft.jsonl
+      - --out
+      - runs/sft1
+      - --epochs
+      - "3"
+      - --lr
+      - "2e-5"
+      - --bs
+      - "16"
+      - --accum
+      - "2"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/runs_sft1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - bash
+      - run_eval.sh
+      - runs/sft1
+      - "200"
+      - "0.85"
+      - "16"
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0933
+    path: /home/ben/task/baseline.json
+  diagnostic:
+    what: >-
+      inspect the eval log for this checkpoint - do completions stop after the
+      ANSWER line (EOS fix working) rather than rambling past it
+    command:
+      - python
+      - "-c"
+      - "print correct/wrong counts, one correct and one wrong completion, and output char lengths from the newest logs/*.json"
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.33
+  output_checkpoint: /home/ben/task/runs/sft1
+  training_summary:
+    final_loss: 0.4247
+    steps: 702
+    notes: >-
+      train_runtime 1180.3 s, 3 epochs, 7467 examples after length filtering;
+      per-epoch checkpoints saved at checkpoint-234 / -468 / -702 (runs_sft1.log,
+      [255]).
+  measurements:
+    - metric: accuracy
+      value: 0.455
+      n: 200
+      path: /home/ben/task/eval_runs_sft1_l200.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.46
+      n: 200
+      path: /home/ben/task/eval_runs_sft1_checkpoint-468_l200.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-06-07T23-37-51+02-00_gsm8k_3AKE7RMrZVUPhNhgkrZBnG.json
+    notes: >-
+      "correct 92 wrong 108"; output char lengths mean 1008 max 19083; the printed
+      correct completion ends right after "ANSWER: 20" [300]. Agent at [302]:
+      "Outputs are clean and stop correctly - EOS fix confirmed".
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    45.5% (epoch 3) and 46.0% (epoch 2) at --limit 200, which the agent read as
+    "a big jump from 9.3% baseline. SFT works and the EOS fix is confirmed" [298].
+    The verdict is inconclusive only because the comparator was measured at
+    --limit 150 and this output at --limit 200, so the two are not under the same
+    protocol.
+  decision: reject
+  next_step: >-
+    Iteration 2: retrain from the base model on GSM8K x3 plus a MetaMathQA GSM
+    subset, since "remaining errors are reasoning quality, which iteration 2
+    (MetaMath) targets" [302].
+
+# ---- Outcome (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-dc28e30d
+  launch_i: 147
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [98, 100, 103, 104, 106]
+    setup: [111, 113, 131, 135, 141, 147]
+    evaluation: [259]
+    result: [255, 296, 299, 300]
+    conclusion: [298, 302]
+  snapshot_files:
+    - baseline.json
+    - baseline_eval.log
+    - runs_sft1.log
+    - eval_runs_sft1_l200.json
+    - eval_runs_sft1_checkpoint-468_l200.json
+    - run_eval.sh
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - >-
+      The baseline comparator was run at --limit 150 and every later eval at
+      --limit 200; the base model was never re-scored at --limit 200.
+    - >-
+      scripts/prep_data.py and scripts/train_sft.py are not in the workspace
+      snapshot; their contents are taken from the write events at [111] and
+      [131]/[135]/[141].
+    - >-
+      The number of examples written to data/gsm8k_sft.jsonl was never printed;
+      7473 is inferred from "Loaded 7467 examples (6 dropped)" in runs_sft1.log.

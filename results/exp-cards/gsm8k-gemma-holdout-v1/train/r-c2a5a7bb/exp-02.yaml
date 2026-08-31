@@ -1,0 +1,189 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Unchanged from exp-01: the base model does not produce the graded format
+    (step-by-step reasoning whose last line is "ANSWER: $ANSWER") [35], [38].
+    The exp-01 launch never trained, because the installed TRL rejected
+    max_seq_length [49].
+  evidence:
+    - path: /home/ben/task/train.py
+      locator: "[49]"
+      observation: "TypeError: SFTConfig.__init__() got an unexpected keyword argument 'max_seq_length'"
+    - path: /home/ben/task/evaluate.py
+      locator: "[29]-[35]"
+      observation: "the eval sends 10 few-shot examples as a system message and grades the numeric value on the ANSWER line"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SFT on diverse math datasets formatted in the exact eval format" [38] -
+    LoRA SFT of the base model on GSM8K train plus the GSM subset of MetaMathQA,
+    every target ending in "ANSWER: {number}", will make the model answer in the
+    graded format.
+  mechanism: >-
+    "This is a base model ... so it needs SFT to follow instructions ... I need
+    to train the model to output chain-of-thought reasoning ending with
+    ANSWER: {number}" [35].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "HF openai/gsm8k (config main, split train) + HF meta-math/MetaMathQA (type contains GSM)"
+      n_examples: 27463
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        the same file exp-01 was to read, built at [43]: 7,463 GSM8K train rows
+        (all but the eval's 10 few-shot indices, <<...>> annotations stripped)
+        + 20,000 MetaMathQA GSM rows, shuffled with seed 42, each stored as a
+        user/assistant message pair with the assistant turn ending
+        "\n\nANSWER: {answer}"
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 / peft 0.18.1 / transformers 4.57.3 / torch 2.8.0+cu129 [23], [24]"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj (132,120,576 of 4,154,588,672 params, 3.18%) [73]"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        The launch takes no arguments; every value is a module-level constant in
+        train.py (the [68] rewrite, which is the file in the workspace), so all
+        come from the script text and none was overridden. Also hardcoded:
+        max_length=1024 with dataset_text_field="text", packing=False,
+        gradient_checkpointing=True, optim="adamw_torch", logging_steps=50,
+        save_steps=500, save_total_limit=2, dataloader_num_workers=4. After
+        training the script merges the adapter into a freshly loaded base model
+        and writes the merged weights to final_model.
+    target_format: >-
+      /home/ben/task/templates/qwen3.jinja with add_generation_prompt=False and
+      enable_thinking=False, so each example reads
+      "<|im_start|>assistant\n<think>\n\n</think>\n\n{reasoning}\n\nANSWER: {n}<|im_end|>"
+      [73]
+  command:
+    argv: [python3, train.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, final_model, --limit, "50", --max-connections, "2", --json-output-file, eval_results_v1.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.23
+    steps: null
+    notes: >-
+      "Training is complete. The model has been trained for 2 epochs with a
+      final loss of ~0.23 and token accuracy of 95.2%. The merged model is saved
+      to final_model" [79]; at the halfway point the agent read loss ~0.27 and
+      token accuracy ~94% [76]. The trainer's own step count was cut out of the
+      stream by output truncation.
+  measurements:
+    - metric: accuracy
+      value: 0.06
+      n: 50
+      path: /home/ben/task/eval_results_v1.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      stderr 0.034; the eval burned 102,400 output tokens on 50 items [83]. The
+      agent's diagnosis at [84]-[96] and [134]: training applied the chat
+      template with enable_thinking=False, which prefixes
+      "<think>\n\n</think>\n\n", while the serving side applies the same
+      template without that keyword and stops at "<|im_start|>assistant\n" -
+      so the trained and served prefixes disagree; and the merged model's
+      generation_config lists only eos 151643 (<|endoftext|>), not 151645
+      (<|im_end|>), so the model does not stop at the end of its turn.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first checkpoint that actually trained scored 0.06 at limit 50 - "Only
+    6% accuracy. That's very low" [84]. Nothing was measured on the base model,
+    so there is no comparator and the number stands alone; the agent read the
+    failure as a train/serve template mismatch plus a missing stop token, not as
+    evidence about the SFT hypothesis.
+  decision: reject
+  next_step: >-
+    "Format training data WITHOUT enable_thinking=False (match eval format)" and
+    "Set proper stop tokens in generation_config" [134], retrained from the base
+    model as exp-03.
+
+provenance:
+  kind: extracted
+  run_ref: r-c2a5a7bb
+  launch_i: 72
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [35, 38, 49]
+    setup: [41, 43, 68, 73]
+    evaluation: [82]
+    result: [76, 79, 83]
+    conclusion: [84, 86, 89, 95, 96, 133, 134]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - evaluate.py
+    - eval_results_v1.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the trainer's step count, runtime and exact final loss were lost to output truncation at [73]; the loss on the card is the agent's own reading at [79]"

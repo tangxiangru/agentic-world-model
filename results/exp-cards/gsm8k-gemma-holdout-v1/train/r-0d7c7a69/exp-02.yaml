@@ -1,0 +1,220 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.75
+
+problem:
+  statement: >-
+    The base model scores 0.080 on the benchmark eval (50 samples): it frequently
+    produces the right number but not the required output shape (no worked reasoning,
+    junk appended after the answer), so the numeric end-match scorer marks it wrong.
+    The agent's own log line: "fails format; often right number + junk". The first
+    attempt at the fix (exp-01) also ran out of memory at per-device batch 16.
+  evidence:
+    - path: /home/ben/task/baseline_metrics.json
+      locator: "[101]"
+      observation: "accuracy 0.080, stderr 0.039 on 50 test samples (evaluate.py --limit 50)"
+    - path: /home/ben/task/RESULTS.md
+      locator: "[273], baseline row of the results table"
+      observation: "agent records the baseline as 0.080 (n=50), 'fails format; often right number + junk'"
+    - path: /home/ben/task/RESULTS.md
+      locator: "[417], plan step 1"
+      observation: "'bs8 accum4 (bs16 OOMs on 151K-vocab logits)' - why this launch differs from exp-01"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/
+      question: "Marissa is hiking a 12-mile trail. She took 1 hour to walk the first 4 miles, then another hour to walk the next two miles. If she wants her average speed to be 4 miles per hour, what speed (in miles per hour) does she need to walk the remaining distance?"
+      gold: "6"
+      model_output: "ANSWER: 6.Navigate"
+      failure: "correct number, but emitted with no reasoning and a junk token appended; scored incorrect ([105])"
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_round1.jsonl
+      source: "HF nvidia/OpenMathInstruct-2 (gsm8k + augmented_gsm8k sources) + HF openai/gsm8k train"
+      n_examples: 239840
+      built_by: /home/ben/task/prep_data.py
+      build_command:
+        - python3
+        - -u
+        - prep_data.py
+        - --out
+        - data/sft_round1.jsonl
+        - --max-omi
+        - "220000"
+      selection: >-
+        OpenMathInstruct-2 rows whose problem_source is gsm8k or augmented_gsm8k
+        (282,276), trailing "The final answer is ..." sentence dropped and \boxed{X}
+        unwrapped, completion re-ended with "ANSWER: <n>"; augmented problems sharing a
+        10-gram with any GSM8K test question dropped (282,276 -> 281,289); <=4 solutions
+        per problem; 220,000 kept over 80,315 unique problems. GSM8K train (7,473,
+        calculator annotations stripped) repeated x3. 12.2% of prompts carry a few-shot
+        system message, 2.0% the exact eval system message. Prompt+completion <= 2400
+        tokens (242,419 -> 239,840; 100.9M tokens). Counts printed in prep_data.log.
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129)
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/batch_size/grad_accum/max_seq_len passed on the command line.
+        scheduler=cosine, warmup_ratio=0.03, packing=True (strategy bfd),
+        eos_token="<|im_end|>", save_strategy=epoch (via --save-epochs),
+        save_only_model=True, optim=adamw_torch_fused, max_grad_norm=1.0,
+        attn_implementation=flash_attention_2, dtype bfloat16, seed=42, logging_steps=25
+        are constants/defaults in /home/ben/task/train_sft.py that the launch did not
+        override. weight_decay is not set by the script (trainer default, never printed).
+    target_format: >-
+      prompt rendered exactly like the eval (<|im_start|>user ... <|im_end|> then
+      <|im_start|>assistant), completion = reasoning ending in a final line
+      "ANSWER: <number>", eos <|im_end|>; loss on the completion only.
+  command:
+    argv:
+      - python3
+      - -u
+      - train_sft.py
+      - --data
+      - data/sft_round1.jsonl
+      - --out
+      - runs/sft_r1
+      - --epochs
+      - "2"
+      - --lr
+      - "2e-5"
+      - --bs
+      - "8"
+      - --accum
+      - "4"
+      - --max-length
+      - "2560"
+      - --save-epochs
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/train_sft_r1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python3
+      - -u
+      - my_eval.py
+      - --model
+      - runs/sft_r1/final
+      - --out
+      - evals/sft_r1_final.json
+    dev_set: "full openai/gsm8k test split via my_eval.py, the agent's offline replica of the benchmark eval (test data used for scoring only)"
+    n: 1319
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.08
+    path: /home/ben/task/baseline_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 2.7
+  output_checkpoint: /home/ben/task/runs/sft_r1/final
+  training_summary:
+    final_loss: 0.3021
+    steps: 2518
+    notes: >-
+      train_runtime 9702.6 s (2 h 41 m), 202.2M tokens, mean_token_accuracy 0.893,
+      entropy 0.739 (train_sft_r1.log); epoch-1 checkpoint also saved at
+      runs/sft_r1/checkpoint-1259.
+  measurements:
+    - metric: accuracy
+      value: 0.7991
+      n: 1319
+      path: /home/ben/task/evals/sft_r1_final.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.7968
+      n: 1319
+      path: /home/ben/task/evals/sft_r1_ep1.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: "average completion length 160 tokens (RESULTS.md [550])"}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Two epochs of format-matched SFT took the model from the 0.080 baseline to 0.7991
+    on the full test replica (epoch-1 checkpoint 0.7968, so the second epoch adds ~0.2
+    pt). The verdict stays inconclusive because the baseline was only measured under a
+    different protocol (benchmark eval, 50 samples) and never re-measured under the
+    full-test replica used here.
+  decision: adopt
+  next_step: >-
+    Agent's plan at [417]: "Phase 2: RFT gen (also measures pass@8 ceiling) then GRPO
+    ~150 steps; RFT-train as fallback." The RFT data was generated but never trained on.
+
+# official_accuracy is joined by the pipeline, never written by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-0d7c7a69
+  launch_i: 392
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [101, 105, 273, 417]
+    setup: [96, 126, 311, 342, 346, 392]
+    evaluation: [205, 514, 526]
+    result: [511, 525, 550]
+    conclusion: [525, 550]
+  snapshot_files:
+    - train_sft.py
+    - train_sft_r1.log
+    - prep_data.py
+    - prep_data.log
+    - my_eval.py
+    - RESULTS.md
+    - baseline_metrics.json
+    - eval_system_message.txt
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "evals/sft_r1_final.json and evals/sft_r1_ep1.json are not in the workspace snapshot; the two accuracies survive only in RESULTS.md ([550])"
+    - "the agent never evaluated the base model with my_eval.py, so no same-protocol baseline exists"
+    - "model selection throughout the run uses the full official test split via my_eval.py; the agent states test data is used for evaluation only"

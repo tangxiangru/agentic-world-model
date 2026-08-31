@@ -1,0 +1,206 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The biggest mismatch is obvious now: the benchmark always includes 10 GSM8K
+    training examples in the system prompt, while my first SFT run didn't"
+    [242]. The GSM8K-only fine-tune (exp-01/exp-03) was trained under a
+    different prompting regime from the one it is judged in, and it landed
+    exactly at the base-model baseline on the official slice [235].
+  evidence:
+    - path: /home/ben/task/runs/gsm8k_only_v1_merged_fix/official_eval_20.json
+      locator: "[232], read at [235]"
+      observation: "GSM8K-only LoRA, official evaluator, 20 samples: accuracy 0.350, stderr 0.109 - identical to the base model's 0.35"
+    - path: /home/ben/task/evaluate.py
+      locator: "[36]"
+      observation: "the benchmark injects 10 GSM8K training examples as few-shot context and scores a numeric match on the final answer"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "I'm regenerating the training data in that exact benchmark format so the
+    model learns to answer under the same prompting regime it will actually be
+    judged on" [242] - matching the evaluator's 10-shot prompt at training time
+    will lift the official score above the 0.35 baseline.
+  mechanism: >-
+    If the training prompt is the benchmark prompt (10 GSM8K few-shots plus the
+    question), the model adapts to the distribution it is scored in rather than
+    to a bare question-answer format [242].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: >-
+    stated only as an elimination: "if it doesn't, I can rule out
+    prompt-matching as the bottleneck and move on" [280]
+  # the phrasing above is the agent's, at [280], after the launch
+
+setup:
+  parent_checkpoint:
+    path: null
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_benchmark_train_sft.jsonl
+      source: "HF openai/gsm8k (config main, split train), re-rendered in the benchmark's 10-shot prompt format"
+      n_examples: 6961
+      built_by: /home/ben/task/scripts/prepare_data.py
+      build_command:
+        - python
+        - scripts/prepare_data.py
+        - --output-dir
+        - data
+        - --tinygsm-count
+        - "20000"
+        - --tinygsm-max-shards
+        - "1"
+        - --val-size
+        - "512"
+      selection: >-
+        the same 6961 GSM8K train rows as exp-01 (512 held out for validation),
+        re-emitted by the patched prep script at [247] as
+        gsm8k_benchmark_examples: 6961, i.e. each row wrapped in the
+        evaluator's 10-shot system prompt [242]. The prep run also wrote the
+        20000-row TinyGSM shard and the 26961-row mix, neither of which this
+        launch reads.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: null
+    peft: "LoRA r=64 alpha=128 dropout=0.05; target modules not stated"
+    hyperparams:
+      lr: 3.0e-05
+      epochs: 0.5
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2560
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        every value here is from the launch argv at [253]; scripts/train_sft.py
+        is not in the workspace snapshot, so no argparse default was adopted.
+        Also passed: --logging-steps 10 --save-steps 250. The longer context
+        costs "about 7-8 seconds per optimizer step at 2.5k-token context" [256].
+    target_format: >-
+      the benchmark's own prompt: 10 GSM8K training examples in the system
+      prompt, then the question, with the solution ending in the evaluator's
+      ANSWER line [242]
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --train-file
+      - data/gsm8k_benchmark_train_sft.jsonl
+      - --output-dir
+      - runs/gsm8k_benchmark_v1
+      - --num-train-epochs
+      - "0.5"
+      - --per-device-train-batch-size
+      - "2"
+      - --gradient-accumulation-steps
+      - "8"
+      - --learning-rate
+      - "3e-5"
+      - --max-seq-length
+      - "2560"
+      - --logging-steps
+      - "10"
+      - --save-steps
+      - "250"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --lora-dropout
+      - "0.05"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.35
+    path: /home/ben/task/baseline_limit20.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.4
+  output_checkpoint: /home/ben/task/runs/gsm8k_benchmark_v1
+  training_summary:
+    final_loss: 0.4184
+    steps: null
+    notes: >-
+      last logged loss 0.4184 at epoch 0.49; the trainer's reported mean
+      train_loss is 0.44305171855660375 over 0.5 epoch, train_runtime 1457.355 s
+      (0.405 h), 2.356 samples/s, 0.148 steps/s [318]. The step count is never
+      printed. The adapter itself was never scored; it was measured only after
+      being merged (exp-05).
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "The benchmark-style adapter finished cleanly" [320] after 24 minutes at
+    2.5k-token context, mean train_loss 0.4431 [318], but this launch's output
+    is an adapter and carries no measurement of its own. Its merged export
+    (exp-05) then tied the baseline, and the agent read the whole line as
+    "effectively neutral" [343].
+  decision: adopt
+  next_step: >-
+    Export with the fixed tokenizer path and run the official 20-sample slice
+    "before deciding whether it becomes the lead model or a stepping stone" [320].
+
+outcome:
+  official_accuracy: null       # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-60904922
+  launch_i: 253
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [232, 235, 242]
+    setup: [245, 247, 248, 253, 256]
+    evaluation: [47]
+    result: [318, 320]
+    conclusion: [320, 343]
+  snapshot_files:
+    - baseline_limit20.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "hypothesis.falsified_if is the agent's own wording from [280], which is after the launch, not before it."
+    - "the launch passes no base-model argument and scripts/train_sft.py is not in the snapshot; origin base_model follows from the run's pattern ([94], [392]) rather than from this command."
+    - "decision follows the rule 'adopt if the output is the parent of a later card' - this adapter is the parent of exp-05; on score the line was judged neutral at [343] and dropped."
+    - "the workspace holds contamination_judgement.txt ('no contamination detected') and disallowed_model_judgement.txt ('only allowed use detected'), but neither check appears in the stream."

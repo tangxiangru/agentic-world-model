@@ -1,0 +1,209 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    [368] "The failure mode in the bad finetunes is now clear from the logs: they
+    aren't mostly 'wrong math,' they're mostly 'one correct solution followed by
+    another long stream of unrelated completions.' That points to a
+    training-distribution problem around how sequences are terminated, not just
+    answer quality." [343] "aggressive SFT on gold GSM8K traces is destabilizing
+    this base model."
+  evidence:
+    - path: /home/ben/task/logs/2026-03-07T21-37-41+01-00_gsm8k_PfywHbJ9aef2nEDGFCTzWY.json
+      locator: "[366] -> [367]"
+      observation: "a sample ends with a correct 'ANSWER: 15' and then continues into unrelated text and another problem"
+    - path: /home/ben/task/candidate_few3_stopfix_eval50.json
+      locator: "[309]"
+      observation: "the prompt-matched LoRA branch scored 0.04 on 50 samples"
+    - path: /home/ben/task/train_qwen_gsm8k.py
+      locator: "[369] -> [376]"
+      observation: "a truncation audit over the 0-shot and 3-shot encodings showed the sequences fit under the context limit, ruling out clipped end tokens"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    [385] "keep the evaluation prompt distribution fixed, have the base model
+    solve GSM8K-train problems under that exact setup, keep only correct traces,
+    trim them to a clean `ANSWER:` ending, and then do a very mild LoRA SFT on
+    those self-generated traces. That avoids the gold-rationale style mismatch
+    that broke the earlier runs."
+  mechanism: >-
+    Training on the base model's own correct, cleanly terminated traces keeps the
+    target inside the model's own distribution, so the update reinforces stopping
+    after the answer instead of transferring the terse GSM8K gold style.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/selftrain_greedy_200.jsonl
+      source: synthetic:self
+      n_examples: 176
+      built_by: /home/ben/task/build_selftrain_dataset.py
+      build_command:
+        - python
+        - build_selftrain_dataset.py
+        - --output-jsonl
+        - data/selftrain_greedy_200.jsonl
+        - --limit
+        - "200"
+        - --gpu-memory-utilization
+        - "0.4"
+      selection: >-
+        the base model answers the first 200 GSM8K train questions (after removing
+        the 10 rows used as demonstrations) under the exact Inspect prompt with a
+        10-shot system message drawn from the seed-42 shuffle; greedy decoding
+        (script default --temperature 0.0), max 512 new tokens; a trace is kept
+        only if some "ANSWER:" line normalises to the gold target, and is then
+        truncated at the end of that line. [401] 176 of 200 kept (keep_rate 0.88).
+        [409] the kept traces average 2424 tokens (max 2693, p95 2577). The
+        trainer then held out --eval-size 24 of them, leaving 152 training rows
+        ([413]).
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: rft
+    framework: vLLM harvest + transformers.Trainer + peft LoRA (versions not printed in the stream)
+    peft: "LoRA r=16 alpha=32 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 1
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/batch_size/grad_accum/max_seq_len, --train-jsonl, --eval-size 24,
+        --lora --lora-r 16 --lora-alpha 32 --merge-adapter --save-strategy no from
+        the launch argv at [411]. lora dropout 0.05, target modules, warmup 0.03,
+        weight_decay 0.01 and seed 42 are argparse defaults of
+        /home/ben/task/train_qwen_gsm8k.py which the launch did not override;
+        scheduler and bf16 are hard-coded there.
+    target_format: >-
+      the harvested record's own messages (10-shot system message + the Inspect
+      user prompt) rendered with templates/qwen3.jinja; assistant turn = the base
+      model's own greedy trace truncated at its first correct "ANSWER: <n>" line;
+      loss masked to the assistant span.
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - 'python train_qwen_gsm8k.py --output-dir exp_selftrain200_lora_r16_lr1e5 --train-jsonl data/selftrain_greedy_200.jsonl --eval-size 24 --max-length 3072 --num-train-epochs 1 --learning-rate 1e-5 --per-device-train-batch-size 1 --per-device-eval-batch-size 1 --gradient-accumulation-steps 16 --logging-steps 1 --save-strategy no --lora --lora-r 16 --lora-alpha 32 --merge-adapter'
+    cwd: /home/ben/task
+    script: /home/ben/task/train_qwen_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - exp_selftrain200_lora_r16_lr1e5
+      - --limit
+      - "50"
+      - --json-output-file
+      - exp_selftrain200_lora_r16_lr1e5_eval50.json
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.5"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.44
+    path: /home/ben/task/final_model_candidate_eval50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.016
+  output_checkpoint: /home/ben/task/exp_selftrain200_lora_r16_lr1e5
+  training_summary:
+    final_loss: 0.39657301604747774
+    steps: 10
+    notes: >-
+      [416] train_runtime 58.6838 s, eval_loss 0.42294397950172424 at epoch 1.0,
+      then "Merging LoRA adapter into base model...". [387] the budget timer read
+      8:23 remaining shortly before the harvest.
+  measurements:
+    - metric: accuracy
+      value: 0.42
+      n: 50
+      path: /home/ben/task/exp_selftrain200_lora_r16_lr1e5_eval50.json
+      delta_vs_comparator: -0.02
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Self-generated traces stopped the collapse - 0.42 on 50 samples, an order of
+    magnitude better than the gold-rationale branches - but did not beat the
+    near-base incumbent's 0.44 under the same protocol. [439] "The first
+    self-training recipe was close but not better: `0.42` versus the fallback
+    `0.44`. That suggests the direction is viable, but the update was still too
+    aggressive."
+  decision: reject
+  next_step: >-
+    [439] "one broader-but-gentler variant next: more self-generated data,
+    lower-rank adapter, lower learning rate" (exp-08).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-0295e24f
+  launch_i: 411
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [343, 367, 368, 376]
+    setup: [385, 398, 401, 409, 411]
+    evaluation: [431]
+    result: [416, 435]
+    conclusion: [439]
+  snapshot_files:
+    - build_selftrain_dataset.py
+    - train_qwen_gsm8k.py
+    - exp_selftrain200_lora_r16_lr1e5_eval50.json
+    - final_model_candidate_eval50.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the harvested dataset file itself is not in the workspace snapshot, so only the printed keep counts document it"
+    - "the first eval of this checkpoint, launched at [419], lost the GPU to a concurrent eval; the scored run is the relaunch at [431]"

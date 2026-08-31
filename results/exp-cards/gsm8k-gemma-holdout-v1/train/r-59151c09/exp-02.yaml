@@ -1,0 +1,189 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "Only 8% accuracy" ([85]) on the 50-sample eval of checkpoint-4000 even
+    though the solutions themselves were right: the checkpoint's
+    generation_config.json listed only 151643 as eos_token_id, so generation ran
+    past "ANSWER: <n>" into a fresh "user" turn and garbage, and the grader
+    scored those samples incorrect.
+  evidence:
+    - path: /home/ben/task/logs/2026-03-22T11-55-50+01-00_gsm8k_jfqVXBoUzXR6X8cKchhNwk.json
+      locator: "[87] - samples 3 and 4 of the 50-sample eval"
+      observation: "correct ANSWER line followed by a new 'user' turn / unrelated text; scored I"
+    - path: /home/ben/task/trained_model_v1/checkpoint-4000/generation_config.json
+      locator: "[94]"
+      observation: "eos_token_id == [151643] only; <|im_end|> (151645) missing"
+  affected_share: null
+  failure_examples:
+    - id: "50-sample eval at [82], sample 3"
+      source: /home/ben/task/logs/2026-03-22T11-55-50+01-00_gsm8k_jfqVXBoUzXR6X8cKchhNwk.json
+      question: null
+      gold: "8"
+      model_output: >-
+        "...48 inches / 6 inches/piece = 8 pieces. Therefore, Tracy obtained 8
+        pieces of wire.\n\nANSWER: 8\n<stray token>user\nSolve the following math problem
+        step by step..."
+      failure: "answer correct, but the model kept generating a new user turn instead of stopping; scored I"
+    - id: "50-sample eval at [82], sample 4"
+      source: /home/ben/task/logs/2026-03-22T11-55-50+01-00_gsm8k_jfqVXBoUzXR6X8cKchhNwk.json
+      question: null
+      gold: "2"
+      model_output: >-
+        "...Marie ordered $17 / $8.50 = 2 boxes of pizza\n\nANSWER: 2\n<bold
+        unicode text> On the first day of cleaning, Sam and his teammates worked
+        out..."
+      failure: "answer correct, run-on generation after the ANSWER line; scored I"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Fix generation_config to include <|im_end|> as stop token" ([97]) - adding
+    151645 to eos_token_id will let the checkpoint stop after the ANSWER line and
+    recover the accuracy the 8% eval was hiding.
+  mechanism: >-
+    Training targets end with <|im_end|>, but the checkpoint's generation_config
+    only stopped on 151643, so vLLM decoded to max_new_tokens on every sample.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/trained_model_v1/checkpoint-4000
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: null
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        generation_config.json rewritten in place to
+        {"eos_token_id": [151643, 151645], "max_new_tokens": 2048,
+        "pad_token_id": 151643, "transformers_version": "4.57.3"}. No sampling
+        params were set at this point.
+    target_format: null
+  command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        # Fix generation_config to include <|im_end|> as stop token
+        config = {
+            'eos_token_id': [151643, 151645],
+            'max_new_tokens': 2048,
+            'pad_token_id': 151643,
+            'transformers_version': '4.57.3'
+        }
+        with open('./trained_model_v1/checkpoint-4000/generation_config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+        print('Updated generation_config.json')
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python3
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - ./trained_model_v1/checkpoint-4000
+      - --limit
+      - "50"
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "2048"
+      - --gpu-memory-utilization
+      - "0.5"
+      - --json-output-file
+      - eval_v1_ckpt4000.json
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.08
+    path: /home/ben/task/logs/2026-03-22T11-55-50+01-00_gsm8k_jfqVXBoUzXR6X8cKchhNwk.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/trained_model_v1/checkpoint-4000
+  training_summary: {final_loss: null, steps: null, notes: "config-only change; no training"}
+  measurements:
+    - metric: accuracy
+      value: 0.74
+      n: 50
+      path: /home/ben/task/eval_v1_ckpt4000.json
+      delta_vs_comparator: 0.66
+  diagnostic_result: {value: null, path: null, notes: "output tokens fell from 99,988 to 11,761 for the same 50 prompts ([83] vs [101]), i.e. the run-on generation stopped"}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "74% accuracy with the EOS fix! That's a massive jump from 8%. The model was
+    already performing well, it just wasn't stopping properly." ([102]) Same
+    weights, same --limit 50 protocol, +66 pts.
+  decision: adopt
+  next_step: >-
+    "train further to improve" ([102]) - resume v1 from checkpoint-4000 to a full
+    epoch ([106]).
+
+outcome:
+  official_accuracy: null   # written by the pipeline, never by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-59151c09
+  launch_i: 97
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [85, 86, 87, 93, 94]
+    setup: [97]
+    evaluation: [100]
+    result: [101]
+    conclusion: [102]
+  snapshot_files:
+    - eval_v1_ckpt4000.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The two failure examples are the only failing items the agent printed; it printed the model output tails but not the questions, so `question` is null."
+    - "Whether the same missing-EOS fix propagated to the checkpoint written by the later resume is never stated; final_model was later verified to carry 151645 ([225])."

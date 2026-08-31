@@ -1,0 +1,263 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 5.52
+
+problem:
+  statement: >-
+    The incumbent still loses items to run-on generation: 4 of 150 completions
+    stop only at the 1,500-token cap and every one of them is wrong, drifting
+    into invented problems and other languages before any answer line the scorer
+    can read [437]. The other 42 failures are reasoning errors.
+  evidence:
+    - path: /home/ben/task/logs/2026-04-20T14-26-51+02-00_gsm8k_ffv6vkHLAWHFfdm3XcvE77.json
+      locator: "[436][437], all 150 samples"
+      observation: "correct 104/150; by stop reason: stop 104/146, max_tokens 0/4"
+  affected_share: null
+  failure_examples:
+    - id: "first max_tokens failure of the 150-sample eval of exp-04"
+      source: /home/ben/task/logs/2026-04-20T14-26-51+02-00_gsm8k_ffv6vkHLAWHFfdm3XcvE77.json
+      question: null
+      gold: "7"
+      model_output: >-
+        "... $y = -\\frac{1}{13}$ ... Snow White often loses her belongings ...
+        If Snow White lost one apple per drawer, and there are 10 apples total,
+        then there are 10/1 = 10 drawers ... What is $ 8-1.99-2.99? $ To
+        subtract"
+      failure: "never answers the asked question; generates a chain of unrelated problems until the token cap, extracted answer 2"
+    - id: "second max_tokens failure of the 150-sample eval of exp-04"
+      source: /home/ben/task/logs/2026-04-20T14-26-51+02-00_gsm8k_ffv6vkHLAWHFfdm3XcvE77.json
+      question: null
+      gold: "105"
+      model_output: "Arabic filler text with stray numeric lists, ending mid-sentence at the token cap"
+      failure: "degenerates into another language; extracted answer 9.3"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "combine v2 base (GSM8K+MetaMath) with rejection-sampled self-distilled CoT"
+    [476], upweighted because the self-generated traces "matche[] model
+    distribution" [476]: training the base model on GSM8K + a MetaMath subset +
+    two copies of the checkpoint's own verified-correct solutions will beat the
+    incumbent.
+  mechanism: >-
+    Traces sampled from the incumbent itself and kept only when the final answer
+    matches gold are in the model's own distribution, so they reinforce the
+    reasoning paths it already gets right instead of pushing it toward MetaMath's
+    style.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/train_data_v4.jsonl
+      source: local
+      n_examples: 87745
+      built_by: /home/ben/task/work/prepare_data_v4.py
+      build_command:
+        - python
+        - prepare_data_v4.py
+      selection: >-
+        GSM8K train (7,473, <<..>> stripped) + a seed-42 shuffle of MetaMathQA
+        GSM_AnsAug / GSM_Rephrased cut to 30,000 + rejection_v3.jsonl counted
+        twice (25,136 x 2) = 87,745 rows [479]; each row behind a system message
+        of K fewshot GSM8K solutions, K from {0,2,4,6,8,8,10,10}. The launch took
+        --subset 70000 of the file.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+    - path: /home/ben/task/work/rejection_v3.jsonl
+      source: synthetic:self
+      n_examples: 25136
+      built_by: /home/ben/task/work/generate_rejection.py
+      build_command:
+        - python
+        - /home/ben/task/work/generate_rejection.py
+        - --model
+        - /home/ben/task/work/sft_v3
+        - --output
+        - /home/ben/task/work/rejection_v3.jsonl
+        - --n_samples
+        - "4"
+        - --temperature
+        - "0.7"
+        - --max_tokens
+        - "512"
+      selection: >-
+        4 samples per GSM8K train question from the exp-04 checkpoint through
+        vLLM (temperature 0.7, top_p 0.95, max 512 tokens, single-turn prompt, no
+        fewshot system, templates/qwen3.jinja); a sample is kept only when the
+        number on its "ANSWER:" line equals the gold answer, is trimmed at the end
+        of that line, and has the line rewritten to the gold value; 25,136 kept
+        [479]. Upstream of the trainer - the launch reads only train_data_v4.jsonl,
+        where these rows appear twice.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 2
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129) [17]; vLLM 0.11.0 for the rejection sampling"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        lr, epochs, bsz, grad_accum, max_len, --model Qwen/Qwen3-1.7B-Base and
+        --subset 70000 are the launch flags at [481]; --no_gc was passed
+        (gradient checkpointing off). train_v2.py is not in the workspace
+        snapshot, so its defaults are not filled into the typed fields; the text
+        written at [235] shows, unoverridden, seed=42, lr_scheduler_type=cosine,
+        warmup_ratio=0.03, weight_decay=0.0, bf16=True,
+        attn_implementation=flash_attention_2, optim=adamw_torch_fused,
+        max_grad_norm=1.0, save_strategy=no, and the generation_config.json with
+        eos_token_id [151645, 151643] written at save time. Effective batch 32.
+    target_format: >-
+      as in exp-03/exp-04; the rejection rows contribute the model's own reasoning
+      text with a gold-corrected final "ANSWER: n" line.
+  command:
+    argv:
+      - nohup
+      - python
+      - train_v2.py
+      - --data
+      - /home/ben/task/work/train_data_v4.jsonl
+      - --output_dir
+      - /home/ben/task/work/sft_v4
+      - --model
+      - Qwen/Qwen3-1.7B-Base
+      - --max_len
+      - "3072"
+      - --bsz
+      - "4"
+      - --grad_accum
+      - "8"
+      - --lr
+      - 1e-5
+      - --epochs
+      - "1.0"
+      - --subset
+      - "70000"
+      - --no_gc
+    cwd: /home/ben/task/work
+    script: /home/ben/task/work/train_v2.py
+    env: {}
+    log: /home/ben/task/work/train_v4.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - /home/ben/task/work/sft_v4
+      - --limit
+      - "500"
+      - --max-connections
+      - "4"
+      - --max-tokens
+      - "2048"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --json-output-file
+      - /home/ben/task/work/eval_v4_500.json
+    dev_set: >-
+      official --limit 500, launched through run_eval.sh at [569] (the wrapper
+      expands to the command above [106]); also measured at --limit 200 at [539]
+      into /home/ben/task/work/eval_v4.json
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.672
+    path: /home/ben/task/work/eval_v3_500.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/work/sft_v4
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No train_runtime, step count or loss for this run appears in the stream -
+      the three progress checks at [502][512][522] have no result blocks in the
+      digest. Launched at t=+5.52h [481]; the checkpoint was evaluated at
+      t=+7.27h [539].
+  measurements:
+    - metric: accuracy
+      value: 0.675
+      n: 200
+      path: /home/ben/task/work/eval_v4.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.656
+      n: 500
+      path: /home/ben/task/work/eval_v4_500.json
+      delta_vs_comparator: -0.016
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Adding 25k self-distilled traces at double weight did not help: 0.656 +/-
+    0.021 against the incumbent's 0.672 +/- 0.021 on the same 500 samples [626],
+    and 0.675 on 200 - "v4 = 67.5% (worse than v3 at 69.3%). Saving v3 as
+    final_model" [547]. The agent's own reading at the end: the extra
+    self-distilled samples "didn't compound improvements within noise" [665].
+  decision: reject
+  next_step: >-
+    Rebuild the mix without MetaMath - GSM8K train twice plus the rejection
+    samples once - and retrain from base (v5) [579][583].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-0632a2e4
+  launch_i: 481
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [436, 437]
+    setup: [451, 453, 476, 478, 479, 481]
+    evaluation: [539, 569]
+    result: [547, 555, 557, 626]
+    conclusion: [547, 626, 662, 665]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the rejection-sampling run at [453] prints its total/correct counts in the script, but no result block for it is in the digest; the 25,136 kept is prepare_data_v4.py's count at [479]"
+    - "eval_v4.json and eval_v4_500.json are not in the workspace snapshot; the values are the ones printed at [557] and [626]"
+    - "the comparison the agent actually made at [547] is across different limits (v4 at 200 vs v3 at 150); the same-limit comparison used here (500) only became available at [626]"

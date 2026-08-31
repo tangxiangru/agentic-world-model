@@ -1,0 +1,215 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.29
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The first full SFT run (exp-01) trains too slowly to fit the budget:
+    "Training pace (~4s/it avg) projects ~4.8h for 2 epochs - too slow, would
+    eat the RFT round. The cause: 29K long-prompt (few-shot-block) examples
+    dominate FLOPs." [25044]
+  evidence:
+    - path: /home/ben/task/logs_sft_v1.txt
+      locator: "[23387] - '7%| | 302/4294 [20:33<7:21:51, 6.64s/it]'"
+      observation: "302 of 4294 steps in 20.5 min; the trainer's own ETA is 7h21 for the remainder"
+    - path: /home/ben/task/logs_prep.txt
+      locator: "system variants: exact_eval=19322 kshot=10274 short=107800"
+      observation: >-
+        ~29.6K of the 137K examples carry a long few-shot system block, which is
+        what the agent identified as the FLOP sink
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Rebuilding the corpus with a much smaller share of long few-shot-block
+    prompts will let the same 2-epoch full fine-tune finish inside the budget
+    without losing the eval-format conditioning, because "smoke test proved ~800
+    eval-block examples suffice for conditioning". [25044]
+  mechanism: >-
+    The long seed-42 few-shot system block is only needed to teach the model the
+    eval-time prompt shape; cutting it from 10%/6% to 2%/3% of the MetaMath half
+    removes most of the long sequences that dominate the per-step FLOPs while
+    keeping the gold half's 35%/15% exposure to that block.
+  expected_effect:
+    metric: null
+    direction: null
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1b.jsonl
+      source: local
+      n_examples: 122397
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py, --out, data/sft_v1b.jsonl, --metamath-cap, "100000"]
+      selection: >-
+        Same recipe as exp-01 (GSM8K train gold x3, <<>> stripped, reformatted to
+        end "ANSWER: N"; MetaMathQA GSM subsets parsed, deduped, tail-rewritten)
+        but MetaMath capped at 100000 and the long-prompt mix cut: for MetaMath
+        items the exact seed-42 eval few-shot block drops from 10% to 2% and the
+        random k-shot block from 6% to 3% ([25053]); gold items keep 35% exact
+        block / 15% k-shot / 50% short system. Decontaminated against all 1319
+        test questions (normalised exact match + word-8-gram overlap > 0.5).
+      repeats: "gsm8k gold x3"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129, flash-attn 2.8.3)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2.0
+      batch_size: 6
+      grad_accum: 11
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "weights loaded fp32, bf16=True autocast, flash_attention_2, gradient checkpointing"
+      seed: 17
+      other: >-
+        --max-len 2560 and --seed 17 not passed; argparse defaults of
+        /home/ben/task/train_sft.py, not overridden by the launch.
+        scheduler/warmup/weight_decay/adam_beta2=0.95/max_grad_norm=1.0/
+        optim=adamw_torch_fused/group_by_length=True are hard-coded in that
+        script. Effective batch 66; 3710 optimizer steps; save_strategy="epoch"
+        so checkpoint-1855 (ep1) and checkpoint-3710 (ep2) were both kept.
+        Trainer reported "dataset: 122387 examples, dropped 10 over 2560 tokens".
+        Peak GPU 80.9 GB [25435].
+    target_format: >-
+      the eval prompt rendered with templates/smollm.jinja; completion =
+      reasoning lines then a single final line "ANSWER: <number>", then
+      <|im_end|>; loss on the completion and <|im_end|> only.
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v1b.jsonl, --out, ckpt/sft_v1b, --epochs, "2", --mbs, "6", --accum, "11", --lr, 2e-5]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs_sft_v1b.txt
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/v1b_ep2, --limit, "150", --json-output-file, results_v1b_ep2_150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator: null
+  diagnostic:
+    what: >-
+      failure-mode classification of the epoch-2 misses at limit 150
+      (truncated_max_tokens / no_answer_line / extra_text_after / wrong_number)
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 3.34
+  output_checkpoint: /home/ben/task/ckpt/sft_v1b/checkpoint-3710
+  training_summary:
+    final_loss: 0.1489
+    steps: 3710
+    notes: >-
+      train_runtime 12010.9 s (3 h 20 m), train_samples_per_second 20.379,
+      train_loss 0.1489. Epoch-1 checkpoint at step 1855 (logged loss 0.1655 at
+      step 1840). Both epoch checkpoints were exported to bf16 eval directories
+      by export_model.py at [27338] (ckpt/v1b_ep1 from checkpoint-1855,
+      ckpt/v1b_ep2 from checkpoint-3710), which also writes the greedy
+      generation_config (temperature 0.0, eos_token_id [128012, 128001]) and
+      sets the tokenizer eos to <|im_end|>; the evals below ran on those exports.
+  measurements:
+    - metric: accuracy
+      value: 0.6733333333333333
+      n: 150
+      path: /home/ben/task/results_v1b_ep2_150.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.62
+      n: 150
+      path: /home/ben/task/results_v1b_ep1_150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      Of the 49 epoch-2 misses at limit 150, the agent's classifier counted zero
+      truncations, zero missing ANSWER lines and zero trailing-text cases: "100%
+      of failures are reasoning errors, zero format failures... mean 320 chars,
+      no truncation" [27523][28445].
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The leaner mix trained 2 epochs in 3 h 20 m instead of the projected 4.8 h
+    and reached 67.3% at limit 150 (epoch 2) vs 62.0% (epoch 1), which the agent
+    read as "around smoke-level" [27522]; its own error analysis showed the
+    output contract fully solved (0 format failures, all misses are reasoning
+    errors). No same-protocol comparator was measured for the killed exp-01, so
+    the speed/quality trade-off itself is untested.
+  decision: adopt
+  next_step: >-
+    Use epoch 2 (ckpt/v1b_ep2) as the seed for a rejection-sampling round:
+    sample k=8 at temperature 1.0 over the 7473 train questions, keep the
+    gold-matching traces, and continue-train on them. [23378]
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-628a7a20
+  launch_i: 25061
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [23386, 23387, 25044]
+    setup: [25053, 25056, 25061]
+    evaluation: [27338, 27343, 28446]
+    result: [27052, 27053, 27054, 27337, 27522, 27523, 28445]
+    conclusion: [27522, 28445, 33246]
+  snapshot_files:
+    - prep_data.py
+    - train_sft.py
+    - export_model.py
+    - logs_sft_v1b.txt
+    - logs_eval_ep1.txt
+    - logs_eval_ep2.txt
+    - results_v1b_ep1_150.json
+    - results_v1b_ep2_150.json
+    - EXPERIMENT_LOG.md
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      The build of data/sft_v1b.jsonl ([25056]) printed no counts in the stream;
+      n_examples 122397 is the agent's own figure in EXPERIMENT_LOG.md, and the
+      trainer log records 122387 examples after the 2560-token filter.
+    - >-
+      No comparator was measured under the limit-150 protocol: the baseline was
+      run at limit 64 (0.141) and the 68.7% the agent compares against comes from
+      the 6K-example smoke run, which is not a card.
+    - >-
+      The two epoch checkpoints of this one launch are both candidates; only
+      epoch 2 was carried forward.

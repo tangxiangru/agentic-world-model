@@ -1,0 +1,202 @@
+# reconstructed from a finished run; schema awm-experiment-card-v1 plus the
+# `provenance` block from doc/exp-card-specs/extraction-protocol.md
+schema_version: awm-experiment-card-v1
+card_id: exp-09
+created_at: null
+elapsed_h: 4.01
+problem:
+  statement: 'Completions aren''t stopping (all hit max length) ([341]): GRPO''s own generation path
+    ignores the checkpoint''s fixed `eos_token_id`, so every rollout is truncated and the reward function
+    crashes on an empty `ANSWER:` capture.'
+  evidence:
+  - path: /home/ben/task/logs/grpo_v1.txt
+    locator: '[339]'
+    observation: completions/clipped_ratio 1.0, mean/min/max completion length all 384, mean_terminated_length
+      0.0, reward mean 0.19
+  - path: /home/ben/task/train_grpo.py
+    locator: '[339] traceback'
+    observation: IndexError in extract_answer at line 40, via reward_fn, step 6
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: Fixing EOS handling and the reward bug, then restarting GRPO ([341]) will let rollouts terminate,
+    give the answer-match reward real signal, and lift accuracy above SFT v2's 71.3% on 150 samples.
+  mechanism: Passing the stop tokens through `generation_kwargs` makes sampled completions end where
+    the answer ends, so the reward separates right from wrong answers instead of scoring truncated
+    text.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft_v2/final
+    origin: exp-04
+    hash: null
+  data:
+  - path: /home/ben/task/data/sft_train_v2.jsonl
+    source: derived:exp-04 (prompts only, openai/gsm8k train questions)
+    n_examples: null
+    built_by: /home/ben/task/prepare_data_v2.py
+    build_command:
+    - python
+    - prepare_data_v2.py
+    selection: 'only rows whose `source` starts with `gsm8k` are kept (--gsm-only), deduplicated by
+      question text, shuffled with seed 42 and cut to --max-samples 7473; each row supplies the system+user
+      prompt and its gold answer as the reward target. The `GRPO prompts: N` line was never captured.'
+    contamination_check: null
+    mixture_weight: 1.0
+    repeats: null
+  method:
+    family: grpo
+    framework: trl.GRPOTrainer 0.27.2
+    peft: none
+    hyperparams:
+      lr: 1.0e-06
+      epochs: null
+      batch_size: 1
+      grad_accum: 8
+      max_seq_len: null
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: 'max_steps=400, num_generations=4, max_completion_length=512, temperature=0.8, top_p=0.95,
+        beta=0.0, max_grad_norm=1.0, mask_truncated_completions=True, remove_unused_columns=False,
+        logging_steps=5, save_steps=100. use_vllm=False; gradient_checkpointing=True; generation_kwargs={''eos_token_id'':
+        [151645, 151643], ''pad_token_id'': 151643, ''do_sample'': True}. Reward: 1.0 for an `ANSWER:`
+        matching gold (+0.1 when the completion holds exactly one `ANSWER:` and no `<|im_start|>`),
+        0.1 for a wrong `ANSWER:` line, -0.5 when no answer can be extracted, -0.2 otherwise. temperature/top_p/beta/warmup
+        and the reward shape are the script text at this launch, not command-line overrides. `extract_answer`
+        was guarded against an empty `ANSWER:` capture at [347]. The tokenizer was still right-padded
+        during this run; the `padding_side=''left''` fix at [365] was applied after the launch and
+        did not affect it.'
+    target_format: free-running completions from the ChatML prompt; the reward reads the last `ANSWER:`
+      line and compares it numerically to the GSM8K gold answer
+  command:
+    argv:
+    - cd
+    - /home/ben/task
+    - '&&'
+    - python
+    - train_grpo.py
+    - --model
+    - checkpoints/sft_v2/final
+    - --output
+    - checkpoints/grpo_v1
+    - --steps
+    - '400'
+    - --num-generations
+    - '4'
+    - --batch-size
+    - '1'
+    - --grad-accum
+    - '8'
+    - --max-completion-length
+    - '512'
+    - --learning-rate
+    - 1e-6
+    - --no-use-vllm
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {}
+    log: /home/ben/task/logs/grpo_v1.txt
+  budget:
+    gpu: 1x NVIDIA H100 80GB HBM3
+    planned_h: null
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - eval_model_grpo
+    - --limit
+    - '150'
+    - --max-connections
+    - '2'
+    - --gpu-memory-utilization
+    - '0.5'
+    - --json-output-file
+    - logs/eval_grpo_v1_150.json
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.7133333333333334
+    path: /home/ben/task/logs/eval_sft_v2_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: 400
+  output_checkpoint: /home/ben/task/checkpoints/grpo_v1/final
+  training_summary:
+    final_loss: -0.0516
+    steps: 400
+    notes: training reward climbed from ~0.715 near step 50 to 0.900 / 0.925 / 1.000 in the last three
+      logs ([362], [375]); completions/clipped_ratio fell to ~0.125 and mean completion length to
+      ~128 tokens, so rollouts were terminating. TRL warned about right-padding in a decoder-only
+      model throughout ([362]).
+  measurements:
+  - metric: accuracy
+    value: 0.6533333333333333
+    n: 150
+    path: /home/ben/task/logs/eval_grpo_v1_150.json
+    delta_vs_comparator: -0.06
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: '''GRPO dropped to 65% (overfit). Sticking with SFT v2 at 71%'' ([383]). Training reward
+    went to ~1.0 on the GSM8K-train prompts while held-out accuracy fell 6 points, so the reward was
+    being satisfied without the ability transferring.'
+  decision: reject
+  next_step: Try continued SFT on more grade-school math data instead ([383]).
+outcome:
+  official_accuracy: null
+provenance:
+  kind: extracted
+  run_ref: r-d0634645
+  launch_i: 351
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem:
+    - 339
+    - 341
+    setup:
+    - 347
+    - 349
+    - 351
+    evaluation:
+    - 374
+    - 380
+    result:
+    - 362
+    - 375
+    - 381
+    conclusion:
+    - 383
+  snapshot_files:
+  - train_grpo.py
+  - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+  - training ran between t=+4.01 h and t=+4.93 h but no elapsed time was printed for it

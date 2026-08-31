@@ -1,0 +1,247 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.78
+
+problem:
+  statement: >-
+    "The first benchmark checkpoint (600) is only 10% on limit-80 and is
+    generating far too many tokens, so format stopping is not solved well yet"
+    [128]; "every run is still hitting the 1024-token cap almost every sample"
+    [129]. The SFT checkpoints never emit a stop token, so answers are cut off at
+    max_tokens instead of ending on the "ANSWER: <n>" line.
+  evidence:
+    - path: /home/ben/task/eval_final_limit80.json
+      locator: "[130], [132], [133]"
+      observation: >-
+        gsm8k (80 samples) on the final SFT weights: accuracy 0.150 with 81,920
+        output tokens, i.e. the full 1024-token budget on every sample
+    - path: /home/ben/task/eval_kept-checkpoint-1200_limit80.json
+      locator: "[133]"
+      observation: "best SFT checkpoint at --limit 80 is 0.175"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "the next iteration will target concise EOS behavior and exact answer
+    formatting" [128] / "a focused repair pass that teaches short, terminating
+    answers" [129] - writing `<|im_end|>` as the EOS token into config.json,
+    generation_config.json, tokenizer_config.json and special_tokens_map.json of
+    the saved checkpoints will make generation terminate and lift limit-80
+    accuracy without retraining.
+  mechanism: >-
+    Training targeted the eval's chat format, whose assistant turn ends in
+    `<|im_end|>`, but the checkpoints inherited the base model's EOS id, so vLLM
+    had no stop token and ran to max_tokens; correcting the saved metadata lets
+    the same weights stop where they were trained to stop.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/sft_v1_lr2e-5_ep2_variants/kept-checkpoint-1200
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "python json/shutil edit of the saved model metadata (no training)"
+    peft: "none"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        no training. Hard-linked copies of kept-checkpoint-1200 and of the final
+        weights get eos_token_id=151645 in config.json and
+        generation_config.json, pad_token_id=151643 in generation_config.json,
+        and eos_token='<|im_end|>' / pad_token='<|endoftext|>' in
+        tokenizer_config.json and special_tokens_map.json.
+    target_format: >-
+      unchanged weights; only the stop-token metadata the evaluator's vLLM server
+      reads.
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - |-
+        python - <<'PY'
+        import json, os, shutil
+        from pathlib import Path
+        pairs = [
+            ('runs/sft_v1_lr2e-5_ep2_variants/kept-checkpoint-1200', 'runs/sft_v1_lr2e-5_ep2_variants/kept-checkpoint-1200-eosfix'),
+            ('runs/sft_v1_lr2e-5_ep2_variants', 'runs/sft_v1_lr2e-5_ep2_variants-final-eosfix'),
+        ]
+        for src, dst in pairs:
+            srcp, dstp = Path(src), Path(dst)
+            if not dstp.exists():
+                shutil.copytree(srcp, dstp, copy_function=os.link)
+            for rel in ['config.json', 'generation_config.json']:
+                p = dstp / rel
+                data = json.load(open(p))
+                data['eos_token_id'] = 151645
+                if rel == 'generation_config.json':
+                    data['pad_token_id'] = 151643
+                json.dump(data, open(p, 'w'), indent=2)
+            p = dstp / 'tokenizer_config.json'
+            data = json.load(open(p))
+            data['eos_token'] = '<|im_end|>'
+            data['pad_token'] = '<|endoftext|>'
+            json.dump(data, open(p, 'w'), indent=2)
+            p = dstp / 'special_tokens_map.json'
+            if p.exists():
+                data = json.load(open(p))
+                data['eos_token'] = '<|im_end|>'
+                data['pad_token'] = '<|endoftext|>'
+                json.dump(data, open(p, 'w'), indent=2)
+            print(dst)
+        PY
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/sft_v1_lr2e-5_ep2_variants/kept-checkpoint-1200-eosfix
+      - --limit
+      - "80"
+      - --json-output-file
+      - eval_1200_eosfix_limit80.json
+      - --max-connections
+      - "6"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.65"
+    dev_set: "official --limit 80"
+    n: 80
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.175
+    path: /home/ben/task/eval_kept-checkpoint-1200_limit80.json
+  diagnostic:
+    what: "output tokens per sample under the same eval, to show generation now terminates"
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/sft_v1_lr2e-5_ep2_variants/kept-checkpoint-1200-eosfix
+      - --limit
+      - "80"
+      - --json-output-file
+      - eval_1200_eosfix_limit80.json
+      - --max-connections
+      - "6"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.65"
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.0
+  duration_h: 0.0
+  steps: null
+  output_checkpoint: /home/ben/task/runs/sft_v1_lr2e-5_ep2_variants/kept-checkpoint-1200-eosfix
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      no training. Two directories were produced: kept-checkpoint-1200-eosfix and
+      runs/sft_v1_lr2e-5_ep2_variants-final-eosfix [147]; a reload check confirmed
+      tokenizer, config and generation config all report eos 151645 `<|im_end|>`
+      [149].
+  measurements:
+    - metric: accuracy
+      value: 0.4875
+      n: 80
+      path: /home/ben/task/eval_1200_eosfix_limit80.json
+      delta_vs_comparator: 0.3125
+    - metric: accuracy
+      value: 0.425
+      n: 80
+      path: /home/ben/task/eval_final_eosfix_limit80.json
+      delta_vs_comparator: 0.275
+    - metric: accuracy
+      value: 0.5133
+      n: 150
+      path: /home/ben/task/eval_base1200_limit150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 171.0
+    path: null
+    notes: >-
+      "output length down from about 1024 tokens per sample to about 171" [160];
+      the eval console shows 13,671 output tokens over 80 samples [159] against
+      81,920 before the fix [130].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "The stop fix changed the picture: checkpoint 1200 is now 48.7% on the first
+    80 samples, with output length down from about 1024 tokens per sample to
+    about 171" [160] - +31.25 pts over the same checkpoint under the same
+    --limit 80, with the token-count collapse confirming the failure really was
+    the missing stop token, not the weights. The final-epoch copy came in lower
+    (0.425), so "Checkpoint 1200 beats the final epoch on the same slice, so I'm
+    treating 1200 as the current best" [164].
+  decision: adopt
+  next_step: >-
+    "error analysis on its log: distinguish arithmetic failures from
+    formatting/extraction failures before spending more GPU time" [164], then a
+    specialization pass from this checkpoint on the exact eval prompt only
+    (exp-03).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-dd7a76f5
+  launch_i: 146
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [128, 129, 130, 132, 133]
+    setup: [146, 147, 148, 149]
+    evaluation: [152, 157, 161]
+    result: [159, 160, 162]
+    conclusion: [160, 164]
+  snapshot_files:
+    - eval_1200_eosfix_limit80.json
+    - eval_final_eosfix_limit80.json
+    - eval_kept-checkpoint-1200_limit80.json
+    - eval_final_limit80.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the 150-sample reading of this checkpoint (0.5133) was taken later, at [247], as the comparator for exp-03; no same-limit predecessor value exists for it, so its delta is empty"
+    - "the second output directory (runs/sft_v1_lr2e-5_ep2_variants-final-eosfix, 0.425) was measured and then never referenced again; only the checkpoint-1200 copy carries forward"

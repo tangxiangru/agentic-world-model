@@ -1,0 +1,206 @@
+# Reconstructed experiment card (extracted, not agent-written).
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 2.06
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    Two rounds of supervised training have taken greedy accuracy to 0.84, but the
+    checkpoint can already solve 98.5% of training questions when allowed 8
+    samples ([358]): the remaining loss is that greedy decoding does not pick the
+    path the model can produce. Imitation of correct traces has no way to push
+    further on this, because it never sees which of its own paths score.
+  evidence:
+    - path: /home/ben/task/runs/eval_v2_150.json
+      locator: "[413]"
+      observation: "sft_v2 measures 0.84 at --limit 150, +5.3 pts over exp-01"
+    - path: /home/ben/task/runs/rft_gen.log
+      locator: "[358]"
+      observation: "pass@8 = 7361/7473 (98.5%) from the previous checkpoint - a ~14 pt gap between what sampling reaches and what greedy returns"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "Now let me apply GRPO, which should be powerful given the 98.5% pass@8 (dense
+    reward)" ([413]) - reinforcement learning on sft_v2 with a binary
+    correct-answer reward will raise --limit 150 accuracy above 0.84.
+  mechanism: >-
+    "it directly optimizes the reward (correct answer), which can beat SFT alone"
+    ([209]); with pass@8 at 98.5% almost every prompt yields a mixed group of
+    correct and incorrect samples, so the group-relative advantage is informative
+    on nearly every step rather than sparse.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v2
+    origin: exp-02
+    hash: null
+  data:
+    - path: null                       # prompts are built in-process, no file on disk
+      source: "openai/gsm8k (main, train)"
+      n_examples: 7473                 # --limit -1, i.e. the whole train split
+      built_by: /home/ben/task/grpo_train.py
+      build_command: []                # built inside the training process, not a separate step
+      selection: >-
+        every gsm8k train row mapped to {prompt: the eval's user turn wrapped in
+        the chat template (prepare_data.build_prompt), target: the gold number};
+        no reference solutions are used, only the target for the reward. At 8
+        prompts per optimizer step and max_steps 300, roughly 2400 of the 7473
+        prompts are consumed - about a third of one epoch.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl.GRPOTrainer 0.27 with vLLM 0.11 colocate rollouts"
+    peft: none
+    hyperparams:
+      lr: 1.0e-06
+      epochs: null                     # max_steps 300 terminates first; --epochs never passed
+      batch_size: 8                    # per_device_train_batch_size = --micro_bs
+      grad_accum: 8
+      max_seq_len: 512                 # max_completion_length; max_prompt_length also 512
+      scheduler: constant_with_warmup
+      warmup: 10                       # warmup_steps, not a ratio
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        From the launch argv [465]: --max_steps 300 --micro_bs 8 --accum 8
+        --num_gen 8 --lr 1e-6 --beta 0.0 --vllm_mem 0.28 --max_completion 512
+        --limit -1. max_prompt_length 512 is grpo_train.py's --max_prompt default,
+        not overridden. Hard-coded in the script: constant_with_warmup with
+        warmup_steps 10, optim adamw_8bit, max_grad_norm 0.2, gradient
+        checkpointing (use_reentrant False), sampling temperature 1.0 / top_p 1.0,
+        num_generations 8, scale_rewards True, beta 0.0 (no reference model, no KL
+        term), seed 42, use_vllm colocate at 0.28 of GPU memory. Reward = 1.0 when
+        the last numeric token of the completion equals the gold answer under the
+        same normalisation the eval scorer uses, else 0.0. env
+        TOKENIZERS_PARALLELISM=false, VLLM_LOGGING_LEVEL=WARNING,
+        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True. The micro-batch of 8 is
+        the fix for the smoke-test OOM: "per_device_train_batch_size drives logp
+        logits mem -> keep small(8) else OOM on 152k vocab" ([524]).
+    target_format: >-
+      unchanged from exp-02 - completions are rolled out from the eval's user turn
+      and rewarded on their last numeric token, so the "ANSWER: <n>" ending is
+      reinforced rather than re-specified. On save the script writes a valid
+      generation_config for the validator, then overwrites it with
+      eos_token_id=[151645, 151643], do_sample False, temperature 0.0, top_p 1.0,
+      top_k -1.
+  command:
+    argv: [nohup, python, grpo_train.py, --model, sft_v2, --out, grpo_v3, --limit, "-1", --max_steps, "300", --micro_bs, "8", --accum, "8", --num_gen, "8", --lr, "1e-6", --beta, "0.0", --vllm_mem, "0.28", --max_completion, "512"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo_train.py
+    env:
+      TOKENIZERS_PARALLELISM: "false"
+      VLLM_LOGGING_LEVEL: "WARNING"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    log: /home/ben/task/runs/grpo_v3.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 0.83                    # "300 steps, ~50 min" ([468])
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, grpo_v3, --limit, "150", --max-connections, "16", --json-output-file, runs/eval_v3_150.json]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k, 10-shot, served through vllm)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.84
+    path: /home/ben/task/runs/eval_v2_150.json
+  diagnostic:
+    what: "before evaluating, confirm the saved checkpoint decodes greedily and stops on <|im_end|>"
+    command: [cat, grpo_v3/generation_config.json]
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.82                         # "~49min" ([524])
+  output_checkpoint: /home/ben/task/grpo_v3
+  training_summary:
+    final_loss: null                   # GRPO loss is never quoted in the digest
+    steps: 300
+    notes: >-
+      "reward climbed from ~0.80 to ~0.90 over 300 steps (clear learning)"
+      ([504]); step time settled around 9-11 s ([485]) at 76.6 GB of the 80 GB card
+      ([478]). Launched [465] t=+2.06h, reported saved at [504] t=+2.91h.
+  measurements:
+    - metric: accuracy
+      value: 0.8667
+      n: 150
+      path: /home/ben/task/runs/eval_v3_150.json
+      delta_vs_comparator: 0.0267
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      grpo_v3/generation_config.json reads do_sample false, eos_token_id
+      [151645, 151643], max_new_tokens 1024, temperature 0.0 ([506]) - the eval
+      decodes greedily and stops at the chat-template end token.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "**v3 (GRPO) = 86.67%** - GRPO added +2.67% over v2. Progression: 40% -> 78.7%
+    -> 84.0% -> 86.67%. GRPO clearly works and reward was still climbing" ([523]),
+    measured against exp-02 under the same --limit 150. The +2.67 pt delta is
+    inside the ~2.8 pt stderr of a 150-item eval, so the sign is consistent with the
+    reward curve but not established by the eval alone.
+  decision: adopt
+  next_step: >-
+    "continue GRPO from v3 for more steps (proven gain)" ([523]) - grpo_v3 becomes
+    exp-04's parent, and is copied to final_model as a safety submission in exp-05.
+
+# ---- joined by the pipeline, never by the extractor --------------------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-5f4b22de
+  launch_i: 465
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [358, 413]
+    setup: [210, 369, 371, 433, 435, 445, 465]
+    evaluation: [505, 506, 517]
+    result: [478, 485, 504, 523, 524]
+    conclusion: [523]
+  snapshot_files:
+    - grpo_train.py
+    - prepare_data.py
+    - run_eval.sh
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 414, outcome: "crashed: torch.OutOfMemoryError in _get_per_token_logps_and_entropies (23.18 GiB alloc) with per_device_train_batch_size=64 over a 152K-vocab logits tensor"}
+    - {launch_i: 437, outcome: "trained 6 steps (reward ~0.77, ~100-token completions, no OOM) then crashed at save: 'GenerationConfig is invalid' because sft_v2's config has temperature=0.0"}
+    - {launch_i: 450, outcome: "passed (6 steps in 124 s incl. startup, ~9 s/step, save OK, reward ~0.77)"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the three smoke tests all wrote to /tmp/grpo_smoke, which was deleted at [465]; none of them produced a candidate."
+    - "grpo_v3's reward trajectory is quoted at [504]/[524] but the per-step reward lines were never printed into the digest (the [488] monitor's output block is absent), so only the 0.80 -> 0.90 endpoints are on record."
+    - "no train_runtime for grpo_v3; wall_h 0.82 h is the agent's own '~49min' from [524]."
+    - "the workspace copy of grpo_train.py is the end-of-run version, which gained --save_steps and moved the generation_config fix before trainer.train() at [692]-[698], i.e. after this launch; at launch time save_strategy was hard-coded 'no' and the fix ran after training."
+    - "+2.67 pts at n=150 is within the eval's own stderr and was never repeated or re-measured at a larger --limit."

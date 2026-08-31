@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 3.08
+
+problem:
+  statement: >-
+    The GRPO line is untested because the run crashed at its first checkpoint
+    save: "HF's GenerationConfig.save_pretrained rejects the do_sample=False +
+    temperature=0.0 combo that I baked into sft2's config" ([415]). The SFT
+    plateau at ~80% still stands ([356]).
+  evidence:
+    - path: /home/ben/task/logs/grpo.log
+      locator: "[413]"
+      observation: "ValueError: GenerationConfig is invalid - temperature 0.0 with do_sample False; no weights written"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    GRPO (RLVR) with a correct-final-answer reward will push the model past the
+    ~80% SFT plateau ([356]); the checkpoint-save crash is fixed by installing a
+    valid greedy GenerationConfig on the model in memory before training ([415]).
+  mechanism: >-
+    Same as exp-03 - group-relative optimisation against a verifiable reward.
+    Rollout sampling uses GRPOConfig.temperature via vLLM, not the model's
+    generation config, so replacing that config does not change training.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/work/sft2
+    origin: exp-02
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k main:train"
+      n_examples: null
+      built_by: /home/ben/task/grpo_train.py
+      build_command: []
+      selection: >-
+        as exp-03: loaded in-process, every train question rendered with the eval
+        prompt template; reward_correct = 1.0 on an exact numeric match of the
+        first "ANSWER:" line, reward_format = 0.15 for a clean ANSWER line
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: grpo
+    framework: "trl.GRPOTrainer 0.27.2 with vLLM 0.11.0 colocate"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-06
+      epochs: null
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: null
+      scheduler: constant_with_warmup
+      warmup: 10
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        from the command line - max_steps=600, save_steps=150, num_generations=8,
+        max_completion_length=400, temperature=1.0, beta=0.0 (no KL reference
+        model), vllm_gpu_memory_utilization=0.3. From grpo_train.py in the
+        workspace, which the launch did not override -
+        lr_scheduler_type="constant_with_warmup", warmup_steps=10,
+        max_prompt_length=512, bf16=True, seed=42, scale_rewards="group",
+        loss_type="dapo", optim="paged_adamw_8bit", gradient_checkpointing=True,
+        save_only_model=True, vllm_mode="colocate", tokenizer eos forced to
+        <|im_end|>. Changed since exp-03: the trainer's model.generation_config
+        is replaced with a valid greedy GenerationConfig before train().
+    target_format: >-
+      eval chat template prompt; completions end in "ANSWER: <n>" and terminate
+      on <|im_end|>
+  command:
+    argv: [python, -u, grpo_train.py, --init, work/sft2, --out, work/grpo, --steps, "600", --save_steps, "150", --lr, "1e-6", --num_gen, "8", --pdbs, "4", --accum, "8", --max_completion, "400", --temp, "1.0", --beta, "0.0", --vllm_mem, "0.3"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo_train.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/grpo.log
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, eval_ckpts.sh, "300", work/grpo/checkpoint-150, work/grpo/checkpoint-300, work/grpo/checkpoint-450, work/grpo/checkpoint-600]
+    dev_set: "official --limit 300"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.8066666666666666
+    path: /home/ben/task/logs/iter2.json
+  diagnostic:
+    what: "reward_correct and entropy trend over training, read from the log"
+    command: []
+    path: /home/ben/task/logs/grpo.log
+
+result:
+  execution: completed
+  wall_h: 0.99
+  output_checkpoint: /home/ben/task/work/grpo/checkpoint-600
+  training_summary:
+    final_loss: null
+    steps: 600
+    notes: >-
+      600 steps at ~4 s/step; checkpoints at 150/300/450/600, each fp32 and about
+      16 GB with config.json torch_dtype null. reward_correct rose from ~0.80 to
+      ~0.90+ over the run ([435], [441]). eval_ckpts.sh runs finalize.py on each
+      checkpoint (greedy generation config, eos 151645) before evaluating it.
+  measurements:
+    - metric: accuracy
+      value: 0.8166666666666667
+      n: 300
+      path: /home/ben/task/logs/eval_work_grpo_checkpoint-150.json
+      delta_vs_comparator: 0.0100
+    - metric: accuracy
+      value: 0.88
+      n: 300
+      path: /home/ben/task/logs/eval_work_grpo_checkpoint-300.json
+      delta_vs_comparator: 0.0733
+    - metric: accuracy
+      value: 0.87
+      n: 300
+      path: /home/ben/task/logs/eval_work_grpo_checkpoint-450.json
+      delta_vs_comparator: 0.0633
+    - metric: accuracy
+      value: 0.92
+      n: 300
+      path: /home/ben/task/logs/eval_work_grpo_checkpoint-600.json
+      delta_vs_comparator: 0.1133
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/grpo.log
+    notes: >-
+      "Reward is trending up (0.80 to ~0.87) and entropy is stable (~0.15) -
+      healthy GRPO" ([399]); by the end reward_correct was ~0.90+ and still
+      climbing ([441], [469])
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    "GRPO is highly effective - checkpoint-600 reaches 92% at limit 300 (up from
+    80%). The final checkpoint is best and reward was still climbing" ([469]).
+    The comparator (exp-02, 0.8067) was measured at --limit 150 and these
+    checkpoints at --limit 300, so the +12 pt jump is not a same-protocol delta.
+    A first attempt to score checkpoint-600 on the full 1319-sample set crashed
+    with a CUDA illegal memory access inside vLLM ([487], [494]).
+  decision: adopt
+  next_step: >-
+    "immediately secure it as final_model (safe baseline)" ([473]) and continue
+    GRPO from it, since reward had not flattened.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5d3c708b
+  launch_i: 420
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [413, 415]
+    setup: [416, 420]
+    evaluation: [390, 454]
+    result: [430, 435, 441, 447, 453, 460, 467, 470, 487, 494]
+    conclusion: [465, 469, 473]
+  snapshot_files:
+    - grpo_train.py
+    - eval_ckpts.sh
+    - finalize.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the four logs/eval_work_grpo_checkpoint-*.json files are not in the workspace snapshot; the values are the numbers the agent printed at [467]."
+    - "the full-test eval of checkpoint-600 launched at [470] never produced a number - the vLLM engine died mid-run."

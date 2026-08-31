@@ -1,0 +1,251 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.10
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The starting point is a base (not post-trained) checkpoint, so nothing in it
+    produces the graded output shape. The agent read the eval harness first and
+    said "Eval expects `ANSWER:` format and thinking-mode chat" [51], then set out
+    to "prepare the training pipeline with contamination checks, then start SFT on
+    MetaMathQA GSM data formatted for this eval" [63].
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-7f29490c.md
+      locator: "[51], [63]"
+      observation: "agent states the eval wants an ANSWER: line and a chat/thinking turn, and plans SFT to match it"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-7f29490c.md
+      locator: "[52], [53]"
+      observation: "tokenizer probe: pad None, eos <|end_of_text|>, has chat_template False on the base checkpoint"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    SFT on the GSM-typed subset of MetaMathQA plus the GSM8K train split,
+    reformatted into the eval's chat shape with a final "ANSWER: <number>" line,
+    will make the base checkpoint answer GSM8K in the graded format. The agent
+    anchored the attempt on a reported result: "MetaMathQA SFT hit ~66%" [11].
+  mechanism: >-
+    Supervised imitation of ~127k step-by-step GSM-style solutions whose target
+    text ends in the exact string the grader parses, so both the reasoning and the
+    answer-emission convention are learned in one pass.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "~66% cited by the agent at [11] for a comparable MetaMathQA SFT; no measured prior for this setup"
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: meta-math/MetaMathQA
+      n_examples: 120000
+      built_by: /home/ben/task/train_sft.py
+      build_command: []
+      selection: >-
+        prepare_metamath(): keep rows whose `type` startswith "GSM", shuffle(seed=42),
+        extract the final number via "#### | The answer is: | ANSWER:" (else last number),
+        drop rows whose answer does not parse as float, take the first 120000. Assistant
+        target = "<think>\n{reasoning}\n</think>\nANSWER: {n}" with the answer tail stripped
+        from the source response and the reasoning truncated to 3500 chars.
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+    - path: null
+      source: openai/gsm8k (main, train split)
+      n_examples: 7473
+      built_by: /home/ben/task/train_sft.py
+      build_command: []
+      selection: >-
+        prepare_gsm8k_train(): all train rows; reasoning = text before "####",
+        answer = text after "####" with commas stripped, dropped if it does not
+        parse as float. Same "<think>...</think>\nANSWER: {n}" target shape.
+        Concatenated with the MetaMath part and shuffled with seed=42
+        (train.log: "Total train samples: 127473").
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (agent's own note at [67] calls it the TRL 0.27 SFT API; transformers 4.57.3 appears in a generation_config at [183])"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        lr / epochs / batch_size / grad_accum / max_seq_len are from the launch argv at [97].
+        scheduler, warmup_ratio, weight_decay and bf16 are hard-coded in the SFTConfig of
+        /home/ben/task/train_sft.py (in the workspace snapshot) and were not overridable from the
+        command line. seed=42 is that script's argparse default and the launch did not override it.
+        Also from the script: packing=False, assistant_only_loss=True, gradient_checkpointing=True
+        (use_reentrant=False), max_grad_norm=1.0, save_steps=1000, save_total_limit=2,
+        logging_steps=25, attn_implementation=flash_attention_2, dtype=bfloat16, use_cache=False.
+    target_format: >-
+      Custom chat template written onto the tokenizer: "<|im_start|>{role}\n{content}<|im_end|>\n"
+      with a default system turn, the assistant turn wrapped in {% generation %} so
+      assistant_only_loss can mask it. Assistant content =
+      "<think>\n{reasoning}\n</think>\nANSWER: {number}".
+  command:
+    argv:
+      - nohup
+      - python
+      - -u
+      - train_sft.py
+      - --output-dir
+      - ./sft_output
+      - --final-dir
+      - ./final_model
+      - --num-metamath
+      - "120000"
+      - --epochs
+      - "1"
+      - --lr
+      - "1e-5"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "4"
+      - --max-length
+      - "2048"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 1.7
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - final_model
+      - --limit
+      - "30"
+      - --json-output-file
+      - eval_30.json
+      - --max-connections
+      - "1"
+      - --gpu-memory-utilization
+      - "0.45"
+    dev_set: "official --limit 30 (inspect_evals/gsm8k, served through vllm by /home/ben/task/evaluate.py)"
+    n: 30
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: >-
+      The agent loaded the inspect log for the --limit 30 run and counted, over all
+      samples, how many completions contained "ANSWER:" and how many contained
+      "<think>", then printed the tails of the wrong ones [178].
+    command: []
+    path: /home/ben/task/logs/2026-07-20T03-11-43+02-00_gsm8k_hZdoQRysk9dsaeynZnQox7.json
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.85
+  duration_h: 1.85
+  steps: 7968
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.14825214885444526
+    steps: 7968
+    notes: >-
+      [148]: train_runtime 6662.2292 s, 19.134 samples/s, 1.196 steps/s,
+      mean_token_accuracy 0.9471, entropy 0.8748, num_tokens 33111100, epoch 1.0;
+      "Saving model to ./final_model" then "Done.", and final_model holds a 2-shard
+      safetensors checkpoint. wall_h is that train_runtime; the launch-to-"Done."
+      window spans [97] t=+0.10h to [147] t=+2.32h and includes data prep and tokenization.
+  measurements:
+    - metric: accuracy
+      value: 0.3
+      n: 30
+      path: /home/ben/task/eval_30.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-07-20T03-11-43+02-00_gsm8k_hZdoQRysk9dsaeynZnQox7.json
+    notes: >-
+      The agent's counts came back garbled in the stream, but both failing samples it
+      printed at [179] show the same thing: the model emits the trained "ANSWER: n"
+      line and then keeps generating - one repeats "</think>" for hundreds of lines,
+      the other repeats the number "317" to the token limit. The format was learned;
+      generation does not terminate.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    One epoch of SFT over 127,473 MetaMath-GSM + GSM8K-train examples finished
+    cleanly (train_loss 0.148, 7968 steps) and scored 0.30 on 30 official items.
+    No baseline was ever measured, so there is no comparator and no delta; and the
+    diagnostic shows the score is held down by non-termination rather than by the
+    reasoning, which is what the format-matching mechanism was supposed to deliver.
+  decision: adopt
+  next_step: >-
+    Patch generation stopping on the saved checkpoint - the tokenizer's eos is still
+    <|end_of_text|> while the trained chat template closes assistant turns with
+    <|im_end|> (done at [182], carded as exp-02). The agent had also written
+    /home/ben/task/train_sft_r2.py at [121] for a continued-SFT round on Orca-Math
+    plus a fresh MetaMath slice at lr 5e-6; it was never launched in the stream.
+
+# ---- Provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-7f29490c
+  launch_i: 97
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [11, 51, 52, 53, 63]
+    setup: [64, 65, 67, 75, 86, 89, 97]
+    evaluation: [151, 154, 155]
+    result: [148, 172, 176, 179]
+    conclusion: [172, 178, 179]
+  snapshot_files:
+    - train_sft.py
+    - train.log
+    - eval_30.json
+    - evaluate.py
+    - timer.sh
+  smoke_runs:
+    - {launch_i: 82, outcome: "crashed: assistant_only_loss=True with a chat template lacking {% generation %} - RuntimeError, at least one example has no assistant tokens"}
+    - {launch_i: 91, outcome: "passed (2 steps, 32 examples) after adding {% generation %} and switching torch_dtype -> dtype; 'SMOKE OK' is not in the stream but the agent deleted smoke_out and launched the full run at [97]"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The --limit 50 eval launched at [151] never produced a number in the stream; eval_50.json in the snapshot holds the post-patch value written later at [185], so this checkpoint's 50-item score is unrecoverable."
+    - "No eval of the untrained base checkpoint was ever run, so evaluation.comparator is empty and the +/- of this launch cannot be quantified."
+    - "The inspect log cited in `diagnostic` (/home/ben/task/logs/2026-07-20T03-11-43+02-00_gsm8k_*.json) is not part of the workspace snapshot."
+    - "final_model was patched in place at [182] and only backed up to final_model_r1 at [195], so the exact weights-plus-config this card produced exist under no single surviving path."
+    - "Framework versions were queried at [34] but the result is not in the stream; TRL 0.27 comes from the agent's own description at [67]."

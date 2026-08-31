@@ -1,0 +1,199 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The prompt/completion chat-style SFT runs are underperforming badly" [215]: the
+    conservative chat-format model scored 0.050 on 20 samples and keeps generating past
+    its answer without emitting EOS [181], [213].
+  evidence:
+    - path: /home/ben/task/runs/exp2b_eval20_mt1500.json
+      locator: "[208] launch, [213] result"
+      observation: "gsm8k (20 samples) accuracy 0.050, stderr 0.050 for runs/exp2b_merged."
+    - path: null
+      locator: "[176], [179], [181]"
+      observation: >-
+        Greedy probe degenerates into token repetition after the ANSWER line; merged
+        generation_config.json lost do_sample:false; the model "often never emits an EOS
+        token".
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Switching strategy to plain text causal SFT (non-chat formatting) to avoid the
+    chat-template masking/pathology and stabilize behavior" [215].
+  mechanism: >-
+    Training on one flat prompt+solution string, with loss on all tokens instead of the
+    chat template's completion mask, removes the hidden masking/template side effects the
+    agent blames for the collapse [215].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF: openai/gsm8k (config main, split=train, loaded in-process by the training script)"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        Whole train split, shuffled with seed 42; --dataset-format plain_text selects
+        convert_example_plain_text(), which concatenates the evaluator prompt and the gold
+        rationale re-ended as "ANSWER: <target>" into a single "text" field (no chat
+        template, no EOS appended); 256 examples held out of train as the val split.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer (version printed at [43]; the digest truncates that result)
+    peft: "QLoRA: LoRA r=32 alpha=64 dropout=0.05 over a 4-bit NF4 base; targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj (--target-modules default 'all', not overridden at [222])"
+    hyperparams:
+      lr: 5.0e-05
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 compute + tf32, 4-bit NF4 double-quant base weights"
+      seed: 42
+      other: >-
+        From the argv at [222]: --dataset-format plain_text, --no-completion-only-loss
+        (loss on every token) and --no-gradient-checkpointing, plus lr/epochs/batch/
+        grad-accum/max-length/val-size/lora-r/lora-alpha/lora-dropout and the
+        eval/save/logging steps. Taken from train_gsm8k_sft.py in task/ because [222] did
+        not override them: --target-modules all, --use-4bit True, --warmup-ratio 0.03,
+        --weight-decay 0.0, --seed 42, cosine schedule, max_grad_norm 1.0, bf16/tf32,
+        packing=False, flash_attention_2. Note the script forces completion_only_loss to
+        False for plain_text regardless of the flag.
+    target_format: >-
+      One flat causal-LM string per example: the evaluator's math prompt immediately
+      followed by the gold rationale and a final "ANSWER: <n>" line, no chat markup and
+      no EOS token [219].
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --output-dir
+      - runs/exp3_plain
+      - --merged-dir
+      - runs/exp3_plain_merged
+      - --dataset-format
+      - plain_text
+      - --epochs
+      - "1.0"
+      - --lr
+      - "5e-5"
+      - --batch-size
+      - "16"
+      - --grad-accum
+      - "2"
+      - --max-length
+      - "1536"
+      - --val-size
+      - "256"
+      - --eval-steps
+      - "80"
+      - --save-steps
+      - "80"
+      - --logging-steps
+      - "10"
+      - --lora-r
+      - "32"
+      - --lora-alpha
+      - "64"
+      - --lora-dropout
+      - "0.05"
+      - --no-completion-only-loss
+      - --no-gradient-checkpointing
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: >-
+      Greedy single-prompt generation (gsm8k test[:1], 400 new tokens) through
+      templates/qwen3.jinja on runs/exp3_plain_merged, checking output length, presence of
+      "ANSWER:" and of "<|endoftext|>" [230].
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/runs/exp3_plain_merged
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "exp3_plain completed cleanly with strong training/eval signals" [229]; no loss,
+      step count or train_runtime line for this launch is kept in the digest.
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      The probe returns 1800 characters of a single repeated token, "has ANSWER False",
+      "has endoftext False" [231] - a complete generation collapse.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    Plain-text causal SFT trained cleanly but its output collapsed even harder than the
+    chat-format model, never producing an ANSWER line, so it was never benchmarked:
+    "Both stronger runs are clearly overfitting/collapsing" [233]. The masking/template
+    explanation for the collapse is contradicted.
+  decision: abandon_line
+  next_step: >-
+    "Switching to a very small, low-risk LoRA update (few steps, low LR, limited modules)
+    to preserve base behavior and target only format/alignment gains" [233] - card exp-05.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-1441f3c6
+  launch_i: 222
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [181, 213, 215]
+    setup: [215, 219, 221, 222]
+    evaluation: [230]
+    result: [229, 231]
+    conclusion: [231, 233]
+  snapshot_files:
+    - train_gsm8k_sft.py
+  smoke_runs:
+    - {launch_i: 218, outcome: "passed (--dry-run --dataset-format plain_text, 5 train / 1 val examples: printed the concatenated prompt+rationale text)"}
+  extractor: claude-opus-5
+  unresolved:
+    - "runs/exp3_plain_merged was never scored with evaluate.py; the only evidence against it is the one-prompt greedy probe at [231]."

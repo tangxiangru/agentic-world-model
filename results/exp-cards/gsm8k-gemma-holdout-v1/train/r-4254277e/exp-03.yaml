@@ -1,0 +1,200 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 0.38
+
+problem:
+  statement: >-
+    Same problem as the previous launch - the zero-shot-trained model does not
+    stop when the eval's 10 demos precede the question - plus the memory failure
+    that stopped the first attempt: "OOM - with max_len 2048 and group_by_length,
+    the longest batch is too big" [200].
+  evidence:
+    - path: /home/ben/task/logs/train_v2.log
+      locator: "[200]"
+      observation: "the previous launch of this recipe went out of memory at per-device batch 16, max_len 2048"
+    - path: null
+      locator: "[186]"
+      observation: >-
+        offline probe: zero-shot the exp-01 model stops cleanly; few-shot (the eval
+        condition) it never stops (finish=length)
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Same claim as exp-02 - training with few-shot system messages will make the
+    model emit <|im_end|> and stop in the eval's 10-shot condition - now at a
+    batch size that fits in memory.
+  mechanism: >-
+    The eval's demos show "ANSWER: X" followed by more text and no stop token,
+    which primes continuation; training in the same context teaches the model to
+    stop after its own answer [178], [186].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--Qwen--Qwen3-1.7B-Base/snapshots/ea980cb0a6c2ae4b936e82123acc929f1cec04c1
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: openai/gsm8k (main, train split)
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: [python, scripts/prep_data.py]
+      selection: >-
+        GSM8K train with <<...>> stripped and solutions ending "ANSWER: X" [92];
+        in-trainer few-shot wrapper: with probability 0.7 a system message of n
+        demos (n uniform in 1..10, drawn from all GSM8K train items formatted like
+        the eval's demos) is prepended, demos dropped if over max_len [187]
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: transformers Trainer (full fine-tune; version not stated in the stream)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --fewshot_max 10 --fewshot_prob 0.7 --grad_ckpt on the command line
+        (gradient checkpointing wired in at [208]/[210]). scheduler=cosine,
+        bf16=True, group_by_length=True, optim=adamw_torch are hard-coded in the
+        script as written at [104]. warmup, weight_decay and seed were not passed
+        and the workspace snapshot retains no scripts/, so they are left null.
+    target_format: >-
+      eval chat template (templates/qwen3.jinja); user = MATH_PROMPT_TEMPLATE
+      wrapping the question, assistant = CoT ending "ANSWER: X" + <|im_end|>, loss
+      on completion tokens only, with a 1-10 demo system message on 70% of examples.
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --files
+      - data/gsm8k_train.jsonl
+      - --out
+      - work/sft_gsm8k_fs_v2
+      - --epochs
+      - "3"
+      - --lr
+      - "1e-5"
+      - --bs
+      - "8"
+      - --accum
+      - "8"
+      - --max_len
+      - "2048"
+      - --fewshot_max
+      - "10"
+      - --fewshot_prob
+      - "0.7"
+      - --grad_ckpt
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, work/sft_gsm8k_fs_v2, "150", "1024", sft_v2]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.053
+    path: /home/ben/task/logs/sft_v1_metrics.json
+  diagnostic:
+    what: >-
+      offline vLLM demo-count sweep on the trained checkpoint (0, 2, 5, 10 demos,
+      temperature 0): how often generation ends in "stop" and how many of 20 test
+      items are right
+    command: [python, scripts/diag_sweep.py, work/sft_gsm8k_fs_v2]
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/work/sft_gsm8k_fs_v2
+  training_summary:
+    final_loss: null
+    steps: 351
+    notes: >-
+      351 optimizer steps (progress bar at [246], [273], [289]); train_runtime was
+      grepped for but never appears in the stream. Launched at t=+0.38h [212],
+      "Training just finished" at t=+0.69h [309].
+  measurements:
+    - metric: accuracy
+      value: 0.04
+      n: 150
+      path: /home/ben/task/logs/sft_v2_metrics.json
+      delta_vs_comparator: -0.013
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "my offline vLLM diag shows v2 stops fine at all demo counts (19-20/20) and
+      gets ~65% correct" [341] - i.e. the checkpoint itself was healthy and the
+      4% was a serving-path artefact, chased down in exp-04.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    "v2 still fails (4%) - 148/150 hit max_tokens, still not stopping. Training
+    with mostly 1-4 demos didn't generalize to the eval's 10-shot context" [326].
+    Measured against exp-01 under the same --limit 150, so the hypothesis as
+    stated is contradicted - but the follow-up diagnostics [332]-[341] showed the
+    checkpoint stops fine offline, and the real cause turned out to be the decode
+    defaults (exp-04); this same checkpoint later became the submission.
+  decision: adopt
+  next_step: >-
+    Verify the few-shot training data construction, then sweep demo counts offline
+    to find where stopping breaks [326], [332].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-4254277e
+  launch_i: 212
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [186, 200]
+    setup: [187, 208, 210, 212]
+    evaluation: [134, 249, 282]
+    result: [246, 273, 289, 309, 326]
+    conclusion: [326, 332, 333, 336, 341]
+  snapshot_files:
+    - evaluate.py
+    - NOTES.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "logs/sft_v2_metrics.json is never printed; the 4% is the agent's own words at [326] (\"148/150 hit max_tokens\")"
+    - "no train_runtime or final loss for this run appears anywhere in the stream"
+    - "the exp-02 OOM attempt wrote to the same --out directory before this launch"

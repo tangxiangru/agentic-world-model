@@ -1,0 +1,194 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null            # digest header: "no timestamps in this run"
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    "The core issue: the model isn't stopping after `ANSWER: X`. It continues
+    generating text." ([495]) The scorer then reads a number out of the trailing
+    text instead of the answer line. The base tokenizer's eos is 128001 while the
+    chat template closes turns with <|im_end|> (128012), which is not registered
+    as a stop token ([503]).
+  evidence:
+    - path: /home/ben/task/eval_v2_quick.json
+      locator: "accuracy"
+      observation: "0.40 on 50 samples for /home/ben/task/model_sft_v2"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-0af4240f.md
+      locator: "[489], [494]"
+      observation: >-
+        "Total: 50, Correct: 20 / Had right answer but marked wrong: 20"; the
+        printed failures show unrelated prose generated after the answer line.
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: null         # printed from logs/2026-02-19T16-20-38+01-00_gsm8k_*.json, which is not in the workspace snapshot
+      question: null
+      gold: "6"
+      model_output: "... ////////\nWhen the group reaches the Recreation Area, Noah says, “It is finally time for us to stretch our legs and for you to enjoy your first hike\", since he has already realized that they are in the"
+      failure: "scored answer 15; generation ran on into unrelated narrative after the answer line ([494])"
+    - id: null
+      source: null
+      question: null
+      gold: "30"
+      model_output: "...use costs $40,000, how much does Michael need to contribute in order to pay off the ceiling cost of the house?\n\nReasoning:\nLloyd would contribute 40% of $40,000, so he would contribute 40% * $40,000 ="
+      failure: "scored answer 40000; the model started generating a fresh problem instead of stopping ([494])"
+    - id: null
+      source: null
+      question: null
+      gold: "8"
+      model_output: "...you do not need to use a \\boxed command.\n///\n</think>\nANSWER: 1"
+      failure: "scored answer 1; the prompt text was echoed before the answer line ([494])"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "The best fix: update the generation_config.json in the saved model to include
+    <|im_end|> as a stop token" ([503]) - with 128012 in eos_token_id, generation
+    ends at the answer line and the numeric matcher stops picking numbers out of
+    the trailer, so accuracy rises.
+  mechanism: >-
+    "The base model has <|im_end|> as token 128012 but EOS is 128001. For the chat
+    model to stop at <|im_end|>, I need to add it to the eos_token_id list in the
+    generation config, or configure vLLM with the right stop tokens." ([503])
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/model_sft_v2
+    origin: exp-02
+    hash: null
+  data: []                 # no training; decode/config change only
+  method:
+    family: decode-config
+    framework: null
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        generation_config.json set to eos_token_id [128001, 128012],
+        pad_token_id 128001 - the values are shown verbatim at [617] and [691]
+        and were then propagated to both checkpoint dirs by the launch below.
+    target_format: null
+  command:
+    argv:
+      - cp
+      - /home/ben/task/model_sft_v2/generation_config.json
+      - /home/ben/task/model_sft_v2/checkpoint-2442/generation_config.json
+      - "&&"
+      - cp
+      - /home/ben/task/model_sft_v2/generation_config.json
+      - /home/ben/task/model_sft_v2/checkpoint-4884/generation_config.json
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: []            # the invocation that produced eval_v2_fixed.json is not in the digest
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.4
+    path: /home/ben/task/eval_v2_quick.json
+  diagnostic:
+    what: >-
+      re-read the per-sample outputs to check whether generation now stops at the
+      answer line ([520])
+    command: []
+    path: null             # logs/2026-02-19T16-27-35+01-00_gsm8k_*.json is not in the workspace snapshot
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/model_sft_v2
+  training_summary: {final_loss: null, steps: null, notes: null}
+  measurements:
+    - metric: accuracy
+      value: 0.36
+      n: 50
+      path: /home/ben/task/eval_v2_fixed.json
+      delta_vs_comparator: -0.04
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      The trailing text is shorter but has not stopped: the printed outputs still
+      end "ANSWER: 1.5\n</think>\n</think>\n..." with the closing tag repeated
+      many times ([521]). The agent's reading: the answer line is still what the
+      scorer reads, so "the multiple </think> tokens ... don't actually hurt
+      scoring" and the remaining failures are wrong arithmetic, not format ([522],
+      [525]).
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    "36% accuracy (with the <|im_end|> fix). The accuracy dropped slightly from
+    40% to 36%, which might be due to sampling variance with only 50 samples."
+    ([519]) - a 4-point move against a 7-point stderr settles nothing, and the
+    diagnostic shows the generation still does not stop cleanly. The config was
+    kept anyway and carried into everything downstream.
+  decision: adopt
+  next_step: >-
+    Treat reasoning quality, not format, as the bottleneck and continue training
+    this checkpoint on the full MetaMath ([525], [528]).
+
+# ---- outcome (joined by the pipeline; never written by the extractor) -------
+outcome:
+  official_accuracy: null
+
+# ---- provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-0af4240f
+  launch_i: 510
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [489, 493, 494, 495, 503]
+    setup: [503, 510]
+    evaluation: [629, 630]
+    result: [519, 521, 522]
+    conclusion: [519, 522, 525]
+  snapshot_files:
+    - eval_v2_quick.json
+    - eval_v2_fixed.json
+    - eval_v2_fixed.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The edit of /home/ben/task/model_sft_v2/generation_config.json itself is not in the filtered digest; launch_i [510] is the event that copies the already-edited file into both checkpoint dirs, and the file's contents are shown at [617] and [691]."
+    - "The eval that produced eval_v2_fixed.json is not in the digest either (the gap between [511] and [515]); n=50 on /home/ben/task/model_sft_v2 and max_tokens 2000 / max_connections 2 are read off eval_v2_fixed.log, and the 0.36 is read at [630]."
+    - "Comparator and result differ in one uncontrolled way beyond the config: they are separate sampling runs of the same 50 items, and the agent itself attributed the gap to variance ([519])."

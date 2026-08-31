@@ -1,0 +1,222 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 5.15
+
+problem:
+  statement: >-
+    Unchanged from exp-05/exp-06 - after the phase-2 mix only reasoning errors
+    remain, "Failures are now pure reasoning slips" [34146] - plus the immediate
+    blocker that the previous RAFT epoch was lost at save time: "Weights were
+    never written - the crash happened before weight saving. The result is lost;
+    must re-run with a generation_config fix" [38494].
+  evidence:
+    - path: /home/ben/task/results_phase2_150.json
+      locator: "[33936]"
+      observation: "0.88 at --limit 150 for the incumbent"
+    - path: /tmp/train_p3.log
+      locator: "[37935]-[37936]"
+      observation: "757 steps trained, then ValueError: GenerationConfig is invalid at trainer.save_model; runs/phase3/final holds only config.json"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    RECONSTRUCTED from what was launched, not stated by the agent: the same RAFT
+    round as exp-06, re-run with the generation-config reset in place so the
+    checkpoint survives the save - fine-tuning the phase-2 checkpoint on 2 copies
+    of its own answer-verified self-solutions plus gold and a 12K external
+    rehearsal slice will reduce the reasoning slips that remain at 0.88.
+  mechanism: >-
+    Not stated. Training on the model's own verified-correct traces (RAFT/STaR),
+    with gold and external data kept as rehearsal; the save path fixed by
+    replacing the packaged greedy generation config with a plain bos/eos/pad one
+    before trainer.save_model [38495].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/models/phase2
+    origin: exp-04
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_phase3.jsonl
+      source: "synthetic:self + derived:exp-01 gold file + local (OpenMathInstruct-2 derivative)"
+      n_examples: null
+      built_by: /home/ben/task/build_mix_phase3.py
+      build_command: [python, build_mix_phase3.py, --raft-repeat, "2", --gold-repeat, "1", --n-external, "12000", --p-prefix-raft, "0.25", --out, data/sft_phase3.jsonl]
+      selection: >-
+        the file built at [35547] and reused unchanged by this launch: 2 copies of
+        the RAFT solutions (eval system prefix with probability 0.25) + 1 copy of
+        the 7,473 gold rows + 12,000 external rows (system prefix with probability
+        0.15), reshuffled with seed 1; 149,413,453 bytes [35918]. No row count in
+        the stream.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: 1
+    - path: /home/ben/task/data/raft.jsonl
+      source: "synthetic:self (sampled from the exp-04 checkpoint on GSM8K train questions)"
+      n_examples: 14457
+      built_by: /home/ben/task/gen_raft.py
+      build_command: []
+      selection: >-
+        "RAFT done: 97.6% of train questions covered, 14,457 verified-correct
+        solutions kept" [34591]; logged as "models/phase2 @ temp0.9 k=8 on train
+        qs", 7,293 of 7,473 questions covered [34800]. Only samples whose last
+        number equals gold and whose last non-empty line is the ANSWER line;
+        structural dedupe; 2 shortest per question. The invocation is not in the
+        stream.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 2
+    - path: /home/ben/task/data/sft_gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/build_data_phase1.py
+      build_command: [python, build_data_phase1.py]
+      selection: "as exp-04 (comma convention kept); one copy in the mix"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+    - path: /home/ben/task/data/omi2_gsm8k_clean.jsonl
+      source: "HF nvidia/OpenMathInstruct-2 (train_1M)"
+      n_examples: null
+      built_by: /home/ben/task/build_data_phase2.py
+      build_command: [python, build_data_phase2.py]
+      selection: "as exp-04; 12,000 rows sampled as a rehearsal slice"
+      contamination_check: passed
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, full fine-tune, flash_attention_2, DataCollatorWithFlattening packing"
+    peft: "none"
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum, --pack and --model models/phase2 are from the launch
+        argv. max_seq_len 3072 and seed 0 are train_sft.py argparse defaults not
+        overridden by this launch; the script is in the snapshot. Script
+        constants as in exp-01, plus the pre-save
+        GenerationConfig(bos=151643, eos=151643, pad=151643) reset added at
+        [38495].
+    target_format: >-
+      eval-rendered chat prompt; assistant turn = the sampled self-solution body
+      then "ANSWER: <target>" + <|im_end|>
+  command:
+    argv: [python, train_sft.py, --data, data/sft_phase3.jsonl, --out, runs/phase3, --model, models/phase2, --epochs, "1", --lr, "5e-6", --bs, "8", --accum, "8", --pack]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONUNBUFFERED: "1"}
+    log: /tmp/train_p3b.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, models/phase3, --limit, "150", --max-connections, "16", --json-output-file, results_phase3_150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.88
+    path: /home/ben/task/results_phase2_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.37
+  duration_h: 1.37
+  steps: 757
+  output_checkpoint: /home/ben/task/runs/phase3/final
+  training_summary:
+    final_loss: null
+    steps: 757
+    notes: >-
+      757 total steps [40231]; last visible loss line {'loss': 0.2387,
+      'epoch': 0.24} at step 186 [40231] - no final_loss printed. wall/duration
+      derived from the event timestamps (launch t=+5.15h [38690], packaged and
+      evaluated t=+6.52h [40495]). The checkpoint was packaged to models/phase3
+      with greedy decoding and <|im_end|> EOS by "python package_model.py --src
+      runs/phase3/final --dst models/phase3 --temperature 0.0" in the same
+      command as the eval [40495].
+  measurements:
+    - metric: accuracy
+      value: 0.84
+      n: 150
+      path: /home/ben/task/results_phase3_150.json
+      delta_vs_comparator: -0.04
+    - metric: accuracy
+      value: 0.8325
+      n: 800
+      path: null
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "Phase 3 regressed to 84.0% (vs 88.0%) - RAFT's terse self-solutions eroded
+    the careful style. Phase 2 remains best" [40954]. The partial full-test read
+    agreed: 0.8325 on 800 of 1319 before that eval hung and was killed, "clearly
+    not better" than phase 2's 0.8415 [45095], [46048].
+  decision: reject
+  next_step: >-
+    "Pivoting to GRPO from Phase 2, starting with a 10-step smoke run" [40954];
+    that line was abandoned after four colocate OOMs [46662] and the run
+    finalised on the phase-2 checkpoint.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-b8ac2f29
+  launch_i: 38690
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [34146, 37936, 38494]
+    setup: [35547, 38495, 38690]
+    evaluation: [40495]
+    result: [40231, 40495, 40954, 45095]
+    conclusion: [40954, 45181, 46048]
+  snapshot_files:
+    - build_mix_phase3.py
+    - gen_raft.py
+    - train_sft.py
+    - package_model.py
+    - evaluate.py
+    - results_phase3_150.json
+    - results_phase2_150.json
+    - RESULTS.md
+  smoke_runs:
+    - {launch_i: 38670, outcome: "save-path check from the packaged phase-2 dir, --limit 64, 400 s timeout; its result block is not in the stream, and the agent went straight to the full re-run"}
+  extractor: null
+  unresolved:
+    - "the full-test eval of this checkpoint was killed at 800/1319 [46053]; no results_phase3_full.json is in the snapshot, so 0.8325 is only the live log read at [45095]"
+    - "the outcome of the [38670] save smoke test is not shown in the stream"

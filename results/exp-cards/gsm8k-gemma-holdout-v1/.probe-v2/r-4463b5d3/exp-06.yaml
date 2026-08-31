@@ -1,0 +1,171 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 0.39
+
+problem:
+  statement: "Baseline: 20.7%. Data is clean (0 contaminated docs)."
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[384] (the agent's own reading of the baseline eval launched at [128])"
+      observation: "the un-tuned base model scores 20.7% on the benchmark at --limit 150"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "derived: nvidia/OpenMathInstruct-2 (gsm8k + augmented_gsm8k) + openai/gsm8k train + meta-math/MetaMathQA GSM subsets"
+      n_examples: 117650
+      built_by: /home/ben/task/prep_data.py
+      build_command: ["OMI2_SHARDS=4", "N_META=25000", "python", "prep_data.py"]
+      selection: >-
+        First 4 OMI-2 parquet shards filtered to problem_source in {gsm8k, augmented_gsm8k},
+        at most 2 (gsm8k) / 1 (augmented) solutions per problem, plain-numeric answers only,
+        solution <=3000 and problem <=1500 chars (~85k); GSM8K train originals with their own
+        reasoning (~7.5k); 25,000 random MetaMathQA rows of type GSM_Rephrased / GSM_AnsAug /
+        GSM_FOBAR / GSM_SV. \boxed stripped, "The answer is:" tails removed, every target
+        rewritten to end in "ANSWER: <number>". Count 117,650 from RESULTS.md [1558].
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer subclass with a token-budget batch sampler + flash_attention_2 (versions not stated)"
+    peft: none
+    hyperparams:
+      lr: 1.4e-05
+      epochs: 2
+      batch_size: 1
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine_with_min_lr
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        --epochs 2, --lr 1.4e-5, --token-budget 8192, --accum 8, --p-fewshot 0.04,
+        --p-kshot 0.05 from the launch; identical to [532]. per_device_train_batch_size is
+        hardcoded to 1 ([438]); batches are formed by the TokenBatchSampler up to 8192 padded
+        tokens, so the effective batch is variable. max_seq_len 3072, seed 0,
+        min_lr_ratio 0.1 and the hardcoded warmup_ratio 0.03, weight_decay 0.0,
+        adam_beta2 0.95, max_grad_norm 1.0, optim adamw_torch_fused come from train_sft.py
+        (in the snapshot) and were not overridden. save_strategy="epoch",
+        save_total_limit=3 as patched at [618]. RESULTS.md [1558] puts the run at ~75M
+        tokens per epoch.
+    target_format: >-
+      messages rendered with the eval chat template (templates/smollm.jinja); assistant turn =
+      the solution ending in "ANSWER: <number>" plus <|im_end|>; loss on completion tokens
+      only; 4% of examples carry the eval's 10-shot system message, 5% a random 2-6-shot one.
+      After training the tokenizer/config are re-saved with <|im_end|> as EOS so vLLM stops.
+  command:
+    argv: [python, train_sft.py, --out, ckpt/sft_v1, --epochs, "2", --lr, "1.4e-5", --token-budget, "8192", --accum, "8", --p-fewshot, "0.04", --p-kshot, "0.05"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/sft_v1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpt/sft_v1, --limit, "200", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, logs/test_sft_v1_ep2.json]
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.207
+    path: /home/ben/task/logs/baseline.json
+  diagnostic:
+    what: >-
+      Does the model depend on the eval's 10-shot system message? Dev accuracy under the
+      eval-style few-shot system message vs no system message, same 400 dev items.
+    command: [python, eval_both.py, --model, ckpt/sft_v1, --limit, "400", --dump, logs/dump_sft_v1.json]
+    path: /home/ben/task/logs/eval_both_sft_v1.log
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/ckpt/sft_v1
+  training_summary: {final_loss: null, steps: null, notes: "Training plus the automated finalize-and-eval chain ([769]) ran from +0.39 h to +2.68 h; the digest does not separate training wall time from eval wall time, and the loss/step prints are grepped but never shown. After the run, finalize_ckpt.py attached the tokenizer, chat template and generation config; the epoch-1 checkpoint was also finalized as ckpt/sft_v1_ep1 and scored 69.0% at n=200 (RESULTS.md [1558]). ckpt/sft_v1/checkpoint-* were deleted at [817]."}
+  measurements:
+    - metric: accuracy
+      value: 0.695
+      n: 200
+      path: /home/ben/task/logs/test_sft_v1_ep2.json
+      delta_vs_comparator: 0.488
+  diagnostic_result:
+    value: 0.680
+    path: /home/ben/task/logs/eval_both_sft_v1.log
+    notes: >-
+      "Prompt condition doesn't matter (68.0% vs 68.75%)" [973], on 400 held-out dev items.
+      eval_both.py prints the few-shot condition first and the plain condition second, so the
+      few-shot value is 0.680 and the plain value 0.6875; the stream prints only the pair.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    "SFT v1: 69.5% on test (vs 20.7% baseline)" [814] - a large jump, but the two numbers are
+    not measured under the same protocol (the baseline ran at --limit 150, this at --limit
+    200), so the comparison does not settle a verdict; and no hypothesis was stated before the
+    launch. The mechanism check that was run - format/system-prompt robustness - came out as
+    intended: 68.0% vs 68.75% on dev with and without the eval's few-shot system message.
+  decision: adopt
+  next_step: >-
+    Rejection sampling from this checkpoint ([817], data/rft_v1.jsonl, k=6, T=1.0, up to 4 kept
+    per problem) and then GRPO from it ([1040], [1079]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-4463b5d3
+  launch_i: 632
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [384]
+    setup: [303, 305, 385, 434, 436, 438, 618, 626, 628, 630, 632]
+    evaluation: [767, 769, 940, 942]
+    result: [814, 973, 1558]
+    conclusion: [814, 973]
+  snapshot_files:
+    - train_sft.py
+    - prep_data.py
+    - promptlib.py
+    - fewshot_system.txt
+    - finalize_ckpt.py
+    - after_sft.sh
+    - eval_dev.py
+    - eval_both.py
+    - evaluate.py
+    - RESULTS.md
+  extractor: null
+  unresolved:
+    - "The dev-400 accuracy of ckpt/sft_v1 from after_sft.sh (logs/dev_sft_v1_ep2.log) is never printed in the stream."
+    - "Final loss, step count and training wall time are grepped but never shown; only the 0.39 h -> 2.68 h bracket covering training plus four evals is visible."
+    - "An epoch-1 sibling checkpoint (ckpt/sft_v1_ep1, 69.0% at n=200) was produced and evaluated by the same automation launch [769]; it has no card of its own because it shares that launch."
+    - "data/rft_v1.jsonl was generated from this checkpoint at [817] but no training run ever consumed it."
+    - "logs/ was not retained in the workspace snapshot; log paths here are the agent's own, and the numbers come from the stream and RESULTS.md [1558]."

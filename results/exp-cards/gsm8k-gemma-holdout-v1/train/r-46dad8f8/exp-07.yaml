@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 3.75
+
+problem:
+  statement: >-
+    Broad SFT is the incumbent at 44.0%, but 40% of its completions still get the
+    first answer wrong and the wrong ones both mis-reason and run on: "the sampled
+    wrong traces include both arithmetic failures and correct-first-answer
+    spillovers" [729]. Focused SFT already failed to fix this by imitation [708].
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46dad8f8/eval_broad_final.json
+      locator: "[599], [705]"
+      observation: "runs/broad 0.440 accuracy, 0.600 first-answer, 0.340 non-terminating on official --limit 150"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-46dad8f8.md
+      locator: "[708]"
+      observation: "focused SFT dropped first-answer accuracy to 0.487, so imitation of more gold traces is not the fix"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A short, low-learning-rate reference-free ORPO pass on 3,188 self-generated
+    preference pairs (verified human GSM8K-train trace preferred over the model's
+    own formatted wrong solution) will improve reasoning and termination together
+    and beat runs/broad's 44.0%, at "about 500 optimizer updates, matching the
+    small-update regime reported effective for math preferences" [736], [729].
+  mechanism: >-
+    The rejected side is a fully formatted, in-distribution wrong solution of
+    comparable length, so the contrast isolates correctness rather than verbosity
+    or format; the chosen side is always the verified human trace so that
+    answer-only luck is not rewarded [225], [685]. ORPO is reference-free, which
+    fits a single H100 where GRPO would not [166].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/broad
+    origin: exp-05
+    hash: null
+  data:
+    - path: /home/ben/task/data/preferences.jsonl
+      source: "synthetic:self (sampled from runs/broad) over HF openai/gsm8k train questions"
+      n_examples: 3188
+      built_by: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46dad8f8/generate_preferences.py
+      build_command: [python, -u, generate_preferences.py, --model, runs/broad, --output, data/preferences.jsonl, --num-samples, "6", --max-tokens, "512"]
+      selection: >-
+        6 samples per contamination-filtered GSM8K-train question at temperature
+        0.8 / top_p 0.95 / top_k 40, stop on 151643 or 151645; chosen = the gold
+        human trace reformatted to end "ANSWER: <n>"; rejected = the sampled wrong
+        answer whose length is closest to the chosen one; questions with no
+        explicitly formatted wrong sample are skipped; 2,718 questions also had at
+        least one correct sample [736]; all 3,188 pairs fit untruncated (max 743
+        tokens) [744]
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: dpo
+    framework: "trl 0.27.2 ORPOTrainer (trl.experimental.orpo)"
+    peft: none
+    hyperparams:
+      lr: 5.0e-07
+      epochs: 5
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.0
+      precision: bf16
+      seed: 20260719
+      other: >-
+        beta 0.1 (odds-ratio weight); max_prompt_length 420, truncation_mode
+        keep_end, gradient_checkpointing on, optim adamw_torch_fused,
+        save_strategy "no"; batch_size/grad_accum/max_length/scheduler/warmup/
+        weight_decay/seed are hard-coded in train_orpo.py (in the snapshot) and
+        were not overridden by this launch; ~500 effective updates
+    target_format: >-
+      "<|im_start|>user\n{PROMPT}<|im_end|>\n<|im_start|>assistant\n" prefix,
+      chosen/rejected both ending in "ANSWER: <n><|im_end|>"
+  command:
+    argv: [python, -u, train_orpo.py, --model, runs/broad, --data, data/preferences.jsonl, --output, runs/orpo, --epochs, "5", --lr, 5e-7, --beta, "0.1"]
+    cwd: /home/ben/task
+    script: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46dad8f8/train_orpo.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: null
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/orpo, --limit, "150", --max-connections, "32", --max-tokens, "1024", --gpu-memory-utilization, "0.55", --json-output-file, eval_orpo.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.44
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46dad8f8/eval_broad_final.json
+  diagnostic:
+    what: >-
+      same three-way rescore of broad / focus / orpo eval logs: first-answer,
+      last-answer, tag, multi-answer and non-stop rates [762]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.28
+  output_checkpoint: /home/ben/task/runs/orpo
+  training_summary:
+    final_loss: null
+    steps: 500
+    notes: >-
+      "ORPO completed all 500 updates in 16 minutes and saved cleanly" [758]; ~2.0
+      s/update; chosen-trace NLL fell 1.98 -> ~1.33 over 3 epochs with margins
+      moving conservatively [744], [749], [754]. No metrics dict is printed in the
+      digest.
+  measurements:
+    - metric: accuracy
+      value: 0.38
+      n: 150
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46dad8f8/eval_orpo.json
+      delta_vs_comparator: -0.06
+  diagnostic_result:
+    value: 0.5933333333333333
+    path: null
+    notes: >-
+      first-answer 0.593 (vs broad 0.600), multi-answer 0.333 (vs 0.287), non-stop
+      0.327, mean output 487.2 tokens: reasoning held but spillover got worse [763]
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    ORPO scored 38.0% against the incumbent's 44.0% on the identical protocol and
+    increased multi-answer spillover, so preferring the concise human trace did
+    not transfer as reasoning gain. "ORPO is rejected... The broad checkpoint
+    remains the parent" [765].
+  decision: reject
+  next_step: >-
+    Train only on contamination-filtered GSM8K-train solutions in the evaluator's
+    exact 10-shot system context with strongly weighted turn-end supervision, to
+    kill post-answer continuation without touching the 60% reasoning signal [765].
+
+# official_accuracy is joined onto the adopted card by the pipeline; the extractor never writes it.
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-46dad8f8
+  launch_i: 737
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [708, 729]
+    setup: [709, 736, 737, 685]
+    evaluation: [759]
+    result: [758, 760, 763]
+    conclusion: [765]
+  snapshot_files:
+    - train_orpo.py
+    - generate_preferences.py
+    - eval_orpo.json
+    - eval_broad_final.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "train_orpo.py writes runs/orpo/orpo_summary.json, but the digest never prints it, so final ORPO loss and margins are not recorded."

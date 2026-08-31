@@ -1,0 +1,170 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "OOM with batch_size=16 and no gradient checkpointing" [161]. The recipe was
+    settled; what was missing was a configuration that fits in 80 GB and finishes
+    one epoch inside the remaining budget.
+  evidence:
+    - path: /home/ben/task/timer.sh
+      locator: "[178]-[179]"
+      observation: "9:26 of the 10 h budget remaining when this launch started"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Let me use gradient checkpointing but with flash attention and a reasonable
+    batch size" [161]: batch 16 x grad-accum 2 with checkpointing on and
+    flash-attention-2 will fit and will run one epoch of the 247k GSM-only
+    mixture in the budget.
+  mechanism: >-
+    Gradient checkpointing brings activation memory back under 80 GB at batch 16,
+    while flash-attention-2 keeps the per-step cost far below the 9.7 s of the
+    unfused configuration.
+  expected_effect:
+    metric: null
+    direction: null
+    against: exp-04
+    magnitude: "~3.9 s/step, ~2.8 h for 2616 steps [169]"
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_gsm_only.jsonl
+      source: "HF meta-math/MetaMathQA (GSM_* only) + HF openai/gsm8k (main, train)"
+      n_examples: 247471
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        MetaMathQA GSM_AnsAug/GSM_Rephrased/GSM_SV/GSM_FOBAR (239,998) + gsm8k
+        train (7,473). Reasoning stripped of "####" and "The answer is:" lines
+        (and of <<calc>> annotations for the gsm8k rows), "\n\nANSWER: {n}"
+        appended, emitted as raw text
+        "<|im_start|>user\n{eval prompt}<|im_end|>\n<|im_start|>assistant\n{response}<|im_end|>\n"
+        with no system/few-shot message and no <|endoftext|>; shuffled seed 42
+        [71]. train_v1.log confirms "Training on 247471 examples".
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 / transformers 4.57.3 / peft 0.18.1 / torch 2.8.0+cu129"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj bias=none (132,120,576 trainable params, 3.18%)"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        --attn-impl flash_attention_2 on the command line. packing=True,
+        gradient_checkpointing=True (use_reentrant=False), save_total_limit=3,
+        weight_decay=0.01, lr_scheduler_type=cosine, seed=42 are constants of the
+        train.py in the workspace snapshot (the [151] revision, echoed at [152])
+        and were not overridden by this launch. Effective batch = 32; 2616 steps.
+    target_format: >-
+      raw text: the eval's user turn verbatim, then "<|im_start|>assistant\n" +
+      reasoning + "\n\nANSWER: {n}" + "<|im_end|>\n". Packed, so many such
+      examples are concatenated into each 1024-token window.
+  command:
+    argv: [python3, train.py, --data-file, training_data_gsm_only.jsonl, --output-dir, trained_model_v1,
+           --epochs, "1.0", --lr, "2e-4", --batch-size, "16", --grad-accum, "2",
+           --max-seq-length, "1024", --lora-r, "64", --lora-alpha, "128",
+           --warmup-ratio, "0.03", --save-steps, "500", --logging-steps, "25",
+           --attn-impl, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/train_v1.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: 2.8
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 2.83
+  duration_h: 2.83
+  steps: 2616
+  output_checkpoint: /home/ben/task/trained_model_v1
+  training_summary:
+    final_loss: 0.1723
+    steps: 2616
+    notes: >-
+      train_runtime 10187.7 s (2.83 h), train_loss 0.1822 over the epoch,
+      mean_token_accuracy 0.959, 81.7M tokens (train_v1.log). Loss 0.6104 at step
+      25, flat at ~0.183 from step 50 [198], 0.1723 at the end [210]. "Loss
+      dropped quickly from 0.61 to 0.19 and has been stable since step 50 ... the
+      loss has already plateaued" [199]. 6:40 of budget left when it finished
+      [210].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first adapter that actually trained to completion: one epoch of 247k
+    packed GSM examples in 2.83 h, loss 0.61 -> 0.17. Nothing was measured on the
+    adapter itself; its accuracy is the 0.080 recorded on exp-07, which merged it
+    into final_model.
+  decision: adopt
+  next_step: >-
+    "Now let me merge the LoRA adapter and evaluate" [211] - merge_model.py into
+    final_model (exp-07).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ef3f45de
+  launch_i: 165
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [161]
+    setup: [151, 152, 165]
+    evaluation: []
+    result: [166, 169, 190, 196, 198, 201, 204, 210]
+    conclusion: [199, 211]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - train_v1.log
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The adapter was never evaluated on its own; every accuracy on this line is measured on the merged copy (exp-07)."
+    - "train_v1.log was the tee target of exp-01 to exp-05 as well; only this launch's content survives in it."

@@ -1,0 +1,220 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 2.52
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    "The broader default eval is 50.0% on 150 samples. That suggests the LoRA SFT
+    solved format-following but still leaves arithmetic/reasoning headroom" [159] -
+    i.e. the r=128 adapter has enough capacity to learn the answer contract but the
+    remaining errors look like reasoning, not formatting.
+  evidence:
+    - path: "{dir}/eval_lora_r128_e2_limit150.json"
+      locator: "[156], [157]"
+      observation: "exp-02 final: accuracy 0.500, stderr 0.041 at --limit 150"
+    - path: "{dir}/eval_lora_r128_e2_limit50.json"
+      locator: "[142], [143]"
+      observation: "exp-02 final: accuracy 0.520 at --limit 50, the slice used for candidate screening"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Full text-weight tuning of the language tower (rather than a LoRA adapter) on
+    the same GSM8K-train-only data "is the most plausible way to improve over the
+    50% LoRA candidate within the remaining time" [168].
+  mechanism: >-
+    All 3.88B language-tower parameters are trainable rather than a 119M-parameter
+    adapter, so the reasoning capacity the LoRA run left on the table should be
+    reachable; the smoke checks showed it fits on the H100 at batch sizes up to 4
+    [161][162][168].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k
+      n_examples: 7473
+      built_by: "{dir}/train_gsm_sft.py"
+      build_command: []
+      selection: >-
+        "the same GSM8K-train-only data" as exp-02 [168]: main config, train split,
+        loaded in-process; system = the fixed 10-shot prompt from the same split
+        (--fewshot 10, --fewshot-seed 42), user = the evaluator's math prompt,
+        target = the reference reasoning ending "ANSWER: n<end_of_turn>"; prompt
+        tokens masked to -100.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129) [21]"
+    peft: "none - 3,880,263,168 / 4,300,079,472 parameters trainable (90.24%); only model.language_model.* and lm_head.* are unfrozen, the vision tower stays frozen [161]"
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.04
+      weight_decay: 0.0
+      precision: bf16
+      seed: 1234
+      other: >-
+        From train_gsm_sft.py argparse defaults (script text in the snapshot, not
+        overridden at launch): --max-length 3072, --weight-decay 0.0,
+        --max-grad-norm 1.0, --seed 1234, --fewshot 10, --fewshot-seed 42,
+        gradient checkpointing on, --template-path templates/gemma3.jinja.
+        Hardcoded: lr_scheduler_type=cosine, bf16=True, tf32=True,
+        group_by_length=True. From the argv: --lr 2e-5, --epochs 2, --batch-size 4,
+        --grad-accum 4, --warmup-ratio 0.04, --optim paged_adamw_8bit (also the
+        default, but explicit here), --save-steps 250, --save-total-limit 10,
+        --logging-steps 10.
+    target_format: >-
+      the evaluator's gemma3 chat template; assistant turn = GSM8K reference
+      reasoning followed by "ANSWER: <n>" and <end_of_turn>
+  command:
+    argv:
+      - python
+      - train_gsm_sft.py
+      - --output-dir
+      - runs/full_e2_fixed_lr2e5
+      - --epochs
+      - "2"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "4"
+      - --lr
+      - "2e-5"
+      - --warmup-ratio
+      - "0.04"
+      - --optim
+      - paged_adamw_8bit
+      - --save-steps
+      - "250"
+      - --save-total-limit
+      - "10"
+      - --logging-steps
+      - "10"
+    cwd: "{dir}"
+    script: "{dir}/train_gsm_sft.py"
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB [8]"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/full_e2_fixed_lr2e5
+      - --limit
+      - "50"
+      - --json-output-file
+      - eval_full_e2_limit50.json
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.55"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.52
+    path: "{dir}/eval_lora_r128_e2_limit50.json"
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result (after) ------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.58
+  output_checkpoint: "{dir}/runs/full_e2_fixed_lr2e5"
+  training_summary:
+    final_loss: 0.31723902750219035
+    steps: null
+    notes: >-
+      train_runtime 5676.34 s, 2.633 samples/s, epoch 2.0, ~5.7-6.3 s per optimizer
+      step [174][181]; total step count never printed. Checkpoints 250, 500 and 750
+      retained; checkpoint-500 is 20 GB and, unlike the LoRA merges, was written
+      without preprocessor_config.json [188][189][191].
+  measurements:
+    - metric: accuracy
+      value: 0.46
+      n: 50
+      path: "{dir}/eval_full_e2_limit50.json"
+      delta_vs_comparator: -0.06
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) --------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "Full tuning underperformed the LoRA final on the same 50-sample slice (46% vs
+    52%)" [187]. Under the identical --limit 50 protocol the extra capacity did not
+    buy accuracy, and the full-weight line was closed after one more checkpoint
+    check [200].
+  decision: reject
+  next_step: >-
+    Check the one-epoch full checkpoint in case the final overfit; "if it is not
+    better, I'll keep the LoRA candidate as the current leader" [187] - done as
+    exp-06.
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-bcdec442
+  launch_i: 169
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [157, 159]
+    setup: [161, 162, 168, 169]
+    evaluation: [184]
+    result: [174, 178, 181, 185, 189, 191]
+    conclusion: [187, 200]
+  snapshot_files:
+    - train_gsm_sft.py
+    - evaluate.py
+    - eval_full_e2_limit50.json
+    - eval_lora_r128_e2_limit50.json
+  smoke_runs:
+    - {launch_i: 160, outcome: "passed (16 examples, 2 steps, batch 1): full tuning fits with 3.88B trainable parameters"}
+    - {launch_i: 163, outcome: "passed (16 examples, 1 step, batch 2)"}
+    - {launch_i: 165, outcome: "passed (16 examples, 1 step, batch 4): batch sizes up to 4 fit"}
+  extractor: claude-opus-5
+  unresolved:
+    - "The full-weight model was never evaluated at --limit 150, so its only comparison with exp-02 is the 50-sample screening slice."
+    - "checkpoint-250 of this run was retained but never packaged or evaluated."

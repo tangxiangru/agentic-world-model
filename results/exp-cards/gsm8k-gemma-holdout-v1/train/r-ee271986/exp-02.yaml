@@ -1,0 +1,188 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.84
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The eval sends no temperature, and vLLM resolves temperature as
+    default_sampling_params.get("temperature", 1.0) from the model's own
+    generation_config.json. The base model has no temperature field, so the eval
+    samples at temperature 1.0 - which is why the baseline produced garbage - and
+    the freshly trained checkpoints would be evaluated the same way. The script's
+    end-of-training patch that was meant to fix this did not apply, because the
+    running process used the pre-edit code.
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[120], [173]"
+      observation: "42% baseline with off-distribution text, attributed at [173] to sampling at temperature 1.0"
+    - path: /home/ben/task/ckpts/sft_v1/generation_config.json
+      locator: "[266], [274]"
+      observation: "saved generation_config.json has no temperature field; the [174] script edit landed after the run started"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Writing "temperature": 0.0 (with top_p 1.0, do_sample false, eos_token_id 151645)
+    into each checkpoint's generation_config.json makes the eval decode greedily
+    instead of sampling, which is "a clear win for math" and makes the eval
+    deterministic.
+  mechanism: >-
+    Agent's words at [173]: "vLLM resolves temperature as
+    default_sampling_params.get('temperature', 1.0). The base model has no
+    'temperature' in its config, so the eval samples at temp=1.0 ... If I put
+    '\"temperature\": 0.0' in my model's generation_config.json, the eval will use
+    greedy decoding."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/sft_v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "json patch of generation_config.json / tokenizer_config.json read by vLLM"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        decode settings written into every ckpts/sft_v1 dir and checkpoint-*:
+        temperature=0.0, top_p=1.0, do_sample=false, eos_token_id=151645 (<|im_end|>),
+        max_new_tokens removed; tokenizer_config eos_token set to <|im_end|>.
+    target_format: null
+  command:
+    argv:
+      - |-
+        python - <<'PY'
+        import json, os, glob
+        def patch(d):
+            gp = os.path.join(d, "generation_config.json")
+            g = json.load(open(gp)) if os.path.exists(gp) else {}
+            g["eos_token_id"] = 151645
+            g["do_sample"] = False
+            g["temperature"] = 0.0   # greedy for vLLM eval
+            g["top_p"] = 1.0
+            g.pop("max_new_tokens", None)
+            json.dump(g, open(gp,"w"), indent=2)
+            # tokenizer eos -> <|im_end|>
+            tp = os.path.join(d,"tokenizer_config.json")
+            if os.path.exists(tp):
+                t=json.load(open(tp)); t["eos_token"]="<|im_end|>"; json.dump(t,open(tp,"w"),indent=2)
+            print("patched", d)
+        for d in ["ckpts/sft_v1"] + sorted(glob.glob("ckpts/sft_v1/checkpoint-*")):
+            if os.path.isdir(d): patch(d)
+        PY
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/sft_v1, --limit, "150", --max-connections, "16",
+              --json-output-file, logs/eval_v1_ep3.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.01
+  duration_h: 0.01
+  steps: null
+  output_checkpoint: /home/ben/task/ckpts/sft_v1
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      All four dirs patched (ckpts/sft_v1 and checkpoint-1484/-2968/-4452), verified
+      at [275]-[280]. The same patch was applied again to the v2 checkpoints at [487]
+      and is baked into merge_lora.py from [445] onwards.
+  measurements:
+    - metric: accuracy
+      value: 0.807
+      n: 150
+      path: /home/ben/task/logs/eval_v1_ep1.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.84
+      n: 150
+      path: /home/ben/task/logs/eval_v1_ep2.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.8266666666666667
+      n: 150
+      path: /home/ben/task/logs/eval_v1_ep3.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The patch applied cleanly and every subsequent eval decoded greedily and was
+    treated as deterministic by the agent ([308], [550]). No A/B was ever run: the
+    same checkpoint was never evaluated with and without the patch under the same
+    --limit, so the size of the decode lever is asserted, not measured.
+  decision: adopt
+  next_step: >-
+    Re-run the training script so that saved checkpoints carry the greedy config
+    themselves ([336], later reverted at [416] because it broke checkpoint saving).
+
+provenance:
+  kind: extracted
+  run_ref: r-ee271986
+  launch_i: 275
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [46, 173, 274]
+    setup: [275]
+    evaluation: [281, 300]
+    result: [280, 286, 308]
+    conclusion: [308, 550]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The decode change and the SFT training were never separated by a measurement; the 42% -> 80-84% jump is attributed to both."
+    - "At [854] the agent noted the same checkpoint scored 84.67% at --max-connections 16 and 82.0% at the default 2, i.e. greedy is not perfectly batch-deterministic in vLLM."

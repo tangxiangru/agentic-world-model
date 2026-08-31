@@ -1,0 +1,160 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.27
+
+problem:
+  statement: >-
+    The starting point is a base model, and the grader expects step-by-step
+    reasoning that ends in an "ANSWER: $ANSWER" line under a few-shot CoT
+    prompt: "The eval expects `ANSWER:` format with few-shot CoT. I'll prepare
+    matching training data and set up SFT." [40]
+  evidence:
+    - path: /home/ben/task/evaluate.py
+      locator: "[4], [5]"
+      observation: >-
+        eval harness read - inspect_evals/gsm8k served through vLLM, --limit
+        default 150, chat template templates/qwen3.jinja, --max-tokens 4000
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Fine-tuning the base model on GSM8K + MetaMathQA rewritten into the eval's
+    few-shot style ("Reasoning:" then "ANSWER: <n>") "should matter more for the
+    base model" than a generic instruction format. [75]
+  mechanism: >-
+    Training targets shaped exactly like the grader's expected output teach the
+    base model to emit the final ANSWER line the scorer parses. [40], [71]
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/combined_math_train.jsonl
+      source: "HF openai/gsm8k (main, train) + meta-math/MetaMathQA (GSM subset)"
+      n_examples: 247470
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        7473 GSM8K train items (calculator <<>> spans and the "#### n" line
+        stripped) plus 239997 MetaMathQA rows whose type contains "GSM" (answer
+        from \boxed{} or "the answer is"); reasoning under 20 chars dropped;
+        questions matching a whitespace/case-normalised GSM8K test question
+        dropped (0 hits, [84], [90]); shuffled with seed 42. Assistant target is
+        "<think>reasoning</think>" followed by a blank line and "ANSWER: n"
+        (rewritten at [87] to drop the duplicated reasoning of the [72] version).
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        lr, epochs, batch-size, grad-accum and max-length come from the launch
+        argv. scheduler, warmup_ratio, weight_decay, bf16 and seed are SFTConfig
+        literals in train_sft.py as written at [77] and are not exposed as
+        command-line flags, so the launch could not override them. Same source
+        for packing=True, assistant_only_loss=True, gradient_checkpointing=True
+        (use_reentrant False), max_grad_norm=1.0, optim=adamw_torch_fused,
+        attn_implementation="sdpa", chat template templates/qwen3.jinja.
+        NOTE the train_sft.py in the workspace snapshot is the later [116]
+        revision (flash_attention_2 + train_chat_template.jinja); this launch
+        ran the [77] revision.
+    target_format: >-
+      chat turns rendered with templates/qwen3.jinja; assistant content is
+      "<think>reasoning</think>" then a final "ANSWER: <n>" line
+  command:
+    argv: [python, -u, train_sft.py, --epochs, "2", --lr, "2e-5", --batch-size, "8", --grad-accum, "4", --max-length, "1536", --output-dir, sft_output, --final-dir, final_model]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_sft.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No result, traceback or kill event for this launch appears in the digest.
+      The identical command was relaunched at [119] (t=+0.31h, ~2.4 min later)
+      after train_sft.py was rewritten at [116] to load train_chat_template.jinja
+      (which carries the {% generation %} marker assistant_only_loss needs) and
+      to use flash_attention_2 instead of sdpa. train_sft.log in the workspace
+      belongs to the [119] run, which overwrote it.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first full SFT launch stops appearing in the stream and the same command
+    is restarted at [119] with a changed training chat template and attention
+    implementation. No loss curve, checkpoint or evaluation can be attributed to
+    this launch.
+  decision: abandon_line
+  next_step: >-
+    Relaunch the same SFT against train_chat_template.jinja and
+    flash_attention_2 ([116], [119]).
+
+provenance:
+  kind: extracted
+  run_ref: r-78f13a5c
+  launch_i: 94
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [40, 71]
+    setup: [72, 75, 76, 77, 82, 87, 88, 94]
+    evaluation: []
+    result: [116, 119]
+    conclusion: [116, 119]
+  snapshot_files:
+    - prepare_data.py
+    - prepare_data.log
+    - train_sft.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the digest records no exit code, traceback or kill for [94]; only the identical relaunch at [119]"
+    - "whether the [94] run failed on assistant_only_loss (templates/qwen3.jinja has no {% generation %} marker) is not stated anywhere in the stream"

@@ -1,0 +1,214 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.59
+
+problem:
+  statement: >-
+    The exp-01 checkpoint reaches only 0.36 at limit 50 once its stop token is
+    fixed - "36% - improving, but still low" [180]. On the printed failures the
+    model produces a plausible-looking chain of thought but solves the wrong
+    quantity or stops the chain early, and a share of the training mixture
+    (MetaMathQA GSM_SV / GSM_FOBAR rows) is written in an unknown-variable style
+    that does not look like the benchmark's questions.
+  evidence:
+    - path: /home/ben/task/eval_v1b_small.json
+      locator: "[174], [180]"
+      observation: "exp-01 measured 0.36 +- 0.069 at limit 50 after the stop-token fix"
+    - path: /home/ben/task/logs/2026-04-21T15-23-29+02-00_gsm8k_cCNPrrKEUVeNBSUqV8Xcpe.json
+      locator: "[181], [182] - 18 correct / 32 incorrect, first 2 failures printed"
+      observation: "failures reason to the wrong quantity and emit ANSWER on that wrong quantity"
+    - path: null
+      locator: "[45], [55]"
+      observation: >-
+        MetaMathQA's GSM_SV/GSM_FOBAR rows are 'value of unknown variable x'
+        rewrites; the previews the agent printed from the v1 mixture are almost
+        all of that shape
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-04-21T15-23-29+02-00_gsm8k_cCNPrrKEUVeNBSUqV8Xcpe.json
+      question: null
+      gold: "6"
+      model_output: "Let's assume Marissa needs to reach the end of the trail in t time (minutes) ... So, Marissa needs to walk 6 miles / 2 hours = 3 miles per hours ... ANSWER: 3"
+      failure: "answers the rate (3) instead of the asked quantity (6); the setup line invents a 12-hour conversion"
+    - id: null
+      source: /home/ben/task/logs/2026-04-21T15-23-29+02-00_gsm8k_cCNPrrKEUVeNBSUqV8Xcpe.json
+      question: null
+      gold: "540"
+      model_output: "James runs 60 meters each sprint and he does this 3 times a week. So, he runs 60*3 = 180 meters each week. #### 180\n\nANSWER: 180"
+      failure: "drops one factor of the problem and stops after two steps; also emits the gold-data '####' marker"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Better SFT data: GSM8K + OpenMathInstruct-2 GSM subsets" [201] - replacing
+    the MetaMathQA half of the mixture with gsm8k / augmented_gsm8k rows from
+    nvidia/OpenMathInstruct-2, at the same recipe and again from the base model,
+    will raise accuracy over exp-01.
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/train_v2.jsonl
+      source: "HF openai/gsm8k (main, train) + HF nvidia/OpenMathInstruct-2 (split train_1M)"
+      n_examples: 47473
+      built_by: /home/ben/task/prepare_data_v2.py
+      build_command: [python, /home/ben/task/prepare_data_v2.py]
+      selection: >-
+        all 7,473 GSM8K train rows (calculator annotations stripped, answer from
+        after "####") plus 40,000 rows drawn from a seed-42 shuffle of
+        OpenMathInstruct-2 train_1M restricted to problem_source in {gsm8k,
+        augmented_gsm8k}; the trailing \boxed{...} is replaced by its content so
+        the reasoning reads through, the row is kept only if expected_answer
+        matches ^-?\d+[\d./,]*$, and the answer is normalised (commas dropped,
+        trailing ".0" dropped). Same user/assistant formatting as exp-01.
+        n_examples is the trainer's "Dataset size" line in train_v2.log; the
+        script's own counts were cut off by the tail at [207].
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        Same script and same command-line values as exp-01 (only --data, --out
+        and --save_steps 10000 differ). warmup_ratio 0.03 is the train_sft.py
+        argparse default and was NOT overridden; scheduler cosine,
+        weight_decay 0.0, bf16, gradient checkpointing, packing=False,
+        optim="adamw_8bit", seed 42 and assistant_only_loss=True are hardcoded
+        in the script.
+    target_format: >-
+      train_template.jinja chat format with {% generation %} assistant masking;
+      assistant turn = "\n<reasoning>\n\nANSWER: <n>" + <|im_end|>
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/train_v2.jsonl, --out, /home/ben/task/sft_v2, --epochs, "1", --lr, "1e-5", --per_device_bs, "8", --grad_accum, "2", --max_seq, "1024", --save_steps, "10000", --logging_steps, "25"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/train_v2.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/sft_v2, --limit, "50", --json-output-file, eval_v2_small.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.36
+    path: /home/ben/task/eval_v1b_small.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.79
+  duration_h: 0.79
+  steps: 2968
+  output_checkpoint: /home/ben/task/sft_v2
+  training_summary:
+    final_loss: 0.2924
+    steps: 2968
+    notes: >-
+      train_v2.log: train_runtime 2844.96 s, 2968/2968 steps, train_loss 0.2924,
+      mean_token_accuracy 0.904. Before evaluating, the agent deleted the
+      mid-run checkpoints and wrote the EOS fix onto the checkpoint at [236]:
+      generation_config eos_token_id [151645, 151643] and pad_token_id 151643,
+      tokenizer_config eos_token "<|im_end|>", special_tokens_map eos_token
+      "<|im_end|>". Every later checkpoint got the same treatment.
+  measurements:
+    - metric: accuracy
+      value: 0.64
+      n: 50
+      path: /home/ben/task/eval_v2_small.json
+      delta_vs_comparator: 0.28
+    - metric: accuracy
+      value: 0.58
+      n: 150
+      path: /home/ben/task/eval_v2_full.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      stderr 0.0686 at limit 50 and 0.0404 at limit 150. The failures the agent
+      printed at [247] are mostly runaway or self-contradicting chains on
+      unknown-variable problems (target 80 / got 1.9; target 8 / got 0), plus
+      one output that trails off into "ANSWER: 0fully".
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    Swapping MetaMathQA for OpenMathInstruct-2's GSM subsets, at the same recipe
+    and same size class, took the limit-50 reading from 0.36 to 0.64 - the agent
+    read it as "64% on 50 samples - big jump!" [245]. The wider limit-150 run on
+    the same checkpoint came in lower at 0.58, which is the number every later
+    card is compared against.
+  decision: adopt
+  next_step: >-
+    "Let me try a v3 with more data and 2 epochs. Given ~7.5h left, budget ~2
+    training attempts." [255]. This checkpoint was also copied to final_model as
+    a fallback while v3 trained (exp-04).
+
+provenance:
+  kind: extracted
+  run_ref: r-96bf32c3
+  launch_i: 212
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [174, 180, 181, 182, 184, 187, 190]
+    setup: [201, 206, 210, 212]
+    evaluation: [236, 239, 249]
+    result: [239, 245, 246, 247, 249]
+    conclusion: [245, 255]
+  snapshot_files:
+    - prepare_data_v2.py
+    - train_sft.py
+    - train_template.jinja
+    - train_v2.log
+    - eval_v2_small.json
+    - eval_v2_full.json
+    - eval_v1b_small.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the two measurements of this checkpoint disagree by 6 points (0.64 at limit 50, 0.58 at limit 150); only the limit-50 pair is a like-for-like comparison with exp-01"
+    - "prepare_data_v2.py's printed row counts were cut off by the tail at [207]; 47,473 is the trainer's dataset size and matches 7,473 gold + 40,000 OMI"
+    - "the EOS fix at [236] was applied to the checkpoint before any eval, so no measurement of sft_v2 without it exists"

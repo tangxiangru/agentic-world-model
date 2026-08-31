@@ -1,0 +1,200 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-10
+created_at: null
+elapsed_h: 6.48
+
+problem:
+  statement: >-
+    One STaR round took the model from 59.8% to 66.6% at --limit 500 and about
+    3.5 h of the budget are left, enough for a second round with a stronger
+    generator. [393] "final_model = v5 (66.6%), and I have 3:37 left. Enough for
+    one more STaR iteration with the stronger v5 as generator."
+  evidence:
+    - path: /home/ben/task/eval_v5_500.json
+      locator: "[379]"
+      observation: "66.6% at --limit 500, +6.8 pts over sft_v4 from one rejection-sampling round"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A second rejection-sampling round, sampling from the stronger sft_v5 and
+    training on both rejection pools plus MetaMath, will add further accuracy.
+    [393] "Enough for one more STaR iteration with the stronger v5 as generator."
+  mechanism: >-
+    A stronger generator covers more train questions with verified correct CoTs
+    and produces better traces, so the next round's supervision is better than the
+    last.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-08
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_pool_v6.jsonl
+      source: "derived:exp-08 and derived:exp-05 (self-sampled) + HF:meta-math/MetaMathQA + HF:openai/gsm8k main split=train"
+      n_examples: 80000
+      built_by: /home/ben/task/build_v6.py
+      build_command: [python, build_v6.py]
+      selection: >-
+        rejection_pool_v2.jsonl (sampled from sft_v5) repeated x2 plus
+        rejection_pool.jsonl (sampled from sft_v4) x1; MetaMathQA GSM_AnsAug
+        40000, GSM_Rephrased 18000, GSM_SV 6000, GSM_FOBAR 6000 requested (no MATH
+        this time), cleaned as before; plus the clean GSM8K train set x1; shuffled
+        with random.seed(7). The launch capped the trainer at --max_examples 80000
+        (train_v6.log "examples: 80000"); the pool's own total is not printed in
+        the digest.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: 1
+    - path: /home/ben/task/rejection_pool_v2.jsonl
+      source: "synthetic:self (sampled from the exp-08 checkpoint)"
+      n_examples: 13749
+      built_by: /home/ben/task/gen_rejection2.py
+      build_command: [nohup, python, gen_rejection2.py]
+      selection: >-
+        gen_rejection.py with sft_v4 replaced by sft_v5 and the output file
+        renamed (created by sed at [394]): 4 samples per GSM8K-train question at
+        temperature 0.8 / top_p 0.95 / max_tokens 512 behind a 4-shot eval-style
+        prefix, kept only when the extracted answer equals gold, at most 2 per
+        question. gen2.log: "questions covered: 7067 / 7473", "total correct
+        samples: 25110 kept rows: 13749".
+      contamination_check: passed
+      mixture_weight: null
+      repeats: 2
+    - path: /home/ben/task/rejection_pool.jsonl
+      source: "synthetic:self (sampled from the exp-05 checkpoint)"
+      n_examples: null
+      built_by: /home/ben/task/gen_rejection.py
+      build_command: [timeout, "2400", python, gen_rejection.py]
+      selection: "the round-1 pool reused unchanged, x1 (see exp-08)"
+      contamination_check: passed
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: rft
+    framework: "transformers.Trainer (full fine-tune); sampling with vllm.LLM"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1600
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        seed 42 is the --seed argparse default of train_pool.py (not overridden by
+        the launch); scheduler/warmup/weight_decay/bf16, group_by_length=True,
+        gradient_checkpointing=True, save_strategy='no', logging_steps=25 are
+        hardcoded in that script's TrainingArguments; it patches eos_token_id to
+        [151643, 151645] in the saved config after training. gen_rejection2.py
+        uses random.seed(0); build_v6.py uses random.seed(7).
+    target_format: >-
+      same few-shot-mixed chat format as exp-08 (p=0.15 exact 10-shot prefix,
+      p=0.30 zero-shot, else 1-5 random demos), completion
+      "{body}\nANSWER: {N}<|im_end|>\n", loss masked on the prompt
+  command:
+    argv: [nohup, python, train_pool.py, --pool, train_pool_v6.jsonl, --out, sft_v6,
+           --epochs, "2", --lr, "1e-5", --bs, "16", --accum, "2", --maxlen, "1600",
+           --max_examples, "80000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_pool.py
+    env: {}
+    log: /home/ben/task/train_v6.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 2.1
+
+evaluation:
+  protocol:
+    command: [timeout, "2400", python, evaluate.py, --model-path, sft_v6, --limit,
+              "500", --max-connections, "24", --max-tokens, "1024",
+              --gpu-memory-utilization, "0.85", --json-output-file, eval_v6_500.json]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-08
+    value: 0.666
+    path: /home/ben/task/eval_v5_500.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.782
+  output_checkpoint: /home/ben/task/sft_v6
+  training_summary:
+    final_loss: 0.1441
+    steps: 5000
+    notes: >-
+      last logged 'loss' 0.1441, reported train_loss 0.1487, 2 epochs over 80000
+      examples (avg len 806.4 tokens, max 1600), train_runtime 6414.9 s
+      (train_v6.log)
+  measurements:
+    - metric: accuracy
+      value: 0.688
+      n: 500
+      path: /home/ben/task/eval_v6_500.json
+      delta_vs_comparator: 0.022
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    68.8% vs 66.6% at --limit 500. [436] "v6: 68.8% vs v5: 66.6% on 500 samples -
+    STaR round 2 added ~2 more points." The gain is real but about one standard
+    error of the 500-sample eval (0.0207), i.e. much smaller than round 1's.
+  decision: adopt
+  next_step: >-
+    [436] promote v6 to final_model and run a final verification eval at the
+    default eval config.
+
+provenance:
+  kind: extracted
+  run_ref: r-d7327838
+  launch_i: 407
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [389, 391, 393]
+    setup: [394, 402, 407]
+    evaluation: [431]
+    result: [427, 436]
+    conclusion: [436]
+  snapshot_files:
+    - gen_rejection2.py
+    - gen2.log
+    - build_v6.py
+    - train_pool.py
+    - train_v6.log
+    - eval_v6_500.json
+    - eval_v5_500.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "sft_v6 was never evaluated at --limit 150 under its own name; the 66.7% at 150 in the run's summary comes from eval_final.json, i.e. the final_model copy of it (exp-11)"
+    - "build_v6.py's printed pool total is not in the digest; only the trainer's 'examples: 80000' after the cap is known"
+    - "+2.2 pts at n=500 is roughly one standard error; the agent treated it as a win without a further check"
+    - "the agent's own evals call evaluate.py on the official benchmark set (first N samples); no held-out dev set was built at any point in the run"

@@ -1,0 +1,253 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "Updates are too strong and the model starts generating long, unstable
+    continuations after the answer" [365]: across six runs the trained
+    checkpoints drift away from the base model's generation behaviour, and only
+    the smallest update stayed near base on the quick slice.
+  evidence:
+    - path: /home/ben/task/experiments/exp6_limit20.json
+      locator: "[313][327]"
+      observation: "exp6_merged, --limit 20: 0.300, the only trained checkpoint level with base"
+    - path: /home/ben/task/logs/2026-02-24T11-46-42+01-00_gsm8k_KTWxLURez5HhenMFgyy7br.json
+      locator: "[347][348] - first samples of the exp3_merged eval log"
+      observation: "answers are correct but the generation runs on into a fresh user turn"
+    - path: /home/ben/task/checkpoints
+      locator: "[362][363] - trainer_state.json of each run"
+      observation: "loss falls cleanly in every run (0.85 -> 0.23 etc.), so the damage is not visible in the training loss"
+  affected_share: null
+  failure_examples:
+    - id: "exp3_merged eval log, sample 2, printed at [348]"
+      source: /home/ben/task/logs/2026-02-24T11-46-42+01-00_gsm8k_KTWxLURez5HhenMFgyy7br.json
+      question: null
+      gold: "540"
+      model_output: >-
+        "He runs 60*3=180 meters per session\nHe completes this routine 3 times a
+        week so that's 180*3=540 meters\n\nANSWER: 540\nต่user\nSolve the following
+        math problem step by step. ... Jordan read 120 French novels last
+        holiday..."
+      failure: >-
+        correct answer, then the model opens a new user turn and starts a fresh
+        problem instead of stopping
+    - id: "exp2_merged eval log, sample 1, printed at [348]"
+      source: /home/ben/task/logs/2026-02-24T11-35-38+01-00_gsm8k_7rUsCx5TRt3EsFzAAbNprR.json
+      question: null
+      gold: "6"
+      model_output: >-
+        "ดึง\n\nหัวข้อ\n\nSo far, she has walked 6 miles, taking 2 hours ... she
+        needs to walk at a speed of 6 mph.\n\nANSWER: 6สั\n"
+      failure: >-
+        the reasoning is sound and the answer is right, but stray non-Latin tokens
+        open the response and are appended to the answer line
+    - id: "exp2_merged eval log, sample 2, printed at [348]"
+      source: /home/ben/task/logs/2026-02-24T11-35-38+01-00_gsm8k_7rUsCx5TRt3EsFzAAbNprR.json
+      question: null
+      gold: "540"
+      model_output: >-
+        "อนุญา\n\nว่า\n\nHe runs 3*60=180 meters\nSo he runs 180*3=540 meters a
+        week\n\nANSWER: 540ตัดสินใจ\n"
+      failure: >-
+        correct answer, but a stray token is glued to "540" so the numeric match
+        fails
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Launching exp7 now: low-rank (r=8) and low-step (40) LoRA update at very low
+    LR to preserve base behavior" [370] and thereby improve math accuracy without
+    destabilizing generation [365].
+  mechanism: >-
+    A conservative sweep around the smallest update that survived - fewer
+    trainable parameters, a short step budget and a very low learning rate - keeps
+    the weights close enough to base that generation stays stable while the model
+    still adapts to the answer format.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: gsm8k train split (loaded in the trainer script, no local file)
+      n_examples: null
+      built_by: null
+      build_command: []
+      selection: >-
+        the trainer's prompt-completion construction as patched at [286]; only the
+        first 40 optimizer steps are consumed
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: transformers.Trainer + peft LoRA (versions not stated in the stream)
+    peft: "LoRA r=8 alpha=16 dropout=0.0 targets=<not stated>"
+    hyperparams:
+      lr: 8.0e-06
+      epochs: null
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: null
+      scheduler: cosine
+      warmup: 0.1
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --max-steps 40, --logging-steps 5. --max-length and --num-epochs were not
+        passed and the trainer script is not in the workspace snapshot, so
+        max_seq_len and epochs are null. scheduler=cosine and bf16/tf32 are
+        hardcoded in the trainer's TrainingArguments as printed at [330], not
+        argparse defaults. Gradient checkpointing was not requested on this launch.
+    target_format: >-
+      raw inference prefix followed by the answer text ending in
+      "ANSWER: <number>"
+  command:
+    argv:
+      - python
+      - scripts/train_gsm8k_lora.py
+      - --output-dir
+      - checkpoints/exp7
+      - --merge-output-dir
+      - checkpoints/exp7_merged
+      - --max-steps
+      - "40"
+      - --learning-rate
+      - "8e-6"
+      - --warmup-ratio
+      - "0.1"
+      - --lora-r
+      - "8"
+      - --lora-alpha
+      - "16"
+      - --lora-dropout
+      - "0.0"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "8"
+      - --logging-steps
+      - "5"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_lora.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - checkpoints/exp7_merged
+      - --limit
+      - "30"
+      - --json-output-file
+      - experiments/exp7_limit30.json
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1536"
+      - --gpu-memory-utilization
+      - "0.5"
+    dev_set: "official --limit 30"
+    n: 30
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.40
+    path: /home/ben/task/experiments/baseline_limit30_mt1536.json
+  diagnostic:
+    what: >-
+      per-eval-log scan of the completions: how many spill into a new user turn,
+      how many contain "ANSWER:", mean output length [413][416]; plus a
+      byte-comparison of the merged checkpoint's tokenizer and generation config
+      against the base model's [419]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/checkpoints/exp7_merged
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      no trainer summary appears in the stream for this run; the launch requested
+      --max-steps 40 [371] and the agent reported it finished [379]
+  measurements:
+    - metric: accuracy
+      value: 0.40
+      n: 30
+      path: /home/ben/task/experiments/exp7_limit30.json
+      delta_vs_comparator: 0.00
+    - metric: accuracy
+      value: 0.3833
+      n: 60
+      path: /home/ben/task/experiments/exp7_limit60_mt2048.json
+      delta_vs_comparator: -0.1833
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      30-sample eval: spill 2/30, "ANSWER:" present 24/30, mean length 1663.0
+      chars, against the base model's 1/30, 21/30, 1857.0 on the same slice;
+      60-sample eval: spill 6/60, "ANSWER:" 50/60, mean length 1838.8, against the
+      base model's 2/60, 48/60, 1277.6 [417]. tokenizer.json, tokenizer_config.json
+      and generation_config.json in the merged checkpoint are byte-identical to the
+      base model's [420], so the tokenizer packaging is not the cause.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    "exp7 ties baseline on the matched 30-sample check" [393] at 0.40, then
+    "regressed badly on the 60-sample check (0.383)" [398] against the base
+    model's 0.567. The conservative sweep neither improves accuracy nor restores
+    base-like generation: spill is three times the base rate on 60 samples.
+  decision: reject
+  next_step: >-
+    evaluate the 10-step checkpoint on 60 samples and then tune generation
+    behaviour via the model generation config [398]; the follow-up actually run
+    was a 10-shot-aligned conservative run [438]
+
+provenance:
+  kind: extracted
+  run_ref: r-e2ebe966
+  launch_i: 371
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [347, 348, 356, 362, 363, 365]
+    setup: [370, 371, 330]
+    evaluation: [380, 388, 394]
+    result: [391, 396, 417, 420]
+    conclusion: [393, 398]
+  snapshot_files:
+    - baseline_limit60.json
+    - evaluate.py
+    - contamination_judgement.txt
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the 60-sample measurement (launched at [394]) is compared against the base model's 0.5667 from baseline_limit60.json, not against the 30-sample comparator named above"
+    - "no result block for the eval launched at [380]; the 0.40 comes from the log scan at [417] and the metrics roll-up at [498]"
+    - "the base-model 30-sample comparator was run at --max-tokens 1536, the same as this card's protocol; the 60-sample comparison mixes --max-tokens 2048 on both sides"
+    - "cited experiments/*.json, logs/*.json and scripts/train_gsm8k_lora.py are not in the workspace snapshot; their values are read from the stream"

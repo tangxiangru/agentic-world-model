@@ -1,0 +1,174 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The SFT checkpoint scores 42.7% at limit 150, below the 44% base-model
+    baseline. The eval passes no sampling parameters, so the serving stack falls
+    back to temperature 1.0; the model then rambles past "ANSWER:" and runs to
+    max_tokens (stop_reason None), while the same weights decoded greedily
+    answer correctly [258], [276], [294].
+  evidence:
+    - path: /home/ben/task/eval_sft_v1.json
+      locator: "[249]"
+      observation: "accuracy 0.4267, stderr 0.0405 at limit 150 - below the 0.44 baseline"
+    - path: /home/ben/task/logs/
+      locator: "[261], [291] - the eval sample log the agent loaded; not in the snapshot"
+      observation: >-
+        sampled outputs never stop; the eval config sets no temperature and the
+        sample stop_reason is None, i.e. the generation hit max_tokens [294].
+    - path: /home/ben/task/probe.py
+      locator: "[271], [276]"
+      observation: "the same checkpoint under greedy decoding answered 3/3 probe questions correctly and stopped cleanly"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Baking greedy sampling defaults into the checkpoint's generation_config.json
+    - temperature 0.0, top_p 1.0, top_k -1, plus eos_token_id 151645
+    (<|im_end|>) - will recover the accuracy lost to temperature-1.0 decoding,
+    without touching the weights [294], [316].
+  mechanism: >-
+    the eval sends no sampling parameters, so the server uses its own defaults;
+    values written into generation_config.json in the model directory are read
+    as those defaults instead, making decoding greedy and stopping at <|im_end|>.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: null
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        generation_config.json written into the checkpoint directory with
+        temperature 0.0, top_p 1.0, top_k -1 and eos_token_id 151645; no weight
+        change [294], [316].
+    target_format: null
+  command:
+    argv: [timeout, "1800", python, evaluate.py, --model-path, sft_v1, --limit, "50", --max-connections, "8", --gpu-memory-utilization, "0.85", --json-output-file, eval_sft_v1_greedy.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/eval_sft_v1_greedy.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 0.5
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_v1, --limit, "150", --max-connections, "8", --gpu-memory-utilization, "0.85", --json-output-file, eval_sft_v1_full.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.4266666666666667
+    path: /home/ben/task/eval_sft_v1.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/sft_v1
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "no training; the checkpoint's decoding defaults were changed in place"
+  measurements:
+    - metric: accuracy
+      value: 0.78
+      n: 50
+      path: /home/ben/task/eval_sft_v1_greedy.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.8133333333333334
+      n: 150
+      path: /home/ben/task/eval_sft_v1_full.json
+      delta_vs_comparator: 0.3866666666666667
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "Greedy fix works: 78% on 50 samples (up from 42.7%). The temperature was
+    the whole problem" [311], and the confirming limit-150 run gave 81.3%
+    against the same checkpoint's 42.7% under the identical protocol [335]:
+    +38.7 pts from a decoding change alone, with no weight change.
+  decision: adopt
+  next_step: >-
+    save this checkpoint as the safe final_model, then generate
+    rejection-sampling (STaR) data from it to push higher [335].
+
+# ---- outcome ----------------------------------------------------------------
+outcome:
+  official_accuracy: null   # never written by the extractor; joined by the pipeline
+
+# ---- provenance (extraction only) ------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-01ed5927
+  launch_i: 297
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [258, 261, 271, 276, 290, 291, 294]
+    setup: [294, 297, 316]
+    evaluation: [312]
+    result: [304, 311, 328, 335]
+    conclusion: [311, 335]
+  snapshot_files:
+    - evaluate.py
+    - probe.py
+    - eval_sft_v1.json
+    - eval_sft_v1_greedy.json
+    - eval_sft_v1_greedy.log
+    - eval_sft_v1_full.json
+    - eval_sft_v1_full.log
+  extractor: claude-opus-5
+  unresolved:
+    - "the command that actually wrote generation_config.json into sft_v1 is not in the digest; the change is stated at [294] and its contents at [316], and the launch cited here is the first run that exercised it."
+    - "whether the same file was written by hand for the later checkpoints or produced by the train_sft.py edit at [574] is not shown; the digest only cats the resulting file [498], [559], [618], [727]."
+    - "the eval sample log the agent inspected at [261]/[291] is not in the snapshot, so the derailed outputs cannot be re-read."

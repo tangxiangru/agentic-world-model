@@ -1,0 +1,168 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 3.90
+
+problem:
+  statement: >-
+    Full fine-tuning made things much worse (45.3% vs 64.7%), so LoRA is the
+    right family - but the incumbent LoRA is only rank 32 trained for 2 epochs
+    on the 39K set, and the run has not yet tested whether adapter capacity or
+    training length is what limits it.
+  evidence:
+    - path: /home/ben/task/results/run3_full_greedy.json
+      locator: "[481]"
+      observation: "full fine-tune scores 0.4533 greedy, far below the LoRA incumbent's 0.6467"
+    - path: /home/ben/task/results/run2_greedy.json
+      locator: "[481]"
+      observation: "incumbent to beat is 64.7% on --limit 150"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A higher-capacity LoRA (r=64, alpha=128) trained 3 epochs on the same
+    proven 39K GSM8K+MetaMath data will push accuracy past the incumbent's
+    64.7%.
+  mechanism: >-
+    "a higher-capacity LoRA (r=64) with 3 epochs on the proven 39K data - to
+    push past 64.7%" [481]; LoRA preserves the 10-shot in-context ability that
+    full FT destroyed, so more adapter rank should add capacity without that
+    cost.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_mm.jsonl
+      source: "HF openai/gsm8k (main, train) + HF meta-math/MetaMathQA (train)"
+      n_examples: 39473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [nice, -n, "10", python, prepare_data.py, --out, data/gsm8k_mm.jsonl, --metamath, "32000", --mm-types, GSM, --mm-per-type, "8000"]
+      selection: "identical file to exp-02 and exp-04"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer + peft LoRA, custom /home/ben/task/train.py (versions not printed in the digest)"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/grad-accum/lora-r/lora-alpha on the command line at [482];
+        max_seq_len 1024 and warmup_ratio 0.03 are train.py argparse defaults
+        not overridden. LoRA dropout 0.05 and the target-module list are fixed
+        in the script. Cosine scheduler, weight_decay 0.0, bf16, gradient
+        checkpointing, adamw_torch, save_strategy="no" fixed in the script.
+        No seed is set. LoRA merged before saving.
+    target_format: "same as exp-02"
+  command:
+    argv: [nohup, python, train.py, --data, data/gsm8k_mm.jsonl, --out, models/gsm8k_r64, --epochs, "3", --bs, "16", --grad-accum, "2", --lr, 2e-4, --lora-r, "64", --lora-alpha, "128"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/logs/train_run4.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 2.3
+
+evaluation:
+  protocol:
+    command: [nohup, python, evaluate.py, --model-path, models/gsm8k_r64, --limit, "150", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.85", --json-output-file, results/run4_r64_greedy.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.6466666666666666
+    path: /home/ben/task/results/run2_greedy.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/models/gsm8k_r64
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No train_loss/train_runtime line for this run appears in the digest; the
+      checkpoint is in place by [535] (t=+6.39h), i.e. within ~2.5h of the
+      launch at t=+3.90h, against the agent's ~2.3h estimate.
+  measurements:
+    - metric: accuracy
+      value: 0.64
+      n: 150
+      path: /home/ben/task/results/run4_r64_greedy.json
+      delta_vs_comparator: -0.006666666666666599
+    - metric: accuracy
+      value: 0.608
+      n: 500
+      path: /home/ben/task/results/run4_n500.json
+      delta_vs_comparator: -0.038
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "Run 4 (r64, 3 epochs): 64.0% - statistically tied with run 2 (64.7%).
+    We've plateaued; more LoRA capacity/epochs don't help - the 4B model's
+    reasoning is the bottleneck" [545]; on the tie-breaking 500-sample eval it
+    falls to 60.8% +-2.2 against the incumbent's 64.6% +-2.1, which the agent
+    reads as "overfit" [842].
+  decision: reject
+  next_step: >-
+    "the highest-upside move is rejection sampling (RFT/STaR) ... This directly
+    targets the reasoning-error failure mode" [545]; this checkpoint is used as
+    the generator for that data (exp-07), not as its parent.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-49d8b87a
+  launch_i: 482
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [481]
+    setup: [482]
+    evaluation: [535, 539, 822, 826]
+    result: [545, 842, 864]
+    conclusion: [545, 842]
+  snapshot_files:
+    - train.py
+    - prepare_data.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The n=500 evals at [809]/[822]/[832] use --max-connections 24; the n=150 and n=500 numbers therefore come from different protocols and only the same-limit pairs carry deltas."
+    - "The agent's 'overfit' reading at [842] is an interpretation of the n=150 vs n=500 gap; no probe tested it."
+    - "The greedy generation_config.json written at [535] is folded into this card's eval protocol rather than being a separate launch."

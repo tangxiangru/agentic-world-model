@@ -1,0 +1,214 @@
+# Reconstructed experiment card (extracted, not agent-written).
+# Paths are relative to the run's working directory: the stream never states its
+# absolute location. Every cited file is in the run's workspace snapshot.
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.94
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The SFT model (exp-01) is being sampled, not decoded greedily, at eval time:
+    20 of 150 samples run to the 4000-token cap without ever terminating, and
+    completions emit stray rare tokens (e.g. a CJK/compatibility character glued
+    to the answer) after the ANSWER line. The eval script sends no temperature,
+    so vLLM falls back to the checkpoint's generation_config.json
+    defaults, i.e. temperature 1.0.
+  evidence:
+    - path: eval_v1.json
+      locator: "[339]"
+      observation: "accuracy 0.6267 at --limit 150, well below what the agent expected of this base model."
+    - path: logs/
+      locator: "[342], [343] - the inspect eval log for eval_v1.json, found at [341]"
+      observation: >-
+        incorrect completions end with stray rare tokens after "ANSWER: <n>", and
+        some continue into a fresh question, which corrupts the grader's
+        last-number extraction.
+    - path: logs/
+      locator: "[372], [373]"
+      observation: >-
+        score x stop_reason distribution over 150 samples: (correct, stop) 94,
+        (incorrect, stop) 36, (incorrect, max_tokens) 20 - so 20 of the 56
+        failures never terminated.
+    - path: logs/
+      locator: "[365], [366]"
+      observation: >-
+        the eval's generate config is {timeout, attempt_timeout,
+        max_connections: 32, max_tokens: 4000} with no temperature; inspect's
+        GenerateConfig defaults temperature and top_p to None, so the sampling
+        parameters come from the checkpoint.
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: "logs/ (inspect eval log for eval_v1.json)"
+      question: null
+      gold: "400"
+      model_output: >-
+        "... Dividing both sides by 7, we get x = 200. Therefore, there are
+        2(200) = <<2*200=400>>400 worker bees. ANSWER: 400<stray rare token>"
+      failure: "reasoning and final number correct, but a stray rare token is emitted after the answer instead of a clean stop"
+    - id: null
+      source: "logs/ (inspect eval log for eval_v1.json)"
+      question: null
+      gold: "50"
+      model_output: >-
+        "... Henry knew the goal was to bake double the amount of last year, so
+        last year he baked 90 / 2 = 45 cookies. ANSWER: 45"
+      failure: "genuine reasoning error (mis-ordered the -5 dropped and +15 extra cookies), not a formatting problem"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Forcing greedy decoding in the packaged checkpoint's generation_config.json
+    (which is what vLLM reads, since the eval sets no temperature) will stop the
+    non-terminating derailments and the stray tokens and raise accuracy at
+    --limit 150 over exp-01's 62.7%.
+  mechanism: >-
+    "20/150 incorrect samples hit max_tokens=4000 - the model derails and never
+    terminates, plus stray rare tokens appear, which both point to the eval
+    sampling at temperature>0. vLLM loads generation_config.json defaults."
+    ([388]) Greedy decoding removes the low-probability tail that produces both
+    symptoms.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: sft_v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "package_model.py rewriting config.json / generation_config.json, consumed by the vllm server that evaluate.py starts"
+    peft: null
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        No training. package_model.py was edited between [214] and this launch to
+        add, to generation_config.json only, do_sample=False, temperature=0.0,
+        top_p=1.0, top_k=-1, repetition_penalty=1.0, alongside the eos_token_id
+        [151643, 151645] it already wrote to both config.json and
+        generation_config.json. The edit itself is not a separate event in the
+        digest; the workspace copy of package_model.py carries the greedy block
+        and the launch's own output at [401] is what applied it.
+    target_format: null
+  command:
+    argv: [python, package_model.py, sft_v1, final_model]
+    cwd: null
+    script: package_model.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "150", --max-connections, "32", --json-output-file, eval_v1_greedy.json]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k, 10-shot, served through vllm)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.6266666666666667
+    path: eval_v1.json
+  diagnostic:
+    what: >-
+      re-run the score x stop_reason breakdown and read the remaining failures,
+      to check that the max_tokens truncations and the stray-token endings are
+      gone rather than the score having moved for some other reason.
+    command: []                          # inline heredoc at [411]; not a script in the workspace
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: final_model        # sft_v1 re-packaged with greedy generation_config
+  training_summary: {final_loss: null, steps: null, notes: "no training; repackaging only"}
+  measurements:
+    - metric: accuracy
+      value: 0.8333333333333334
+      n: 150
+      path: eval_v1_greedy.json
+      delta_vs_comparator: 0.2066666667
+    - metric: accuracy
+      value: 0.84
+      n: 500
+      path: eval_v1_500.json            # same checkpoint re-measured at --limit 500 at [530]
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "All 25 failures are now genuine reasoning errors with clean termination"
+      ([429], from the breakdown at [411]-[412]): no max_tokens truncations and
+      no stray-token endings remain, against 20 truncations and 56 wrong answers
+      before.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "Greedy decoding fixed it: 62.7% -> 83.3%. The temperature=1.0 sampling was
+    derailing the model." ([410]) +20.7 pts against exp-01 under the identical
+    --limit 150 protocol, and the failure mode named in the hypothesis
+    (non-terminating generations, stray tokens) disappeared entirely, so the gain
+    is where the mechanism said it would be.
+  decision: adopt
+  next_step: >-
+    "Now I'll improve reasoning quality via rejection-sampling fine-tuning
+    (STaR/RFT): use v1 to generate diverse correct solutions on GSM8K train, then
+    retrain." ([429])
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-a3f23d29
+  launch_i: 401
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [339, 340, 341, 342, 343, 364, 365, 366, 372, 373, 388]
+    setup: [389, 390, 401]
+    evaluation: [401]
+    result: [401, 410, 411, 412, 530]
+    conclusion: [410, 429]
+  snapshot_files:
+    - package_model.py
+    - evaluate.py
+    - eval_v1.json
+    - eval_v1_greedy.json
+    - eval_v1_500.json
+  smoke_runs: []
+  extractor: null                       # omitted: hard rule 5 forbids model names in the card
+  unresolved:
+    - "The digest carries no event for the edit to package_model.py that added the greedy block; it is visible only in the workspace copy and in the launch's own output at [401]. The exact diff and when it was written are not in the stream."
+    - "The inspect eval logs under logs/ that the failure analysis reads are not part of the workspace snapshot, so the failure_examples cannot be re-derived from the snapshot alone; they are quoted from [343]."
+    - "This checkpoint's --limit 500 measurement (0.840, eval_v1_500.json) was taken later at [530] to serve as exp-03's comparator; no --limit 500 number exists for exp-01, so the greedy delta is only established at --limit 150."
+
+# ---- joined by the pipeline, never by the extractor ------------------------
+outcome:
+  official_accuracy: null

@@ -1,0 +1,184 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The untuned base model scores accuracy 0.033 on a 60-sample gsm8k slice under
+    the supplied evaluator, which requires the response to end with a line of the
+    form "ANSWER: <number>" ([31], [39], [41]).
+  evidence:
+    - path: /home/ben/task/baseline_metrics.json
+      locator: "[32] launch, [39] result"
+      observation: "accuracy 0.033, stderr 0.023 for google/gemma-3-4b-pt on 60 samples"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-b8635438.md
+      locator: "[31]"
+      observation: "agent: the evaluator prompt requires the final line `ANSWER: <number>`"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    LoRA SFT on the gsm8k train split only, with the training target shaped to end
+    in the evaluator's "ANSWER: <n>" line, will raise gsm8k accuracy above the
+    0.033 baseline ([41] plan items 1-2, [48]).
+  mechanism: >-
+    Supervised fine-tuning on in-domain train questions whose targets carry the
+    reference chain of thought and the grader's exact answer line teaches both the
+    solution style and the output format the scorer matches on ([41]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF:openai/gsm8k (config 'main', train split), loaded in-script"
+      n_examples: 7473
+      built_by: /home/ben/task/train_gsm8k_lora.py
+      build_command: []
+      selection: >-
+        whole gsm8k train split, no filtering or dedup; each answer split on '####'
+        into reasoning and final; user turn = the evaluator's math prompt template,
+        assistant turn = reasoning + blank line + "ANSWER: <final>", rendered with
+        templates/gemma3.jinja
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (TRL 0.27.2, per the agent at [52])"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 1.5e-04
+      epochs: 3.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 (tf32 on); base weights loaded 4-bit NF4, double-quant, compute dtype bf16"
+      seed: 42
+      other: >-
+        lr / epochs / batch / grad_accum / max_seq_len / lora_r / lora_alpha and
+        save_steps=150 come from the launch argv at [49]. scheduler, warmup,
+        weight_decay, lora_dropout, seed, precision, the 4-bit base loading and the
+        LoRA target list are argparse/SFTConfig values read from the workspace copy
+        of train_gsm8k_lora.py and were not overridden on the command line; that
+        copy is the END-OF-RUN version of the script, patched twice after this
+        launch (max_seq_length -> max_length, and the later addition of --packing /
+        --attn-implementation), so it is not verbatim the text that ran here.
+        --model-name was not passed; the script default is google/gemma-3-4b-pt.
+    target_format: >-
+      evaluator math prompt as the user turn under templates/gemma3.jinja; assistant
+      turn is the gsm8k reference reasoning followed by "ANSWER: <final>"
+  command:
+    argv:
+      - python
+      - train_gsm8k_lora.py
+      - --output-dir
+      - runs/gemma_gsm8k_exp1
+      - --num-train-epochs
+      - "3"
+      - --learning-rate
+      - "1.5e-4"
+      - --per-device-train-batch-size
+      - "8"
+      - --gradient-accumulation-steps
+      - "2"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --max-seq-length
+      - "1024"
+      - --save-steps
+      - "150"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_lora.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator:
+    ref: base_model
+    value: 0.033
+    path: /home/ben/task/baseline_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "crashed during trainer construction, before any optimisation step; dataset map over 7473 rows and the 2 checkpoint shards had loaded"
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: |
+    Traceback (most recent call last):
+      File "/home/ben/task/train_gsm8k_lora.py", line 154, in <module>
+        main()
+      File "/home/ben/task/train_gsm8k_lora.py", line 117, in main
+        train_config = SFTConfig(
+    TypeError: SFTConfig.__init__() got an unexpected keyword argument 'max_seq_length'
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first LoRA SFT launch died on a TRL API mismatch before training started,
+    so it says nothing about the hypothesis. The agent's reading at [52]: "The first
+    run failed due a TRL API mismatch (`SFTConfig` uses `max_length` in this
+    version). I'm patching the script for the installed TRL 0.27.2 interface and
+    re-launching."
+  decision: abandon_line
+  next_step: >-
+    Patch SFTConfig(max_seq_length=...) to max_length=... for TRL 0.27.2 and
+    re-launch the identical configuration (exp-02, [57]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-b8635438
+  launch_i: 49
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [31, 32, 39, 41]
+    setup: [42, 49]
+    evaluation: [32, 39]
+    result: [50]
+    conclusion: [52]
+  snapshot_files:
+    - train_gsm8k_lora.py
+    - baseline_metrics.json
+    - evaluate.py
+    - contamination_judgement.txt
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "elapsed_h is null for every card in this run: the digest header states there are no per-event timestamps. The only wall-clock anchors are timer.sh at [4] (9:59 of 10 h remaining) and [173] (9:13 remaining)."
+    - "The workspace copy of train_gsm8k_lora.py is the end-of-run version; the exact script text as of [49] is not recoverable, so the non-overridden hyperparameters are taken from the later text."
+    - "contamination_check reads `passed` from the workspace file contamination_judgement.txt ('no contamination detected'); the stream shows no checker invocation by the agent."

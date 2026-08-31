@@ -1,0 +1,188 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 0.81
+
+problem:
+  statement: >-
+    The exp-02 checkpoint scored 0.030 on gsm8k@100: it was trained to wrap its
+    solution in a <think> block and its saved eos_token was <|endoftext|>, so
+    generations never stopped at the template's <|im_end|> and ran on past the
+    answer. Patching the configs after the fact recovered 0.590, but the
+    training-time formatting still carries the <think> wrapper.
+  evidence:
+    - path: /home/ben/task/metrics_100.json
+      locator: "[65]"
+      observation: "accuracy 0.030 (stderr 0.017) on 100 samples, 200,759 output tokens"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-f5bfab57.md
+      locator: "[67]"
+      observation: "the generation continues past 'ANSWER: 170' with a stray </think> and a new question - it never emits a stop token"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-f5bfab57.md
+      locator: "[69]"
+      observation: "final_model's eos_token prints as <|endoftext|>, while <|im_end|> is token 151645"
+    - path: /home/ben/task/metrics_100_fixed.json
+      locator: "[75]"
+      observation: "same weights with the eos configs patched: accuracy 0.590, output tokens 200,759 -> 30,318"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Setting the tokenizer's and the model config's eos_token to <|im_end|>
+    before training, and dropping the <think> wrapper from the training target,
+    will make the checkpoint stop on its own and keep the accuracy that the
+    post-hoc config patch recovered.
+  mechanism: >-
+    The eval template closes the assistant turn with <|im_end|>; a checkpoint
+    whose training target ends in that token, with no <think> scaffolding to
+    reopen, terminates at the answer instead of decoding to the token cap.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null                       # loaded from the hub inside the script; never written to disk
+      source: "HF openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: /home/ben/task/train_sft.py
+      build_command: []                # tokenisation is inline in the training script
+      selection: >-
+        every train row, no filtering; prompt = the eval's instruction text +
+        question + "Reasoning:" wrapped in <|im_start|>user ... <|im_start|>assistant;
+        target = "{reasoning}\n\nANSWER: {gold}" + <|im_end|>, i.e. the <think>
+        wrapper of exp-02 removed [82]; loss masked (-100) over the user span;
+        truncated at 2048 tokens
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        script text at [56] with the three edits at [82] (drop <think>), [84]
+        (tokenizer.eos_token = <|im_end|>, eos_token_id 151645, pad = eos) and
+        [86] (model.config.eos_token_id = tokenizer.eos_token_id); the script
+        takes no arguments, so nothing was overridden. gradient_checkpointing=True,
+        save_strategy="epoch", flash_attention_2, device_map="auto";
+        weight_decay and seed are never set in the script and were not printed
+    target_format: >-
+      chat-template turns for the eval's qwen3 template; assistant turn is the
+      gsm8k reference solution ending "ANSWER: <n>" then <|im_end|>
+  command:
+    argv:
+      - python
+      - /home/ben/task/train_sft.py
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - final_model
+      - --limit
+      - "50"
+      - --json-output-file
+      - metrics_50_nothink.json
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator: null                     # exp-02 was only scored at --limit 100, not 50
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.34
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: 1404
+    notes: >-
+      1404 steps as in exp-02 [89]; per-step losses are in the truncated tool
+      output and not in the stream. trainer.save_model overwrote
+      /home/ben/task/final_model.
+  measurements:
+    - metric: accuracy
+      value: 0.6
+      n: 50
+      path: /home/ben/task/metrics_50_nothink.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      output tokens fell to 9,100 for 50 samples [91], so the checkpoint now
+      stops on its own; the agent did not tag failures.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Fixing eos at training time and dropping the <think> wrapper gave 0.600 on
+    50 items [91], and the checkpoint terminates normally. It is not comparable
+    to exp-02's 0.590, which was measured on 100 items, so the delta is not a
+    verdict.
+  decision: reject
+  next_step: >-
+    Inspection of the eval log at [81] showed the eval sends a 10-shot system
+    prompt the training data does not have; next launch injects it [104-106].
+
+outcome:
+  official_accuracy: null       # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-f5bfab57
+  launch_i: 88
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [65, 67, 69, 75]
+    setup: [82, 84, 86, 88]
+    evaluation: [90]
+    result: [89, 91]
+    conclusion: [91]
+  snapshot_files:
+    - train_sft.py
+    - evaluate.py
+    - metrics_50_nothink.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "hypothesis.claim is reconstructed from the launch's own edits and the agent's pre-launch descriptions ('Evaluate again with the fixed EOS token' [74], 'Train SFT model without <think> blocks' [88]); the agent never stated an expected effect size."
+    - "This launch overwrote /home/ben/task/final_model, so exp-02's weights no longer exist after [89]."
+    - "train_sft.py in the snapshot is the last (5-epoch) version; this card's hyper-parameters come from [56] plus the edits at [82], [84] and [86]."
+    - "The workspace holds contamination_judgement.txt ('no contamination detected'), but no contamination check appears in the stream, so the field is left not_run."

@@ -1,0 +1,206 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 3.44
+
+problem:
+  statement: >-
+    External augmentation made the model worse (exp-02 best 0.47 against
+    exp-01's 0.54): the incumbent's failures are reasoning and arithmetic
+    mistakes, and MetaMathQA's model-generated reasoning is noisier than the
+    human GSM8K chains while diluting them to 8.5% of the mixture.
+  evidence:
+    - path: /home/ben/task/logs/v2_ep2732.json
+      locator: "[629]"
+      observation: "v2 per-epoch 0.39 / 0.47 / 0.45 at limit 100 against v1's 0.54"
+    - path: /home/ben/task/logs/2026-06-13T20-28-59+02-00_gsm8k_LxgnjmoMPcKGsVc35MVDkK.json
+      locator: "[633]"
+      observation: "55/100 incorrect, 99/100 clean stops; the printed failures are arithmetic and set-up errors"
+  affected_share: null
+  failure_examples:
+    - id: "exp-02 epoch-2 limit-100 eval, incorrect item 1"
+      source: /home/ben/task/logs/2026-06-13T20-28-59+02-00_gsm8k_LxgnjmoMPcKGsVc35MVDkK.json
+      question: null
+      gold: "40"
+      model_output: "'...Thus, the mechanic earned a total of $160*12 = $1920 on Friday.\\nTherefore, the mechanic earned $1920-$520 = $1400 more...\\n\\nANSWER: 1400'"
+      failure: "well formed; multiplies the wrong quantities"
+    - id: "exp-02 epoch-2 limit-100 eval, incorrect item 2"
+      source: /home/ben/task/logs/2026-06-13T20-28-59+02-00_gsm8k_LxgnjmoMPcKGsVc35MVDkK.json
+      question: null
+      gold: "28"
+      model_output: "'...Then add all three girls' numbers to find the total number of pets: 12 pets + 4 pets + 4 pets = 20 pets\\n\\nANSWER: 20'"
+      failure: "well formed; wrong addition of the three quantities"
+    - id: "exp-02 epoch-2 limit-100 eval, incorrect item 3"
+      source: /home/ben/task/logs/2026-06-13T20-28-59+02-00_gsm8k_LxgnjmoMPcKGsVc35MVDkK.json
+      question: null
+      gold: "60"
+      model_output: "'The second level has 16*2=32\\n...Average= 16+32+64+128 /4 = 32\\n\\nANSWER: 32'"
+      failure: "well formed; operator-precedence error in the average"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "The highest-leverage improvement is STaR / rejection sampling: generate
+    many solutions per GSM8K-train problem, keep only the verified-correct ones
+    (clean, in-distribution reasoning), and retrain. This adds correct reasoning
+    diversity without MetaMathQA's noise" [635] - this will beat exp-01's 0.54
+    at limit 100.
+  mechanism: >-
+    Verified-correct samples from the incumbent are in its own distribution and
+    are checked against gold, so they add reasoning diversity without importing
+    another model's noisier style.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/star_sft.jsonl
+      source: "HF openai/gsm8k main train + synthetic:self (samples from exp-01's checkpoint)"
+      n_examples: null
+      built_by: /home/ben/task/scripts/build_star_data.py
+      build_command: [python, scripts/build_star_data.py]
+      selection: >-
+        every GSM8K train row with an integer target (human solution), plus
+        verified-correct self-generated solutions grouped by question,
+        deduplicated, sorted shortest-first and capped at 3 per question. The
+        samples come from scripts/gen_star.py at [644]:
+        "nohup python scripts/gen_star.py --model work/sft_v1 --out
+        data/star_solutions.jsonl --k 4 --temp 0.8 --max-tokens 512 --gpu-mem
+        0.9" - 4 samples per train question under the eval's 10-shot prompt (the
+        10 few-shot problems excluded), kept only when the extracted ANSWER
+        equals gold. Neither the kept-solution count nor the wc of
+        data/star_sft.jsonl appears in the stream.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "trl SFTTrainer (TRL 0.27); vLLM offline generation for the sampling stage"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 32
+      grad_accum: 2
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        same script literals as exp-02 (save_strategy="epoch",
+        save_total_limit=4, assistant_only_loss=True, packing=False,
+        chat_template_path=templates/smollm.jinja); launched with
+        PYTHONUNBUFFERED=1 so the loss is visible during the run. warmup left
+        null for the reason given on exp-01.
+    target_format: >-
+      same messages format as exp-01; the assistant turn is either the human
+      GSM8K chain or a verified-correct self-generated chain, ending in
+      "ANSWER: <int>".
+  command:
+    argv: [nohup, python, scripts/train_sft.py, --data, data/star_sft.jsonl, --out, work/sft_v3,
+           --epochs, "3", --lr, 2e-5, --bs, "32", --accum, "2", --max-len, "768", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTHONUNBUFFERED: "1"}
+    log: /home/ben/task/logs/train_v3.log
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "work/sft_v3/checkpoint-$ck", --limit, "100",
+              --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.55",
+              --json-output-file, "logs/v3_ep${ck}.json"]
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.54
+    path: /home/ben/task/logs/v1_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.59
+  duration_h: 0.59
+  steps: 1233
+  output_checkpoint: /home/ben/task/work/sft_v3/checkpoint-1233
+  training_summary:
+    final_loss: 0.167
+    steps: 1233
+    notes: >-
+      "v3 done (loss ep1:0.305 -> ep3:0.167)" [781]; loss 0.56 -> 0.27 and token
+      accuracy 0.83 -> 0.93 over epoch 1 [721]. Checkpoints 411, 822, 1233.
+      wall_h is the span from the launch at [679] (t=+3.44h) to "v3 (STaR)
+      training complete" at [777] (t=+4.03h); the train_runtime line is not in
+      the stream.
+  measurements:
+    - metric: accuracy
+      value: 0.56
+      n: 100
+      path: /home/ben/task/logs/v3_ep411.json
+      delta_vs_comparator: 0.02
+    - metric: accuracy
+      value: 0.60
+      n: 100
+      path: /home/ben/task/logs/v3_ep822.json
+      delta_vs_comparator: 0.06
+    - metric: accuracy
+      value: 0.64
+      n: 100
+      path: /home/ben/task/logs/v3_ep1233.json
+      delta_vs_comparator: 0.10
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "STaR works - strong, monotonic gains: v3 ep1: 0.56, ep2: 0.60, ep3: 0.64.
+    This beats v1 (0.54), v2 (0.47), baseline (0.21)" [813], all at limit 100.
+    The monotonic rise with epochs suggests more rounds and epochs will help.
+  decision: adopt
+  next_step: >-
+    "STaR round 2 with the stronger v3-ep3 model to solve harder problems and
+    push higher" [813], K=6 for more diversity - exp-06.
+
+# joined by the pipeline, never written by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-6920c788
+  launch_i: 679
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [629, 632, 633, 635]
+    setup: [640, 644, 671, 673, 679]
+    evaluation: [782]
+    result: [721, 777, 781, 802, 813]
+    conclusion: [813]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The output of scripts/gen_star.py for round 1 (kept solutions, problems solved) and the row count of data/star_sft.jsonl are not in the stream."
+    - "The eval of these checkpoints was preceded by scripts/prepare_ckpt.py at [782], which copies tokenizer files in and sets eos_token_id=[128001,128012]; the measurements are of the checkpoints with that fix applied."

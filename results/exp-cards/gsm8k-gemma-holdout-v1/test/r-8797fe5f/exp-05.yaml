@@ -1,0 +1,226 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 7.50
+
+problem:
+  statement: null
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8797fe5f/rft_gen4.log
+      locator: "[529]"
+      observation: >-
+        With k=4 samples per problem the exp-01 checkpoint produced no correct
+        solution for 3,146 of 17,073 training problems, and only one or two for
+        many more - the pool the agent turned into the GRPO prompt set.
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8797fe5f/dev_sft2_greedy.json
+      locator: "[559], [585], [606]"
+      observation: >-
+        More supervised data on the same distribution (exp-03) did not move the
+        score, so the remaining headroom was not going to come from another SFT
+        round.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Reinforcement learning with a binary correct-answer reward, run on the
+    problems the model solves rarely or never, will raise accuracy above
+    exp-01 where more supervised data did not.
+  mechanism: >-
+    Reconstructed from the launch and the script the agent wrote for it.
+    train_grpo.py [403]: "GRPO on GSM8K train (+augmented) prompts with binary
+    correctness reward ... reward = 1 if strict final 'ANSWER: x' matches
+    target"; the prompt-set rewrite at [639] adds the agent's reasoning in a
+    comment: "Hard-problem set: problems where the SFT model's RFT solve rate
+    was low. rft_raw has <=3 kept solutions per solved problem; fewer kept =>
+    harder. Problems absent from rft_raw (attempted but 0 correct) are
+    hardest." No expected effect was written down before the launch.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt_sft1/final
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/data/rft_raw.jsonl
+      source: "derived:exp-03 (the rejection-sampling output) + derived:exp-01 data/sft_clean.jsonl"
+      n_examples: 12162
+      built_by: /home/ben/task/train_grpo.py
+      build_command: []
+      selection: >-
+        The prompt set is built inside train_grpo.py at load time (rewritten at
+        [639]): it replays gen_rft.py's problem pool (GSM8K-train minus the 400
+        dev questions, plus the first 10,000 shuffled unique
+        omi2_augmented_gsm8k questions under random seed 11), counts how many
+        accepted solutions each question has in data/rft_raw.jsonl, and keeps
+        the questions with 0 accepted solutions ("hard") and with 1-2 ("medium"),
+        dropping everything the model already solves easily. grpo_run.log:
+        "prompts: 12162 (hard 3146, medium 9016)". Only 100 optimiser steps ran,
+        so about 3% of the set was seen (epoch 0.03).
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: grpo
+    framework: "trl.GRPOTrainer 0.27.2 with colocated vLLM generation (API surface checked at [408]/[424])"
+    peft: none
+    hyperparams:
+      lr: 2.0e-06
+      epochs: null
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1280
+      scheduler: constant_with_warmup
+      warmup: 10
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        --init, --out, --max-steps 100, --bs 8, --accum 4, --num-generations 8,
+        --lr 2e-6, --vllm-mem 0.15, --max-completion 640 and --save-steps 40
+        come from the command line at [657]; the whole launch is wrapped in
+        "timeout 2520" (a 42-min hard cap). Hardcoded in GRPOConfig:
+        lr_scheduler_type constant_with_warmup, warmup_steps 10,
+        max_prompt_length 512, temperature 1.0, top_p 1.0, beta 0.0 (no KL
+        anchor), bf16, gradient checkpointing (use_reentrant False),
+        mask_truncated_completions True, use_vllm with vllm_mode colocate,
+        vllm_max_model_length 1280 (added at [631]), optim adamw_8bit and
+        use_liger_loss True (both switched in at [621]), save_total_limit 3,
+        logging_steps 1, seed 42. The tokenizer's eos_token is forced to
+        "<end_of_turn>" at [639]; a valid GenerationConfig is installed on the
+        model before training at [655] so checkpoint saves pass validation.
+        Env: PYTHONPATH=/home/ben/task/pylib,
+        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True.
+    target_format: >-
+      Same eval wrapper as the SFT rounds, generation only; reward 1.0 when the
+      completion's last line is exactly "ANSWER: <number>" and the number
+      matches the target, else 0.0.
+  command:
+    argv: [timeout, "2520", python, train_grpo.py, --init, ckpt_sft1/final, --out, ckpt_grpo, --max-steps, "100", --bs, "8", --accum, "4", --num-generations, "8", --lr, "2e-6", --vllm-mem, "0.15", --max-completion, "640", --save-steps, "40"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {PYTHONPATH: /home/ben/task/pylib, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/grpo_run.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 0.7
+
+evaluation:
+  protocol:
+    command: [python, dev_eval.py, --model, ckpt_grpo/final, --n, "400", --gpu-mem, "0.6", --save-out, dev_grpo.json]
+    dev_set: /home/ben/task/data/dev_set.json
+    n: 400
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.835
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8797fe5f/dev_sft1_greedy.json
+  diagnostic:
+    what: >-
+      Whether the regression is monotone in training steps - the step-40
+      checkpoint measured on the same dev set.
+    command: [python, dev_eval.py, --model, ckpt_grpo/checkpoint-40, --n, "400", --gpu-mem, "0.6", --save-out, dev_grpo40.json]
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8797fe5f/dev_grpo40.json
+
+result:
+  execution: completed
+  wall_h: 0.54
+  duration_h: 0.54
+  steps: 100
+  output_checkpoint: /home/ben/task/ckpt_grpo/final
+  training_summary:
+    final_loss: 0.0020
+    steps: 100
+    notes: >-
+      grpo_run.log: 100/100 steps in 32:34, train_runtime 1954.63 s,
+      train_loss 0.001999, epoch 0.03; "saved ckpt_grpo/final", exit 0, with
+      checkpoint-40 and checkpoint-80 kept. Logged batch reward stayed in the
+      0.44-0.81 band throughout with no trend ([668] shows every tenth value:
+      0.5625, 0.8125, 0.8125, 0.75, 0.5625, 0.8125, 0.59375, 0.65625, 0.75,
+      0.625). The agent at [670]: "GRPO finished all 100 steps (32 min)".
+  measurements:
+    - metric: accuracy
+      value: 0.7725
+      n: 400
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8797fe5f/dev_grpo.json
+      delta_vs_comparator: -0.0625
+    - metric: accuracy
+      value: 0.815
+      n: 400
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8797fe5f/dev_grpo40.json
+      delta_vs_comparator: -0.020
+  diagnostic_result:
+    value: 0.815
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8797fe5f/dev_grpo40.json
+    notes: >-
+      The step-40 checkpoint (evaluated at [710], after copying the processor
+      configs across from ckpt_grpo/final so it could be served) is already
+      2.0 pts below the starting point and the step-100 checkpoint is 6.3 pts
+      below, so the damage accumulates with training rather than appearing at
+      the end. The agent at [715]: "checkpoint-40 is also below sft1 (81.5%) -
+      GRPO was net-negative throughout."
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    A 100-step GRPO run off the exp-01 checkpoint, with a binary
+    correct-answer reward on the 12,162 problems the model solves rarely or
+    never, completed cleanly in 32 min and made the model worse on the dev set
+    at every point measured: 0.815 at step 40 and 0.7725 at step 100 against
+    0.835 for its parent, under the same greedy 400-item protocol. The agent's
+    reading at [692]: "regressed ... no KL anchor + hard-problem distribution
+    skew; discarded", with beta 0.0 and the hard-problem-only prompt mix named
+    as the two suspects - neither was tested separately.
+  decision: reject
+  next_step: >-
+    Nothing further was launched. With 1 h 49 m left the agent verified
+    final_model (still the exp-02 packaging of exp-01) at [718] and stopped.
+
+provenance:
+  kind: extracted
+  run_ref: r-8797fe5f
+  launch_i: 657
+  stated_by_agent:
+    problem: false
+    hypothesis: false
+  anchors:
+    problem: [529, 559, 639]
+    setup: [403, 408, 424, 621, 631, 639, 641, 643, 655, 657]
+    evaluation: [671, 710]
+    result: [667, 668, 670]
+    conclusion: [692, 715, 718, 721]
+  snapshot_files:
+    - train_grpo.py
+    - dev_eval.py
+    - grpo_run.log
+    - grpo_smoke.log
+    - grpo_smoke2.log
+    - grpo_smoke3.log
+    - grpo_smoke4.log
+    - dev_grpo.json
+    - dev_grpo40.json
+    - dev_sft1_greedy.json
+    - rft_gen4.log
+  smoke_runs:
+    - {launch_i: 615, outcome: "crashed: torch.OutOfMemoryError after step 1 (79.16 of 79.18 GiB in use); also showed completions/clipped_ratio 1.0, i.e. every completion counted as truncated"}
+    - {launch_i: 621, outcome: "crashed after patching to adamw_8bit + use_liger_loss and vllm-mem 0.15: vLLM refused to start, 'max seq len (131072) ... 3.07 GiB KV cache is needed, which is larger than the available KV cache memory (1.55 GiB)'"}
+    - {launch_i: 633, outcome: "3 steps ran after adding vllm_max_model_length=1280, but clipped_ratio stayed 1.0 and loss 0.0, and the save crashed with 'ValueError: GenerationConfig is invalid'"}
+    - {launch_i: 645, outcome: "3 steps with the hard-problem prompt set and eos_token='<end_of_turn>': clipped_ratio drops to 0.0-0.06 and loss becomes non-zero, but the save still crashed on the invalid GenerationConfig, which was then installed before training instead of after [655]"}
+  extractor: null
+  unresolved:
+    - "the two suspected causes of the regression - beta 0.0 (no KL anchor) and the hard-problem-only prompt mix - were never separated; no ablation was run and no time remained"
+    - "checkpoint-80 was never evaluated, so the shape of the regression between step 40 and step 100 is unknown"
+    - "the [671] dev_eval launch has no result block in the digest; 0.7725 is read from dev_grpo.json in the workspace and matches the agent's summary [692]"

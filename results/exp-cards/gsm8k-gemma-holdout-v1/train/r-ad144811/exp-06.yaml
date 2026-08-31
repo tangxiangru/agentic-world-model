@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 2.83
+
+problem:
+  statement: >-
+    Three separate second-stage curricula all scored below the 75.3% first-stage
+    checkpoint, so no new data source has beaten simply continuing the corpus that
+    worked; the previous attempt at that continuation was relaunched with an
+    explicit data-shuffling seed.
+  evidence:
+    - path: /home/ben/task/novel_v1_150.json
+      locator: "[492]"
+      observation: "Prompt-disjoint curriculum scored 72.7% and was rejected."
+    - path: /home/ben/task/sft_v1_eos_150.json
+      locator: "[492]"
+      observation: "75.3% remains the incumbent to beat."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A second, reshuffled epoch over the same 122,419-row mixed corpus at half the
+    original learning rate (1e-5) will improve on 75.3%; checkpoints at steps 200,
+    400 and 600 will show whether the benefit peaks before the end.
+  mechanism: >-
+    Consolidating the corpus that produced the interface alignment, at a lower rate
+    and in a different data order, should add reasoning accuracy without the
+    distribution shift that new corpora caused.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v1
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/train_data
+      source: "local: openai/gsm8k train + meta-math/MetaMathQA (exact GSM8K-train provenance)"
+      n_examples: 122419
+      built_by: /home/ben/task/prepare_train_data.py
+      build_command: ["python", "prepare_train_data.py", "--output", "train_data", "--gsm-repeats", "3", "--rephrased", "40000", "--ansaug", "40000", "--sv", "10000", "--fobar", "10000"]
+      selection: "Same corpus as exp-01, repacked in a different order by --seed 2027."
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "GSM8K train split x3 inside the corpus; this is its second epoch"
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (custom packed, completion-only collator)"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.1
+      precision: "bf16 (tf32), flash_attention_2, gradient checkpointing"
+      seed: 2027
+      other: >-
+        All of lr/epochs/batch/grad_accum/max_len/warmup/seed come from the launch
+        argv. scheduler, weight_decay, optim=adamw_torch_fused and max_grad_norm=1.0
+        are hard-coded in train_sft.py (in the workspace, not overridden).
+        save_steps 200, logging_steps 10.
+    target_format: "Packed completion-only chat format, no system turn."
+  command:
+    argv: ["/bin/bash", "-lc", "python train_sft.py --model sft_v1 --data train_data --output sft_v2 --max-length 2048 --epochs 1 --batch-size 8 --grad-accum 4 --learning-rate 1e-5 --warmup-ratio 0.03 --save-steps 200 --logging-steps 10 --seed 2027"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: ["python", "evaluate.py", "--model-path", "sft_v2", "--limit", "150", "--json-output-file", "sft_v2_150.json", "--max-connections", "16", "--max-tokens", "2048", "--gpu-memory-utilization", "0.55"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.7533
+    path: /home/ben/task/sft_v1_eos_150.json
+  diagnostic:
+    what: >-
+      Learning-curve sweep: score the step-400 checkpoint of the same run under the
+      same protocol to test whether the benefit peaks before the endpoint.
+    command: ["python", "evaluate.py", "--model-path", "sft_v2/checkpoint-400", "--limit", "150", "--json-output-file", "sft_v2_step400_150.json", "--max-connections", "16", "--max-tokens", "2048", "--gpu-memory-utilization", "0.55"]
+    path: /home/ben/task/sft_v2_step400_150.json
+
+result:
+  execution: completed
+  wall_h: 1.16
+  duration_h: null
+  steps: 612
+  output_checkpoint: /home/ben/task/sft_v2
+  training_summary:
+    final_loss: 0.1177
+    steps: 612
+    notes: >-
+      612 optimizer steps, mean loss 0.1177 [559]; checkpoints kept at 400, 600 and
+      612, plus a step-200 copy preserved outside the trainer's rotation (exp-07).
+  measurements:
+    - metric: accuracy
+      value: 0.74
+      n: 150
+      path: /home/ben/task/sft_v2_150.json
+      delta_vs_comparator: -0.0133
+    - metric: accuracy
+      value: 0.7867
+      n: 150
+      path: /home/ben/task/sft_v2_step400_150.json
+      delta_vs_comparator: 0.0334
+    - metric: accuracy
+      value: 0.7533
+      n: 150
+      path: /home/ben/task/sft_v2_step400_eval2.json
+      delta_vs_comparator: 0.0
+    - metric: accuracy
+      value: 0.764215
+      n: 1319
+      path: /home/ben/task/sft_v2_step400_full.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.7867
+    path: /home/ben/task/sft_v2_step400_150.json
+    notes: >-
+      Step 400 (78.7%) beats the endpoint (74.0%) and the step-200 copy beats both
+      at 82.0%, so the schedule peaks early and then declines. Rescored later at the
+      evaluator's default two connections, step 400 falls to 75.3%
+      (sft_v2_step400_eval2.json), and on the full 1,319 examples it reaches 76.42%
+      - "+4 questions vs step 200, within noise" (EXPERIMENTS.md).
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: >-
+    "The second full-data pass reached 74.0%, below the 75.3% best, so I'm rejecting
+    that endpoint" [565]; but the same run's early checkpoints are the best models
+    of the whole session - step 400 at 78.7% and step 200 at 82.0% - so "the
+    200-step checkpoint is the clear peak of this schedule" [581]. The second epoch
+    helps only in its first third.
+  decision: adopt
+  next_step: >-
+    Preserve the step-200 checkpoint outside the trainer's rotation and promote it
+    as the champion (exp-07); the endpoint itself is dropped.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ad144811
+  launch_i: 503
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [292, 365, 492]
+    setup: [66, 67, 503]
+    evaluation: [560, 562, 570, 578, 919, 932, 939, 975]
+    result: [512, 559, 563, 565, 576, 579, 581, 926]
+    conclusion: [565, 581]
+  snapshot_files:
+    - train_sft.py
+    - prepare_train_data.py
+    - sft_v2_150.json
+    - sft_v2_step400_150.json
+    - sft_v2_step400_eval2.json
+    - sft_v2_step400_full.json
+    - EXPERIMENTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The step-600 checkpoint of this run was never evaluated."
+    - "The first full-set attempt on step 400 at [919] omitted --limit and therefore scored only 150 samples (0.7133); it was overwritten by the --limit -1 rerun. A second attempt at [932] was interrupted at 524/1,319 with 'NoneType has no attribute scores'; the surviving sft_v2_step400_full.json is from the --max-connections 2 rerun at [939], whose result block is not in the digest."
+    - "Step 400 was measured under two different concurrencies (16 -> 78.7%, 2 -> 75.3%) on the same weights; only the two-connection number is comparable with the final selection."

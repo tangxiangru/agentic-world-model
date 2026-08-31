@@ -1,0 +1,178 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The first training recipe clearly failed (model started emitting corrupted
+    multi-sample continuations)" [152] - training loss on the whole sequence,
+    prompt tokens included, drove the model to continue past its answer into
+    fabricated extra turns.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-d4a6c52f.md
+      locator: "[141], [142]"
+      observation: >-
+        raw generations from the exp-03 eval log: correct "ANSWER: 600" then junk
+        and a fabricated next user turn
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-d4a6c52f.md
+      locator: "[150], [156], [157]"
+      observation: "agent read TRL's SFTTrainer source and confirmed it supports prompt/completion masking directly"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Switching to a safer SFT setup with assistant-only loss via TRL [will]
+    prevent prompt-token overfitting/catastrophic drift" [152]; the full run uses
+    "completion-only loss, which should preserve prompt behavior and train only
+    the assistant answer tokens" [172].
+  mechanism: >-
+    Masking the prompt tokens out of the loss stops the model from learning to
+    generate the prompt/role scaffolding, so generation should stop at the
+    answer instead of rolling into another turn.
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k
+      n_examples: 7473
+      built_by: null
+      build_command: []
+      selection: >-
+        whole `main` train split; answer split on "####"; each row mapped to a
+        conversational prompt/completion pair (user = evaluator math prompt,
+        assistant = "<reasoning>\n\nANSWER: <target>") under templates/qwen3.jinja.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer / SFTConfig (QLoRA, 4-bit NF4)
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 5.0e-05
+      epochs: 3.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: null
+      precision: "bf16 compute over a 4-bit NF4 base"
+      seed: 42
+      other: >-
+        completion_only_loss=True, packing=False, assistant_only_loss=False,
+        optim=paged_adamw_32bit, save_strategy=epoch - all hard-coded in
+        train_gsm8k_trl.py. warmup_ratio=0.05 and seed=42 are that script's
+        argparse defaults, not overridden by the launch. Caveat: the workspace
+        copy is the end-of-run file (it has a later-added --format-mode flag,
+        default "plain"); at this launch the script emitted the chat-formatted
+        prompt/completion shown at [162], so only the unchanged defaults are
+        attributable here. SFTConfig sets no weight_decay.
+    target_format: >-
+      conversational prompt/completion; assistant content = rationale then
+      "ANSWER: <n>".
+  command:
+    argv:
+      - python
+      - train_gsm8k_trl.py
+      - --output-dir
+      - experiments/run2_trl_lora
+      - --epochs
+      - "3.0"
+      - --learning-rate
+      - "5e-5"
+      - --batch-size
+      - "8"
+      - --grad-accum
+      - "4"
+      - --max-length
+      - "1536"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --lora-dropout
+      - "0.05"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_trl.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/experiments/run2_trl_lora
+  training_summary:
+    final_loss: null
+    steps: 702
+    notes: >-
+      "Run 2 finished successfully (3 epochs, stable loss down to ~0.46-0.49 late
+      training)" [243]; no train_runtime/train_loss line for this run appears in
+      the stream. Per-epoch checkpoints named by the agent: checkpoint-234 [214],
+      checkpoint-468 [228], and checkpoint-702 (merged at [248]), so 702 steps.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Training completed cleanly with completion-only loss, but the adapter was
+    only judged through its merges (exp-06, exp-07). The mechanism did not hold:
+    at [263] the agent found the model still continuing into synthetic user turns.
+  decision: adopt
+  next_step: "merge the epoch-2 and epoch-3 checkpoints and run a fast GSM8K eval to pick one [243]"
+
+provenance:
+  kind: extracted
+  run_ref: r-d4a6c52f
+  launch_i: 173
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [142, 152]
+    setup: [162, 172, 173]
+    evaluation: []
+    result: [214, 228, 243]
+    conclusion: [243, 263]
+  snapshot_files:
+    - train_gsm8k_trl.py
+  smoke_runs:
+    - {launch_i: 168, outcome: "passed (--epochs 0.02 into experiments/smoke_trl)"}
+  extractor: null
+  unresolved:
+    - "no final train_loss / train_runtime line for run2 is in the digest; step count inferred from the checkpoint names the agent quotes"
+
+outcome:
+  official_accuracy: null

@@ -1,0 +1,245 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.86
+
+problem:
+  statement: >-
+    "The 150-sample score for the first candidate is 44.7%, much better than the
+    20-sample estimate but still leaves room." [160] Earlier, on the 20-sample
+    check: "the model now follows the format and sometimes solves, but
+    fixed-prompt SFT alone is underpowered" [144] - i.e. training only on the
+    evaluator's answer contract buys formatting, not solving.
+  evidence:
+    - path: /home/ben/task/experiments/lora64_fixed2/eval150.json
+      locator: "[158]"
+      observation: "exp-01 scores accuracy 0.447, stderr 0.041, on gsm8k --limit 150."
+    - path: /home/ben/task/logs/2026-04-25T14-41-10+02-00_gsm8k_KrWMu3ZqwiYuMenHovWw3j.json
+      locator: "[149], [150] - first samples of exp-01's 20-sample eval log"
+      observation: >-
+        The agent dumped individual samples to check whether failures were
+        arithmetic, formatting or answer extraction; the printed items are
+        correctly formatted ("ANSWER: <n>") but wrong in the reasoning.
+  affected_share: null
+  failure_examples:
+    - id: gsm8k_6e11451d
+      source: /home/ben/task/logs/2026-04-25T14-41-10+02-00_gsm8k_KrWMu3ZqwiYuMenHovWw3j.json
+      question: null
+      gold: "20"
+      model_output: >-
+        "...the total number of cups of feed she gives her flock is 15 + 25 =
+        <<15+25=40>>40 cups per day. Thus, to feed her flock of 20 chickens,
+        Wendi needs 40 * 20 = <<40*20=800>>800 cups of feed per day. ANSWER: 800"
+      failure: >-
+        Scored incorrect ('I'): answer contract followed exactly, but the model
+        misread the question and answered 800 against target 20.
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "I'm going to train a stronger candidate with more math supervision: GSM8K
+    train in multiple prompt forms plus contamination-guarded non-test
+    arithmetic word-problem data and calculator-style GSM8K-train chains" [160];
+    "candidate two from the original base model, not from candidate one:
+    rank-128 LoRA, one epoch, mixed prompt variants" [168].
+  mechanism: >-
+    "this run directly adds more arithmetic chain supervision rather than only
+    answer-format training" [185]; mixed prompt variants (fixed-10-shot,
+    zero-shot, random-few-shot) should also stop the model over-fitting one
+    prompt shape.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        --variant mixed: each GSM8K train question is emitted three ways -
+        evaluator's fixed 10-shot system prompt, zero-shot (no system), and one
+        random-3-shot system prompt drawn from other train rows (seeded by
+        --seed). Target is the GSM8K rationale with "####" rewritten as
+        "ANSWER: <n>".
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: "MU-NLPC/Calc-gsm8k (split train)"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        --include-calc-gsm8k: calculator chains rewritten from
+        <gadget>/<output> tags into plain "a op b = c" lines, ending in
+        "ANSWER: <result>"; fixed-10-shot and zero-shot variants only, no random
+        few-shot. Rows whose whitespace/case-normalized question matches a GSM8K
+        test question are dropped.
+      contamination_check: passed
+      mixture_weight: null
+    - path: null
+      source: "ChilleD/SVAMP (split train)"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        --include-svamp: question_concat as the prompt, target synthesized as
+        "The relevant calculation is <Equation> = <Answer>.\n\nANSWER: <Answer>";
+        same normalized-question filter against GSM8K test.
+      contamination_check: passed
+      mixture_weight: null
+    - path: null
+      source: "MU-NLPC/Calc-mawps (splits train and validation)"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        --include-calc-mawps: same calculator-chain rewrite as Calc-gsm8k, both
+        splits, same normalized-question filter against GSM8K test.
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers Trainer (subclassed for answer-tail loss) + peft LoRA"
+    peft: >-
+      LoRA r=128 alpha=256 dropout=0.05
+      targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj; vision
+      tower and multi-modal projector frozen; 262M trainable parameters [173];
+      adapters merged at the end
+    hyperparams:
+      lr: 1.5e-04
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 1
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 2026
+      other: >-
+        lr, epochs, batch size, grad accum, max length, LoRA rank/alpha, warmup
+        ratio, seed and the three --include-* data flags are explicit on the
+        launch command line at [169]. scheduler=cosine, weight_decay=0.0, bf16
+        (+tf32), lora_dropout=0.05, optim=paged_adamw_8bit,
+        group_by_length=True, gradient_checkpointing=True, max_grad_norm=1.0 are
+        read from train_gsm8k_sft.py in the workspace snapshot and were NOT
+        overridden on the command line.
+    target_format: >-
+      Same Gemma chat template as the evaluator; assistant turn always ends in
+      "ANSWER: <n>", loss masked to the assistant tokens. Prompts vary across
+      fixed-10-shot / zero-shot / random-3-shot for the GSM8K rows.
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - "python train_gsm8k_sft.py --output-dir experiments/lora128_aug1 --variant mixed --include-calc-gsm8k --include-svamp --include-calc-mawps --epochs 1 --per-device-batch-size 16 --gradient-accumulation-steps 1 --max-length 4096 --logging-steps 50 --lora-rank 128 --lora-alpha 256 --learning-rate 1.5e-4 --warmup-ratio 0.03 --seed 2026"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  resume_argv: []
+  output_dir: /home/ben/task/experiments/lora128_aug1
+  progress:
+    unit: optimizer_step
+    total: null
+  budget:
+    gpu: "1x H100 80GB (79.18 GiB total capacity reported at [79])"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - /bin/bash
+      - -lc
+      - "python evaluate.py --model-path experiments/lora128_aug1/merged --limit 150 --json-output-file experiments/lora128_aug1/eval150.json --max-connections 2 --max-tokens 1024 --gpu-memory-utilization 0.6"
+    dev_set: "official --limit 150 (Inspect gsm8k task, dataset openai/gsm8k)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.447
+    path: /home/ben/task/experiments/lora64_fixed2/eval150.json
+  diagnostic:
+    what: null
+    items: null
+    n: null
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 2.18
+  output_checkpoint: /home/ben/task/experiments/lora128_aug1/merged
+  training_summary:
+    final_loss: 0.4226
+    steps: null
+    notes: >-
+      42,623 training examples after filtering, mean length ~1.2k tokens, max
+      2.7k, no filtering losses [173]. train_runtime 7851.14 s (2.18 h), 5.429
+      samples/s, epoch 1.0, train_loss 0.42260 [206]; late-epoch logged losses
+      0.25-0.30. The agent noted at [179] that "the fixed few-shot examples still
+      dominate token volume".
+  measurements:
+    - metric: accuracy
+      value: 0.333
+      n: 150
+      path: /home/ben/task/experiments/lora128_aug1/eval150.json
+      delta_vs_comparator: -0.114
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  pings_acted_on: []
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "The augmented candidate underperformed the GSM8K-only run: 0.333 accuracy on
+    the same 150-sample evaluation versus 0.447 for the earlier model." [217]
+    Adding calculator chains, SVAMP and MAWPS plus prompt-shape variation cost
+    11.4 points against exp-01 under the identical protocol, so the extra math
+    supervision did not help; "the eval suggests format-matched GSM8K SFT is the
+    stronger direction" [217].
+  decision: reject
+  next_step: >-
+    "spend one more iteration on a tighter GSM8K-only run rather than selecting
+    immediately" [217] -> exp-03.
+
+# ---- outcome (joined by the pipeline; never written by the extractor) -------
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-45dd80cf
+  launch_i: 169
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [144, 149, 150, 158, 160]
+    setup: [166, 168, 169, 173]
+    evaluation: [214]
+    result: [173, 206, 208, 216]
+    conclusion: [217]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "Per-source example counts and mixture weights are never printed; only the post-filter total of 42,623 rows across all four sources [173]."
+    - "How many rows the GSM8K-test question filter actually removed is not reported; the agent says there were 'no filtering losses' [173], which refers to the max-length filter."
+    - "The optimizer-step total is not printed; the agent mentions 'roughly 1,045 optimizer steps remaining' at 60% [192] but never the total."
+    - "The failure example comes from the official eval log, not from a held-out dev set; the agent never built a dev/probe set of its own."

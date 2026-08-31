@@ -1,0 +1,197 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.20
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The base model fails the eval catastrophically rather than mathematically: on
+    the 50-sample baseline it drifts off-distribution (Korean/garbage text), echoes
+    the prompt and invents new questions instead of solving the given one, and does
+    not stop cleanly. That is what the 42% baseline reflects.
+  evidence:
+    - path: /home/ben/task/logs/baseline.json
+      locator: "[120]"
+      observation: "baseline accuracy 0.42 (stderr 0.0705) on --limit 50 of the base model"
+    - path: /home/ben/task/logs/2026-06-15T07-03-29+02-00_gsm8k_5ssUpCSjXHzNiqTXD42Fua.json
+      locator: "[126], first 3 samples"
+      observation: >-
+        sample dumps show prompt echo, an invented second question, and no stop;
+        one sample scored I with extracted answer 720 against target 30
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Full supervised fine-tuning of the base model on GSM8K-train plus MetaMathQA
+    GSM-derived data, reformatted to end with "ANSWER: X" and wrapped in the eval's
+    exact chat prompt, will remove the catastrophic failure modes and give a large
+    jump over the 42% baseline.
+  mechanism: >-
+    Agent's words at [128]: "The baseline failures are revealing: the base model
+    (a) goes off-distribution generating Korean/garbage, (b) echoes prompts and
+    invents new questions instead of solving, (c) doesn't stop properly. These
+    catastrophic failures explain the 42%. My SFT directly fixes all of this."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null          # only "a large jump" [128]; no number stated
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--Qwen--Qwen3-4B-Base/snapshots/906bfd4b4dc7f14ee4320094d8b41684abff8539
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "local (built from HF openai/gsm8k train + meta-math/MetaMathQA)"
+      n_examples: 47473
+      built_by: /home/ben/task/scripts/prepare_data.py
+      build_command: [python, scripts/prepare_data.py]
+      selection: >-
+        GSM8K train with <<calc>> annotations stripped and "#### X" turned into
+        "ANSWER: X"; plus up to 20000 GSM_AnsAug and 20000 GSM_Rephrased MetaMathQA
+        items with "The answer is:"/"####" rewritten to "ANSWER: X"; each wrapped as
+        prompt "<|im_start|>user\n<eval math template><|im_end|>\n<|im_start|>assistant\n"
+        and completion "<reasoning>\nANSWER: <n><|im_end|>"; questions whitespace/case
+        normalised and dropped if they match a GSM8K test question ([101], [103], [108])
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer (transformers 4.57.3, version read off generation_config.json at [586])"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/bs/accum/max_len are from the launch argv at [129]. scheduler,
+        weight_decay, precision and seed are literals in the TrainingArguments block
+        of the script as written at [115] (the script is not in the workspace
+        snapshot, so nothing is taken from its argparse defaults - warmup_ratio and
+        save_strategy are argparse-defaulted and left null). Other literals at [115]:
+        optim=adamw_torch_fused, max_grad_norm=1.0, gradient_checkpointing=True
+        (use_reentrant=False), flash_attention_2, save_total_limit=4,
+        dataloader_num_workers=4, logging_steps=20, completion-only loss
+        (prompt tokens masked to -100), left-truncation of over-length prompts.
+    target_format: >-
+      eval chat format, assistant turn = cleaned reasoning followed by a final
+      "ANSWER: <number>" line and <|im_end|>; pad token <|endoftext|>, eos patched to
+      <|im_end|> at save time
+  command:
+    argv: [nohup, python, scripts/train_sft.py, --data, data/sft_v1.jsonl, --out, ckpts/sft_v1,
+           --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2", --max_len, "1024"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null            # "~96 min total for 3 epochs" estimated at [136], not a stated budget
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/sft_v1, --limit, "150", --max-connections, "16",
+              --json-output-file, logs/eval_v1_ep3.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.42
+    path: /home/ben/task/logs/baseline.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.64
+  duration_h: 1.64
+  steps: 4452
+  output_checkpoint: /home/ben/task/ckpts/sft_v1
+  training_summary:
+    final_loss: null
+    steps: 4452
+    notes: >-
+      4452 optimiser steps (3 epochs) at ~1.3 s/step; loss never reached the log
+      (stdout buffering under nohup, [189]-[195]), so no loss curve exists. Per-epoch
+      checkpoints ckpts/sft_v1/checkpoint-1484 / -2968 / -4452 were saved but without
+      tokenizer files, so vLLM refused to load them until the tokenizer files were
+      copied in from the final dir at [300]. wall_h derived from event timestamps
+      [129] (t=+0.20h) to [274] (t=+1.84h, final save confirmed).
+  measurements:
+    - metric: accuracy
+      value: 0.807
+      n: 150
+      path: /home/ben/task/logs/eval_v1_ep1.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.84
+      n: 150
+      path: /home/ben/task/logs/eval_v1_ep2.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.8266666666666667
+      n: 150
+      path: /home/ben/task/logs/eval_v1_ep3.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Agent at [286]/[308]: "Epoch-3: 82.7% - a massive jump from the 42% baseline",
+    then "Epoch 1: 80.7%, Epoch 2: 84.0%, Epoch 3: 82.7% - all within ~3% stderr,
+    epoch 2 is the nominal best". The catastrophic failure modes are gone (clean
+    step-by-step outputs stopping at ANSWER, [310]), but the comparator was measured
+    under a different protocol (--limit 50, sampled) so the delta is not a
+    like-for-like measurement.
+  decision: adopt
+  next_step: >-
+    Secure checkpoint-2968 (epoch 2) as final_model, then push higher with
+    rejection-sampling fine-tuning on self-generated solutions ([308], [312]).
+
+provenance:
+  kind: extracted
+  run_ref: r-ee271986
+  launch_i: 129
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [120, 122, 126, 128]
+    setup: [101, 103, 108, 115, 129]
+    evaluation: [281, 300]
+    result: [136, 186, 189, 195, 274, 286, 308]
+    conclusion: [286, 308, 310, 312]
+  snapshot_files:
+    - evaluate.py
+    - contamination_judgement.txt
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The 42% baseline was measured at --limit 50 with sampling (temperature 1.0), the SFT checkpoints at --limit 150 with greedy decoding, so the reported jump mixes a decode change (exp-02) with the training change."
+    - "No loss values were ever logged, so training health is only inferred from GPU utilisation and step rate."
+    - "Epoch-1 accuracy 0.807 is the agent's own printed summary at [308]; the raw JSON value was not shown in the stream."

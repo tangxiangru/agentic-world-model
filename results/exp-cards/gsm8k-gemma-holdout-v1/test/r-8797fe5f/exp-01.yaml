@@ -1,0 +1,247 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.69
+
+problem:
+  statement: >-
+    The un-post-trained base model scores 5% on the benchmark: it rambles past
+    the answer instead of stopping, and it is served with its own sampling
+    generation config (temp 1.0, top_k 64, top_p 0.95), so the completion the
+    scorer sees rarely ends in a clean "ANSWER: <number>". The agent's words at
+    [130]: "Baseline is only 5% - the base model with sampling (temp 1.0 from
+    its generation_config) fails badly", and in its own notes at [152]:
+    "rambles, doesn't stop, temp-1.0 sampling".
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8797fe5f/baseline_100.json
+      locator: "[83] launch, [128] result"
+      observation: >-
+        evaluate.py --model-path google/gemma-3-4b-pt --limit 100 gives
+        accuracy 0.05, stderr 0.0219.
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-8797fe5f.md
+      locator: "[131], [132]"
+      observation: >-
+        Reading the eval transcripts, completions run 6,829 and 13,761
+        characters, continue into the next few-shot problem after the answer
+        line, and emit malformed finals such as "ANSWER: <<180>>180" and
+        "ANSWER: 8+9+7 = 24".
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-8797fe5f.md
+      locator: "[104], [152]"
+      observation: >-
+        The agent reconstructed the eval's exact 10-shot system block (train
+        split, seed 42, limit 10) and recorded that the scorer takes the last
+        numeric token, so "the model MUST stop right after ANSWER: <number>".
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8797fe5f/evaluate.py
+      locator: whole file
+      observation: >-
+        The eval harness the problem is defined against; read at [4]/[5].
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full-parameter supervised fine-tuning on a large math-reasoning mixture
+    (GSM8K train + OpenMathInstruct-2) rewritten into the eval's exact prompt
+    wrapper and "Reasoning ... ANSWER: X" target, with loss on the completion
+    only, will make the model answer in the scored format and stop, lifting
+    accuracy far above the 5% baseline.
+  mechanism: >-
+    The base model is a pretrained (non-instruct) checkpoint, so the failure is
+    formatting and termination as much as arithmetic; training on the exact
+    eval wrapper with <end_of_turn> as the completion's last token teaches both
+    the answer format and the stop. Reconstructed from the plan the agent wrote
+    at [152] ("SFT on GSM8K train ... + OpenMathInstruct-2 ... reformat \boxed
+    -> ANSWER: X ... Full FT bf16 + liger kernel, completion-only loss, exact
+    eval prompt format (incl. some few-shot-prefixed examples)") and from the
+    launch itself; the agent never wrote an expected effect for this launch.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_clean.jsonl
+      source: "HF openai/gsm8k (config main, split train) + HF nvidia/OpenMathInstruct-2 (splits train_5M and train_1M)"
+      n_examples: 257872
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py]
+      selection: >-
+        prep_data.py, written at [114] and patched at [169], run at [171]. GSM8K
+        train: calculator annotations <<...>> stripped, the number after "####"
+        normalised, response = reasoning + "\n\nANSWER: <n>". OpenMathInstruct-2:
+        from train_5M the gsm8k and augmented_gsm8k sources, at most 2 solutions
+        per problem, capped at 230,000; from train_1M the math and
+        augmented_math sources, at most 1 per problem, capped at 90,000; each
+        solution has its final \boxed sentence cut off and "ANSWER: <n>"
+        appended, non-numeric answers dropped, responses over 4,000 chars or
+        questions over 1,500 chars dropped. At [177] 400 GSM8K-train problems
+        (random seed 7) were held out as data/dev_set.json and removed from all
+        sources by exact question match, leaving 257,873 rows in
+        data/sft_nodev.jsonl. The launch read data/sft_clean.jsonl (the
+        train_sft.py default, not overridden); the step that turns
+        sft_nodev.jsonl into sft_clean.jsonl - the contamination filter - is not
+        in the digest. n_examples is the "loaded 257872 rows" line the trainer
+        printed into sft1.log; 249,840 survived the 2,048-token length filter
+        ("dropped 8032 (too long)"), 120.1M tokens.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: >-
+      transformers.Trainer with Gemma3ForConditionalGeneration,
+      flash_attention_2 and DataCollatorWithFlattening (padding-free), Liger
+      kernels via use_liger_kernel=True. Stack reported at [48]: vllm 0.11,
+      trl 0.27, transformers 4.57.
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1.0
+      batch_size: 128
+      grad_accum: 1
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr, epochs, bs, accum, --grad-ckpt and --save-steps 1000 come from the
+        command line at [268]. max_seq_len 2048 (--max-len), the data path and
+        the few-shot mixing fractions are train_sft.py argparse defaults (script
+        is in the workspace) and were NOT overridden. scheduler cosine,
+        warmup_ratio 0.03, weight_decay 0.0, bf16, gradient checkpointing with
+        use_reentrant False, optim adamw_torch_fused, use_liger_kernel True,
+        max_grad_norm 1.0, seed 42, save_total_limit 2, logging_steps 10 are
+        hardcoded in TrainingArguments. The vision tower and multi-modal
+        projector are frozen, leaving 3.88B trainable parameters (sft1.log).
+        Env: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True.
+    target_format: >-
+      "<bos><start_of_turn>user\n" + (optional few-shot prefix) + the eval's
+      MATH_PROMPT_TEMPLATE ending "Reasoning:" + "<end_of_turn>\n<start_of_turn>
+      model\n", completion = reasoning + "\n\nANSWER: <n>" + "<end_of_turn>";
+      labels are -100 over the prompt so loss is on the completion only. Per row
+      (defaults, not overridden): 3% get the eval's exact seed-42 10-shot block,
+      a further 10% get 1-6 random GSM8K-train exemplars as the prefix.
+  command:
+    argv: [nohup, python, train_sft.py, --bs, "128", --accum, "1", --epochs, "1", --lr, "2e-5", --grad-ckpt, --save-steps, "1000", --out, ckpt_sft1]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/sft1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, dev_eval.py, --model, ckpt_sft1/final, --n, "400", --gpu-mem, "0.6", --save-out, dev_sft1_greedy.json]
+    dev_set: /home/ben/task/data/dev_set.json
+    n: 400
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 2.05
+  duration_h: 2.05
+  steps: 1952
+  output_checkpoint: /home/ben/task/ckpt_sft1/final
+  training_summary:
+    final_loss: 0.3418
+    steps: 1952
+    notes: >-
+      sft1.log: train_runtime 7374.49 s (2:02:54 for 1952/1952 steps),
+      train_samples_per_second 33.879, train_loss 0.34179, epoch 1.0, "saved to
+      ckpt_sft1/final". Logged loss falls 0.379 -> 0.320 over the epoch [327].
+      The agent read it at [356] as "SFT round 1 complete (final loss 0.32, 2h)".
+  measurements:
+    - metric: accuracy
+      value: 0.835
+      n: 400
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-8797fe5f/dev_sft1_greedy.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      This checkpoint was never run through evaluate.py directly; the
+      limit-150 numbers in the run belong to its packaged copy (exp-02, whose
+      weights the agent verified identical at [677]). At [375]/[376] the agent
+      re-read the 400-item dev output and found 66 failures, none of them
+      missing an "ANSWER:" line and none over 2,000 characters - the format and
+      stopping problem of the baseline is gone; what remains is wrong
+      arithmetic and wrong intermediate steps.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    One epoch of full fine-tuning on 249,840 eval-formatted examples (120.1M
+    tokens) ran 2.05 h to train_loss 0.342 and scored 0.835 on the agent's
+    400-problem held-out dev set with greedy decoding. The base model was never
+    measured under that same protocol (its only number is 0.05 at limit 100
+    with sampled decoding), so the jump is unmistakable but has no
+    like-for-like comparator; every later candidate in the run is measured
+    against this card.
+  decision: adopt
+  next_step: >-
+    Packaged to final_model with a greedy generation config at [368] (exp-02),
+    then used as the sampler for rejection-sampling data and as the parent of
+    both the round-2 SFT (exp-03) and the GRPO run (exp-05).
+
+provenance:
+  kind: extracted
+  run_ref: r-8797fe5f
+  launch_i: 268
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [83, 128, 130, 131, 132, 104, 152]
+    setup: [114, 169, 171, 177, 245, 247, 268]
+    evaluation: [361]
+    result: [327, 353, 354, 356, 375, 376]
+    conclusion: [368, 430, 692]
+  snapshot_files:
+    - prep_data.py
+    - train_sft.py
+    - dev_eval.py
+    - evaluate.py
+    - sft1.log
+    - dev_sft1_greedy.json
+    - baseline_100.json
+  smoke_runs:
+    - {launch_i: 203, outcome: "2,000 rows, bs 16 / accum 2, 15-min cap; result block not in the digest - the agent immediately made gradient checkpointing a flag"}
+    - {launch_i: 209, outcome: "3,000 rows, bs 32, no grad checkpointing; result not in the digest"}
+    - {launch_i: 215, outcome: "3,000 rows, bs 16 / accum 4, no grad checkpointing; result not in the digest"}
+    - {launch_i: 221, outcome: "4,000 rows, bs 48 with grad checkpointing and expandable_segments; result not in the digest"}
+    - {launch_i: 227, outcome: "6,000 rows, bs 96 with grad checkpointing; result not in the digest - the agent then switched to flash_attention_2 + DataCollatorWithFlattening [245]"}
+    - {launch_i: 250, outcome: "6,000 rows, bs 64, first run of the flattening collator + FA2; result not in the digest"}
+    - {launch_i: 256, outcome: "8,000 rows, bs 128 - the throughput setting the real launch used; result not in the digest"}
+    - {launch_i: 262, outcome: "dev_eval.py on the /tmp/smoke7 checkpoint, 50 items, checking the eval path end to end; result not in the digest"}
+  extractor: null
+  unresolved:
+    - "data/sft_clean.jsonl, the file the launch actually read, is never built in the digest; prep_data.py writes data/sft_raw.jsonl and the [177] step writes data/sft_nodev.jsonl (257,873 rows vs the 257,872 the trainer loaded). The decontamination pass that presumably produced it, and its 0-hit result, appear only in the agent's later summary [692]"
+    - "no smoke run's result block survives in the digest, so the reason for each configuration change is inferred from the next command, not stated"
+    - "the base model was never evaluated under the dev-400 greedy protocol, so this card has no same-protocol comparator"

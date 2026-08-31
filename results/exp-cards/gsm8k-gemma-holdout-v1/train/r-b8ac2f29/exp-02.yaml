@@ -1,0 +1,211 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.27
+
+problem:
+  statement: >-
+    After the gold-only SFT the output contract is satisfied but the model still
+    gets 23 of 150 wrong: "Remaining failures are genuine reasoning slips (not
+    format)" [23144].
+  evidence:
+    - path: /home/ben/task/results_phase1_150.json
+      locator: "[20871]"
+      observation: "accuracy 0.8467 at --limit 150 for the gold-only SFT checkpoint"
+    - path: /home/ben/task/logs
+      locator: "[20950]-[20951]; newest inspect log of the phase-1 eval, exact filename not printed"
+      observation: "the printed wrong answers all stop cleanly and end with an ANSWER: line; the errors are in the reasoning"
+  affected_share: null
+  failure_examples:
+    - id: gsm8k_1c7c4606
+      source: /home/ben/task/logs
+      question: null
+      gold: "5"
+      model_output: >-
+        "In the first 180 days, Cecilia will use 180 cups of dog food because
+        180 x 1 = 180. In the remaining 120 days ... 120 x 2 = 240. In total ...
+        180 + 240 = 420. Cecilia will use 4 bags of dog food because
+        420 / 110 = 3 remainder 90.  ANSWER: 4"
+      failure: "setup right; 420/110 is floored to 4 bags instead of rounding up to 5 [20951]"
+    - id: gsm8k_2466f3cc
+      source: /home/ben/task/logs
+      question: null
+      gold: "6"
+      model_output: "not printed in full; scorer extracted 3"
+      failure: "wrong final value (3 vs 6); the completion body is cut off in the stream [20951]"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Phase 2 (more + more careful CoT data) is the right next lever" [23144] -
+    adding external GSM8K-style solutions to the gold set will reduce the
+    reasoning slips that remain after the gold-only SFT.
+  mechanism: >-
+    More, and more carefully written, chains of thought for GSM8K-style problems
+    give the model more careful step-by-step patterns than the terse gold
+    rationales alone.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_phase2.jsonl
+      source: "derived:exp-01 gold file + local (OpenMathInstruct-2 derivative)"
+      n_examples: null
+      built_by: /home/ben/task/build_mix_phase2.py
+      build_command: []
+      selection: >-
+        gold rows repeated, plus external GSM8K-sourced rows that carry the eval
+        system prefix with probability p_prefix and a bare user->assistant prompt
+        otherwise. The agent said it was "Rebuilding the mix at 60K externals to
+        fit the time budget" [23144], but the build_mix_phase2.py invocation for
+        this launch does not appear in the stream, so the exact --n-external,
+        --gold-repeat and --p-prefix used here are unknown.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: null
+    - path: /home/ben/task/data/omi2_gsm8k_clean.jsonl
+      source: "HF nvidia/OpenMathInstruct-2 (train_1M)"
+      n_examples: null
+      built_by: /home/ben/task/build_data_phase2.py
+      build_command: [python, build_data_phase2.py]
+      selection: >-
+        kept only problem_source in {gsm8k, augmented_gsm8k}; deduped on
+        normalized problem text; dropped anything matching a GSM8K *test*
+        question exactly or sharing an 8-gram with one; kept a solution only when
+        its last \boxed{} equals expected_answer, cut right after that box, and
+        rejected bodies under 20 or over 2400 chars or with more than one box.
+        The agent later recorded the file as roughly 80K rows [32061]; the build
+        print is not in the stream.
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+    - path: /home/ben/task/data/sft_gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/build_data_phase1.py
+      build_command: [python, build_data_phase1.py]
+      selection: "as exp-01; repeated inside the mix an unknown number of times for this launch"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full fine-tune, flash_attention_2, gradient checkpointing"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum and --group-by-length are from the launch argv
+        (group_by_length=True was added to the script at [15856] just before).
+        max_seq_len 3072 and seed 0 are train_sft.py argparse defaults not
+        overridden by this launch; the script is in the snapshot. Script
+        constants as in exp-01.
+    target_format: >-
+      eval-rendered chat prompt (system prefix on all gold rows, on external rows
+      with probability p_prefix); assistant turn ends "ANSWER: <target>" +
+      <|im_end|>
+  command:
+    argv: [python, train_sft.py, --data, data/sft_phase2.jsonl, --out, runs/phase2, --epochs, "1", --lr, "1e-5", --bs, "4", --accum, "16", --group-by-length]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTHONUNBUFFERED: "1"}
+    log: /tmp/train_p2.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      The run is last seen loading checkpoint shards at [23558] (t=+1.27h). It is
+      never referenced again: at [25512] (t=+1.41h) the agent takes the GPU for a
+      packing smoke test and at [26878] relaunches phase 2 with
+      DataCollatorWithFlattening packing at bs8/accum8. Recorded as killed per the
+      protocol rule for a launch that simply stops appearing; no kill command is
+      in the stream and nothing was saved or evaluated.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first phase-2 launch produced no checkpoint and no measurement; it was
+    superseded within ~10 minutes by a packed re-launch after the agent added
+    DataCollatorWithFlattening to the trainer [25338]-[25341] for the throughput
+    the remaining budget needed. The hypothesis it carried was re-tested by
+    exp-03 and exp-04.
+  decision: abandon_line
+  next_step: >-
+    Re-launch the same mix with --pack (flattened FA2 varlen batches) after
+    measuring steady-state throughput in a short smoke run [25512], [26543].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-b8ac2f29
+  launch_i: 23150
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [20871, 20950, 20951, 23144]
+    setup: [14968, 15852, 15856, 23150]
+    evaluation: []
+    result: [23557, 23558, 25512]
+    conclusion: [25338, 26878]
+  snapshot_files:
+    - build_mix_phase2.py
+    - build_data_phase1.py
+    - build_data_phase2.py
+    - train_sft.py
+    - results_phase1_150.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the build_mix_phase2.py invocation that produced data/sft_phase2.jsonl for this launch is not in the stream; only the agent's '60K externals' remark [23144] describes it"
+    - "the stream never shows this run being stopped, only that the GPU is taken by the next launch"

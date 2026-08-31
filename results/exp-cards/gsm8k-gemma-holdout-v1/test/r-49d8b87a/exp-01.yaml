@@ -1,0 +1,178 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.29
+
+problem:
+  statement: >-
+    The raw pretrained base model scores 4% on the benchmark: it rambles past
+    its answer and the scorer takes the last number in the completion, so even
+    a correct chain of thought is graded wrong. It is a base model and does not
+    follow the eval's chat format, does not stop, and does not end on
+    "ANSWER: X".
+  evidence:
+    - path: /home/ben/task/results/baseline.json
+      locator: "[126]; accuracy printed again in the results roll-up at [864]"
+      observation: "raw google/gemma-3-4b-pt at --limit 100 scores 0.04 (stderr 0.0197)"
+    - path: /home/ben/task/evaluate.py
+      locator: "[24]"
+      observation: >-
+        agent's reading of the eval: 10-shot chat-template prompt, scorer
+        match(numeric=True, location="end") extracts the LAST number, so the
+        model must end with the answer and then stop
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    LoRA SFT on GSM8K-train, formatted to exactly match the eval prompt with
+    the assistant turn ending in "ANSWER: X", will make the base model follow
+    the chat format, stop after the answer, and lift accuracy far above the 4%
+    baseline; the run also validates the training pipeline end to end.
+  mechanism: >-
+    "gemma-3-4b-pt is a base model, so it needs SFT to follow the chat format,
+    produce step-by-step reasoning ending in `ANSWER: X`, then emit
+    `<end_of_turn>`/EOS" [24].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: null
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --out, data/gsm8k_train.jsonl]
+      selection: >-
+        every gsm8k train row; answer split on "####", <<...>> calculator
+        annotations stripped, whitespace normalised; user turn = the eval's
+        MATH_PROMPT_TEMPLATE verbatim, assistant = cleaned reasoning +
+        "\nANSWER: <target>" with commas removed from the target.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer + peft LoRA, custom /home/ben/task/train.py (versions not printed in the digest)"
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/grad-accum are on the command line at [127]. max_seq_len
+        (--max-len 1024), warmup_ratio 0.03, lora_r 32 and lora_alpha 64 are
+        argparse defaults of /home/ben/task/train.py and were NOT overridden by
+        this launch. Fixed in the script body (not CLI options): cosine
+        scheduler, weight_decay 0.0, bf16, gradient_checkpointing with
+        use_reentrant=False, optim=adamw_torch, max_grad_norm 1.0,
+        save_strategy="no", logging_steps 10, dataloader_num_workers 4. No seed
+        is ever set. LoRA is merged into the base weights and the full model is
+        saved.
+    target_format: >-
+      "<bos><start_of_turn>user\n{eval MATH_PROMPT_TEMPLATE}<end_of_turn>\n<start_of_turn>model\n{reasoning}\nANSWER:
+      {target}<end_of_turn>\n", loss masked over the prompt (completion-only).
+  command:
+    argv: [nohup, python, train.py, --data, data/gsm8k_train.jsonl, --out, models/gsm8k_lora, --epochs, "3", --bs, "16", --grad-accum, "2", --lr, 2e-4]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/logs/train_run1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [nohup, python, evaluate.py, --model-path, models/gsm8k_lora, --limit, "150", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.85", --json-output-file, results/run1_gsm8k.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.04
+    path: /home/ben/task/results/baseline.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/models/gsm8k_lora
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No train_loss/train_runtime line for this run appears in the digest;
+      progress at 644/702 steps at [232] (t=+0.59h) and the save is confirmed
+      at [242] (t=+0.63h), so the run took roughly 0.3h from launch at
+      t=+0.29h.
+  measurements:
+    - metric: accuracy
+      value: 0.4666666666666667
+      n: 150
+      path: /home/ben/task/results/run1_gsm8k.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Run 1 (GSM8K-only LoRA, 3 epochs): 46.7% - up from 4% baseline. Good
+    validation of the pipeline, but there's headroom" [255]. The direction is
+    as predicted, but the baseline was measured at --limit 100 and this at
+    --limit 150, so the two are not under the same protocol.
+  decision: adopt
+  next_step: >-
+    "The MetaMath augmentation is the proven lever. Let me launch run 2 with
+    the augmented 39K dataset" [255].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-49d8b87a
+  launch_i: 127
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [24, 126]
+    setup: [55, 61, 70, 127]
+    evaluation: [43, 247]
+    result: [232, 242, 263, 864]
+    conclusion: [255]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - evaluate.py
+    - timer.sh
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "prepare_data.py prints its row count but the result block is not in the digest, so n_examples for data/gsm8k_train.jsonl is unknown; the 39473-example total for the later gsm8k+32K-MetaMath mix at [268] implies 7473 gsm8k rows, and 7473 gsm8k-train questions are reported at [713]."
+    - "task/train.py is the end-of-run copy; the --full-ft branch was added at [272]-[276], after this launch. The LoRA settings and defaults cited here are from the script text as written at [70]."
+    - "No contamination check was run by the agent in the digest; task/contamination_judgement.txt ('no contamination detected') and task/disallowed_model_judgement.txt ('only allowed use detected') are external judgements in the workspace, not produced by any launch."
+    - "decision: adopt is on the grounds that this checkpoint was the incumbent that motivated exp-02; it was never copied to final_model."
+    - "The eval outputs under /home/ben/task/results/ and /home/ben/task/logs/ are cited from the stream; the workspace snapshot contains only the scripts, judgements and system_monitor.log."

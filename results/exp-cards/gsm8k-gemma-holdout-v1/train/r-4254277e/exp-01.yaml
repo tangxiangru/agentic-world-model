@@ -1,0 +1,205 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.15
+
+problem:
+  statement: >-
+    The base model solves GSM8K problems correctly but never stops: after the
+    answer it keeps generating new invented problems and solutions, so the
+    scorer (match numeric, location="end", i.e. the LAST number in the
+    completion) reads a wrong number. Baseline accuracy is 0.11 even though the
+    underlying arithmetic is largely right.
+  evidence:
+    - path: /home/ben/task/logs/baseline_metrics.json
+      locator: "[109]"
+      observation: 'base model, limit 100: {"accuracy": 0.11, "stderr": 0.0314}'
+    - path: /home/ben/task/logs/2026-06-11T02-00-07+02-00_gsm8k_bhiG6AbgvQx9G8jNtobVNT.json
+      locator: "[114], [115] - first 4 samples printed"
+      observation: >-
+        completions run to 1000-2000+ chars; one sample solves the asked problem
+        and then continues with fresh invented problems, another degenerates into
+        off-task Chinese text
+    - path: null
+      locator: "[87], [117]"
+      observation: >-
+        the base eos is <|endoftext|> (151643) while the eval's chat template
+        needs the model to stop on <|im_end|> (151645)
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-06-11T02-00-07+02-00_gsm8k_bhiG6AbgvQx9G8jNtobVNT.json
+      question: null
+      gold: "40"
+      model_output: >-
+        "... to the number of kittens that Patchy and Trixie have given away:
+        48 + 7 = <<48+7=55>>55 / 4. Finally, we sum up the number of Kittens the
+        family now lays: 55 // ANSWER: 55 // 29 children were riding on the bus.
+        At the bus stop, some more children got on ... ANSWER: 19"
+      failure: >-
+        answered, then invented and answered a further problem, so the last
+        number in the completion (19) was scored instead of the real answer
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised fine-tuning on GSM8K train, with the assistant turn ending in
+    "ANSWER: X" followed by <|im_end|>, will teach the model to stop and so fix
+    the scoring failure; the math ability is already there.
+  mechanism: >-
+    "This is purely a stopping/format issue that SFT will fix by teaching
+    <|im_end|> emission. The underlying math ability is strong." [117]
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--Qwen--Qwen3-1.7B-Base/snapshots/ea980cb0a6c2ae4b936e82123acc929f1cec04c1
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: openai/gsm8k (main, train split)
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: [python, scripts/prep_data.py]
+      selection: >-
+        every GSM8K train item; <<...>> calculator annotations stripped; answer
+        split on "####" and reformatted as "<reasoning>\nANSWER: <target>" with
+        commas removed from the target [92]
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: transformers Trainer (full fine-tune; version not stated in the stream)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        scheduler=cosine, bf16=True, group_by_length=True,
+        gradient_checkpointing=False, optim=adamw_torch, save_strategy=no,
+        logging_steps=20 are hard-coded in the TrainingArguments of the training
+        script as written in the stream at [104]. warmup (argparse default 0.03),
+        weight_decay (0.0) and seed (0) were not given on the command line and
+        the workspace snapshot retains no scripts/, so they are left null.
+        attn_implementation=flash_attention_2, pad token <|endoftext|> (151643).
+    target_format: >-
+      the eval's own template: user turn = MATH_PROMPT_TEMPLATE wrapping the
+      question and ending in "Reasoning:", chat template templates/qwen3.jinja
+      applied, assistant turn = the CoT ending "ANSWER: X" + <|im_end|>; loss on
+      completion tokens only (prompt masked with -100). No few-shot demos in the
+      training context.
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --files
+      - data/gsm8k_train.jsonl
+      - --out
+      - work/sft_gsm8k_v1
+      - --epochs
+      - "3"
+      - --lr
+      - "1e-5"
+      - --bs
+      - "16"
+      - --accum
+      - "4"
+      - --max_len
+      - "1024"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, work/sft_gsm8k_v1, "150", "1024", sft_v1]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.11
+    path: /home/ben/task/logs/baseline_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.07
+  output_checkpoint: /home/ben/task/work/sft_gsm8k_v1
+  training_summary:
+    final_loss: 0.505
+    steps: null
+    notes: '"Training completed in ~4.4 min (final loss 0.505)" [159]; saved config verified to carry eos <|im_end|> = 151645 [162]'
+  measurements:
+    - metric: accuracy
+      value: 0.053
+      n: 150
+      path: /home/ben/task/logs/sft_v1_metrics.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Accuracy dropped to 5.3% - something is wrong" [168]. Inspecting the outputs
+    showed the model still ran past its answer inside the eval's 10-shot context;
+    the agent's reading was that "the few-shot demonstrations prime the model to
+    continue (the demos show ANSWER: X followed by more text, no stop token)"
+    [178]. The comparator was measured at --limit 100 and this run at --limit 150,
+    so the two numbers are not a clean comparison.
+  decision: reject
+  next_step: >-
+    "Train with few-shot context so the model learns to emit <|im_end|> and stop
+    even when demos precede it" - add a --fewshot_max / --fewshot_prob path to
+    the training script and retrain [186].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-4254277e
+  launch_i: 118
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [87, 109, 114, 115, 117]
+    setup: [92, 94, 104, 118]
+    evaluation: [88, 134, 163]
+    result: [147, 159, 162, 168]
+    conclusion: [168, 169, 170, 178, 186]
+  snapshot_files:
+    - evaluate.py
+    - NOTES.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the workspace snapshot keeps only NOTES.md, evaluate.py, timer.sh and the two judgement files; scripts/, data/, work/ and logs/ are gone, so every cited log path is the runtime path and cannot be re-read"
+    - "the exact accuracy was only stated in prose (\"5.3%\" [168], 0.05 in NOTES.md); logs/sft_v1_metrics.json is never printed"
+    - "the baseline comparator was run at --limit 100 [88] while every later eval used --limit 150"

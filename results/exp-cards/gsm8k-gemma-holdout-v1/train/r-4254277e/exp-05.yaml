@@ -1,0 +1,199 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 0.96
+
+problem:
+  statement: null
+  evidence: []
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--Qwen--Qwen3-1.7B-Base/snapshots/ea980cb0a6c2ae4b936e82123acc929f1cec04c1
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: openai/gsm8k (main, train split)
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: [python, scripts/prep_data.py]
+      selection: >-
+        GSM8K train, <<...>> stripped, solutions ending "ANSWER: X" [92]; listed
+        twice on the command line, so upweighted 2x
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 2
+    - path: /home/ben/task/data/mm_ansaug.jsonl
+      source: meta-math/MetaMathQA (GSM_AnsAug subset)
+      n_examples: 40000
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: []
+      selection: >-
+        capped to the first 40000 rows of an 80k file via the ":40000" spec; the
+        file holds MetaMathQA GSM_AnsAug items with a numeric answer, reformatted
+        to end in "ANSWER: X". NOTES.md [407] records the sizes and that the
+        MetaMath items derive from GSM8K/MATH train only; the prep_data.py
+        revision that writes mm_*.jsonl is not in the stream.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+    - path: /home/ben/task/data/mm_rephrased.jsonl
+      source: meta-math/MetaMathQA (GSM_Rephrased subset)
+      n_examples: 40000
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: []
+      selection: >-
+        capped to the first 40000 rows of an 80k file via the ":40000" spec; same
+        construction as mm_ansaug.jsonl
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: sft
+    framework: transformers Trainer (full fine-tune; version not stated in the stream)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 1280
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --fewshot_max 6 --fewshot_prob 0.5 on the command line. scheduler=cosine,
+        bf16=True, group_by_length=True are hard-coded in the script as written at
+        [104]; note --grad_ckpt was NOT passed here. warmup, weight_decay and seed
+        were not passed and the workspace snapshot retains no scripts/, so they are
+        left null. ~95K examples, 2968 optimizer steps.
+    target_format: >-
+      eval chat template; user = MATH_PROMPT_TEMPLATE wrapping the question,
+      assistant = CoT ending "ANSWER: X" + <|im_end|>, loss on completion tokens
+      only, with a 1-6 demo system message on 50% of examples.
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --files
+      - data/gsm8k_train.jsonl
+      - data/gsm8k_train.jsonl
+      - data/mm_ansaug.jsonl:40000
+      - data/mm_rephrased.jsonl:40000
+      - --out
+      - work/sft_mix_v3
+      - --epochs
+      - "2"
+      - --lr
+      - "1e-5"
+      - --bs
+      - "8"
+      - --accum
+      - "8"
+      - --max_len
+      - "1280"
+      - --fewshot_max
+      - "6"
+      - --fewshot_prob
+      - "0.5"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v3.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, work/sft_mix_v3, "150", "1024", sft_v3]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.64
+    path: /home/ben/task/logs/sft_v2_fixed_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 2968
+    notes: >-
+      2968 planned optimizer steps over ~95K examples; the loop itself ran (411/2968
+      at [494], 46% at [506]) but the save failed, so no usable checkpoint exists.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    "The v3 weights (model.safetensors, generation_config.json) are missing - only
+    tokenizer/config saved. That means v3's model.save_pretrained failed" [549];
+    root cause at [555]: "GenerationConfig.validate() rejects temperature=0.0
+    during model.save_pretrained" (the greedy defaults written into the script at
+    [393]). Disk was fine (3% used) [550]. The traceback surfaced only indirectly,
+    as vLLM failing to load the directory [535], [539], [540].
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The reported "v3 = 64%, identical to v2" [515] was wrong: "the '64%' was a
+    stale v2 log picked up by analyze_eval.py" [549], [555], because v3 never
+    saved its weights and the eval could not load it. NOTES.md records the
+    correction: "MetaMath did NOT actually get evaluated" [670]. So the GSM8K +
+    MetaMath mixture was never measured.
+  decision: abandon_line
+  next_step: >-
+    Fix the save path (save with do_sample=False and default temperature, then
+    patch generation_config.json by raw json.dump) [556], and move on to
+    rejection-sampling fine-tuning from the known-good exp-04 checkpoint rather
+    than retraining the mixture [555], [560].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-4254277e
+  launch_i: 409
+  stated_by_agent:
+    problem: false
+    hypothesis: false
+  anchors:
+    problem: []
+    setup: [407, 409]
+    evaluation: [431]
+    result: [494, 506, 515, 535, 539, 540, 545, 549, 550, 555]
+    conclusion: [515, 549, 555, 670]
+  snapshot_files:
+    - NOTES.md
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the agent gave no problem statement or hypothesis before this launch; \"v3: GSM8K (x2) + MetaMath ansaug/rephrased, few-shot, optimized for speed\" [409] is a description of the command, not a stated expectation"
+    - "the prep_data.py revision that writes mm_ansaug/mm_rephrased/mm_sv/mm_fobar is not in the stream; their sizes come from NOTES.md quoted at [407]"
+    - "whether the MetaMath mixture helps was never answered - the run produced no evaluable checkpoint and was not retried"

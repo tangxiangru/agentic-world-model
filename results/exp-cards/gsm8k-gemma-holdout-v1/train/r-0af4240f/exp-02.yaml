@@ -1,0 +1,220 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null            # digest header: "no timestamps in this run"
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The training format of exp-01 does not match what the model has to produce at
+    inference: the eval's chat template defaults to /think mode and stops at
+    "<|im_start|>assistant\n", so the model must generate the <think> block
+    itself, while exp-01 trained it to write only what follows an already-closed
+    "<think>\n\n</think>" prefix ([150], [155]).
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-0af4240f.md
+      locator: "[143], [148], [149], [155]"
+      observation: >-
+        The agent's reading of templates/smollm.jinja: enable_thinking defaults to
+        true, so at inference the generation prompt carries no think prefix and
+        the model must emit "<think>reasoning</think>ANSWER: X" itself.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Training the same MetaMath GSM data in the think-mode shape - reasoning inside
+    <think>...</think> followed by "ANSWER: X" - so that the training text is
+    exactly what the model must generate at inference, will produce a model that
+    answers in the scored format ([155], [161]).
+  mechanism: >-
+    "Training in THINK mode = model generates <think>reasoning</think>ANSWER: X"
+    ([149]); the training text then matches the continuation the template asks
+    for, instead of a continuation of an already-closed think block.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null           # loaded from the hub inside the training script; no file written
+      source: HF:meta-math/MetaMathQA
+      n_examples: 239997
+      built_by: /home/ben/task/train_sft_v2.py
+      build_command:
+        - python3
+        - /home/ben/task/train_sft_v2.py
+        - --gsm_only
+      selection: >-
+        rows whose `type` contains "GSM" (240,000 of 395,000, counts printed at
+        [39]); shuffle(seed=42); drop rows with no parseable "####"/"The answer
+        is" number; strip <<..>> calculator annotations; drop rows whose formatted
+        text exceeds 1024 tokens - 239,997 kept (train_v2.log).
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        lr, epochs, batch_size, grad_accum, max_seq_len and warmup are the args in
+        the launched script run_train_v2.sh ([166]). scheduler=cosine,
+        weight_decay=0.01, bf16, packing=True, max_grad_norm=1.0,
+        optim=adamw_torch_fused, save_strategy=epoch, save_total_limit=2 are
+        hard-coded in the SFTConfig of /home/ben/task/train_sft_v2.py (in the
+        workspace) and are not command-line flags, so the launch could not
+        override them. No training seed is set (Trainer default); seed=42 is only
+        the dataset shuffle.
+    target_format: >-
+      "/think" chat format, no system message:
+      <|im_start|>user\n{MATH_PROMPT_TEMPLATE with the
+      question}<|im_end|>\n<|im_start|>assistant\n<think>\n{reasoning, <<..>>
+      stripped}\n</think>\nANSWER: {number}<|im_end|>
+  command:
+    argv:
+      - python3
+      - /home/ben/task/train_sft_v2.py
+      - --model_name
+      - HuggingFaceTB/SmolLM3-3B-Base
+      - --output_dir
+      - /home/ben/task/model_sft_v2
+      - --max_seq_length
+      - "1024"
+      - --num_epochs
+      - "2"
+      - --batch_size
+      - "8"
+      - --grad_accum
+      - "4"
+      - --lr
+      - "2e-5"
+      - --warmup_ratio
+      - "0.05"
+      - --gsm_only
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft_v2.py
+    env: {}
+    log: /home/ben/task/train_v2.log
+  budget:
+    gpu: "1x H100 80GB"    # "Training is using 64GB of the 80GB GPU" [365]
+    planned_h: null        # agent's own estimate at [208]: ~2.7 h
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - bash
+      - /home/ben/task/run_eval.sh
+      - /home/ben/task/model_sft_v2
+      - "50"
+      - /home/ben/task/eval_v2_quick.json
+      - /home/ben/task/eval_v2_quick.log
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator: null         # the base model was never evaluated, and exp-01 produced no checkpoint
+  diagnostic:
+    what: >-
+      inspection of the per-sample eval log to see what the model emits after
+      "ANSWER: X" ([480], [483], [488], [490], [493])
+    command: []
+    path: null             # logs/2026-02-19T16-20-38+01-00_gsm8k_*.json is not in the workspace snapshot
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.68
+  duration_h: 2.68
+  steps: 4884
+  output_checkpoint: /home/ben/task/model_sft_v2
+  training_summary:
+    final_loss: 0.126977
+    steps: 4884
+    notes: >-
+      train_runtime 9653.79 s, mean_token_accuracy 0.9689, 2.0 epochs
+      (train_v2.log final line); epoch-1 checkpoint saved at step 2442, epoch-2 at
+      4884. Loss fell 1.036 (step 25) -> 0.111 (step 2425) over epoch 1 ([350]).
+  measurements:
+    - metric: accuracy
+      value: 0.4
+      n: 50
+      path: /home/ben/task/eval_v2_quick.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      20/50 correct ([493]); on failures the model continues past "ANSWER: X" into
+      unrelated prose and the numeric matcher then picks a number out of that
+      trailer ([494], [495]).
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "The model achieves 40% accuracy on 50 samples (+-7% stderr). This is a
+    baseline result." ([474]). Nothing was measured against a comparator, so the
+    format claim is untested; the eval-log dump instead exposed a new problem, the
+    model not stopping after "ANSWER: X" ([495]).
+  decision: adopt
+  next_step: >-
+    Register <|im_end|> as a stop token so generation ends at "ANSWER: X" ([503]);
+    then continue training this checkpoint on more data ([525]).
+
+# ---- outcome (joined by the pipeline; never written by the extractor) -------
+outcome:
+  official_accuracy: null
+
+# ---- provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-0af4240f
+  launch_i: 166
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [143, 148, 149, 150, 155]
+    setup: [161, 166]
+    evaluation: [457, 468]
+    result: [451, 474, 476, 493, 494]
+    conclusion: [474, 495]
+  snapshot_files:
+    - train_sft_v2.py
+    - run_train_v2.sh
+    - train_v2.log
+    - run_eval.sh
+    - eval_v2_quick.json
+    - eval_v2_quick.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "The filtered digest carries the write of run_train_v2.sh at [166] but not the shell event that ran it; launch_i therefore points at the write whose content is the exact argv. That the script ran is attested by train_v2.log, by the agent tracking its steps from [208] on, and by the model_sft_v2 checkpoints listed at [342]."
+    - "An eval of the epoch-1 checkpoint (model_sft_v2/checkpoint-2442, 50 samples) was launched at [356] and died because training still held the GPU - vLLM could not start (eval_epoch1.log). No number came out of it."
+    - "A first attempt to evaluate model_sft_v2 was launched at [457]; [465] reports it did not take its arguments in background mode, and the 0.40 in eval_v2_quick.json is from the run_eval.sh launch at [468]. Both wrote the same output file."
+    - "The 0.40 measurement was taken before the generation_config change of exp-03; eval_v2_quick.json in the workspace still holds 0.40, while the later like-for-like rerun of the same checkpoint (eval_v2_compare.json, [681]) reads 0.36."

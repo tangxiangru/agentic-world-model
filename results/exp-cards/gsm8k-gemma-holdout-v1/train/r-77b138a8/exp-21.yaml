@@ -1,0 +1,200 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-21
+created_at: null
+elapsed_h: 5.75
+
+problem:
+  statement: >-
+    The GSM8K-only continuation from the incumbent produced only checkpoints with
+    worse validation loss, so the remaining GPU time needs a data source with
+    more upside than GSM8K train re-used again.
+  evidence:
+    - path: null
+      locator: "[610]"
+      observation: >-
+        "both validation losses were worse than the current best, so I'm not
+        spending benchmark calls on them yet"
+    - path: null
+      locator: "[582]"
+      observation: >-
+        "if the current continuation does not beat the best checkpoint, this is
+        the next higher-upside training run"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A one-epoch LoRA run from the base model on a decontaminated public synthetic
+    GSM-style dataset will beat the GSM8K-only recipe, because the synthetic set
+    has a clean question/solution/answer schema and adds problem diversity.
+  mechanism: >-
+    "I found a public synthetic GSM-style dataset that is just data, not a
+    fine-tuned model, and it has a clean question/solution/answer schema" [582];
+    "with checkpointing so we can evaluate 500/1000/1500 if it looks promising"
+    [610].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-08
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/synthgsm_50k.jsonl
+      source: clarkkitchen22/SynthGSM8K-50K
+      n_examples: 50418
+      built_by: /home/ben/task/prepare_synthgsm.py
+      build_command:
+        - python
+        - prepare_synthgsm.py
+        - --output
+        - data/synthgsm_50k.jsonl
+      selection: >-
+        prepare_synthgsm.py rewrites each row as "{solution}\n#### {answer}",
+        dropping empty rows and any whose normalized question matches a GSM8K
+        *test* question; it reported "wrote 50418 rows / skipped_empty 0 /
+        skipped_test_overlap 0" [589]
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer + peft LoRA (transformers 4.57.3)
+    peft: "LoRA r=64 alpha=128 dropout=0.0 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: null
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        --max-steps 1500 caps the run; --external-only drops the GSM8K rows so
+        only the synthetic jsonl is trained on, rendered no-system. max_seq_len
+        (4096), weight_decay (0.0) and seed (42) are train_gsm8k_sft.py argparse
+        defaults not overridden by the launch; cosine schedule, bf16+tf32,
+        gradient_checkpointing, group_by_length, adamw_torch_fused and
+        max_grad_norm=0.3 are hardcoded. --save-steps 500, --save-total-limit 4,
+        --merge, --completion-end eos.
+    target_format: >-
+      no-system prompt; assistant turn = synthetic rationale, blank line,
+      "ANSWER: <n>", then the tokenizer eos token
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --model-name
+      - Qwen/Qwen3-4B-Base
+      - --output-dir
+      - runs/sft_lora_v11_synth50k_eos1500
+      - --final-dir
+      - runs/sft_lora_v11_synth50k_eos1500/merged
+      - --max-steps
+      - "1500"
+      - --learning-rate
+      - "2e-4"
+      - --warmup-ratio
+      - "0.03"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --lora-dropout
+      - "0.0"
+      - --batch-size
+      - "8"
+      - --grad-accum
+      - "4"
+      - --val-size
+      - "384"
+      - --extra-jsonl
+      - data/synthgsm_50k.jsonl
+      - --external-only
+      - --completion-end
+      - eos
+      - --save-steps
+      - "500"
+      - --save-total-limit
+      - "4"
+      - --merge
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: 0.0
+  output_checkpoint: null
+  training_summary: {final_loss: null, steps: null, notes: "crashed after loading the 50,418 extra examples, before training started"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: |
+    Traceback (most recent call last):
+      File "/home/ben/task/train_gsm8k_sft.py", line 367, in <module>
+    loaded extra synthetic examples: 50418
+        main()
+      File "/home/ben/task/train_gsm8k_sft.py", line 274, in main
+        eval_dataset = GSM8KSFTDataset(
+    TypeError: GSM8KSFTDataset.__init__() missing 1 required positional argument: 'label_eos_only'
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "The first synthetic launch hit the new stop-label argument in the eval
+    dataset path; I patched that and rechecked the script" [622]. The identical
+    command was relaunched at [623].
+  decision: abandon_line
+  next_step: "pass label_eos_only through to the eval dataset and relaunch [617], [623]"
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-77b138a8
+  launch_i: 611
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [582, 610]
+    setup: [588, 589, 610, 611]
+    evaluation: []
+    result: [612]
+    conclusion: [614, 617, 622, 623]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - prepare_synthgsm.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved: []

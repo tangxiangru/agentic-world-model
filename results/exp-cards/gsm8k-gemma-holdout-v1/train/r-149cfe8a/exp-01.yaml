@@ -1,0 +1,185 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.30
+
+problem:
+  statement: >-
+    The model to be post-trained is a base model: it scores 0.200 on the
+    benchmark at 10-shot and does not naturally produce the format the scorer
+    needs (the scorer takes the LAST number in the output, so answers must end
+    in an "ANSWER: $ANSWER" line).
+  evidence:
+    - path: /home/ben/task/results/baseline.json
+      locator: "[155]"
+      observation: "base model, 10-shot, 50 samples: accuracy 0.200, stderr 0.057"
+    - path: null
+      locator: "[29]"
+      observation: >-
+        agent: "Since this is a base model, it won't naturally follow this
+        format - fine-tuning to match it is key."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    SFT of the base model on GSM8K-train plus MetaMath GSM-derived solutions,
+    rendered through the eval's own chat template with few-shot demos in the
+    system message and completion-only loss, will make it emit the required
+    "ANSWER: X" format and raise accuracy well above the 0.200 base.
+  mechanism: >-
+    Training with the exact eval prompt structure (system = few-shot demos,
+    user = MATH_PROMPT) avoids the template's default "use <think>" reasoning
+    prompt that an empty system message would trigger, and teaches the model to
+    stop cleanly on <|im_end|> [128].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/train.jsonl
+      source: "openai/gsm8k[train] + meta-math/MetaMathQA[GSM_AnsAug,GSM_Rephrased]"
+      n_examples: 37473
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --per-type, "15000", --types, "GSM_AnsAug,GSM_Rephrased"]
+      selection: >-
+        GSM8K train answers with <<...>> calculator annotations and the
+        "#### N" delimiter stripped, whitespace-normalised, reformatted to end
+        in "ANSWER: <target>"; MetaMath GSM_AnsAug/GSM_Rephrased rows whose
+        "The answer is:" tail parses as a plain number, 15000 kept per type;
+        shuffled with seed 0. No GSM8K test data used.
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/fewshot_pool.jsonl
+      source: "openai/gsm8k[train]"
+      n_examples: 7473
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --per-type, "15000", --types, "GSM_AnsAug,GSM_Rephrased"]
+      selection: "every GSM8K train item as {question, reasoning, target}; 1-3 sampled per training example as the system-message demos"
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers Trainer (flash_attention_2, bf16); version not printed in the stream"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        scheduler (cosine), warmup_ratio 0.03, weight_decay 0.0, max_grad_norm
+        1.0, seed 0, optim adamw_torch_fused, group_by_length=True,
+        gradient_checkpointing and save_total_limit=4 are train.py defaults that
+        the launch did not override (script text is in the workspace:
+        train.py). Launch flags: --fewshot-min 1 --fewshot-max 3
+        --save-strategy epoch. Loss is computed on assistant tokens only, via
+        the chat template's assistant mask.
+    target_format: >-
+      templates/smollm.jinja chat format: system = 1-3 few-shot demos
+      ("<question>\n\nReasoning:\n<reasoning>\n\nANSWER: <target>"), user =
+      MATH_PROMPT wrapping the question, assistant = cleaned reasoning ending
+      in "ANSWER: <target>".
+  command:
+    argv: [nohup, python, train.py, --data, data/train.jsonl, --out, runs/sft1, --epochs, "3", --lr, "1e-5", --bs, "16", --grad-accum, "2", --max-len, "1024", --fewshot-min, "1", --fewshot-max, "3", --save-strategy, epoch]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/runs/sft1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/sft1/final, --limit, "150", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.85", --json-output-file, results/sft1_final.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.2
+    path: /home/ben/task/results/baseline.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.2
+  output_checkpoint: /home/ben/task/runs/sft1/final
+  training_summary:
+    final_loss: 0.209
+    steps: 3516
+    notes: >-
+      "Training complete (train_loss 0.209, ~73 min)" [363]. 37473 features
+      built, none skipped; seq len p50=574 p99=924 max=1023; 4,017,634 loss
+      tokens [223]. Per-epoch checkpoints checkpoint-1172, checkpoint-2344 and
+      final.
+  measurements:
+    - metric: accuracy
+      value: 0.6667
+      n: 150
+      path: /home/ben/task/results/sft1_final.json
+      delta_vs_comparator: 0.4667
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    SFT took the model from a base 0.200 to 0.667, but the comparator was
+    measured at --limit 50 and this eval at --limit 150, so the two are not
+    under the same protocol. The agent also noticed that generation_config.json
+    had lost `temperature` during the save, so this eval was sampling rather
+    than greedy [369].
+  decision: adopt
+  next_step: >-
+    Force greedy decoding by writing temperature=0.0 into the checkpoint's
+    generation_config.json and re-evaluate [379].
+
+provenance:
+  kind: extracted
+  run_ref: r-149cfe8a
+  launch_i: 208
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [29, 155, 157]
+    setup: [144, 148, 178, 208]
+    evaluation: [364]
+    result: [223, 339, 363, 371]
+    conclusion: [369]
+  snapshot_files:
+    - build_data.py
+    - train.py
+    - evaluate.py
+    - contamination_judgement.txt
+  smoke_runs:
+    - {launch_i: 202, outcome: "passed (--limit 200, 1 epoch, runs/smoke; deleted immediately before the real launch)"}
+  extractor: null
+  unresolved:
+    - "contamination_check comes from the workspace file contamination_judgement.txt (\"no contamination detected\"); no contamination-checker invocation appears in the stream."
+    - "The epoch-1 checkpoint (checkpoint-1172) was never evaluated."
+
+outcome:
+  official_accuracy: null

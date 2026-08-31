@@ -1,0 +1,148 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The un-post-trained base model scores accuracy=0.125 on a 40-sample slice of
+    the benchmark, and no training/merge/eval path exists yet, so nothing can be
+    improved until the pipeline is shown to run end to end.
+  evidence:
+    - path: /home/ben/task/baseline_40.json
+      locator: "[29], [33], [35]"
+      observation: "base model, 40 samples, max_tokens 2048: accuracy 0.125, stderr 0.053"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    LoRA SFT of the base model on the gsm8k train split, formatted exactly like
+    the eval prompt (step-by-step reasoning ending in an "ANSWER: <n>" line),
+    will raise benchmark accuracy over the base model; a short subset pass first
+    validates the train/save/merge/eval path before larger runs are paid for.
+  mechanism: >-
+    The base model is not instruction-tuned for this answer format; training on
+    train-split solutions rendered through the eval's own chat template teaches
+    the required output shape.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF:openai/gsm8k (config main, train split)"
+      n_examples: 461
+      built_by: /home/ben/task/train_gsm8k_lora.py
+      build_command: []
+      selection: >-
+        train split only, shuffled with seed 42, first 512 rows taken as the
+        subset and split 461 train / 51 eval inside the script (Map counts
+        printed at [72]); each row rendered as a user turn holding the eval's
+        math prompt and an assistant turn holding the gsm8k rationale with the
+        "####" line rewritten as "ANSWER: <n>"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer (version not printed in the stream)
+    peft: "QLoRA: LoRA r=64 alpha=128 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj] over a 4-bit NF4 base"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 training over a 4-bit NF4 (double-quant) base"
+      seed: 42
+      other: >-
+        scheduler, warmup, weight_decay, seed, LoRA r/alpha/dropout/targets,
+        quantization and gradient_checkpointing are argparse/script defaults in
+        /home/ben/task/train_gsm8k_lora.py and were not overridden at launch.
+        The snapshot holds the script as it was at the end of the run; at this
+        launch it still passed max_seq_length to SFTConfig, which is what
+        crashed it, so the script text differed here.
+    target_format: >-
+      chat format rendered with templates/smollm.jinja, assistant turn =
+      rationale + blank line + "ANSWER: <n>", eos appended
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - python train_gsm8k_lora.py --output-dir runs/smoke-lora --subset 512 --epochs 1 --batch-size 8 --grad-accum 2 --eval-steps 25 --save-steps 25 --logging-steps 5 --max-seq-length 1536 --learning-rate 2e-4
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_lora.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  output_checkpoint: null
+  training_summary: {final_loss: null, steps: null, notes: "crashed after dataset mapping (461 train / 51 eval rows) and checkpoint load"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: |-
+    File "/home/ben/task/train_gsm8k_lora.py", line 131, in main
+      sft_config = SFTConfig(
+    TypeError: SFTConfig.__init__() got an unexpected keyword argument 'max_seq_length'
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The launch died in SFTConfig construction on a TRL API mismatch, so nothing
+    was trained and nothing was measured. The agent inspected the SFTConfig
+    signature at [74] and reported "I fixed compatibility issues with this TRL
+    version (max_length/eval_strategy) and restarted the smoke training run"
+    [80].
+  decision: iterate
+  next_step: >-
+    Re-launch the same subset smoke recipe with SFTConfig(max_length=...) and
+    eval_strategy instead of the removed keywords (exp-02).
+
+provenance:
+  kind: extracted
+  run_ref: r-3911d1bb
+  launch_i: 70
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [29, 33, 35]
+    setup: [51, 54, 69, 70]
+    evaluation: []
+    result: [72]
+    conclusion: [74, 80]
+  snapshot_files:
+    - train_gsm8k_lora.py
+    - baseline_40.json
+    - evaluate.py
+  extractor: claude-opus-5
+  unresolved:
+    - "the script text in the snapshot is the end-of-run version; the revision that crashed here (it still passed max_seq_length to SFTConfig, and had a --merged-dir flag per [54]) is not in the workspace"
+    - "the diff that fixed the TRL API is not shown in the stream, only described at [80]"

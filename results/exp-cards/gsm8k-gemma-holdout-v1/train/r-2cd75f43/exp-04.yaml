@@ -1,0 +1,198 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 1.44
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    "Errors are actual reasoning errors" ([212]) - 78 of the 150 evaluated items are wrong
+    on the incumbent, and the wrong ones are wrong in the arithmetic/algebra of the chain,
+    not in the answer format.
+  evidence:
+    - path: /home/ben/task/logs/2026-04-16T18-18-40+02-00_gsm8k_YVDQLifWouZQAQoLu2bgDy.json
+      locator: "[209] script, [210] output"
+      observation: "Total: 150, Wrong: 78; mean output length 1934 chars, median 374, max 11375"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-04-16T18-18-40+02-00_gsm8k_YVDQLifWouZQAQoLu2bgDy.json
+      question: null          # the agent printed only the target, the prediction and the output tail
+      gold: "17"
+      model_output: >-
+        "... The total number of calories needed per day is 500 * 8 = 4000 calories. Because
+        of this the total amount of money that Tracy makes per day of care is (4000 / 500) * 6
+        = $48. ANSWER: 48 LocalDateTime is not always formatting for the java datetime picker"
+      failure: "wrong quantity computed, and the generation continues past the answer into unrelated text"
+    - id: null
+      source: /home/ben/task/logs/2026-04-16T18-18-40+02-00_gsm8k_YVDQLifWouZQAQoLu2bgDy.json
+      question: null
+      gold: "400"
+      model_output: >-
+        "... there are 2 * x = 2x baby bees / There are 2 * 2 * x = 4x queens ... x + 2x + 4x
+        = 700, 7x = 700, x = 100, worker bees = 2 * 100 = 200. ANSWER: 200"
+      failure: "set up the relations wrongly and answered for the wrong quantity (200 instead of 400)"
+    - id: null
+      source: /home/ben/task/logs/2026-04-16T18-18-40+02-00_gsm8k_YVDQLifWouZQAQoLu2bgDy.json
+      question: null
+      gold: "40"
+      model_output: >-
+        "... Friday $1920 ... Thursday $1440 + $640 = $2080 ... $1920 - $2080 = -$160. On
+        Friday the mechanic earned $160 more than on Thursday. ANSWER: -160"
+      failure: "sign error and a wrong Thursday total; answered -160"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "train v3 with additional math data (MetaMathQA)" ([212]) - adding MetaMathQA's
+    GSM-derived problems on top of GSM8K train will reduce the remaining reasoning errors
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v3.jsonl
+      source: "HF gsm8k (main) train split + HF meta-math/MetaMathQA"
+      n_examples: 47473
+      built_by: /home/ben/task/prepare_data_v3.py
+      build_command: [python, prepare_data_v3.py]
+      selection: >-
+        all 7473 GSM8K train rows, plus 40000 rows sampled (random.seed(42)) from the
+        240000 MetaMathQA rows whose type starts with "GSM"; MetaMath responses parsed by
+        taking the text before "####" as reasoning and the "The answer is:" tail as the
+        target, dropping rows with no such tail or with reasoning under 10 chars; the two
+        pools are shuffled together ([218], [220], [221])
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 640
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        every value except scheduler / weight_decay / precision / seed is a launch arg at
+        [229] (warmup_ratio 0.03 was passed explicitly). scheduler=cosine, weight_decay=0.0
+        and bf16 are hard-coded in TrainingArguments in train_sft.py, which is in the
+        workspace snapshot; seed=42 is that script's argparse default, not overridden.
+    target_format: >-
+      raw "<|im_start|>user ... <|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n",
+      prompt span masked out of the loss ([147])
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/train_data_v3.jsonl, --output,
+           /home/ben/task/ckpt_sft_v3, --epochs, "2.0", --lr, "1e-5", --batch_size, "16",
+           --grad_accum, "2", --max_length, "640", --warmup_ratio, "0.03"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /tmp/train_v3.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpt_sft_v3, --limit, "150",
+              --json-output-file, /tmp/eval_v3.json, --max-connections, "4"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.480
+    path: /tmp/eval_v2b.json
+  diagnostic:
+    what: "output-length and score distribution over the eval log, to separate rambling from reasoning errors"
+    command: []
+    path: /home/ben/task/logs/2026-04-16T19-57-40+02-00_gsm8k_kHQmxc3MNcqBeVs5HtUNRp.json
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/ckpt_sft_v3
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      launched t=+1.44h, checkpoint shards present at [260] t=+2.96h; no loss or step count
+      in the stream. Before the eval, generation_config.json was rewritten with
+      eos_token_id [151643, 151645] in the same event as the eval ([264]).
+  measurements:
+    - metric: accuracy
+      value: 0.480
+      n: 150
+      path: /tmp/eval_v3.json
+      delta_vs_comparator: 0.000
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-04-16T19-57-40+02-00_gsm8k_kHQmxc3MNcqBeVs5HtUNRp.json
+    notes: >-
+      "Mean: 2000.88, Median: 413, Max: 11809, >2000: 41; Counter({'I': 78, 'C': 72});
+      Wrong and long: 39" ([269]) - half the failures are long degenerate generations, and
+      the sample printed at [272] drifts from a partial solution into unrelated text.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "v3 is also 48%" ([267]) - 40k MetaMathQA GSM-derived rows on top of GSM8K moved the
+    score not at all under the same --limit 150 protocol, and the failure profile is
+    unchanged: 78 wrong, 39 of them long rambling generations.
+  decision: reject
+  next_step: >-
+    Next launch drops the extra data and trains GSM8K-only for more epochs at a higher lr
+    ([278]); no reason was stated for the change.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-2cd75f43
+  launch_i: 229
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [209, 210, 212]
+    setup: [215, 216, 218, 220, 221, 229]
+    evaluation: [264]
+    result: [260, 265, 269, 272]
+    conclusion: [267]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data_v3.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null                # withheld: hard rule 5 forbids a model name in these cards
+  unresolved:
+    - "the failing items recorded above are from the agent's runs of the supplied evaluate.py
+       on the official set at --limit 150, not from a held-out probe set of its own; it kept no
+       watch set"
+    - "no eval JSON or inspect log survives in the workspace snapshot; the /tmp and logs/ paths
+       are as they appear in the stream"

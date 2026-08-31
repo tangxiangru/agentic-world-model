@@ -1,0 +1,270 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 2.47
+
+problem:
+  statement: >-
+    Supervised fine-tuning has plateaued at 63% and the remaining errors are
+    reasoning failures, not format failures; the agent wanted to go beyond
+    imitation of reference solutions: "final_model secured at 63% with correct
+    config. Now let me push higher with GRPO RL" [486].
+  evidence:
+    - path: /home/ben/task/eval_runs_sft2_l200.json
+      locator: "[480]"
+      observation: "the incumbent (iteration-2 epoch 2) scores 0.63 at --limit 200"
+    - path: /home/ben/task/eval_runs_sft2_checkpoint-3189_l200.json
+      locator: "[480]"
+      observation: "its epoch-1 checkpoint scores 0.61, so a third SFT epoch was not obviously going to help"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    GRPO reinforcement learning from the iteration-2 checkpoint, rewarding a
+    final answer that numerically matches the GSM8K train gold (plus a small
+    format bonus), will raise accuracy above 63% [486].
+  mechanism: >-
+    Not stated before the launch beyond "push higher with GRPO RL" [486]; the
+    reward is exactly the eval's own criterion (last number equals gold, +0.2 if
+    an "ANSWER:" line is present), so training optimises the scored quantity
+    directly rather than imitating reference text.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/sft2
+    origin: exp-03
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, split=train)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/train_grpo.py
+      build_command: []
+      selection: >-
+        built in-process by train_grpo.py: every GSM8K train row becomes a prompt
+        (MATH_PROMPT_TEMPLATE as a single user message, rendered with
+        templates/qwen3.jinja) plus a "gold" field taken from after "####" with
+        commas/$ stripped; no filtering, no reference solutions used. The dataset
+        map over 7473 rows is visible in grpo_smoke.log [499].
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl 0.27.2 GRPOTrainer with colocated vLLM 0.11.0 generation"
+    peft: none
+    hyperparams:
+      lr: 1.0e-06
+      epochs: null
+      batch_size: 16
+      grad_accum: 8
+      max_seq_len: null
+      scheduler: constant_with_warmup
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        From the launch line: --steps 250, --num-gen 8, --max-prompt 512,
+        --max-comp 512, --vllm-mem 0.28, --lr 1e-6, --beta 0.0 (no KL penalty),
+        --temperature 1.0, --bs 16, --accum 8. From the train_grpo.py source
+        written at [398] and edited at [526], not overridden on the launch line:
+        lr_scheduler_type=constant_with_warmup, warmup_steps=10, top_p=1.0,
+        scale_rewards=True, bf16=True, gradient_checkpointing=True,
+        save_strategy=steps, save_steps=50, save_total_limit=8, use_vllm=True,
+        vllm_mode=colocate. No seed or weight_decay was set. 250 steps covered
+        0.54 epochs of the 7473 prompts (grpo1.log), i.e. ~16 prompts per step
+        with 8 generations each.
+    target_format: >-
+      generations are scored, not imitated: correctness_reward = 1.0 if the last
+      number in the completion equals the gold within 1e-4, plus format_reward =
+      0.2 if the completion contains "ANSWER:".
+  command:
+    argv:
+      - nohup
+      - python
+      - scripts/train_grpo.py
+      - --model
+      - runs/sft2
+      - --out
+      - runs/grpo1
+      - --steps
+      - "250"
+      - --bs
+      - "16"
+      - --accum
+      - "8"
+      - --num-gen
+      - "8"
+      - --max-prompt
+      - "512"
+      - --max-comp
+      - "512"
+      - --vllm-mem
+      - "0.28"
+      - --lr
+      - "1e-6"
+      - --beta
+      - "0.0"
+      - --temperature
+      - "1.0"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_grpo.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    log: /home/ben/task/grpo1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 1.0
+
+evaluation:
+  protocol:
+    command:
+      - bash
+      - run_eval.sh
+      - runs/grpo1/checkpoint-$ck
+      - "200"
+      - "0.85"
+      - "16"
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.63
+    path: /home/ben/task/eval_runs_sft2_l200.json
+  diagnostic:
+    what: >-
+      train-prompt correctness reward and policy entropy over the run, to see
+      whether RL is learning and when it starts to collapse
+    command:
+      - grep
+      - "-oE"
+      - "'rewards/correctness_reward/mean': [0-9.]+"
+      - /home/ben/task/grpo1.log
+    path: /home/ben/task/grpo1.log
+
+result:
+  execution: completed
+  wall_h: 0.71
+  output_checkpoint: /home/ben/task/runs/grpo1
+  training_summary:
+    final_loss: 0.0104
+    steps: 250
+    notes: >-
+      train_runtime 2538.5 s, 0.54 epochs; checkpoints saved every 50 steps
+      (checkpoint-50/-100/-150/-200/-250) [589]; GPU held at ~72.7 GB [556].
+  measurements:
+    - metric: accuracy
+      value: 0.67
+      n: 200
+      path: /home/ben/task/eval_runs_grpo1_checkpoint-50_l200.json
+      delta_vs_comparator: 0.04
+    - metric: accuracy
+      value: 0.735
+      n: 200
+      path: /home/ben/task/eval_runs_grpo1_checkpoint-100_l200.json
+      delta_vs_comparator: 0.105
+    - metric: accuracy
+      value: 0.72
+      n: 200
+      path: /home/ben/task/eval_runs_grpo1_checkpoint-150_l200.json
+      delta_vs_comparator: 0.09
+    - metric: accuracy
+      value: 0.8
+      n: 200
+      path: /home/ben/task/eval_runs_grpo1_checkpoint-200_l200.json
+      delta_vs_comparator: 0.17
+    - metric: accuracy
+      value: 0.745
+      n: 200
+      path: /home/ben/task/eval_runs_grpo1_checkpoint-250_l200.json
+      delta_vs_comparator: 0.115
+    - metric: accuracy
+      value: 0.762
+      n: 500
+      path: /home/ben/task/eval_runs_grpo1_checkpoint-200_l500.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.906
+    path: /home/ben/task/grpo1.log
+    notes: >-
+      train-prompt correctness reward rose from ~0.75 at step 15 [556] to
+      ~0.88 midway [574] to ~0.90 at the end [589]; entropy fell from ~0.30 to
+      ~0.13-0.19, which the agent read as the policy getting peaked, hence
+      evaluating every checkpoint rather than only the last one.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "GRPO is a major success: ckpt-50 67% | ckpt-100 73.5% | ckpt-150 72% |
+    ckpt-200 80% | ckpt-250 74.5%. All beat the 63% base" [616], under the same
+    --limit 200 protocol as the comparator; the rising train reward confirms the
+    RL signal was doing the work. The non-monotonic checkpoint curve is noise the
+    agent went on to test: checkpoint-200 came back at 76.2% on --limit 500,
+    below its 80% on --limit 200.
+  decision: iterate
+  next_step: >-
+    "Given GRPO's strong gains, I'll likely continue RL from the best checkpoint
+    next" [625], after the --limit 500 confirmation over checkpoints 200, 250 and
+    100 picks a robust winner [617].
+
+# ---- Outcome (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-dc28e30d
+  launch_i: 531
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [480, 482, 486]
+    setup: [398, 526, 531]
+    evaluation: [592, 617]
+    result: [556, 574, 588, 589, 613, 614]
+    conclusion: [616, 625]
+  snapshot_files:
+    - grpo1.log
+    - grpo_smoke.log
+    - eval_grpo1.log
+    - eval_grpo1_l500.log
+    - eval_runs_grpo1_checkpoint-50_l200.json
+    - eval_runs_grpo1_checkpoint-100_l200.json
+    - eval_runs_grpo1_checkpoint-150_l200.json
+    - eval_runs_grpo1_checkpoint-200_l200.json
+    - eval_runs_grpo1_checkpoint-250_l200.json
+    - eval_runs_grpo1_checkpoint-200_l500.json
+    - eval_runs_grpo1_checkpoint-250_l500.log
+    - run_eval.sh
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 487, outcome: "passed (3 steps, --bs 8 --accum 1 from runs/sft2): clean reward signal, completions terminated, no OOM; save_steps then tightened 100 -> 50 at [526] and runs/grpo_smoke deleted"}
+  extractor: null
+  unresolved:
+    - >-
+      The --limit 500 confirmation launched at [617] never finished inside the
+      stream: checkpoint-200 returned 0.762, checkpoint-250's eval was still
+      running (eval_runs_grpo1_checkpoint-250_l500.log exists with no .json) and
+      checkpoint-100 was never reached. The comparator was never measured at
+      --limit 500, so the 0.762 has no same-protocol baseline.
+    - >-
+      The stream ends at t=+3.38h (6:36 of the 10 h budget left) while those evals
+      were running, so it does not show whether any GRPO checkpoint replaced
+      final_model. As of the last explicit action, final_model is still the exp-04
+      copy of runs/sft2.
+    - >-
+      scripts/train_grpo.py is not in the workspace snapshot; its contents come
+      from the write event at [398] and the edit at [526].

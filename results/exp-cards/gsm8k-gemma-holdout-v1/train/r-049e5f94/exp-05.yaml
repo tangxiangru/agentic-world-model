@@ -1,0 +1,242 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 2.22
+
+problem:
+  statement: >-
+    With formatting and stopping fixed, "the remaining 17% are genuine
+    reasoning errors (e.g., wrong speed calculation), not format issues" [660].
+  evidence:
+    - path: /home/ben/task/logs/ckpt1800.json
+      locator: "[657], [658]"
+      observation: >-
+        100/100 clean stops, 0 continuations, yet 17 of 100 answers wrong - the
+        printed failures are arithmetic/setup errors that still end in a clean
+        ANSWER line
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/ckpt1800.json
+      question: "(printed only as the completion tail; gold answer 6)"
+      gold: "6"
+      model_output: "...3.4 miles per hour to achieve an average speed of 4 miles per hour.\n\nANSWER: 3.4"
+      failure: "clean stop, wrong rate computation [658]"
+    - id: null
+      source: /home/ben/task/logs/ckpt1800.json
+      question: "(printed only as the completion tail; gold answer 10)"
+      gold: "10"
+      model_output: "...nce.\nSo, his speed is 17.14 miles / 3 hours = 5.71 miles per hour.\n\nANSWER: 5.71"
+      failure: "clean stop, wrong speed calculation [658]"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Now let me run rejection sampling (STaR) with checkpoint-1800 to generate
+    correct model-style solutions for GSM8K train problems - targeting the
+    reasoning errors" [664]; "the model has the capability; STaR training should
+    improve greedy accuracy" [705].
+  mechanism: >-
+    Training on the model's own correct, in-distribution solutions (shortest
+    correct of K=8 samples per train question, upweighted x2) rather than
+    MetaMath's style should reinforce the reasoning it already executes
+    correctly [671], [705].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "derived:exp-04 (synthetic:self) + openai/gsm8k train + meta-math/MetaMathQA"
+      n_examples: 84946
+      built_by: /home/ben/task/prepare_v2.py
+      build_command: [python, prepare_v2.py]
+      selection: >-
+        MATH-derived data dropped entirely; up to 70K MetaMathQA GSM_* items
+        kept from data/sft_train.jsonl, plus the rejection-sampled model
+        solutions repeated x2 and the 127 unsolved questions kept once as gold
+        CoT. Printed composition: {'metamath_GSM_AnsAug': 23340,
+        'metamath_GSM_SV': 11690, 'metamath_GSM_FOBAR': 11629,
+        'metamath_GSM_Rephrased': 23341, 'rs_gsm': 14692, 'gsm8k_train': 127,
+        'gold_gsm': 127} [707].
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/rs_gsm.jsonl
+      source: "synthetic:self (exp-04 checkpoint)"
+      n_examples: 7473
+      built_by: /home/ben/task/generate_solutions.py
+      build_command:
+        - python
+        - -u
+        - generate_solutions.py
+        - --model
+        - runs/eval_ckpt1800
+        - --out
+        - data/rs_gsm.jsonl
+        - --k
+        - "8"
+        - --temp
+        - "0.9"
+        - --max-tokens
+        - "512"
+        - --gpu-mem
+        - "0.85"
+      selection: >-
+        K=8 samples per GSM8K-train question at temperature 0.9 / top_p 0.95;
+        keep the shortest sample whose parsed ANSWER equals gold; fall back to
+        the gold CoT when no sample is correct. "solved 98.3% of GSM8K train
+        problems (7346/7473)" [705], so 7346 model solutions + 127 gold
+        fallbacks.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers.Trainer
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        fresh run from the base model, not a resume. Scheduler, warmup, weight
+        decay, precision and seed are task/train_sft.py values the launch did
+        not override. 84946 examples -> 1327 steps/epoch, so checkpoint-1200 is
+        epoch ~0.9 [809].
+    target_format: >-
+      "<|im_start|>user\n{eval MATH_PROMPT_TEMPLATE}<|im_end|>\n<|im_start|>assistant\n"
+      as prompt (masked), completion = "{reasoning}\n\nANSWER: {n}<|im_end|>\n"
+  command:
+    argv:
+      - python
+      - -u
+      - train_sft.py
+      - --out
+      - runs/sft_v2
+      - --epochs
+      - "2"
+      - --lr
+      - 1e-5
+      - --bs
+      - "16"
+      - --accum
+      - "4"
+      - --max-len
+      - "1024"
+      - --data
+      - data/sft_v2.jsonl
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - eval_model.py
+      - runs/eval_v2_1200
+      - "100"
+      - v2_1200
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.83
+    path: /home/ben/task/logs/ckpt1800.json
+  diagnostic:
+    what: "stop_reason distribution and continuation count, printed by eval_model.py"
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.76
+  output_checkpoint: /home/ben/task/runs/sft_v2/checkpoint-1200
+  training_summary:
+    final_loss: null
+    steps: 1200
+    notes: >-
+      Killed at checkpoint-1200 (epoch ~0.9, "same depth as v1's best") [880],
+      [881]. Loss ~0.13 at epoch 0.45 [904]. The SIGKILL landed mid-save, so
+      checkpoint-1200 was left without trainer_state.json or scheduler.pt
+      [898], [907].
+  measurements:
+    - metric: accuracy
+      value: 0.82
+      n: 100
+      path: /home/ben/task/logs/v2_1200.json
+      delta_vs_comparator: -0.01
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "v2@0.9 = **82%** - essentially tied with v1's 83% (within stderr ~4%). So
+    STaR didn't break the plateau at epoch 0.9; the model seems capped ~82-83%
+    at this depth." [891]. Measured against exp-04 under the same limit of 100,
+    but the -1 pt delta is well inside the noise, so the claim is neither
+    supported nor contradicted.
+  decision: reject
+  next_step: >-
+    "The most likely remaining lever is **more epochs** (both v1/v2 only reached
+    epoch 0.9)" [891] - resume to 2.0 epochs.
+
+provenance:
+  kind: extracted
+  run_ref: r-049e5f94
+  launch_i: 711
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [657, 658, 660]
+    setup: [665, 671, 706, 707, 711]
+    evaluation: [881]
+    result: [880, 881, 891, 898, 907]
+    conclusion: [891]
+  snapshot_files:
+    - generate_solutions.py
+    - prepare_v2.py
+    - combine_data.py
+    - train_sft.py
+    - eval_model.py
+    - prep_checkpoint.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - >-
+      combine_data.py was written [322] but never invoked in the stream;
+      prepare_v2.py did the merge instead.
+    - >-
+      logs/v2_1200.json is never printed; 82% is quoted by the agent at [891].
+    - >-
+      The x2 upweighting of rejection-sampled solutions is baked into
+      prepare_v2.py rather than exposed as a data mixture weight.

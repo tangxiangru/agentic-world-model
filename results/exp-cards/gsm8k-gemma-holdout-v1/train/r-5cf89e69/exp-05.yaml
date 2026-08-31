@@ -1,0 +1,174 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "Multiple processes are running!" [125] - the three previous launches of the same
+    SFT run were still holding the GPU, and "the old processes caused the issue" [133].
+    The recipe itself had not yet produced a checkpoint.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-5cf89e69.md
+      locator: "[124], [137]"
+      observation: >-
+        ps showed several concurrent train.py processes; after pkill, nvidia-smi showed
+        the H100 at 2MiB with no running processes
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised fine-tuning of the base model on math reasoning data "formatted to
+    match the evaluation prompt format" - GSM8K train plus MetaMathQA GSM entries,
+    with the assistant turn ending in "ANSWER: <number>" - will make the model
+    answer grade-school math in the format the grader expects [37].
+  mechanism: >-
+    The base model has no chat/answer-format behaviour; training on chat-formatted
+    step-by-step solutions that end in "ANSWER: N" teaches both the format and the
+    solution style the scorer matches on [37][48].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "openai/gsm8k (train) + meta-math/MetaMathQA (types containing GSM)"
+      n_examples: 247473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, /home/ben/task/prepare_data.py]
+      selection: >-
+        all 7473 GSM8K train rows plus 240000 MetaMathQA GSM rows whose answer parses
+        to a float; "<<...>>" calculator annotations stripped; "The answer is:" tails
+        removed; shuffled with seed 42; no system message in the formatted text [59][60].
+      repeats: null
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer (TRL 0.27, per the agent at [101])"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        scheduler and precision are the argparse defaults of the snapshot's train.py
+        (lr_scheduler_type="cosine", bf16=True), which the launch did not override.
+        weight_decay is not an argument of train.py and never printed, so it is left
+        null. Fixed in the script (not flags): packing=True, gradient_checkpointing=True
+        with use_reentrant=False, dataloader_num_workers=2, dataset_text_field="text".
+    target_format: >-
+      "<|im_start|>user\n<eval prompt template><|im_end|>\n<|im_start|>assistant\n<reasoning>\n\nANSWER: <n><|im_end|>\n";
+      no system message, calculator annotations stripped [108].
+  command:
+    argv: [python3, /home/ben/task/train.py, --model_name, Qwen/Qwen3-1.7B-Base, --data_file,
+      /home/ben/task/train_data.jsonl, --output_dir, /home/ben/task/output_model_v1,
+      --num_train_epochs, "2", --per_device_train_batch_size, "8", --gradient_accumulation_steps,
+      "4", --learning_rate, 2e-5, --max_length, "1024", --warmup_ratio, "0.03",
+      --logging_steps, "50", --save_steps, "2000", --save_total_limit, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, /home/ben/task/evaluate.py, --model-path, /home/ben/task/output_model_v1,
+      --limit, "50", --max-connections, "2", --max-tokens, "2048",
+      --gpu-memory-utilization, "0.5", --json-output-file, /home/ben/task/eval_v1_50.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 2.33
+  output_checkpoint: /home/ben/task/output_model_v1
+  training_summary:
+    final_loss: 0.117
+    steps: 5222
+    notes: >-
+      "Final loss was ~0.117 with 96.4% token accuracy after 2 epochs. The training took
+      about 2h20m" [186]. Step count from the progress line at [180] and the
+      checkpoint-5222 directory at [260].
+  measurements:
+    - metric: accuracy
+      value: 0.4
+      n: 50
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-5cf89e69/eval_v1_50.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      Format check the agent ran on the eval log: 49/50 outputs contained "ANSWER:";
+      scores C=20, I=30 [205].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "40% accuracy on the first 50 samples. That's a reasonable starting point for a base
+    model" [194]. The format half of the hypothesis clearly took (49/50 outputs carry
+    "ANSWER:" [205]), but there is no comparator measurement, so the accuracy claim is
+    untested.
+  decision: adopt
+  next_step: >-
+    "The main issue is the model making reasoning/calculation errors" [206]; the agent
+    listed weighting GSM8K train more heavily, cleaning MetaMathQA, and - the one it
+    acted on - including the evaluation's 10-shot system message in training [206][209].
+
+# ---- Outcome (joined by the pipeline, never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5cf89e69
+  launch_i: 141
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [124, 125, 133, 137]
+    setup: [59, 108, 139, 141]
+    evaluation: [192]
+    result: [180, 186, 193, 196, 205]
+    conclusion: [194, 206, 209]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - evaluate.py
+    - eval_v1_50.json
+  smoke_runs: []
+  extractor: null                # model id withheld: cards carry no model names
+  unresolved:
+    - "the base model was never evaluated, so this card has no comparator"
+    - "prepare_data_v2.py was written and run ([210][212], 72389 examples in train_data_v2.jsonl) but no launch ever trained on that file"

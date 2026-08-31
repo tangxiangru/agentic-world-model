@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 1.98
+
+problem:
+  statement: >-
+    "inspect passes `temperature=None`, and vllm resolves it via
+    `default_sampling_params.get("temperature", 1.0)` - so the eval currently
+    samples at **temperature=1.0** (unless my model's generation_config sets
+    temperature)" [572]. Sampled decoding is what leaves 12% of completions
+    running past their ANSWER line at epoch 0.6.
+  evidence:
+    - path: /home/ben/task/logs/ckpt1200.json
+      locator: "[512], [513]"
+      observation: >-
+        "stop_reasons: Counter({'stop': 44, 'max_tokens': 6}); continued (>1
+        ANSWER): 9 / 50" under sampled decoding
+    - path: /home/ben/task/logs/ckpt1200.json
+      locator: "[540], [541], [543], [544]"
+      observation: >-
+        the eval log records no temperature; inspect passes None, the eval's
+        own max_tokens (4000) always wins, and everything else falls through to
+        the model's generation_config
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "**Setting `"temperature": 0.0` in my generation_config.json makes the eval
+    decode greedily** - a legitimate, free optimization that reduces
+    continuation and maximizes single-sample math accuracy." [578]
+  mechanism: >-
+    "`do_sample` is IGNORED by vllm - only explicit `temperature`/`top_p`
+    matter", and the request-level override precedence lets max_tokens come
+    from the eval while temperature falls through to the model's own
+    generation_config [572], [578]. The eos fix (eos_token_id=[151643,151645])
+    in the same config is what lets vllm stop on <|im_end|> at all [62], [293].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/sft_v1/checkpoint-1800
+    origin: exp-03
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "vllm (via inspect); prep_checkpoint.py writes config.json + generation_config.json"
+    peft: "none"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        generation_config.json written as {"eos_token_id": [151643, 151645],
+        "bos_token_id": 151643, "temperature": 0.0, "top_p": 1.0,
+        "transformers_version": "4.57.3"} and config.json eos_token_id set to
+        [151643, 151645] [579], [1013]. The same script also copies the base
+        model's tokenizer files into the checkpoint dir.
+    target_format: >-
+      unchanged model weights; only the decoding/stop configuration the eval
+      reads changes
+  command:
+    argv:
+      - python
+      - prep_checkpoint.py
+      - runs/sft_v1/checkpoint-1800
+      - runs/eval_ckpt1800
+    cwd: /home/ben/task
+    script: /home/ben/task/prep_checkpoint.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/eval_ckpt1800
+      - --limit
+      - "100"
+      - --max-tokens
+      - "1024"
+      - --max-connections
+      - "16"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --json-output-file
+      - logs/ckpt1800.json
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.54
+    path: /home/ben/task/logs/ckpt1200.json
+  diagnostic:
+    what: "stop_reason distribution and count of completions with more than one ANSWER line"
+    command: []
+    path: /home/ben/task/logs/ckpt1800.json
+
+result:
+  execution: completed
+  wall_h: 0.03
+  output_checkpoint: /home/ben/task/runs/eval_ckpt1800
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No training; the checkpoint was repackaged with the greedy + eos config
+      and, after the eval, copied to final_model as "83% insurance" [661].
+  measurements:
+    - metric: accuracy
+      value: 0.83
+      n: 100
+      path: /home/ben/task/logs/ckpt1800.json
+      delta_vs_comparator: 0.29
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/logs/ckpt1800.json
+    notes: >-
+      "stop_reasons: Counter({'stop': 100}); continued (>1 ANSWER): 0 / 100;
+      completion char len: min 64 max 801 mean 372" [658] - 100% clean stops,
+      zero continuations.
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    "**stopping is now 100% clean** (100/100 stop, 0 continuations) with greedy
+    + epoch 0.9 training. The remaining 17% are genuine reasoning errors ...
+    not format issues" [660]. The mechanism the hypothesis named is confirmed
+    exactly, but the accuracy jump 54% -> 83% is confounded: this checkpoint is
+    also 600 steps further trained than the comparator, and the two evals used
+    different sample counts (50 vs 100).
+  decision: adopt
+  next_step: >-
+    Save it as final_model insurance and "pursue rejection sampling to fix
+    reasoning errors" [660].
+
+provenance:
+  kind: extracted
+  run_ref: r-049e5f94
+  launch_i: 645
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [512, 513, 540, 541, 543, 544, 572]
+    setup: [578, 579, 645]
+    evaluation: [651]
+    result: [657, 658, 660, 661]
+    conclusion: [660]
+  snapshot_files:
+    - prep_checkpoint.py
+    - fix_eos.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - >-
+      The decode change was never tested in isolation: greedy decoding was first
+      applied to a checkpoint that was also 600 steps further trained than the
+      last evaluated one. The agent's own later summary attributes ~54% -> 83%
+      to both together ("greedy + enough training both matter", [730]).
+    - >-
+      logs/ckpt1800.json is not in the workspace snapshot.

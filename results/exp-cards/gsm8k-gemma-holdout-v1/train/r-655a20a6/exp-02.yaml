@@ -1,0 +1,194 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null              # digest header states this run has no event timestamps
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The LoRA model from exp-01 emits the required "ANSWER: n" line reliably but gets the
+    arithmetic and the chain of reasoning wrong, scoring 0.46 on 50 official samples; one
+    sample also degenerated into an endlessly repeated expression instead of terminating.
+  evidence:
+    - path: /home/ben/task/eval_results_50.json
+      locator: "accuracy key"
+      observation: "0.46 (stderr 0.071) on the official set at --limit 50 [140]"
+    - path: /home/ben/task/logs/2026-03-18T11-09-13+01-00_gsm8k_YSxXTrkxTqVk5bEDgbfxKM.json
+      locator: "first 10 samples, printed at [143]; output at [144]"
+      observation: >-
+        agent's reading at [146]: "The model follows the format well (ANSWER: X) but makes
+        reasoning errors."
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-03-18T11-09-13+01-00_gsm8k_YSxXTrkxTqVk5bEDgbfxKM.json
+      question: null
+      gold: null
+      model_output: "... 2 = 3/4 + 1 + 2 = 3/4 + 1 + 2 = 3/4 + 1 + 2 = 3/4 + 1 + 2 = ... (repeats to the token limit)"
+      failure: "degenerate repetition, no ANSWER line reached; the digest truncates this item's header so its target is not recoverable"
+    - id: null
+      source: /home/ben/task/logs/2026-03-18T11-09-13+01-00_gsm8k_YSxXTrkxTqVk5bEDgbfxKM.json
+      question: null
+      gold: "20"
+      model_output: >-
+        "...20 candles / 10 = 2 pounds of beeswax. The cost of the supplies for 2 pounds of
+        beeswax is $10. The cost of the wicks for 20 candles is $2 ... In total, the cost of
+        supplies is $10 + $2 = $12 ... revenue is 20 x $2 = $40. His net profit is
+        $40 - $12 = $28." / "ANSWER: 28"
+      failure: "arithmetic each step is self-consistent but the problem is set up wrongly; answered 28 against gold 20"
+    - id: null
+      source: /home/ben/task/logs/2026-03-18T11-09-13+01-00_gsm8k_YSxXTrkxTqVk5bEDgbfxKM.json
+      question: null
+      gold: "7"
+      model_output: >-
+        "In one week, she will eat 4 x 1 = 4 dozen eggs. In three weeks she will eat 4 dozen
+        eggs." / "ANSWER: 12"
+      failure: "reasoning stops one step early and contradicts itself; the emitted answer 12 does not follow from it, gold is 7"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Full fine-tuning of all parameters of the base model on the same data for 2 epochs,
+    instead of a 1-epoch LoRA adapter, "should give better math reasoning" [149].
+  mechanism: >-
+    More epochs and updating every parameter rather than a rank-128 adapter; a memory
+    estimate at [147]/[148] put full fine-tuning at ~39.8 GB (6.6 model + 26.5 optimizer +
+    6.6 gradients) against 80 GB available, so it was judged to fit.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model       # train_full.py loads the base model, not exp-01's checkpoint
+    hash: null
+  data:
+    - path: /home/ben/task/train_split.jsonl
+      source: "gsm8k (main/train) + meta-math/MetaMathQA (GSM_Rephrased, GSM_AnsAug, GSM_SV, GSM_FOBAR)"
+      n_examples: 254744
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        unchanged from exp-01: the same file built at [95]/[96] - gsm8k train twice (with
+        and without the eval's prompt template), all GSM-typed MetaMathQA with the template
+        on a random 30%, calculator annotations and trailing answer lines stripped, shuffled
+        seed 42, first 200 rows held out as val_split.jsonl.
+      repeats: "gsm8k train x2 (templated + plain); MetaMathQA x1"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129)
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        every value above is a module constant in train_full.py, not a CLI argument; the
+        workspace copy is the file written at [150] and the launch passed no arguments, so
+        nothing was overridden. Also set: optim="adamw_torch_fused", packing=True,
+        dataset_text_field="text", gradient_checkpointing=True (use_reentrant=False),
+        eval_strategy/save_strategy="steps" every 2000, save_total_limit=2,
+        load_best_model_at_end=False, attn_implementation="flash_attention_2",
+        dataloader_num_workers=4. Effective batch size 32; the launch printed
+        "Total params: 3,075,098,624 | Trainable: 3,075,098,624" [153].
+    target_format: >-
+      same ChatML text as exp-01: "<|im_start|>{role}\n{content}<|im_end|>\n", assistant
+      content "<think>\n{reasoning}\n</think>\n\nANSWER: {number}"
+  command:
+    argv: [python3, train_full.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_full.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null          # the timer at [137], before the exp-01 eval, reported 8:03 of the 10 h left
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: []              # this output was never evaluated in the stream
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.46
+    path: /home/ben/task/eval_results_50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: killed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      the digest ends inside this launch's output [153]: the data was mapped to text
+      (254,744 train / 200 val), the model loaded, and all 3,075,098,624 parameters were
+      reported trainable - then the stream stops. No loss line, checkpoint save, merge or
+      eval appears afterwards, so per the extraction protocol this is recorded as `killed`
+      for a launch that simply stops appearing, not as an observed kill or crash.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Full fine-tuning was launched against the LoRA incumbent's 0.46 with roughly 8 h of
+    budget nominally remaining, and the recorded stream ends while it was still starting
+    up. Nothing is known about whether it trained, saved, or beat exp-01.
+  decision: abandon_line
+  next_step: null
+
+# ---- provenance (extraction only) ------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-655a20a6
+  launch_i: 152
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [140, 142, 143, 144, 146]
+    setup: [147, 148, 149, 150, 152]
+    evaluation: []
+    result: [153]
+    conclusion: [137, 153]
+  snapshot_files:
+    - train_full.py
+    - prepare_data.py
+    - val_split.jsonl
+    - eval_results_50.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the digest stops mid-output at [153]; whether this launch completed its 2 epochs, was killed, or crashed is not recoverable"
+    - "train_full.py saves to /home/ben/task/final_model, the same directory exp-01's merged model occupies, so which weights were submitted is unsettled - the workspace snapshot carries no checkpoint"
+    - "no eval of this output exists; the 0.46 comparator is exp-01's number, and the two were never measured side by side"

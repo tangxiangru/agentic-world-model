@@ -1,0 +1,198 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 3.20
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    Two things the agent named in the script it wrote just before this launch
+    [186]: the model has to be taught to stop - "Add custom EOS token so the
+    model learns to stop properly / We will explicitly use <|im_end|> as the
+    stop token during training" - and the few-shot context has to be stable and
+    eval-like - "Prepare a FIXED few-shot bank from gsm8k" with
+    "8 few shots like typical eval", against exp-03's 5 re-sampled per example.
+    The training set goes back to the 240k MetaMathQA GSM slice rather than
+    gsm8k's 7.5k.
+  evidence:
+    - path: /home/ben/task/eval_metrics_v2.json
+      locator: "[137]"
+      observation: "exp-03, trained on gsm8k train only, scored 0.040 before its EOS was fixed"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-9e0ad3aa.md
+      locator: "[181]"
+      observation: "the same weights with EOS fixed reached 0.400 and 10x fewer output tokens, i.e. stopping is what mattered"
+    - path: /home/ben/task/check_metamath.py
+      locator: "[182]"
+      observation: "agent re-reads raw MetaMathQA GSM responses before rewriting the trainer"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Training on the 240k MetaMathQA GSM slice with <|im_end|> set as the
+    tokenizer's and the model's EOS, and with one fixed 8-shot prefix "like
+    typical eval", will produce a model that stops properly and beats the
+    gsm8k-only models.
+  mechanism: >-
+    Agent's comments at [186]: the stop token is learned because the EOS the
+    trainer appends is the same <|im_end|> the eval template ends turns with;
+    the few-shot bank is fixed so every example sees the same prefix.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null                       # loaded in-process by the script, never written to disk
+      source: "HF meta-math/MetaMathQA (split=train), filtered type.startswith('GSM'); 8-shot prefix from HF openai/gsm8k (main, split=train)"
+      n_examples: 239000               # "Adding EOS to train dataset ... 239000" [191]
+      built_by: /home/ben/task/train_v3.py
+      build_command: []                # formatting is inline in the training script
+      repeats: 1
+      selection: >-
+        240000 GSM rows of MetaMathQA [237]; one fixed 8-shot system prefix
+        drawn once with random.seed(42) from gsm8k train; per row the text is
+        "<|im_start|>system\n{8 few-shot blocks}<|im_end|>\n<|im_start|>user\n
+        {eval MATH_PROMPT_TEMPLATE(query)}\n<|im_end|>\n<|im_start|>assistant\n
+        {response before '####'}\n\nANSWER: {first line after '####'}<|im_end|>\n";
+        train_test_split(test_size=1000) -> 239000 train, 1000 eval.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: null                       # random.seed(42) is for the few-shot draw only; no training seed set
+      other: >-
+        All values are literals in the SFTConfig of train_v3.py as written at
+        [186]; the launch passed no CLI arguments. NOTE the snapshot copy of
+        train_v3.py is the post-launch text - at [240] the agent changed
+        per_device_train_batch_size 2 -> 1, gradient_accumulation_steps 16 -> 32
+        and max_length 2048 -> 4096, after this launch had finished. Effective
+        batch 32. save_strategy=no, eval_strategy=steps/eval_steps=1000,
+        max_grad_norm=1.0, dataset_num_proc=16, completion-only loss via the
+        agent's CustomDataCollator. tokenizer.eos_token, model.config.eos_token_id
+        and model.generation_config.eos_token_id are all set to <|im_end|>
+        in-script.
+    target_format: >-
+      fixed 8-shot system prefix, eval prompt template in the user turn,
+      assistant turn = MetaMathQA reasoning then "ANSWER: <n>", closed with
+      <|im_end|>.
+  command:
+    argv: [python, train_v3.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v3.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: 4.0                     # shell timeout 14400000 ms at [190]
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "100", --json-output-file, eval_metrics_v4.json]
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.4
+    path: null                         # [181]; eval_metrics_v4.json was overwritten by this card's own eval
+  diagnostic:
+    what: "does the model stop? - agent dumps eval-log completions with check_logs.py"
+    command: [python, check_logs.py]
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 4.0                          # [190] t=+3.20h -> [191] t=+7.20h
+  duration_h: 4.0
+  steps: null                          # [191] is truncated before any step total
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "stdout truncated at [191]; no loss line survives in the digest. Overwrote exp-02's final_model."
+  measurements:
+    - metric: accuracy
+      value: 0.02
+      n: 100
+      path: /home/ben/task/eval_metrics_v4.json
+      delta_vs_comparator: -0.38
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [193]: 344,367 tokens [I: 221,723, O: 122,644] - ~1200 output tokens per
+      sample, so it still does not stop. [197] shows a completion that answers
+      ("ANSWER: 251"), then keeps going and invents two further problems until
+      it hits output_tokens 2048, against Expected: 221.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    Four hours of SFT on the 240k MetaMathQA slice scored 0.020 [193], an order
+    below the 0.400 the far cheaper gsm8k-trained checkpoint reached once its
+    EOS was fixed [181]. The stated mechanism failed on its own terms: the
+    check at [197] shows the model still running past its own ANSWER line into
+    freshly invented problems, so setting EOS inside the script did not carry
+    into the saved checkpoint.
+  decision: adopt
+  next_step: >-
+    Patch the saved checkpoint's EOS the way it was patched for the other model
+    and re-evaluate (exp-06).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-9e0ad3aa
+  launch_i: 190
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [137, 181, 182, 186]
+    setup: [186, 190, 237]
+    evaluation: [192]
+    result: [191, 193, 196, 197]
+    conclusion: [193, 197, 200]
+  snapshot_files:
+    - train_v3.py
+    - eval_metrics_v4.json
+    - check_metamath.py
+    - check_logs.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The agent never states a comparator for this launch; exp-04's 0.400 is used because it is the incumbent best measured under the same --limit 100."
+    - "train_v3.py in the snapshot is the post-[240] text (batch 1, grad_accum 32, max_length 4096); the launched values are taken from the write at [186]."
+    - "eval_metrics_v4.json is reused here as the output filename; it previously held exp-04's 0.400 and now holds this card's 0.020."

@@ -1,0 +1,211 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 0.56
+
+problem:
+  statement: >-
+    "I see several issues: 1. There are strange non-ASCII characters (Thai,
+    Russian) being output at the start of responses 2. The model is often not
+    completing its answer properly (getting cut off) 3. The answer extraction is
+    finding intermediate numbers instead of the final #### answer... Also, I
+    notice the model uses "ANSWER:" sometimes and "####" other times
+    inconsistently" [90], and "The issue seems to be that the chat
+    template/formatting is causing issues" [96].
+  evidence:
+    - path: /home/ben/task/logs/2026-01-22T12-40-16+00-00_gsm8k_bkEdncKfLk4WRocEpZiti6.json
+      locator: "[89] - first 5 samples printed"
+      observation: >-
+        every printed completion opens with stray non-ASCII tokens and ends with a
+        non-ASCII token glued to the number; two of the three shown are scored
+        incorrect on an intermediate number even though the chain of thought ends
+        on the right value
+    - path: /home/ben/task/logs/2026-01-22T12-11-45+00-00_gsm8k_ZgyGa8jU2W5DZZxRaUDx4w.json
+      locator: "[28]"
+      observation: "base model scored 0.400 on 20 samples; the fine-tuned model scores 0.160 on 50"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-01-22T12-40-16+00-00_gsm8k_bkEdncKfLk4WRocEpZiti6.json
+      question: "Tracy used a piece of wire 4 feet long to support tomato plants in the garden. The wire was cut into ..."
+      gold: "8"
+      model_output: "สุขภาพ\\n\\nรสชาติ\\n\\n6 inches = 0.5 feet\\n4 feet / 0.5 = <<4/0.5=8>>8 pieces\\nANSWER: 8บัตร"
+      failure: "reasoning correct, but the scorer extracted 0.5; leading Thai tokens and a Thai token fused to the final 8"
+    - id: null
+      source: /home/ben/task/logs/2026-01-22T12-40-16+00-00_gsm8k_bkEdncKfLk4WRocEpZiti6.json
+      question: "Marie ordered one chicken meal that costs $12, 5 packs of milk that costs $3 each, 4 apples that cos ..."
+      gold: "2"
+      model_output: "... total cost for chicken meal, milk, and apples is $12 + $15 + $6 = <<12+15+6=33>>33 ... she bought $17/$8.50 = <<17/8.5=2>>2 boxes of pizza.\\nANSWER: 2เป็นคน"
+      failure: "correct final line, but the scorer extracted the intermediate 33"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "The issue seems to be that the chat template/formatting is causing issues.
+    Let me try simpler formatting without the system prompt and use the base
+    model's capabilities better" [96]; train_v2.py header: "Version 2: Simpler
+    formatting, lower LR, better prompt engineering."
+  mechanism: >-
+    Dropping the system prompt and folding the instruction into the user turn, at a
+    quarter of the learning rate and half the LoRA rank, should leave the base
+    model's own behaviour more intact and stop the corrupted leading tokens.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF:openai/gsm8k (main, train split), loaded in-process by the training script"
+      n_examples: 7473
+      built_by: /home/ben/task/train_v2.py
+      build_command: []
+      selection: >-
+        all 7,473 train items, question + the untouched GSM8K answer; --use_metamath
+        not passed, so no MetaMathQA
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.0 (peft 0.18.1)"
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]"
+    hyperparams:
+      lr: 5.0e-05
+      epochs: 1
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        lr, epochs, batch_size, grad_accum, max_seq_length, lora_r, lora_alpha and
+        warmup_ratio are on the command line at [100]. lora_dropout=0.05 is the
+        argparse default of train_v2.py (in the workspace) and was not overridden;
+        scheduler=cosine, bf16, packing=False, optim=adamw_torch_fused are
+        hard-coded in its SFTConfig.
+    target_format: >-
+      Qwen chat template, no system turn: user = "Solve this math problem step by
+      step. Show your work and put the final answer after ####.\n\nProblem: {q}",
+      assistant = the raw GSM8K answer ending in "#### n"
+  command:
+    argv:
+      - rm
+      - -rf
+      - checkpoints_gsm8k
+      - final_model
+      - "&&"
+      - python3
+      - train_v2.py
+      - --output_dir
+      - ./checkpoints_v2
+      - --final_model_dir
+      - ./final_model
+      - --batch_size
+      - "4"
+      - --gradient_accumulation_steps
+      - "8"
+      - --learning_rate
+      - "5e-5"
+      - --num_train_epochs
+      - "1"
+      - --max_seq_length
+      - "1024"
+      - --lora_r
+      - "32"
+      - --lora_alpha
+      - "64"
+      - --warmup_ratio
+      - "0.05"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: null
+  budget:
+    gpu: "one H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, final_model, --limit, "50", --max-connections, "1", --max-tokens, "2048"]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.160
+    path: /home/ben/task/logs/2026-01-22T12-40-16+00-00_gsm8k_bkEdncKfLk4WRocEpZiti6.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.19
+  duration_h: 0.18
+  steps: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.4218
+    steps: null
+    notes: >-
+      train_runtime 647.2 s, 1.0 epoch, final logged loss 0.351,
+      mean_token_accuracy 0.927, 1,630,425 tokens seen [101].
+  measurements:
+    - metric: accuracy
+      value: 0.140
+      n: 50
+      path: /home/ben/task/logs/2026-01-22T12-54-49+00-00_gsm8k_oBygWPPGtzHxRmzKYmWJFW.json
+      delta_vs_comparator: -0.020
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "Still only 14% accuracy, which is worse than the baseline of 40%" [105]. The
+    simpler chat formatting changed nothing: the printed samples still open with
+    Thai/Hebrew tokens and the scorer still lifts intermediate numbers [107]. Under
+    the identical --limit 50 protocol this is 0.140 against exp-02's 0.160.
+  decision: reject
+  next_step: >-
+    Read the eval harness itself; the agent found it grades an "ANSWER: $ANSWER"
+    line with 10 few-shot examples [115], and decided to "train the model
+    specifically in the format that the evaluation expects" [118].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-98c04d79
+  launch_i: 100
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [89, 90, 96]
+    setup: [97, 100]
+    evaluation: [103]
+    result: [101, 104]
+    conclusion: [105, 107, 108, 115, 118]
+  snapshot_files:
+    - train_v2.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the failure examples come from the official eval log, the only per-item output the agent ever printed; no held-out dev or probe set was built in this run"
+    - "the eval logs named in the stream are not in the workspace snapshot"

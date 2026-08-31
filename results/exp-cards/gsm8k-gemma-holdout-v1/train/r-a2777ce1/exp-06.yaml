@@ -1,0 +1,214 @@
+schema_version: "awm-experiment-card-v1"
+card_id: "exp-06"
+created_at: null
+elapsed_h: 0.95
+problem:
+  statement: null
+  evidence: []
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+setup:
+  parent_checkpoint:
+    path: "Qwen/Qwen3-1.7B-Base"
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k
+      n_examples: 7473
+      built_by: null
+      build_command: []
+      selection: "full openai/gsm8k main train split, reformatted as ChatML"
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: "meta-math/MetaMathQA"
+      n_examples: 20000
+      built_by: null
+      build_command: []
+      selection: "shuffle(seed=42) then first 20000 rows; query/response reformatted as ChatML; concatenated with GSM8K and shuffled with seed 42"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (version from [19])"
+    peft: none
+    hyperparams:
+      lr: 5e-05
+      epochs: 2
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: null
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: "gradient_checkpointing=True, optim=adamw_torch, save_strategy=epoch, packing=False, logging_steps=50, report_to=none; every value is written out in the inline program at the launch event, nothing is taken from a default"
+    target_format: "\"<|im_start|>user\\n{question}<|im_end|>\\n<|im_start|>assistant\\n{answer}<|im_end|>\"; the assistant turn is the GSM8K reference solution verbatim, ending in the \"#### <n>\" line the grader matches on"
+  command:
+    argv:
+      - python3
+      - "-c"
+      - |-
+        import torch
+        from datasets import load_dataset, concatenate_datasets
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from trl import SFTTrainer, SFTConfig
+
+        print('Loading tokenizer...')
+        tokenizer = AutoTokenizer.from_pretrained('Qwen/Qwen3-1.7B-Base', trust_remote_code=True)
+        tokenizer.pad_token = tokenizer.eos_token
+
+        print('Loading model...')
+        model = AutoModelForCausalLM.from_pretrained(
+            'Qwen/Qwen3-1.7B-Base',
+            torch_dtype=torch.bfloat16,
+            device_map='auto',
+            trust_remote_code=True,
+        )
+
+        print('Loading GSM8K train data...')
+        gsm8k = load_dataset('openai/gsm8k', 'main', split='train')
+        def format_gsm8k(example):
+            return {'text': f\"<|im_start|>user\n{example['question']}<|im_end|>\n<|im_start|>assistant\n{example['answer']}<|im_end|>\"}
+        gsm8k = gsm8k.map(format_gsm8k, remove_columns=gsm8k.column_names)
+        print(f'GSM8K examples: {len(gsm8k)}')
+
+        print('Loading MetaMathQA...')
+        try:
+            metamath = load_dataset('meta-math/MetaMathQA', split='train')
+            metamath = metamath.shuffle(seed=42).select(range(min(20000, len(metamath))))
+            metamath = metamath.map(lambda x: {'text': f\"<|im_start|>user\n{x['query']}<|im_end|>\n<|im_start|>assistant\n{x['response']}<|im_end|>\"}, remove_columns=metamath.column_names)
+            print(f'MetaMathQA examples: {len(metamath)}')
+            combined = concatenate_datasets([gsm8k, metamath])
+        except Exception as e:
+            print(f'Could not load MetaMathQA: {e}')
+            combined = gsm8k
+
+        combined = combined.shuffle(seed=42)
+        print(f'Total training examples: {len(combined)}')
+
+        print('Setting up training...')
+        training_args = SFTConfig(
+            output_dir='final_model_v2',
+            num_train_epochs=2,
+            per_device_train_batch_size=8,
+            gradient_accumulation_steps=2,
+            learning_rate=5e-5,
+            weight_decay=0.01,
+            warmup_ratio=0.05,
+            logging_steps=50,
+            save_strategy='epoch',
+            bf16=True,
+            gradient_checkpointing=True,
+            optim='adamw_torch',
+            report_to='none',
+            max_length=1024,
+            packing=False,
+        )
+
+        trainer = SFTTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=combined,
+            processing_class=tokenizer,
+        )
+
+        print('Starting training...')
+        trainer.train()
+
+        print('Saving model...')
+        trainer.save_model('final_model_v2')
+        tokenizer.save_pretrained('final_model_v2')
+        print('Model saved to final_model_v2')
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: 1x H100
+    planned_h: null
+evaluation:
+  protocol:
+    command:
+      - python3
+      - evaluate.py
+      - "--model-path"
+      - final_model_v2
+      - "--limit"
+      - "150"
+      - "--max-connections"
+      - "2"
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: "exp-05"
+    value: 0.32
+    path: "/home/ben/task/logs/2026-02-16T12-32-41+01-00_gsm8k_k4oS3KeKWSFL9qsFTDyDWM.json"
+  diagnostic:
+    what: null
+    command: []
+    path: null
+result:
+  execution: completed
+  wall_h: 0.46
+  output_checkpoint: /home/ben/task/final_model_v2
+  training_summary:
+    final_loss: null
+    steps: 3436
+    notes: "steps read from the checkpoint-1718 / checkpoint-3436 directories copied out at [163]; 1718 steps per epoch at effective batch 16 over 27473 examples. Background job, so no loss trace. wall_h is an upper bound: launched at [140] t=+0.95h, evaluated at [158] t=+1.41h"
+  measurements:
+    - metric: accuracy
+      value: 0.327
+      n: 150
+      path: "/home/ben/task/logs/2026-02-16T13-04-06+01-00_gsm8k_PhgoFPjdpomRHuK9YJGNZc.json"
+      delta_vs_comparator: 0.007
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Adding 20k MetaMathQA and a second epoch moved 150-sample accuracy from 0.320 to 0.327 [159], a 0.7-pt delta against a stderr of 0.038 - indistinguishable from the incumbent. The agent nonetheless promoted it into final_model at [162]."
+  decision: adopt
+  next_step: "raise the learning rate from 5e-5 to 1e-4 and train 3 epochs on GSM8K alone ([164])"
+provenance:
+  kind: extracted
+  run_ref: "r-a2777ce1"
+  launch_i: 140
+  stated_by_agent:
+    problem: false
+    hypothesis: false
+  anchors:
+    problem: []
+    setup:
+      - 140
+    evaluation:
+      - 158
+    result:
+      - 159
+      - 163
+    conclusion:
+      - 159
+      - 162
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: "claude-opus-5"
+  unresolved:
+    - "the +0.007 delta is inside one stderr of either measurement, so the promotion at [162] is not supported by the numbers the agent had"

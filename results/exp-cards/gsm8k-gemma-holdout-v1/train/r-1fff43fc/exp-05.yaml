@@ -1,0 +1,173 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 0.92
+
+problem:
+  statement: >-
+    With the two config fixes in place the gold-only SFT model sits at 73.3% at
+    --limit 150; the agent wanted to push accuracy higher than what gold GSM8K
+    rationales alone give.
+  evidence:
+    - path: /home/ben/task/logs/sft_v1_greedy.json
+      locator: "[359]"
+      observation: >-
+        "Greedy decoding -> 73.3% ... Let me update final_model and then push higher
+        with rejection-sampling (RFT)."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Adding rejection-sampled solutions the model generated itself and that reach the
+    gold answer, on top of the gold GSM8K rationales, will push accuracy higher than
+    the gold-only model.
+  mechanism: >-
+    Stated only as "build a rejection-sampling (RFT/STaR) dataset to push higher"
+    [334] / "push higher with rejection-sampling (RFT)" [359]; no mechanism was
+    spelled out.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/train_v2.jsonl
+      source: "openai/gsm8k (main, train split) + synthetic:self"
+      n_examples: null
+      built_by: /home/ben/task/work/prep_data_v2.py
+      build_command: [python, work/prep_data_v2.py]
+      selection: >-
+        Gold half: one record per GSM8K train item, `<<...>>` stripped, reformatted to
+        end "ANSWER: <n>" (7473 items per the agent at [885]). RFT half: work/rft_raw.jsonl,
+        produced at [372] by `python work/rft_generate.py` sampling work/sft_v1 with
+        K=6, temperature 0.9, top_p 0.95, max_tokens 512, stop_token_ids=[128012],
+        seed 0 over every GSM8K train question; a sample is kept when its last number
+        equals gold, the text is truncated at the ANSWER line, exact duplicates are
+        dropped and at most 2 solutions per question are kept (~13.6K solutions per
+        the agent at [885]). Records shuffled, seed 123; system prompt 50/50 brief
+        instruction vs random k-shot (k=2-8). The script's "total records" print at
+        [396] is not in the digest.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr, epochs and the data path are positional launch args. The rest are the
+        SFTConfig literals in the script as written at [160] (script text is in the
+        digest only, not in the workspace snapshot): packing=False,
+        assistant_only_loss=True, gradient_checkpointing=True, optim=adamw_torch,
+        max_grad_norm=1.0, save_strategy="no", bf16=True, flash_attention_2. At [410]
+        the script was extended to patch the saved model after training with
+        eos_token_id=[128012,128001] and greedy generation settings, so every later
+        checkpoint is eval-ready.
+    target_format: >-
+      the eval's chat template (templates/smollm.jinja); assistant turn ends in
+      "ANSWER: <n>", loss on assistant tokens only
+  command:
+    argv: [nohup, python, work/train_sft.py, work/sft_v2, "2", 1e-5, work/train_v2.jsonl]
+    cwd: /home/ben/task
+    script: /home/ben/task/work/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, work/sft_v2, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, logs/sft_v2.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.733
+    path: /home/ben/task/logs/sft_v1_greedy.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.01
+  output_checkpoint: /home/ben/task/work/sft_v2
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No loss or step count was printed for this run. wall_h derived from event
+      timestamps (launch [415] t=+0.92h, first eval [431] t=+1.93h).
+  measurements:
+    - metric: accuracy
+      value: 0.767
+      n: 150
+      path: /home/ben/task/logs/sft_v2.json
+      delta_vs_comparator: 0.034
+    - metric: accuracy
+      value: 0.742
+      n: 500
+      path: /home/ben/task/logs/sft_v2_500.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "v2 = 76.7% (+3.3pp)" against the gold-only greedy model under the same --limit 150
+    protocol [449]; a wider 500-sample rerun read 74.2% and became the comparator for
+    everything after. Gold + self-generated correct solutions beat gold alone.
+  decision: adopt
+  next_step: >-
+    Lock v2 in as final_model and run a 500-sample eval for a tighter estimate [449];
+    then analyse the remaining errors [475].
+
+# official_accuracy is joined by the pipeline, never written by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-1fff43fc
+  launch_i: 415
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [334, 359]
+    setup: [368, 372, 394, 396, 403, 405, 410, 415]
+    evaluation: [431, 450]
+    result: [449, 586]
+    conclusion: [449]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The 500-sample value 0.742 is never printed directly in the digest; it is the agent's own back-reference to logs/sft_v2_500.json at [586] (\"worse than v2 (74.2%)\")."
+    - "Neither prep_data_v2.py's record count nor rft_generate.py's kept-solution count appears in the digest; the ~13.6K figure is the agent's summary at [885]."

@@ -1,0 +1,207 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.17
+
+problem:
+  statement: >-
+    The base model scores 0.44 on the official path and the failures are
+    contract failures, not math: "the base model likely fails the output
+    contract rather than the math" [12232]; "Classic base-model failures:
+    derailment into garbage, prompt repetition, no stopping - the math itself is
+    often fine when it stays on track" [12555]. The base ships no instruct
+    decoding config, so vLLM sampled at temperature 1.0 and the completions never
+    stopped [14158].
+  evidence:
+    - path: /home/ben/task/results_base_100.json
+      locator: "[12114]"
+      observation: "baseline accuracy 0.44 (stderr 0.0499) on the official path at --limit 100"
+    - path: /home/ben/task/logs
+      locator: "[12233]-[12234]; newest inspect log of the baseline run, exact filename not printed"
+      observation: "raw completions: one derails into unrelated text for 5.8K chars and never emits a stop token"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs
+      question: null
+      gold: "540"
+      model_output: >-
+        "3 runs a week x 3 sprints = 9 sprints. 60 meters x 9 sprints = 540
+        meters." then 5.8K further characters of unrelated generated text
+        (category lists, an unrelated integral derivation), stop_reason=stop
+      failure: >-
+        the arithmetic is right in the first line, but the model keeps generating,
+        so the last numeric word the scorer reads is not the answer [12234]
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full fine-tuning on GSM8K train rendered byte-for-byte in the eval's own
+    prompt format, with completions that end in "ANSWER: X" + <|im_end|>, and
+    served with greedy decoding and <|im_end|> as EOS, will remove the
+    derailment / no-stop failures and lift accuracy far above the 0.44 baseline.
+  mechanism: >-
+    "vLLM reads temperature/top_p/top_k/min_p/repetition_penalty/max_new_tokens
+    from generation_config.json - the base ran at temp 1.0 (explains the noise).
+    I'll ship greedy decoding + proper EOS in my final model, mirroring
+    Qwen3-Instruct's config arrangement exactly" [14158]; SFT supplies the stop
+    discipline and the fixed ANSWER tail the scorer needs.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/build_data_phase1.py
+      build_command: [python, build_data_phase1.py]
+      selection: >-
+        every GSM8K train row; <<...>> calculator annotations stripped, trailing
+        spaces and 3+ newlines collapsed; prompt = the exact eval rendering
+        (system = 10 few-shots drawn with seed 42, user = MATH_PROMPT_TEMPLATE,
+        then <|im_start|>assistant); completion = cleaned gold reasoning +
+        "ANSWER: <target>" + <|im_end|>. Answers were stripped of commas in this
+        first build - the comma bug found at [29344] was fixed only for exp-04.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full fine-tune, flash_attention_2, gradient checkpointing"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 4
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum are from the launch argv. max_seq_len 3072 and seed 0
+        are train_sft.py argparse defaults, not overridden by this launch; the
+        script is in the snapshot. Constants hard-coded in the script:
+        lr_scheduler_type=cosine, warmup_ratio=0.03, weight_decay=0.0,
+        adam_beta2=0.95, max_grad_norm=1.0, optim=adamw_torch_fused, bf16=True,
+        save_strategy=no (single save at the end), loss masked to completion
+        tokens (prompt labels = -100), rows over 3072 tokens dropped. The
+        snapshot holds the end-of-run version of train_sft.py; --pack, --model
+        and the pre-save generation_config reset were added after this launch.
+    target_format: >-
+      eval-rendered chat prompt; assistant turn = reasoning lines, blank line,
+      "ANSWER: <target>", then <|im_end|>
+  command:
+    argv: [python, train_sft.py, --data, data/sft_gsm8k_train.jsonl, --out, runs/phase1, --epochs, "2", --lr, "1e-5", --bs, "4", --accum, "16"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /tmp/train_p1.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, models/phase1, --limit, "150", --max-connections, "16", --json-output-file, results_phase1_150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.44
+    path: /home/ben/task/results_base_100.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.05
+  duration_h: 1.05
+  steps: 234
+  output_checkpoint: /home/ben/task/runs/phase1/final
+  training_summary:
+    final_loss: 0.285
+    steps: 234
+    notes: >-
+      "Phase 1 trained (final loss 0.285)" [20741]; step count from "Training is
+      running (234 steps, GPU 98%, 60GB)" [14547]. wall/duration derived from the
+      event timestamps (launch t=+0.17h [14168], completion reported t=+1.22h
+      [20741]), not printed by the trainer. The checkpoint was packaged to
+      models/phase1 with greedy decoding and <|im_end|> EOS by
+      "python package_model.py --src runs/phase1/final --dst models/phase1
+      --temperature 0.0" [20742] before every evaluation below.
+  measurements:
+    - metric: accuracy
+      value: 0.8467
+      n: 150
+      path: /home/ben/task/results_phase1_150.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.8088
+      n: 1140
+      path: null
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Big jump: 44% -> 84.7%" [20949], and the remaining errors are "genuine
+    reasoning slips (not format)" [23144] - the contract failures are gone. The
+    verdict stays inconclusive because the comparator was measured at --limit 100
+    and this output at --limit 150, so the two numbers are not under one protocol.
+    The later full-test read (0.8088 on 1140 of 1319 before the run was killed
+    [46680], [46814]) put it clearly below phase 2.
+  decision: reject
+  next_step: >-
+    "Phase 2 (more + more careful CoT data) is the right next lever" [23144] -
+    mix the gold set with external GSM8K-style solutions.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-b8ac2f29
+  launch_i: 14168
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [12114, 12232, 12234, 12555]
+    setup: [11109, 11112, 14158, 14168]
+    evaluation: [20742, 20871]
+    result: [14547, 20741, 20949, 46680]
+    conclusion: [20949, 23144, 46814]
+  snapshot_files:
+    - build_data_phase1.py
+    - prompt_contract.py
+    - train_sft.py
+    - package_model.py
+    - evaluate.py
+    - results_base_100.json
+    - results_phase1_150.json
+    - RESULTS.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the baseline comparator was run at --limit 100 and this checkpoint at --limit 150, so no same-protocol delta exists"
+    - "the full-test run of this checkpoint was killed at 1140/1319 [46819] and no results_phase1_full.json is in the snapshot; 0.8088 was read off the live inspect log"
+    - "the sample-level inspect logs under logs/ are not in the snapshot, so the failure example cannot be re-read from task/"

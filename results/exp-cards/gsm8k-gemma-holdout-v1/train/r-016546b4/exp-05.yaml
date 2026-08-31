@@ -1,0 +1,218 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 0.71
+
+problem:
+  statement: >-
+    "The model is not responding to the prompts correctly - it's generating
+    random text or continuing with other problems. This is a base model and needs
+    to be properly instruction-tuned to follow the expected format" [75]. The v1
+    targets were "Question: ... Answer: ... #### n", while the eval asks for a
+    chat turn ending in "ANSWER: $ANSWER", so the 0.140 at [71] is a formatting
+    failure more than a reasoning one.
+  evidence:
+    - path: /home/ben/task/logs/2026-01-20T13-25-57+00-00_gsm8k_UTaht7wexrSndkHR7JhSLM.json
+      locator: "[74], samples 0-2 of the 50-sample eval"
+      observation: "the completions answer a different, invented question; none of the three carries an ANSWER line for the asked problem"
+    - path: /home/ben/task/logs/2026-01-20T13-25-57+00-00_gsm8k_UTaht7wexrSndkHR7JhSLM.json
+      locator: "[71]"
+      observation: "gsm8k (50 samples): accuracy 0.140, stderr 0.050"
+  affected_share: null
+  failure_examples:
+    - id: "eval sample 1 (50-sample run at [70])"
+      source: /home/ben/task/logs/2026-01-20T13-25-57+00-00_gsm8k_UTaht7wexrSndkHR7JhSLM.json
+      question: "James decides to run 3 sprints 3 times a week. He runs 60 meters each sprint. How many total meters does he run a week?"
+      gold: "540"
+      model_output: >-
+        "(user) Solve the following math problem step by step. The last line of
+        your response should be of the form \"ANSWER: $ANSWER\" ... Aubrey is
+        planting tomatoes and cucumbers in her garden. ..."
+      failure: "emits a stray speaker token and then a different, self-invented problem; never answers the sprints question"
+    - id: "eval sample 2 (50-sample run at [70])"
+      source: /home/ben/task/logs/2026-01-20T13-25-57+00-00_gsm8k_UTaht7wexrSndkHR7JhSLM.json
+      question: "Richard lives in an apartment building with 15 floors. Each floor contains 8 units, and 3/4 of the building is occupied. What's the total number of unoccupied units In the building?"
+      gold: "30"
+      model_output: >-
+        "@user Elisa is reading a book. If the book has 250 pages ... ANSWER: 10
+        Okay, great! Now, I want you to also come up with a different task ..."
+      failure: "answers an invented reading-pages problem instead of the apartment problem, then keeps generating new tasks"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Let me train with a better data format that matches this evaluation format"
+    [78] / "a better training script that formats data properly for the chat
+    format used in evaluation" [81]: training on targets that reproduce the eval's
+    own instruction wrapper and end in "ANSWER: {n}" will make the model answer
+    the asked question in the graded form.
+  mechanism: >-
+    The grader matches an "ANSWER: $ANSWER" line. If every training example is the
+    eval prompt (instruction + question + reminder + "Reasoning:") followed by the
+    solution and that exact final line, the model learns to stop at one answer in
+    the shape the grader reads, instead of continuing the document.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF meta-math/MetaMathQA"
+      n_examples: 100000
+      built_by: /home/ben/task/train_v2.py
+      build_command:
+        - python
+        - train_v2.py
+        - --data_source
+        - metamath
+        - --max_samples
+        - "100000"
+      selection: >-
+        GSM_AnsAug / GSM_FOBAR / GSM_Rephrased / GSM_SV rows ("Filtered to 240000
+        GSM-related samples", train_v2.log); each rewritten into the eval's own
+        prompt - "Solve the following math problem step by step. The last line of
+        your response should be of the form \"ANSWER: $ANSWER\" ... Reasoning:" -
+        with the reasoning stripped of "#### n" / "The answer is:" and a final
+        "ANSWER: {n}" line; rows without an ANSWER line dropped (240,000 kept);
+        shuffled with seed 42 and cut to 100,000. Built in-process, not written to
+        disk.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.0 / transformers 4.57.6"
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        scheduler=cosine, warmup_ratio=0.03, seed=42, optim=adamw_torch_fused,
+        gradient_checkpointing=True, save_strategy=epoch, save_total_limit=2,
+        logging_steps=10 are train_v2.py's own defaults/config (workspace copy)
+        and were not overridden on the command line; weight_decay was never set.
+        Effective batch = 32, so 6,250 steps for 2 epochs.
+    target_format: >-
+      the eval prompt verbatim (instruction + question + reminder + "Reasoning:")
+      followed by the cleaned solution and a final line "ANSWER: {n}", as one flat
+      text field - not a chat template.
+  command:
+    argv:
+      - python
+      - train_v2.py
+      - --model_name
+      - Qwen/Qwen3-1.7B-Base
+      - --output_dir
+      - ./trained_model_v2
+      - --data_source
+      - metamath
+      - --max_samples
+      - "100000"
+      - --num_train_epochs
+      - "2"
+      - --per_device_train_batch_size
+      - "4"
+      - --gradient_accumulation_steps
+      - "8"
+      - --learning_rate
+      - 2e-5
+      - --max_seq_length
+      - "1024"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: /home/ben/task/train_v2.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 2.74
+  duration_h: 1.97
+  steps: 5741
+  output_checkpoint: /home/ben/task/trained_model_v2/checkpoint-3125
+  training_summary:
+    final_loss: 0.1243
+    steps: 5741
+    notes: >-
+      Stalled, not finished: train_v2.log stops at step 5741/6250 (epoch 1.71,
+      1:58:25 elapsed, last logged loss 0.1243) with no train_runtime line. At
+      [170] the agent found "0% utilization and only 2MiB memory used ... the
+      training processes have stalled" and killed them at [173]. The epoch-1
+      checkpoint, checkpoint-3125, is the only usable output.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The format-matched SFT ran for about two hours, then stalled at 92% of epoch 2
+    and was killed; no second-epoch model exists. What survived is checkpoint-3125
+    from the end of epoch 1, which the next launch packaged and measured at 0.300
+    on 20 samples [191] - so the format hypothesis is supported only through
+    exp-06, not by anything measured on this card.
+  decision: adopt
+  next_step: >-
+    "Let me use the checkpoint from the first epoch and evaluate it" [115] -
+    copy checkpoint-3125 into final_model (exp-06).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-016546b4
+  launch_i: 84
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [71, 72, 74, 75, 78]
+    setup: [82, 84]
+    evaluation: []
+    result: [85, 112, 117, 170, 173, 175]
+    conclusion: [115, 133, 175]
+  snapshot_files:
+    - train_v2.py
+    - train_v2.log
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "why the run stalled is never established - the agent saw an idle GPU and live processes and killed them; no traceback appears"
+    - "the digest truncates the [85] training output; step, epoch and loss are read from train_v2.log in the snapshot, which this command tee'd"
+    - "checkpoint-3125's score is recorded on exp-06, the launch that copied it into final_model and evaluated it"

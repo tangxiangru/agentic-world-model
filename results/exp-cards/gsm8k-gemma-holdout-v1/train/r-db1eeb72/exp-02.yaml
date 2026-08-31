@@ -1,0 +1,253 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The exp-01 checkpoint scores well on plain held-out prompts but collapses on
+    the benchmark harness: the evaluator prepends solved examples in the system
+    message, and the model "often gets the first answer right, then keeps
+    generating additional Q&A-style text" [155]. The specific cause the agent
+    named: local runs stop at <|im_end|>, "but evaluate.py via vLLM is only
+    stopping on <|endoftext|>, so the model keeps going after the correct answer
+    and gets scored wrong" [162].
+  evidence:
+    - path: /home/ben/task/runs/gsm8k_ft_v1/holdout_64_fewshot5.json
+      locator: "[159], [160]"
+      observation: "eval_holdout.py --limit 64 --fewshot-in-system 5 on exp-01 reproduces the drift/degradation the benchmark showed"
+    - path: null
+      locator: "[126], [148]"
+      observation: "benchmark slice run on exp-01 (evaluate.py --limit 100); the agent reports a 'benchmark collapse' from it, no accuracy in the stream"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/runs/gsm8k_ft_v1/holdout_64_fewshot5.json
+      question: "...as one less parrot than cats. Six of his pets have four legs. He has 2 dogs. How many pets does he have in total?"
+      gold: "19"
+      model_output: "17"
+      failure: "wrong under the 5-shot-in-system prompt shape; printed at [160]"
+    - id: null
+      source: /home/ben/task/runs/gsm8k_ft_v1/holdout_64_fewshot5.json
+      question: "Olaf collects colorful toy cars. At first, his collection consisted of 150 cars... How many toy cars does Olaf have in total, after receiving all these gifts?"
+      gold: "196"
+      model_output: "198"
+      failure: "correct without few-shot examples in the system message [123], wrong with them; printed at [160]"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A short second-stage fine-tune of exp-01 with five solved examples injected
+    into the system prompt will teach the model to stop after answering and fix
+    the benchmark behaviour: "running a short second-stage fine-tune specifically
+    to teach the model to stop after answering" [155].
+  mechanism: >-
+    "it is explicitly training on the system-fewshot prompt shape that broke the
+    benchmark run" [188] - the training prompt is made to match the evaluator's
+    few-shot inference shape, and the target ends at <|im_end|>, so the
+    continuation habit is trained away.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/gsm8k_ft_v1
+    origin: exp-01
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, split=train)"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k.py
+      build_command: []
+      selection: >-
+        same gsm8k train / 256-item validation split as exp-01 (val-size 256,
+        seed 42), but each training prompt now carries a system message of 5
+        solved gsm8k train examples (--fewshot-in-system 5), chosen by the
+        script as the next 5 examples after the current index, excluding itself.
+        Token-length checks before the launch: k=5 avg 1262, p90 1481, max 1660
+        tokens [143].
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer (script train_gsm8k.py)"
+    peft: "none"
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        From the launch: --per-device-eval-batch-size 2, --val-size 256,
+        --logging-steps 20, --fewshot-in-system 5. Not on the command line,
+        taken from train_gsm8k.py argparse defaults in the snapshot (not
+        overridden): seed=42, weight-decay=0.01, warmup-ratio=0.03,
+        template-path=templates/qwen3.jinja, save-total-limit=2. Hard-coded in
+        that script: cosine schedule, adamw_torch_fused, bf16+tf32,
+        max_grad_norm 1.0, gradient checkpointing, per-epoch eval/save with
+        load_best_model_at_end on eval_loss. Validation examples are tokenized
+        with num_fewshot=0 regardless of the flag.
+    target_format: >-
+      system message = 5 solved examples ("question / Reasoning: / ANSWER: n");
+      user = evaluator prompt template; assistant = gold reasoning +
+      "ANSWER: <n>" + <|im_end|>.
+  command:
+    argv:
+      - python
+      - train_gsm8k.py
+      - --model-name
+      - runs/gsm8k_ft_v1
+      - --output-dir
+      - runs/gsm8k_ft_v2_fs5
+      - --num-train-epochs
+      - "1"
+      - --learning-rate
+      - "5e-6"
+      - --per-device-train-batch-size
+      - "2"
+      - --per-device-eval-batch-size
+      - "2"
+      - --gradient-accumulation-steps
+      - "8"
+      - --max-length
+      - "2048"
+      - --val-size
+      - "256"
+      - --logging-steps
+      - "20"
+      - --fewshot-in-system
+      - "5"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/gsm8k_ft_v2_fs5
+      - --limit
+      - "20"
+      - --json-output-file
+      - runs/gsm8k_ft_v2_fs5/eval_20.json
+      - --max-connections
+      - "1"
+      - --gpu-memory-utilization
+      - "0.22"
+      - --max-tokens
+      - "2000"
+    dev_set: "official --limit 20"
+    n: 20
+    seed: null
+  comparator:
+    ref: exp-01
+    value: null
+    path: /home/ben/task/runs/gsm8k_ft_v1/eval_20_eosfix.json
+  diagnostic:
+    what: "does the aligned checkpoint hold up on the held-out split under the same 5-shot-in-system shape that broke exp-01"
+    command:
+      - python
+      - eval_holdout.py
+      - --model-path
+      - runs/gsm8k_ft_v2_fs5
+      - --limit
+      - "64"
+      - --batch-size
+      - "4"
+      - --max-new-tokens
+      - "256"
+      - --fewshot-in-system
+      - "5"
+      - --json-output-file
+      - runs/gsm8k_ft_v2_fs5/holdout_64_fewshot5.json
+    path: /home/ben/task/runs/gsm8k_ft_v2_fs5/holdout_64_fewshot5.json
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/gsm8k_ft_v2_fs5
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "This second-stage run is behaving as intended: slower, but stable, and it
+      is explicitly training on the system-fewshot prompt shape that broke the
+      benchmark run" [188]. A tokenizer cleanup followed before the benchmark
+      slice ("saved base tokenizer to runs/gsm8k_ft_v2_fs5" [207]).
+  measurements:
+    - metric: accuracy
+      value: 0.35
+      n: 20
+      path: /home/ben/task/runs/gsm8k_ft_v2_fs5/eval_20.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/runs/gsm8k_ft_v2_fs5/holdout_64_fewshot5.json
+    notes: >-
+      "The aligned run didn't improve plain held-out accuracy, which is
+      acceptable" [204]; no number printed. A further 10-shot-in-system holdout
+      run [213] printed only failing items, no accuracy.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The aligned checkpoint reaches 0.350 on a 20-sample benchmark slice
+    (stderr 0.109) [208], and the agent kept it as the best model [269]; but the
+    matching --limit 20 slice on exp-01 [171] reports no accuracy in the stream,
+    so the improvement over the parent is not measurable here. The agent's own
+    reading afterwards: "The current best checkpoint is still underpowered on the
+    actual benchmark" [219].
+  decision: adopt
+  next_step: >-
+    "widen the training data beyond GSM8K train with adjacent grade-school
+    word-problem datasets, while still avoiding GSM8K test contamination" [219]
+    (exp-03).
+
+# joined by the pipeline, never by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-db1eeb72
+  launch_i: 181
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [148, 155, 159, 160, 162]
+    setup: [143, 181]
+    evaluation: [200, 206, 213]
+    result: [188, 207, 208]
+    conclusion: [219, 269]
+  snapshot_files:
+    - train_gsm8k.py
+    - gsm8k_utils.py
+    - eval_holdout.py
+    - evaluate.py
+  extractor: claude-opus-5
+  unresolved:
+    - "No accuracy is reported for the --limit 20 slice on exp-01 [171], so the comparator value under this protocol is unknown."
+    - "The stop-token config patch [162] and the tokenizer cleanup before [206] have no command in the digest; it is not settled which of the two, or the training itself, produced the 0.350."
+    - "The holdout evals at [200] and [213] print items but no accuracy."
+    - "The digest carries no timestamps; timer.sh read 9:23 remaining just after this launch [184]."

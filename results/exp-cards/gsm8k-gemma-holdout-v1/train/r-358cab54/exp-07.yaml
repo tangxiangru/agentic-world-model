@@ -1,0 +1,213 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 2.42
+
+problem:
+  statement: >-
+    On the 300-sample dev eval of the best checkpoint (82.67%) the remaining
+    errors are predominantly reasoning/setup errors - misidentifying quantities
+    and relationships - not arithmetic slips, so more diverse high-quality
+    supervised data is the highest-value lever.
+  evidence:
+    - path: /home/ben/task/ckpt_c75_metrics.json
+      locator: "[493]"
+      observation: "checkpoint-75 at 0.8267 on --limit 300"
+    - path: /home/ben/task/eval_ckpt_c75.log
+      locator: "[494] [495]"
+      observation: "the dumped failing samples show correct arithmetic on a wrong setup [497]"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/eval_ckpt_c75.log
+      question: "(bake-sale brownies and cheesecakes; question text not printed in the stream)"
+      gold: "221"
+      model_output: >-
+        "The total amount of money raised from brownies is 43 brownies * 3
+        slices/brownie * $3/slice = $387 ... $387 + $92 = $479. ANSWER: 479"
+      failure: "arithmetic sound; the quantities and relationships were set up wrong"
+    - id: null
+      source: /home/ben/task/eval_ckpt_c75.log
+      question: "(burrito order with gift card; question text not printed in the stream)"
+      gold: "9"
+      model_output: >-
+        "The base burrito is $6.50 ... he owes 6.50 + 5.50 + 3.00 - 5.00 =
+        $10.00. ANSWER: 10"
+      failure: "mis-assembled the cost structure; each individual sum is correct"
+    - id: null
+      source: /home/ben/task/eval_ckpt_c75.log
+      question: "(auction bidding on a desk; question text not printed in the stream)"
+      gold: "500"
+      model_output: >-
+        "The desk is $200 when Carmen first accepts the bid ... her first bid is
+        $350 + $50 = $400. Carmen then bids a..."
+      failure: "modelled the bidding sequence wrongly; the printed output is truncated"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Agent at [497]: the errors "suggest more diverse high-quality data is the
+    highest-EV lever" - adding 80K MetaMathQA GSM-derived items to the SFT mix
+    should raise dev accuracy above the 82.67% incumbent.
+  mechanism: >-
+    MetaMathQA's GSM_Rephrased / GSM_AnsAug / GSM_SV / GSM_FOBAR items restate the
+    same problems with different surface structure, which targets setup errors
+    rather than arithmetic.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "derived:exp-03 mix + HF meta-math/MetaMathQA"
+      n_examples: 108675
+      built_by: /home/ben/task/prep_metamath.py
+      build_command: [python, prep_metamath.py]
+      selection: >-
+        data/sft_v2.jsonl (28675 = GSM8K + capped RFT) plus data/metamath.jsonl
+        (80000), shuffled with seed 123 by the inline script at [530];
+        train_v3.log loaded 108674 of 108675 lines (1 over max-len 1024)
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/metamath.jsonl
+      source: "HF meta-math/MetaMathQA (train)"
+      n_examples: 80000
+      built_by: /home/ben/task/prep_metamath.py
+      build_command: [python, prep_metamath.py]
+      selection: >-
+        GSM-derived types only, per-type caps GSM_Rephrased 25000, GSM_AnsAug
+        25000, GSM_SV 15000, GSM_FOBAR 15000 (random.seed 0); answer taken from
+        "####" or "The answer is", kept only when it is a clean integer;
+        reasoning 20-1800 chars; LaTeX $ and \\text{} stripped; ending rewritten
+        to "\n\nANSWER: X". Ingredient of data/sft_v3.jsonl.
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer (custom prompt-masked SFT in train_sft.py); flash_attention_2"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/accum/max-len and --save-steps 3396 (one checkpoint per
+        epoch) from the launch; warmup_ratio 0.03 is the train_sft.py argparse
+        default, not overridden; scheduler cosine, weight_decay 0.0,
+        max_grad_norm 1.0, bf16, gradient_checkpointing, paged_adamw_8bit,
+        group_by_length hard-coded in train_sft.py. No --model, so training
+        starts from Qwen/Qwen3-4B-Base. Only epoch 1 was completed before the
+        agent stopped the run.
+    target_format: >-
+      prompt masked; loss on completion + <|im_end|>, completions ending in
+      "ANSWER: X"
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/sft_v3.jsonl, --out, sft_v3, --epochs, "2", --lr, "1e-5", --bs, "16", --accum, "2", --max-len, "1024", --save-steps, "3396"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_v3.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, eval_ckpt.sh, sft_v3_tmp/checkpoint-3396, "300", v3e1]
+    dev_set: "official --limit 300 (10-shot, fewshot_seed 42, shuffle_fewshot true, per [204])"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.8266666666666667
+    path: /home/ben/task/ckpt_c75_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 1.16
+  output_checkpoint: /home/ben/task/sft_v3_tmp/checkpoint-3396
+  training_summary:
+    final_loss: 0.1761
+    steps: 3423
+    notes: >-
+      train_v3.log ends at step 3423/6794 (1:09:39) - the agent killed the run
+      just after the epoch-1 checkpoint (step 3396) saved, to save time and avoid
+      an epoch-2 overfit [616] [617]. sft_v3_tmp was deleted in the disk cleanup
+      at [961].
+  measurements:
+    - metric: accuracy
+      value: 0.8466666666666667
+      n: 300
+      path: /home/ben/task/ckpt_v3e1_metrics.json
+      delta_vs_comparator: 0.02
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    The epoch-1 checkpoint measured 84.67% against 82.67% under the same
+    --limit 300 protocol. Agent at [628]: "The MetaMath data was the key lever -
+    a clear +2-3% jump over checkpoint-75."
+  decision: adopt
+  next_step: >-
+    "Since data is what's moving the needle, let me lock this in and push the data
+    lever further with more MetaMath (emphasizing structural variety SV/FOBAR
+    which target the setup errors I saw)" [628]. The agent also added --resume
+    support to train_sft.py at [633] intending to finish epoch 2 for LR
+    annealing, but never ran that resume.
+
+outcome:
+  official_accuracy: null    # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-358cab54
+  launch_i: 542
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [493, 494, 495, 497]
+    setup: [504, 518, 520, 530, 540, 542]
+    evaluation: [617, 623]
+    result: [616, 628]
+    conclusion: [628, 629, 632]
+  snapshot_files:
+    - prep_metamath.py
+    - train_sft.py
+    - train_v3.log
+    - eval_ckpt.sh
+    - ckpt_v3e1_metrics.json
+    - eval_v3e1.log
+    - eval_ckpt_v3e1.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      the first eval attempt at [617] exited 144 without producing metrics; it was
+      re-run cleanly at [623].
+    - >-
+      the agent planned a resume to finish epoch 2 ([632] [633] [635]) and never
+      launched it.

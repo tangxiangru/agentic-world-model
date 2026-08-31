@@ -1,0 +1,188 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.18
+
+problem:
+  statement: >-
+    The first real SFT launch saved and validated too rarely: with --save-steps
+    300 and no checkpoint retention limit or best-checkpoint selection, there is
+    no way to pick a stronger intermediate adapter if later epochs overfit.
+  evidence:
+    - path: null
+      locator: "[88]"
+      observation: >-
+        "The current run has only reached the warmup phase, and keeping several
+        intermediate adapters gives us a better chance to pick the strongest
+        model if later epochs overfit"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Re-running the same GSM8K-only LoRA SFT recipe with more retained
+    checkpoints and best-by-validation-loss selection will yield a usable
+    checkpoint to benchmark, rather than only the final epoch's weights.
+  mechanism: >-
+    The script now evaluates and saves on the same interval, keeps up to 10
+    adapters, and can load the lowest validation-loss checkpoint before merging.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k (main, train)
+      n_examples: null
+      built_by: null
+      build_command: []
+      selection: >-
+        loaded inside train_gsm8k_sft.py; train split shuffled with the run seed,
+        first --val-size 384 rows held out, 10 rows sampled with seed 42 build the
+        evaluator-style few-shot system message; each remaining row expanded into
+        an exact-system and a no-system variant (--include-no-system). The example
+        count was not printed for this launch.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer + peft LoRA (transformers 4.57.3)
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.04
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        max_seq_len (--max-length 4096), weight_decay (--weight-decay 0.0) and
+        seed (--seed 42) are train_gsm8k_sft.py argparse defaults, not overridden
+        by the launch. scheduler=cosine, bf16+tf32, gradient_checkpointing,
+        group_by_length, optim=adamw_torch_fused, max_grad_norm=0.3 are hardcoded
+        in the script. --save-steps 300, --save-total-limit 10, --load-best,
+        --merge. --completion-end left at the script default "im_end".
+    target_format: >-
+      evaluator-style chat prompt; assistant turn = GSM8K rationale, blank line,
+      "ANSWER: <n>", then "<|im_end|>\n"
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --output-dir
+      - runs/sft_lora_v1b
+      - --final-dir
+      - runs/sft_lora_v1b/merged
+      - --epochs
+      - "3"
+      - --learning-rate
+      - "2e-4"
+      - --warmup-ratio
+      - "0.04"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --lora-dropout
+      - "0.05"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "4"
+      - --val-size
+      - "384"
+      - --include-no-system
+      - --save-steps
+      - "300"
+      - --save-total-limit
+      - "10"
+      - --load-best
+      - --merge
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.56
+  output_checkpoint: /home/ben/task/runs/sft_lora_v1b/checkpoint-300
+  training_summary:
+    final_loss: null
+    steps: 600
+    notes: >-
+      held-out GSM prompt eval_loss 0.37054 at step 300 and 0.39190 at step 600
+      [129], [143]; the agent killed the run at [148] rather than train toward a
+      worsening validation signal. checkpoint-300 was the best-by-validation
+      adapter.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Checkpoint 600 validation loss worsened to 0.3919 versus 0.3705 at
+    checkpoint 300. I'm stopping this run early and will benchmark the stronger
+    checkpoint" [145]. No benchmark number was produced by this launch itself.
+  decision: adopt
+  next_step: >-
+    merge checkpoint-300 into a standalone model directory and run a real
+    benchmark pass [156]
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-77b138a8
+  launch_i: 102
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [88]
+    setup: [101, 102]
+    evaluation: []
+    result: [129, 131, 143, 145, 146, 147, 148]
+    conclusion: [145, 156]
+  snapshot_files:
+    - train_gsm8k_sft.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "decision is adopt only in the sense that checkpoint-300 became the parent of exp-03; the run itself was killed early"
+    - "the training example count for this launch was never printed"

@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-09
+created_at: null
+elapsed_h: 6.79
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: "The first GRPO attempt ran out of memory before its first step: the reference model, the policy, the AdamW optimizer states and a colocated vLLM engine do not fit together on one 80GB card."
+  evidence:
+    - path: /home/ben/task/grpo_v5.log
+      locator: "[525], [531]"
+      observation: "'GRPO OOM'd (ref model + policy + vLLM + AdamW too much for 80GB).'"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: "Dropping the KL term (beta=0, so no reference model is held), halving the microbatch, shrinking completions and giving vLLM less memory will let GRPO fit in 80GB and run."
+  mechanism: "'beta=0 (no ref model -> dr_grpo loss, saves ~6GB+)' [531], plus expandable_segments to reduce allocator fragmentation."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v4
+    origin: exp-06
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k train (prompts only, built in-process by grpo.py)"
+      n_examples: 7473
+      built_by: /home/ben/task/grpo.py
+      build_command: null
+      selection: "Every GSM8K train row with a numeric gold answer, rendered as system = the eval's exact 10-shot prompt + user = MATH_PROMPT_TEMPLATE; rule rewards on the final number and the 'ANSWER:' line."
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+  method:
+    family: grpo
+    framework: trl.GRPOTrainer
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-6
+      epochs: null
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: "max_steps 120, num_generations 8, temperature 1.0, beta 0.0 (no reference model; loss_type dr_grpo), max_completion_length 320, max_prompt_length 2048, scale_rewards=True, mask_truncated_completions=True, warmup_steps 10, use_vllm=True colocate with vllm_gpu_memory_utilization 0.2 and vllm_max_model_length 2560. max_prompt_length, scale_rewards, warmup_steps, seed and precision are constants in /home/ben/task/grpo.py that this launch did not override."
+    target_format: "Sampled completions scored by a rule reward: last number must equal the gold answer; small bonus for containing 'ANSWER:'."
+  command:
+    argv: [nohup, python, -u, grpo.py, --init, sft_v4, --out, grpo_v5, --fewshot, "10", --steps, "120", --lr, "1e-6", --num-gen, "8", --temp, "1.0", --beta, "0.0", --bs, "8", --accum, "4", --max-completion, "320", --vllm-gpu, "0.2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      VLLM_WORKER_MULTIPROC_METHOD: spawn
+    log: /home/ben/task/grpo_v5.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: failed
+  wall_h: null
+  duration_h: null
+  steps: 0
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 0
+    notes: "Progress bar reached 0/120 in 11 seconds before the traceback. 'GRPO prompts: 7473' was printed, so the dataset built fine."
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 794.00 MiB. GPU 0 has a total capacity of 79.18 GiB of which 502.31 MiB is free. Including non-PyTorch memory, this process has 78.68 GiB memory in use. Of the allocated memory 74.38 GiB is allocated by PyTorch, with 24.00 MiB allocated in private pools (e.g., CUDA Graphs), and 3.43 GiB is reserved by PyTorch but unallocated."
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Removing the reference model and shrinking the batch did not help: the same 794 MiB allocation failed with an identical 74.38 GiB already resident. 'GRPO still OOMs even with beta=0 - the full optimizer states (24GB) + policy + vLLM don't fit' [538]."
+  decision: abandon_line
+  next_step: "Add LoRA to grpo.py so the base stays frozen and the 24GB of optimizer states disappear; last GRPO attempt, time-boxed [538]."
+
+# ---- Outcome (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-8fbb0755
+  launch_i: 532
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [531]
+    setup: [532]
+    result: [533, 535, 536]
+    conclusion: [538]
+  snapshot_files:
+    - grpo.py
+    - grpo_v5.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "grpo_v5.log was overwritten by the third attempt, which produced a byte-identical OOM message, so the traceback in the workspace cannot be attributed to one attempt with certainty."

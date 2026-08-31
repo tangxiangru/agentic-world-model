@@ -1,0 +1,189 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 3.77
+
+problem:
+  statement: >-
+    v2 scored 0.320 against v1's 0.527 on the same 150 samples. "Let me analyze
+    why v2 was worse - maybe the issue was the OpenR1 data not being as aligned
+    with GSM8K style." [128]
+  evidence:
+    - path: /home/ben/task/eval_results_v2.json
+      locator: "[122]"
+      observation: "v2 checkpoint, 150 samples: accuracy 0.320, stderr 0.038"
+    - path: /home/ben/task/eval_results.json
+      locator: "[103]"
+      observation: "v1 checkpoint, same protocol: accuracy 0.527 - the incumbent v2 failed to beat"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Let me create a simpler approach - focus only on GSM8K train data and
+    MetaMathQA with better formatting" [128]: dropping OpenR1-Math and the
+    phrasing augmentations, weighting GSM8K 5x, using a short plain system
+    prompt and the terse GSM8K rationale style, and training 3 epochs at 2e-5,
+    will beat the 52.7% incumbent.
+  mechanism: >-
+    The agent's read of the v2 loss is that OpenR1-Math traces are "not being as
+    aligned with GSM8K style" [128], so restricting the mixture to GSM8K-style
+    problems and reasoning should stop the model drifting off the target
+    distribution.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/math_training_data_v3
+      source: "local (built from HF gsm8k main/train + meta-math/MetaMathQA GSM_* types)"
+      n_examples: 99291
+      built_by: /home/ben/task/prepare_data_v3.py
+      build_command: [python, prepare_data_v3.py]
+      selection: >-
+        GSM8K train repeated 5x plus all deduped MetaMathQA rows of type
+        GSM_Rephrased/GSM_SV/GSM_FOBAR/GSM_AnsAug (no OpenR1, no phrasing
+        variants); <<..>> markers stripped; thinking is the plain GSM8K
+        rationale under "Let me solve this step by step."; short system prompt
+        ("You are a helpful AI assistant. Solve math problems step by step...");
+        shuffled with random.seed(42). Size read from "Dataset size: 99291" in
+        training_log_v3.txt; the script's per-source counts were truncated out
+        of the digest at [132].
+      repeats: "GSM8K 5x"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.0
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/batch_size/grad_accum/max_seq_len are launch args. scheduler
+        (cosine), weight_decay (0.01) and bf16 are hardcoded in train_sft.py;
+        warmup 0.03 is the script's argparse default, not overridden by the
+        launch. Same script settings as exp-01 (packing=False,
+        group_by_length=True, gradient_checkpointing=True, adamw_torch_fused,
+        flash_attention_2, 1% eval split at seed 42, load_best_model_at_end on
+        eval_loss). Effective batch 32; max_seq_len cut from 2048 to 1536.
+    target_format: >-
+      SmolLM3 chat-template text field with the short system prompt; assistant
+      turn = "<think>Let me solve this step by step.\n\n<gsm8k rationale lines></think>\n\nThe answer is <n>."
+  command:
+    argv: [python, train_sft.py, --data_path, math_training_data_v3, --output_dir,
+           ./trained_model_v3, --batch_size, "4", --gradient_accumulation_steps, "8",
+           --learning_rate, "2e-5", --num_epochs, "3", --save_steps, "1000",
+           --logging_steps, "200", --max_length, "1536"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/training_log_v3.txt
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "150",
+              --max-connections, "2", --gpu-memory-utilization, "0.5",
+              --json-output-file, eval_results_v3.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.5266666666666666
+    path: /home/ben/task/eval_results.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 3.32
+  duration_h: 3.30
+  steps: 9216
+  output_checkpoint: /home/ben/task/trained_model_v3
+  training_summary:
+    final_loss: 0.170
+    steps: 9216
+    notes: >-
+      train_loss 0.17027, train_runtime 11875.94 s, mean_token_accuracy 0.9695,
+      last eval_loss 0.1538, 3.0 epochs - read from training_log_v3.txt; the
+      digest's copy of the run output is truncated. Copied over final_model at
+      [143]; the eval below ran on that copy. The same checkpoint was copied to
+      final_model again at [170] (exp-05) and re-measured at 0.593.
+  measurements:
+    - metric: accuracy
+      value: 0.58
+      n: 150
+      path: /home/ben/task/eval_results_v3.json
+      delta_vs_comparator: 0.05333333333333334
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "We got 58% accuracy with v3! That's the best so far." [147] - 0.580 against
+    exp-01's 0.527 on the same 150 samples, +5.3 pts, though each eval's own
+    stderr is ~0.040 so the gap is only about one standard error. The
+    GSM8K-only, plain-rationale mixture is the recipe that stuck: this
+    checkpoint is what the run finally shipped.
+  decision: adopt
+  next_step: >-
+    "Let me try training for even more epochs or with different
+    hyperparameters. Let me continue training the v3 model for more epochs"
+    [150] - which became the v4 data build.
+
+# ---- official result (joined by the pipeline; never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-b8779e0c
+  launch_i: 134
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [122, 128]
+    setup: [129, 131, 134]
+    evaluation: [145]
+    result: [135, 143, 146]
+    conclusion: [147, 150]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data_v3.py
+    - training_log_v3.txt
+    - eval_results_v3.json
+    - eval_results.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: "post-hoc extractor (identity withheld)"
+  unresolved:
+    - "The launch passed no --model_name, so it retrained from the base model (the script's argparse default), even though at [128] the agent had said 'let me try to continue training from the v1 checkpoint for more epochs'."
+    - "v3 changes several things at once (no OpenR1, no phrasing variants, GSM8K 5x, short system prompt, 3 epochs, max_length 1536), so the +5.3 pts cannot be attributed to any one of them."
+    - "Two evals of this checkpoint under the same protocol give 0.580 [146] and 0.593 [178]; the agent read the gap as eval variance [179]."

@@ -1,0 +1,198 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-10
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The stop_reason is 'stop' ... but the content has 9 ANSWER occurrences! The
+    model generated multiple question-answer pairs in one response. The first
+    ANSWER is correct (540), but the scorer looks at the last ANSWER (420) which
+    is wrong for this question ... the model learned from packing to continue
+    generating after <|im_end|>. The fix is clear now. I need to train WITHOUT
+    packing. This is the only reliable way to teach the model that <|im_end|>
+    means STOP" [290].
+  evidence:
+    - path: /home/ben/task/eval_v2_50.json
+      locator: "[281]"
+      observation: "accuracy 0.040 on 50 items after adding <|endoftext|> to every packed example - worse than the 0.080 of the first candidate"
+    - path: /home/ben/task/logs/2026-02-17T06-19-27+01-00_gsm8k_9CEMuSM6U3qJ5ypAS9aPc7.json
+      locator: "[305]-[306], first 20 samples"
+      observation: "Correct 1/20 with an ANSWER line in 20/20; the first ANSWER is often the right number followed by stray non-ASCII text, the last is the instruction wrapper of an invented next problem"
+  affected_share: null
+  failure_examples:
+    - id: "eval sample 6 of the 400-token run at [302]"
+      source: /home/ben/task/logs/2026-02-17T06-19-27+01-00_gsm8k_9CEMuSM6U3qJ5ypAS9aPc7.json
+      question: null
+      gold: "75"
+      model_output: "First ANSWER line: '75'; last ANSWER line: '$ANSWER\" (without quotes) where $ANSWER is the answer to the problem, and you do not need to use a \\boxed command.'"
+      failure: "right answer first, then the model reproduces the instruction template as if starting a new item; the grader reads the end"
+    - id: "eval sample 17 of the 400-token run at [302]"
+      source: /home/ben/task/logs/2026-02-17T06-19-27+01-00_gsm8k_9CEMuSM6U3qJ5ypAS9aPc7.json
+      question: null
+      gold: "26"
+      model_output: "First ANSWER line: '26'; last ANSWER line: '$ANSWER\" (without quotes) where'"
+      failure: "same pattern: correct number produced, then continuation past the answer"
+    - id: "eval sample 11 of the 400-token run at [302]"
+      source: /home/ben/task/logs/2026-02-17T06-19-27+01-00_gsm8k_9CEMuSM6U3qJ5ypAS9aPc7.json
+      question: null
+      gold: "18"
+      model_output: "First and last ANSWER line: '18<non-ASCII>'"
+      failure: "correct digits, but a stray non-ASCII token is glued to them so the numeric match fails"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "I need to train WITHOUT packing. This is the only reliable way to teach the
+    model that <|im_end|> means STOP" [290]: SFT on 50k GSM examples in messages
+    format with packing=False for 2 epochs will make the model terminate after one
+    answer.
+  mechanism: >-
+    With one example per sequence, every occurrence of <|im_end|> in training is
+    followed by padding rather than by another turn, so the token carries the
+    "stop" statistics the packed data destroyed.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-09
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_gsm_msgs.jsonl
+      source: "HF meta-math/MetaMathQA (GSM_* only) + HF openai/gsm8k (main, train)"
+      n_examples: 50000
+      built_by: null
+      build_command: []
+      selection: >-
+        Built by an inline python heredoc at [319] (not saved as a script): gsm8k
+        train 7,473 rows with <<calc>> annotations stripped, plus MetaMathQA
+        GSM_AnsAug/GSM_Rephrased/GSM_SV/GSM_FOBAR 239,998 rows with "####" and
+        "The answer is:" lines stripped; each becomes a two-message record - user
+        = the eval's prompt template, assistant = reasoning + "\n\nANSWER: {n}".
+        247,471 rows written [320]; the trainer cut to 50,000 via --max-samples
+        (shuffle seed 42), "Training on 50000 examples for 2.0 epochs"
+        (train_v3.log).
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 / transformers 4.57.3 / peft 0.18.1 / torch 2.8.0+cu129"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj bias=none (132,120,576 trainable params, 3.18%)"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=False is the point of the launch; it is train_v3.py's own setting
+        (workspace copy, written at [316]), together with
+        gradient_checkpointing=True, attn_implementation="flash_attention_2",
+        dataloader_num_workers=4, save_total_limit=2, weight_decay=0.01,
+        lr_scheduler_type=cosine, seed=42 - none overridden on the command line.
+        Effective batch = 32; 3126 steps.
+    target_format: >-
+      messages format handed to SFTTrainer, which applies the model's own chat
+      template. This is the mismatch the next card identifies: the base
+      tokenizer's template inserts "<think>\n\n</think>\n\n" before the assistant
+      content, which the eval template never emits [366].
+  command:
+    argv: [python3, train_v3.py, --data-file, training_data_gsm_msgs.jsonl, --output-dir, trained_model_v3,
+           --max-samples, "50000", --epochs, "2.0", --lr, "2e-4", --batch-size, "16",
+           --grad-accum, "2", --max-seq-length, "768", --lora-r, "64", --lora-alpha, "128",
+           --warmup-ratio, "0.03", --save-steps, "500", --logging-steps, "25"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v3.py
+    env: {}
+    log: /home/ben/task/train_v3.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: 2.0
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.96
+  duration_h: 1.96
+  steps: 3126
+  output_checkpoint: /home/ben/task/trained_model_v3
+  training_summary:
+    final_loss: 0.2087
+    steps: 3126
+    notes: >-
+      train_runtime 7039.0 s (1.96 h), train_loss 0.2310, mean_token_accuracy
+      0.954, 33.2M tokens (train_v3.log). Loss 0.7140 at step 25, ~0.25 by step
+      500 [347], 0.2087 at step 3125 [356]. "The loss is higher than with packing
+      (0.18) because without packing there's padding overhead ... But the
+      important thing is the model will learn proper stopping behavior" [348].
+      3:05 of the 10 h budget remained when it finished [353].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Two epochs of 50k unpacked messages-format examples, loss 0.71 -> 0.21, in
+    1.96 h. The adapter was not scored on its own; the 0.020 it produced is on
+    exp-11, which merged it.
+  decision: adopt
+  next_step: "Merge into final_model and evaluate (exp-11)."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ef3f45de
+  launch_i: 331
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [285, 290, 293, 305, 306]
+    setup: [316, 319, 320, 321, 331]
+    evaluation: []
+    result: [332, 344, 347, 348, 350, 353, 356]
+    conclusion: [348, 360]
+  snapshot_files:
+    - train_v3.py
+    - train_v3.log
+    - eval_v2_50.json
+    - eval_v2_50_400tok.json
+  smoke_runs:
+    - {launch_i: 322, outcome: "no output recorded in the digest; the same 20-step speed test is re-run at [324]"}
+    - {launch_i: 324, outcome: "passed: 20-step speed test on trained_model_v3_test, ~2.3 s/step [328]"}
+  extractor: null
+  unresolved:
+    - "training_data_gsm_msgs.jsonl was built by an inline heredoc at [319], not by a script in the workspace, so it cannot be regenerated from a snapshot file; the heredoc is truncated in the digest at the output-file line."
+    - "Which 50,000 of the 247,471 rows the trainer selected is fixed only by datasets' shuffle(seed=42)."
+    - "The adapter was never evaluated on its own."

@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.66
+
+problem:
+  statement: >-
+    "The GSM8K-only model scores 70% greedy but 11% at temp 1.0. The model is
+    correct but its distribution is too flat (low logit margins) - temp-1.0
+    sampling derails. The official eval is temp 1.0, so I need a much sharper
+    distribution." [333]
+  evidence:
+    - path: /home/ben/task/logs/myeval_gsm_only_300.json
+      locator: "[294]"
+      observation: "exp-01 output at temp 1.0: 0.1133 (34/300), outputs degenerating into unrelated text"
+    - path: /home/ben/task/logs/myeval_gsm_only_greedy.json
+      locator: "[328], [333]"
+      observation: "same checkpoint at temperature 0.0: 70% on limit 100"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Training on far more data (MetaMath GSM 240K + MetaMath MATH + GSM8K train)
+    will sharpen the model's output distribution so that temp-1.0 accuracy rises
+    towards its greedy accuracy. [333]
+  mechanism: >-
+    A much larger, in-format supervised mix raises the logit margin on the
+    reasoning tokens, so sampling at temperature 1.0 stays on the correct
+    trajectory instead of derailing. [333]
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_mix1.jsonl
+      source: "HF openai/gsm8k (train) + HF meta-math/MetaMathQA"
+      n_examples: null
+      built_by: null
+      build_command: []
+      selection: >-
+        inline build at [334] (no script in the workspace): data/gsm8k_train.jsonl
+        repeated x2, plus 120000 shuffled rows of data/metamath_gsm.jsonl (240000
+        rows, GSM_Rephrased/AnsAug/SV/FOBAR with clean numeric answers, built by
+        build_data.py --which mm_gsm [194][212]), plus 40000 shuffled rows of
+        data/metamath_math.jsonl (129588 rows, MATH_* types, --which mm_math);
+        shuffled with seed 0. The agent reported the mix as "175K examples" [339]
+        and never printed the exact count.
+      contamination_check: passed
+      mixture_weight: null
+      repeats: "gsm8k_train x2"
+  method:
+    family: sft
+    framework: "transformers Trainer (full fine-tune, completion-only loss mask)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 32
+      grad_accum: 1
+      max_seq_len: 768
+      scheduler: cosine_with_min_lr
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        scheduler, warmup, weight_decay, precision and seed are train_sft.py
+        defaults not overridden by the launch (min_lr_rate 0.1,
+        gradient_checkpointing, group_by_length, adamw_torch_fused,
+        flash_attention_2); --save_steps 4000 was passed
+    target_format: >-
+      chat format with no system message; assistant turn is a CoT ending in
+      'ANSWER: <n>' plus <|im_end|>; generation_config eos patched to
+      [151643, 151645]
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/sft_mix1.jsonl, --out, work/sft_mix1, --epochs, "2", --lr, "1e-5", --bs, "32", --accum, "1", --max_len, "768", --save_steps, "4000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/sft_mix1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, myeval.py, eval, --model, work/sft_mix1, --limit, "30", --temperature, "1.0", --max_tokens, "512"]
+    dev_set: "GSM8K test split scored by myeval.py with the eval's 10-shot system prompt, --limit 30, temperature 1.0"
+    n: 30
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.1133
+    path: /home/ben/task/logs/myeval_gsm_only_300.json
+  diagnostic:
+    what: "greedy accuracy, and the same temp-1.0 eval with the 10-shot system message removed, to locate the failure in the few-shot priming rather than in the model"
+    command: [timeout, "200", python, -u, myeval.py, eval, --model, work/sft_mix1, --limit, "100", --temperature, "0.0", --max_tokens, "400"]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.73
+  output_checkpoint: /home/ben/task/work/sft_mix1
+  training_summary:
+    final_loss: 0.179
+    steps: 10936
+    notes: >-
+      "Training complete (final loss 0.179)" [414]; checkpoints 4000/8000/10936
+      saved [474]; wall_h from the launch [341] t=+0.66h to completion [414]
+      t=+2.39h
+  measurements:
+    - metric: accuracy
+      value: 0.033
+      n: 30
+      path: null
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.75
+    path: null
+    notes: >-
+      75% greedy at limit 100 [455][460]; 58.3% at temp 1.0 on 60 questions with
+      the few-shot system message removed, stopping cleanly [467][472]; at temp
+      >=0.7 with the few-shot system message the model does not emit <|im_end|>
+      after 'ANSWER: X' and continues into a hallucinated next question [466]
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    The 175K-example mix trained to loss 0.179 and reached 75% greedy, but only
+    3.3% at temp 1.0 under the eval's few-shot system prompt - worse than exp-01
+    - so more data did not fix temp-1.0 fragility. The diagnostic relocated the
+    cause: without the few-shot system message the same checkpoint gets 58.3% at
+    temp 1.0, so the eval's few-shot format ("... ANSWER: X\n\n[next question]")
+    primes the model to run past its answer instead of stopping [466][472].
+    Measured at limit 30 against a comparator at limit 300, so no delta is claimed.
+  decision: adopt
+  next_step: >-
+    "few-shot-matched training - train with few-shot context so the model learns
+    to stop despite the priming" [472]; continue-train this checkpoint rather
+    than retrain from base, because few-shot sequences are ~4-5x longer [476]
+
+# ---- 7. Outcome (joined by the pipeline; never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-f099ff8e
+  launch_i: 341
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [294, 328, 333]
+    setup: [334, 339, 341]
+    evaluation: [415, 423, 455, 467]
+    result: [393, 414, 428, 460, 472]
+    conclusion: [466, 472, 476]
+  snapshot_files:
+    - build_data.py
+    - train_sft.py
+    - myeval.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the planned temp-1.0 eval at limit 300 [415] failed to launch; the only temp-1.0 number for this checkpoint is the limit-30 foreground run at [423], which wrote no json"
+    - "the exact row count of data/sft_mix1.jsonl was never printed; only the agent's '175K' [339]"
+    - "logs/*.json referenced by this card are not present in the workspace snapshot"
+    - "this checkpoint is the parent of exp-03/exp-04 but was never itself packaged as final_model"

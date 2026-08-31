@@ -1,0 +1,156 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.58
+
+problem:
+  statement: >-
+    The un-tuned base model scores 41.3% on the benchmark eval at limit 150, and
+    the plan written before any training is to fine-tune it on math chain-of-thought
+    data formatted exactly like the eval prompt so that its answers are gradeable.
+  evidence:
+    - path: /home/ben/task/results_baseline.json
+      locator: "[226]"
+      observation: "baseline accuracy 0.4133 (stderr 0.0403) on the first 150 eval questions"
+    - path: /home/ben/task/NOTES.md
+      locator: "[229], experiments-log row 0"
+      observation: "'41.3% | baseline; vLLM temp=1.0 default (base gen_config has no temp)'"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SFT v1: math CoT data (MetaMathQA GSM-heavy + GSM8K train orig), ChatML format
+    matching eval exactly; ~30% samples include the EXACT eval system message
+    (extract from eval log), rest no/varied system. End responses with 'ANSWER: X'."
+    [46]
+  mechanism: >-
+    The eval scorer takes the last number-like word in the completion, so training
+    targets that end in "ANSWER: <n>" inside the eval's own ChatML prompt make the
+    model emit answers the scorer can read [46].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_data_v1
+      source: local
+      n_examples: 90910
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py]
+      selection: >-
+        GSM8K train originals (7,379 rows, every other one carrying the exact 10-shot
+        eval system message) + MetaMathQA GSM_AnsAug/GSM_Rephrased/GSM_SV/GSM_FOBAR/
+        MATH_AnsAug (40,193) + OpenMathInstruct-2 gsm8k/augmented_gsm8k/math (43,338),
+        all rebuilt into the eval's ChatML prompt with completions ending
+        "ANSWER: <n><|im_end|>"; 8-gram overlap against the gsm8k test split dropped
+        1,117 rows; 5,401 of 90,910 rows carry the eval system message
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl 0.27.2 SFTTrainer (transformers 4.57.3, torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=True, completion_only_loss=True, eos_token=<|im_end|>,
+        pad_token=<|endoftext|>, optim=adamw_torch_fused, flash_attention_2;
+        gradient checkpointing OFF via --no-grad-ckpt. max_seq_len is the
+        --max-length argparse default (4096) and scheduler/warmup/weight_decay/
+        precision/seed are hard-coded in SFTConfig in train_sft.py, which is in the
+        workspace; the launch overrode none of them.
+    target_format: >-
+      prompt = "<|im_start|>user\n<eval MATH_PROMPT_TEMPLATE><|im_end|>\n<|im_start|>assistant\n"
+      (optionally preceded by the exact 10-shot eval system turn); completion =
+      reasoning + "\n\nANSWER: <n><|im_end|>"
+  command:
+    argv: [python, train_sft.py, --data, sft_data_v1, --out, ckpt_sft_v1, --epochs, "2", --bs, "4", --accum, "8", --lr, "1e-5", --no-grad-ckpt]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_v1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic: {what: null, command: [], path: null}
+
+result:
+  execution: failed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No step was logged; train_v1.log in the workspace is the end-of-run file,
+      overwritten by the later relaunches that share the same log path.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    CUDA OOM with gradient checkpointing disabled - "OOM without gradient
+    checkpointing" [351]; NOTES: "no-grad-ckpt OOMs at 16K tok/micro (logits fp32
+    upcast 152K vocab)" [439]. No traceback text is in the stream.
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first full SFT v1 launch ran out of memory before any logged step, so the
+    hypothesis was never tested. Relaunched minutes later with checkpointing on.
+  decision: iterate
+  next_step: >-
+    "Relaunching with checkpointing and a larger micro-batch (bs=8, accum=4 - same
+    128K tokens/step)" [351]
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a2d62ed3
+  launch_i: 307
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [226, 229]
+    setup: [124, 274, 306, 307]
+    evaluation: []
+    result: [351]
+    conclusion: [351, 439]
+  snapshot_files:
+    - train_sft.py
+    - prep_data.py
+    - prep_data.log
+    - results_baseline.json
+    - NOTES.md
+  smoke_runs:
+    - {launch_i: 242, outcome: "passed (2 steps on a 3K-row MetaMathQA subset, train_loss 0.425)"}
+  extractor: null
+  unresolved:
+    - "the identical command was re-issued at [319]; the stream does not say which of the two processes OOM'd"
+    - "train_sft.py in the workspace is the end-of-run version: the --liger flag [372] and the generation-config reset [693] were added after this launch"

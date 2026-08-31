@@ -1,0 +1,185 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The 17.5% result looks inconsistent with training quality. I identified a
+    likely tokenizer artifact in the local saved files" [130] - the merged
+    checkpoint had been saved with tokenizer assets the agent suspected of
+    corrupting generation, so its score could not be trusted as a measure of
+    the fine-tune.
+  evidence:
+    - path: /home/ben/task/sanity_eval40.json
+      locator: "accuracy"
+      observation: "0.175 on 40 samples for runs/sanity_merged, against a training run whose eval_loss was 0.349 and mean_token_accuracy 0.920"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-7a94150b.md
+      locator: "[130]"
+      observation: "agent names the local saved tokenizer files as the likely cause and decides to replace them"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Replacing the merged checkpoint's tokenizer assets with the original base
+    model's files and re-running the eval will "verify" [130] whether the low
+    score was a tokenizer artifact rather than a real regression - i.e. the
+    score should recover once the tokenizer is correct.
+  mechanism: >-
+    The merged directory's tokenizer was written by the training script; if it
+    differs from the base tokenizer, vLLM decodes with the wrong vocabulary or
+    special tokens and the generations are corrupted regardless of the weights.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/sanity_merged
+    origin: exp-02
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "huggingface_hub.snapshot_download + shutil.copy2 (no training)"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        no training; tokenizer.json, tokenizer_config.json, vocab.json and
+        merges.txt were copied from the Qwen/Qwen3-4B-Base snapshot over
+        runs/sanity_merged (special_tokens_map.json and chat_template.jinja
+        were not present in the snapshot and were not copied) [132].
+    target_format: null
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - |-
+        python - <<'PY'
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        repo='Qwen/Qwen3-4B-Base'
+        path=snapshot_download(repo_id=repo, allow_patterns=['tokenizer*','merges.txt','vocab.json','special_tokens_map.json','chat_template.jinja'])
+        print('snapshot',path)
+        out='runs/sanity_merged'
+        for fn in ['tokenizer.json','tokenizer_config.json','vocab.json','merges.txt','special_tokens_map.json','chat_template.jinja']:
+            src=os.path.join(path,fn)
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(out,fn))
+                print('copied',fn)
+        PY
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [5]"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/sanity_merged
+      - --limit
+      - "20"
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1200"
+      - --gpu-memory-utilization
+      - "0.6"
+      - --json-output-file
+      - sanity_eval20_1200.json
+    dev_set: "official --limit 20"
+    n: 20
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.5
+    path: /home/ben/task/base_eval20_1200.json
+  diagnostic:
+    what: "inspection of per-sample outputs in the eval log to see whether failures are formatting or reasoning [142]"
+    command:
+      - python
+      - "-"
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/sanity_merged
+  training_summary: {final_loss: null, steps: null, notes: "no training; tokenizer assets replaced in place, so this candidate shares exp-02's weights"}
+  measurements:
+    - metric: accuracy
+      value: 0.15
+      n: 20
+      path: /home/ben/task/sanity_eval20_1200.json
+      delta_vs_comparator: -0.35
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      the agent dumped one sample from the eval log at [142]; the printed
+      output ended in a correctly formatted "ANSWER: 3" against target 6, with
+      stray non-English tokens around the reasoning, and it concluded "outputs
+      are formatted but often incorrect, so this is mostly a reasoning-quality
+      issue, not just parsing" [145]. The inspection script itself raised
+      TypeError after printing that one sample [143].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    With base tokenizer assets in place the checkpoint scored 0.15 on 20
+    samples against the base model's 0.50 measured under the same --limit 20
+    --max-tokens 1200 [148], so the low score was not a tokenizer artifact:
+    "The first tuning run clearly overfit/degraded" [153].
+  decision: reject
+  next_step: >-
+    "Pivoting to a conservative adaptation setup: much lower LR, lower-rank
+    LoRA, and simpler text formatting to preserve base reasoning while nudging
+    answer style" [153] (exp-04).
+
+provenance:
+  kind: extracted
+  run_ref: r-7a94150b
+  launch_i: 131
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [130]
+    setup: [131, 132]
+    evaluation: [137, 146, 148]
+    result: [137, 142, 143, 145]
+    conclusion: [148, 153]
+  snapshot_files:
+    - sanity_eval20_1200.json
+    - base_eval20_1200.json
+    - sanity_eval40.json
+    - evaluate.py
+  extractor: claude-opus-5
+  unresolved:
+    - "the digest never shows the console output of the [137] eval; the 0.15 is read from sanity_eval20_1200.json in the workspace"
+    - "the base comparator at --limit 20 --max-tokens 1200 was run after this eval ([146]) with --gpu-memory-utilization 0.55 rather than 0.6; every other eval argument matches"
+    - "whether the tokenizer files actually differed from the base ones is never checked in the stream - only that four of them were copied [132]"

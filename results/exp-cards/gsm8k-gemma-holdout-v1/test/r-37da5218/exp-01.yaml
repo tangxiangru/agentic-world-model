@@ -1,0 +1,198 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 1.11
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: null          # the agent launched the main SFT run without stating a problem in words
+  evidence:
+    - path: /home/ben/task/baseline_50.json
+      locator: "digest [253]-[254]"
+      observation: "base checkpoint scores accuracy 0.04 on the benchmark at --limit 50"
+    - path: "digest event [227]-[228]"
+      locator: "[228]"
+      observation: >-
+        first eval sample of the base checkpoint: the completion keeps generating past the
+        answer into further invented problems, so the numeric scorer reads a trailing number
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: null              # not stated before the launch
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_main.jsonl
+      source: "derived: nvidia/OpenMathInstruct-2 (gsm8k + augmented_gsm8k, math + augmented_math) + openai/gsm8k train"
+      n_examples: null
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        prepare_data.py [126]/[209]/[211]: \boxed{X} replaced inline with X, solution body kept,
+        "\n\nANSWER: <answer><end_of_turn>" appended; non-numeric expected_answer dropped;
+        gsm bodies capped at 2000 chars and math bodies at 1500; max 3 solutions per problem;
+        exact-dup drop; normalized-question filter against the gsm8k test split;
+        10% of records carry the exact fixed 10-shot eval prefix (fewshot_system_message.txt),
+        5% carry 1-10 random few-shot examples, the rest none; plus the full gsm8k train split
+        with <<...>> calculator annotations stripped. sft_main.jsonl is a subsample of
+        sft_data.jsonl taken by an inline script at [390]: 210000 omi2-gsm + 25000 omi2-math +
+        all gsm8k-train records, reshuffled. The agent reported the result as
+        "242K records / 140M tokens / 2301 steps" [447]; the record count itself was never printed.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers Trainer (custom FFD packing + flatten collator), flash_attention_2, liger_kernel"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 2
+      max_seq_len: 8192
+      scheduler: cosine
+      warmup: 100
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        --pack-len 8192, --max-doc-len 4096 and --seed 42 are train_sft.py argparse defaults
+        (script text in task/, not overridden at this launch). scheduler=cosine,
+        weight_decay=0.0, max_grad_norm=1.0, optim=adamw_torch_fused, bf16=True,
+        gradient_checkpointing=True (use_reentrant=False), save_steps 600, logging_steps 10
+        are hardcoded in train_sft.py. warmup is 100 *steps*, not a ratio.
+        Full fine-tune with vision tower and multimodal projector frozen; Liger fused
+        linear-CE kernels applied. Effective batch = 4 bins x 2 accum x 8192 tokens.
+    target_format: >-
+      "<bos><start_of_turn>user\n<prompt template (optionally few-shot-prefixed)><end_of_turn>\n
+      <start_of_turn>model\n" as prompt (labels -100), completion = solution body +
+      "\n\nANSWER: <answer><end_of_turn>"; loss on completion tokens only.
+  command:
+    argv: [nohup, python3, -u, train_sft.py, --data, sft_main.jsonl, --output-dir, runs/main,
+           --epochs, "1", --lr, "2e-5", --warmup-steps, "100", --save-steps, "600",
+           --bins-per-batch, "4", --grad-accum, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/runs/main.log
+
+  budget:
+    gpu: "1x H100"
+    planned_h: 3.0
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [bash, eval_model.sh, runs/main/final, main150, "150", "6", "0.3"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.04
+    path: /home/ben/task/baseline_50.json
+  diagnostic:
+    what: "categorise the wrong items of the limit-150 eval by failure mode (missing ANSWER line / truncation / wrong number)"
+    command: [python3, "-", "<<EOF (inline script at [641])"]
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.68
+  duration_h: 2.68
+  steps: 2301
+  output_checkpoint: /home/ben/task/runs/main/final
+  training_summary:
+    final_loss: 0.29
+    steps: 2301
+    notes: >-
+      agent: "Training complete (2h41m, final train loss 0.29)" [609]; last logged loss
+      0.2681 at epoch 0.99 [592]. eval_model.sh packages the checkpoint through
+      finalize_model.py, which writes a greedy generation_config.json
+      (do_sample=false, temperature 0.0, eos [1,106]) before serving it [645]/[646].
+  measurements:
+    - metric: accuracy
+      value: 0.74
+      n: 150
+      path: /home/ben/task/eval_main150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      of 39 wrong items: no_answer_line 1, truncated 0, has_answer_wrong_num 38;
+      completion length mean 600 chars, max 18207 [642]. Two wrong items printed at [663].
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Round-1 SFT reached accuracy 0.74 (stderr 0.036) at --limit 150 [637], and the agent's
+    own failure triage found the remaining errors are arithmetic/reasoning, not formatting
+    (38 of 39 wrong items carried a well-formed ANSWER line) [642]. The only base-model
+    number available (0.04) was measured at --limit 50, a different protocol, so no
+    comparison under this card's protocol exists.
+  decision: adopt
+  next_step: >-
+    RFT generation from this checkpoint, then a round-2 continuation on fresh
+    OpenMathInstruct-2 data plus the RFT set [684]. (prepare_rft_mix.py was written at [422]
+    for that mix but never run; prepare_round2_mix.py [709] was used instead.)
+
+# ---- 7. Outcome -------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-37da5218
+  launch_i: 394
+  stated_by_agent:
+    problem: false
+    hypothesis: false
+  anchors:
+    problem: [228, 253, 254]
+    setup: [126, 209, 211, 390, 394]
+    evaluation: [616, 645, 646]
+    result: [592, 609, 637, 641, 642, 663]
+    conclusion: [637, 642, 682]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data.py
+    - fewshot_system_message.txt
+    - finalize_model.py
+    - eval_model.sh
+    - evaluate.py
+    - baseline_50.json
+    - eval_main150.json
+    - contamination_judgement.txt
+  smoke_runs:
+    - {launch_i: 274, outcome: "passed: smoke train on 12.8K-record smoke_data.jsonl; loss 0.73 -> 0.44 [447]"}
+    - {launch_i: 351, outcome: "passed (12 steps): throughput benchmark, --no-grad-ckpt --bins-per-batch 1 --grad-accum 8; disabling grad checkpointing was slower [447]"}
+    - {launch_i: 369, outcome: "passed (12 steps): throughput benchmark, --bins-per-batch 4 --grad-accum 2; chosen setting, 14.8K tok/s [447]"}
+    - {launch_i: 384, outcome: "passed (10 steps): throughput benchmark, --bins-per-batch 8 --grad-accum 1; slower than bs=4 [447]"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "sft_main.jsonl record count was never printed; only the agent's rounded '242K records / 140M tokens' [447]."
+    - "The base-model comparator (0.04) was measured at --limit 50, not the --limit 150 used here [254]."
+    - "run_full_training.sh [324] encodes an earlier variant of this launch (sft_data.jsonl, bins-per-batch 2, grad-accum 4, save-steps 700) and was never executed; the launch at [394] was typed inline."

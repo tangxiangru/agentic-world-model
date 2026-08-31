@@ -1,0 +1,182 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 1.58
+
+problem:
+  statement: >-
+    Scored with the task's own evaluate.py the base model gets 38.0% at limit 150,
+    because evaluate.py sets only max_tokens and vLLM takes sampling defaults from
+    the model's own generation_config.json - the base config has no temperature, so
+    it is sampled at temperature 1.0. Greedy decoding on the same prompt format is
+    far stronger (79% on a 24-question smoke set, 83.8% greedy over the whole train
+    split), so the gap is decoding noise plus an unenforced answer format rather
+    than missing capability.
+  evidence:
+    - path: /home/ben/task/eval_artifacts/baseline_150.json
+      locator: "[15909]"
+      observation: '{"accuracy": 0.38, "stderr": 0.0398} for Qwen/Qwen3-4B-Base at --limit 150'
+    - path: /home/ben/task/data/star_round1.log
+      locator: "[16531]"
+      observation: "greedy pass over gsm8k train: 6262/7473 = 83.8% correct traces"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised fine-tuning on gold GSM8K train solutions plus verified
+    rejection-sampled traces, all ending in the canonical "ANSWER: <gold>" line,
+    will lift accuracy well above the 38% baseline; the base model already has the
+    format and the reasoning, and "sampling noise kills it" [15854].
+  mechanism: >-
+    Training every row to end in the canonical answer line, with the exact eval
+    10-shot prompt as (loss-masked) context for a third of rows, teaches the
+    scoring contract, while the verified traces reinforce the reasoning the model
+    already does correctly at greedy [15854, 16273].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: synthetic:self
+      n_examples: 28781
+      built_by: /home/ben/task/build_sft_data.py
+      build_command:
+        - python
+        - build_sft_data.py
+        - --star-file
+        - data/star_round1.jsonl
+        - --out
+        - data/sft_v1.jsonl
+      selection: >-
+        Per gsm8k train question: the gold solution with <<calc>> annotations
+        stripped, plus <=3 verified rejection-sampled traces from
+        data/star_round1.jsonl (gen_star.py, greedy + k=8 @ T=0.8 top-p 0.95 over
+        all 7473 train questions, kept when the normalized ANSWER marker equals the
+        gold train answer). Traces are cut at the last ANSWER-ish line, that line
+        rewritten to "ANSWER: <gold>", dropped if >2400 chars, <20 chars, word
+        uniqueness <0.35, or a near-duplicate of one already kept; greedy first,
+        then non-LaTeX, then shortest. Per row the system prompt is drawn 35% exact
+        eval 10-shot / 35% random k-shot (k in 2,4,6,8) / 30% none. The first
+        generation run [16274] died on a Unicode fraction in the answer normalizer
+        and was relaunched at [18865] after the exception was caught.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 (torch 2.8, flash-attn 2.8.3)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 32
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr, batch_size, grad_accum, max_seq_len and seed are train_sft.py argparse
+        defaults, not overridden in this launch. scheduler, warmup_ratio 0.03,
+        weight_decay 0.0, bf16, adamw_torch_fused with adam_beta2 0.95,
+        max_grad_norm 1.0, gradient checkpointing, flash_attention_2 and
+        DataCollatorWithFlattening padding-free batching are fixed in the script.
+        Effective batch 128. Prompt tokens masked to -100; rows longer than
+        max_seq_len are dropped.
+    target_format: >-
+      Rendered through templates/qwen3.jinja; assistant turn is the reasoning
+      ending in a final line "ANSWER: <gold>" followed by <|im_end|>.
+  command:
+    argv:
+      - python
+      - train_sft.py
+      - --data
+      - data/sft_v1.jsonl
+      - --out
+      - runs/sft_v1
+      - --epochs
+      - "3"
+      - --save-each-epoch
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/runs_sft_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: 0.03
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No traceback in the stream; the next event [21390] rewrites num_proc=8 to
+      num_proc=None in the tokenize map and relaunches the identical command, so
+      the run did not get past dataset tokenization. runs_sft_v1.log was
+      overwritten by later relaunches and holds only the run of exp-05.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    First real SFT launch on sft_v1; it produced no checkpoint and was replaced
+    within two minutes by an identical relaunch with multiprocessing disabled in
+    the tokenize map [21390].
+  decision: abandon_line
+  next_step: "Relaunch with num_proc=None in ds.map/ds.filter (exp-02)."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-9395d5af
+  launch_i: 21187
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [15854, 15909, 16036, 16273, 16531]
+    setup: [21110, 21181, 21187]
+    evaluation: []
+    result: [21390]
+    conclusion: [21390]
+  snapshot_files:
+    - train_sft.py
+    - build_sft_data.py
+    - gen_star.py
+    - runs_sft_v1.log
+  smoke_runs:
+    - {launch_i: 16532, outcome: "passed: build_sft_data.py dry run on the smoke star file"}
+    - {launch_i: 17915, outcome: "passed: CPU-only tokenization + DataCollatorWithFlattening boundary check on 3 rows"}
+  extractor: null
+  unresolved:
+    - "The rejection-sampling smoke run reported at [16273] (greedy 19/24) has no launch event in the digest."
+    - "eval_artifacts/*.json and data/ are not in the workspace snapshot; dataset and baseline numbers come from the stream and RESULTS.md."

@@ -1,0 +1,185 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.87
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The base model scores 14.1% on the benchmark eval: at its default decoding
+    (temperature 1.0) it "rambles ~1840 tokens/output", never stops, invents
+    follow-up question/answer turns after its own answer, drifts from the
+    "ANSWER: N" format, and slips on arithmetic - so the scorer, which reads the
+    last numeric word of the completion, mostly reads the wrong number. [17112]
+  evidence:
+    - path: /home/ben/task/results_base_64.json
+      locator: "accuracy 0.140625, stderr 0.0438 (limit 64)"
+      observation: "baseline accuracy of the unmodified base model at limit 64"
+    - path: /home/ben/task/logs_base_eval.txt
+      locator: "[9101] launch, [17112] the agent's reading of the result"
+      observation: >-
+        agent's summary: "Baseline: 14.1% (limit 64, temp 1.0 - base model
+        rambles ~1840 tokens/output)"
+    - path: /home/ben/task/EXPERIMENT_LOG.md
+      locator: "## Runs, first bullet"
+      observation: >-
+        "base (temp 1.0 default): accuracy 0.141 @ limit 64. Failures: no stop
+        (runs on, fake follow-up QAs), arithmetic slips, format drift."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: local
+      n_examples: 137396
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py, --out, data/sft_v1.jsonl]
+      selection: >-
+        GSM8K train gold CoT with <<>> annotations stripped and reformatted to
+        end "ANSWER: N", repeated x3 (--gsm8k-repeats default 3), plus the
+        MetaMathQA GSM subsets (AnsAug/Rephrased/SV/FOBAR) parsed, tail-rewritten
+        to "ANSWER: N", deduped and capped at 115000 (--metamath-cap default);
+        every prompt rendered through the eval's own chat template with mixed
+        system blocks (gold: 35% the exact seed-42 eval few-shot block / 15%
+        random k-shot / 50% short system; MetaMath: 10% / 6% / 84%) and a
+        randomised "Today Date"; printed counts: gold 7473, metamath kept 233758
+        capped to 115000, exact_eval=19322 kshot=10274 short=107800.
+      repeats: "gsm8k gold x3"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129, flash-attn 2.8.3)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 2.0
+      batch_size: 4
+      grad_accum: 16
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "weights loaded fp32, bf16=True autocast, flash_attention_2, gradient checkpointing"
+      seed: 17
+      other: >-
+        --max-len 2560 and --seed 17 not passed on the command line; taken from
+        the argparse defaults of /home/ben/task/train_sft.py, which the launch
+        did not override. scheduler/warmup/weight_decay/adam_beta2=0.95/
+        max_grad_norm=1.0/optim=adamw_torch_fused/group_by_length=True are
+        hard-coded in that script's TrainingArguments, not command-line args.
+        Effective batch 64. save_strategy="epoch", save_total_limit=4. Loss is
+        masked to the completion plus <|im_end|>. Trainer reported "dataset:
+        137374 examples, dropped 22 over 2560 tokens".
+    target_format: >-
+      the eval prompt rendered with templates/smollm.jinja (system = few-shot or
+      short system block, user = the eval's MATH_PROMPT_TEMPLATE), completion =
+      reasoning lines then a single final line "ANSWER: <number>", then
+      <|im_end|>.
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v1.jsonl, --out, ckpt/sft_v1, --epochs, "2", --mbs, "4", --accum, "16", --lr, 2e-5]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs_sft_v1.txt
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 3.0
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: killed
+  wall_h: 0.4
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 306
+    notes: >-
+      Killed by the agent at 306/4294 steps (`pkill -f train_sft.py`, [25045]),
+      21 min in, no checkpoint saved (save_strategy=epoch). At the observed pace
+      the agent projected ~4.8 h for 2 epochs, which would have consumed the
+      time reserved for the later rejection-sampling round. [23387][25044]
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Killed after 306 of 4294 steps because the projected 4.8 h for 2 epochs did
+    not fit the budget; the agent attributed the cost to the "29K long-prompt
+    (few-shot-block) examples [that] dominate FLOPs" and rebuilt the corpus with
+    a leaner long-prompt share instead. No checkpoint and no measurement. [25044]
+  decision: abandon_line
+  next_step: >-
+    Rebuild the corpus with the exact-eval-block share for MetaMath cut from 10%
+    to 2% and the k-shot share from 6% to 3%, cap MetaMath at 100000, and
+    relaunch at mbs 6 / accum 11 (exp-02).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-628a7a20
+  launch_i: 20368
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [9101, 17112, 23378]
+    setup: [14759, 16114, 17728, 20368]
+    evaluation: []
+    result: [20369, 23386, 23387, 25044, 25045]
+    conclusion: [25044, 33246]
+  snapshot_files:
+    - prep_data.py
+    - train_sft.py
+    - logs_prep.txt
+    - logs_sft_v1.txt
+    - logs_base_eval.txt
+    - results_base_64.json
+    - EXPERIMENT_LOG.md
+  smoke_runs:
+    - {launch_i: 18066, outcome: "crashed: CUDA OOM in cross-entropy at mbs 8 / accum 8 (long-sequence batches + fp32 logits)"}
+    - {launch_i: 18704, outcome: "passed (6000-example, 1-epoch pipeline check at mbs 4 / accum 16, 426 s; export + eval at limit 150 gave 0.687, results_smoke_150.json)"}
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      The stream never states a hypothesis for this launch; the agent only says
+      "Pipeline validated end-to-end. Launching the full run (137K examples, 2
+      epochs, ~3h)" [20363].
+    - >-
+      data/sft_v1.jsonl was rebuilt three times ([14880], [16945], [17728]) as
+      the agent fixed the decontamination branch and a render bug; only the last
+      build ([17728], logged to logs_prep.txt) is the file this launch read.

@@ -1,0 +1,181 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.20
+
+problem:
+  statement: >-
+    The raw pretrained base model scores 7.3% at --limit 150. Its failures are
+    dominated by rambling/degeneration after the answer: the eval sends no
+    temperature so vLLM samples at the model's own default (temp 1.0) and the
+    model never stops, while the scorer takes the last number in the
+    completion, so even a correct chain of thought is graded wrong.
+  evidence:
+    - path: /home/ben/task/baseline_150.json
+      locator: "[8652] launch, accuracy read at [14734]"
+      observation: "google/gemma-3-4b-pt at --limit 150 scores 0.0733 (stderr 0.0214)"
+    - path: null
+      locator: "[14734]"
+      observation: >-
+        agent: "Baseline: 7.3% (150 samples), avg output ~2200 tokens - the PT
+        model rambles at temp 1.0"
+    - path: null
+      locator: "[15017]"
+      observation: >-
+        agent: "Failures are dominated by rambling/degeneration after the answer
+        (temp-1.0 sampling, no stop discipline)"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full fine-tuning on GSM8K-train solutions formatted byte-exactly like the
+    eval prompt, with the completion ending in "ANSWER: X<end_of_turn>", plus
+    greedy decoding written into the checkpoint's generation_config, will fix
+    the rambling failures and lift accuracy far above the 7.3% baseline.
+    (agent, [15017]: "exactly what SFT + greedy decoding will fix")
+  mechanism: >-
+    The eval never sends temperature/top_p, so the served checkpoint's own
+    generation_config controls decoding; training the model to emit
+    <end_of_turn> right after the ANSWER line gives the scorer a clean last
+    number ([7874], [15017]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/build_sft_v1.py
+      build_command: [python3, build_sft_v1.py]
+      selection: >-
+        every gsm8k train row; answer split on "####"; prompt rendered through
+        the eval's own chat construction (gsm8k_eval_prompt.py) with 40% the
+        exact 10-shot eval prefix (train split, seed 42), 20% random 10-shot
+        prefixes (seeds 1000-1019), 40% zero-shot; completion = gold reasoning
+        + "\n\nANSWER: {target}<end_of_turn>"; loss on completion tokens only.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer, custom /home/ben/task/train_sft.py (versions not printed in the digest)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: "fp32 weights + bf16=True autocast"
+      seed: 42
+      other: >-
+        lr/epochs/bs/accum are on the command line at [15027]. warmup_ratio 0.03
+        is the argparse default of train_sft.py and was NOT overridden by this
+        launch. Fixed in the script body as it stood at this launch ([13872]):
+        MAX_LEN 3072 (longer rows dropped), cosine scheduler, seed 42,
+        optim="adamw_bnb_8bit", attn_implementation="sdpa",
+        torch_dtype=float32, bf16=True, gradient_checkpointing with
+        use_reentrant=False, group_by_length, save_strategy="epoch",
+        save_only_model, max_grad_norm 1.0, logging_steps 10. Vision tower and
+        multi-modal projector frozen (420M params). No weight_decay is set.
+        use_liger_kernel and flash_attention_2 were added AFTER this launch
+        ([15716], [17972]).
+    target_format: >-
+      "<bos><start_of_turn>user\n{fewshot prefix + eval MATH_PROMPT_TEMPLATE}<end_of_turn>\n<start_of_turn>model\n"
+      as prompt; "{reasoning}\n\nANSWER: {target}<end_of_turn>" as completion.
+  command:
+    argv: [python3, train_sft.py, --data, data/sft_v1.jsonl, --out, ckpts/v1, --epochs, "3", --lr, 2e-5, --bs, "8", --accum, "4"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0733333333333333
+    path: /home/ben/task/baseline_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Crashed roughly 0.04 h after launch (launch [15027] t=+0.20h, failure
+      reported at [15707] t=+0.24h). No checkpoint was written.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    Out-of-memory in the cross-entropy. Agent at [15707]: "OOM in cross-entropy:
+    Gemma3's 262K vocab makes logits enormous (8x2000x262Kx4B = 17GB)". The
+    traceback text itself is not in the digest.
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first full fine-tune attempt died on the materialised logits of the
+    262K-token vocabulary before a single checkpoint was saved, so the
+    hypothesis was not tested. The agent diagnosed it immediately and moved to
+    a fused cross-entropy kernel ([15707]).
+  next_step: >-
+    Add Liger fused CE (use_liger_kernel=True, edited into train_sft.py at
+    [15716]) and relaunch the same command ([15718]).
+  decision: abandon_line
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-71205e90
+  launch_i: 15027
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [8652, 14734, 14827, 15017]
+    setup: [8337, 12588, 12591, 13872, 15027]
+    evaluation: []
+    result: [15707]
+    conclusion: [15707, 15716, 15718]
+  snapshot_files:
+    - build_sft_v1.py
+    - gsm8k_eval_prompt.py
+    - train_sft.py
+    - baseline_150.json
+    - train_v1.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "n_examples 7473 for data/sft_v1.jsonl is the row count printed by train_sft.py in task/train_v1.log; that log was overwritten by the [17974] relaunch of the same data file, and the build_sft_v1.py result block at [12591] is not in the digest."
+    - "task/train_sft.py is the end-of-run copy; the hyperparameters listed here are the script text as it stood at [13872], before the edits at [15716], [17350], [17352] and [17971]."

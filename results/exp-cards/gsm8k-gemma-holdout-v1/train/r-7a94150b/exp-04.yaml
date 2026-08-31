@@ -1,0 +1,264 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The first tuning run clearly overfit/degraded" [153]: the 0.25-epoch
+    QLoRA run at lr 2e-4 with r=64 scored 0.15 on 20 samples against the
+    untouched base model's 0.50 under the same eval setting, and the sampled
+    generations showed broken reasoning rather than a formatting problem.
+  evidence:
+    - path: /home/ben/task/sanity_eval20_1200.json
+      locator: "accuracy"
+      observation: "0.15 for runs/sanity_merged at --limit 20 --max-tokens 1200"
+    - path: /home/ben/task/base_eval20_1200.json
+      locator: "accuracy"
+      observation: "0.50 for the untouched Qwen/Qwen3-4B-Base under the same eval setting [148]"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-7a94150b.md
+      locator: "[142], [143], [145]"
+      observation: >-
+        one dumped sample: correctly formatted but wrong answer, with stray
+        non-English tokens; agent reads it as "mostly a reasoning-quality
+        issue, not just parsing".
+  affected_share: null
+  failure_examples:
+    - id: gsm8k_2466f3cc
+      source: /home/ben/task/logs/2026-02-12T12-12-42+01-00_gsm8k_P9XAvgUTHwDKvYqpT2Mjfv.json
+      question: null
+      gold: "6"
+      model_output: >-
+        "[non-English filler]\n\nThere are 12 - 4 - 2 = <<12-4-2=6>>6 miles left
+        to hike.\nTo finish in 12 - 1 - 1 = <<12-1-1=10>>10 hours, she needs to
+        hike 3 miles/ hour.\n\nANSWER: 3\n\n[non-English filler]"
+      failure: >-
+        scored incorrect ('I', answer 3 vs target 6): the trace computes the 6
+        miles correctly but reports the miles-per-hour rate as the final
+        answer, and the generation is wrapped in stray non-English tokens.
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Pivoting to a conservative adaptation setup: much lower LR, lower-rank
+    LoRA, and simpler text formatting to preserve base reasoning while nudging
+    answer style" [153] - i.e. lr 5e-6, LoRA r=16 on q_proj/v_proj only, and
+    plain (non-chat) formatting will score above the tuned runs and, the agent
+    hoped, above base.
+  mechanism: >-
+    A high-LR, high-rank adapter over all projections overwrote the base
+    model's reasoning; a small, low-rank, low-LR update touching only the
+    attention query/value projections should leave the base capability intact
+    while still teaching the answer format.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split train), loaded in-script"
+      n_examples: 7248
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command:
+        - python
+        - train_gsm8k_sft.py
+        - --use-4bit
+        - --epochs
+        - "1.0"
+        - --batch-size
+        - "8"
+        - --grad-accum
+        - "4"
+        - --max-seq-length
+        - "1536"
+        - --learning-rate
+        - "5e-6"
+        - --lora-r
+        - "16"
+        - --lora-alpha
+        - "32"
+        - --lora-dropout
+        - "0.05"
+        - --target-modules
+        - q_proj,v_proj
+        - --format-style
+        - plain
+        - --output-dir
+        - runs/conservative_lora
+        - --merged-output-dir
+        - runs/conservative_merged
+        - --save-steps
+        - "200"
+        - --logging-steps
+        - "20"
+      selection: >-
+        train_test_split(test_size=0.03, seed=42) on gsm8k train (7248 train /
+        225 val as printed at [86] for the same split settings); --format-style
+        plain means build_plain_text: the evaluator's math prompt and the
+        rationale + "ANSWER: <n>" concatenated as raw text, with no chat
+        template.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 with SFTConfig (versions at [35], [36])"
+    peft: "LoRA r=16 alpha=32 dropout=0.05, targets q_proj,v_proj (all from the launch argv)"
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "4-bit NF4 double-quant base with bf16 compute (--use-4bit; quantisation detail from train_gsm8k_sft.py)"
+      seed: 42
+      other: >-
+        everything except scheduler, warmup, weight_decay, seed and val_size is
+        from the launch argv at [159]. scheduler=cosine and bf16=True are
+        hard-coded in train_gsm8k_sft.py in the workspace; warmup_ratio 0.03,
+        weight_decay 0.0, seed 42 and val_size 0.03 are unoverridden argparse
+        defaults in that same file. save_steps 200 / logging_steps 20 were set
+        on the command line.
+    target_format: >-
+      plain text: the evaluator's math prompt followed by the gsm8k rationale
+      and "ANSWER: <n>" (no chat template).
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --use-4bit
+      - --epochs
+      - "1.0"
+      - --batch-size
+      - "8"
+      - --grad-accum
+      - "4"
+      - --max-seq-length
+      - "1536"
+      - --learning-rate
+      - "5e-6"
+      - --lora-r
+      - "16"
+      - --lora-alpha
+      - "32"
+      - --lora-dropout
+      - "0.05"
+      - --target-modules
+      - q_proj,v_proj
+      - --format-style
+      - plain
+      - --output-dir
+      - runs/conservative_lora
+      - --merged-output-dir
+      - runs/conservative_merged
+      - --save-steps
+      - "200"
+      - --logging-steps
+      - "20"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [5]"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/conservative_merged
+      - --limit
+      - "20"
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1200"
+      - --gpu-memory-utilization
+      - "0.6"
+      - --json-output-file
+      - conservative_eval20_1200.json
+    dev_set: "official --limit 20"
+    n: 20
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.5
+    path: /home/ben/task/base_eval20_1200.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/conservative_merged
+  training_summary:
+    final_loss: null
+    steps: 227
+    notes: >-
+      "227 steps total" [164]; the run was reported stable throughout ([161],
+      [164], [167], [168]) and "finished and merged successfully" [172], but no
+      loss line or train_runtime for this launch appears in the digest. The
+      LoRA adapter is at /home/ben/task/runs/conservative_lora.
+  measurements:
+    - metric: accuracy
+      value: 0.25
+      n: 20
+      path: /home/ben/task/conservative_eval20_1200.json
+      delta_vs_comparator: -0.25
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    The conservative low-LR, r=16, q/v-only, plain-format adapter scored 0.25
+    on 20 samples against base 0.50 under the same protocol [174] - better than
+    the aggressive run (0.15) but still far below the untouched model, so
+    "current fine-tune variants are underperforming the base model" [176].
+  decision: reject
+  next_step: >-
+    "One final micro-update (very low LR, very few steps) to preserve base
+    capability while still applying minimal post-training. If it doesn't beat
+    base, I'll ship the strongest model available" [176] (exp-05).
+
+provenance:
+  kind: extracted
+  run_ref: r-7a94150b
+  launch_i: 159
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [142, 143, 145, 148, 153]
+    setup: [156, 159]
+    evaluation: [173]
+    result: [161, 164, 167, 168, 172, 174]
+    conclusion: [174, 176]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - conservative_eval20_1200.json
+    - base_eval20_1200.json
+    - sanity_eval20_1200.json
+    - evaluate.py
+  extractor: claude-opus-5
+  unresolved:
+    - "the edits between [153] and [156] that added --target-modules and --format-style are not shown in the digest; only the end-of-run script is available"
+    - "no training loss, runtime or eval_loss for this launch appears in the stream"
+    - "the failure example is the single sample the agent dumped at [143]; its eval log is not in the workspace snapshot and the question text was never printed"

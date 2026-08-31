@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    [240] "the strongest remaining hypothesis is prompt mismatch: the benchmark is
+    10-shot in the system message, and the failing branches never trained on that
+    structure." Both the full fine-tune and the zero-shot LoRA recipe were trained
+    on bare single-question prompts while the evaluation presents few-shot
+    demonstrations in a system message.
+  evidence:
+    - path: /home/ben/task/exp_full_gsm_e1_stopfix_eval50.json
+      locator: "[230]"
+      observation: "0.14 on 50 samples after the decode fix, still far below the 0.44 base baseline"
+    - path: /home/ben/task/evaluate.py
+      locator: "[38] -> [39]"
+      observation: "the Inspect gsm8k task builds a 10-shot prompt with 'Reasoning:' and a final 'ANSWER:' line"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    [250] "LoRA, but with three GSM8K train demonstrations in the system prompt
+    for every training sample ... should give a much clearer answer on whether
+    prompt-structure matching is the missing piece." [257] "If this one works, it
+    should work for the right reason: the train-time prompt matches the eval-time
+    prompt structure."
+  mechanism: >-
+    Training under the same few-shot system-message structure the scorer uses
+    removes the train/eval prompt-distribution gap the agent blames for the
+    earlier collapses.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k (main, split=train)
+      n_examples: null
+      built_by: /home/ben/task/train_qwen_gsm8k.py
+      build_command: []
+      selection: >-
+        in-trainer construction with --fewshot-k 3: full train split shuffled with
+        seed 42, the first --eval-size rows (script default 256, not overridden)
+        held out, the rest used for training; for each row three other train rows
+        are sampled and joined into a system message of
+        "question / Reasoning: ... / ANSWER: <target>" demonstrations.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: transformers.Trainer + peft LoRA (versions not printed in the stream)
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 5.0e-05
+      epochs: 1
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/batch_size/grad_accum/max_seq_len and --fewshot-k 3 --lora
+        --merge-adapter --save-strategy epoch from the launch argv at [249]. lora
+        r=64, alpha=128, dropout=0.05, target modules, warmup 0.03, weight_decay
+        0.01 and seed 42 are argparse defaults of
+        /home/ben/task/train_qwen_gsm8k.py which the launch did not override;
+        scheduler and bf16 are hard-coded there.
+    target_format: >-
+      templates/qwen3.jinja chat format; system turn = three GSM8K train
+      demonstrations, user turn = the Inspect GSM8K prompt, assistant turn = the
+      gold rationale + "ANSWER: <target>"; loss masked to the assistant span.
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - 'python train_qwen_gsm8k.py --output-dir exp_lora_few3_e1_lr5e5 --num-train-epochs 1 --learning-rate 5e-5 --max-length 1536 --fewshot-k 3 --per-device-train-batch-size 2 --per-device-eval-batch-size 2 --gradient-accumulation-steps 8 --logging-steps 20 --save-strategy epoch --lora --merge-adapter'
+    cwd: /home/ben/task
+    script: /home/ben/task/train_qwen_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - candidate_few3_stopfix
+      - --limit
+      - "50"
+      - --json-output-file
+      - candidate_few3_stopfix_eval50.json
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.3"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.44
+    path: /home/ben/task/baseline_50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.33
+  output_checkpoint: /home/ben/task/exp_lora_few3_e1_lr5e5
+  training_summary:
+    final_loss: 0.425737541333764
+    steps: 452
+    notes: >-
+      [299] train_runtime 1171.85 s, eval_loss 0.42963361740112305 at epoch 1.0,
+      then "Merging LoRA adapter into base model...". [255] the budget timer read
+      8:57 remaining just after this launch.
+  measurements:
+    - metric: accuracy
+      value: 0.04
+      n: 50
+      path: /home/ben/task/candidate_few3_stopfix_eval50.json
+      delta_vs_comparator: -0.4
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Prompt-structure matching did not rescue the recipe: the merged adapter,
+    repackaged with the same stop-token fix, scored 0.04 on 50 samples against the
+    base model's 0.44 under the same protocol. [311] "The honest conclusion from
+    the stronger post-training runs is that they overfit the reasoning format and
+    degrade benchmark behavior."
+  decision: reject
+  next_step: >-
+    [311] "one final conservative branch: an almost-no-op LoRA update, just enough
+    to satisfy 'fine-tuned' while staying as close as possible to the base model's
+    much stronger baseline" (exp-06).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-0295e24f
+  launch_i: 249
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [230, 240]
+    setup: [249, 250]
+    evaluation: [304]
+    result: [299, 309]
+    conclusion: [311, 332]
+  snapshot_files:
+    - train_qwen_gsm8k.py
+    - candidate_few3_stopfix_eval50.json
+    - baseline_50.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the scored model is candidate_few3_stopfix, described at [301] as the stopfixed packaging of this merged run, but the command that built that directory does not appear in the stream"

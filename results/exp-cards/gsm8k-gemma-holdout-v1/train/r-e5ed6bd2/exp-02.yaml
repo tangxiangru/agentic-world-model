@@ -1,0 +1,165 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.07
+
+problem:
+  statement: >-
+    train.py crashed in the backward pass with "element 0 of tensors does not require grad
+    and does not have a grad_fn"; the agent's two edits attribute it to the multi-GPU
+    device_map and to gradient checkpointing interacting with the PEFT wrapper
+    ("# Use single GPU", "# Disabled to avoid issues with PEFT").
+  evidence:
+    - path: null
+      locator: "[53]"
+      observation: "traceback from the exp-01 launch: RuntimeError at accelerator.backward, 0/1404 steps"
+    - path: /home/ben/task/baseline_results.json
+      locator: "[42]-[43]"
+      observation: "base model accuracy 0.180 on gsm8k --limit 50, the number this run is trying to beat"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/gsm8k_train_templated.jsonl
+      source: "HF: gsm8k main, train split"
+      n_examples: 7473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: ["python3", "prepare_data.py"]
+      selection: >-
+        every gsm8k train row reformatted as a 3-turn chat (system prompt asking for
+        step-by-step reasoning ending in \boxed{answer}; assistant turn = the gold
+        rationale before '####' plus "Therefore, the answer is \boxed{<gold>}"), then
+        rendered with the tokenizer's chat template; no filtering or dedup
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer + peft 0.18.1"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        the launch passed no arguments, so every value here is a module-level constant in
+        train.py (script text in the workspace, written at [32] and edited at [58], [61]);
+        device_map="cuda:0", gradient_checkpointing=False,
+        attn_implementation="flash_attention_2"
+    target_format: >-
+      full-sequence causal LM loss over the chat-templated conversation (no
+      completion-only masking); assistant turn ends in "\boxed{<answer>}"
+  command:
+    argv: ["python3", "train.py"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: ["python3", "evaluate.py", "--model-path", "final_model", "--limit", "150", "--max-tokens", "4000", "--json-output-file", "first_iteration_results.json"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.18
+    path: /home/ben/task/baseline_results.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.24
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      stdout was truncated in the stream at [65]; the last logged loss visible is 0.4521 at
+      epoch 0.98, and the trainer's progress bar in the exp-01 crash showed 1404 total steps
+      for this configuration. The script saves the LoRA adapter to final_model/lora_adapter
+      and the merged weights to final_model.
+  measurements:
+    - metric: accuracy
+      value: 0.02666666666666667
+      n: 150
+      path: /home/ben/task/first_iteration_results.json
+      delta_vs_comparator: -0.1533
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      the agent wrote test_model.py at [83] to inspect a single generation and read the eval
+      log; at [90] it reported the model emits the right answer (\boxed{72}) and then keeps
+      generating repetitive content. No numeric probe was recorded.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    LoRA SFT at r=64 / lr=2e-4 / 3 epochs on the \boxed-format chat data completed but scored
+    0.027 on 150 official items, far below the base model, with output token count blowing up
+    (295k output tokens for 150 items); at [82] the agent called this "something is wrong".
+    The comparator was measured at --limit 50 rather than 150, so the gap is not a like-for-like
+    contrast even though its size leaves little doubt.
+  decision: reject
+  next_step: >-
+    Rewrite the data in the evaluation's own "Reasoning: ... ANSWER: X" format and retrain with
+    more conservative LoRA settings (prepare_data_v2.py / train_v2.py) - that is exp-03.
+
+provenance:
+  kind: extracted
+  run_ref: r-e5ed6bd2
+  launch_i: 64
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [53, 58, 61]
+    setup: [24, 27, 28, 32, 58, 61, 64]
+    evaluation: [77]
+    result: [65, 78]
+    conclusion: [82, 90, 95]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - test_model.py
+    - first_iteration_results.json
+    - baseline_results.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "final loss and completed step count: the training stdout at [65] is truncated in the stream"
+    - "the comparator (0.180) was measured under --limit 50 while this output was measured under --limit 150"
+    - "the checkpoint was deleted at [95] (rm -rf final_model qwen3-1.7b-gsm8k-lora), so it cannot be re-evaluated"

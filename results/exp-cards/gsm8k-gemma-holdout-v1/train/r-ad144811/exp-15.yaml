@@ -1,0 +1,169 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-15
+created_at: null
+elapsed_h: 7.76
+
+problem:
+  statement: >-
+    Every external-data and reward branch has been rejected, and a low-rate pass on
+    the official split ties then declines, so the only untried source of supervision
+    is the model's own successful reasoning distribution.
+  evidence:
+    - path: /home/ben/task/official_refine30_eval.json
+      locator: "[1036]"
+      observation: >-
+        "The low-rate official pass does not produce a reproducible gain (step 20
+        ties; step 30 drops to 73.3%)."
+    - path: /home/ben/task/grpo_conservative50_150.json
+      locator: "[799]"
+      observation: "Outcome-reward optimization was rejected outright at 72.7%."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Rejection-sampled self-training - sampling four rationales per official training
+    question from the champion, keeping up to two that reach the exact gold answer
+    (and falling back to the gold rationale where none is correct), then one pass at
+    1e-6 - will improve on the champion's 77.3% under the evaluator's default
+    settings.
+  mechanism: >-
+    Fine-tuning on the model's own correct trajectories reinforces the reasoning
+    distribution it can already execute, and preserving gold rationales for the
+    questions it fails avoids an easy-problem-only curriculum [1044].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-13
+    magnitude: null
+  falsified_if: >-
+    Agent's gate at [1045]: "rejection unless it beats the existing artifact under
+    the exact default evaluator."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v2_step200
+    origin: exp-07
+    hash: null
+  data:
+    - path: /home/ben/task/self_rft_data
+      source: "synthetic:self (rollouts from the exp-07 checkpoint on openai/gsm8k train prompts)"
+      n_examples: 14510
+      built_by: /home/ben/task/prepare_self_rft.py
+      build_command: ["python", "prepare_self_rft.py", "--model", "sft_v2_step200", "--output", "self_rft_data", "--samples", "4", "--keep", "2", "--max-tokens", "384", "--seed", "8080"]
+      selection: >-
+        Four sampled trajectories per official training question, at most two kept
+        per question and only those whose final answer exactly matches gold; gold
+        train rationales retained where none of the four is correct. Only GSM8K
+        train questions are used; no held-out content and no external API. Row count
+        from the run's own record (EXPERIMENTS.md).
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "up to 2 kept trajectories per question (--keep 2)"
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer (custom packed, completion-only collator); rollouts sampled with vLLM by prepare_self_rft.py"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-6
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.1
+      precision: "bf16 (tf32), flash_attention_2, gradient checkpointing"
+      seed: 8081
+      other: >-
+        lr/epochs/batch/grad_accum/seed from the launch argv; max_length 2048 and
+        warmup_ratio 0.03 are train_sft.py argparse defaults (script in the
+        workspace, not overridden); scheduler, weight_decay and precision are
+        hard-coded in the script. save_steps 20, logging_steps 5.
+    target_format: "Packed completion-only chat format, no system turn."
+  command:
+    argv: ["/bin/bash", "-lc", "python train_sft.py --model sft_v2_step200 --data self_rft_data --output self_rft_v1 --epochs 1 --learning-rate 1e-6 --batch-size 8 --grad-accum 4 --save-steps 20 --logging-steps 5 --seed 8081"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: ["python", "evaluate.py", "--model-path", "self_rft_v1/checkpoint-20", "--limit", "150", "--json-output-file", "self_rft20_eval.json", "--max-connections", "2", "--max-tokens", "4000", "--gpu-memory-utilization", "0.3"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-13
+    value: 0.7733
+    path: /home/ben/task/final_model_eval150.json
+  diagnostic: {what: null, command: [], path: null}
+
+result:
+  execution: killed
+  wall_h: 0.2
+  duration_h: null
+  steps: 27
+  output_checkpoint: /home/ben/task/self_rft_v1/checkpoint-20
+  training_summary:
+    final_loss: null
+    steps: 27
+    notes: >-
+      Checkpoint 20 was written at learning rate 8.36e-7 [1054] but its first shard
+      took several minutes to flush (2.0 -> 2.6 -> 2.9 -> 3.5 GB of 8.0 GB observed
+      at [1070]-[1080]); with the budget nearly spent the agent stopped the run at
+      step 27: "the extra seven unsaved updates are discarded" [1085].
+  measurements:
+    - metric: accuracy
+      value: 0.74
+      n: 150
+      path: /home/ben/task/self_rft20_eval.json
+      delta_vs_comparator: -0.0333
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "Self-RFT drops to 74.0% and is rejected. The original step-200 export remains
+    the best under the provided evaluator's default settings" [1091]. Training on
+    the model's own verified rationales cost 3.3 points on the fixed slice.
+  decision: reject
+  next_step: >-
+    No further weight updates; one read-only full-set comparison of the first-stage
+    checkpoint (73.28%, also rejected [1102]), then final integrity checks.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ad144811
+  launch_i: 1050
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [1010, 1036]
+    setup: [1039, 1044, 1050]
+    evaluation: [1086]
+    result: [1054, 1056, 1062, 1065, 1070, 1074, 1077, 1080, 1085, 1089, 1091]
+    conclusion: [1091, 1102]
+  snapshot_files:
+    - train_sft.py
+    - prepare_self_rft.py
+    - self_rft20_eval.json
+    - final_model_eval150.json
+    - EXPERIMENTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The number of rows in self_rft_data was never printed in the digest; 14,510 is taken from the run's own EXPERIMENTS.md table in the workspace."
+    - "An attempt to copy checkpoint 20 aside at [1055] failed because the shard was still being written; the checkpoint was evaluated in place instead."

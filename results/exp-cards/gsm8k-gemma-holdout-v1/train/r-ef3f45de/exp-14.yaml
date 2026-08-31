@@ -1,0 +1,200 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-14
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The model NEVER generates <|im_end|> (token 151645) at all! It generates ####
+    instead ... In LoRA, only the attention and MLP layers are fine-tuned. The
+    embedding layer and the language model head (which produces token logits) are
+    frozen. So the model can't learn to increase the probability of generating
+    <|im_end|> at the right position!" [416].
+  evidence:
+    - path: /home/ben/task/eval_v4_50.json
+      locator: "[406]"
+      observation: "accuracy 0.040 on 50 items after matching the eval's raw text exactly - four candidates in, still under 0.10"
+    - path: /home/ben/task/logs/2026-02-17T09-33-03+01-00_gsm8k_ViZwMpcMndacViRuVEbCzo.json
+      locator: "[408]-[409], samples 3-5"
+      observation: "every inspected completion has Stop: max_tokens, 5.8k-7.1k characters and 10-20 ANSWER lines; the first ANSWER is the right number on three of them"
+    - path: null
+      locator: "[414]-[415], greedy decode of one eval-shaped prompt"
+      observation: "the token stream contains neither 151645 nor 151643; the model continues with '####' after 'ANSWER: 2'"
+  affected_share: null
+  failure_examples:
+    - id: "eval sample 3 of the 50-item run at [405]"
+      source: /home/ben/task/logs/2026-02-17T09-33-03+01-00_gsm8k_ViZwMpcMndacViRuVEbCzo.json
+      question: null
+      gold: "30"
+      model_output: >-
+        "There are 15 floors x 8 units = <<15*8=120>>120 units in the building.
+        3/4 of the building is occupied, so 3/4 x 120 units = <<3/4*120=90>>90
+        units are occupied. Therefore, the total number of unoccupied units in the
+        building is 120 units - 90 units = <<120-90=30>>30 units. / ANSWER: 30 /
+        <non-ASCII>assistant ..." (5,793 chars, 10 ANSWER lines, Stop: max_tokens)
+      failure: "reasoning and first answer correct, then a new assistant turn and nine more answers; the grader reads the last one"
+    - id: "eval sample 4 of the 50-item run at [405]"
+      source: /home/ben/task/logs/2026-02-17T09-33-03+01-00_gsm8k_ViZwMpcMndacViRuVEbCzo.json
+      question: null
+      gold: "8"
+      model_output: >-
+        "Since 1 foot is equal to 12 inches, the wire used by Tracy is 4 feet x 12
+        inches/foot = <<4*12=48>>48 inches long. If the wire was cut into pieces of
+        6 inches, the number of pieces obtained is 48 inches / 6 inches/piece =
+        <<48/6=8>>8 pieces. / ANSWER: 8 / <non-ASCII> / Solve the following math
+        problem step by ..." (7,060 chars, 20 ANSWER lines, Stop: max_tokens)
+      failure: "correct answer, then the model re-emits the instruction template and solves nineteen invented problems"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "1.8 hours left. I need to act fast. Let me try adding lm_head and
+    embed_tokens to modules_to_save in LoRA. This will make these layers fully
+    trainable (not LoRA, but full fine-tune for just these layers)" [419].
+  mechanism: >-
+    <|im_end|> and <|endoftext|> are rows of the output projection. With lm_head
+    and embed_tokens frozen, no amount of adapter training can raise their logits
+    at the end of an answer; unfreezing them lets the model learn the terminator
+    itself.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-13
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_gsm_raw.jsonl
+      source: "HF meta-math/MetaMathQA (GSM_* only) + HF openai/gsm8k (main, train)"
+      n_examples: 20000
+      built_by: null
+      build_command: []
+      selection: >-
+        The same file exp-12 trained on, built by the inline heredoc at [383]
+        (gsm8k train 7,473 + MetaMathQA GSM_* 239,998 = 247,471 rows [384]), each
+        row one raw text field
+        "<|im_start|>user\n{eval prompt}<|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n<|endoftext|>",
+        shuffled seed 42. Cut to 20,000 here rather than 50,000, for time: the
+        trainer logged "Training on 20000 examples for 1.0 epochs" (train_v5.log).
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 / transformers 4.57.3 / peft 0.18.1 / torch 2.8.0+cu129"
+    peft: >-
+      LoRA r=64 alpha=128 dropout=0.05
+      targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj bias=none,
+      plus modules_to_save=["lm_head", "embed_tokens"] - 910,032,896 trainable
+      params (18.45%) against 132,120,576 (3.18%) on every earlier card
+      (train_v5.log).
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        --save-steps 9999 (no intermediate checkpoints). dataset_text_field="text",
+        packing=False, gradient_checkpointing=True,
+        attn_implementation="flash_attention_2", dataloader_num_workers=4,
+        save_total_limit=2, weight_decay=0.01, lr_scheduler_type=cosine, seed=42
+        are train_v5.py's own settings (workspace copy, written at [420]) and were
+        not overridden. Effective batch = 32; 625 steps. Batch dropped from 16 to 8
+        because the two unfrozen full-size layers cost memory.
+    target_format: >-
+      raw text identical to the eval template's rendering, terminated by
+      "<|im_end|>\n<|endoftext|>".
+  command:
+    argv: [python3, train_v5.py, --data-file, training_data_gsm_raw.jsonl, --output-dir, trained_model_v5,
+           --max-samples, "20000", --epochs, "1.0", --lr, "2e-4", --batch-size, "8",
+           --grad-accum, "4", --max-seq-length, "768", --lora-r, "64", --lora-alpha, "128",
+           --warmup-ratio, "0.03", --save-steps, "9999", --logging-steps, "25"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v5.py
+    env: {}
+    log: /home/ben/task/train_v5.log
+  budget:
+    gpu: "H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.40
+  duration_h: 0.40
+  steps: 625
+  output_checkpoint: /home/ben/task/trained_model_v5
+  training_summary:
+    final_loss: 0.1231
+    steps: 625
+    notes: >-
+      train_runtime 1457.8 s (0.40 h), train_loss 0.1408, mean_token_accuracy
+      0.962 (train_v5.log). Loss 0.4005 at step 25, 0.1231 at step 625 - the
+      lowest of any run on this line, on the smallest dataset. At 89% after 20
+      minutes with 1:24 of budget left [431].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    One epoch of 20k unpacked raw-text examples with lm_head and embed_tokens
+    unfrozen, in 24 minutes. The adapter was not scored on its own; merged as
+    exp-15 it produced 0.320, the run's best result by a factor of eight.
+  decision: adopt
+  next_step: "Merge into final_model with the widened eos_token_id and evaluate (exp-15)."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ef3f45de
+  launch_i: 425
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [406, 409, 413, 415, 416]
+    setup: [383, 384, 420, 425]
+    evaluation: []
+    result: [426, 430, 431]
+    conclusion: [431, 435]
+  snapshot_files:
+    - train_v5.py
+    - train_v5.log
+    - eval_v4_50.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The change from exp-12 is not isolated: modules_to_save was added at the same time as the dataset shrank from 50k to 20k and the per-device batch from 16 to 8, so the 0.040 -> 0.320 jump cannot be attributed to the unfrozen layers alone by this run's evidence."
+    - "training_data_gsm_raw.jsonl was built by an inline heredoc, not by a workspace script."
+    - "The adapter was never evaluated on its own."

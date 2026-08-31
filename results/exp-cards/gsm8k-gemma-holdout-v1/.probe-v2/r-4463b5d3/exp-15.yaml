@@ -1,0 +1,154 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-15
+created_at: null
+elapsed_h: 8.25
+
+problem:
+  statement: null
+  evidence:
+    - path: /home/ben/task/final_model/config.json
+      locator: "[1341] (the agent's own \"Check saved dtype\" event, run one event before this launch)"
+      observation: "the agent printed the dtype / torch_dtype fields of the packaged config; the output is not in the digest, and the next action was to re-save the weights in bf16"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-14
+    hash: null
+  data: []
+  method:
+    family: other
+    framework: "transformers from_pretrained(dtype=bfloat16) + save_pretrained(safe_serialization=True), then finalize_ckpt.py"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        No training and no weight change beyond the dtype of the stored tensors: the
+        checkpoint is loaded in bfloat16 and re-serialised, the previous final_model is
+        deleted and the bf16 directory moved into its place ([1347]), then finalize_ckpt.py
+        re-attaches the tokenizer, chat template and greedy generation config.
+    target_format: "greedy decoding, stop on <|im_end|>; completions end in \"ANSWER: <number>\" for the numeric matcher."
+  command:
+    argv:
+      - python
+      - "-c"
+      - |
+        import torch, json
+        from transformers import AutoModelForCausalLM
+        m = AutoModelForCausalLM.from_pretrained('ckpt/grpo_v2/checkpoint-50', dtype=torch.bfloat16)
+        m.save_pretrained('final_model_bf16', safe_serialization=True)
+        print('saved')
+    cwd: /home/ben/task
+    script: /home/ben/task/finalize_ckpt.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "-1", --max-connections, "8", --gpu-memory-utilization, "0.3", --json-output-file, logs/final_full3.json]
+    dev_set: "official --limit -1 (full test set)"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-13
+    value: 0.874
+    path: /home/ben/task/logs/test800_ckpt_grpo_v2_checkpoint-50.json
+  diagnostic:
+    what: >-
+      Whether the first full-test run's low score was the model or the inference stack: count
+      of completions returned as pure "!" padding, accuracy among the rest, and a scan of the
+      safetensors for non-finite weights.
+    command:
+      - python
+      - "-c"
+      - |
+        bad=[i for i,x in enumerate(s) if x['output']['choices'][0]['message']['content'][:20].strip('!')=='']
+        print('total',len(s),'garbage',len(bad),'correct',len(ok))
+        print('acc among non-garbage', len(ok)/ (len(s)-len(bad)))
+    path: /home/ben/task/logs/final_full.json
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary: {final_loss: null, steps: null, notes: "The submitted artifact: ckpt/grpo_v2/checkpoint-50 re-saved in bf16 and finalized. It also passed a plain-transformers load-and-generate check at [1554]. Reaching a clean full-test number took three attempts: logs/final_full.json (--max-connections 24, --gpu-memory-utilization 0.85) returned 993 of 1319 samples as \"!!!!\" garbage; logs/final_full2.json (--max-connections 16) died on a CUDA illegal memory access; logs/final_full3.json (--max-connections 8, --gpu-memory-utilization 0.3, the script's default) ran clean. The weights themselves were scanned for non-finite values at [1466]."}
+  measurements:
+    - metric: accuracy
+      value: 0.8696
+      n: 1319
+      path: /home/ben/task/logs/final_full3.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.868
+    path: /home/ben/task/logs/final_full.json
+    notes: >-
+      "993/1319 samples returned pure \"!!!!\" garbage - a vLLM inference failure, not model
+      quality (accuracy among valid outputs was 86.8%)" [1465]. The root cause the agent read
+      out of logs/final_full2.log at [1502] was a CUDA illegal memory access from high
+      concurrency plus a large KV cache [1518].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "86.96% on the full 1319-sample GSM8K test set, no errors" [1553] - the number the run ends
+    on, from the bf16 final_model under the eval script's own default serving settings. It is
+    not a comparison: the candidate-selection runs were at n=800 and the baseline at n=150, so
+    nothing here is measured against a comparator under the same protocol.
+  decision: adopt
+  next_step: null
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-4463b5d3
+  launch_i: 1343
+  stated_by_agent:
+    problem: false
+    hypothesis: false
+  anchors:
+    problem: [1341]
+    setup: [1343, 1347]
+    evaluation: [1352, 1373, 1466, 1519, 1525]
+    result: [1412, 1430, 1465, 1494, 1527, 1553, 1554]
+    conclusion: [1553, 1558, 1562]
+  snapshot_files:
+    - finalize_ckpt.py
+    - evaluate.py
+    - promptlib.py
+    - RESULTS.md
+  extractor: null
+  unresolved:
+    - "Why the checkpoint was re-saved in bf16 is never stated; the dtype check at [1341] printed something the digest does not carry."
+    - "The verification run at [1352] with the script's default settings (logs/final_default.json, --limit 150) is launched and waited on, but its accuracy never appears in the stream."
+    - "The full-test evaluation was launched twice at [1519] and [1525] with the same output path logs/final_full3.json; which of the two produced the 86.96% is not distinguishable in the digest."
+    - "final_model is the last artifact written (nothing after [1347] modifies it) and RESULTS.md [1558] names it as ckpt/grpo_v2/checkpoint-50 in bf16, but the digest never states which directory was ultimately submitted."

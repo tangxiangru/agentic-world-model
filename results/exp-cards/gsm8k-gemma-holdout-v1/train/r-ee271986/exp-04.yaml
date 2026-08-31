@@ -1,0 +1,184 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 2.13
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    SFT has plateaued around 84% on --limit 150 with the three epoch checkpoints
+    inside each other's stderr, so more epochs of the same imitation data is not the
+    lever; the model needs solutions in its own distribution.
+  evidence:
+    - path: /home/ben/task/logs/eval_v1_ep2.json
+      locator: "[308]"
+      observation: "epoch 1 / 2 / 3 = 80.7 / 84.0 / 82.7 on --limit 150, all within ~3% stderr"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Rejection-sampling fine-tuning - generating correct self-solutions on GSM8K train
+    with the epoch-2 model and retraining on them together with the original SFT data -
+    will push accuracy above the 84% SFT plateau.
+  mechanism: >-
+    Agent's words at [181]: "RFT - generating correct self-solutions on GSM8K train
+    and retraining - is typically the highest-value second step", and at [312]
+    "generate diverse correct self-solutions on GSM8K train with the epoch-2 model,
+    which typically pushes accuracy higher."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--Qwen--Qwen3-4B-Base/snapshots/906bfd4b4dc7f14ee4320094d8b41684abff8539
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "derived:exp-01 (self-sampled solutions) + local (the exp-01 SFT file)"
+      n_examples: 73279
+      built_by: /home/ben/task/scripts/combine_rft.py
+      build_command: [python, scripts/combine_rft.py, --base, data/sft_v1.jsonl, --rft,
+                      data/rft_solutions.jsonl, --out, data/sft_v2.jsonl, --rft_upsample, "1"]
+      selection: >-
+        data/sft_v1.jsonl (47473 examples) concatenated with the RFT solutions wrapped
+        in the same eval prompt format, then shuffled with seed 42 ([196], [342], [347])
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "rft_upsample=1 (RFT solutions used once)"
+    - path: /home/ben/task/data/rft_solutions.jsonl
+      source: synthetic:self
+      n_examples: null       # never printed
+      built_by: /home/ben/task/scripts/rft_generate.py
+      build_command: [nohup, python, scripts/rft_generate.py, --model, ckpts/sft_v1/checkpoint-2968,
+                      --out, data/rft_solutions.jsonl, --k, "4", --temp, "0.8", --top_p, "0.95",
+                      --max_tokens, "768", --gpu_mem, "0.85"]
+      selection: >-
+        4 samples per GSM8K train question from checkpoint-2968 at temperature 0.8 /
+        top_p 0.95, seed 0; keep only samples whose ANSWER value normalises to the gold
+        answer, deduplicated per question on the first 200 chars of the lowercased
+        solution ([182], launched at [313])
+      contamination_check: not_run   # generated from GSM8K train questions only
+      mixture_weight: null
+  method:
+    family: rft
+    framework: "transformers.Trainer (transformers 4.57.3, version read off generation_config.json at [586])"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/bs/accum/max_len from the launch argv at [342]; scheduler,
+        weight_decay, precision and seed are literals in the script as edited at [336]
+        and [338] (script not in the workspace snapshot, so no argparse defaults are
+        filled - warmup_ratio and save_strategy are left null). This version of the
+        script additionally set model.generation_config eos_token_id / do_sample /
+        temperature / top_p / max_new_tokens=None before training and passed
+        processing_class=tok to the Trainer; the generation_config presets are what
+        crashed every checkpoint save.
+    target_format: >-
+      eval chat format, assistant turn ends with "ANSWER: <number>" and <|im_end|>
+  command:
+    argv: [nohup, python, scripts/train_sft.py, --data, data/sft_v2.jsonl, --out, ckpts/sft_v2,
+           --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2", --max_len, "1024"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 2.4           # "6870 steps, ~2.4h" [347]
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: []              # nothing evaluable was produced
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.84
+    path: /home/ben/task/logs/eval_v1_ep2.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: failed
+  wall_h: 1.02
+  duration_h: 1.02
+  steps: 2290
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 2290
+    notes: >-
+      Reached step 2290/6870 (~50 min of training) and then raised
+      "ValueError: GenerationConfig is invalid" inside Trainer._save_checkpoint, so
+      checkpoint-2290 contained only config.json and no weights ([384], [387], [391]).
+      Root cause diagnosed at [399]: transformers' GenerationConfig validation rejects
+      an explicit temperature together with do_sample=False, and setting
+      max_new_tokens=None also fails validation. Process force-killed and ckpts/sft_v2
+      deleted at [400]-[407]. wall_h from event timestamps [342] (t=+2.13h) to [400]
+      (t=+3.15h). Traceback tail read from /home/ben/task/logs/train_v2.log at [391].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    File ".../transformers/trainer.py", line 3325, in _save_checkpoint
+      self.save_model(output_dir, _internal_call=True)
+    File ".../transformers/generation/configuration_utils.py", line 725, in save_pretrained
+      raise ValueError(str(exc) + "\n\nFix these issues to save the configuration.")
+    ValueError: GenerationConfig is invalid:
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Agent at [393]: "v2 training crashed at step 2290 with no usable checkpoint saved.
+    I lost ~50 min. The v1 approach (patching the config dict after training) worked;
+    my 'improvement' broke it." The RFT hypothesis was not tested by this launch.
+  decision: abandon_line
+  next_step: >-
+    Revert the pre-training generation_config settings, switch to step-based saves with
+    save_only_model, and relaunch the same data as a 2-epoch run (exp-05).
+
+provenance:
+  kind: extracted
+  run_ref: r-ee271986
+  launch_i: 342
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [308]
+    setup: [182, 196, 313, 336, 338, 342, 347]
+    evaluation: []
+    result: [384, 387, 389, 391, 393, 394, 399, 400]
+    conclusion: [393, 399, 415]
+  snapshot_files: []
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The number of RFT solutions kept was never printed; only the combined total of 73,279 examples at [347]."
+    - "The rft_generate.py run itself produced no reported statistics (coverage, kept-per-question) in the stream."

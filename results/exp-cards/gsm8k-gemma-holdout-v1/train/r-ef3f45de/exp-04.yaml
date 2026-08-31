@@ -1,0 +1,166 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Throughput, not quality: "4318 steps * 7.3s = 31,521s = 8.75 hours. With 9.7
+    hours left, that's cutting it close since we also need time to merge and
+    evaluate. Let me stop this and reduce the training data to focus on a smaller,
+    more targeted dataset" [122].
+  evidence:
+    - path: /home/ben/task/timer.sh
+      locator: "[120]-[121]"
+      observation: "9:41 of the 10 h budget remaining when the first full-mixture run was stopped"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "The GSM-derived data from MetaMathQA (240K) plus GSM8K train (7.5K) = ~247K
+    samples should be sufficient" and raising the per-device batch to 8 will bring
+    one epoch inside the budget [122].
+  mechanism: >-
+    Dropping the MATH_* half of the mixture removes ~155k off-distribution rows,
+    and a larger per-device batch at the same effective batch size (8 x 4 = 32)
+    amortises the fixed per-step overhead over more tokens.
+  expected_effect:
+    metric: null
+    direction: null
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_gsm_only.jsonl
+      source: "HF meta-math/MetaMathQA (GSM_* only) + HF openai/gsm8k (main, train)"
+      n_examples: 247471
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        The GSM-only side-output of the same prepare_data.py run: rows whose
+        source tag contains "GSM" or equals "gsm8k_train", i.e. MetaMathQA
+        GSM_AnsAug/GSM_Rephrased/GSM_SV/GSM_FOBAR (239,998) plus gsm8k train
+        (7,473). Same formatting as training_data.jsonl - eval prompt, reasoning
+        with "####"/"The answer is:" lines stripped, "\n\nANSWER: {n}", wrapped in
+        <|im_start|>user/assistant with no system message and no <|endoftext|>.
+        "Saved 247471 GSM-only examples to training_data_gsm_only.jsonl" [71].
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 / transformers 4.57.3 / peft 0.18.1 / torch 2.8.0+cu129"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj bias=none"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=True, gradient_checkpointing=True (use_reentrant=False),
+        save_total_limit=3, weight_decay=0.01, lr_scheduler_type=cosine, seed=42
+        are constants of the train.py revision this launch ran ([73] + the [90]
+        rename), digest [74]; not overridden on the command line. Effective batch
+        = 32, 2616 steps for one epoch, measured at ~9.7 s/step [139]-[140].
+    target_format: >-
+      raw text: the eval's user turn verbatim, then "<|im_start|>assistant\n" +
+      reasoning + "\n\nANSWER: {n}" + "<|im_end|>\n".
+  command:
+    argv: [python3, train.py, --data-file, training_data_gsm_only.jsonl, --output-dir, trained_model_v1,
+           --epochs, "1.0", --lr, "2e-4", --batch-size, "8", --grad-accum, "4",
+           --max-seq-length, "1024", --lora-r, "64", --lora-alpha, "128",
+           --warmup-ratio, "0.03", --save-steps, "500", --logging-steps, "25"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "H100 80GB"
+    planned_h: 7.0
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  duration_h: null
+  steps: 13
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 13
+    notes: >-
+      Reached step 13/2616 in the two minutes the agent watched it [139]. "~9.7
+      seconds per step. 2616 * 9.7 = ~25K seconds = ~7 hours. That's tight but
+      doable. However, I need time for merging and evaluation too" [140] - so it
+      was abandoned for a faster configuration rather than run out. No loss line
+      and no checkpoint appear for it.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Halving the data and doubling the per-device batch cut the projection from
+    8.75 h to ~7 h - still too much of a 9.7 h remaining budget to leave room for
+    merging and evaluation, so the run was dropped after thirteen steps. Nothing
+    about the recipe was measured.
+  decision: abandon_line
+  next_step: >-
+    "The bottleneck is gradient checkpointing + per-step time" [143] - try batch
+    16 with gradient checkpointing off and flash-attention-2 (exp-05).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ef3f45de
+  launch_i: 133
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [120, 121, 122]
+    setup: [71, 133]
+    evaluation: []
+    result: [134, 138, 139, 140]
+    conclusion: [140, 143]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "No explicit kill is recorded for this launch; it stops appearing after [140] and the same output directory is reused by [157]."
+    - "train_v1.log in the snapshot is the log of the later successful launch at [165], so this run left no artefact."

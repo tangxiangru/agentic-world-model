@@ -1,0 +1,260 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null                        # the stream carries no timestamps
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The base model is weak under the provided evaluator ("20% accuracy on a
+    20-sample slice", [69]), and the pilot fine-tunes showed the real obstacle
+    is prompt/format mismatch rather than capability: trained without a system
+    message the model "learned to continue into synthetic user/assistant turns
+    after the answer instead of stopping" ([89]), while the evaluator always
+    supplies a system message holding ten fixed GSM8K train exemplars and scores
+    only the extracted "ANSWER:" line ([35], [114]).
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-4aa3d061/baseline_limit20.json
+      locator: "[36] launch, [62] result"
+      observation: "base model HuggingFaceTB/SmolLM3-3B-Base scored accuracy 0.200 (stderr 0.092) on --limit 20"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-4aa3d061.md
+      locator: "[84]"
+      observation: "printed generation from the first pilot checkpoint runs on past the answer with fabricated follow-on turns; that checkpoint scored 0/10"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-4aa3d061.md
+      locator: "[127] vs [96]"
+      observation: "pilot with 10 few-shots in the system message reached eval_loss 0.5027 vs 0.7103 without a system message, on the same 128-example subset"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Full supervised fine-tuning of the base model on the GSM8K train split,
+    serialized into the evaluator's exact prompt format with ten fixed
+    train-split few-shot exemplars in the system message and loss masked to the
+    assistant completion, will raise GSM8K accuracy substantially over the base
+    model ([46], [61], [118], [163]).
+  mechanism: >-
+    "The eval uses one fixed 10-example training set in the system prompt for
+    every test question" and forces the local smollm chat template, so training
+    on that same serialized prompt shape teaches the model the output contract
+    the scorer actually reads - reasoning ending in a single "ANSWER: n" line
+    followed by EOS ([35], [55], [114], [118]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null                    # agent said only "move the needle substantially" [69]
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null                       # loaded in-process, no file on disk
+      source: "HF id openai/gsm8k (config main, split train)"
+      n_examples: null                 # never printed; dataset_stats.json is not in the snapshot
+      built_by: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-4aa3d061/train_gsm8k.py
+      build_command: []                # built inside the training script, no separate prep run
+      selection: >-
+        whole train split, train_test_split(test_size=0.02, seed=42, shuffle=True);
+        prompt = the evaluator's math instruction template around the question,
+        rendered through templates/smollm.jinja with add_generation_prompt, with a
+        system message of 10 fixed few-shot exemplars drawn from a pool of 30 train
+        items shuffled with fewshot_seed=42 (the current question skipped);
+        target = the gold rationale with "#### n" rewritten as "ANSWER: n", plus EOS;
+        prompt tokens masked to -100; examples longer than --max-length raise.
+      contamination_check: passed      # task/contamination_judgement.txt: "no contamination detected"
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129, datasets 4.5.0, accelerate 1.12.0) [27]"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 8
+      grad_accum: 1
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        scheduler, warmup, weight_decay and seed are train_gsm8k.py argparse
+        defaults that the launch did not override (lr_scheduler_type=cosine,
+        warmup_ratio=0.03, weight_decay=0.01, seed=42); so are val_size=0.02,
+        fewshot_seed=42, tune_mode=full, model_name=HuggingFaceTB/SmolLM3-3B-Base,
+        templates_dir=templates, logging_steps=10 and eval_steps=0, which makes
+        eval_strategy and save_strategy "epoch". precision bf16, optim
+        adamw_torch_fused, load_best_model_at_end=True and
+        metric_for_best_model=eval_loss are hardcoded in the script, not flags.
+        The launch itself set --gradient-checkpointing and --save-total-limit 4.
+    target_format: >-
+      assistant turn = gsm8k rationale, blank line, "ANSWER: <final number>",
+      then the tokenizer EOS - the exact line the grader extracts.
+  command:
+    argv:
+      - python
+      - train_gsm8k.py
+      - --output-dir
+      - runs/full_fewshot10_e3_lr1e5
+      - --num-train-epochs
+      - "3"
+      - --per-device-train-batch-size
+      - "8"
+      - --per-device-eval-batch-size
+      - "8"
+      - --gradient-accumulation-steps
+      - "1"
+      - --learning-rate
+      - "1e-5"
+      - --max-length
+      - "4096"
+      - --gradient-checkpointing
+      - --fewshot-in-system
+      - "10"
+      - --save-total-limit
+      - "4"
+    cwd: /home/ben/task
+    script: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-4aa3d061/train_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null                    # agent estimated "a little over an hour" [167], never a number it committed to
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/full_fewshot10_e3_lr1e5/checkpoint-1832
+      - --limit
+      - "150"
+      - --json-output-file
+      - runs/full_fewshot10_e3_lr1e5/checkpoint-1832_eval150.json
+      - --max-connections
+      - "1"
+      - --gpu-memory-utilization
+      - "0.45"
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.2
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-4aa3d061/baseline_limit20.json
+  diagnostic:
+    what: >-
+      whether checkpoint-1832's generations still run past "ANSWER:" into extra
+      chat turns, which would justify adding <|im_end|> as a second stop token
+      ([183], [191], [229])
+    command: []                        # inspection is reported at [317], no shell block in the stream
+    path: null
+
+# ---- 5. Result (after) ------------------------------------------------------
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/full_fewshot10_e3_lr1e5/checkpoint-1832
+  training_summary:
+    final_loss: null
+    steps: 1832
+    notes: >-
+      stopped after epoch 2 of the 3 requested - "the long run is stopped cleanly
+      enough for comparison; both checkpoint-916 and checkpoint-1832 are on disk"
+      [297]; no kill command appears in the filtered stream. trainer_state at
+      global_step 1832 reports best_model_checkpoint=checkpoint-916 with
+      best_metric (eval_loss) 0.3996759057044983 [301], i.e. epoch 1 held the
+      lower validation loss even though epoch 2 scored higher on GSM8K.
+  measurements:
+    - metric: accuracy
+      value: 0.38
+      n: 50
+      path: /home/ben/task/runs/full_fewshot10_e3_lr1e5/checkpoint-916_eval50.json
+      delta_vs_comparator: null        # comparator measured at --limit 20, not 50
+    - metric: accuracy
+      value: 0.46
+      n: 50
+      path: /home/ben/task/runs/full_fewshot10_e3_lr1e5/checkpoint-1832_eval50.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.553
+      n: 150
+      path: /home/ben/task/runs/full_fewshot10_e3_lr1e5/checkpoint-1832_eval150.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "the sampled generations from checkpoint-1832 are clean: no multi-turn
+      spillover and no stray chat delimiters in the first 50 samples", so the
+      extra-EOS tweak was dropped [317].
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) --------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    The eval-aligned SFT ran two of three epochs and produced two checkpoints;
+    checkpoint-1832 beat checkpoint-916 on the same 50-sample slice ("46% vs
+    38%", [311]) and reached 0.553 on 150 samples [340], well above the base
+    model's 0.200, and its generations terminated cleanly at the ANSWER line
+    [317]. The verdict stays inconclusive because the only base-model number is
+    at --limit 20 while this launch's outputs were scored at --limit 50 and 150,
+    so no delta under a shared protocol exists.
+  decision: adopt
+  next_step: >-
+    package checkpoint-1832 into final_model with runtime artifacts only and
+    evaluate that directory directly [342]; the <|im_end|> extra-stop-token
+    change was considered and dropped as unnecessary [317].
+
+# ---- outcome ---------------------------------------------------------------
+outcome:
+  official_accuracy: null              # never written by the extractor; joined by the pipeline
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-4aa3d061
+  launch_i: 164
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [62, 69, 84, 89, 114, 118]
+    setup: [163, 164]
+    evaluation: [303, 308, 318]
+    result: [297, 301, 305, 309, 340]
+    conclusion: [311, 317, 342, 383]
+  snapshot_files:
+    - train_gsm8k.py
+    - evaluate.py
+    - baseline_limit20.json
+    - contamination_judgement.txt
+  smoke_runs:
+    - {launch_i: 67, outcome: "passed (128 examples, 0.05 epoch); its checkpoint then scored 0/10 and generated synthetic extra turns"}
+    - {launch_i: 95, outcome: "passed (prompt -> assistant + EOS fix); eval_loss 0.7103, 0.200 on 5 samples"}
+    - {launch_i: 126, outcome: "passed (10 few-shots in system); eval_loss 0.5027"}
+    - {launch_i: 142, outcome: "crashed: LoRA + gradient checkpointing, 'element 0 of tensors does not require grad and does not have a grad_fn'"}
+    - {launch_i: 146, outcome: "passed after enable_input_require_grads; eval_loss 0.4914, merged model 0.200 on 5 samples, ~7x throughput of full tuning"}
+    - {launch_i: 155, outcome: "passed: full tuning fits at per-device batch 4, eval_loss 0.4812"}
+    - {launch_i: 159, outcome: "passed: full tuning fits at per-device batch 8, eval_loss 0.4816 - the config chosen for this launch"}
+  extractor: claude-opus-5
+  unresolved:
+    - "no timestamps in the stream, so elapsed_h and wall_h are null; the only clock readings are timer.sh remaining 9:59 at [10], 9:35 at [175] and 8:44 at [326]"
+    - "the stream shows no explicit kill/stop command for the 3-epoch run; only the agent's statement at [297] that it was stopped after checkpoint-1832"
+    - "the base-model comparator exists only at --limit 20 (0.200); this launch's outputs were never scored at that limit, so no same-protocol delta"
+    - "the 150-sample eval [318] omitted --max-tokens and so ran at the evaluate.py default of 4000, while the 50-sample and baseline evals used --max-tokens 1024"
+    - "train/eval example counts and final training loss were never printed; runs/full_fewshot10_e3_lr1e5/dataset_stats.json exists in the run but not in the workspace snapshot"
+    - "the eval JSONs cited in result.measurements are run-side paths; they are not in the workspace snapshot and could not be re-read"

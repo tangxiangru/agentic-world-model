@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.93
+
+problem:
+  statement: >-
+    The SFT checkpoint never stops: it emits a correct solution, then keeps
+    generating unrelated problems and text past the "ANSWER:" line. The saved
+    generation_config still lists only <|endoftext|> as EOS, so <|im_end|> - the
+    token every training target ends in - does not terminate a completion
+    ("Fix generation_config to use im_end as EOS for chat" [176]).
+  evidence:
+    - path: /home/ben/task/logs/2026-04-20T10-18-21+02-00_gsm8k_6mFBznYNiEB3EaM7KNPtEM.json
+      locator: "[168][169], sample 0 of the 150-sample eval of exp-01"
+      observation: "the completion answers the asked question and then continues into a different, self-invented problem"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Fix generation_config to use im_end as EOS for chat" [176]: writing
+    eos_token_id [151645, 151643] into the checkpoint's generation_config.json
+    (and eos_token <|im_end|> into tokenizer_config.json) will make generation
+    stop at the end of the answer instead of running on.
+  mechanism: >-
+    Training appended <|im_end|> (151645) to every target, but the base model's
+    generation_config only carries <|endoftext|> (151643), so the serving stack
+    never sees a stop token and decodes to the token cap.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/work/sft_v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "transformers 4.57.3 [17]"
+    peft: "none"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        No training. generation_config.json is overwritten in place with
+        bos_token_id 151643, eos_token_id [151645, 151643], pad_token_id 151643,
+        max_new_tokens 2048 (printed back at [179]), and tokenizer_config.json's
+        eos_token is set to "<|im_end|>" (script text at [176]).
+    target_format: null
+  command:
+    argv:
+      - python
+      - /home/ben/task/work/fix_generation_config.py
+      - /home/ben/task/work/sft_v1
+    cwd: null
+    script: /home/ben/task/work/fix_generation_config.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - /home/ben/task/work/sft_v1
+      - --limit
+      - "150"
+      - --max-connections
+      - "4"
+      - --max-tokens
+      - "1500"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --json-output-file
+      - /home/ben/task/work/eval_v1_fixed.json
+    dev_set: "official --limit 150 (run from /home/ben/task, [180])"
+    n: 150
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: >-
+      Two probes of the stopping behaviour: a local transformers generate on a
+      bare single-question prompt [197], and a vLLM replay of the eval's own
+      messages for sample 0 - a ten-shot system message plus the instruction
+      wrapper - through templates/qwen3.jinja [225].
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/work/sft_v1
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "config-only change, applied in place to the exp-01 checkpoint [178][179]"
+  measurements:
+    - metric: accuracy
+      value: 0.14
+      n: 150
+      path: /home/ben/task/logs/2026-04-20T10-22-07+02-00_gsm8k_GfwaeyvgeqPG4RPKJrNMmE.json
+      delta_vs_comparator: null
+    - metric: first_answer_accuracy
+      value: 0.60
+      n: 150
+      path: /home/ben/task/logs/2026-04-20T10-22-07+02-00_gsm8k_GfwaeyvgeqPG4RPKJrNMmE.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      On a bare prompt the model now answers and stops at <|im_end|> ("ANSWER:
+      72<|im_end|>", [198]), so the EOS fix works. Under the eval's own ten-shot
+      system message the same checkpoint decodes repeated Chinese filler until
+      the 1500-token cap [226], i.e. the checkpoint collapses on the eval's
+      prompt shape, which no EOS setting can repair.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    The stop-token fix does what it claims - generation terminates on a plain
+    prompt [198] - but the eval score stays at 21/150 scored correct while 90/150
+    carry a correct first ANSWER line [204], because the scorer reads the last
+    number and the model keeps writing after it under the ten-shot system prompt
+    [226]. No accuracy was measured for the pre-fix checkpoint, so the two
+    cannot be compared.
+  decision: reject
+  next_step: >-
+    Rebuild the training data so that every example carries a system message of K
+    randomly drawn GSM8K fewshots, matching the eval's prompt, and train from the
+    base model again [230][235].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-0632a2e4
+  launch_i: 178
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [168, 169, 176]
+    setup: [176, 178, 179]
+    evaluation: [180]
+    result: [186, 187, 197, 198, 200, 203, 204, 225, 226]
+    conclusion: [204, 226]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the eval at [180] never prints its accuracy banner in the stream; the 0.14 and 0.60 above are the agent's own recount at [204] (21 and 90 of 150) over the eval log"
+    - "eval_v1_fixed.json and the logs/*.json it came from are not in the workspace snapshot"
+    - "the cwd of the [178] launch is not determinable from the stream; the command uses absolute paths"

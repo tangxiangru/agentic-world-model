@@ -1,0 +1,178 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 6.91
+
+problem:
+  statement: >-
+    The few-shot-aware recipe fixed stopping but plateaued: both epochs of exp-05
+    score 48.0%, and the 77 remaining failures are reasoning errors, so more or
+    more varied training data is the only lever left inside the budget.
+  evidence:
+    - path: /home/ben/task/logs/sft3_e1_greedy.json
+      locator: "[828]"
+      observation: "epoch 1 and epoch 2 both give 48.0% greedy — no gain from the second epoch"
+    - path: /home/ben/task/logs/sft3_e2_greedy.json
+      locator: "[828]"
+      observation: "rambling down to 1/150, so the remaining loss is reasoning quality, not formatting"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Launch a scaled run (GSM8K + MetaMath, all few-shot-wrapped) to try to beat
+    it" [828] — MetaMathQA augmentation should help now that it is wrapped in the
+    same few-shot distribution that fixed stopping, and beat exp-05's 48%.
+  mechanism: >-
+    MetaMath hurt in exp-03 while the model was also rambling; with the stop
+    behaviour learned from few-shot-wrapped prompts, the extra augmented traces
+    should add reasoning coverage without reintroducing the length failure.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/mix_fewshot.jsonl
+      source: "local (openai/gsm8k train + meta-math/MetaMathQA GSM_* via work/meta_gsm.jsonl)"
+      n_examples: null
+      built_by: /home/ben/task/build_fewshot_mix.py
+      build_command: [python, build_fewshot_mix.py, --out, work/mix_fewshot.jsonl,
+                      --gsm_rep, "2", --meta_n, "18000", --seed, "0"]
+      selection: >-
+        GSM8K train repeated twice plus 18000 randomly chosen rows of
+        work/meta_gsm.jsonl; every item's question is re-wrapped with k
+        demonstrations drawn from shot_choices [0, 0, 2, 4, 6, 8, 8] built from raw
+        GSM8K train rows in the eval's few-shot format; MetaMath questions are
+        recovered from the prepared prompt by splitting on the template text;
+        shuffled. seed 0.
+      contamination_check: not_run
+      repeats: 2
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (AutoModelForImageTextToText, eager attention)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/accum/maxlen all from the launch argv. scheduler cosine,
+        warmup 0.03 (--warmup default), weight_decay 0.0 and bf16 are train.py
+        values this launch did not override; also optim=paged_adamw_8bit,
+        max_grad_norm=1.0, gradient_checkpointing=True, vision tower and projector
+        frozen. save_strategy was changed to "steps" with save_steps=400,
+        save_total_limit=4 at [846] just before this launch, "insurance"
+        checkpoints at 400 and 800 [858]. Rows longer than 2048 tokens are dropped
+        by the dataset class; the dropped count was not printed.
+    target_format: >-
+      "<start_of_turn>user\n{k few-shot demos}\n\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
+      then "{reasoning}\nANSWER: {target}<end_of_turn>"; loss on the completion only.
+  command:
+    argv: [nohup, python, train.py, --data, work/mix_fewshot.jsonl, --out, work/sft4,
+           --epochs, "1", --lr, "1e-5", --bs, "4", --accum, "8", --maxlen, "2048"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONUNBUFFERED: "1"}
+    log: /home/ben/task/logs/train4.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: 2.0
+
+evaluation:
+  protocol:
+    command: [nohup, bash, -c, "python evaluate.py --model-path work/sft4 --limit 150 --json-output-file logs/sft4_greedy.json > logs/sft4_greedy_eval.log 2>&1"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.48
+    path: /home/ben/task/logs/sft3_e2_greedy.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.94
+  output_checkpoint: /home/ben/task/work/sft4
+  training_summary:
+    final_loss: null
+    steps: 990
+    notes: >-
+      "Scaled run is training (~2h, 990 steps)" [858]; the loss lines grepped at
+      [868] are not in the digest, so no final loss is recorded. wall_h derived
+      from timestamps: launched [848] t=+6.91h, completion waiter returned by
+      [875] t=+8.85h. Only the final model was evaluated; the step-400/800
+      checkpoints were never used.
+  measurements:
+    - metric: accuracy
+      value: 0.407
+      n: 150
+      path: /home/ben/task/logs/sft4_greedy.json
+      delta_vs_comparator: -0.073
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "SFT4 (with MetaMath) = 40.7% — MetaMath hurts even with stopping fixed. So
+    sft3 (GSM8K-only few-shot, 48%) is the best" [895]: 7.3 points below the
+    incumbent under the same 150-sample greedy protocol, so the scaling hypothesis
+    is contradicted and MetaMath's harm is not explained by the rambling failure.
+  decision: reject
+  next_step: >-
+    None: with ~1 h left "another training run can't safely fit ... MetaMath
+    augmentation consistently hurt, while GSM8K-only plateaued at 48% ... I'll lock
+    in the verified best model" [934].
+
+outcome:
+  official_accuracy: null   # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-f79e3d68
+  launch_i: 848
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [828]
+    setup: [786, 829, 846, 848]
+    evaluation: [875]
+    result: [858, 875, 895, 936]
+    conclusion: [895, 934, 936]
+  snapshot_files:
+    - train.py
+    - build_fewshot_mix.py
+    - prep_meta.py
+    - finalize.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "build_fewshot_mix.py's printed row count is not in the digest, so n_examples for work/mix_fewshot.jsonl is unknown."
+    - "No final training loss for this run appears in the stream."
+    - "The step-400 and step-800 checkpoints the agent kept as insurance were never evaluated."
+    - "The agent's logs/ directory is not in the workspace snapshot; the accuracy is the value printed at [936]."

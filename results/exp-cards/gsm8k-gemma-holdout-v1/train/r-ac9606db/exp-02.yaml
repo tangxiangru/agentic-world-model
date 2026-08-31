@@ -1,0 +1,175 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.44
+
+problem:
+  statement: >-
+    The base model is at 0.12 and the full-scale SFT run has not been made yet; the
+    12k-example validation run reached 54%, so the recipe works and the question is what
+    the full 135k / 2-epoch version gives. [253] "Baseline: 12% (base model, 10-shot).
+    Sanity (12k examples, 1 epoch, ~6 min): 54% - pipeline validated end-to-end."
+  evidence:
+    - path: /home/ben/task/runs/baseline.json
+      locator: "[135]"
+      observation: '{"accuracy": 0.12, "stderr": 0.0464} for the base model at --limit 50'
+    - path: /home/ben/task/runs/sanity_eval.json
+      locator: "[198], [201], reported at [253]"
+      observation: "the 12k / 1-epoch validation checkpoint scored 54% at --limit 100"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft.jsonl
+      source: "HF: openai/gsm8k (main, train) x2 + meta-math/MetaMathQA (GSM_Rephrased, GSM_AnsAug)"
+      n_examples: null
+      built_by: /home/ben/task/work/prepare_data.py
+      build_command: [python, work/prepare_data.py]
+      selection: >-
+        gsm8k train answers split on "####", <<...>> calculator annotations stripped,
+        included twice; MetaMathQA GSM_Rephrased + GSM_AnsAug kept only when the text
+        after "The answer is:" is plainly numeric, shuffled and capped at 120000; every
+        item rendered into the eval's MATH_PROMPT_TEMPLATE with the completion ending
+        "ANSWER: <n>". The launch capped the file at --max_examples 135000.
+      repeats: "gsm8k train x2"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer (transformers 4.57.3, per the saved generation_config.json at [310]); flash_attention_2, gradient checkpointing"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr / epochs / bs / accum / max_len from the launch argv. scheduler=cosine,
+        weight_decay=0.0, bf16=True, max_grad_norm=1.0, save_strategy="no" are hard-coded
+        in train_sft.py; warmup_ratio=0.03 is that script's argparse default and the launch
+        did not override it. The script text is read from the write events [89], [112],
+        [114] - it is not in the workspace snapshot. No seed is set anywhere in the stream.
+    target_format: >-
+      "<|im_start|>system ... Reasoning Mode: /think ... You are an expert mathematician
+      ...<|im_end|>" + "<|im_start|>user\n<MATH_PROMPT_TEMPLATE><|im_end|>" +
+      "<|im_start|>assistant\n<reasoning>\nANSWER: <n>" followed by eos id 128001 so vLLM
+      stops right after the answer line; loss masked to the assistant span only.
+  command:
+    argv:
+      - |-
+        nohup python work/train_sft.py --out runs/v1 --data data/sft.jsonl --epochs 2 --lr 1e-5 --bs 16 --accum 2 --max_len 1024 --max_examples 135000 > runs/v1_train.log 2>&1 &
+    cwd: /home/ben/task
+    script: /home/ben/task/work/train_sft.py
+    env: {}
+    log: /home/ben/task/runs/v1_train.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 2.0
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/v1, --limit, "150", --max-connections, "16",
+              --gpu-memory-utilization, "0.85", --json-output-file, runs/v1_eval.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.12
+    path: /home/ben/task/runs/baseline.json
+  diagnostic:
+    what: >-
+      re-read the eval log's 150 samples and split the wrong ones into missing-ANSWER,
+      hit-max_tokens and genuine reasoning errors [282]
+    command: []
+    path: /home/ben/task/logs/2026-06-04T19-51-00+02-00_gsm8k_WwRKVMu26VvtXK5bXG6HhQ.json
+
+result:
+  execution: completed
+  wall_h: 2.08
+  duration_h: 2.08
+  steps: 8436
+  output_checkpoint: /home/ben/task/runs/v1
+  training_summary:
+    final_loss: 0.16
+    steps: 8436
+    notes: >-
+      [269] "v1 done (final loss ~0.16)". 8436 optimizer steps for 2 epochs over 135000
+      examples at ~1.11-1.14 it/s. wall_h is the span [208] t=+0.44h to [266] t=+2.52h,
+      the first event that confirms the save.
+  measurements:
+    - metric: accuracy
+      value: 0.593
+      n: 150
+      path: /home/ben/task/runs/v1_eval.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-06-04T19-51-00+02-00_gsm8k_WwRKVMu26VvtXK5bXG6HhQ.json
+    notes: >-
+      [283] 89 of 150 correct; of the 61 wrong, 1 had no "ANSWER:" line and 6 ran out of
+      tokens, so [285] "Most failures are genuine reasoning/arithmetic errors ... The model
+      formats and stops correctly."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    [279] "v1: **59.3%** on 150 (up from 12% baseline). Good but I want more." The jump is
+    large but the comparator was measured at --limit 50 and this run at --limit 150, so the
+    delta is not a like-for-like measurement; the failure analysis that followed showed the
+    remaining errors are reasoning, not formatting.
+  decision: adopt
+  next_step: >-
+    Inspect the eval's generation config, since the eval sends no temperature and vLLM may
+    be sampling [289]; then the enriched-data run that was already prepared [253].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ac9606db
+  launch_i: 208
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [135, 137, 192, 253]
+    setup: [63, 65, 89, 112, 114, 208]
+    evaluation: [270, 273]
+    result: [266, 269, 279, 282, 283]
+    conclusion: [279, 285]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 164, outcome: "passed (12000 examples, 1 epoch, ~6 min): loss 0.33->0.22, model saved, 54% at --limit 100"}
+  extractor: null
+  unresolved:
+    - "runs/v1_eval.json and runs/baseline.json are named in the stream but are not in the workspace snapshot; 0.593 is read from the agent's own line at [279] and 0.12 from the printed json at [135]"
+    - "the comparator (base model) was measured at --limit 50 and this output at --limit 150, so no same-protocol delta exists"
+    - "the size of data/sft.jsonl was never printed in the digest"

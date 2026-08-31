@@ -1,0 +1,167 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The evaluator puts 10 few-shot GSM8K solutions in the system message and
+    those keep the dataset's <<calculation>> annotations, but every training file
+    so far strips them, so the training target does not match the pattern the
+    model is shown at inference time.
+  evidence:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      locator: "[65], [66]"
+      observation: >-
+        sample_to_fewshot builds "{question}\n\nReasoning:\n{reasoning}\n\nANSWER: {target}"
+        from the raw gsm8k answer field, which contains the <<calc>> markers
+    - path: /home/ben/task/train_data_v3.jsonl
+      locator: "[285], [286]"
+      observation: >-
+        the rebuilt data keeps the markers, e.g. "Harry ran 10 x 50/100 = <<10*50/100=5>>5 meters per hour faster"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Training on rationales that keep the <<calc>> annotations - matching the
+    few-shot examples in the evaluator's system message - will improve accuracy
+    over the incumbent LoRA model.
+  mechanism: >-
+    "Keep <<calculation>> markers - they match the few-shot examples format!"
+    [283]; the model is asked to imitate a pattern it has also been trained on.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v3.jsonl
+      source: "gsm8k (main/train) + meta-math/MetaMathQA"
+      n_examples: 27473
+      built_by: /home/ben/task/prepare_data_v3.py
+      build_command: [python3, /home/ben/task/prepare_data_v3.py]
+      selection: >-
+        all 7473 gsm8k train items with the <<calc>> markers KEPT, plus 20000
+        sampled GSM-type MetaMathQA items; shuffled (seed 42). [283] [285] [286]
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2 (transformers 4.57.3, peft 0.18.1)
+    peft: "LoRA r=128 alpha=256 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 1.0e-04
+      epochs: 3
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        assistant_only_loss=True, save_strategy=epoch (save_total_limit=3),
+        logging_steps=50, gradient_checkpointing=True (use_reentrant=False),
+        optim=adamw_torch_fused; merged adapter plus a GenerationConfig with
+        eos_token_id=[128001, <|im_end|>]. All values read from the script text of
+        /home/ben/task/train_v6.py [292]; the launch passed no overrides.
+    target_format: >-
+      chat messages [user, assistant]; assistant =
+      "<think>\n{rationale with <<calc>> markers}\n</think>\n\nANSWER: {n}"
+  command:
+    argv: [python3, /home/ben/task/train_v6.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v6.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, /home/ben/task/evaluate.py, --model-path, /home/ben/task/final_model, --limit, "150", --max-connections, "2", --gpu-memory-utilization, "0.5", --json-output-file, /home/ben/task/eval_v6.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.6466666666666666
+    path: /home/ben/task/eval_v2_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      no loss log for this run appears (save_strategy=epoch, so the first
+      checkpoint only lands at step 1718 [310]); the epoch-2 adapter is
+      /home/ben/task/checkpoints_v6/checkpoint-3436 and the merged 3-epoch model
+      went to final_model
+  measurements:
+    - metric: accuracy
+      value: 0.6266666666666667
+      n: 150
+      path: /home/ben/task/eval_v6.json
+      delta_vs_comparator: -0.02
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    62.7% on 150 samples, 2 points under the 64.7% incumbent under the same
+    protocol; after also testing the epoch-2 checkpoint the agent read it as
+    "the <<calc>> markers are actually hurting performance. The v2 model (without
+    calc markers, 2 epochs) remains the best" [340].
+  decision: reject
+  next_step: >-
+    merge and evaluate the epoch-2 checkpoint of this run to see whether the
+    third epoch overtrained [326] - exp-08
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5ca84abf
+  launch_i: 294
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [66, 279, 283, 286]
+    setup: [283, 285, 286, 292, 294]
+    evaluation: [321]
+    result: [310, 322]
+    conclusion: [322, 340]
+  snapshot_files:
+    - prepare_data_v3.py
+    - train_v6.py
+    - evaluate.py
+    - eval_v6.json
+    - eval_v2_150.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "this launch overwrote /home/ben/task/final_model again"
+    - "the eval at [321] is of the merged end-of-training (3rd epoch) model; the stream does not print a step count or loss for the run"

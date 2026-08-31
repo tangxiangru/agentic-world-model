@@ -1,0 +1,205 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 4.07
+
+problem:
+  statement: >-
+    The incumbent broad checkpoint gets the first answer right 60% of the time but
+    only scores 44%, because 34% of completions never emit a stop token and run on
+    into an unrelated synthetic problem after the answer; ORPO made this worse.
+    The evaluator also wraps every question in a fixed ~2,048-token 10-shot system
+    message that the SFT corpora never showed the model [190], [603], [765].
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46dad8f8/eval_broad_final.json
+      locator: "[603], [705]"
+      observation: >-
+        66/150 correct, 43/150 completions carry more than one ANSWER tag, 51/150
+        stop only at the 1,024-token cap; wrong completions average 2,225 chars vs
+        512 for correct ones
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-46dad8f8.md
+      locator: "[190]"
+      observation: >-
+        the evaluator's fixed 10-shot system message is about 2,048 tokens before
+        the question, a shape broad/focus SFT never trained on
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-46dad8f8.md
+      question: "Luke is spending time at the beach building sandcastles. He eventually notices that each level of a sandcastle will have half the square footage as the level below it. If he makes a 4 leveled sandcastle where the top level has a square footage of 16, what is the average square footage of a level?"
+      gold: "60"
+      model_output: "... ANSWER: 150 (the scored completion is about Anthony's strawberries, an unrelated problem the model drifted into; extracted answers were 7.5 then 150)"
+      failure: "generation did not stop after its own answer and continued into a different synthetic problem, so the graded final answer belongs to another question"
+    - id: null
+      source: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-46dad8f8.md
+      question: "... to the hospital and the hospital charges the patients $200 an hour. How much profit does the hospital make from these visits?"
+      gold: "10000"
+      model_output: "... ANSWER: 4.5帶性質 ... then restates and re-solves an unrelated 'average hours driving' problem"
+      failure: "answered a spilled-in unrelated problem; the ANSWER line carries stray non-ASCII text instead of terminating"
+    - id: null
+      source: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-46dad8f8.md
+      question: "Poppy is solving a 1000-piece jigsaw puzzle. She places a quarter of the pieces on the board, then her mom places a third of the remaining pieces. How many jigsaw pieces are left to be placed?"
+      gold: "500"
+      model_output: "ANSWER: 500 ... ANSWER: 83.4"
+      failure: "the first answer was correct; a second ANSWER line produced after the spillover is what the grader saw"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Training the broad checkpoint only on contamination-filtered GSM8K-train
+    solutions presented in the evaluator's exact 10-shot system context, with the
+    turn-end token weighted 16x, will "preserve its 60% reasoning signal while
+    eliminating post-answer continuation" [765].
+  mechanism: >-
+    Up-weighting <|im_end|> in the response-only loss makes the turn-ending
+    decision the dominant gradient signal, while training in the evaluator's own
+    2.5k-token prompt shape removes the train/inference context mismatch [190],
+    [632].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/broad
+    origin: exp-05
+    hash: null
+  data:
+    - path: /home/ben/task/data/system_train.jsonl
+      source: "local (HF openai/gsm8k train split only)"
+      n_examples: 7371
+      built_by: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46dad8f8/prepare_system_data.py
+      build_command: [python, prepare_system_data.py]
+      selection: >-
+        every contamination-filtered GSM8K-train row, each carrying the
+        evaluator's fixed system message (10 GSM8K-train demonstrations, shuffle
+        seed 42, 5,872 characters) plus the evaluator's user prompt; response is
+        the gold reasoning ending "ANSWER: <n>" [196], [354]
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (EOSWeightedTrainer, response-only loss)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-06
+      epochs: 1
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.1
+      precision: bf16
+      seed: 20260719
+      other: >-
+        --eos-weight 16 (loss weight on the <|im_end|> label); --no-checkpoints;
+        scheduler/warmup/weight_decay/max_grad_norm=1.0/seed/optim come from
+        train_sft.py in the snapshot and were not overridden; effective batch 16;
+        461 updates
+    target_format: >-
+      "<|im_start|>system\n{10-shot demos}<|im_end|>\n<|im_start|>user\n{PROMPT}<|im_end|>\n<|im_start|>assistant\n"
+      + gold reasoning + "\n\nANSWER: <n>" + "<|im_end|>"; full response supervised,
+      <|im_end|> weighted 16x
+  command:
+    argv: [python, -u, train_sft.py, --model, runs/broad, --data, data/system_train.jsonl, --output, runs/system_broad, --epochs, "1", --lr, 2e-6, --max-length, "3072", --batch-size, "2", --grad-accum, "8", --no-checkpoints, --eos-weight, "16"]
+    cwd: /home/ben/task
+    script: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46dad8f8/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: null
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/system_broad, --limit, "150", --max-connections, "32", --max-tokens, "1024", --gpu-memory-utilization, "0.55", --json-output-file, eval_system_broad.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.44
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46dad8f8/eval_broad_final.json
+  diagnostic:
+    what: >-
+      paired rescore of the broad and system_broad eval logs: first-answer
+      accuracy, ANSWER-tag coverage, multi-answer rate, non-stop rate and mean
+      output tokens [791]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.21
+  output_checkpoint: /home/ben/task/runs/system_broad
+  training_summary:
+    final_loss: 2.9636450015541786
+    steps: 461
+    notes: >-
+      train_runtime 698.39 s (11m38s), 10.55 samples/s, total_flos 1.486e17, epoch
+      1.0 [785], [787]; the loss scale is high because the <|im_end|> label carries
+      weight 16
+  measurements:
+    - metric: accuracy
+      value: 0.44666666666666666
+      n: 150
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-46dad8f8/eval_system_broad.json
+      delta_vs_comparator: 0.006666666666666654
+  diagnostic_result:
+    value: 0.46
+    path: null
+    notes: >-
+      non-termination collapsed 0.340 -> 0.040 and multi-answer 0.287 -> 0.047,
+      mean output 464.9 -> 165.0 tokens, tag coverage 0.947 -> 0.993; but
+      first-answer accuracy fell 0.600 -> 0.460 [792], [796]
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    The termination half of the mechanism worked spectacularly (non-stop 34% ->
+    4%), but exact match moved only 44.0% -> 44.7% because first-answer math
+    accuracy fell 60.0% -> 46.0%: supervising the whole gold response overwrote the
+    broad checkpoint's reasoning. The claim to "preserve its 60% reasoning signal"
+    is falsified [796].
+  decision: reject
+  next_step: >-
+    Branch from runs/broad again with EOS-only supervision, "which targets the
+    successful termination behavior without training over the reasoning tokens
+    that caused the regression" [796].
+
+# official_accuracy is joined onto the adopted card by the pipeline; the extractor never writes it.
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-46dad8f8
+  launch_i: 766
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [190, 603, 705, 765]
+    setup: [766, 196, 354]
+    evaluation: [788]
+    result: [785, 787, 789, 792]
+    conclusion: [796]
+  snapshot_files:
+    - train_sft.py
+    - prepare_system_data.py
+    - eval_system_broad.json
+    - eval_broad_final.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The three failure_examples above were printed at [304] and [331] from the step-2,000 interim checkpoint's eval log, not from runs/broad; they are the only individually printed failing items in the stream and illustrate the spillover mode this launch targets."
+    - "logs/*gsm8k*.json (the per-sample eval logs the diagnostics were computed from) are not in the workspace snapshot, so the diagnostic numbers can only be re-read from the digest."

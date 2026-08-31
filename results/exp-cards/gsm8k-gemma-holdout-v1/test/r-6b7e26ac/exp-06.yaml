@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 6.52
+
+problem:
+  statement: >-
+    The incumbent sits at ~70% and the one attempt to push past it (exp-04) collapsed to 20%
+    by losing clean stopping; the agent read that as an overfitting effect - the 107K
+    mixture trained for 2 epochs reached a lower train loss (0.138) than the working 85K run
+    (0.174) and generalised worse. So the open question is whether more data diversity can
+    still help if the rejection data is dropped and the epoch count is cut to one.
+  evidence:
+    - path: /home/ben/task/logs/v3g_metrics.json
+      locator: "[628]"
+      observation: "v3 at 20%: rambles past ANSWER: and re-emits the prompt template"
+    - path: /home/ben/task/logs/train_v3.log
+      locator: "[701] (train_loss values quoted); [741]"
+      observation: "v3's train_loss 0.138 vs v2's 0.174 - read as lower loss, worse generalization"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "v4 = larger diverse MetaMath (no rejection data, which broke v3) trained 1 epoch to
+    maximize data diversity while avoiding the overfitting that broke v3" [678] - a 133K
+    MetaMathQA-GSM mixture at 1 epoch will beat v2's 70.7% greedy without the degeneration.
+  mechanism: >-
+    More distinct GSM-style problems give broader reasoning coverage, while a single epoch
+    keeps the fit light enough to avoid the low-train-loss degeneration that the agent
+    blamed for v3.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: >-
+    "eval v4 greedy on the same 300 test samples as v2 (70.7%), and only replace final_model
+    if v4 clearly wins" [695] - i.e. no clear win at --limit 300 leaves the incumbent in
+    place.
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py]
+      selection: "unchanged from exp-01"
+      contamination_check: not_run
+      mixture_weight: null
+    - path: /home/ben/task/data/metamath_gsm.jsonl
+      source: "HF meta-math/MetaMathQA"
+      n_examples: null
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py]
+      selection: "GSM_Rephrased + GSM_AnsAug, per-type cap raised from 25000 to 45000 by an in-place sed on data_prep.py at [679], then regenerated"
+      contamination_check: not_run
+      mixture_weight: null
+    - path: /home/ben/task/data/metamath_gsm_extra.jsonl
+      source: "HF meta-math/MetaMathQA"
+      n_examples: null
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py]
+      selection: "GSM_SV + GSM_FOBAR, per-type cap raised from 12000 to 18000 at [679], then regenerated"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer, via /home/ben/task/train_sft.py (AutoModelForCausalLM, bf16, flash_attention_2 with sdpa fallback)"
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-5
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bfloat16
+      seed: 0
+      other: >-
+        Only --epochs/--lr/--bs/--accum/--max_len/--save on the launch line [685]; scheduler,
+        warmup 0.03, weight_decay 0.0, seed 0, bf16, max_grad_norm 1.0, optim adamw_torch,
+        gradient checkpointing and group_by_length come from the train_sft.py defaults in the
+        snapshot and were not overridden. Epochs is the one hyper-parameter deliberately
+        changed from the earlier runs (2 -> 1).
+    target_format: "unchanged from exp-03; no few-shot and no rejection records in this mixture"
+  command:
+    argv: [python, train_sft.py, --data, data/gsm8k_train.jsonl, data/metamath_gsm.jsonl, data/metamath_gsm_extra.jsonl, --output_dir, runs/v4, --epochs, "1", --lr, "2e-5", --bs, "8", --accum, "8", --max_len, "1024", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v4.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/v4_greedy, --limit, "300", --max-connections, "16", --gpu-memory-utilization, "0.6", --json-output-file, logs/v4g300_metrics.json]
+    dev_set: "official --limit 300"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.707
+    path: /home/ben/task/logs/v2g300_metrics.json
+  diagnostic:
+    what: "whether the checkpoint stops cleanly after the ANSWER line or rambles on, re-emitting the prompt template"
+    command: [python, -c, "inline analysis of the latest inspect eval json: generation lengths, samples with no 'ANSWER:', samples that re-emit 'Solve the following' after the answer"]
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/v4
+  training_summary:
+    final_loss: 0.161
+    steps: 2086
+    notes: >-
+      133K examples, 2086 steps, ETA ~90 min [695]; finished with train_loss 0.161 - "healthy,
+      between v2's 0.174 and v3's broken 0.138" [701]. Launched t=+6.52h [685], saved by
+      t=+8.10h [701]. Evaluated through runs/v4_greedy (make_greedy at [702]).
+  measurements:
+    - metric: accuracy
+      value: 0.39
+      n: 300
+      path: /home/ben/task/logs/v4g300_metrics.json
+      delta_vs_comparator: -0.317
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      99 of 300 generations ramble on after the answer, re-emitting the prompt template (one
+      completion is 13,600 characters); 2 produce no ANSWER line at all [731]. Same failure
+      shape as v3 despite no rejection data and only one epoch.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    "v4 greedy = 39% - also broken, despite no rejection data and 1 epoch. This is alarming:
+    both larger-data runs (v3=107K, v4=133K) broke while v2 (85K) works" [729]. The
+    diagnostic showed the same non-stopping degeneration [733], so the extra data neither
+    helped nor was the epoch count the cause; the incumbent stood.
+  decision: adopt
+  next_step: >-
+    Attempt a short continued fine-tune from this checkpoint on clean GSM8K-train to restore
+    clean stopping (exp-07) [750].
+
+provenance:
+  kind: extracted
+  run_ref: r-6b7e26ac
+  launch_i: 685
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [628, 678, 741]
+    setup: [679, 685]
+    evaluation: [702]
+    result: [695, 701, 729, 731, 820]
+    conclusion: [729, 733, 826]
+  snapshot_files:
+    - train_sft.py
+    - data_prep.py
+    - make_greedy.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "Marked adopt only because its output checkpoint is the parent of exp-07; it never became the incumbent - the agent kept exp-05's final_model."
+    - "Per-file example counts were never printed; only the 133K total [695]. The snapshot's data_prep.py does carry the 45000/18000 caps used here, so this mixture is the one reproducible one."
+    - "The cause of the shared v3/v4 non-stopping degeneration is never established. The agent checked the training data for prompt-template text and found it clean [741], leaving 'a subtle overfitting-related degeneration' as an untested conjecture."

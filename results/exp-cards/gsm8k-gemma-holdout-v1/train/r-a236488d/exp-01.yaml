@@ -1,0 +1,185 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.50
+
+problem:
+  statement: >-
+    The base model scores 0.200 on the official eval at --limit 150, so there is
+    large headroom; and the first data build renders examples whose p90 length is
+    2189 tokens against a 2048 max_length, which would truncate completions and
+    teach answer-less rambling.
+  evidence:
+    - path: /home/ben/task/work/logs/baseline_150.json
+      locator: "[15086]"
+      observation: "base model accuracy 0.200, stderr 0.0328 on 150 samples"
+    - path: /home/ben/task/work/data/sft_v1.jsonl
+      locator: "[15086]"
+      observation: "86,759 rows written; token length p50 1860 / p90 2189 / p99 2473 / max 2754"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/data/sft_v1_f.jsonl
+      source: "openai/gsm8k (train) + nvidia/OpenMathInstruct-2"
+      n_examples: 86753
+      built_by: /home/ben/task/work/scripts/prep_data.py
+      build_command:
+        - python
+        - prep_data.py
+        - --out
+        - /home/ben/task/work/data/sft_v1.jsonl
+        - --omi2-gsm8k-count
+        - "120000"
+        - --gold-repeat
+        - "2"
+      selection: >-
+        2x GSM8K train gold CoT (7,379 kept after decontamination, <<..>> calculator
+        annotations stripped) + 72,001 OpenMathInstruct-2 rows with problem_source in
+        {gsm8k, augmented_gsm8k} (integer/decimal answers only, 30-1500 chars, dedup by
+        normalized problem, 15,115 contaminated candidates skipped); prompts rendered
+        through the eval's own jinja template with a random date and a system-prompt mix
+        (55% eval-style 10-shot block, 20% k in {3,5,8}, 10% default long "think"
+        instructions, rest 10-shot); completions are "reasoning\n\nANSWER: X<|im_end|>";
+        then filtered to <=2816 tokens by the inline script at [16524] (6 rows dropped,
+        86,753 kept) into sft_v1_f.jsonl.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "gold x2"
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 4
+      grad_accum: 16
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=True (bfd), padding_free=True, completion_only_loss=True,
+        assistant_only_loss=False, gradient_checkpointing=False,
+        optim=adamw_torch_fused, max_grad_norm=1.0, attn_implementation=flash_attention_2,
+        save_strategy="no", eos_token=<|im_end|>, pad_token=<|end_of_text|>.
+        scheduler / warmup / seed / precision / packing come from the train_sft.py source
+        written at [13840] and are not overridden by the launch; that script is NOT in the
+        workspace snapshot, only in the stream's write event.
+    target_format: >-
+      prompt = the eval-rendered chat prompt (system = few-shot block or instructions,
+      user = the official "Solve the following math problem step by step ... Reasoning:"
+      template); completion = "reasoning\n\nANSWER: <n><|im_end|>", loss on completion only.
+  command:
+    argv:
+      - python
+      - work/scripts/train_sft.py
+      - --data
+      - work/data/sft_v1_f.jsonl
+      - --out
+      - work/runs/sft_v1
+      - --epochs
+      - "1"
+      - --lr
+      - "1e-5"
+      - --max-length
+      - "2816"
+      - --per-device-bs
+      - "4"
+      - --grad-accum
+      - "16"
+    cwd: /home/ben/task
+    script: /home/ben/task/work/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/work/logs/train_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Died on the first optimizer step; no checkpoint written. Launched at
+      [16794] t=+0.50h, failure reported at [18923] t=+0.70h (the agent was
+      sleeping in between, so the exact wall time is not in the stream).
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    "OOM on step 1 - logits (128K vocab) + uncheckpointed activations at 11.3K
+    tokens/microbatch" [18923]. No traceback text appears in the stream.
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first full-fine-tune launch OOM'd on step 1 and produced nothing, so the
+    recipe was never measured. The agent attributed it to the 128K-vocab logits plus
+    uncheckpointed activations at ~11.3K tokens per microbatch, and to a data mix in
+    which most examples carry a ~1200-token few-shot system block that contributes no
+    loss [18923].
+  decision: abandon_line
+  next_step: >-
+    Regenerate the data with a cheaper system-prompt mix (fewshot10-frac 0.22,
+    fewshotk-frac 0.03, plain-frac 0.20, rest short one-line instructions) and relaunch
+    with gradient checkpointing + liger kernels at per-device bs 24 and
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (exp-02).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a236488d
+  launch_i: 16794
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [15086, 16523]
+    setup: [11566, 12403, 12531, 13840, 14581, 16524, 16786, 16794]
+    evaluation: []
+    result: [18923]
+    conclusion: [18923, 18924, 19477]
+  snapshot_files: []
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The workspace snapshot holds only evaluate.py, system_monitor.log and timer.sh; work/scripts/*.py, work/data/* and work/logs/* are not in it, so every script and eval path cited here is read from the stream's write/shell events rather than from files."
+    - "No wall time or step count for this launch is stated; only that it OOM'd on step 1."

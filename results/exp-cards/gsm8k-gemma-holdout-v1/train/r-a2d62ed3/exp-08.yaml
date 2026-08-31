@@ -1,0 +1,171 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 3.52
+
+problem:
+  statement: >-
+    The RFT round still had to be run: the SFT v1 checkpoint sits at 87.3% with
+    "genuine reasoning slips in terse MetaMath style" [624], and the first RFT launch
+    died at its checkpoint save on an invalid generation config [690].
+  evidence:
+    - path: /home/ben/task/results_sft_v1_ep2.json
+      locator: "[620]"
+      observation: "incumbent at 0.8733 on 150 questions"
+    - path: /home/ben/task/train_v2.log
+      locator: "[689], [690]"
+      observation: "GenerationConfig validation error inside _save_checkpoint at step 231/347"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Same RFT claim as the crashed launch - continue-train the SFT v1 epoch-2 checkpoint
+    on its own correct solutions plus fresh augmented problems and replay - now with the
+    generation config reset inside the training script and a 1-epoch budget [693, 697].
+  mechanism: >-
+    Self-generated correct traces (98.9% pass@8 on the train split) reinforce the model's
+    own reasoning distribution rather than MetaMathQA's terse style [624, 646].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpt_sft_v1/final
+    origin: exp-06
+    hash: null
+  data:
+    - path: /home/ben/task/sft_data_v2
+      source: "synthetic:self + local"
+      n_examples: 57236
+      built_by: /home/ben/task/prep_rft_data.py
+      build_command: [python, prep_rft_data.py, --rft, rft_data.jsonl, --replay, sft_data_v1, --replay-frac, "0.3", --fresh, fresh_aug_gsm8k_pool.jsonl, --fresh-n, "15000", --sys-prob, "0.15", --out, sft_data_v2]
+      selection: >-
+        29,036 rejection-sampled rows from gen_rft.py (k=8, temperature 1.0, top_p 0.95,
+        max 768 tokens, on all 7,473 gsm8k train questions with ckpt_sft_v1/final; keep
+        only completions whose ANSWER matches gold, dedup on the first 120 chars, at most
+        4 per question; 7,391/7,473 questions had at least one correct sample) + 15,000
+        fresh OpenMathInstruct-2 augmented_gsm8k rows from a 50,012-row pool excluding
+        every sft_data_v1 question and 8-gram decontaminated against the gsm8k test split
+        + a 0.3 replay fraction of sft_data_v1 (~13.2K rows); RFT rows carry the eval
+        system message with probability 0.15, fresh rows 0.02
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "trl 0.27.2 SFTTrainer with liger kernel (transformers 4.57.3)"
+    peft: none
+    hyperparams:
+      lr: 6.0e-06
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        use_liger_kernel=True via --liger, packing=True, completion_only_loss=True,
+        gradient_checkpointing ON; train_sft.py now resets model.generation_config to
+        GenerationConfig(bos 151643, eos [151645, 151643], pad 151643) before training
+        [695]. max_seq_len is the --max-length argparse default and scheduler/warmup/
+        weight_decay/precision/seed are hard-coded in SFTConfig in train_sft.py (in the
+        workspace); the launch overrode none of them.
+    target_format: >-
+      eval-format ChatML; completion = the model's own sampled solution ending in
+      "ANSWER: <n><|im_end|>"
+  command:
+    argv: [python, train_sft.py, --data, sft_data_v2, --model, ckpt_sft_v1/final, --out, ckpt_sft_v2, --epochs, "1", --bs, "4", --accum, "8", --lr, "6e-6", --liger]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTHONPYCACHEPREFIX: /home/ben/pycache, PYTHONPATH: /home/ben/pylibs}
+    log: /home/ben/task/train_v2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 0.95
+
+evaluation:
+  protocol:
+    command: [bash, run_eval.sh, ckpt_sft_v2/final, sft_v2, "150", "4"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.8733
+    path: /home/ben/task/results_sft_v1_ep2.json
+  diagnostic: {what: null, command: [], path: null}
+
+result:
+  execution: completed
+  wall_h: 0.64
+  output_checkpoint: /home/ben/task/ckpt_sft_v2/final
+  training_summary:
+    final_loss: 0.2367
+    steps: 231
+    notes: >-
+      train_runtime 2319s, 1 epoch over 57,236 rows, mean_token_accuracy 0.897;
+      checkpoint patched to greedy decoding (temperature 0.0) before eval [723].
+  measurements:
+    - metric: accuracy
+      value: 0.8933
+      n: 150
+      path: /home/ben/task/results_sft_v2.json
+      delta_vs_comparator: 0.02
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "+2.0 vs v1-ep2" [742] - 89.3% against 87.3% under the same limit-150 protocol,
+    though the gain is inside the eval's own stderr (~2.5 pts), and no probe separated
+    the RFT mechanism from the extra fresh data.
+  decision: adopt
+  next_step: "GRPO from this checkpoint on gsm8k train prompts with an exact-answer reward [735, 742]"
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a2d62ed3
+  launch_i: 697
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [620, 624, 689, 690]
+    setup: [607, 693, 695, 697]
+    evaluation: [723]
+    result: [722, 742]
+    conclusion: [742]
+  snapshot_files:
+    - train_sft.py
+    - train_v2.log
+    - prep_rft_data.py
+    - gen_rft.py
+    - gen_rft.log
+    - prep_fresh_pool.py
+    - prep_fresh_pool.log
+    - patch_ckpt.py
+    - run_eval.sh
+    - rerun_v2eval.log
+    - eval_sft_v2.log
+    - results_sft_v2.json
+    - results_sft_v1_ep2.json
+    - NOTES.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the eval result 0.8933 appears in the workspace json; the stream's own printout of it is not in the digest, only the NOTES row written at [742]"
+    - "post_v2.sh was written to evaluate an epoch-1 checkpoint too, but the 1-epoch relaunch produced only ckpt_sft_v2/final and the script was never run"

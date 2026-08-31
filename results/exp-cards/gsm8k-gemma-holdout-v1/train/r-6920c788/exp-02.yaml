@@ -1,0 +1,207 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.48
+
+problem:
+  statement: >-
+    exp-01's output is well formatted and stops cleanly, but 46 of 100 test
+    problems are still wrong, and the failures are genuine reasoning and
+    arithmetic mistakes rather than format or stopping problems.
+  evidence:
+    - path: /home/ben/task/logs/2026-06-13T17-39-20*.json
+      locator: "[220]-[221]"
+      observation: >-
+        "incorrect: 46/100"; stop_reasons {stop: 98, max_tokens: 2}; the three
+        printed failures all have clean format and a wrong intermediate step
+    - path: /home/ben/task/logs/v1_metrics.json
+      locator: "[219]"
+      observation: "exp-01 accuracy 0.54 on the first 100 test problems"
+  affected_share: null
+  failure_examples:
+    - id: "exp-01 limit-100 eval, incorrect item 1"
+      source: /home/ben/task/logs/2026-06-13T17-39-20*.json
+      question: null
+      gold: "17"
+      model_output: "'The total number of unripe oranges is 25 x 20/100 = 5.\\nIf 2 are sour, the number of good oranges is 25-1-5-2-2 = 15\\n\\nANSWER: 15'"
+      failure: "format correct; wrong set-up of the subtraction chain"
+    - id: "exp-01 limit-100 eval, incorrect item 2"
+      source: /home/ben/task/logs/2026-06-13T17-39-20*.json
+      question: null
+      gold: "40"
+      model_output: "'earned $160 on car tires because 40 x 4 = 160\\nOn Thursday the mechanic earned $200 because\\n...ANSWER: 80'"
+      failure: "format correct; incoherent intermediate steps, one line left unfinished"
+    - id: "exp-01 limit-100 eval, incorrect item 3"
+      source: /home/ben/task/logs/2026-06-13T17-39-20*.json
+      question: null
+      gold: "40"
+      model_output: "'The adopted kittens from Patchy are 3 * 7 = 21.\\nThe total number of kittens they had then is 21 adopted + 7 found = 28\\nThe total number they have now is 28 + (2 + 12) = 42.\\n\\nANSWER: 42'"
+      failure: "format correct; misreads the problem's quantities"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "The remaining 46 errors are genuine reasoning/arithmetic mistakes, not
+    format issues. This means more diverse CoT data (MetaMathQA) is the right
+    next step" [223] - adding 80K GSM-derived MetaMathQA examples to the GSM8K
+    train set will raise limit-100 accuracy above exp-01's 0.54.
+  mechanism: >-
+    MetaMathQA's GSM_Rephrased / GSM_FOBAR / GSM_SV variants restate the same
+    training problems in more forms, so the model sees more chains of thought
+    per problem type than the 7.4K human solutions alone.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/combined_sft.jsonl
+      source: "HF openai/gsm8k main train + HF meta-math/MetaMathQA train"
+      n_examples: 87394
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: [nohup, python, scripts/prep_data.py, --combined-out, data/combined_sft.jsonl,
+                      --metamath-n, "80000"]
+      selection: >-
+        7394 GSM8K train rows (as exp-01) plus the first 80000 MetaMathQA rows
+        of type GSM_Rephrased / GSM_FOBAR / GSM_SV whose "The answer is:" (or
+        "####") target parses as an integer; answer markers and <<calc>>
+        annotations stripped from the reasoning; same messages format. Printed
+        as "[combined] total 87394 (metamath added: 80000)" [233].
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl SFTTrainer (TRL 0.27)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 32
+      grad_accum: 2
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: null
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        same script literals as exp-01, with save_strategy changed to "epoch"
+        and save_total_limit=4 at [242] before this launch, so one checkpoint
+        per epoch is kept. warmup left null for the reason given on exp-01.
+    target_format: >-
+      same as exp-01: smollm.jinja chat rendering, assistant turn ends in
+      "ANSWER: <int>", assistant-only loss.
+  command:
+    argv: [nohup, python, scripts/train_sft.py, --data, data/combined_sft.jsonl, --out, work/sft_v2,
+           --epochs, "3", --lr, 2e-5, --bs, "32", --accum, "2", --max-len, "768", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: 2.6
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "work/sft_v2/checkpoint-$ck", --limit, "100",
+              --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.55",
+              --json-output-file, "logs/v2_ep${ck}.json"]
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.54
+    path: /home/ben/task/logs/v1_metrics.json
+  diagnostic:
+    what: "stop-reason distribution and printed failures of the epoch-2 checkpoint, to separate format failure from reasoning failure"
+    command: [python, "- <<PY", "stops[c.get('stop_reason')]+=1", "incorrect: 55/100"]
+    path: /home/ben/task/logs/2026-06-13T20-28-59+02-00_gsm8k_LxgnjmoMPcKGsVc35MVDkK.json
+
+result:
+  execution: completed
+  wall_h: 2.7
+  duration_h: 2.7
+  steps: 4098
+  output_checkpoint: /home/ben/task/work/sft_v2
+  training_summary:
+    final_loss: null
+    steps: 4098
+    notes: >-
+      loss 0.386 -> 0.101 and mean_token_accuracy 0.879 -> 0.963 by epoch 1.6
+      [463]/[547]; "the low loss (0.14) by epoch 0.6 suggests epochs 2-3 might
+      overfit" [465]. The train_runtime line was never captured [563]; wall_h is
+      the span from the launch at [248] (t=+0.48h) to "v2 training complete" at
+      [597] (t=+3.18h). Checkpoints kept: 1366, 2732, 4098.
+  measurements:
+    - metric: accuracy
+      value: 0.39
+      n: 100
+      path: /home/ben/task/logs/v2_ep1366.json
+      delta_vs_comparator: -0.15
+    - metric: accuracy
+      value: 0.47
+      n: 100
+      path: /home/ben/task/logs/v2_ep2732.json
+      delta_vs_comparator: -0.07
+    - metric: accuracy
+      value: 0.45
+      n: 100
+      path: /home/ben/task/logs/v2_ep4098.json
+      delta_vs_comparator: -0.09
+  diagnostic_result:
+    value: 0.55
+    path: /home/ben/task/logs/2026-06-13T20-28-59+02-00_gsm8k_LxgnjmoMPcKGsVc35MVDkK.json
+    notes: >-
+      55/100 incorrect, stop_reasons {stop: 99, max_tokens: 1}; "v2's outputs
+      are well-formed but make more reasoning/arithmetic errors than v1" [635]
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    Best epoch 0.47 against exp-01's 0.54 under the same limit-100 protocol, so
+    the extra data hurt: "The clean human-written GSM8K solutions (v1's data)
+    are higher quality than MetaMathQA's model-generated reasoning, so pure
+    GSM8K (0.54) beats the diluted mix (0.47)" [635]. GSM8K is only 8.5% of this
+    mixture.
+  decision: reject
+  next_step: >-
+    "The highest-leverage improvement is STaR / rejection sampling: generate
+    many solutions per GSM8K-train problem, keep only the verified-correct ones
+    ... and retrain" [635] - exp-04.
+
+# joined by the pipeline, never written by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-6920c788
+  launch_i: 248
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [219, 220, 221, 223]
+    setup: [190, 226, 232, 233, 242, 248]
+    evaluation: [602]
+    result: [463, 547, 563, 597, 628, 629, 632, 633]
+    conclusion: [614, 635]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The 150K variant data/combined_150k.jsonl (157394 rows) was built at [305]/[313] for a possible larger run but was never trained on."
+    - "train_runtime for this launch never appears in the stream; wall_h is derived from the event timestamps at [248] and [597]."

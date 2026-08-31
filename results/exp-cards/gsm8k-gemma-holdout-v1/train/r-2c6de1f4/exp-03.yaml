@@ -1,0 +1,217 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The model reaches the right "ANSWER: <n>" line but keeps generating after it,
+    emitting garbage tokens (Thai/CJK fragments) glued to the number, which
+    breaks the numeric match; the agent read this as the model never learning to
+    emit EOS, and additionally noticed that the chat template inserts
+    "<think>\n\n</think>\n\n" before the assistant turn while the training
+    targets do not contain it.
+  evidence:
+    - path: /home/ben/task/logs/2026-03-21T23-21-45+01-00_gsm8k_oJKEeCQxepjaGzJYSUG6mq.json
+      locator: "[95], [98] - samples 0, 1, 3, 9, 13"
+      observation: >-
+        correct reasoning and a correct final number followed by junk characters,
+        e.g. "ANSWER: 540ยิ่ง", "ANSWER: 8閭"
+    - path: /home/ben/task/logs/2026-03-21T23-21-45+01-00_gsm8k_oJKEeCQxepjaGzJYSUG6mq.json
+      locator: "[98]"
+      observation: "the rest of the failures are genuine arithmetic/reasoning errors or 2048-token truncations"
+  affected_share: null
+  failure_examples:
+    - id: "eval sample 0"
+      source: /home/ben/task/logs/2026-03-21T23-21-45+01-00_gsm8k_oJKEeCQxepjaGzJYSUG6mq.json
+      question: null
+      gold: "6"
+      model_output: "... To hike the remaining 7 miles in 1 hour, she would have to hike at a speed of 7 miles / 1 hour = 7 miles per hour.\n\nANSWER: 7ผลิตภั"
+      failure: "wrong answer (7 vs 6) and trailing garbage after the number"
+    - id: "eval sample 3"
+      source: /home/ben/task/logs/2026-03-21T23-21-45+01-00_gsm8k_oJKEeCQxepjaGzJYSUG6mq.json
+      question: null
+      gold: "8"
+      model_output: "6 inches equals 6 / 12 = 0.5 feet.\n4 feet long piece of wire was cut into 4 / 0.5 = 8 pieces, 6 inches long.\n\nANSWER: 8閭"
+      failure: "answer correct but the trailing character makes the match fail"
+    - id: "eval sample 9"
+      source: /home/ben/task/logs/2026-03-21T23-21-45+01-00_gsm8k_oJKEeCQxepjaGzJYSUG6mq.json
+      question: null
+      gold: "7"
+      model_output: "It takes 3 eggs x 7 days = 21 eggs to make a week of omelets.\nThus, she will eat 21 eggs / 12 eggs per dozen = 1.75 dozen eggs in 4 weeks.\n\nANSWER: 1.75ติดต่อ"
+      failure: "wrong unit conversion, and trailing garbage after the number"
+    - id: "eval sample 13"
+      source: /home/ben/task/logs/2026-03-21T23-21-45+01-00_gsm8k_oJKEeCQxepjaGzJYSUG6mq.json
+      question: null
+      gold: "20"
+      model_output: "... Since each of Wendi's 20 chickens has 40 cups of feed, then in total she needs 20 chickens * 40 cups of feed = 800 cups of feed.\n\nANSWER: 800เร็"
+      failure: "misread the question and trailing garbage after the number"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "Let me fix the training to ensure the model learns to generate the EOS token
+    after the answer ... the Qwen3 template inserts <think>\n\n</think>\n\n before
+    the assistant content ... But during training, my data doesn't have this
+    pattern. I need to match this." [99] - i.e. adding the think-tag prefix to
+    every training target (and keeping the ANSWER: format) will remove the
+    trailing-garbage failures and raise accuracy.
+  mechanism: >-
+    If the assistant turn seen in training begins exactly as it will at inference
+    (think tags first) and ends with the EOS the template writes, the model
+    should stop cleanly right after the ANSWER line.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k (main, train split)
+      n_examples: 7473
+      built_by: /home/ben/task/train_v3.py
+      build_command: []
+      selection: >-
+        as in exp-02, plus a "<think>\n\n</think>\n\n" prefix on the assistant
+        turn; rows without a "####" line dropped.
+      repeats: 8
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: meta-math/MetaMathQA
+      n_examples: null          # the printed GSM/MATH subset sizes are elided in [108]
+      built_by: /home/ben/task/train_v3.py
+      build_command: []
+      selection: >-
+        all GSM_AnsAug/GSM_Rephrased/GSM_SV/GSM_FOBAR rows, plus 30,000 shuffled
+        (seed=42) MATH_* rows; \boxed{} rewritten to a trailing "ANSWER: <n>"
+        line; think-tag prefix added; unconvertible rows dropped.
+      repeats: 1
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=True, gradient_checkpointing=True, save_steps=1000,
+        attn_implementation=flash_attention_2. Module-level constants in
+        /home/ben/task/train_v3.py (no argparse); the launch passed no arguments.
+    target_format: >-
+      same grader-shaped user turn as exp-02, with the assistant turn beginning
+      "<think>\n\n</think>\n\n" and ending "ANSWER: {n}<|im_end|>".
+  command:
+    argv: [python3, train_v3.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v3.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, ./final_model, --limit, "50",
+              --max-connections, "2", --max-tokens, "2048",
+              --gpu-memory-utilization, "0.5"]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.420
+    path: /home/ben/task/logs/2026-03-21T23-21-45+01-00_gsm8k_oJKEeCQxepjaGzJYSUG6mq.json
+  diagnostic:
+    what: "re-read the first eval samples for trailing garbage and continued generation"
+    command: []
+    path: /home/ben/task/logs/2026-03-22T00-55-10+01-00_gsm8k_NikGmnEjRobMbs6mYycmfq.json
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary: {final_loss: null, steps: null, notes: "training stdout elided in the stream"}
+  measurements:
+    - metric: accuracy
+      value: 0.220
+      n: 50
+      path: /home/ben/task/logs/2026-03-22T00-55-10+01-00_gsm8k_NikGmnEjRobMbs6mYycmfq.json
+      delta_vs_comparator: -0.200
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-03-22T00-55-10+01-00_gsm8k_NikGmnEjRobMbs6mYycmfq.json
+    notes: >-
+      worse, not better: garbage now appears *before* the reasoning as well, and
+      several samples roll on into freshly invented questions after the ANSWER
+      line [117]; stderr 0.059.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    22% on the same 50-sample protocol, 20 points below the comparator [114]. The
+    agent's own reading at [119]: "the <think>\n\n</think>\n\n tags in training
+    are wrong since the template doesn't add them by default", the model
+    "generates multiple examples - from packing=True", and it still does not stop
+    after the answer.
+  decision: reject
+  next_step: >-
+    "Let me fix these issues: remove think tags, use packing=False, and consider
+    full fine-tuning" [119].
+
+provenance:
+  kind: extracted
+  run_ref: r-2c6de1f4
+  launch_i: 107
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [95, 96, 98, 99]
+    setup: [103, 107]
+    evaluation: [113]
+    result: [114, 117]
+    conclusion: [119]
+  snapshot_files:
+    - train_v3.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "Dataset sizes for this launch are elided from the [108] output block."
+    - "The two changes the agent named at [99] - think tags and EOS handling -
+       were bundled into one launch, and only the think tags were actually
+       implemented, so the EOS half of the hypothesis was never tested."
+
+# ---- Official result (joined by the pipeline; never written by the extractor) ----
+outcome:
+  official_accuracy: null

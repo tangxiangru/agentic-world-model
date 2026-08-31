@@ -1,0 +1,184 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.18
+
+problem:
+  statement: >-
+    The un-tuned base model scores 44% on the supplied evaluator: it has no clean
+    stop (its EOS is <|endoftext|> 151643 while the chat template ends turns with
+    <|im_end|> 151645), so it rambles past the answer, and the scorer takes the
+    last number in the completion.
+  evidence:
+    - path: /home/ben/task/baseline_metrics.json
+      locator: "[101]"
+      observation: "base model accuracy 0.44 (stderr 0.0499) at --limit 100"
+    - path: /home/ben/task/baseline_eval.log
+      locator: "[103]"
+      observation: >-
+        agent read the baseline as "the base model rambles without clean
+        <|im_end|> stopping, costing points"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full SFT on the GSM8K train split, formatted exactly as the evaluator renders
+    it (qwen3 chat template, completion = cleaned reasoning + "\n\nANSWER: X"),
+    will beat the 44% base-model baseline.
+  mechanism: >-
+    Training on completion + <|im_end|> teaches the model both the scorer's answer
+    format and to stop at the chat end-of-turn token, neither of which the base
+    model does. Agent at [80]: "Train the model to produce reasoning +
+    \n\nANSWER: X then stop with <|im_end|>."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_gsm8k.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py]
+      selection: >-
+        every GSM8K train item with a "####" answer; calculator annotations
+        <<...>> stripped and repeated spaces collapsed; prompt = qwen3 chat
+        template over the evaluator's math prompt with add_generation_prompt;
+        completion = reasoning + "\n\nANSWER: <target>"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer (custom prompt-masked SFT in train_sft.py); flash_attention_2"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/accum/max-len came from the launch; warmup_ratio 0.03 is the
+        argparse default in train_sft.py (not overridden by the launch);
+        scheduler cosine, weight_decay 0.0, max_grad_norm 1.0, bf16,
+        gradient_checkpointing, optim paged_adamw_8bit, group_by_length,
+        save_strategy="no" are hard-coded in train_sft.py. No seed is set
+        anywhere in the launch or the script.
+    target_format: >-
+      prompt tokens masked to -100; loss on the completion plus an appended
+      <|im_end|>, so the model learns the "ANSWER: X" ending and to stop
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/sft_gsm8k.jsonl, --out, sft_v1, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2", --max-len, "1024"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_v1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_v1, --limit, "300", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.5", --json-output-file, v1_metrics.json]
+    dev_set: "official --limit 300 (10-shot, fewshot_seed 42, shuffle_fewshot true, per [204])"
+    n: 300
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.44
+    path: /home/ben/task/baseline_metrics.json
+  diagnostic:
+    what: >-
+      standalone greedy vLLM generation on one question to check the model stops
+      at <|im_end|> after patch_eos.py set eos_token_id=[151643,151645] [176]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.2
+  output_checkpoint: /home/ben/task/sft_v1
+  training_summary:
+    final_loss: 0.1961
+    steps: 702
+    notes: >-
+      train_loss 0.2616 over 3 epochs, train_runtime 727.7 s, 7473 examples
+      loaded (0 skipped over max-len), from train_v1.log
+  measurements:
+    - metric: accuracy
+      value: 0.403
+      n: 300
+      path: /home/ben/task/v1_metrics.json
+      delta_vs_comparator: -0.037
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      the standalone greedy test produced a clean, correct answer with
+      finish_reason "stop" [181], while the evaluator run did not - the gap that
+      exp-02 explains
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    SFT v1 measured 40.3% at --limit 300 against a 44% baseline taken at
+    --limit 100, so the two numbers are not comparable [195]. The agent read the
+    drop as suspicious and went looking at the samples, which produced exp-02.
+  decision: adopt
+  next_step: >-
+    Inspect the eval samples to find why a model that answers correctly in a
+    standalone greedy test scores worse than the base model [195].
+
+outcome:
+  official_accuracy: null    # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-358cab54
+  launch_i: 116
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [101, 103]
+    setup: [87, 90, 96, 113, 116]
+    evaluation: [176, 186]
+    result: [175, 195]
+    conclusion: [195]
+  snapshot_files:
+    - prep_data.py
+    - train_sft.py
+    - train_v1.log
+    - v1_metrics.json
+    - baseline_metrics.json
+    - baseline_eval.log
+    - eval_v1.log
+    - patch_eos.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      v1_metrics.json now holds 0.8167, the exp-02 re-eval: both evals wrote the
+      same --json-output-file, so the 0.403 value survives only in the stream
+      at [195].
+    - >-
+      the baseline was run at --limit 100 and v1 at --limit 300, so the -3.7 pt
+      delta is not a like-for-like comparison.

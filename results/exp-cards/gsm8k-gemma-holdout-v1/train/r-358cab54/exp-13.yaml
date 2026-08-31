@@ -1,0 +1,199 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-13
+created_at: null
+elapsed_h: 7.87
+
+problem:
+  statement: >-
+    The trainer saved the winning checkpoint in fp32 (4 shards, ~16 GB). Under
+    the evaluator's own defaults - gpu_memory_utilization 0.3 and max-tokens
+    4000 - that leaves too little KV cache, and a sanity eval crashed with a CUDA
+    "illegal memory access" and a 500 from the server, so the candidate is not
+    safe to submit as it stands.
+  evidence:
+    - path: /home/ben/task/eval_sanity.log
+      locator: "[1005] [1009]"
+      observation: >-
+        "POST /v1/chat/completions HTTP/1.1 500 Internal Server Error" and
+        "torch.AcceleratorError: CUDA error: an illegal memory access was
+        encountered" during the limit-150, max-tokens-4000 run
+    - path: /home/ben/task/final_model/config.json
+      locator: "[999]"
+      observation: >-
+        agent: "4 shards = fp32 (~16GB) - the GRPOTrainer saved in fp32. The
+        grader uses default gpu_memory_utilization=0.3 (24GB), where a 16GB fp32
+        model leaves little KV-cache room."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Agent at [1011]: "Converting to bf16 (8GB) frees KV headroom" - the model
+    will then run under the evaluator's exact defaults without crashing, at the
+    same accuracy, since bf16 is the dtype it was trained in.
+  mechanism: >-
+    Halving the weight footprint leaves enough of the 0.3 memory fraction for the
+    KV cache at max-tokens 4000 and high concurrency.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-12
+    magnitude: >-
+      accuracy unchanged (bf16 is the dtype it was trained in); the change is that
+      the eval completes under the default settings instead of crashing
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-12
+    hash: null
+  data: []
+  method:
+    family: other
+    framework: "transformers AutoModelForCausalLM save_pretrained (safe_serialization) + direct JSON edit of generation_config.json"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        packaging only, no weight updates beyond the fp32 -> bf16 cast.
+        temperature / top_k / top_p / do_sample are cleared on the
+        GenerationConfig object so save_pretrained's validation passes, then the
+        greedy config is written straight to JSON afterwards
+        (eos_token_id [151643, 151645], do_sample false, temperature 0.0,
+        top_p 1.0, top_k -1, max_new_tokens 2048). Tokenizer files were missing
+        from the saved directory and were copied from the fp32 model at [1047].
+    target_format: >-
+      a 2-shard bf16 model directory (~7.6 GB) with greedy decoding and both stop
+      tokens, servable by vLLM at gpu_memory_utilization 0.3
+  command:
+    argv:
+      - python
+      - -c
+      - |-
+        import torch, json
+        from transformers import AutoModelForCausalLM
+        m = AutoModelForCausalLM.from_pretrained('final_model', dtype=torch.bfloat16)
+        # Clear invalid fields so save_pretrained's GenerationConfig validation passes
+        for k in ['temperature','top_k','top_p','do_sample']:
+            if hasattr(m.generation_config, k): setattr(m.generation_config, k, None)
+        m.generation_config.eos_token_id = [151643,151645]
+        m.save_pretrained('final_model_bf16', safe_serialization=True)
+        print('saved bf16, dtype:', next(m.parameters()).dtype)
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model_bf16, --limit, "150", --max-connections, "2", --max-tokens, "4000", --gpu-memory-utilization, "0.3", --json-output-file, grader_test_metrics.json]
+    dev_set: "official --limit 150 under the evaluator's default settings; also --limit -1 (1319) and --limit 300 under those defaults"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-12
+    value: 0.8703563305534496
+    path: /home/ben/task/final_full_metrics.json
+  diagnostic:
+    what: "does the vLLM server survive the evaluator's defaults (gpu-mem 0.3, max-tokens 4000) that crashed the fp32 model"
+    command: [python, evaluate.py, --model-path, final_model, --limit, "300", --max-connections, "2", --max-tokens, "4000", --gpu-memory-utilization, "0.3", --json-output-file, final_default300_metrics.json]
+    path: /home/ben/task/eval_final_default300.log
+
+result:
+  execution: completed
+  wall_h: 0.01
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      no training; fp32 -> bf16 cast, 2 shards, 7.6 GB. The bf16 directory was
+      moved over final_model at [1056] and the fp32 copy deleted at [1065].
+  measurements:
+    - metric: accuracy
+      value: 0.88
+      n: 150
+      path: /home/ben/task/grader_test_metrics.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.8703563305534496
+      n: 1319
+      path: /home/ben/task/final_full_metrics.json
+      delta_vs_comparator: 0.0
+    - metric: accuracy
+      value: 0.8766666666666667
+      n: 300
+      path: /home/ben/task/final_default300_metrics.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.8766666666666667
+    path: /home/ben/task/final_default300_metrics.json
+    notes: >-
+      agent at [1077]: "Confirmed: 87.67% on 300 samples under exact grader
+      defaults, 0 crashes"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    The bf16 model runs under the evaluator's exact defaults with no crash and
+    scores 87.04% on the full 1319 items - identical to the fp32 checkpoint, so
+    the conversion was lossless [1064]. This directory is what the run left as
+    final_model.
+  decision: adopt
+  next_step: null
+
+outcome:
+  official_accuracy: null    # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-358cab54
+  launch_i: 1022
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [992, 999, 1005, 1007, 1009, 1011]
+    setup: [1022, 1047]
+    evaluation: [1028, 1047, 1056, 1069]
+    result: [1027, 1055, 1064, 1066, 1077, 1095, 1101]
+    conclusion: [1064, 1077]
+  snapshot_files:
+    - eval_sanity.log
+    - eval_grader_test.log
+    - grader_test_metrics.json
+    - eval_final_bf16.log
+    - final_full_metrics.json
+    - eval_final_default300.log
+    - final_default300_metrics.json
+    - vllm_manual.log
+  smoke_runs:
+    - {launch_i: 1012, outcome: "conversion attempt bundled with killing the hung eval; no result shown in the stream, the agent retried"}
+    - {launch_i: 1016, outcome: "retry without the config fix; the agent then added the GenerationConfig clearing so save_pretrained validation passes"}
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      the first grader-defaults test at [1028] failed because save_pretrained had
+      not written the tokenizer files ("Failed to start vLLM server", [1034]
+      [1037] [1044]); they were copied from the fp32 directory at [1047] and the
+      test passed.
+    - >-
+      the stream ends with final_model holding this bf16 directory, but the
+      submission itself is never confirmed by the stream.

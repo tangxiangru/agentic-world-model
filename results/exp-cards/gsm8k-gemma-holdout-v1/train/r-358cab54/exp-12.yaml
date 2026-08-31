@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-12
+created_at: null
+elapsed_h: 7.01
+
+problem:
+  statement: >-
+    Two GRPO rounds have each improved greedy accuracy from a stronger base
+    (85.37% then 87.26% on the full eval), and the second round's reward was
+    still climbing when it was stopped, so the pattern has not visibly run out.
+  evidence:
+    - path: /home/ben/task/ckpt_g3c80_metrics.json
+      locator: "[925]"
+      observation: "round-2 c80 at 0.8767 (--limit 300) / 0.8726 (1319), up from 0.8633 / 0.8537"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Agent at [925]: "Let me try one more iterative GRPO round from c80 to push
+    further" - a third low-LR round from the 87.26% checkpoint should climb again.
+  mechanism: >-
+    Same as the previous round: restart optimizer and reference policy from the
+    improved checkpoint, with even finer checkpointing (every 15 steps) to catch
+    the greedy peak before overshoot.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-11
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/grpo_base4
+    origin: exp-11
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, train split), loaded in-process by grpo2.py"
+      n_examples: 7473
+      built_by: /home/ben/task/grpo2.py
+      build_command: []
+      selection: >-
+        every GSM8K train question rendered as a chat user turn with the
+        evaluator's math prompt; gold "#### " value is the reward target
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl 0.27.2 GRPOTrainer with vLLM 0.11.0 colocate rollouts"
+    peft: none
+    hyperparams:
+      lr: 1.0e-06
+      epochs: 1
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: constant_with_warmup
+      warmup: 10
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        from the launch: num_generations 8, temperature 1.0, beta 0.0,
+        vllm_gpu_memory_utilization 0.22, save_steps 15. max_completion_length
+        640 is the grpo2.py argparse default, not overridden; correctness reward
+        1.0 plus format reward 0.2; other trainer settings hard-coded in
+        grpo2.py. Env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True.
+        grpo_base4 is final_model (round-2 checkpoint-80) with a
+        validation-clean generation_config.
+    target_format: >-
+      reward = 1.0 for a correct extracted answer plus 0.2 for a well-formed
+      "ANSWER:" line
+  command:
+    argv: [nohup, python, -u, grpo2.py, --model, grpo_base4, --out, grpo4_out, --limit, "0", --g, "8", --bs, "8", --accum, "8", --lr, "1e-6", --temp, "1.0", --beta, "0.0", --vllm-mem, "0.22", --save-steps, "15", --epochs, "1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo2.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/grpo4_run.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, eval_ckpt.sh, grpo4_out/checkpoint-60, "300", g4c60]
+    dev_set: "official --limit 300 (10-shot, fewshot_seed 42, shuffle_fewshot true, per [204]); the winner was then re-run at --limit -1 (1319)"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-11
+    value: 0.8766666666666667
+    path: /home/ben/task/ckpt_g3c80_metrics.json
+  diagnostic:
+    what: "training-time correctness reward on sampled rollouts (temperature 1.0) vs greedy dev accuracy"
+    command: []
+    path: /home/ben/task/grpo4_run.log
+
+result:
+  execution: killed
+  wall_h: 0.37
+  output_checkpoint: /home/ben/task/grpo4_out/checkpoint-60
+  training_summary:
+    final_loss: null
+    steps: 75
+    notes: >-
+      grpo4_run.log ends at step 75/934 (16:20) when the agent stopped the run;
+      checkpoints 15, 30, 45, 60, 75 were written, and 45 and 60 were evaluated.
+  measurements:
+    - metric: accuracy
+      value: 0.8866666666666667
+      n: 300
+      path: /home/ben/task/ckpt_g4c60_metrics.json
+      delta_vs_comparator: 0.01
+    - metric: accuracy
+      value: 0.8766666666666667
+      n: 300
+      path: /home/ben/task/ckpt_g4c45_metrics.json
+      delta_vs_comparator: 0.0
+    - metric: accuracy
+      value: 0.8703563305534496
+      n: 1319
+      path: /home/ben/task/final_full_metrics.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/grpo4_run.log
+    notes: >-
+      agent at [943] correctness "climbing to ~0.95 (higher than round 2)" and at
+      [952] "~0.96-0.98 - suspiciously high, which could signal train overfitting
+      (reward is on train data)"; at [991] "sampling reward keeps climbing
+      (0.85 -> 0.97) but greedy test accuracy is flat"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    Checkpoint-60 gained +1 pt at --limit 300 (88.67% vs 87.67%) but the gain did
+    not survive the full 1319-item eval: 87.04% against round-2's 87.26%. Agent
+    at [991]: "essentially tied ... The model has plateaued at ~87%: sampling
+    reward keeps climbing but greedy test accuracy is flat - a sign the GRPO is
+    now overfitting train. Further rounds won't help test."
+  decision: adopt
+  next_step: >-
+    Stop iterating and finalise this checkpoint; first verify it under the
+    evaluator's default settings (max-tokens 4000, gpu-mem 0.3) [991].
+
+outcome:
+  official_accuracy: null    # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-358cab54
+  launch_i: 926
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [925]
+    setup: [926]
+    evaluation: [968, 977, 983]
+    result: [943, 952, 965, 976, 982, 991]
+    conclusion: [991]
+  snapshot_files:
+    - grpo2.py
+    - grpo4_run.log
+    - eval_ckpt.sh
+    - ckpt_g4c45_metrics.json
+    - ckpt_g4c60_metrics.json
+    - eval_ckpt_g4c45.log
+    - eval_ckpt_g4c60.log
+    - eval_ckpt_g4c75.log
+    - eval_final_full3.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      the checkpoint-75 eval launched at [968] never produced metrics: its log
+      ends with "Failed to start vLLM server", and no ckpt_g4c75_metrics.json
+      exists in the snapshot. The agent did not comment on it.
+    - >-
+      final_full_metrics.json holds 0.87036, which this launch's full eval wrote
+      at [983] and the exp-13 bf16 full eval then overwrote with the same value.
+    - >-
+      the run's kill at [953] reported ENOSPC on the temp filesystem, so its
+      command output was lost; the stop itself was confirmed at [960] [964].

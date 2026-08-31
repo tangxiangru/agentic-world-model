@@ -1,0 +1,205 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-09
+created_at: null
+elapsed_h: 4.10
+
+problem:
+  statement: >-
+    "GRPO@100 = 84% (no change) - same as base. Two likely causes: (1) LR too
+    low for LoRA, (2) TRL detects termination via tokenizer eos (151643) but the
+    model emits `<|im_end|>` (151645) - so termination handling is off." [1146]
+  evidence:
+    - path: /home/ben/task/logs/grpo100.json
+      locator: "[1143], [1144]"
+      observation: "GRPO checkpoint-100 merged and evaluated: 0.84 at limit 150, identical to the SFT parent"
+    - path: /home/ben/task/logs/grpo1.log
+      locator: "[1052], [1053]"
+      observation: >-
+        "'completions/clipped_ratio': 1.0" and
+        "'completions/mean_terminated_length': 0.0" at every logged step
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Setting the tokenizer's eos to <|im_end|> so TRL masks completions
+    correctly, and raising the LoRA learning rate to 5e-6 with the KL penalty
+    removed, will let GRPO improve on the 84% SFT plateau [1146], [1147].
+  mechanism: >-
+    "TRL detects completion termination via tokenizer eos; the model emits
+    <|im_end|> (151645), so set eos to that for correct masking" [1147]; a
+    higher LR and beta=0 give the policy room to move.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-07
+    hash: null
+  data:
+    - path: "openai/gsm8k (main, split=train)"
+      source: "HF: openai/gsm8k"
+      n_examples: 7473
+      built_by: /home/ben/task/train_grpo.py
+      build_command: []
+      selection: "unchanged from exp-08 [1023]"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: trl.GRPOTrainer
+    peft: "LoRA r=32 alpha=64 dropout=0.0 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 5.0e-06
+      epochs: null
+      batch_size: 16
+      grad_accum: 4
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --steps 340 (max_steps), --k 8 (num_generations), --beta 0.0 (no KL).
+        The intervention relative to exp-08 is tok.eos_token = "<|im_end|>"
+        [1147]. From task/train_grpo.py and not overridden:
+        max_completion_length=400, max_prompt_length=512, temperature=1.0,
+        loss_type="dr_grpo", use_vllm colocate at 0.35, save_steps=100.
+    target_format: >-
+      minimal chat template; reward_correct() parses the last "ANSWER: <n>" in
+      the completion and compares it to gold
+  command:
+    argv:
+      - python
+      - -u
+      - train_grpo.py
+      - --steps
+      - "340"
+      - --bs
+      - "16"
+      - --k
+      - "8"
+      - --accum
+      - "4"
+      - --lr
+      - 5e-6
+      - --beta
+      - "0.0"
+      - --out
+      - runs/grpo2
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grpo.py
+    env: {}
+    log: /home/ben/task/logs/grpo2.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/eval_grpo2_100
+      - --limit
+      - "150"
+      - --max-tokens
+      - "1024"
+      - --max-connections
+      - "16"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --json-output-file
+      - logs/grpo2_100.json
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-07
+    value: 0.84
+    path: /home/ben/task/logs/v1_2400.json
+  diagnostic:
+    what: "clipped_ratio / mean_terminated_length, to confirm the eos fix took effect"
+    command: []
+    path: /home/ben/task/logs/grpo2.log
+
+result:
+  execution: killed
+  wall_h: 0.23
+  output_checkpoint: /home/ben/task/runs/grpo2/checkpoint-100
+  training_summary:
+    final_loss: null
+    steps: 100
+    notes: >-
+      Killed once checkpoint-100 was saved (step ~100 of 340) [1191]. Reward sat
+      at ~0.85-0.89 with no trend through step 87 [1176], [1188]. The first
+      merge+eval attempt produced an empty metrics file and had to be re-run
+      [1203], [1206], [1207].
+  measurements:
+    - metric: accuracy
+      value: 0.847
+      n: 150
+      path: /home/ben/task/logs/grpo2_100.json
+      delta_vs_comparator: 0.007
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/logs/grpo2.log
+    notes: >-
+      "Termination is now fixed (`clipped_ratio: ~0.0`, `mean_terminated_length:
+      122`) - the previous GRPO's lack of improvement was likely due to this."
+      [1161]
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    "GRPO2@100 = **84.7%** vs base 84.0% - a small positive signal (within
+    noise, but the termination fix helped)" [1212]. The mechanism claim is
+    confirmed directly (termination metrics went from clipped_ratio 1.0 /
+    terminated length 0 to ~0.0 / 122), but a +0.7 pt delta at n=150 is far
+    inside the ~3 pt standard error.
+  decision: adopt
+  next_step: >-
+    "RL gains can compound with more steps. Let me resume GRPO2 from
+    checkpoint-100 to extend it" [1212].
+
+provenance:
+  kind: extracted
+  run_ref: r-049e5f94
+  launch_i: 1149
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [1143, 1144, 1146]
+    setup: [1147, 1149]
+    evaluation: [1207]
+    result: [1161, 1176, 1188, 1191, 1203, 1207, 1212]
+    conclusion: [1212]
+  snapshot_files:
+    - train_grpo.py
+    - merge_lora.py
+    - eval_model.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - >-
+      logs/grpo2_100.json is never printed; 84.7% is quoted by the agent at
+      [1212].
+    - >-
+      Two changes (eos fix, and lr 1e-6 -> 5e-6 with beta 0.04 -> 0.0) were made
+      together, so their contributions cannot be separated.

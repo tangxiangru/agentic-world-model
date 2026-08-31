@@ -1,0 +1,233 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    [196] "the model often gets the math right, writes `ANSWER: ...`, then keeps
+    sampling garbage, and the scorer picks up the wrong trailing number. This
+    points to generation settings, not the weights." [202] "the eval chat template
+    terminates assistant turns with `<|im_end|>` (token `151645`), but the saved
+    generation config stops only on `<|endoftext|>` (`151643`)."
+  evidence:
+    - path: /home/ben/task/logs/2026-03-07T21-16-34+01-00_gsm8k_iXKbSDFVZB8e3FmDHcwxJ6.json
+      locator: "[191] -> [192]; first samples of the 150-sample eval of exp-01"
+      observation: "generations run past the answer into long stretches of unrelated text, so the scorer reads a trailing number that is not the answer"
+    - path: /home/ben/task/exp_full_gsm_e3_lr1e5/checkpoint-452/generation_config.json
+      locator: "[197] -> [198]"
+      observation: "eos_token_id 151643 and pad_token_id None on both the base model and the trained checkpoint; nothing stops decoding at <|im_end|>"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    [205] "as soon as decoding stops on `<|im_end|>`, the answer is clean and the
+    garbage disappears" - repackaging the best checkpoint with
+    eos_token_id=[151645, 151643], pad_token_id=151643 and greedy decoding will
+    recover the score.
+  mechanism: >-
+    The training targets end with the template's <|im_end|>; if that token is not
+    a stop token at decode time the model keeps generating past its own answer and
+    the "match" scorer picks up the wrong final number.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/exp_full_gsm_e3_lr1e5/checkpoint-452
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "transformers AutoTokenizer/shutil + hand-edited config (no training)"
+    peft: "none"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        no training: weights/config/index copied from checkpoint-452 into
+        exp_full_gsm_e1_stopfix, fresh base tokenizer saved, then
+        config.json eos_token_id=151645, pad_token_id=151643 and
+        generation_config.json eos_token_id=[151645, 151643],
+        pad_token_id=151643, do_sample=False, temperature=1.0, top_p=1.0,
+        top_k=50.
+    target_format: null
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - |-
+          python - <<'PY'
+          from pathlib import Path
+          import shutil, json
+          from transformers import AutoTokenizer
+
+          src = Path('exp_full_gsm_e3_lr1e5/checkpoint-452')
+          out = Path('exp_full_gsm_e1_stopfix')
+          if out.exists():
+              shutil.rmtree(out)
+          out.mkdir()
+          for name in ['config.json','generation_config.json','model-00001-of-00002.safetensors','model-00002-of-00002.safetensors','model.safetensors.index.json']:
+              shutil.copy2(src / name, out / name)
+          base_tok = AutoTokenizer.from_pretrained('Qwen/Qwen3-4B-Base', use_fast=True)
+          base_tok.save_pretrained(out)
+          config = json.loads((out / 'config.json').read_text())
+          config['eos_token_id'] = 151645
+          config['pad_token_id'] = 151643
+          (out / 'config.json').write_text(json.dumps(config, indent=2))
+          gc = json.loads((out / 'generation_config.json').read_text())
+          gc['eos_token_id'] = [151645, 151643]
+          gc['pad_token_id'] = 151643
+          gc['do_sample'] = False
+          gc['temperature'] = 1.0
+          gc['top_p'] = 1.0
+          gc['top_k'] = 50
+          (out / 'generation_config.json').write_text(json.dumps(gc, indent=2))
+          PY
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - exp_full_gsm_e1_stopfix
+      - --limit
+      - "50"
+      - --json-output-file
+      - exp_full_gsm_e1_stopfix_eval50.json
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.3"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.44
+    path: /home/ben/task/baseline_50.json
+  diagnostic:
+    what: >-
+      greedy decode of a single GSM8K item from the best checkpoint under
+      eos_token_id 151643, 151645 and [151645, 151643], to see whether the stop
+      token alone explains the runaway generations
+    command:
+      - /bin/bash
+      - -lc
+      - |-
+          python - <<'PY'
+          import torch
+          from datasets import load_dataset
+          from transformers import AutoModelForCausalLM, AutoTokenizer
+          from pathlib import Path
+
+          MATH_PROMPT_TEMPLATE = '''Solve the following math problem step by step. The last line of your response should be of the form \"ANSWER: "'$ANSWER" (without quotes) where $ANSWER is the answer to the problem.
+
+          {prompt}
+
+          Remember to put your answer on its own line at the end in the form "ANSWER: $ANSWER" (without quotes) where $ANSWER is the answer to the problem, and you do not need to use a '"\\\\boxed command.
+
+          Reasoning:
+          '''
+
+          tok = AutoTokenizer.from_pretrained('Qwen/Qwen3-4B-Base')
+          tok.chat_template = Path('templates/qwen3.jinja').read_text()
+          model = AutoModelForCausalLM.from_pretrained('exp_full_gsm_e3_lr1e5/checkpoint-452', torch_dtype=torch.bfloat16, device_map='cuda')
+          model.eval()
+          row = load_dataset('openai/gsm8k','main',split='test[:1]')[0]
+          messages=[{'role':'user','content':MATH_PROMPT_TEMPLATE.format(prompt=row['question'])}]
+          prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+          inputs = tok(prompt, return_tensors='pt').to(model.device)
+          for eos in [151643, 151645, [151645,151643]]:
+              out = model.generate(**inputs, max_new_tokens=256, do_sample=False, eos_token_id=eos, pad_token_id=151643)
+              text = tok.decode(out[0][inputs['input_ids'].shape[1]:], skip_special_tokens=False)
+              print('EOS', eos)
+              print(text[:1500])
+              print('---')
+          PY
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/exp_full_gsm_e1_stopfix
+  training_summary: {final_loss: null, steps: null, notes: "repackaging/decode-config step, no training"}
+  measurements:
+    - metric: accuracy
+      value: 0.14
+      n: 50
+      path: /home/ben/task/exp_full_gsm_e1_stopfix_eval50.json
+      delta_vs_comparator: -0.3
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [204] with eos 151643 the model produces the correct "ANSWER: 18" and then
+      continues into an unrelated problem; with 151645 or [151645, 151643] the
+      generation stops immediately after "ANSWER: 18<|im_end|>".
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: >-
+    The stop-token fix did what it was supposed to mechanically - the single-item
+    probe at [204] shows the runaway text disappearing - but the repackaged model
+    still scored only 0.14 on 50 samples against the base model's 0.44 under the
+    same protocol. [233] "The full-update branch is not holding up under the
+    actual eval prompt, even after fixing decoding."
+  decision: reject
+  next_step: >-
+    [233] switch to LoRA on the same GSM8K-train recipe to "preserve more of the
+    base model's behavior while still teaching the target answer format" (exp-04).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-0295e24f
+  launch_i: 206
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [191, 192, 196, 197, 198, 202]
+    setup: [206]
+    evaluation: [208, 228]
+    result: [204, 230]
+    conclusion: [233]
+  snapshot_files:
+    - exp_full_gsm_e1_stopfix_eval50.json
+    - baseline_50.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the first eval of this package, launched at [208], died because a vLLM server could not start over lingering GPU allocations; the scored run is the relaunch at [228] with --gpu-memory-utilization 0.3"

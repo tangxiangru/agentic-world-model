@@ -1,0 +1,205 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-10
+created_at: null
+elapsed_h: 2.39
+
+problem:
+  statement: >-
+    GSM8K-train-only SFT has plateaued around 0.65-0.69 on the 150-sample probe
+    and the exact-prompt variant was worse on validation; the remaining misses
+    are reasoning errors, which points at a lack of problem diversity rather
+    than format.
+  evidence:
+    - path: null
+      locator: "[314], [317]"
+      observation: >-
+        "The exact-only loss is not clearly better than the earlier mixed run
+        yet ... the MetaMath warm-up path is likely the higher-upside next
+        experiment"
+    - path: /home/ben/task/eval_sft_v2_eos600_limit150.json
+      locator: "[240], [251]"
+      observation: "the incumbent is at 0.687 on 150 samples"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A no-system, external-format warm-up on a decontaminated GSM subset of
+    MetaMathQA will give the model more problem diversity than GSM8K train alone
+    and provide a stronger starting point for GSM prompt refinement.
+  mechanism: >-
+    "this stage is no-system external-format warm-up rather than prompt-matched
+    training" [336]; the diversity is meant to improve reasoning, with prompt
+    alignment restored in a later stage.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-08
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/metamath_gsm_80k.jsonl
+      source: meta-math/MetaMathQA (GSM subset)
+      n_examples: null
+      built_by: /home/ben/task/prepare_metamath_gsm.py
+      build_command:
+        - python
+        - prepare_metamath_gsm.py
+        - --output
+        - data/metamath_gsm_80k.jsonl
+        - --limit
+        - "80000"
+      selection: >-
+        prepare_metamath_gsm.py keeps GSM-type MetaMathQA rows, drops rows whose
+        normalized query or original_question matches a GSM8K *test* question,
+        drops duplicates and over-long rows, extracts the final answer and
+        rewrites each row as "{reasoning}\n#### {target}", shuffles with seed 42
+        and truncates to --limit. The row count for this 80k file was never
+        printed; a later run of the same script with --limit 200000 reported
+        112,196 unique rows and test_overlap 0 [467].
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer + peft LoRA (transformers 4.57.3)
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: null
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        --max-steps 2000 caps the run; --external-only drops the GSM8K rows so
+        only the extra jsonl is trained on, and extra rows are rendered
+        no-system. max_seq_len (4096), weight_decay (0.0) and seed (42) are
+        train_gsm8k_sft.py argparse defaults not overridden by the launch; cosine
+        schedule, bf16+tf32, gradient_checkpointing, group_by_length,
+        adamw_torch_fused and max_grad_norm=0.3 are hardcoded. --save-steps 500,
+        --save-total-limit 5, --merge, --completion-end eos.
+    target_format: >-
+      no-system prompt; assistant turn = MetaMath rationale, blank line,
+      "ANSWER: <n>", then the tokenizer eos token
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --model-name
+      - Qwen/Qwen3-4B-Base
+      - --output-dir
+      - runs/sft_lora_v4_meta80k_eos2000
+      - --final-dir
+      - runs/sft_lora_v4_meta80k_eos2000/merged
+      - --max-steps
+      - "2000"
+      - --learning-rate
+      - "2e-4"
+      - --warmup-ratio
+      - "0.03"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --lora-dropout
+      - "0.05"
+      - --batch-size
+      - "8"
+      - --grad-accum
+      - "4"
+      - --val-size
+      - "384"
+      - --extra-jsonl
+      - data/metamath_gsm_80k.jsonl
+      - --external-only
+      - --completion-end
+      - eos
+      - --save-steps
+      - "500"
+      - --save-total-limit
+      - "5"
+      - --merge
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.53
+  output_checkpoint: /home/ben/task/runs/sft_lora_v4_meta80k_eos2000/checkpoint-1000
+  training_summary:
+    final_loss: null
+    steps: 1055
+    notes: >-
+      killed with SIGINT at 1055/2000; held-out GSM prompt eval_loss 0.44413 at
+      step 1000, unchanged from step 500, which the agent expected because this
+      stage is not prompt-matched [336], [339], [551]
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: "KeyboardInterrupt during training_step at 1055/2000 [340]"
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "The 1000-step MetaMath checkpoint has the same GSM prompt validation loss as
+    step 500, so I'm stopping the warm-up here. Next I'll merge that checkpoint
+    and run GSM prompt refinement from it" [339]. checkpoint-1000 became the base
+    for every later refinement branch.
+  decision: adopt
+  next_step: "merge checkpoint-1000 and refine on GSM prompts from it [348]"
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-77b138a8
+  launch_i: 328
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [314, 317]
+    setup: [296, 328, 334]
+    evaluation: []
+    result: [336, 337, 339, 340, 342, 551]
+    conclusion: [339, 348]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - prepare_metamath_gsm.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the number of rows written to data/metamath_gsm_80k.jsonl was never printed"

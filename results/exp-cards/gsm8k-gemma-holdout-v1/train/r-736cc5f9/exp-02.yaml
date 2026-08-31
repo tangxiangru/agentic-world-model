@@ -1,0 +1,231 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The official evaluator never passes a temperature, and the serving backend
+    defaults to temperature=1.0, so unless the exported checkpoint carries a
+    deterministic generation_config the official GSM8K score is sampled rather
+    than greedy - which makes any checkpoint comparison built on it unreliable
+    [121], [150].
+  evidence:
+    - path: /home/ben/task/evaluate.py
+      locator: "[121], [150]"
+      observation: "agent inspected the evaluator and found no temperature is forwarded; the backend samples by default"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Rerunning the full-data short-prompt LoRA fine-tune with the corrected export
+    (a deterministic generation_config written next to the merged model) yields a
+    trustworthy, deterministically scored first reference model against which the
+    fewshot-aligned and full-finetune variants can be judged [169], [179].
+  mechanism: >-
+    "The export path now writes a deterministic generation_config, which matters
+    because vllm otherwise samples by default", so the merged checkpoint is
+    scored under greedy decoding and repeated scores are comparable [169].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF: openai/gsm8k (config main, split train), loaded in-process by the training script"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command: []
+      selection: >-
+        load_records() splits each answer on "####"; split_records() holds out
+        --val-size 512 random items (seed 42) as validation and trains on the
+        rest; --train-samples -1 means the whole remainder. --train-fewshot 0, so
+        each training example is user prompt + assistant "reasoning\n\nANSWER: n".
+        Mean training length ~295-299 tokens [172], [187].
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + peft 0.18.1 (torch 2.8.0+cu129)"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        LoRA rank/alpha/dropout, warmup_ratio, weight_decay and seed are the
+        argparse defaults of train_gsm8k_sft.py (in task/) and were not overridden
+        on this launch; lr_scheduler_type="cosine", bf16=True, tf32=True,
+        optim="adamw_torch_fused", load_best_model_at_end=True with
+        metric_for_best_model="eval_loss" are hard-coded in that script.
+        --gradient-checkpointing on; --eval-fewshot 0 here (unlike [110]), so
+        validation prompts match the training prompts. Trainable share reported
+        for this LoRA configuration at the smoke stage: 69,730,304 params, 3.89%
+        [74].
+    target_format: >-
+      the evaluator's Qwen chat template (templates/qwen3.jinja); assistant turn =
+      GSM8K reference reasoning followed by "ANSWER: <n>", loss masked to the
+      assistant tokens. Export writes a generation_config with do_sample greedy
+      settings and both Qwen end tokens as eos.
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --output-dir
+      - outputs/exp1_lora_nf
+      - --save-merged-dir
+      - outputs/exp1_lora_nf_merged
+      - --train-samples
+      - "-1"
+      - --eval-samples
+      - "128"
+      - --val-size
+      - "512"
+      - --num-train-epochs
+      - "3"
+      - --per-device-train-batch-size
+      - "4"
+      - --per-device-eval-batch-size
+      - "4"
+      - --gradient-accumulation-steps
+      - "8"
+      - --logging-steps
+      - "10"
+      - --save-steps
+      - "200"
+      - --eval-steps
+      - "200"
+      - --learning-rate
+      - "2e-4"
+      - --train-fewshot
+      - "0"
+      - --eval-fewshot
+      - "0"
+      - --max-length
+      - "1024"
+      - --gradient-checkpointing
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - eval_gsm8k_local.py
+      - --model-path
+      - outputs/exp1_lora_nf_merged
+      - --split
+      - test
+      - --limit
+      - "100"
+      - --fewshot
+      - "10"
+      - --batch-size
+      - "8"
+      - --max-new-tokens
+      - "256"
+      - --output-file
+      - exp1_local_test100.json
+    dev_set: "GSM8K test, first 100 items, 10-shot prompt built by eval_gsm8k_local.py"
+    n: 100
+    seed: 42
+  comparator: null
+  diagnostic:
+    what: "held-out validation loss on the 512-item train holdout, read from the saved trainer_state.json at each checkpoint"
+    command: []
+    path: /home/ben/task/outputs/exp1_lora_nf/checkpoint-200/trainer_state.json
+
+result:
+  execution: completed
+  wall_h: 0.28
+  output_checkpoint: /home/ben/task/outputs/exp1_lora_nf_merged
+  training_summary:
+    final_loss: 0.4355
+    steps: null
+    notes: >-
+      train_runtime 1008.99 s, train_loss 0.4355 over 3 epochs [268]. Validation
+      loss 0.5531 at step 200, 0.5571 at step 400, 0.6345 at step 600, so
+      load_best_model_at_end restored step 200 and the merged export reflects it
+      [225], [249], [264], [266], [270].
+  measurements:
+    - metric: accuracy
+      value: 0.01
+      n: 100
+      path: /home/ben/task/exp1_local_test100.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.60
+      n: 100
+      path: /home/ben/task/exp1_local_test100.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: 0.5531
+    path: /home/ben/task/outputs/exp1_lora_nf/checkpoint-200/trainer_state.json
+    notes: "best eval_loss 0.5531 at step 200; later checkpoints worse (0.5571, 0.6345), so LoRA capacity looked saturated after epoch one [252], [253], [266]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The run finished and restored its best (step-200) checkpoint; the raw local
+    test-slice score of 1/100 was a parsing artifact - "my local extractor was
+    treating 540<junk> as a literal wrong answer" - and rescoring the saved
+    responses with a stricter numeric extractor gave 60/100 [318], [322], [326],
+    [329]. No comparator was measured under this protocol, so the number stands
+    alone rather than as a tested delta.
+  decision: reject
+  next_step: >-
+    "That's strong enough that the next run should be a real full fine-tune, not
+    another minor LoRA tweak" [329].
+
+provenance:
+  kind: extracted
+  run_ref: r-736cc5f9
+  launch_i: 170
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [121, 150]
+    setup: [169, 170]
+    evaluation: [273, 307, 325]
+    result: [225, 249, 264, 268, 270, 318, 326]
+    conclusion: [322, 329]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - eval_gsm8k_local.py
+    - exp1_local_test100.json
+    - contamination_judgement.txt
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the 0.60 figure is the agent's offline re-parse of exp1_local_test100.json at [325]-[326]; the file on disk still records accuracy 0.01 under the script's own extractor"
+    - "the official evaluate.py --limit 100 run on this checkpoint ([273], writing exp1_eval100.json) was killed at [300] before returning a score, and that file is not in the workspace snapshot"
+    - "this checkpoint was never re-scored after the stop-token fix of [383]-[388], so its 0.60 and exp-03's 0.66 were produced under slightly different decoding conditions"
+
+outcome:
+  official_accuracy: null

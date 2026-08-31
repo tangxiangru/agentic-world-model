@@ -1,0 +1,183 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 3.20
+
+problem:
+  statement: >-
+    The packaged stage-1 model scored 0/50 because generation never stops: the
+    finalized config kept the base tokenizer's <|endoftext|> (151643) as EOS, so
+    completions run past the assistant turn, repeat the prompt, and emit dozens
+    of "ANSWER:" lines until the token cap [239][241][244].
+  evidence:
+    - path: /home/ben/task/eval_stage1_50.json
+      locator: "[237]"
+      observation: "accuracy 0.000 over 50 samples, 98,912 output tokens"
+    - path: /home/ben/task/final_model/config.json
+      locator: "[244]"
+      observation: 'eos_token_id 151643 (<|endoftext|>) and use_cache false in the packaged config'
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: "logs/2026-04-25T07-21-09+02-00 (Inspect eval log, not in the workspace snapshot)"
+      question: null
+      gold: null
+      model_output: >-
+        "... Marie ordered 5 packs of milk, so she spent 5 * $3 = $15 ... </think>user\nSolve
+        the following math problem step by step. ... ANSWER: ..." repeated, 42
+        occurrences of "ANSWER" in one completion
+      failure: >-
+        the completion never emits EOS; it continues into a fresh user prompt and
+        answers unrelated problems until the 2048-token cap [241]
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Setting <|im_end|> (151645) as eos_token_id in both config.json and
+    generation_config.json, and restoring use_cache for inference, will stop the
+    runaway continuations and let the same 50-sample eval score the model's real
+    output [250].
+  mechanism: >-
+    The chat template ends the assistant turn with <|im_end|>, a token the base
+    tokenizer does not register as EOS; making it EOS lets vLLM terminate the
+    turn at the end of the answer.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/stage1_metamath_gsm_think
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "scripts/finalize_model.py (shutil.copytree + config rewrite)"
+    peft: "none"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        after the change: config.json eos_token_id=151645, use_cache=true;
+        generation_config.json eos_token_id=151645, do_sample=false, top_p=1.0,
+        repetition_penalty=1.0 [253][254][343].
+    target_format: null
+  command:
+    argv:
+      - python
+      - scripts/finalize_model.py
+      - runs/stage1_metamath_gsm_think
+      - final_model
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/finalize_model.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - final_model
+      - --limit
+      - "50"
+      - --json-output-file
+      - eval_stage1_eos_50.json
+      - --max-connections
+      - "8"
+      - --max-tokens
+      - "2048"
+      - --gpu-memory-utilization
+      - "0.5"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.0
+    path: /home/ben/task/eval_stage1_50.json
+  diagnostic:
+    what: >-
+      token-id check comparing the base tokenizer and the packaged tokenizer for
+      <|endoftext|>, <|im_end|>, <|im_start|>, <think>, </think> [245]
+    command:
+      - python
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model
+  training_summary: {final_loss: null, steps: null, notes: "re-packaging only; no training"}
+  measurements:
+    - metric: accuracy
+      value: 0.08
+      n: 50
+      path: /home/ben/task/eval_stage1_eos_50.json
+      delta_vs_comparator: 0.08
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      output tokens for the same 50 samples fell from 98,912 to 66,583 and total
+      eval time from 51 s to 36 s, i.e. the runaway continuations stopped
+      [237][256]; the packaged configs read back eos 151645 [254].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "EOS stopping fixed the infinite continuation but stage-1 accuracy is only
+    ... 8%" [257]. The decode fix did what it claimed under the same --limit 50
+    (0.000 -> 0.080), but the remaining errors are content, not format: sampled
+    outputs are off-topic non-math continuations rather than GSM solutions
+    [259].
+  decision: reject
+  next_step: >-
+    "the broad MetaMath format may be interfering with the evaluator's plain
+    few-shot format, so the next likely step is a short exact-prompt GSM8K-train
+    alignment pass" [257] - launched as exp-04.
+
+# joined by the pipeline, never written by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-6dabe99e
+  launch_i: 253
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [239, 241, 244]
+    setup: [250, 253, 343]
+    evaluation: [255]
+    result: [254, 256, 259]
+    conclusion: [257]
+  snapshot_files:
+    - eval_stage1_50.json
+    - eval_stage1_eos_50.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: null   # withheld: cards must not contain a model name
+  unresolved:
+    - "the Inspect eval logs under logs/ that the failure example is quoted from are not in the workspace snapshot"

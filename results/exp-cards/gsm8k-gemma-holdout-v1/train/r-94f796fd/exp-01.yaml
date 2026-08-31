@@ -1,0 +1,193 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The untouched base model scores far below what the budget allows: "The
+    baseline is worse than expected: `24%` on the first 50 test samples, so there
+    is a lot of headroom" [116]. The agent also did not yet know which target
+    format the eval harness rewards.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-94f796fd/baseline_50.json
+      locator: "[63] launch, [116] read"
+      observation: "base model accuracy 0.24 (stderr 0.061) on the first 50 GSM8K test samples"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-94f796fd.md
+      locator: "[83]"
+      observation: >-
+        base-model generation on an eval-style prompt opens with stray `<think>`
+        blocks and section headings instead of the harness's plain
+        "Reasoning ... ANSWER:" shape
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "a controlled ablation: two short LoRA runs that differ only in target format
+    (`plain` vs `think`) so I can see whether matching the template's
+    reasoning-mode instructions helps or hurts GSM8K accuracy under the actual
+    eval harness" [120]; this is the `plain` arm, and "If this plain-format run
+    already jumps well above the `24%` baseline, I'll keep the recipe tight and
+    spend remaining time on better curriculum" [126].
+  mechanism: >-
+    "The eval prompt's few-shot exemplars are plain `Reasoning ... ANSWER:`
+    blocks, so a plain-output model is more likely to align with what the harness
+    is actually demonstrating" [156].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: "openai/gsm8k (main, split=train), loaded inside the training script"
+      source: "HF id: openai/gsm8k"
+      n_examples: 2048
+      built_by: /home/ben/task/train_gsm8k.py
+      build_command: []
+      selection: >-
+        --train-samples 2048 --val-samples 128; all GSM8K train rows shuffled with
+        seed 42, answer split on "####" into reasoning + target, first 2048 taken
+        for training and the next 128 for validation; no few-shot context in the
+        training prompt (--fewshot-contexts left at 0).
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57 + peft 0.18 LoRA (torch 2.8, datasets 4.5) [36]"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,up_proj,gate_proj,down_proj (script defaults, not overridden); ~121M trainable parameters [141]"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1.5
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        scheduler, warmup, weight_decay, precision, seed and the LoRA shape are
+        NOT on the command line; they are read from the argparse defaults and
+        TrainingArguments of task/train_gsm8k.py, which this launch did not
+        override (lr_scheduler_type=cosine, warmup_ratio=0.03, weight_decay=0.0,
+        bf16=True, optim=adamw_torch_fused, gradient_checkpointing=True, seed=42,
+        save_strategy/eval_strategy="epoch" with load_best_model_at_end on
+        eval_loss, chat template templates/smollm.jinja). Caveat: the workspace
+        copy of the script is the END-of-run version; the EOS-termination option
+        ([185]) and the eval_fixed few-shot option ([202]) were added after this
+        launch, so the script's `append_eos` default cannot be attributed here -
+        [185] states this run's targets were NOT EOS-terminated.
+    target_format: >-
+      SmolLM chat template; user turn = the harness math prompt ("... The last
+      line of your response should be of the form \"ANSWER: $ANSWER\" ...
+      Reasoning:"), assistant turn = "<reasoning>\n\nANSWER: <target>" with loss
+      on the assistant turn only. No EOS appended at this point in the run [185].
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - "python train_gsm8k.py --output-dir exp_plain_2k --save-merged-dir exp_plain_2k_merged --train-samples 2048 --val-samples 128 --num-train-epochs 1.5 --batch-size 2 --eval-batch-size 2 --gradient-accumulation-steps 8 --logging-steps 10 --max-length 1536 --learning-rate 2e-4 --answer-format plain"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [20]"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - /bin/bash
+      - -lc
+      - "python evaluate.py --model-path exp_plain_2k_merged --limit 50 --json-output-file exp_plain_2k_50.json --max-connections 1 --max-tokens 1200 --gpu-memory-utilization 0.5"
+    dev_set: "official --limit 50 (inspect_evals/gsm8k, openai/gsm8k test)"
+    n: 50
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.24
+    path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-94f796fd/baseline_50.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/exp_plain_2k_merged
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      No end-of-run loss/runtime line for this launch is in the stream. The agent
+      reported it was "moving at roughly six minutes for 2,048 samples over 1.5
+      epochs" [126], that training was "stable" and that the adapter had "about
+      `121M` trainable parameters" [141]; it finished cleanly [161].
+  measurements:
+    - metric: accuracy
+      value: 0.1
+      n: 50
+      path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-94f796fd/exp_plain_2k_50.json
+      delta_vs_comparator: -0.14
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "The first pilot underperformed badly on real eval: `10%` on the same
+    50-sample slice, despite low train/val loss" [180] - 14 points BELOW the 24%
+    baseline. Inspecting generations gave the cause: "The model is often producing
+    a correct-looking `ANSWER: ...` and then continuing into unrelated
+    training-style Q/A snippets, so the fine-tune improved local loss but broke
+    generation stopping under `vllm`" [185].
+  decision: reject
+  next_step: >-
+    "I'm patching the training targets to end with the tokenizer EOS token so
+    evaluation can terminate cleanly" [185] - rerun the same 2,048-sample pilot
+    with EOS-terminated targets [189]. The `think` arm of the format ablation
+    announced at [120] was never launched; it was dropped at [156] ("I'm leaning
+    toward skipping the `think`-formatted branch unless this run disappoints").
+
+provenance:
+  kind: extracted
+  run_ref: r-94f796fd
+  launch_i: 121
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [63, 83, 116]
+    setup: [120, 121, 141]
+    evaluation: [162]
+    result: [161, 172, 180]
+    conclusion: [180, 185, 189]
+  snapshot_files:
+    - train_gsm8k.py
+    - evaluate.py
+    - baseline_50.json
+    - exp_plain_2k_50.json
+  smoke_runs:
+    - {launch_i: 117, outcome: "passed - 32-sample / 0.2-epoch dry run of train_gsm8k.py, 7 steps, train_loss 0.930, eval_loss 0.446, merge+save worked; 'I've validated the pipeline end to end' [120]"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the stream has no per-event timestamps, so elapsed_h is null on every card in this run; the only clock readings are timer.sh outputs (9:59 remaining at [5], 9:46 at [140], 9:22 at [234], 8:57 at [299])"
+    - "no training loss/runtime line for this launch appears in the digest, so training_summary is empty"
+    - "the workspace copy of train_gsm8k.py is the end-of-run version, so its defaults for --append-eos and --fewshot-mode postdate this launch"

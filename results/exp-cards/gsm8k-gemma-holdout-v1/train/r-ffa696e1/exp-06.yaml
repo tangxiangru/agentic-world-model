@@ -1,0 +1,175 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 2.34
+
+problem:
+  statement: null
+  evidence: []
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Adding rejection-sampling data - the 71.3% model's own sampled solutions,
+    kept only where the first ANSWER line matches gold and truncated there - to
+    GSM8K and MetaMath will push accuracy further.
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py, --metamath, --metamath-max, "200000"]
+      selection: "same reformatting as exp-01"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 2
+    - path: /home/ben/task/data/rft_train.jsonl
+      source: "synthetic:self (sampled from exp-05's checkpoint on GSM8K train questions)"
+      n_examples: 14037
+      built_by: /home/ben/task/rft_generate.py
+      build_command: [python, rft_generate.py, --model, "out_gsm_meta/checkpoint-3826", --out,
+                      "data/rft_raw.jsonl", --k, "6", --temp, "0.8", --top-p, "0.95",
+                      --max-tokens, "512", --gpu-mem, "0.9"]
+      selection: >-
+        K=6 samples per GSM8K train question at temperature 0.8 / top_p 0.95
+        (7473 questions, at least one correct on 4891 = 0.654); then
+        rft_filter.py --max-per-q 2 keeps a completion only if the number after
+        its FIRST "ANSWER:" equals gold, cuts everything from that ANSWER onward
+        and re-appends "ANSWER: {target}<|im_end|>", dedups on the last 100 chars
+        of reasoning. 7175/7473 questions kept at least one; 14,037 examples.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+    - path: /home/ben/task/data/metamath_gsm.jsonl
+      source: "HF meta-math/MetaMathQA (rows whose type starts with GSM)"
+      n_examples: 60000
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py, --metamath, --metamath-max, "200000"]
+      selection: "capped at 60000 by --max-per-file"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: rft
+    framework: "transformers.Trainer, custom tokenization + completion-only loss"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        --grad-ckpt on, --max-per-file 60000, --repeat-gsm8k 2. scheduler, warmup,
+        weight_decay, seed, bf16, flash_attention_2, save_strategy="epoch" are
+        train_sft.py defaults, not overridden. 88,983 total rows of which 14,946
+        GSM8K, per train_v3.log.
+    target_format: "same as exp-01"
+  command:
+    argv: [nohup, python, train_sft.py, --train-files, data/gsm8k_train.jsonl, data/rft_train.jsonl,
+           data/metamath_gsm.jsonl, --max-per-file, "60000", --repeat-gsm8k, "2",
+           --epochs, "2", --lr, "1e-5", --max-len, "1024", --per-device-batch-size, "16",
+           --grad-accum, "2", --grad-ckpt, --output-dir, out_v3]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/.cache/huggingface, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/train_v3.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "out_v3/checkpoint-2781", --limit, "150",
+              --json-output-file, "eval_checkpoint-2781.json"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.7133
+    path: /home/ben/task/eval_checkpoint-3826.json
+  diagnostic: {what: null, command: [], path: null}
+
+result:
+  execution: killed
+  wall_h: 0.62
+  output_checkpoint: /home/ben/task/out_v3/checkpoint-2781
+  training_summary:
+    final_loss: null
+    steps: 2781
+    notes: >-
+      killed at the end of epoch 1 of 2 at [600]. Agent at [599]: "Following the
+      v2 lesson (epoch-1 was best), let me kill and evaluate v3 epoch-1 for fast
+      feedback."
+  measurements:
+    - metric: accuracy
+      value: 0.7533
+      n: 150
+      path: /home/ben/task/eval_checkpoint-2781.json
+      delta_vs_comparator: 0.04
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    Agent at [610]: "v3 epoch-1 = 75.3%! RFT helped (+4% over v2). Progression:
+    18% -> 66% -> 71.3% -> 75.3%, now near the ~76% instruct target." Measured
+    against exp-05 under the same --limit 150.
+  decision: adopt
+  next_step: >-
+    Copy this checkpoint into final_model as a safety net (exp-07), then run a
+    second rejection-sampling round from the better model.
+
+provenance:
+  kind: extracted
+  run_ref: r-ffa696e1
+  launch_i: 578
+  stated_by_agent:
+    problem: false
+    hypothesis: true
+  anchors:
+    problem: []
+    setup: [520, 556, 566, 574, 575, 578]
+    evaluation: [600]
+    result: [593, 599, 600, 604, 610]
+    conclusion: [610]
+  snapshot_files:
+    - train_sft.py
+    - rft_generate.py
+    - rft_filter.py
+    - rft_gen.log
+    - prep_ckpt.sh
+    - fix_config.py
+    - run_eval.sh
+    - train_v3.log
+    - eval_checkpoint-2781.json
+    - eval_checkpoint-2781.log
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "rft_filter.py went through three revisions ([560], [570], [572]) before producing clean data; only the final version is in the workspace"
+    - "epoch 2 was never run, so 'epoch-1 is best' remained an assumption carried over from exp-05"

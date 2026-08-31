@@ -1,0 +1,264 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-11
+created_at: null
+elapsed_h: 6.47
+
+problem:
+  statement: >-
+    DPO bought nothing on top of exp-09 - "DPO gave no measurable gain (62.7% vs
+    63.0%)" [38476] - and the first RFT round had already sampled every gsm8k
+    train question, so another round on the same questions would mostly rehearse
+    chains the model has now seen many times.
+  evidence:
+    - path: /home/ben/task/results_dpo_300.json
+      locator: "[38476]"
+      observation: "exp-10 at 0.6267 against exp-09's 0.63 on --limit 300"
+    - path: /home/ben/task/logs_rft.log
+      locator: "end of file, produced by the [30906] sampler"
+      observation: >-
+        the first RFT round already covered all 7473 gsm8k train questions and
+        solved 97.0% of them at least once
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Best lever remaining: RFT round 2 on fresh unused MetaMath-Rephrased
+    questions (no train-memorization inflation)" [38476]: a second on-policy
+    round over rephrased questions that were never used in the v2 mixture will
+    raise accuracy over exp-09.
+  mechanism: >-
+    Sampling verified-correct chains on questions the model has not been trained
+    on gives new on-policy supervision instead of re-fitting the questions it has
+    already memorised, so the gain should not be an artefact of the training
+    distribution.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-09
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/sft_v3/final
+    origin: exp-09
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/v5.jsonl
+      source: "derived:exp-09 (self-generated) + openai/gsm8k (config: main, split: train) + meta-math/MetaMathQA (GSM_AnsAug)"
+      n_examples: 49183
+      built_by: /home/ben/task/prep_data_v5.py
+      build_command:
+        - python
+        - prep_data_v5.py
+        - --rft2
+        - data/rft2.jsonl
+        - --out
+        - data/v5.jsonl
+      selection: >-
+        prep_data_v5.py defaults, none overridden at [39265]: all 37710 round-2
+        chains from data/rft2.jsonl + the gsm8k train split once (7473 rows, 20%
+        with the exact eval 10-shot prefix) + 4000 MetaMathQA GSM_AnsAug replay
+        rows, shuffled seed 9. 37710+7473+4000 = 49183 = the count the trainer
+        loaded, 0 skipped as too long.
+      repeats: 1
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/rft2.jsonl
+      source: "derived:exp-09 (synthetic:self, verified against meta-math/MetaMathQA GSM_Rephrased answers)"
+      n_examples: 37710
+      built_by: /home/ben/task/rft_round2.py
+      build_command:
+        - python
+        - rft_round2.py
+        - --model
+        - runs/sft_v3/final
+        - --out
+        - data/rft2.jsonl
+        - --k
+        - "4"
+        - --temp
+        - "0.9"
+        - --keep-per-q
+        - "2"
+        - --n-questions
+        - "20000"
+      selection: >-
+        the script reconstructs prep_data_v2's seed-0 shuffle of the
+        GSM_Rephrased pool and takes only rows past the first 60000 (the ones
+        that mixture consumed), so the questions are unused; gold is the answer
+        parsed out of the corpus response. 4 samples per question at temperature
+        0.9, top_p 0.95, max 640 tokens, stop on [1, 106], 15% of prompts with
+        the eval 10-shot prefix; kept only if the completion stopped cleanly and
+        its "ANSWER: <n>" equals gold, at most 2 per question, deduplicated on
+        the last 80 characters. logs_rft2.log: per-sample correct 0.914,
+        questions solved at least once 19700/19956, kept 37710. Folded into
+        data/v5.jsonl, not fed to the trainer directly.
+      repeats: 1
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel FLCE; sampling with vllm 0.11.0 offline LLM.generate"
+    peft: none
+    hyperparams:
+      lr: 4.0e-06
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights, bf16=True autocast, 8-bit Adam"
+      seed: 42
+      other: >-
+        lr / epochs / micro-batch / grad-accum / max-len and --base explicit on
+        the argv at [39270]; PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True in
+        the environment. scheduler cosine, warmup_ratio 0.03, weight_decay 0.0,
+        bf16=True, seed 42, optim adamw_bnb_8bit, group_by_length are
+        train_sft.py values this launch did not override. lr 4e-6, slightly below
+        exp-09's 5e-6, on a checkpoint that has now been trained three times.
+    target_format: >-
+      eval-format chat; assistant turn = the sampled (or gold, or replay) chain
+      ending "ANSWER: <n>" then <end_of_turn>; loss on assistant tokens only.
+  command:
+    argv:
+      - python
+      - train_sft.py
+      - --data
+      - data/v5.jsonl
+      - --base
+      - runs/sft_v3/final
+      - --out
+      - runs/sft_v5
+      - --epochs
+      - "1"
+      - --lr
+      - "4e-6"
+      - --micro-batch
+      - "16"
+      - --grad-accum
+      - "2"
+      - --max-len
+      - "2816"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      PYTHONPATH: /home/ben/pylibs
+      TRITON_CACHE_DIR: /home/ben/.triton_cache
+    log: /home/ben/task/logs_train_v5.log
+  resume_argv: null
+  output_dir: /home/ben/task/runs/sft_v5
+  progress:
+    unit: optimizer_step
+    total: 1537
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/sft_v5/final
+      - --limit
+      - "300"
+      - --max-connections
+      - "16"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --json-output-file
+      - results_v5_300.json
+    dev_set: "official --limit 300"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-09
+    value: 0.63
+    path: /home/ben/task/results_v3_300.json
+  diagnostic:
+    what: null
+    items: null
+    n: null
+    metric: null
+    direction: null
+
+result:
+  execution: completed
+  wall_h: 1.08
+  duration_h: 1.08
+  steps: 1537
+  output_checkpoint: /home/ben/task/runs/sft_v5/final
+  training_summary:
+    final_loss: 0.08175852574849175
+    steps: 1537
+    notes: >-
+      train_runtime 3903.8 s, 12.60 samples/s, 1 epoch, 1537/1537 in ~1:05; last
+      logged step losses 0.0795 and 0.08 (logs_train_v5.log). Saved at +7.57h and
+      evaluated immediately.
+  measurements:
+    - metric: accuracy
+      value: 0.5933333333333334
+      n: 300
+      path: /home/ben/task/results_v5_300.json
+      delta_vs_comparator: -0.03666666666666663
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  pings_acted_on: []
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "v5: 59.3% - regression vs v3 (63.0%). Discarding v5" [40180]: a second
+    on-policy round on unused rephrased questions, measured under the same
+    --limit 300 protocol, lost 3.7 pts. The sampler's own numbers say why the
+    fresh questions were poor supervision - the model already solved 98.7% of
+    them at least once and 91.4% per sample, so the round mostly re-fit what it
+    could already do (the agent later calls them "easy rephrased questions").
+  decision: reject
+  next_step: >-
+    Keep exp-09, which is already in final_model, and run the full 1319-item eval
+    against final_model itself [40180] (exp-12).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-e3d4334d
+  launch_i: 39270
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [38476]
+    setup: [38477, 38480, 38941, 39265, 39270]
+    evaluation: [39892]
+    result: [39885, 40180]
+    conclusion: [40180]
+  snapshot_files:
+    - train_sft.py
+    - rft_round2.py
+    - prep_data_v5.py
+    - prep_data_v2.py
+    - evaluate.py
+    - logs_rft2.log
+    - logs_train_v5.log
+    - logs_eval_v5.log
+    - results_v5_300.json
+    - results_v3_300.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the greedy generation_config.json rewrite at [39892] runs in the same event as the eval; it is recorded as part of the evaluation protocol, not as a decode-config card"
+    - "--n-questions 20000 was requested but the unused pool held 19956 usable rows, so that is what was sampled (logs_rft2.log); the pool size line itself is not in the digest"
+    - "v5 was never evaluated on the full test set before being discarded"

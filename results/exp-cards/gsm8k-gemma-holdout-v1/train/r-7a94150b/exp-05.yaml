@@ -1,0 +1,254 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "Current fine-tune variants are underperforming the base model" [176]:
+    every tuned checkpoint so far scored below the untouched model on the same
+    20-sample eval - 0.15 for the aggressive run and 0.25 for the conservative
+    one against 0.50 for base.
+  evidence:
+    - path: /home/ben/task/conservative_eval20_1200.json
+      locator: "accuracy"
+      observation: "0.25 for runs/conservative_merged at --limit 20 --max-tokens 1200 [174]"
+    - path: /home/ben/task/sanity_eval20_1200.json
+      locator: "accuracy"
+      observation: "0.15 for runs/sanity_merged under the same setting"
+    - path: /home/ben/task/base_eval20_1200.json
+      locator: "accuracy"
+      observation: "0.50 for the untouched Qwen/Qwen3-4B-Base under the same setting [148]"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "One final micro-update (very low LR, very few steps) to preserve base
+    capability while still applying minimal post-training" [176] - lr 1e-6 for
+    0.03 epochs with LoRA r=8 on q_proj/v_proj should leave the base model's
+    reasoning essentially intact while still counting as post-training, and if
+    it still does not beat base the base weights get shipped.
+  mechanism: >-
+    The damage scales with how far the adapter moves the model; a handful of
+    steps at 1e-6 with r=8 is a small enough update that the base behaviour
+    should survive.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: >-
+    stated only as a decision rule: if the micro-update "doesn't beat base",
+    the strongest available model is shipped instead [176].
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k (config main, split train), loaded in-script"
+      n_examples: 7248
+      built_by: /home/ben/task/train_gsm8k_sft.py
+      build_command:
+        - python
+        - train_gsm8k_sft.py
+        - --use-4bit
+        - --epochs
+        - "0.03"
+        - --batch-size
+        - "8"
+        - --grad-accum
+        - "4"
+        - --max-seq-length
+        - "1536"
+        - --learning-rate
+        - "1e-6"
+        - --lora-r
+        - "8"
+        - --lora-alpha
+        - "16"
+        - --lora-dropout
+        - "0.0"
+        - --target-modules
+        - q_proj,v_proj
+        - --format-style
+        - chat
+        - --output-dir
+        - runs/micro_lora
+        - --merged-output-dir
+        - runs/micro_merged
+        - --save-steps
+        - "1000"
+        - --logging-steps
+        - "5"
+      selection: >-
+        train_test_split(test_size=0.03, seed=42) on gsm8k train (225-example
+        val split confirmed at [178]); --format-style chat renders each record
+        through the tokenizer chat template as user = evaluator math prompt,
+        assistant = rationale + "ANSWER: <n>". At 0.03 epochs only ~7 optimizer
+        steps (about 224 sequences) of the 7248 were actually seen.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 with SFTConfig (versions at [35], [36])"
+    peft: "LoRA r=8 alpha=16 dropout=0.0, targets q_proj,v_proj (all from the launch argv)"
+    hyperparams:
+      lr: 1.0e-06
+      epochs: 0.03
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "4-bit NF4 double-quant base with bf16 compute (--use-4bit; quantisation detail from train_gsm8k_sft.py)"
+      seed: 42
+      other: >-
+        everything except scheduler, warmup, weight_decay, seed and val_size is
+        from the launch argv at [177]. scheduler=cosine and bf16=True are
+        hard-coded in train_gsm8k_sft.py in the workspace; warmup_ratio 0.03,
+        weight_decay 0.0, seed 42 and val_size 0.03 are unoverridden argparse
+        defaults in that same file. The tokenizer's pad token (151643) was
+        written into the model/generation config at load time [178].
+    target_format: >-
+      chat-template text: user turn carries the evaluator's math prompt,
+      assistant turn is the gsm8k rationale ending in "ANSWER: <n>".
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --use-4bit
+      - --epochs
+      - "0.03"
+      - --batch-size
+      - "8"
+      - --grad-accum
+      - "4"
+      - --max-seq-length
+      - "1536"
+      - --learning-rate
+      - "1e-6"
+      - --lora-r
+      - "8"
+      - --lora-alpha
+      - "16"
+      - --lora-dropout
+      - "0.0"
+      - --target-modules
+      - q_proj,v_proj
+      - --format-style
+      - chat
+      - --output-dir
+      - runs/micro_lora
+      - --merged-output-dir
+      - runs/micro_merged
+      - --save-steps
+      - "1000"
+      - --logging-steps
+      - "5"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [5]"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/micro_merged
+      - --limit
+      - "80"
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1200"
+      - --gpu-memory-utilization
+      - "0.6"
+      - --json-output-file
+      - micro_eval80_1200.json
+    dev_set: "official --limit 80"
+    n: 80
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.5
+    path: /home/ben/task/base_eval80_1200.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.003
+  output_checkpoint: /home/ben/task/runs/micro_merged
+  training_summary:
+    final_loss: 1.452143703188215
+    steps: 7
+    notes: >-
+      train_runtime 11.2673 s, 19.298 samples/s, 67627 tokens seen,
+      mean_token_accuracy 0.731, entropy 1.146 at epoch 0.03 [178]; wall_h is
+      that train_runtime and excludes merge/save. The LoRA adapter is at
+      /home/ben/task/runs/micro_lora.
+  measurements:
+    - metric: accuracy
+      value: 0.45
+      n: 20
+      path: /home/ben/task/micro_eval20_1200.json
+      delta_vs_comparator: -0.05
+    - metric: accuracy
+      value: 0.425
+      n: 80
+      path: /home/ben/task/micro_eval80_1200.json
+      delta_vs_comparator: -0.075
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    The micro-update came closest to base but still lost: 0.45 vs 0.50 on 20
+    samples ("still slightly below base" [184]) and 0.425 vs 0.500 on the
+    80-sample re-check the agent ran to cut sampling noise [185], [193]. Even a
+    7-step, 1e-6 LoRA update degraded the base model rather than preserving it.
+  decision: reject
+  next_step: >-
+    Ship the strongest available weights: stage the base-model snapshot into
+    final_model rather than any tuned checkpoint [176], [203] (exp-06).
+
+provenance:
+  kind: extracted
+  run_ref: r-7a94150b
+  launch_i: 177
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [174, 176]
+    setup: [177, 178]
+    evaluation: [180, 185, 193]
+    result: [178, 184]
+    conclusion: [184, 189, 203, 212]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - micro_eval20_1200.json
+    - micro_eval80_1200.json
+    - base_eval20_1200.json
+    - base_eval80_1200.json
+    - evaluate.py
+  extractor: claude-opus-5
+  unresolved:
+    - "the console output of the [180], [185] and [193] evals never appears in the digest; the 0.45, 0.425 and base 0.50 at limit 80 are read from the workspace JSON files (the agent quotes the same numbers at [184] and [212])"
+    - "the base --limit 80 comparator was run with --gpu-memory-utilization 0.55 against 0.6 for the micro run; every other eval argument matches"

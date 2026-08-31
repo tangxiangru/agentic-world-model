@@ -1,0 +1,171 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.27
+
+problem:
+  statement: >-
+    The incumbent now follows the format but only reaches 59.3%. Its errors are genuine
+    reasoning mistakes, and they are made worse by the eval's decoding: the eval harness
+    omits temperature, so vLLM falls back to the checkpoint's generation_config.json, which
+    has do_sample=true / top_k=64 / top_p=0.95 - i.e. sampling at roughly temperature 1.0,
+    which both adds noise (~3-4% stderr) and costs accuracy.
+  evidence:
+    - path: /home/ben/task/logs/v1_metrics.json
+      locator: "[409]"
+      observation: "v1 accuracy 0.593 at --limit 150"
+    - path: /home/ben/task/logs
+      locator: "[411]"
+      observation: "4 of the incorrect samples printed: format is correct, the arithmetic or the plan is not"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs
+      question: null
+      gold: "400"
+      model_output: "... Combining like terms, we get 5.5x = 700\nDividing both sides by 5.5, we get x = 128\nTherefore, there are 2x = 2 * 128 = 256 worker bees.\n\nANSWER: 256"
+      failure: "clean format, wrong equation setup: 700/5.5 = 128 and the answer 256 instead of 400"
+    - id: null
+      source: /home/ben/task/logs
+      question: null
+      gold: "50"
+      model_output: "... leaving 105 + 15 = 120 cookies to be divided between the two years.\nTwice the number of cookies from the previous year's competition is 120 / 2 = 60 cookies.\nSince Henry dropped 5 cookies, that means he had 60 + 5 = 65 cookies baked last year.\n\nANSWER: 65"
+      failure: "clean format, mis-modelled the relation between the two years; answers 65 instead of 50"
+    - id: null
+      source: /home/ben/task/logs
+      question: null
+      gold: "30"
+      model_output: "... $1,000,000 / 100 = $10,000.\nTherefore, the value of each car in the fleet is $10,000.\n\nANSWER: 10000\n\nThe total cost of the cars in the fleet is $1,000,000, and there are 100 cars in the fleet."
+      failure: "answers the wrong quantity and then keeps talking after the ANSWER line"
+    - id: null
+      source: /home/ben/task/logs
+      question: null
+      gold: "17"
+      model_output: "... There are 5 oranges that are unripe, so the total number of oranges that are either bad, unripe, or sour is 1 + 5 + 2 = 8 oranges.\nTherefore, the number of good oranges is 2"
+      failure: "truncated/derailed final step; the last number the scorer sees is 2"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Rewriting generation_config.json to greedy decoding (do_sample=false, temperature=0.0,
+    top_k=1, top_p=1.0) will remove the sampling noise the eval otherwise inherits and raise
+    accuracy over v1's sampled 59.3% at the same --limit.
+  mechanism: >-
+    "vLLM (default generation_config='auto') reads sampling defaults from
+    generation_config.json when the request omits them. inspect-ai omits temperature, so
+    setting temperature=0.0 here makes eval use greedy decoding" [230] - the model then takes
+    its argmax chain instead of a sampled one, so a single noisy token can no longer derail
+    an otherwise correct solution.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "vLLM decode defaults read from generation_config.json; variant produced by /home/ben/task/make_greedy.py"
+    peft: "none"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        No training. make_greedy.py symlinks every file of runs/v1 into runs/v1_greedy and
+        writes a real generation_config.json with do_sample=false, temperature=0.0,
+        top_k=1, top_p=1.0, eos_token_id=[1, 106], pad_token_id=0, bos_token_id=2 [415].
+        The weights are byte-identical to exp-01's.
+    target_format: null
+  command:
+    argv: [python, make_greedy.py, runs/v1, runs/v1_greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/make_greedy.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/v1_greedy, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.6", --json-output-file, logs/v1g_metrics.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.593
+    path: /home/ben/task/logs/v1_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/v1_greedy
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "No training; only generation_config.json was rewritten, every other file is a symlink to runs/v1."
+  measurements:
+    - metric: accuracy
+      value: 0.6133333333333333
+      n: 150
+      path: /home/ben/task/logs/v1g_metrics.json
+      delta_vs_comparator: 0.0200
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "Greedy v1: 61.3% vs sampling 59.3% - only +2%, so decoding isn't the bottleneck;
+    reasoning capability is" [426]. The greedy setting held up and was reused as the decode
+    configuration for every later evaluation and for the submitted model, but this
+    checkpoint itself was dropped in favour of the next training run.
+  decision: reject
+  next_step: >-
+    Keep greedy decoding as the standing decode setting; attack reasoning instead - scale
+    MetaMath data ~2.3x to ~85K and add few-shot-augmented examples that mirror the eval's
+    10-shot prompt structure, keeping 2 epochs [426], [440].
+
+provenance:
+  kind: extracted
+  run_ref: r-6b7e26ac
+  launch_i: 414
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [220, 409, 411, 413]
+    setup: [230, 414, 415]
+    evaluation: [414]
+    result: [423]
+    conclusion: [426]
+  snapshot_files:
+    - make_greedy.py
+    - analyze_eval.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The inspect eval JSON that analyze_eval.py read at [411] is picked by mtime and its filename is never printed, so the failure_examples cite the logs directory rather than a file."
+    - "The stream never separates how much of the +2.0 pts is the removal of sampling noise and how much is a genuine greedy-vs-sampled capability gap; only one greedy and one sampled run exist."

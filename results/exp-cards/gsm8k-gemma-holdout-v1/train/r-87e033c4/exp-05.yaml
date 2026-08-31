@@ -1,0 +1,171 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 1.74
+
+problem:
+  statement: >-
+    "The issue is clear: model trained with `<think>\n\n</think>\n\n` prefix gets stuck in
+    loops at eval" [214]. The training template (templates/qwen3.jinja) wraps the assistant
+    turn in an empty <think> block, while the eval renders only
+    "<|im_start|>assistant\n", so at eval time the model keeps emitting <think>.
+  evidence:
+    - path: /home/ben/task/logs/2026-04-20T03-40-49+02-00_gsm8k_2aagh5u8LdNZCtaJyTjJxV.json
+      locator: "[211], [212]"
+      observation: "greedy outputs are long repetitions of '<think>'"
+    - path: /home/ben/task/eval_v1_greedy.json
+      locator: "[203], workspace file"
+      observation: "0.013 at --limit 150 after all three config fixes"
+    - path: /home/ben/task/templates/qwen3.jinja
+      locator: "[142], [143]"
+      observation: "training render is '...assistant\\n<think>\\n\\n</think>\\n\\n...' while the eval render stops at '...assistant\\n'"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Retraining from the base model with simple_template.jinja - a template that does not
+    wrap assistant turns in <think> - so that "eval ... sees matching prompt structure
+    (no <think> prefix)" [220] will stop the loops and let the eval score reflect the
+    model's actual math ability.
+  mechanism: >-
+    Train-time and eval-time prompt structure become identical, so the first tokens the
+    model is asked to continue at eval are the ones it was trained to continue.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft
+      source: "local: built from openai/gsm8k train + meta-math/MetaMathQA (GSM_AnsAug, GSM_Rephrased)"
+      n_examples: 62419
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        Unchanged from exp-01: GSM8K train (7473 rows) with <<...>> annotations stripped,
+        repeated 3x, plus 20000 MetaMathQA GSM_AnsAug and 20000 GSM_Rephrased sampled with
+        random.seed(42); shuffled. "Total records: 62419" [62], re-checked at [374].
+      repeats: "gsm8k train x3"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer 0.27.2
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/bsz/grad_accum are the launch flags at [224] and are identical to exp-01;
+        the only change is the chat template ([220]). max_seq_len, scheduler, warmup_ratio,
+        weight_decay, bf16, seed are hard-coded in the SFTConfig of task/train.py ([67]),
+        max_seq_len from the --max-seq-len argparse default (1024), not overridden by the
+        launch. Also from the script: packing=False, completion_only_loss=True,
+        gradient_checkpointing=True, optim=adamw_torch_fused, flash_attention_2.
+        After training and before the first eval, the agent patched the checkpoint at [252]:
+        eos_token_id 151645 in config.json and generation_config.json, eos_token '<|im_end|>'
+        in tokenizer_config.json. That patch is folded into this card because the unpatched
+        checkpoint was never evaluated.
+    target_format: >-
+      chat-formatted messages rendered with simple_template.jinja
+      ("<|im_start|>assistant\n<answer><|im_end|>\n", no <think> wrapper); user turn is the
+      eval's MATH_PROMPT_TEMPLATE, assistant turn ends with "\n\nANSWER: <final>".
+  command:
+    argv: [rm, -rf, checkpoints/sft-v1, "&&", nohup, python, train.py, --output, checkpoints/sft-v2, --epochs, "1", --lr, 1e-5, --bsz, "8", --grad-accum, "2", ">", train_v2.log, "2>&1", "&"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/train_v2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, checkpoints/sft-v2, --limit, "150", --max-connections, "2", --max-tokens, "1024", --gpu-memory-utilization, "0.5", --json-output-file, eval_v2.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.013333333333333334
+    path: /home/ben/task/eval_v1_greedy.json
+  diagnostic:
+    what: "read the failing samples to see whether the loops are gone [262]"
+    command: []
+    path: /home/ben/task/logs/2026-04-20T04-41-14+02-00_gsm8k_d4HvADRyJguReQyxHckbN3.json
+
+result:
+  execution: completed
+  wall_h: 0.77
+  steps: 3902
+  duration_h: 0.77
+  output_checkpoint: /home/ben/task/checkpoints/sft-v2
+  training_summary: {final_loss: 0.14483144521514676, steps: 3902, notes: "train_runtime 2771.14 s, mean_token_accuracy 0.968"}
+  measurements:
+    - metric: accuracy
+      value: 0.23333333333333334
+      n: 150
+      path: /home/ben/task/eval_v2.json
+      delta_vs_comparator: 0.22
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-04-20T04-41-14+02-00_gsm8k_d4HvADRyJguReQyxHckbN3.json
+    notes: "the <think> loops are gone; failures now show a correct solution ending in 'ANSWER: N' followed by run-on text starting a new problem [263]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    0.233 at --limit 150 against 0.013 for the last v1 candidate: the agent called it
+    "23.3% accuracy, big improvement" [261], and the <think> loops disappeared, which is
+    what the template change predicted. The remaining failures are run-on continuations
+    past the answer, pointing at decoding rather than training.
+  decision: adopt
+  next_step: "Force greedy decoding in this checkpoint's generation_config.json ([266])."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-87e033c4
+  launch_i: 224
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [211, 212, 214]
+    setup: [217, 218, 220, 224, 252]
+    evaluation: [255]
+    result: [251, 261, 262, 263]
+    conclusion: [261, 263]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+    - simple_template.jinja
+    - train_v2.log
+    - eval_v2.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The comparator (exp-04, 0.013) was measured under the same --limit 150 but with greedy decoding forced and --max-tokens 1536, while this eval used the checkpoint's default sampling and --max-tokens 1024."

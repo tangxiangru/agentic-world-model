@@ -1,0 +1,190 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-11
+created_at: null
+elapsed_h: 8.10
+
+problem:
+  statement: >-
+    The remaining errors are capability limits, not fixable by data or format work:
+    "failures are genuine reasoning/comprehension errors (misreading problems, wrong
+    recurrences) - not format issues (99.9% have clean ANSWER:, only 1/1000
+    rambled). These are capability limits of the 3B model" [738], and "The remaining
+    errors are capability limits - exactly what online RL with verifiable rewards
+    (GRPO) targets" [748].
+  evidence:
+    - path: /home/ben/task/final_1000.json
+      locator: "[734], [736]"
+      observation: "0.554 over 1000 items with only 1 malformed completion, so ~44% of items fail on reasoning alone"
+    - path: /home/ben/task/eval_final_1000.log
+      locator: "[736]"
+      observation: >-
+        five printed failures are misread problems and wrong recurrences with clean
+        formatting throughout
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    GRPO from the submitted checkpoint, with a verifiable reward that is 1.0 exactly
+    when inspect_ai's numeric end-match scorer accepts the completion, will push
+    accuracy above the ~55% the SFT line reached.
+  mechanism: >-
+    "GRPO from fewshot_v1 (SFT->RL, the standard recipe for capability gains)" [760];
+    online RL against the exact grading function optimises the metric directly rather
+    than imitating a fixed target distribution.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-10
+    magnitude: null
+  falsified_if: >-
+    "saving checkpoints every 300 steps so I can eval and only keep it if it beats
+    55% (else revert)" [849]
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-10
+    hash: null
+  data:
+    - path: null
+      source: "HF:openai/gsm8k (main, train split - prompts only, built in-process)"
+      n_examples: null
+      built_by: /home/ben/task/grpo.py
+      build_command: []
+      selection: >-
+        grpo.py make_dataset() turns every gsm8k train row into a prompt of
+        [system=SYS_INSTRUCTION, user=MATH_PROMPT_TEMPLATE(question)] plus the gold
+        target as the `answer` column; --limit 0 means no truncation. No file was
+        written, so no count was printed.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: grpo
+    framework: "trl.GRPOTrainer 0.27.2"
+    peft: none
+    hyperparams:
+      lr: 2.0e-06
+      epochs: null
+      batch_size: 16
+      grad_accum: 1
+      max_seq_len: null
+      scheduler: constant_with_warmup
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        From the launch: lr 2e-6, beta 0.0 (no KL term, so no reference model),
+        num_generations 8, bs 16, accum 1, max_steps 1200, vllm_mode colocate,
+        vllm_gpu_memory_utilization 0.25, attn_implementation sdpa. From grpo.py
+        itself, not overridden by the launch: max_completion_length 400,
+        max_prompt_length 1024, generation_batch_size = bs * accum,
+        optim adamw_8bit, gradient_checkpointing, lr_scheduler_type
+        constant_with_warmup, warmup_ratio 0.03, save_steps 300 (patched in at
+        [850]). Reward: 1.0 when inspect_ai match_str(location="end", numeric=True)
+        accepts the completion, else 0.0.
+    target_format: >-
+      same chat rendering as the SFT runs; the policy is rewarded only for ending in
+      a numeric answer the eval's own scorer accepts.
+  command:
+    argv: [python, grpo.py, --model, final_model, --out, runs/grpo_v1, --limit, "0", --num-gen, "8", --bs, "16", --accum, "1", --lr, "2e-6", --beta, "0.0", --max-steps, "1200", --vllm-mode, colocate, --attn, sdpa, --vllm-mem, "0.25"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo.py
+    env: {}
+    log: /home/ben/task/grpo_run.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/grpo_v1/checkpoint-300, --limit, "300", --max-connections, "8", --gpu-memory-utilization, "0.5", --json-output-file, grpo300.json]
+    dev_set: "official --limit 300"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-08
+    value: 0.5467
+    path: /home/ben/task/cmp_fewshot.json
+  diagnostic:
+    what: "the logged training reward, as a check on whether GRPO was learning at all"
+    command: []
+    path: /home/ben/task/grpo_run.log
+
+result:
+  execution: killed
+  wall_h: null
+  duration_h: null
+  steps: 421
+  output_checkpoint: /home/ben/task/runs/grpo_v1/checkpoint-300
+  training_summary: {final_loss: null, steps: 421, notes: "killed at [862] after ~421 of 1200 steps because the reward was not rising; only checkpoint-300 was saved and evaluated; its tokenizer files were copied in from runs/fewshot_v1 at [862]; the run directory was deleted at [874]"}
+  measurements:
+    - metric: accuracy
+      value: 0.5333
+      n: 300
+      path: /home/ben/task/grpo300.json
+      delta_vs_comparator: -0.0134
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/grpo_run.log
+    notes: >-
+      "GRPO reward is flat/declining (started ~0.72, now ~0.5-0.6 at step 400) with
+      no upward trend" [861]; grpo_run.log's 77 logged reward values run from 0.6625
+      at the start to 0.5125 at the end.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "GRPO checkpoint-300 = 53.3% - slightly worse than fewshot_v1 (54.7%), no
+    improvement (consistent with the flat reward trend)" [873]. The agent's own bar -
+    keep it only if it beats 55% - was missed, so the run was killed and the
+    submission left unchanged; the 1.3 pt gap is itself inside the noise of a
+    300-item eval.
+  decision: abandon_line
+  next_step: >-
+    "GRPO did NOT beat few-shot SFT. Model near capability ceiling on hard problems
+    (can't crack in short run) ... Abandoned." [878]
+
+outcome:
+  official_accuracy: null      # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-51c52152
+  launch_i: 850
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [736, 738, 748]
+    setup: [761, 824, 826, 840, 850]
+    evaluation: [868]
+    result: [856, 861, 873]
+    conclusion: [873, 877, 878]
+  snapshot_files:
+    - grpo.py
+    - grpo_run.log
+    - grpo_test.log
+    - grpo300.json
+    - eval_grpo300.log
+    - cmp_fewshot.json
+    - final_1000.json
+    - RESULTS.md
+  smoke_runs:
+    - {launch_i: 765, outcome: "no result recorded (2 steps, --limit 32, under a 600 s timeout); rerun in the background at [771]"}
+    - {launch_i: 771, outcome: "hung at initialisation; a stale vLLM process from the crashed limit-600 eval was still holding the GPU [781]"}
+    - {launch_i: 790, outcome: "hung at initialisation: 'model is already on multiple devices' with vllm_mode=server [795]"}
+    - {launch_i: 826, outcome: "ran with sdpa + vllm_mode=colocate, but all rewards 0 (frac_reward_zero_std 1.0) - the reward function was fed message dicts, not strings [831]"}
+    - {launch_i: 834, outcome: "debug run (2 steps) that printed the completion shape behind the zero rewards"}
+    - {launch_i: 844, outcome: "passed (5 steps): reward mean 0.875/0.625/0.25 with frac_reward_zero_std 0.0, ~1 s/step [849]"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the run was killed at ~421/1200 steps, so no checkpoint past 300 exists and the full recipe was never tested"
+    - "runs/grpo_v1 including checkpoint-300 was deleted at [874]; only grpo300.json survives"
+    - "the GRPO prompt set was built in memory, so its example count was never printed"

@@ -1,0 +1,160 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.26
+
+problem:
+  statement: >-
+    The SFT model of exp-01 produces the right format but never stops: it emits
+    <|im_end|> (151645) while vllm only stops on <|endoftext|> (151643), so
+    generation runs past "ANSWER: n" into garbage and the numeric scorer, which
+    takes the last number, marks it wrong. [130] "Confirmed: model emits
+    <|im_end|> (151645) but vllm only stops on <|endoftext|> (151643)."
+  evidence:
+    - path: /home/ben/task/eval_v1.json
+      locator: "[114]"
+      observation: "accuracy 0.0267 at --limit 150 after a clean SFT run"
+    - path: null
+      locator: "[122]"
+      observation: >-
+        sample completions end with a correct-looking "ANSWER: 175" and then keep
+        generating unrelated problems and other-language text; TARGET 400 SCORE I
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Adding <|im_end|> to the saved model's eos_token_id will make vllm stop at the
+    end of the answer and recover the accuracy the format fix was supposed to
+    give. [130] "Let me set the EOS to include <|im_end|> and re-eval."
+  mechanism: >-
+    The scorer takes the last number in the completion; stopping at the model's
+    own turn end leaves "ANSWER: n" as the last number.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "vllm via evaluate.py (inspect_evals/gsm8k, qwen3 chat template)"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        eos_token_id set to [151643, 151645] in the checkpoint's config.json and
+        generation_config.json; the edit command itself is not in the digest, the
+        change is stated at [130] and the same patch is written into the later
+        training scripts (train_sft2.py, train_pool.py)
+    target_format: null
+  command:
+    argv: [cd, /home/ben/task, "&&", timeout, "1800", python, evaluate.py,
+           --model-path, sft_v1, --limit, "150", --max-connections, "16",
+           --max-tokens, "1024", --gpu-memory-utilization, "0.85",
+           --json-output-file, eval_v1b.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [cd, /home/ben/task, "&&", timeout, "1800", python, evaluate.py,
+              --model-path, sft_v1, --limit, "150", --max-connections, "16",
+              --max-tokens, "1024", --gpu-memory-utilization, "0.85",
+              --json-output-file, eval_v1b.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.0267
+    path: /home/ben/task/eval_v1.json
+  diagnostic:
+    what: >-
+      re-read the eval log's completions with their stop_reason and length [145],
+      then generate from the checkpoint directly in the trained zero-shot format
+      to see whether it stops [151]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/sft_v1
+  training_summary: {final_loss: null, steps: null, notes: "no training in this launch; checkpoint config only"}
+  measurements:
+    - metric: accuracy
+      value: 0.0333
+      n: 150
+      path: /home/ben/task/eval_v1b.json
+      delta_vs_comparator: 0.0067
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [156] in the exact zero-shot trained format the model stops perfectly; the
+      remaining non-stopping is caused by the eval's 10-shot system prompt, whose
+      demos run "ANSWER: N\n\n[next problem]" and teach continuation in context
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    With eos fixed the checkpoint scored 3.3% vs 2.7%, a delta well inside the
+    stderr (0.0147), so the EOS mismatch was necessary but not sufficient. [156]
+    "The problem is the 10-shot system prompt at eval ... which teaches the model
+    in-context to continue after ANSWER. I need to train with that few-shot
+    context."
+  decision: reject
+  next_step: >-
+    Train a new model from base with few-shot context mixed into training
+    (random 0-6 demos plus sometimes the exact 10-shot eval prefix) [166].
+
+provenance:
+  kind: extracted
+  run_ref: r-d7327838
+  launch_i: 136
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [120, 121, 122, 130]
+    setup: [130, 133, 136]
+    evaluation: [136, 140]
+    result: [141]
+    conclusion: [145, 151, 156]
+  snapshot_files:
+    - eval_v1.json
+    - eval_v1b.json
+    - evaluate.py
+    - train_sft2.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the command that edited eos_token_id in sft_v1's config.json / generation_config.json does not appear in the digest; the launch cited here is the re-evaluation that ran under the changed config"
+    - "a first attempt at the same eval [133] exited 1 because the working directory was sft_v1 ('python: can't open file /home/ben/task/sft_v1/evaluate.py'); [136] is the same command re-run from /home/ben/task"
+    - "the agent's own evals call evaluate.py on the official benchmark set (first N samples); no held-out dev set was built at any point in the run"

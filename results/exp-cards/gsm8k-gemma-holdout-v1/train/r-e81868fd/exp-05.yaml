@@ -1,0 +1,195 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null                        # digest header: "no timestamps in this run"
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The incumbent sits at 54% on 150 samples and its remaining failures are
+    calculation errors, but there is no longer time for a fresh full training run
+    (5.8 h left, a from-scratch pass on the enlarged mixture needs 6.2 h).
+  evidence:
+    - path: /home/ben/task/eval_run1_150.json
+      locator: "[279]"
+      observation: "\"With 150 samples, 81 correct (54%). We want to maximize this. The key bottleneck is reasoning quality.\""
+    - path: /home/ben/task/timer.sh
+      locator: "[274], [275]"
+      observation: "\"Remaining time (hours:minutes): 5:52\""
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    [276]: "the better approach is to continue training the existing v1 model ...
+    This 'continued pre-training' approach would be more efficient" - a second
+    1-epoch pass over a focused set (GSM8K train x5 + Orca-Math) starting from the
+    incumbent at a low learning rate (5e-6) will raise accuracy above 54%.
+  mechanism: >-
+    [279]: "GSM8K train (7.5K) x 5 = 37.5K (heavily weight the direct GSM8K data);
+    Orca-Math (200K) - known to be very effective"; a low learning rate is meant to
+    add the new data without discarding what the incumbent learned.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-03
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v3_train.jsonl
+      source: "local: openai/gsm8k + microsoft/orca-math-word-problems-200k"
+      n_examples: 227667
+      built_by: /home/ben/task/prepare_data_v3.py
+      build_command: [python3, prepare_data_v3.py]
+      selection: >-
+        GSM8K train x5 = 37,365 + 190,802 Orca-Math rows whose answer could be
+        extracted by a four-pattern regex cascade (else the last number) = 228,167
+        total, shuffled with seed 42, first 500 held out as
+        /home/ben/task/train_data_v3_val.jsonl (passed as --val-file). No MetaMathQA.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: "GSM8K train x5, Orca-Math x1"
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129) [23]"
+    peft: none
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/batch/grad_accum/max_seq_len/warmup/save_steps from the launch argv at
+        [285]. scheduler=cosine, weight_decay=0.01, bf16=True, packing=True,
+        gradient_checkpointing=True, dataset_text_field="text", eval_steps=500 are
+        hard-coded in /home/ben/task/train_continue.py (script text is in the workspace
+        and the launch did not override them). No training seed set.
+    target_format: >-
+      same chat-template text as exp-02; assistant turn
+      "<think>{solution}</think>{solution}\n\nANSWER: {n}", with Orca-Math's full
+      GPT-4-style answer as the solution body
+  command:
+    argv: [python3, train_continue.py, --model-path, final_model,
+           --train-file, train_data_v3_train.jsonl, --val-file, train_data_v3_val.jsonl,
+           --output-dir, checkpoints_v3, --num-epochs, "1", --batch-size, "8",
+           --gradient-accumulation-steps, "4", --learning-rate, "5e-6",
+           --max-seq-length, "2048", --warmup-ratio, "0.03", --save-steps, "500"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_continue.py
+    env: {}
+    log: /home/ben/task/training_run3.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [18]"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python3, evaluate.py, --model-path, checkpoints_v3/final, --limit, "150",
+              --max-connections, "2", --gpu-memory-utilization, "0.4",
+              --json-output-file, eval_v3_150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.54
+    path: /home/ben/task/eval_run1_150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 3.43
+  duration_h: 3.43
+  steps: 3186
+  output_checkpoint: /home/ben/task/checkpoints_v3/final
+  training_summary:
+    final_loss: 0.14
+    steps: 3186
+    notes: >-
+      [323]: "Training v3 is complete! Final loss: 0.140, token accuracy: 95.9%."
+      /home/ben/task/training_run3.log: train_runtime 12348.1 s, train_loss 0.1458,
+      mean_token_accuracy 0.9580 over 3186/3186 steps - a higher loss and lower token
+      accuracy than exp-02's 0.06 / 0.982, which the agent read at [314] as "Orca-Math
+      data is longer and more diverse". Launched in the background as "rm -rf
+      checkpoints_v2 checkpoints_v3 && python3 train_continue.py ... | tee
+      training_run3.log &". The output directory was deleted at [370].
+  measurements:
+    - metric: accuracy
+      value: 0.48
+      n: 150
+      path: /home/ben/task/eval_v3_150.json
+      delta_vs_comparator: -0.06
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    [328]: "v3 model gets 48.0% - actually worse than v1's 54.0%. The continued
+    training on Orca-Math data with lower learning rate didn't help." The agent's own
+    reading of why: "Orca-Math answers may have different formats that confuse the
+    model ... may have caused catastrophic forgetting of the MetaMathQA patterns ...
+    longer, more verbose answers which may dilute the focus."
+  decision: reject
+  next_step: >-
+    [331]: "continue training v1 on just GSM8K train data ... repeated many times ...
+    at a very low learning rate. This should make the model excellent at the exact
+    GSM8K format." The agent also built a 314,730-example GSM8K-x10 + all-MetaMathQA-GSM
+    set with prepare_gsm8k_only.py at [332]-[335] but never trained on it, judging at
+    [336] that "314K examples at the same pace would take ~3.3 hours. That's too long."
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-e81868fd
+  launch_i: 285
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [274, 275, 276, 279]
+    setup: [277, 280, 282, 283, 285]
+    evaluation: [326, 327]
+    result: [308, 314, 323, 327]
+    conclusion: [328, 331, 336]
+  snapshot_files:
+    - prepare_data_v3.py
+    - train_continue.py
+    - train_data_v3_val.jsonl
+    - training_run3.log
+    - evaluate.py
+    - eval_v3_150.json
+    - eval_run1_150.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "checkpoints_v3 was deleted at [370], so this checkpoint no longer exists"
+    - "the agent named three candidate causes for the regression (format mismatch, catastrophic forgetting, verbosity) and tested none of them"
+    - "the workspace contains contamination_judgement.txt (\"no contamination detected\"), but no event in the stream shows the agent running a contamination checker"

@@ -1,0 +1,212 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 5.00
+
+problem:
+  statement: >-
+    "The dominant problem is clear: rambling on hard problems kills the
+    last-number score, and it's induced by the 10-shot prompt's `ANSWER: X\n\n...`
+    continuation pattern that competes with the learned stop token" [695]. 57/150
+    greedy outputs run past the answer into invented follow-on problems, and the
+    grader reads the last number.
+  evidence:
+    - path: /home/ben/task/logs/2026-05-30T10-11-50+02-00_gsm8k_CyZcvhdcr2Ct4RCdk2LFrj.json
+      locator: "[538], [539]"
+      observation: "no ANSWER: 0, long(>2500ch): 57, total 150 — every output is well formatted, 38% do not stop"
+    - path: /home/ben/task/logs/train3.log
+      locator: "[725], [726]"
+      observation: "the first attempt at this fix (exp-04) OOM'd at maxlen 3072, batch 8"
+  affected_share: 0.38
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-05-30T10-11-50+02-00_gsm8k_CyZcvhdcr2Ct4RCdk2LFrj.json
+      question: null
+      gold: "20"
+      model_output: "... So 10 girls would be left-handed because 50 girls * .2 equals 10.\nANSWER: 10\n\t\nSo currently she is 37 because 74 / 2 = 37\nANSWER: 37\n\t\nHe has been sober for 6000 days because 10,000 days - 4000 days = 6000 days\nANSWER: 6000\n..."
+      failure: "11847-character output: never stops, chains invented new problems, so the last number is unrelated to the question"
+    - id: null
+      source: /home/ben/task/logs/2026-05-30T10-11-50+02-00_gsm8k_CyZcvhdcr2Ct4RCdk2LFrj.json
+      question: null
+      gold: "400"
+      model_output: "... She has 4320 usable bricks because 4800 - 648 = 4320\nANSWER: 4320\n/******/user\nPattern 1 Output 7,9,11,13,15 sequence ..."
+      failure: "5799-character output: runs past its answer into a hallucinated user turn"
+    - id: null
+      source: /home/ben/task/logs/2026-05-30T10-11-50+02-00_gsm8k_CyZcvhdcr2Ct4RCdk2LFrj.json
+      question: null
+      gold: "17"
+      model_output: "The percentage of good oranges is 100 - 20 - 2 - 1 = 77\nThere are 19 good oranges because 25 x .77 = 19.75 = 19\nANSWER: 19"
+      failure: "stops correctly (134 chars) but the arithmetic is wrong — a genuine reasoning miss, not rambling"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "The fix: train with the few-shot context so the model learns to stop after
+    its answer in the exact eval distribution" [695] — SFT on GSM8K train wrapped
+    in variable-length few-shot prefixes will stop the rambling and raise greedy
+    accuracy above the mix model, with memory settings that fit an H100.
+  mechanism: >-
+    The rambling is induced by the eval's 10-shot prompt, whose repeated
+    "ANSWER: X\n\n<next problem>" pattern biases continuation over stopping;
+    training on prompts carrying the same prefixes teaches the model to emit
+    <end_of_turn> after its own answer in that context.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/gsm8k_fewshot.jsonl
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: null
+      built_by: /home/ben/task/build_fewshot.py
+      build_command: []
+      selection: >-
+        each GSM8K train question is prefixed with k demonstrations drawn from
+        shot_choices [0, 0, 2, 4, 6, 8, 10] (other train rows), formatted exactly
+        like the eval's few-shot block —
+        "{question}\n\nReasoning:\n{reasoning}\n\nANSWER: {target}" with the <<>>
+        annotations kept — while the trained target has its <<>> stripped;
+        shuffled. "Mean 1065 tokens, max 3011" [719]. The agent said it would "cap
+        shots at 8" [745], but no rebuild appears in the stream and the snapshot's
+        build_fewshot.py still lists 10; the effective cap came from --maxlen 2048
+        dropping the longest rows.
+      contamination_check: not_run
+      repeats: 1
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (AutoModelForImageTextToText, eager attention)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/bs/accum/maxlen all from the launch argv. scheduler cosine,
+        warmup 0.03 (--warmup default), weight_decay 0.0 and bf16 are train.py
+        values this launch did not override; also optim=paged_adamw_8bit,
+        max_grad_norm=1.0, gradient_checkpointing=True, vision tower and projector
+        frozen. save_strategy was "epoch", save_total_limit=3 at this launch, which
+        is why checkpoint-457 (epoch 1) exists. Rows longer than 2048 tokens are
+        dropped by the dataset class; the dropped count was not printed.
+    target_format: >-
+      "<start_of_turn>user\n{k few-shot demos}\n\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
+      then "{reasoning}\nANSWER: {target}<end_of_turn>"; loss on the completion only.
+  command:
+    argv: [nohup, python, train.py, --data, work/gsm8k_fewshot.jsonl, --out, work/sft3,
+           --epochs, "2", --lr, "1e-5", --bs, "4", --accum, "8", --maxlen, "2048"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONUNBUFFERED: "1"}
+    log: /home/ben/task/logs/train3.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [nohup, bash, -c, "python evaluate.py --model-path work/sft3 --limit 150 --json-output-file logs/sft3_e2_greedy.json > logs/sft3_e2_greedy_eval.log 2>&1"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.287
+    path: /home/ben/task/logs/sft2_e2_greedy.json
+  diagnostic:
+    what: "rambling rate — share of the 150 greedy outputs longer than 2000 characters, the same audit run on exp-03"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.80
+  output_checkpoint: /home/ben/task/work/sft3
+  training_summary:
+    final_loss: 0.35
+    steps: 914
+    notes: >-
+      "Training done (final loss 0.35 — much less overfit than before)" [798].
+      Epoch-1 checkpoint at /home/ben/task/work/sft3/checkpoint-457 [799]; the step
+      count is inferred from the checkpoint directory names 457 and 914 removed at
+      [911], not printed as a total. wall_h derived from timestamps: launched
+      [753] t=+5.00h, completion reported [798] t=+6.80h.
+  measurements:
+    - metric: accuracy
+      value: 0.48
+      n: 150
+      path: /home/ben/task/logs/sft3_e2_greedy.json
+      delta_vs_comparator: 0.193
+    - metric: accuracy
+      value: 0.48
+      n: 150
+      path: /home/ben/task/logs/sft3_e1_greedy.json
+      delta_vs_comparator: 0.193
+  diagnostic_result:
+    value: 0.0067
+    path: null
+    notes: >-
+      "Rambling fixed (1/150, down from 57/150)!" [828] — the >2000-character count
+      printed at [808]; the exp-03 comparison used a >2500-character threshold, so
+      the two counts are not measured at exactly the same cut.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    Few-shot-aware training took greedy accuracy to 48.0% on 150 at both epochs,
+    +19.3 points over the MetaMath mix model under the same protocol, and the
+    rambling it was aimed at fell from 57/150 to 1/150 — the gain is where the
+    hypothesis said it would be. Both epoch checkpoints score identically, so the
+    agent read the recipe as stable rather than epoch-sensitive.
+  decision: adopt
+  next_step: >-
+    "Lock in sft3 as a safe final_model, then launch a scaled run (GSM8K +
+    MetaMath, all few-shot-wrapped) to try to beat it" [828].
+
+outcome:
+  official_accuracy: null   # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-f79e3d68
+  launch_i: 753
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [538, 539, 695, 726]
+    setup: [696, 719, 745, 753]
+    evaluation: [799, 808]
+    result: [798, 808, 828, 911, 936]
+    conclusion: [828, 936]
+  snapshot_files:
+    - train.py
+    - build_fewshot.py
+    - finalize.py
+    - eval_ckpt.sh
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "build_fewshot.py was never invoked in the digest: the build argv, the shot cap actually used, and the row count of work/gsm8k_fewshot.jsonl are unknown. The agent's stated intent to cap shots at 8 [745] is not reflected in the snapshot's build_fewshot.py (still 0-10)."
+    - "The rambling rates before and after use different length thresholds (>2500ch at [539] vs >2000ch at [808])."
+    - "The two epoch checkpoints both report 48.0%; the stream does not say whether the eval outputs were identical or the agreement is coincidental."
+    - "The agent's logs/ directory is not in the workspace snapshot; accuracies are the values printed at [936]."

@@ -1,0 +1,203 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 2.77
+
+problem:
+  statement: >-
+    With greedy decoding fixed, the incumbent's remaining errors are all reasoning errors -
+    nothing left to gain from formatting or stopping. [336] "Greedy v1: 76.7%, and **all 35
+    failures are genuine reasoning errors** (0 format, 0 truncation). The model is
+    well-behaved; it needs better reasoning."
+  evidence:
+    - path: /home/ben/task/runs/v1_greedy_eval.json
+      locator: "[333], [334]"
+      observation: '"file acc 115 / 150 ... wrong total 35 nofmt 0 max_tokens 0" on the greedy eval log'
+    - path: /home/ben/task/logs/2026-06-04T19-51-00+02-00_gsm8k_WwRKVMu26VvtXK5bXG6HhQ.json
+      locator: "[283]"
+      observation: >-
+        on the earlier sampling eval only 1 of 61 wrong answers lacked an ANSWER line and 6
+        hit max_tokens, so the failures were already mostly reasoning
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Training on the model's own sampled solutions that reach the gold answer (STaR /
+    rejection sampling), upweighted and mixed with the enriched off-policy data, will raise
+    accuracy over v1. [336] "On-policy rejection sampling (STaR) directly targets this. Let
+    me pivot: kill v2 and instead generate on-policy correct solutions from v1, then train
+    v3 on a combined dataset (enriched data + rejection-sampled solutions) - combining all
+    signals in one run."
+  mechanism: >-
+    [237] the generated traces are in the model's own distribution and are kept only when
+    the final answer is right, so training reinforces the reasoning patterns that already
+    work instead of imitating another dataset's style.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/reject.jsonl
+      source: synthetic:self
+      n_examples: 20980
+      built_by: /home/ben/task/work/gen_reject.py
+      build_command:
+        - |-
+          nohup python work/gen_reject.py --model runs/v1 --out data/reject.jsonl --n 6 --temp 1.0 --keep_per_q 3 --max_tokens 640 --gpu_mem 0.85 > runs/reject_gen.log 2>&1 &
+      selection: >-
+        6 samples per gsm8k train question from the v1 checkpoint at temperature 1.0 /
+        top_p 0.95 / max 640 tokens, keep at most 3 per question whose "ANSWER:" value
+        normalises to the gold answer, dropping duplicates that share their first 80
+        characters. 20980 kept ([389]).
+      repeats: "x2 in the mix below"
+      contamination_check: not_run
+      mixture_weight: null
+    - path: /home/ben/task/data/sft3.jsonl
+      source: "derived:exp-06 (data/reject.jsonl x2) + data/sft2.jsonl subsample"
+      n_examples: 151960
+      built_by: /home/ben/task/work/prepare_v3.py
+      build_command: [python, work/prepare_v3.py, "2", "110000"]
+      selection: >-
+        "reject=20980 x2, base=110000, total=151960" [389] - the on-policy set repeated
+        twice plus 110000 items sampled from data/sft2.jsonl (gsm8k x2 + MetaMathQA +
+        orca-math), then shuffled. The launch capped it at --max_examples 152000.
+      repeats: "on-policy x2"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: rft
+    framework: "transformers.Trainer (transformers 4.57.3, per the saved generation_config.json at [310]); generation with vLLM in gen_reject.py"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        lr / epochs / bs / accum / max_len from the launch argv; save_strategy="epoch",
+        save_total_limit=4, save_only_model=True carried over from [313] and [316], so
+        checkpoint-4749 (epoch 1) and checkpoint-9498 (epoch 2) were written.
+        scheduler=cosine and weight_decay=0.0 are hard-coded in train_sft.py and
+        warmup_ratio=0.03 is its argparse default, not overridden by this launch; the
+        script text is read from the stream, not the workspace snapshot.
+    target_format: >-
+      same as exp-02: system prefix + MATH_PROMPT_TEMPLATE user turn + assistant reasoning
+      ending "ANSWER: <n>" plus eos 128001, loss on the assistant span only. The on-policy
+      completions are the model's own text, already in that shape.
+  command:
+    argv:
+      - |-
+        nohup python work/train_sft.py --out runs/v3 --data data/sft3.jsonl --epochs 2 --lr 1e-5 --bs 16 --accum 2 --max_len 1024 --max_examples 152000 > runs/v3_train.log 2>&1 &
+    cwd: /home/ben/task
+    script: /home/ben/task/work/train_sft.py
+    env: {}
+    log: /home/ben/task/runs/v3_train.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 2.4
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/v3, --limit, "150", --max-connections, "16",
+              --gpu-memory-utilization, "0.85", --json-output-file, runs/v3_ep2_eval.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.767
+    path: /home/ben/task/runs/v1_greedy_eval.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 3.11
+  duration_h: 3.11
+  steps: 9498
+  output_checkpoint: /home/ben/task/runs/v3
+  training_summary:
+    final_loss: 0.1765
+    steps: 9498
+    notes: >-
+      Last logged losses 0.1808 / 0.1786 / 0.175 / 0.1906 / 0.1765 [413]; per-epoch
+      checkpoints runs/v3/checkpoint-4749 and runs/v3/checkpoint-9498. wall_h is the span
+      [392] t=+2.77h to [412] t=+5.88h, the first event confirming the save - the agent's
+      own ETA was ~2.4h. checkpoint-4749 was written without tokenizer files, so its first
+      eval died with "Failed to start vLLM server" [436]; the tokenizer was copied in by
+      hand at [442].
+  measurements:
+    - metric: accuracy
+      value: 0.793
+      n: 150
+      path: /home/ben/task/runs/v3_ep2_eval.json
+      delta_vs_comparator: 0.026
+    - metric: accuracy
+      value: 0.773
+      n: 150
+      path: /home/ben/task/runs/v3_ep1_eval.json
+      delta_vs_comparator: 0.006
+    - metric: accuracy
+      value: 0.77
+      n: 300
+      path: /home/ben/task/runs/v3_300.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    [427] "v3 epoch-2: **79.3%** (greedy), beating v1's 76.7% (+2.6). STaR refinement
+    worked." Epoch 2 beat epoch 1 (0.793 vs 0.773) under the same --limit 150 greedy
+    protocol, and a later --limit 300 run put it at 0.770; no probe separated the on-policy
+    data from the extra enriched data, so the mechanism itself was not isolated.
+  decision: adopt
+  next_step: >-
+    [459] "one more STaR round: generate from the stronger v3 (solves harder questions now)
+    for v4" - and copy v3 to final_model first [454].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ac9606db
+  launch_i: 392
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [333, 334, 336]
+    setup: [238, 351, 362, 388, 389, 392]
+    evaluation: [416, 418, 421, 428, 442, 444, 447, 551, 554]
+    result: [412, 413, 427, 436, 440, 453]
+    conclusion: [427, 453]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "none of runs/v3_ep2_eval.json, runs/v3_ep1_eval.json or runs/v3_300.json is in the workspace snapshot; 0.793, 0.773 and 0.770 are read from the agent's lines at [427], [453] and the echo at [564]"
+    - "the spot-check at [389] printed 'unique questions covered: 1' for data/reject.jsonl, but the key used was the first 80 characters of the shared prompt template, so the real per-question coverage of the on-policy set is not established"
+    - "the greedy generation_config was written onto runs/v3 and runs/v3/checkpoint-4749 at [416] before these evals; runs/v3/checkpoint-9498 was never evaluated separately from runs/v3"

@@ -1,0 +1,147 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 0.70
+
+problem:
+  statement: >-
+    The previous GSM8K+MetaMath launch repeated every row rather than only the
+    GSM8K rows, producing 429,892 training rows and a ~3.7 h estimate.
+  evidence:
+    - path: null
+      locator: "[287]"
+      observation: "agent: repeat_gsm8k logic repeats all rows incl. MetaMath 4x -> 429,892 rows"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    With the repeat filter fixed to src == "gsm8k" and the weight lowered to 3x,
+    GSM8K + 100k MetaMath GSM rows will train in budget and beat the 66% of
+    GSM8K-only SFT.
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py, --metamath, --metamath-max, "200000"]
+      selection: "same reformatting as exp-01; repeat filter now matches src == 'gsm8k' only"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 3
+    - path: /home/ben/task/data/metamath_gsm.jsonl
+      source: "HF meta-math/MetaMathQA (rows whose type starts with GSM)"
+      n_examples: null
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py, --metamath, --metamath-max, "200000"]
+      selection: "capped at 100000 by --max-per-file"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: sft
+    framework: "transformers.Trainer, custom tokenization + completion-only loss"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        scheduler, warmup, weight_decay, seed, bf16, flash_attention_2 are
+        train_sft.py defaults, not overridden. No gradient checkpointing.
+        save_strategy was changed from "no" to "epoch" (save_total_limit 2) at
+        [352] while this launch was already running, so it did not take effect.
+    target_format: "same as exp-01"
+  command:
+    argv: [nohup, python, train_sft.py, --train-files, data/gsm8k_train.jsonl, data/metamath_gsm.jsonl,
+           --max-per-file, "100000", --repeat-gsm8k, "3", --epochs, "2", --lr, "1e-5",
+           --max-len, "1024", --per-device-batch-size, "16", --grad-accum, "2",
+           --output-dir, out_gsm_meta]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/.cache/huggingface}
+    log: /home/ben/task/train_gsm_meta.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic: {what: null, command: [], path: null}
+
+result:
+  execution: failed
+  wall_h: 0.18
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 342
+    notes: >-
+      crashed at step 342 of 7652. Agent at [348] (mid-run): "78 min ETA. Loss is
+      already converged at ~0.18." Agent at [372]: "Training crashed with CUDA OOM
+      at step 342 - MetaMath has longer sequences than GSM8K, and a batch of long
+      examples spiked memory past 80GB. No checkpoint was saved."
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    CUDA out of memory: "cated memory 66.44 GiB is allocated by PyTorch, and 9.76
+    GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory
+    is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid
+    fragmentation." (log tail at [370], at 4%|342/7652)
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Out of memory at step 342 of 7652 with no checkpoint saved: MetaMath's longer
+    sequences spiked a batch past 80 GB. Nothing measurable came out of it.
+  decision: abandon_line
+  next_step: >-
+    Relaunch the identical recipe with --grad-ckpt and
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True.
+
+provenance:
+  kind: extracted
+  run_ref: r-ffa696e1
+  launch_i: 311
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [287, 307]
+    setup: [311]
+    evaluation: []
+    result: [348, 369, 370, 372]
+    conclusion: [372, 373]
+  snapshot_files:
+    - train_sft.py
+    - data_prep.py
+    - train_gsm_meta.log
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "train_gsm_meta.log was overwritten by the relaunch at [373]; only the tail quoted at [370] survives"
+    - "the row count for this launch was never printed; only the 7652-step total appears, in the progress bar"

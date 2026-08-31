@@ -1,0 +1,226 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 3.2
+
+problem:
+  statement: >-
+    "The bottleneck isn't data quantity; it's the model's reasoning accuracy under
+    greedy decode" [515] - the incumbent sits at 0.64 and adding MetaMath was not
+    going to move it (and in the event was never evaluated, exp-05).
+  evidence:
+    - path: /home/ben/task/logs/sft_v2_fixed_metrics.json
+      locator: "[400], [515]"
+      observation: "the incumbent measures 0.64 at limit 150; the agent read the (stale) v3 number as identical, i.e. more supervised data changed nothing"
+    - path: /home/ben/task/logs/rft1_gen.log
+      locator: "[628], [629]"
+      observation: >-
+        the first full generation pass finished but its post-processing crashed
+        with OverflowError in norm_num, losing ~40 minutes of sampling
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "The right lever now is rejection-sampling fine-tuning (RFT) to reinforce
+    correct on-policy reasoning" [515] - retraining on the incumbent's own
+    verified-correct solutions to GSM8K train will raise accuracy above 0.64.
+  mechanism: >-
+    Sampling K solutions per training question from the incumbent and keeping only
+    those whose last number matches gold reinforces the reasoning the model
+    already gets right, in its own distribution, rather than adding more
+    off-distribution supervised text.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--Qwen--Qwen3-1.7B-Base/snapshots/ea980cb0a6c2ae4b936e82123acc929f1cec04c1
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/rft1.jsonl
+      source: synthetic:self (sampled from the exp-04 checkpoint, work/sft_gsm8k_fs_v2)
+      n_examples: null
+      built_by: /home/ben/task/scripts/rejection_sample.py
+      build_command:
+        - python
+        - scripts/rejection_sample.py
+        - --model
+        - work/sft_gsm8k_fs_v2
+        - --out
+        - data/rft1.jsonl
+        - --k
+        - "8"
+        - --temp
+        - "0.9"
+        - --top_p
+        - "0.95"
+        - --max_tokens
+        - "512"
+        - --keep_per_q
+        - "4"
+        - --gpu_mem
+        - "0.9"
+      selection: >-
+        8 samples per GSM8K train question (all 7473), keep only samples whose last
+        number equals gold and that contain an "ANSWER:" line, rewrite the tail as
+        a clean "ANSWER: <gold>", drop near-duplicates by the first 200 chars of
+        the normalised body, at most 4 kept per question [136], [632]. Never
+        printed: the file was still being generated when the stream ends.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: openai/gsm8k (main, train split)
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: [python, scripts/prep_data.py]
+      selection: 'GSM8K train, <<...>> stripped, solutions ending "ANSWER: X"; listed twice, so upweighted 2x'
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 2
+  method:
+    family: rft
+    framework: transformers Trainer (full fine-tune; version not stated in the stream); generation with vLLM
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 1280
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --fewshot_max 6 --fewshot_prob 0.5. Trained from the base model, not from
+        the incumbent ("retrain from BASE on rft1 + gsm8k_train x2", NOTES.md
+        [670]). scheduler=cosine and bf16=True are hard-coded in the script as
+        written at [104]; warmup, weight_decay and seed were not passed and the
+        workspace snapshot retains no scripts/, so they are left null. Uses the
+        reworked save path from [556] (save with do_sample=False, then patch
+        generation_config.json by raw json.dump).
+    target_format: >-
+      eval chat template; assistant turn = the kept sampled solution rewritten to
+      end "ANSWER: <gold>" + <|im_end|>, loss on completion tokens only, with a
+      1-6 demo system message on 50% of examples.
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --files
+      - data/rft1.jsonl
+      - data/gsm8k_train.jsonl
+      - data/gsm8k_train.jsonl
+      - --out
+      - work/rft1
+      - --epochs
+      - "2"
+      - --lr
+      - "1e-5"
+      - --bs
+      - "8"
+      - --accum
+      - "8"
+      - --max_len
+      - "1280"
+      - --fewshot_max
+      - "6"
+      - --fewshot_prob
+      - "0.5"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_rft1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, work/rft1, "150", "1024", rft1]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.64
+    path: /home/ben/task/logs/sft_v2_fixed_metrics.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Launched at [649] as a chained script (wait for the generation PID, abort if
+      data/rft1.jsonl has fewer than 5000 lines, otherwise train, check
+      work/rft1/model.safetensors exists, then evaluate). The stream ends at
+      [679] t=+3.27h with the generation still at 11% ("Processed prompts: 11%
+      6408/59784" [674]), so the training step had not started yet and no result
+      for it exists anywhere in the stream or the workspace snapshot. Recorded as
+      killed per the protocol's rule for a launch that simply stops appearing.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The rejection-sampling round was set up and launched as an unattended
+    generate-train-evaluate chain, but the stream ends 4 minutes after the launch
+    with sampling only 11% done, so nothing about the RFT hypothesis was measured.
+    The incumbent, final_model = the exp-04 checkpoint at 0.64, was still the
+    standing submission at that point.
+  decision: abandon_line
+  next_step: >-
+    "SFT(v2 64%) -> RFT round1 (-> work/rft1) -> iterate RFT or GRPO -> pick best
+    -> final_model. Remember: for final selection eval on a LARGER sample (limit
+    500+) to reduce noise" (NOTES.md, [670]). A GRPO script with a
+    last-number-correctness reward was written at [666] as the higher-ceiling
+    fallback if RFT plateaued, but was never run.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-4254277e
+  launch_i: 649
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [515, 628, 629, 631]
+    setup: [136, 632, 635, 643, 649]
+    evaluation: [649]
+    result: [654, 673, 674, 676, 679]
+    conclusion: [666, 670, 679]
+  snapshot_files:
+    - NOTES.md
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 524, outcome: "crashed: vLLM could not load work/sft_mix_v3 for RFT generation - the v3 directory has no weights [535], [545], [549]"}
+    - {launch_i: 560, outcome: "crashed after ~40 min: OverflowError, cannot convert float infinity to integer, in norm_num while post-processing the generated samples [629]; parsing guarded at [632]"}
+  extractor: null
+  unresolved:
+    - "the launch event is the pipeline script written and started at [649]; the train_sft.py argv recorded here is the training command inside that script, quoted verbatim in the same block. The invocation itself was `nohup bash scripts/rft1_pipeline.sh 10439`"
+    - "the digest ends at [679] t=+3.27h of a 10h budget, so the outcome of this launch - and everything the run did over its remaining ~6.7h - is unknown; NOTES.md in the workspace snapshot also stops at this point"
+    - "data/rft1.jsonl was never counted; the pipeline would have aborted below 5000 lines"
+    - "which checkpoint was ultimately submitted is not settled; final_model held the exp-04 copy as of [435] and nothing in the stream replaces it"

@@ -1,0 +1,166 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 1.69
+
+problem:
+  statement: >-
+    "OOM from the 152k-vocab logits on long flattened batches" at micro-batch 32
+    [21758] - the padding-free flattened batches make the vocabulary projection the
+    memory bottleneck.
+  evidence:
+    - path: /home/ben/task/runs_sft_v1.log
+      locator: "[21758]"
+      observation: "agent reports the OOM from the log of the exp-02 launch (log later overwritten)"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Reducing the micro-batch to 8 with grad-accum 16, keeping the effective batch
+    at 128, plus PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, will fit in
+    80 GB and let the same SFT run train through [21758].
+  mechanism: >-
+    Shorter flattened batches mean fewer logits per forward pass, and expandable
+    segments reduce allocator fragmentation.
+  expected_effect:
+    metric: null
+    direction: null
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: synthetic:self
+      n_examples: 28781
+      built_by: /home/ben/task/build_sft_data.py
+      build_command:
+        - python
+        - build_sft_data.py
+        - --star-file
+        - data/star_round1.jsonl
+        - --out
+        - data/sft_v1.jsonl
+      selection: >-
+        Gold gsm8k train solution (calculator annotations stripped) plus <=3
+        verified rejection-sampled traces per question from data/star_round1.jsonl
+        (gen_star.py: greedy + k=8 @ T=0.8, kept when the normalized ANSWER marker
+        equals the gold train answer), every trace rewritten to end in
+        "ANSWER: <gold>", deduped, capped at 2400 chars, low-lexical-diversity
+        traces dropped; system prompt per row 35% exact eval 10-shot / 35% random
+        k-shot / 30% none.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 (torch 2.8, flash-attn 2.8.3)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 8
+      grad_accum: 16
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr, max_seq_len and seed are train_sft.py argparse defaults, not overridden
+        in this launch; batch_size and grad_accum come from the launch args
+        (effective batch 128). scheduler, warmup_ratio 0.03, weight_decay 0.0,
+        bf16, adamw_torch_fused with adam_beta2 0.95, max_grad_norm 1.0, gradient
+        checkpointing, flash_attention_2 and DataCollatorWithFlattening are fixed
+        in the script.
+    target_format: >-
+      Rendered through templates/qwen3.jinja; assistant turn is the reasoning
+      ending in a final line "ANSWER: <gold>" followed by <|im_end|>.
+  command:
+    argv:
+      - python
+      - train_sft.py
+      - --data
+      - data/sft_v1.jsonl
+      - --out
+      - runs/sft_v1
+      - --epochs
+      - "3"
+      - --per-device-bs
+      - "8"
+      - --grad-accum
+      - "16"
+      - --save-each-epoch
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/runs_sft_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.09
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Trained without OOM, then killed by the agent (pkill -f train_sft.py at
+      [23387]) after it noticed that "the 2048 max-len silently dropped ~10.5k
+      samples (mostly eval-mode rows - the most valuable context)" [23386].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The memory fix worked - training ran at micro-batch 8 - but the run was killed
+    minutes in because max_seq_len 2048 was silently dropping about 10.5k of the
+    28,781 rows, mostly the rows carrying the exact eval 10-shot context.
+  decision: abandon_line
+  next_step: "Raise --max-len to 3072 and relaunch (exp-04)."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-9395d5af
+  launch_i: 21759
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [21758]
+    setup: [21759]
+    evaluation: []
+    result: [23386, 23387]
+    conclusion: [23386]
+  snapshot_files:
+    - train_sft.py
+    - build_sft_data.py
+    - gen_star.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The ~10.5k dropped-sample count is the agent's statement at [23386]; the log line it read was overwritten."

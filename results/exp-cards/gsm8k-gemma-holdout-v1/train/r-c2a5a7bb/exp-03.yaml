@@ -1,0 +1,175 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The exp-02 checkpoint scored 0.06 at limit 50 and would not stop: training
+    applied the chat template with enable_thinking=False, which prefixes the
+    assistant turn with "<think>\n\n</think>\n\n", while at serving time the
+    template is applied without that keyword and the prompt simply ends at
+    "<|im_start|>assistant\n" - "The model was trained on mismatched format"
+    [134]. On top of that the merged model's generation_config lists only eos
+    151643, so nothing stops generation at <|im_end|> [96].
+  evidence:
+    - path: /home/ben/task/eval_results_v1.json
+      locator: "[83]"
+      observation: "accuracy 0.060, stderr 0.034 on 50 items; 102,400 output tokens for 50 answers"
+    - path: /home/ben/task/logs/2026-02-13T02-26-01+01-00_gsm8k_2DkbpwMpFWnY9U4TqEX7aE.json
+      locator: "[85]/[86]"
+      observation: "sampled outputs run past the answer into a new, unrelated problem"
+    - path: /home/ben/task/templates/qwen3.jinja
+      locator: "[132]/[133]"
+      observation: "with enable_thinking absent the prompt ends '<|im_start|>assistant\\n'; with enable_thinking=False it ends '<think>\\n\\n</think>\\n\\n'"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Let me fix both issues and retrain: 1. Format training data WITHOUT
+    enable_thinking=False (match eval format) 2. Set proper stop tokens in
+    generation_config" [134] - training on the template as the evaluator applies
+    it, and writing eos_token_id [151643, 151645], will raise accuracy.
+  mechanism: >-
+    Remove the train/serve prefix mismatch so the model continues from exactly
+    the prompt the evaluator sends, and give it a stop token at the end of its
+    turn.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "HF openai/gsm8k (config main, split train) + HF meta-math/MetaMathQA (type contains GSM)"
+      n_examples: 27463
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        the same file exp-02 used (7,463 GSM8K train rows + 20,000 MetaMathQA
+        GSM rows, seed 42); the change in this launch is not the data but how
+        the training script renders it
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 / peft 0.18.1 / transformers 4.57.3 [23], [24]"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3.0
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        The launch takes no arguments; every value is a module-level constant in
+        train_v2.py (in the workspace), so all come from the script text and none
+        was overridden. Only two things differ from exp-02: NUM_EPOCHS 2 -> 3,
+        and apply_chat_template is called without enable_thinking. The script
+        also writes generation_config.json with eos_token_id [151643, 151645],
+        do_sample true, temperature 0.7, top_p 0.8, top_k 20 after merging.
+    target_format: >-
+      templates/qwen3.jinja applied with add_generation_prompt=False and no
+      enable_thinking keyword; assistant turn = "{reasoning}\n\nANSWER: {n}"
+  command:
+    argv: [python3, train_v2.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 1.49
+  duration_h: 1.49
+  steps: 3870
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 3870
+    notes: >-
+      The last progress line the stream carries is 3870/5151 at 1:29:07 [140];
+      the process then returned exit code 1. The agent checked final_model at
+      [145] and found it still carried the exp-02 timestamps (02:23), i.e. the
+      merge and save never ran: "The v2 training didn't complete ... This is
+      likely an OOM or the process was killed" [147]. wall_h and steps are that
+      last progress line, not a completion record.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: "exit code 1 at step ~3870/5151; no traceback survives in the stream (the output was truncated for size)"
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Three-epoch LoRA on the same data, rendered without enable_thinking, died at
+    roughly three quarters of the first pass and never merged or saved, so the
+    template fix was never measured. Inspecting the template at [150] the agent
+    then found that the mismatch was not fixed anyway: the template injects
+    "<think>\n\n</think>\n\n" for the last assistant message whether or not
+    enable_thinking is passed.
+  decision: abandon_line
+  next_step: >-
+    "Instead of fighting with the template, let me simply format the training
+    data directly as text strings without using the template at all - this gives
+    me full control over the format" [153]; prepare_data_v2.py writes raw
+    <|im_start|>-delimited text, trained as exp-04.
+
+provenance:
+  kind: extracted
+  run_ref: r-c2a5a7bb
+  launch_i: 139
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [83, 86, 89, 96, 133, 134]
+    setup: [137]
+    evaluation: []
+    result: [140, 145, 146, 147]
+    conclusion: [147, 150, 151, 153]
+  snapshot_files:
+    - prepare_data.py
+    - train_v2.py
+    - eval_results_v1.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "why the process exited 1 is not settled: the agent guessed OOM or an external kill, and the traceback (if any) was lost to output truncation at [140]"

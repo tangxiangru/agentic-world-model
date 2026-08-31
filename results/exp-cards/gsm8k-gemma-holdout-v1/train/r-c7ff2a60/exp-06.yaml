@@ -1,0 +1,209 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The model does not stop after "ANSWER: <n>": it keeps generating and rolls
+    into a new, invented problem, and the scorer reads the wrong number - the
+    agent attributes this to packing during training, which concatenated several
+    examples per sequence and taught the model to continue past <|im_end|>.
+    Adding <|im_end|> to the stop tokens did not fix it.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-c7ff2a60.md
+      locator: "[299]"
+      observation: "samples continue after the answer with a fresh problem statement; one sample answers 'ANSWER: 6' correctly and is still scored I"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-c7ff2a60.md
+      locator: "[296]"
+      observation: "accuracy 0.140 on 50 samples after the eos-token edit, below the 0.220 before it"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Retraining from the base model without packing, with each example ending
+    "<|im_end|><|end_of_text|>", will teach the model to stop after the answer
+    and so raise scored accuracy [300][304].
+  mechanism: >-
+    "The core issue is the packing during training - the model learned to
+    continue past <|im_end|> because in training, packed sequences had multiple
+    examples concatenated" [300]; one example per sequence with an explicit
+    end-of-text token puts the stop inside the training distribution.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null                       # loaded in-process by the training script
+      source: openai/gsm8k (main, train)
+      n_examples: 7473                 # "GSM8K: 7473" (train_v3.log)
+      built_by: /home/ben/task/train_v3.py
+      build_command: []
+      selection: >-
+        answer after "####", <<...>> annotations stripped, assistant turn ends
+        "ANSWER: <n>" then "<|im_end|><|end_of_text|>"; upsampled 5x; shuffled
+        with random.seed(42)
+      repeats: "x5"
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: meta-math/MetaMathQA (train)
+      n_examples: 80000                # "MetaMathQA GSM: 80000" (train_v3.log)
+      built_by: /home/ben/task/train_v3.py
+      build_command: []
+      selection: >-
+        only GSM_AnsAug and GSM_Rephrased, capped at 80000, reasoning < 1500
+        chars (the SV/FOBAR variants and all MATH types dropped from the
+        earlier mixture); answer line re-emitted as "ANSWER: <n>"
+      repeats: "x1"
+      contamination_check: not_run
+      mixture_weight: null
+    # total after upsampling: 117365 examples (train_v3.log)
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2, transformers 4.57.3, torch 2.8.0+cu129 [24]"
+    peft: none
+    hyperparams:
+      lr: 5.0e-05
+      epochs: null                     # step-capped: max_steps=900 (~0.25 epoch, per train_v3.log)
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 512
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        max_steps=900, packing=False, save_only_model=True, save_steps=10000
+        (no intermediate saves), gradient_checkpointing=True, flash_attention_2,
+        optim=adamw_torch_fused, max_grad_norm=1.0, pad token
+        <|finetune_right_pad_id|> (128004). The script also rewrites
+        final_model/config.json (eos_token_id [128001, 128012], use_cache true)
+        and generation_config.json after saving. All values are literals in
+        /home/ben/task/train_v3.py; the launch passed no arguments.
+    target_format: >-
+      "<|im_start|>user\n{eval prompt}<|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|><|end_of_text|>"
+  command:
+    argv: [python, /home/ben/task/train_v3.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v3.py
+    env: {}
+    log: /home/ben/task/train_v3.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 1.0                     # "Let's use max_steps to train for ~1 hour = 900 steps" [304]
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - /home/ben/task/final_model
+      - --limit
+      - "50"
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.5"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.140
+    path: null                         # printed at [296]; eval log not in the snapshot
+  diagnostic:
+    what: "print output tails to check whether generations now end after the ANSWER line [319]"
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.23
+  duration_h: 0.23                     # train_runtime 829.9 s (train_v3.log)
+  steps: 900
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.1992                 # last logged loss at epoch 0.25; train_loss over the run 0.2578
+    steps: 900
+    notes: "0.25 epoch of the 117,365-example set, mean token accuracy 0.944, train_runtime 829.9 s (train_v3.log)"
+  measurements:
+    - metric: accuracy
+      value: 0.160
+      n: 50
+      path: null                       # printed at [317]; eval log not in the snapshot
+      delta_vs_comparator: 0.020
+    - metric: accuracy
+      value: 0.280
+      n: 50
+      path: null                       # printed at [324]; same checkpoint, eval run with --max-tokens 512
+      delta_vs_comparator: null        # different eval protocol from the comparator
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      stderr 0.052 [317]. The printed tails still show continuation into new
+      problems on some items [320]; capping generation at --max-tokens 512
+      instead raised the score to 0.280 [324], which is what the agent kept
+      using for the next comparison.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: >-
+    Training without packing and with an explicit end-of-text token cost only
+    14 minutes but moved the score from 0.140 to 0.160 on the same 50 items -
+    inside the stderr of either measurement - and the printed outputs still run
+    past the answer [320], so the packing explanation did not hold. Truncating
+    generation at 512 tokens recovered 0.280, which the agent read as
+    "better! But still not great. The model needs more training" [325].
+  decision: reject
+  next_step: "retrain from base with more steps (3000) and more MetaMathQA data [325][326]"
+
+# ---- Outcome (joined by the pipeline; never written by the extractor) ------
+outcome:
+  official_accuracy: null
+
+# ---- Provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-c7ff2a60
+  launch_i: 310
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [296, 299, 300]
+    setup: [304, 306, 310]
+    evaluation: [316, 323]
+    result: [317, 320, 324]
+    conclusion: [318, 325]
+  snapshot_files:
+    - train_v3.py
+    - train_v3.log
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the two measurements on this checkpoint differ only in --max-tokens (4000 vs 512): 0.160 vs 0.280; the run never establishes which setting the official grading uses"
+    - "the script comment plans ~900 steps for ~1 hour but the run took 14 minutes, so the step budget was set from a stale throughput estimate"

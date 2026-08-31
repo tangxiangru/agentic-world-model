@@ -1,0 +1,246 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The current best checkpoint is still underpowered on the actual benchmark"
+    [219] - training so far has used GSM8K train only, so coverage of
+    grade-school word problems is narrow.
+  evidence:
+    - path: /home/ben/task/runs/gsm8k_ft_v2_fs5/eval_20.json
+      locator: "[206], [208]"
+      observation: "aligned checkpoint scores 0.350 (stderr 0.109) on the 20-sample benchmark slice"
+    - path: /home/ben/task/runs/gsm8k_ft_v2_fs5/holdout_32_fewshot10.json
+      locator: "[213], [214]"
+      observation: "10-shot-in-system holdout run on the aligned checkpoint; the printed items are all wrong (e.g. 196 -> 183.5, 4 -> 1, 15 -> 25)"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "broaden the supervision with adjacent grade-school word-problem datasets
+    (ASDiv, MAWPS, SVAMP/ASDiv/MAWPS combo)" [236] as a cautious low-learning-rate
+    continuation from the aligned checkpoint, so "the model can pick up broader
+    arithmetic coverage without throwing away the stop behavior I just taught it"
+    [251]; if the resulting checkpoint is better, re-apply the few-shot alignment
+    pass [236].
+  mechanism: >-
+    Wider but in-domain word-problem supervision should improve arithmetic
+    coverage, while a small learning rate and a partial epoch preserve the
+    benchmark-aligned formatting/stop behaviour from exp-02.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: >-
+    stated as a decision rule rather than a threshold: "If it outperforms the
+    aligned-only checkpoint on a benchmark slice, I'll keep it and stop;
+    otherwise I'll revert to the cleaner aligned model for final_model" [254].
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/gsm8k_ft_v2_fs5
+    origin: exp-02
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, split=train)"
+      n_examples: null
+      built_by: /home/ben/task/train_grade_school_mix.py
+      build_command: []
+      selection: "all train records, target = gold reasoning + 'ANSWER: <n>' (gsm_examples())"
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: "HF EleutherAI/asdiv (split=validation)"
+      n_examples: null
+      built_by: /home/ben/task/train_grade_school_mix.py
+      build_command: []
+      selection: >-
+        body + question concatenated; target = first numeric in the answer field
+        (records with none dropped); assistant = "Using <formula>, the answer is
+        <target>.\n\nANSWER: <target>" (asdiv_examples())
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: "HF mwpt5/MAWPS (split=train)"
+      n_examples: null
+      built_by: /home/ben/task/train_grade_school_mix.py
+      build_command: []
+      selection: >-
+        N_i / number_i placeholders substituted with the record's Numbers;
+        assistant = "Using <equation> = <target>.\n\nANSWER: <target>"
+        (mawps_examples())
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: "HF cq01/mawps-asdiv-a_svamp (splits train + validation)"
+      n_examples: null
+      built_by: /home/ben/task/train_grade_school_mix.py
+      build_command: []
+      selection: >-
+        both splits used (the digest printed 3138 train and 1000 validation rows
+        at [226]); placeholders substituted, prefix Equation rendered infix;
+        assistant = "Using <equation> = <target>.\n\nANSWER: <target>"
+        (combined_svamp_examples())
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer (script train_grade_school_mix.py)"
+    peft: "none"
+    hyperparams:
+      lr: 2.0e-06
+      epochs: 0.7
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        From the launch: --per-device-eval-batch-size 4, --eval-size 256,
+        --logging-steps 25. Not on the command line, taken from
+        train_grade_school_mix.py argparse defaults in the snapshot (not
+        overridden): seed=42, weight-decay=0.01, warmup-ratio=0.03,
+        template-path=templates/qwen3.jinja, save-total-limit=2. Hard-coded in
+        that script: cosine schedule, adamw_torch_fused, bf16+tf32,
+        max_grad_norm 1.0, gradient checkpointing, per-epoch eval/save with
+        load_best_model_at_end on eval_loss. The four sources are pooled,
+        shuffled with seed 42 and split with test_size=256 for eval; no
+        per-source weighting.
+    target_format: >-
+      evaluator prompt template, no few-shot system message; assistant turn ends
+      in "ANSWER: <n>" + <|im_end|>.
+  command:
+    argv:
+      - python
+      - train_grade_school_mix.py
+      - --model-name
+      - runs/gsm8k_ft_v2_fs5
+      - --output-dir
+      - runs/gsm8k_mix_v1
+      - --num-train-epochs
+      - "0.7"
+      - --learning-rate
+      - "2e-6"
+      - --per-device-train-batch-size
+      - "4"
+      - --per-device-eval-batch-size
+      - "4"
+      - --gradient-accumulation-steps
+      - "4"
+      - --max-length
+      - "1024"
+      - --eval-size
+      - "256"
+      - --logging-steps
+      - "25"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_grade_school_mix.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/gsm8k_mix_v1
+      - --limit
+      - "20"
+      - --json-output-file
+      - runs/gsm8k_mix_v1/eval_20.json
+      - --max-connections
+      - "1"
+      - --gpu-memory-utilization
+      - "0.22"
+      - --max-tokens
+      - "2000"
+    dev_set: "official --limit 20"
+    n: 20
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.35
+    path: /home/ben/task/runs/gsm8k_ft_v2_fs5/eval_20.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/gsm8k_mix_v1
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "The mixed continuation is faster than expected" [256]; "converging fast
+      enough that it's worth finishing" [260]; "finished quickly and didn't hurt
+      validation loss" [265]. No loss value or step count in the stream.
+  measurements:
+    - metric: accuracy
+      value: 0.25
+      n: 20
+      path: /home/ben/task/runs/gsm8k_mix_v1/eval_20.json
+      delta_vs_comparator: -0.1
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "The mixed-data continuation lost to the aligned checkpoint on the benchmark
+    slice (25% vs 35% on 20 samples)" [269]; measured under the same
+    evaluate.py --limit 20 protocol (0.250, stderr 0.099 [267]), so the wider
+    grade-school mix did not buy coverage at this learning rate - though at n=20
+    the two slices are within each other's stated stderr.
+  decision: reject
+  next_step: >-
+    "selecting runs/gsm8k_ft_v2_fs5 as the best model, copying it to final_model,
+    and doing one last verification pass there" [269] (exp-04).
+
+# joined by the pipeline, never by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-db1eeb72
+  launch_i: 252
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [208, 213, 214, 219]
+    setup: [223, 224, 225, 226, 236, 251, 252]
+    evaluation: [266]
+    result: [256, 260, 265, 267]
+    conclusion: [269]
+  snapshot_files:
+    - train_grade_school_mix.py
+    - gsm8k_utils.py
+    - evaluate.py
+  extractor: claude-opus-5
+  unresolved:
+    - "No example counts are printed for the mixed dataset; only the cq01/mawps-asdiv-a_svamp split sizes (3138 / 1000) appear, at [226]."
+    - "The agent said it would avoid GSM8K test contamination [219] but ran no checker in the stream; task/contamination_judgement.txt reads 'no contamination detected'."
+    - "The decision rests on a single 20-sample slice per checkpoint (stderr ~0.10), which the agent did not discuss."
+    - "The digest carries no timestamps, so elapsed_h and wall_h are null."

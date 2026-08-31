@@ -1,0 +1,153 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.17
+
+problem:
+  statement: >-
+    The SFT checkpoint scores 0.04 on the 150-sample eval and its eval outputs are
+    degenerate - long runs of unrelated tokens and other languages instead of a solution.
+    The agent traced this to a token mismatch: "EOS token in config is `<|endoftext|>`
+    (151643) but the chat template uses `<|im_end|>` (151645)" [145].
+  evidence:
+    - path: /home/ben/task/eval_v1_150.json
+      locator: "[131]"
+      observation: "accuracy 0.04; agent: 'Only 4% accuracy - something is wrong!'"
+    - path: /home/ben/task/logs/2026-04-20T03-04-16+02-00_gsm8k_cdA9rrXfqFfqWciQU8Eirn.json
+      locator: "[132], [133]"
+      observation: "sampled eval outputs are unrelated JSON/prose, not math solutions"
+    - path: /home/ben/task/checkpoints/sft-v1/config.json
+      locator: "[136], [137]"
+      observation: "eos_token_id 151643 (<|endoftext|>) while the chat template ends turns with <|im_end|> (151645)"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Rewriting eos_token_id to 151645 (`<|im_end|>`) in the checkpoint's config.json and
+    generation_config.json is "the main issue" [145]; with it fixed, generation will stop
+    at the end of the assistant turn and the eval score will recover.
+  mechanism: >-
+    The model was trained to emit <|im_end|> at the end of the answer, but the runtime
+    stops only on <|endoftext|>, so decoding runs past the answer into garbage.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft-v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: null
+    peft: "none"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: "in-place edit of checkpoints/sft-v1/config.json and generation_config.json: eos_token_id 151643 -> 151645"
+    target_format: null
+  command:
+    argv:
+      - python
+      - -c
+      - |
+        import json
+        # Fix config.json
+        for p in ['checkpoints/sft-v1/config.json', 'checkpoints/sft-v1/generation_config.json']:
+            with open(p) as f:
+                c = json.load(f)
+            c['eos_token_id'] = 151645  # <|im_end|>
+            with open(p, 'w') as f:
+                json.dump(c, f, indent=2)
+            print(p, 'updated')
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, checkpoints/sft-v1, --limit, "150", --max-connections, "2", --max-tokens, "1536", --gpu-memory-utilization, "0.5", --json-output-file, eval_v1_fixed.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.04
+    path: /home/ben/task/eval_v1_150.json
+  diagnostic:
+    what: "single-prompt generate() on the patched checkpoint, outside the eval harness [155]"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  steps: null
+  duration_h: null
+  output_checkpoint: /home/ben/task/checkpoints/sft-v1
+  training_summary: {final_loss: null, steps: null, notes: "config edit only, no training"}
+  measurements:
+    - metric: accuracy
+      value: 0.08
+      n: 150
+      path: /home/ben/task/eval_v1_fixed.json
+      delta_vs_comparator: 0.04
+  diagnostic_result:
+    value: null
+    path: null
+    notes: "direct generate() on a one-line prompt returned '15 + 27 = 42\\n\\nANSWER: 42<|im_end|>' [156], so the checkpoint itself answers correctly; with the 10-shot system prompt it emitted a doubled '<think>' prefix [160]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Accuracy moved 0.04 -> 0.08 at --limit 150, but the eval outputs were still degenerate
+    ([163], [164]), so the EOS id was not "the main issue". The agent kept digging and found
+    the tokenizer_config still carried the old EOS.
+  decision: adopt
+  next_step: "Fix eos_token in tokenizer_config.json as well ([169])."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-87e033c4
+  launch_i: 146
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [131, 132, 133, 136, 137, 145]
+    setup: [146, 147]
+    evaluation: [148]
+    result: [155, 156, 159, 160, 163, 164]
+    conclusion: [163, 164, 166]
+  snapshot_files:
+    - eval_v1_150.json
+    - eval_v1_fixed.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "eval_v1_fixed.json ran in the background and its score is never printed in the stream; the 0.08 is read from the workspace file the launch named."

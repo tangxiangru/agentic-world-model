@@ -1,0 +1,192 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-11
+created_at: null
+elapsed_h: 6.46
+
+problem:
+  statement: >-
+    One GRPO round from the v3 base lifted the full-eval score to 85.37% but the
+    reward had already plateaued at ~0.90 by step ~120 and the run overshot by
+    step 180, so a single round from that base is spent.
+  evidence:
+    - path: /home/ben/task/ckpt_g2c120_metrics.json
+      locator: "[859] [868]"
+      observation: "trajectory v3 84.67 -> c60 85.33 -> c120 86.33 (peak) -> c180 84.33 at --limit 300; c120 full-eval 85.37%"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Agent at [868]: "Let me try iterative GRPO - start a fresh low-LR GRPO from
+    c120 (the 85.37% model) to build on the gains, with fine checkpointing to
+    capture the peak."
+  mechanism: >-
+    Restarting the optimizer and the reference policy from the improved
+    checkpoint gives a fresh low-LR round rather than pushing the same one past
+    its overshoot point.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-10
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/grpo_base3
+    origin: exp-10
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, train split), loaded in-process by grpo2.py"
+      n_examples: 7473
+      built_by: /home/ben/task/grpo2.py
+      build_command: []
+      selection: >-
+        every GSM8K train question rendered as a chat user turn with the
+        evaluator's math prompt; gold "#### " value is the reward target
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: grpo
+    framework: "trl 0.27.2 GRPOTrainer with vLLM 0.11.0 colocate rollouts"
+    peft: none
+    hyperparams:
+      lr: 1.0e-06
+      epochs: 1
+      batch_size: 8
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: constant_with_warmup
+      warmup: 10
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        from the launch: num_generations 8, temperature 1.0, beta 0.0,
+        vllm_gpu_memory_utilization 0.22, save_steps 20 (finer, to catch the
+        peak). max_completion_length 640 is the grpo2.py argparse default, not
+        overridden; other trainer settings as hard-coded in grpo2.py; correctness
+        reward 1.0 plus format reward 0.2. Env
+        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True. grpo_base3 is
+        final_model (grpo2 checkpoint-120) with a validation-clean
+        generation_config.
+    target_format: >-
+      reward = 1.0 for a correct extracted answer plus 0.2 for a well-formed
+      "ANSWER:" line
+  command:
+    argv: [nohup, python, -u, grpo2.py, --model, grpo_base3, --out, grpo3_out, --limit, "0", --g, "8", --bs, "8", --accum, "8", --lr, "1e-6", --temp, "1.0", --beta, "0.0", --vllm-mem, "0.22", --save-steps, "20", --epochs, "1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo2.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/grpo3_run.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, eval_ckpt.sh, grpo3_out/checkpoint-80, "300", g3c80]
+    dev_set: "official --limit 300 (10-shot, fewshot_seed 42, shuffle_fewshot true, per [204]); the winner was then re-run at --limit -1 (1319)"
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-10
+    value: 0.8633333333333333
+    path: /home/ben/task/ckpt_g2c120_metrics.json
+  diagnostic:
+    what: "training-time correctness reward on sampled rollouts (temperature 1.0) vs greedy dev accuracy"
+    command: []
+    path: /home/ben/task/grpo3_run.log
+
+result:
+  execution: killed
+  wall_h: 0.4
+  output_checkpoint: /home/ben/task/grpo3_out/checkpoint-80
+  training_summary:
+    final_loss: null
+    steps: 102
+    notes: >-
+      grpo3_run.log ends at step 102/934 (22:37) when the agent stopped the run to
+      evaluate; checkpoints 60, 80 and 100 were evaluated. grpo3_out was deleted
+      at [968] to free disk.
+  measurements:
+    - metric: accuracy
+      value: 0.87
+      n: 300
+      path: /home/ben/task/ckpt_g3c100_metrics.json
+      delta_vs_comparator: 0.0067
+    - metric: accuracy
+      value: 0.8766666666666667
+      n: 300
+      path: /home/ben/task/ckpt_g3c80_metrics.json
+      delta_vs_comparator: 0.0133
+    - metric: accuracy
+      value: 0.87
+      n: 300
+      path: /home/ben/task/ckpt_g3c60_metrics.json
+      delta_vs_comparator: 0.0067
+    - metric: accuracy
+      value: 0.8726
+      n: 1319
+      path: /home/ben/task/final_full_metrics.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/grpo3_run.log
+    notes: >-
+      agent at [886] "correctness ~0.88-0.92 (comparable, some spikes to 0.94)"
+      and at [895] "climbed to ~0.92-0.956 (higher than before)"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    Checkpoint-80 measured 87.67% against c120's 86.33% under the same
+    --limit 300 protocol, and 87.26% on the full 1319-item eval against c120's
+    85.37%. Agent at [925]: "The iterative GRPO pattern is working - each round
+    from a strong base improves greedy."
+  decision: adopt
+  next_step: >-
+    "Let me try one more iterative GRPO round from c80 to push further" [925].
+
+outcome:
+  official_accuracy: null    # joined by the pipeline; never written by the extractor
+
+provenance:
+  kind: extracted
+  run_ref: r-358cab54
+  launch_i: 869
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [859, 868]
+    setup: [869]
+    evaluation: [896, 902, 911, 917]
+    result: [886, 895, 910, 916, 925]
+    conclusion: [925]
+  snapshot_files:
+    - grpo2.py
+    - grpo3_run.log
+    - eval_ckpt.sh
+    - ckpt_g3c60_metrics.json
+    - ckpt_g3c80_metrics.json
+    - ckpt_g3c100_metrics.json
+    - eval_ckpt_g3c60.log
+    - eval_ckpt_g3c80.log
+    - eval_ckpt_g3c100.log
+    - eval_final_full2.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - >-
+      the 1319-item value 0.8726 survives only in the stream at [925]:
+      final_full_metrics.json was overwritten by later full evals and now holds
+      0.8704.
+    - >-
+      the first eval attempt at [896] exited 144 without producing metrics; it was
+      re-run cleanly at [902].

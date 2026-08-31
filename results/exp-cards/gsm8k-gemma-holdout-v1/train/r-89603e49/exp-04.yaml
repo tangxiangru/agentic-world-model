@@ -1,0 +1,203 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 3.14
+
+problem:
+  statement: >-
+    "Format is 100% solved - all 41 failures are pure reasoning errors. The
+    bottleneck is now math capability -> RFT (verified self-distillation) + more
+    high-quality data is the right lever" [27448]. The v1 model reaches 72.7% at
+    limit 150 and its remaining errors are wrong intermediate reasoning, not
+    contract violations.
+  evidence:
+    - path: /home/ben/task/results/v1-ckpt-sft_v1-checkpoint-1214-limit150.json
+      locator: "[26446]"
+      observation: "v1 = 72.7% at limit 150, up from the 13.3% baseline"
+    - path: "/home/ben/task/logs/*gsm8k*.json (most recent at [26447]; exact filename not printed)"
+      locator: "[26447], [26448] - analyze_failures.py output"
+      observation: "0 format failures; all 41 failures at limit 150 are reasoning errors"
+  affected_share: 1.0
+  failure_examples:
+    - id: null
+      source: "/home/ben/task/logs/*gsm8k*.json (v1 eval log at [26448])"
+      question: "(not printed - a boat/water-intake rate problem)"
+      gold: "16"
+      model_output: >-
+        "First find how many 10-foot segments there are in 64 seconds: 64
+        seconds / 16 seconds/segment = 4 segments ... 0.8 liters/second * 4
+        seconds = 3.2 liters  ANSWER: 3.2"
+      failure: "wrong rate decomposition; answered 3.2 instead of 16"
+    - id: null
+      source: "/home/ben/task/logs/*gsm8k*.json (v1 eval log at [26448])"
+      question: "(not printed - Marissa's walking-speed problem)"
+      gold: "6"
+      model_output: >-
+        "Marissa has already walked a total of 4 + 2 = 6 miles. She has 12 - 6 =
+        6 miles left ... 6/1.5 = 4 miles per hour  ANSWER: 4"
+      failure: "answers the wrong quantity; answered 4 instead of 6"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Adding OpenMathInstruct-2 gsm8k/augmented_gsm8k rows and a round of
+    rejection-sampling (answer-verified self-solutions from the v1 model) to the
+    v1 corpus, retrained from base, will raise accuracy above v1's 72.7% by
+    improving math capability rather than format [27448], [32538].
+  mechanism: >-
+    "RFT (verified self-distillation) + more high-quality data is the right
+    lever" [27448] - training on the model's own answer-verified solutions plus
+    a larger verified corpus targets reasoning errors, which are now 100% of the
+    failures.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: local
+      n_examples: null
+      built_by: /home/ben/task/build_v2.py
+      build_command: []
+      selection: >-
+        v1 rows kept as-is + nvidia/OpenMathInstruct-2 gsm8k-sourced rows
+        (single \boxed{} answer matching expected_answer, rewritten to an
+        "ANSWER:" line, max 2 per normalized question, decontaminated against
+        gsm8k test by exact match + 8-gram containment > 0.55) + the RFT round-1
+        rows below; prompt variants re-drawn per row (12% exact eval few-shot
+        system prompt, 8% random 10-shot, 13% random 1-8-shot, 67% none). The
+        build_v2.py invocation itself does not appear in the filtered digest, so
+        the row count is unknown; RESULTS.md [39153] describes v2 as ~185K rows
+        consumed under a 150M-token budget.
+      repeats: null
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: synthetic:self
+      n_examples: null
+      built_by: /home/ben/task/rft_generate.py
+      build_command: [nohup, python, rft_generate.py, --model, export/v1-ckpt-sft_v1-checkpoint-1214]
+      selection: >-
+        Rejection sampling with the exported v1 checkpoint over all 7473 GSM8K
+        train questions (k=6) plus 12000 OpenMathInstruct-2 augmented questions
+        (k=4), temperature 0.9, top_p 0.95, max_tokens 700, 4-shot random system
+        prompt; keep completions whose ANSWER matches gold (or whose last number
+        does), body length 80-1800 chars, shortest sample per distinct opening,
+        at most 3 kept per question. k/temperature/max-keep/n-aug are
+        rft_generate.py argparse defaults at [27449]; the launch overrode none
+        of them. Component of data/sft_v2.jsonl, not fed to the trainer
+        directly. RESULTS.md [39153] reports 44.7K verified self-solutions.
+      repeats: "at most 3 solutions per question"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (custom packed Dataset), flash_attn 2.8.3, torch 2.8.0+cu129"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: "fp32 weights with bf16 autocast (dtype=torch.float32, bf16=True)"
+      seed: 7
+      other: >-
+        batch_size, grad_accum, max_seq_len and the 170M token/epoch budget are
+        train_sft.py argparse defaults not overridden by this launch;
+        scheduler/warmup/weight_decay/seed are hard-coded in train_sft.py.
+        --save-steps 500 from the launch. Packing: first-fit-decreasing with
+        capacity buckets [19151]. Completion-only loss.
+    target_format: >-
+      assistant turn = "<reasoning>\n\nANSWER: <n>" followed by <|im_end|>, in the
+      eval's chat rendering.
+  command:
+    argv: [nohup, env, "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True", python, train_sft.py, --data, data/sft_v2.jsonl, --out, ckpt/sft_v2, --epochs, "2", --lr, "1e-5", --save-steps, "500"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator:
+    ref: exp-03
+    value: 0.727
+    path: /home/ben/task/results/v1-ckpt-sft_v1-checkpoint-1214-limit150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.13
+  duration_h: 0.13
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Killed ~8 minutes in at [29447] and the checkpoint directory deleted; the
+      relaunch in the same command line changed the run to 1.6 epochs with a
+      150M-token budget (description "Restart v2 with 150M tokens and 1.6
+      epochs"). The stream gives no reason in words beyond that description.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    First v2 launch (2 epochs, default 170M-token budget) was killed after ~8
+    minutes and its checkpoint dir removed, before any checkpoint or
+    measurement; relaunched immediately at a smaller epoch/token budget.
+  decision: abandon_line
+  next_step: "relaunch v2 at --epochs 1.6 --token-budget 150000000 [29447]"
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-89603e49
+  launch_i: 28893
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [26446, 26447, 26448, 27448]
+    setup: [22848, 27449, 27452, 28893]
+    evaluation: [26359, 26446]
+    result: [29447, 29448]
+    conclusion: [29447, 29610]
+  snapshot_files:
+    - train_sft.py
+    - build_v2.py
+    - rft_generate.py
+    - analyze_failures.py
+    - evaluate.py
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the build_v2.py invocation is not in the filtered digest, so data/sft_v2.jsonl's row count and mixture are known only from RESULTS.md"
+    - "rft_generate.py's round-1 output counts (solved rate, rows) are not printed in the digest"
+    - "no result block for this launch; step count and loss unknown"

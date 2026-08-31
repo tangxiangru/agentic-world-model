@@ -1,0 +1,186 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 1.21
+
+problem:
+  statement: >-
+    The eval prompts every item with a large system message holding 10 worked
+    gsm8k examples, but training showed the model only a bare user turn, so
+    train and test prompts differ. The exp-03 checkpoint drifts off-distribution
+    under that system message - one logged completion answers in Russian and
+    returns 1925 for a 25-orange problem.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-f5bfab57.md
+      locator: "[81]"
+      observation: "the eval's messages start with a role=system turn of worked examples ending 'ANSWER: 55', then the user question; the assistant turn is Russian prose with the wrong answer"
+    - path: /home/ben/task/metrics_50_nothink.json
+      locator: "[91]"
+      observation: "0.600 on 50 samples - the ceiling the mismatched prompt leaves"
+    - path: /home/ben/task/system_prompt.txt
+      locator: "whole file, 5872 bytes"
+      observation: "the extracted 10-shot system prompt, saved so training can prepend it"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Prepending the eval's own 10-shot system message to every training example
+    ("train with system prompt injected to match test distribution", [106])
+    will raise gsm8k accuracy.
+  mechanism: >-
+    Training on exactly the prompt shape the grader sends removes the
+    distribution shift between the fine-tuning data and test time.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null                       # loaded from the hub inside the script; never written to disk
+      source: "HF openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: /home/ben/task/train_sft.py
+      build_command: []                # tokenisation is inline in the training script
+      selection: >-
+        every train row, no filtering; each example is
+        <|im_start|>system + the 10-shot text of /home/ben/task/system_prompt.txt
+        + <|im_end|>, then the eval's user instruction + question + "Reasoning:",
+        then the assistant turn "{reasoning}\n\nANSWER: {gold}" + <|im_end|>;
+        loss masked (-100) over system and user spans; truncated at 4096 tokens
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        all values read from the full script text written at [104]; the script
+        takes no arguments, so nothing was overridden. gradient_checkpointing=True,
+        save_strategy="epoch", flash_attention_2, device_map="auto",
+        tokenizer/model eos_token_id = <|im_end|> (151645);
+        weight_decay and seed are never set in the script and were not printed
+    target_format: >-
+      the eval's own three-turn layout (10-shot system, instruction+question
+      user, assistant) with the assistant turn ending "ANSWER: <n>" + <|im_end|>
+  command:
+    argv:
+      - python
+      - /home/ben/task/train_sft.py
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - final_model
+      - --limit
+      - "100"
+      - --json-output-file
+      - metrics_100_final.json
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.59
+    path: /home/ben/task/metrics_100_fixed.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.0
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: null
+    steps: 1404
+    notes: >-
+      1404 steps [107]; the run took about an hour, four times exp-03, because
+      each example now carries the 5.9 KB system prompt. Per-step losses are in
+      the truncated tool output and not in the stream. trainer.save_model
+      overwrote /home/ben/task/final_model.
+  measurements:
+    - metric: accuracy
+      value: 0.73
+      n: 100
+      path: /home/ben/task/metrics_100_final.json
+      delta_vs_comparator: 0.14
+    - metric: accuracy
+      value: 0.6360879454131918
+      n: 1319
+      path: /home/ben/task/metrics_full.json
+      delta_vs_comparator: null
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    Matching the training prompt to the eval's 10-shot system message gave
+    0.730 on the same 100 items where the previous candidate measured 0.590
+    (+14 pts), and 0.6361 on the full 1319-item set [109,111]; the agent later
+    recorded this run as "~63.6% on the full test set" [128].
+  decision: reject
+  next_step: "Same recipe for 5 epochs instead of 3 [114-120]."
+
+outcome:
+  official_accuracy: null       # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-f5bfab57
+  launch_i: 106
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [81, 91, 97]
+    setup: [104, 106]
+    evaluation: [108, 110]
+    result: [107, 109, 111]
+    conclusion: [109, 111, 128]
+  snapshot_files:
+    - train_sft.py
+    - system_prompt.txt
+    - evaluate.py
+    - metrics_100_final.json
+    - metrics_full.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The comparator is exp-02's eos-patched checkpoint, the only other model scored at --limit 100; exp-03 (the immediately preceding candidate) was only scored at --limit 50, so part of the +14 pts may belong to the <think>/eos change rather than to the system prompt."
+    - "system_prompt.txt is in the workspace, but the stream does not show the command that wrote it: extract_fewshot.py failed at [97] and events [98]-[103] are not in the digest."
+    - "This launch overwrote /home/ben/task/final_model, so exp-03's weights no longer exist after [107]."
+    - "The workspace holds contamination_judgement.txt ('no contamination detected'), but no contamination check appears in the stream, so the field is left not_run."

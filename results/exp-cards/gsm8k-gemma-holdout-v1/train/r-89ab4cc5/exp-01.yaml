@@ -1,0 +1,182 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The un-tuned base model scores 0.45 on a 40-sample GSM8K slice and is not
+    adapted to the scorer's output contract (the response must end with a line
+    "ANSWER: $ANSWER"); the agent took 0.45 as the number a tuned checkpoint has
+    to beat.
+  evidence:
+    - path: /home/ben/task/baseline_limit40.json
+      locator: "[41]"
+      observation: "base model, 40 samples: accuracy 0.450, stderr 0.080"
+    - path: /home/ben/task/evaluate.py
+      locator: "[8], [29]"
+      observation: "agent read the scoring contract: end with 'ANSWER: <number>'; eval injects 10 GSM8K train few-shots"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    LoRA/QLoRA supervised fine-tuning of the base model on GSM8K train, written
+    in the exact benchmark prompt format with the answer ending in
+    "ANSWER: <n>", will lift accuracy over the 0.45 baseline.
+  mechanism: >-
+    Training targets shaped like the eval's own prompt/answer format teach the
+    base model to produce a step-by-step solution that terminates in the parsed
+    ANSWER line, so correct reasoning is actually scored ([43], [62], [138]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "GSM8K train (agent's words, [43], [62]); the loader call in the script text is truncated in the stream"
+      n_examples: null
+      built_by: /home/ben/task/scripts/train_gsm8k_lora.py
+      build_command: []
+      selection: >-
+        GSM8K train examples; the gold answer is split on "####" into reasoning
+        and target, the prompt is the benchmark's math template and the
+        completion is "<reasoning>\n\nANSWER: <target>" ([67]); a small held-out
+        fraction is split off for eval_loss (fraction not stated in the launch).
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 with peft 0.18.1 (versions printed at [47])"
+    peft: "LoRA r=64 alpha=128 dropout=0.05; target modules not stated"
+    hyperparams:
+      lr: 1.5e-4
+      epochs: 4
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 1536
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        --logging-steps 10; the agent described the run as QLoRA with
+        assistant-only masked loss via custom labels ([78]). The training
+        script is NOT in the workspace snapshot (only the truncated text it
+        wrote at [67]), so no argparse defaults were adopted for the fields
+        left null above.
+    target_format: >-
+      benchmark math prompt template + completion "<reasoning>\n\nANSWER: <gold>"
+  command:
+    argv:
+      - python
+      - scripts/train_gsm8k_lora.py
+      - --output-dir
+      - runs/gsm8k_lora_v1
+      - --epochs
+      - "4"
+      - --learning-rate
+      - "1.5e-4"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "4"
+      - --max-length
+      - "1536"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --lora-dropout
+      - "0.05"
+      - --logging-steps
+      - "10"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_lora.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.45
+    path: /home/ben/task/baseline_limit40.json
+  diagnostic:
+    what: "per-epoch held-out eval_loss in trainer_state.json, used for checkpoint selection"
+    command: []
+    path: /home/ben/task/runs/gsm8k_lora_v1/checkpoint-1359/trainer_state.json
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/gsm8k_lora_v1/checkpoint-453
+  training_summary:
+    final_loss: null
+    steps: 1359
+    notes: >-
+      1812 optimizer steps planned for this config ([90]); the agent killed the
+      run after epoch 3 at global_step 1359 ([166], [168], [183]). Two
+      checkpoints were saved, checkpoint-453 and checkpoint-1359;
+      best_model_checkpoint = checkpoint-453 (eval_loss 0.4611).
+  measurements: []
+  diagnostic_result:
+    value: 0.4610549509525299
+    path: /home/ben/task/runs/gsm8k_lora_v1/checkpoint-1359/trainer_state.json
+    notes: "eval_loss 0.4611 (epoch 1, step 453) -> 0.4824 (epoch 2, step 906) -> 0.5633 (epoch 3, step 1359) [183]"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Validation has degraded from epoch 1 to epoch 2, so continuing all the way
+    to epoch 4 is unlikely to help" [166]; the saved metadata confirmed
+    overfitting and picked checkpoint-453 [185]. No benchmark score was taken on
+    this output itself, so the format-alignment claim was not tested here.
+  decision: adopt
+  next_step: >-
+    Merge both saved checkpoints (453 and 1359) and benchmark them on GSM8K to
+    validate the eval-loss-based selection [185].
+
+provenance:
+  kind: extracted
+  run_ref: r-89ab4cc5
+  launch_i: 88
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [29, 41, 43]
+    setup: [62, 67, 78, 88]
+    evaluation: [182, 183]
+    result: [90, 166, 168, 183]
+    conclusion: [166, 185]
+  snapshot_files:
+    - baseline_limit40.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "an identical invocation of this command appears at [79]; the stream does not record its outcome, and the training that produced the checkpoints is the [88] invocation"
+    - "the training script is not in the workspace snapshot, so scheduler, warmup, weight decay, seed and precision are unknown"
+    - "the training data file is never named or counted; the load_dataset call in the script text at [67] is truncated"
+    - "wall time of the run is never printed (the agent's in-flight estimate was 50-55 minutes, [113])"

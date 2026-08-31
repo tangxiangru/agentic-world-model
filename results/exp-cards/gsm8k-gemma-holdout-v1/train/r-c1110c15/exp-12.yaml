@@ -1,0 +1,194 @@
+# Reconstructed experiment card (awm-experiment-card-v1 + provenance).
+# Extracted after the fact from a finished run's event stream and workspace snapshot.
+# Bracketed numbers such as [1411] are event indices in the run digest.
+
+schema_version: awm-experiment-card-v1
+card_id: exp-12
+created_at: null
+elapsed_h: 5.93
+problem:
+  statement: '''Training-based variants around the winner are flattening out'' [1685]: seven consecutive
+    training variants (mixture, checkpoint and learning-rate axes) all landed 69-78% on 100 against the
+    incumbent''s 81.0%. The one variant that looked better on 100, teacher_delta_mix_d, was unusable because
+    it collapsed to 68.7% on 150.'
+  evidence:
+  - path: /home/ben/task/teacher_delta_mix_d_ckpt5_eval100.json
+    locator: '[1549]'
+    observation: the d branch scored 82.0% on 100
+  - path: /home/ben/task/teacher_delta_mix_d_ckpt5_eval150.json
+    locator: '[1555]'
+    observation: the same checkpoint scored 68.7% on 150
+  - path: /home/ben/task/teacher_delta_mix_a_lr2e7_ckpt5_eval100.json
+    locator: '[1676]'
+    observation: the lower-LR variant scored 71.0% on 100
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: Blending a small fraction (20%) of the high-variance teacher_delta_mix_d model into the validated
+    final_model in weight space 'captures any of its upside without inheriting the collapse' [1685].
+  mechanism: The two models are a few LoRA steps apart from the same base, so their weights are close
+    enough to average; a 0.8/0.2 blend stays near the validated model while moving a little toward whatever
+    d found.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-04
+    hash: null
+  data: []
+  method:
+    family: merge
+    framework: transformers AutoModelForCausalLM parameter averaging (inline script)
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: 'weight-space average of two merged checkpoints: model-a=/home/ben/task/final_model at 0.8,
+        model-b=/home/ben/task/experiments/teacher_delta_mix_d_ckpt5_merged at alpha=0.2 (exp-07''s candidate);
+        floating-point buffers averaged the same way, integer buffers taken from model-b; tokenizer and
+        generation config copied from model-a'
+    target_format: unchanged - the blend keeps final_model's chat template and generation config
+  command:
+    argv:
+    - /bin/bash
+    - -lc
+    - |-
+      python - <<'PY'
+      import shutil
+      from pathlib import Path
+      import torch
+      from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+
+      base_path = '/home/ben/task/final_model'
+      other_path = '/home/ben/task/experiments/teacher_delta_mix_d_ckpt5_merged'
+      out_path = Path('/home/ben/task/experiments/final_model_soup_d20')
+      alpha = 0.2
+
+      if out_path.exists():
+          shutil.rmtree(out_path)
+
+      m1 = AutoModelForCausalLM.from_pretrained(base_path, torch_dtype=torch.bfloat16, device_map='cpu')
+      m2 = AutoModelForCausalLM.from_pretrained(other_path, torch_dtype=torch.bfloat16, device_map='cpu')
+
+      with torch.no_grad():
+          p2 = dict(m2.named_parameters())
+          for name, param in m1.named_parameters():
+              param.copy_(param * (1 - alpha) + p2[name].to(param.dtype) * alpha)
+          b2 = dict(m2.named_buffers())
+          for name, buf in m1.named_buffers():
+              if name in b2 and torch.is_floating_point(buf):
+                  buf.copy_(buf * (1 - alpha) + b2[name].to(buf.dtype) * alpha)
+              elif name in b2:
+                  buf.copy_(b2[name])
+
+      m1.save_pretrained(out_path, safe_serialization=True)
+      AutoTokenizer.from_pretrained(base_path, use_fast=True).save_pretrained(out_path)
+      GenerationConfig.from_pretrained(base_path).save_pretrained(out_path)
+      print(out_path)
+      PY
+    cwd: null
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: 1x H100
+    planned_h: null
+evaluation:
+  protocol:
+    command:
+    - python
+    - /home/ben/task/evaluate.py
+    - --model-path
+    - /home/ben/task/experiments/final_model_soup_d20
+    - --limit
+    - '100'
+    - --json-output-file
+    - /home/ben/task/final_model_soup_d20_eval100.json
+    - --max-connections
+    - '2'
+    - --max-tokens
+    - '3000'
+    - --gpu-memory-utilization
+    - '0.45'
+    dev_set: official --limit 100
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.81
+    path: /home/ben/task/teacher_delta_mix_a_ckpt5_eval100.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/experiments/final_model_soup_d20
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: No training; the script writes the averaged model directly.
+  measurements:
+  - metric: accuracy
+    value: 0.7
+    n: 100
+    path: /home/ben/task/final_model_soup_d20_eval100.json
+    delta_vs_comparator: -0.11
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: 70.0% on 100, eleven points below the incumbent [1696]. Averaging in 20% of the unstable branch
+    does not recover any of its apparent upside; it lands in the same collapsed band as the training variants.
+  decision: reject
+  next_step: 'Look outside the weights: check tokenizer correctness and eval stability [1698].'
+outcome:
+  official_accuracy: null
+provenance:
+  kind: extracted
+  run_ref: r-c1110c15
+  launch_i: 1686
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem:
+    - 1685
+    setup:
+    - 1686
+    evaluation:
+    - 1689
+    result:
+    - 1689
+    conclusion:
+    - 1696
+  snapshot_files:
+  - final_model_soup_d20_eval100.json
+  - teacher_delta_mix_d_ckpt5_eval100.json
+  - teacher_delta_mix_d_ckpt5_eval150.json
+  - teacher_delta_mix_a_ckpt5_eval100.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+  - The digest does not show a result block for the soup script itself, only the eval that followed, so
+    there is no confirmation line for the write.

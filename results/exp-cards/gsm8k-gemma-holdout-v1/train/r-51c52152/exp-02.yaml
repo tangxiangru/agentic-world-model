@@ -1,0 +1,213 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.66
+
+problem:
+  statement: >-
+    exp-01's remaining errors are genuine arithmetic/reasoning mistakes inside
+    well-formed solutions, not format failures: "completions are well-formed (end
+    with ANSWER: N, model stops cleanly, median 257 tokens). Failures are genuine
+    arithmetic/reasoning errors (e.g., circular reasoning like '700/3 bees = X'),
+    not format issues - exactly what RFT targets" [228].
+  evidence:
+    - path: /home/ben/task/gold_v1_metrics.json
+      locator: "[221], [222]"
+      observation: "exp-01 scores 0.5667 at --limit 150, so ~43% of items are still wrong"
+    - path: /home/ben/task/eval_gold_v1.log
+      locator: "[225], [226]"
+      observation: >-
+        stop_reasons all clean, completion length min/median/max 62/257/887; three
+        printed failures are wrong intermediate arithmetic, not formatting
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: null
+      question: null
+      gold: "400"
+      model_output: "...There are 700/2 bees = <<700/2=350>>350 baby bees.\nThere are 350/2 = <<350/2=175>>175 queen bees.\nThere are 350/2 bees = <<350/2=175>>175 worker bees.\n\nANSWER: 175"
+      failure: "circular/incoherent setup ('so 700/3 bees = X'), final answer 175 vs gold 400"
+    - id: null
+      source: null
+      question: null
+      gold: "40"
+      model_output: "...The mechanic earned $400 on Friday because 12 times 40 equals 480 or 6 times 60 equals 360 and 480 - 360 equals <<12*40-6*60=120>>120\n\nANSWER: 120"
+      failure: "hedging between two computations, picks the wrong difference; 120 vs gold 40"
+    - id: null
+      source: null
+      question: null
+      gold: "50"
+      model_output: "...He wants to bake 38 because 95 /2 = <<95/2=47.5>>47.5\nHe baked 48 last year because you need to round up because you can't make half of a cookie.\n\nANSWER: 48"
+      failure: "wrong equation set-up then an ad-hoc rounding step; 48 vs gold 50"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Rejection-sampling fine-tuning - sampling K CoTs per GSM8K train problem from
+    exp-01, keeping only the ones whose extracted answer matches gold, and
+    retraining on gold x2 plus those solutions - will fix the arithmetic/reasoning
+    failures exp-01 still makes.
+  mechanism: >-
+    "sample K CoTs per train problem from the SFT model, keep correct ones using
+    the *exact* scorer logic, then retrain" [153]; the kept traces are in the
+    model's own distribution and already end in a correct answer.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data_rft1
+      source: "HF:openai/gsm8k gold x2 + derived:exp-01 (self-sampled, rft_round1.jsonl)"
+      n_examples: 41156
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --out, data_rft1, --gold, "2", --rft, rft_round1.jsonl, --max-length, "1024"]
+      selection: >-
+        after the dedup fix at [259]-[269]: RFT records first, deduped on
+        (question, reasoning) so diverse correct solutions for the same problem
+        survive, then gold added once through the same dedup and one further raw
+        copy of gold appended for up-weighting; test-split questions dropped;
+        examples over 1024 tokens dropped.
+      contamination_check: passed
+      mixture_weight: 1.0
+      repeats: "gold x2"
+    - path: /home/ben/task/rft_round1.jsonl
+      source: "synthetic:self (sampled from exp-01's checkpoint)"
+      n_examples: 26218
+      built_by: /home/ben/task/sample_rft.py
+      build_command: [python, sample_rft.py, --model, runs/gold_v1, --out, rft_round1.jsonl, --k, "8", --temp, "0.8", --keep-per-problem, "4", --max-tokens, "512", --gpu-mem, "0.85"]
+      selection: >-
+        8 samples per GSM8K train question at temperature 0.8 / top_p 0.95 (script
+        default) with stop_token_ids [128001, 128012]; a sample is kept only when
+        inspect_ai's match_str(location="end", numeric=True) matches the gold
+        target - the same scorer the eval uses; at most 4 kept per problem;
+        exact-duplicate reasoning dropped.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: null
+  method:
+    family: rft
+    framework: "transformers.Trainer 4.57.3"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        Only lr/epochs/bs/accum came from the launch; scheduler, seed,
+        max_grad_norm=1.0, group_by_length, adamw_torch_fused,
+        gradient_checkpointing and flash_attention_2 are hard-coded in
+        train_sft.py, and warmup/weight_decay are its argparse defaults, not
+        overridden by this launch. max_seq_len enforced by
+        prepare_data.py --max-length 1024.
+    target_format: >-
+      same as exp-01: smollm.jinja chat format, assistant turn = reasoning +
+      "\n\nANSWER: <n>", assistant-only loss.
+  command:
+    argv: [python, train_sft.py, --data, data_rft1, --out, runs/rft_v1, --epochs, "3", --lr, "2e-5", --bs, "16", --accum, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_rft_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, runs/rft_v1, --limit, "150", --max-connections, "8", --gpu-memory-utilization, "0.5", --json-output-file, rft_v1_metrics.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.5667
+    path: /home/ben/task/gold_v1_metrics.json
+  diagnostic:
+    what: "share of completions with no 'ANSWER:' line, plus completion-length distribution, to separate collapse from reasoning loss"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  duration_h: null
+  steps: 3861
+  output_checkpoint: /home/ben/task/runs/rft_v1
+  training_summary: {final_loss: 0.14, steps: 3861, notes: "train_loss 0.14 as recorded by the agent at [356] (vs 0.30 for exp-01); step count from the progress bar at [304]; checkpoint deleted at [449]"}
+  measurements:
+    - metric: accuracy
+      value: 0.4
+      n: 150
+      path: /home/ben/task/rft_v1_metrics.json
+      delta_vs_comparator: -0.1667
+  diagnostic_result:
+    value: 0.24
+    path: null
+    notes: >-
+      [353]: 36/150 completions contain no "ANSWER:"; length min/median/p90/max =
+      105/366/4000/6834 chars, with "!!!!" loops running to max_tokens and doubled
+      "ANSWER:" lines - degeneration, not just weaker reasoning.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    "rft_v1: 40% - a regression from gold_v1's 56.7%. RFT hurt." [351]. The agent's
+    reading at [356]: "overfitting/collapse. train_loss 0.14 (vs 0.30). 24% outputs
+    ramble to max_tokens ('!!!' loops), double ANSWER lines. Self-RFT data too
+    low-diversity -> distribution collapse."
+  decision: reject
+  next_step: >-
+    "Metamath recipe (gold + diverse external GSM augs) is more robust" [356]; and
+    if RFT is retried, "gentle (1-2 ep, lr1e-5) + diverse ext data".
+
+outcome:
+  official_accuracy: null      # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-51c52152
+  launch_i: 279
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [225, 226, 228]
+    setup: [229, 254, 259, 273, 279]
+    evaluation: [331]
+    result: [346, 351, 352, 353]
+    conclusion: [351, 356]
+  snapshot_files:
+    - sample_rft.py
+    - prepare_data.py
+    - train_sft.py
+    - sft_common.py
+    - rft_v1_metrics.json
+    - eval_rft_v1.log
+    - sample_rft1.log
+    - gold_v1_metrics.json
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "train_rft_v1.log and rft_round1.jsonl are not in the workspace snapshot"
+    - "n_examples 41156 for data_rft1 was not printed at [273]; it is the 'train examples: 41156' line from train_rft_v2.log, which loaded the same data_rft1 directory unchanged"
+    - "the first data_rft1 build at [254] used the buggy (question, answer) dedup; the launch used the [273] rebuild"
+    - "the three failure examples were printed at [226] without item ids, and the eval log they came from (logs/*.json) was deleted at [229]"

@@ -1,0 +1,191 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 0.73
+
+problem:
+  statement: >-
+    The un-tuned base model scores 41.3% on the eval at limit 150, and four earlier
+    attempts to start SFT v1 died on memory or on the full root filesystem, so the
+    recipe had still not been tested.
+  evidence:
+    - path: /home/ben/task/results_baseline.json
+      locator: "[226]"
+      observation: "baseline accuracy 0.4133 (stderr 0.0403) at limit 150"
+    - path: /home/ben/task/NOTES.md
+      locator: "[439], Learnings"
+      observation: "'bs4+ckpt+liger = target config' after the OOM and disk failures"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "SFT v1: math CoT data (MetaMathQA GSM-heavy + GSM8K train orig), ChatML format
+    matching eval exactly; ~30% samples include the EXACT eval system message ... End
+    responses with 'ANSWER: X'." [46]
+  mechanism: >-
+    The scorer takes the last number-like word in the completion, so targets written
+    in the eval's own ChatML prompt and ending in "ANSWER: <n>" make the model's
+    answers gradeable; the GSM-heavy mixture supplies the reasoning [46].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_data_v1
+      source: local
+      n_examples: 90910
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py]
+      selection: >-
+        GSM8K train originals 7,379 (every other row carrying the exact 10-shot eval
+        system message) + MetaMathQA GSM_AnsAug 7,084 / GSM_Rephrased 19,579 / GSM_SV
+        3,976 / GSM_FOBAR 3,942 / MATH_AnsAug 5,612 + OpenMathInstruct-2
+        augmented_gsm8k 24,766 / gsm8k 14,574 / math 3,998; MetaMath and OMI2 rows get
+        the eval system message with probability 0.02; boxed answers unwrapped, "The
+        answer is:" endings stripped, non-numeric GSM answers dropped, per-problem caps
+        (OMI2 3/2/1); 8-gram overlap against the gsm8k test split dropped 1,117 rows;
+        5,401 of 90,910 rows carry the eval system message
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl 0.27.2 SFTTrainer with liger kernel (transformers 4.57.3, torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        use_liger_kernel=True via --liger, packing=True, completion_only_loss=True,
+        eos_token=<|im_end|>, pad_token=<|endoftext|>, optim=adamw_torch_fused,
+        flash_attention_2, gradient_checkpointing ON (use_reentrant=False),
+        save_strategy=epoch. max_seq_len is the --max-length argparse default (4096)
+        and scheduler/warmup/weight_decay/precision/seed are hard-coded in SFTConfig
+        in train_sft.py (in the workspace); the launch overrode none of them.
+    target_format: >-
+      prompt = "<|im_start|>user\n<eval MATH_PROMPT_TEMPLATE><|im_end|>\n<|im_start|>assistant\n"
+      (optionally preceded by the exact 10-shot eval system turn); completion =
+      reasoning + "\n\nANSWER: <n><|im_end|>", loss on the completion only
+  command:
+    argv: [python, train_sft.py, --data, sft_data_v1, --out, ckpt_sft_v1, --epochs, "2", --bs, "4", --accum, "8", --lr, "1e-5", --liger]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTHONPYCACHEPREFIX: /home/ben/pycache, PYTHONPATH: /home/ben/pylibs}
+    log: /home/ben/task/train_v1.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 1.75
+
+evaluation:
+  protocol:
+    command: [bash, run_eval.sh, ckpt_sft_v1/final, sft_v1_ep2, "150", "4"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.4133
+    path: /home/ben/task/results_baseline.json
+  diagnostic:
+    what: >-
+      manual read of the wrong answers in the epoch-2 eval log to separate format
+      failures from reasoning failures [621]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.77
+  output_checkpoint: /home/ben/task/ckpt_sft_v1/final
+  training_summary:
+    final_loss: 0.2506
+    steps: 640
+    notes: >-
+      train_runtime 6354s, 2 epochs, mean_token_accuracy 0.918 at the end; epoch-1
+      checkpoint saved as ckpt_sft_v1/checkpoint-320 (loss 0.51 -> 0.236, token
+      accuracy 91.6% [522]). Both checkpoints were patched to greedy decoding
+      (temperature 0.0, eos [<|im_end|>, <|endoftext|>]) by patch_ckpt.py before eval [560].
+  measurements:
+    - metric: accuracy
+      value: 0.8733
+      n: 150
+      path: /home/ben/task/results_sft_v1_ep2.json
+      delta_vs_comparator: 0.46
+    - metric: accuracy
+      value: 0.86
+      n: 150
+      path: /home/ben/task/results_sft_v1_ep1.json
+      delta_vs_comparator: 0.4467
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "All failures are genuine reasoning slips in terse MetaMath style - format is
+      perfect" [624]; four wrong items printed at [622] all end in a well-formed
+      ANSWER line.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "87.3% (ep2) / 86.0% (ep1) - big jump from 41.3% but below target" [620]; every
+    remaining failure the agent inspected was a reasoning slip, not a format miss, so
+    the format-matching mechanism did what it was meant to.
+  decision: adopt
+  next_step: >-
+    Rejection-sampling round on the epoch-2 checkpoint's own correct solutions, plus
+    fresh augmented GSM problems and a replay slice [46, 500]
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a2d62ed3
+  launch_i: 433
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [226, 229, 439]
+    setup: [124, 189, 274, 306, 433]
+    evaluation: [283, 527, 560]
+    result: [522, 620, 622, 624]
+    conclusion: [620, 624, 646]
+  snapshot_files:
+    - train_sft.py
+    - train_v1.log
+    - prep_data.py
+    - prep_data.log
+    - patch_ckpt.py
+    - post_v1.sh
+    - run_eval.sh
+    - eval_sft_v1_ep1.log
+    - eval_sft_v1_ep2.log
+    - results_sft_v1_ep1.json
+    - results_sft_v1_ep2.json
+    - results_baseline.json
+    - NOTES.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "epoch-2 was evaluated first and epoch-1 second, both under the same protocol, but the stream does not say which was intended as the candidate before the numbers came back"

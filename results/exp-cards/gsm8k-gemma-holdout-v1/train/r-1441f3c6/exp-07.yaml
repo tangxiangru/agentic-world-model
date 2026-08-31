@@ -1,0 +1,223 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Same problem as card exp-06: every TRL-trained checkpoint collapses into repeated
+    tokens [231], [239], [242], and the first launch of the hand-written trainer at [249]
+    left no result in the stream.
+  evidence:
+    - path: null
+      locator: "[239], [242]"
+      observation: >-
+        runs/exp4_tiny_merged, merged and unmerged, emits one repeated token while the
+        base model answers coherently.
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "A manual LoRA training script with plain transformers.Trainer and explicit
+    tokenization/collation to eliminate hidden masking/template side effects" [244], run
+    as "a short pilot... to verify that this pipeline preserves coherent generation
+    before committing to a longer run" [248].
+  mechanism: >-
+    Hand-written text building (prompt + rationale + "ANSWER: n" + EOS), plain LM
+    collation and loss on all tokens avoid whatever the TRL data path did to the labels;
+    an explicit EOS should also fix the never-stopping generations seen at [181].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF: openai/gsm8k (config main, split=train, loaded in-process by the training script)"
+      n_examples: 2000
+      built_by: /home/ben/task/train_manual_lora.py
+      build_command: []
+      selection: >-
+        Train split shuffled with seed 42, then the first 2000 rows (--train-limit 2000);
+        to_text() concatenates the evaluator prompt, the gold rationale (answer split on
+        "####"), a final "ANSWER: <target>" line and the EOS token into one "text" field;
+        tokenized with truncation at 1024; 128 rows held out as the val split.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "transformers.Trainer (hand-written script, no TRL); DataCollatorForLanguageModeling(mlm=False)"
+    peft: "QLoRA: LoRA r=8 alpha=16 dropout=0.05 targets=q_proj,v_proj over a 4-bit NF4 base prepared with prepare_model_for_kbit_training"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 0.5
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "bf16 compute + tf32, 4-bit NF4 double-quant base weights"
+      seed: 42
+      other: >-
+        Identical argv to card exp-06 except --output-dir/--merged-dir. Taken from
+        train_manual_lora.py in task/ because [255] did not override them:
+        --lora-dropout 0.05, --seed 42, and the script constants weight_decay 0.0,
+        warmup_ratio 0.03, lr_scheduler_type cosine, bf16=True, tf32=True,
+        max_grad_norm 1.0, gradient_checkpointing=False, save_total_limit 2, load_in_4bit
+        NF4 double-quant with bf16 compute, flash_attention_2, merge in bfloat16 on CPU.
+    target_format: >-
+      One flat causal-LM string per example ending "ANSWER: <n><|endoftext|>"; loss on
+      every token.
+  command:
+    argv:
+      - python
+      - train_manual_lora.py
+      - --output-dir
+      - runs/exp5b_manual
+      - --merged-dir
+      - runs/exp5b_manual_merged
+      - --train-limit
+      - "2000"
+      - --val-size
+      - "128"
+      - --epochs
+      - "0.5"
+      - --lr
+      - "1e-5"
+      - --batch-size
+      - "16"
+      - --grad-accum
+      - "2"
+      - --max-length
+      - "1024"
+      - --logging-steps
+      - "10"
+      - --save-steps
+      - "50"
+      - --eval-steps
+      - "50"
+      - --lora-r
+      - "8"
+      - --lora-alpha
+      - "16"
+      - --target-modules
+      - q_proj,v_proj
+    cwd: /home/ben/task
+    script: /home/ben/task/train_manual_lora.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/exp5b_manual_merged
+      - --limit
+      - "120"
+      - --json-output-file
+      - runs/exp5b_eval120.json
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --max-tokens
+      - "1500"
+    dev_set: "official --limit 120"
+    n: 120
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.1333
+    path: /home/ben/task/baseline_metrics.json
+  diagnostic:
+    what: >-
+      Greedy single-prompt generation (gsm8k test[:1], 220 new tokens) of the merged model
+      side by side with the base model, checking length and whether "ANSWER:" appears
+      [258].
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.007
+  duration_h: 0.007
+  steps: 30
+  output_checkpoint: /home/ben/task/runs/exp5b_manual_merged
+  training_summary:
+    final_loss: 1.3309
+    steps: 30
+    notes: >-
+      30 steps, train_runtime 26.70 s, train_loss 1.3309, logged loss 1.3882 -> 1.2865,
+      epoch 0.51 [256].
+  measurements:
+    - metric: accuracy
+      value: 0.1417
+      n: 120
+      path: /home/ben/task/runs/exp5b_eval120.json
+      delta_vs_comparator: 0.0084
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "The manual tiny-LoRA model behaves like base (no collapse), which is the first
+      stable outcome" [262]; the eval consumed 44,539 output tokens against the base
+      model's 48,541 on the same 120 samples [264] vs [48], i.e. no runaway generations.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    The hand-written trainer is the first pipeline that does not collapse the model, and
+    it scores 0.1417 against the base model's 0.1333 under the identical protocol
+    (--limit 120, --max-tokens 1500): "the first improvement over baseline (14.2% vs
+    13.3% on the same 120-sample setting)" [266]. The +0.84 pt gap is well inside the
+    baseline's own +-3.1 pt stderr, so the direction is right but the size is not
+    distinguishable from noise on 120 samples.
+  decision: adopt
+  next_step: >-
+    "One stronger manual-LoRA variant on full GSM8K-train to try to push this higher
+    before finalizing" [266] - card exp-08.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-1441f3c6
+  launch_i: 255
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [239, 242, 244]
+    setup: [248, 249, 255]
+    evaluation: [263]
+    result: [256, 262, 264]
+    conclusion: [266, 280]
+  snapshot_files:
+    - train_manual_lora.py
+    - baseline_metrics.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "runs/exp5b_eval120.json is not in the workspace snapshot; the 0.1417 value is the agent's own report at [297], matching the 0.142 printed at [264]."
+    - "No eval-loss line for runs/exp5b_manual appears in the digest even though --eval-steps 50 was set (the run is only 30 steps long)."

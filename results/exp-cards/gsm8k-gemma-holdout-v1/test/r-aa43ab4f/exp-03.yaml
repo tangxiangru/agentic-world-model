@@ -1,0 +1,246 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: 4.98
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The agent's words at [213]: "The v2 model works perfectly WITHOUT fewshots but
+    continues the pattern WITH fewshots." The incumbent answers correctly and stops when
+    given a bare question, but under the eval's 10-shot prompt it keeps generating,
+    inventing and answering further questions, so the numeric matcher - which takes the
+    last numeric value in the output - reads an answer to a question nobody asked.
+  evidence:
+    - path: /home/ben/task/logs/sft_v2_eval.json
+      locator: "[188]"
+      observation: "exp-02 scores 0.027 (stderr 0.013) on --limit 150"
+    - path: /home/ben/task/logs/2026-04-24T15-24-38+02-00_gsm8k_Q7vwS5mUdvM3PfizAyUNBk.json
+      locator: "[191]"
+      observation: >-
+        a 1,817-character completion that answers the asked question correctly in its
+        first block, then fabricates and answers three more questions and trails off
+        mid-template; stop_reason "stop", not "length"
+    - path: /home/ben/task/logs/2026-04-24T15-24-38+02-00_gsm8k_Q7vwS5mUdvM3PfizAyUNBk.json
+      locator: "[200]; samples 0-3"
+      observation: >-
+        every "ANSWER:" emitted per sample vs the one the scorer picked - all four
+        mismatch, and on two of them the model's FIRST answer was the gold one
+    - path: null
+      locator: "[210], [211]"
+      observation: >-
+        direct generation from the checkpoint with the eval's 10 few-shot context: the
+        model answers "ANSWER: 3" correctly and then replays the whole prompt template
+        before <end_of_turn>; the same probe without few-shot context [206] stops cleanly
+  affected_share: null
+  failure_examples:
+    - id: "printed at [200], sample 0"
+      source: /home/ben/task/logs/2026-04-24T15-24-38+02-00_gsm8k_Q7vwS5mUdvM3PfizAyUNBk.json
+      question: null
+      gold: "20"
+      model_output: "all ANSWER: lines emitted = ['20', '$ANSWER\"', '$ANSWER\"']; scorer picked 8"
+      failure: "the first answer, 20, is correct; the model kept going and the last-numeric matcher scored 8"
+    - id: "printed at [200], sample 2"
+      source: /home/ben/task/logs/2026-04-24T15-24-38+02-00_gsm8k_Q7vwS5mUdvM3PfizAyUNBk.json
+      question: "There are 700 bees in a hive. There are twice as many worker bees as baby bees, and there are twice as many babies as queens.  How many worker bees are there?"
+      gold: "400"
+      model_output: "all ANSWER: lines emitted = ['700', '2403', '500', '2944', '$ANSWER\"']; scorer picked 1"
+      failure: "four separate answers to four different questions; the scorer picked 1"
+    - id: "printed at [200], sample 3"
+      source: /home/ben/task/logs/2026-04-24T15-24-38+02-00_gsm8k_Q7vwS5mUdvM3PfizAyUNBk.json
+      question: null
+      gold: "40"
+      model_output: "all ANSWER: lines emitted = ['40', '$ANSWER\"', '$ANSWER\"']; scorer picked 12"
+      failure: "the first answer, 40, is correct; run-on generation cost the point"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    The agent's words at [213]: "Need to finetune v2 on fewshot-format data to teach it to
+    stop after one answer." Continuing exp-02 on gsm8k train examples whose user turn
+    already carries few-shot context will raise accuracy under the eval's few-shot prompt.
+  mechanism: >-
+    Every training example is built to mimic the eval prompt exactly - N random gsm8k-train
+    few-shots, then the target question in the eval template - and the target ends after a
+    single "ANSWER: <n>", so the loss teaches the model to emit one solution and stop even
+    when a question-answer pattern precedes it (script docstring at [214]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/runs/sft_v2
+    origin: exp-02
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_fewshot.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prepare_fewshot_data.py
+      build_command: [python, scripts/prepare_fewshot_data.py]
+      selection: >-
+        one example per gsm8k train row; the user turn is 3 few-shots sampled (random.seed(0))
+        from the other gsm8k train rows, each rendered "question\n\nReasoning:\n{reasoning}\n\nANSWER: {n}",
+        joined by blank lines and followed by the eval prompt template around the target
+        question; the target itself is excluded from its own few-shot pool; <<...>> markers
+        stripped, commas removed from the final answer; shuffled (script text at [214], run
+        at [216]).
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer / TrainingArguments (version not stated in the stream)
+    peft: "none"
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 2.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1280
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        Only the five values above were passed on the launch line at [221]; the rest are
+        null because the training script is not in the workspace snapshot. See exp-01
+        hyperparams.other for the script's hardcoded settings as read at [60].
+    target_format: >-
+      gemma3.jinja chat format; user turn = 3 few-shot Q/Reasoning/ANSWER blocks + the eval
+      prompt template around the target question; assistant turn = reasoning then a single
+      "ANSWER: <number>" followed by <end_of_turn>; prompt tokens masked to -100.
+  command:
+    argv:
+      - nohup
+      - python
+      - scripts/train_sft.py
+      - --epochs
+      - "2.0"
+      - --output
+      - /home/ben/task/runs/sft_v3
+      - --bs
+      - "8"
+      - --ga
+      - "4"
+      - --lr
+      - "5e-6"
+      - --max_len
+      - "1280"
+      - --data
+      - /home/ben/task/data/gsm8k_fewshot.jsonl
+      - --model
+      - /home/ben/task/runs/sft_v2
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/train_sft_v3.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - nohup
+      - python
+      - evaluate.py
+      - --model-path
+      - /home/ben/task/runs/sft_v3
+      - --limit
+      - "150"
+      - --json-output-file
+      - logs/sft_v3_eval.json
+      - --max-connections
+      - "8"
+      - --max-tokens
+      - "1024"
+      - --gpu-memory-utilization
+      - "0.85"
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.02666666666666667
+    path: /home/ben/task/logs/sft_v2_eval.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.49
+  output_checkpoint: /home/ben/task/runs/sft_v3
+  training_summary:
+    final_loss: null
+    steps: 468
+    notes: >-
+      468 total steps read off the progress bar at [222]; no loss line appears in the
+      digest for this launch. wall_h is an upper bound from the timestamps: launch [221]
+      t=+4.98h to the eval launch [226] t=+5.47h. preprocessor_config.json and
+      processor_config.json were copied into the checkpoint from the base-model snapshot at
+      [226] before evaluation.
+  measurements:
+    - metric: accuracy
+      value: 0.49333333333333335
+      n: 150
+      path: /home/ben/task/logs/sft_v3_eval.json
+      delta_vs_comparator: 0.4666666666666667
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    Continuing the incumbent on 7,473 gsm8k-train examples that embed 3-shot context lifted
+    --limit 150 accuracy from 0.027 to 0.493 [229], +46.7 points under the identical
+    protocol, which is what the stated claim predicted. The agent did not re-run the
+    stopping probe on this checkpoint, so the mechanism itself - that the model now stops
+    after one answer - was never separately measured.
+  decision: adopt
+  next_step: >-
+    Made this checkpoint final_model at [231], then immediately built a larger
+    few-shot-format set mixing MetaMathQA GSM_* with gsm8k train [236]-[239] to continue
+    from here.
+
+# ---- outcome (filled by the pipeline, never by the extractor) ---------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-aa43ab4f
+  launch_i: 221
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [188, 191, 199, 200, 206, 210, 211, 213]
+    setup: [214, 216, 217, 221]
+    evaluation: [226]
+    result: [222, 229]
+    conclusion: [229, 231, 236]
+  snapshot_files:
+    - evaluate.py
+    - contamination_judgement.txt
+    - timer.sh
+  smoke_runs: []
+  extractor: null   # withheld: no model names are written into these cards
+  unresolved:
+    - "n_examples 7473 is taken from the constant N in the data-prep script written at [214]; the count the script printed at [216] is cut off in the digest output at [217], and the script is not in the workspace snapshot."
+    - "The stated mechanism (stop after one answer) was never re-probed on this checkpoint, so mechanism_verdict is not_tested even though the score moved as claimed."
+    - "The agent stated no expected magnitude and no falsification condition."

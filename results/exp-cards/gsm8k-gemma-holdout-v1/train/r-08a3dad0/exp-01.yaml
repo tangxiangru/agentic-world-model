@@ -1,0 +1,239 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.19
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The base model scores 14% on the 150-item eval. It produces plausible
+    reasoning under the 10-shot chat prompt but does not stop after the answer,
+    and the scorer takes the LAST number in the output, so a rambling
+    continuation overwrites an otherwise correct answer. The base model's EOS is
+    <|endoftext|> (151643) while the chat template ends turns with <|im_end|>
+    (151645).
+  evidence:
+    - path: /home/ben/task/baseline.json
+      locator: "[132], [140]"
+      observation: "baseline accuracy 0.14 at --limit 150 on Qwen/Qwen3-1.7B-Base"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-08a3dad0.md
+      locator: "[118]"
+      observation: >-
+        agent: the scorer takes the last number (location=end), so the model must
+        end with the right number AND stop generating
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-08a3dad0.md
+      locator: "[176]"
+      observation: >-
+        agent: base EOS is <|endoftext|> (151643) but the chat template terminates
+        turns with <|im_end|> (151645)
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Supervised fine-tuning of the base model on GSM8K-train plus the GSM-typed
+    subset of MetaMathQA, formatted exactly as the eval formats its prompts and
+    with every assistant target terminated by <|im_end|>, will lift accuracy well
+    above the 14% baseline - chiefly by making the model stop cleanly after
+    "ANSWER: N".
+  mechanism: >-
+    "I'll train assistant turns to end with <|im_end|> and configure the final
+    model to stop on it" [176]; clean stopping is what the last-number scorer
+    rewards [118].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_data.jsonl
+      source: "local: built from HF openai/gsm8k (main, train) + meta-math/MetaMathQA (GSM_* types)"
+      n_examples: 101209
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py]
+      selection: >-
+        GSM8K train with <<...>> calculator annotations stripped; MetaMathQA rows
+        of type GSM_Rephrased/GSM_AnsAug/GSM_SV/GSM_FOBAR whose "The answer is:"
+        tail parses as a plain number, capped at META_CAP=90000; plus few-shot-
+        prefixed copies of a random 50% of the GSM8K-train items (the exact 10-shot
+        system prompt the eval builds, gsm8k train shuffled seed=42, first 10).
+        Prompt = chat template templates/qwen3.jinja over the eval's math prompt;
+        completion = reasoning + "ANSWER: N".
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129, flash_attention_2, datasets 4.5.0)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum are the launch flags. max_seq_len(2048), scheduler
+        (cosine), warmup_ratio(0.03), weight_decay(0.0), bf16, seed(0),
+        group_by_length=True, gradient_checkpointing=True, save_strategy=epoch,
+        save_total_limit=4, logging_steps=25, dataloader_num_workers=4 are
+        train.py values the launch did not override (script text at [217]; the
+        file in task/ is a later revision - see provenance.unresolved).
+        HF_HOME=/home/ben/hf_cache is set inside the script.
+    target_format: >-
+      prompt = templates/qwen3.jinja chat template with add_generation_prompt;
+      completion = reasoning lines + "ANSWER: N" + <|im_end|>; loss on the
+      completion only (prompt labels set to -100); examples over 2048 tokens
+      dropped.
+  command:
+    argv: [nohup, python, train.py, --data, sft_data.jsonl, --out, sft_out, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/train.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_out, --limit, "150", --json-output-file, eval_sftout.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.14
+    path: /home/ben/task/baseline.json
+  diagnostic:
+    what: >-
+      greedy HF `generate` probe on the eval prompt, zero-shot and 10-shot,
+      checking whether the model emits token 151645 (<|im_end|>) and stops [342]
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.45
+  output_checkpoint: /home/ben/task/sft_out
+  training_summary:
+    final_loss: 0.15807372636130465
+    steps: 9141
+    notes: >-
+      train_runtime 5219.34 s, 1.751 steps/s; "kept 97473/101209" examples after
+      the 2048-token filter; per-epoch checkpoints at 3047/6094/9141. Only the
+      final sft_out got eos_token_id=151645 written; the per-epoch checkpoints
+      kept 151643 [312].
+  measurements:
+    - metric: accuracy
+      value: 0.1
+      n: 150
+      path: /home/ben/task/eval_3047.json
+      delta_vs_comparator: -0.04
+    - metric: accuracy
+      value: 0.12666666666666668
+      n: 150
+      path: /home/ben/task/eval_6094.json
+      delta_vs_comparator: -0.013333333333333322
+    - metric: accuracy
+      value: 0.10666666666666667
+      n: 150
+      path: /home/ben/task/eval_9141.json
+      delta_vs_comparator: -0.03333333333333333
+    - metric: accuracy
+      value: 0.11333333333333333
+      n: 150
+      path: /home/ben/task/eval_sftout.json
+      delta_vs_comparator: -0.026666666666666672
+    - metric: accuracy
+      value: 0.04666666666666667
+      n: 150
+      path: /home/ben/task/eval_sftout2.json
+      delta_vs_comparator: -0.09333333333333332
+    - metric: accuracy
+      value: 0.04666666666666667
+      n: 150
+      path: /home/ben/task/eval_clean.json
+      delta_vs_comparator: -0.09333333333333332
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "[354] The model stops perfectly under HF generate (`ANSWER: 72<|im_end|>`)
+      in both zero/10-shot" - the weights had learned the stop token; the failure
+      was in the serving path.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: >-
+    Under the eval as run, every checkpoint of this SFT scored at or below the
+    14% baseline (best 12.7%, sft_out 11.3%) - "Accuracy dropped to ~10-13%,
+    worse than baseline" [291]; the model "produces correct answers but never
+    stops" [310]. The greedy probe [354] showed the weights do emit <|im_end|>,
+    so the measurement was confounded by the decode path, not by the training.
+  decision: adopt
+  next_step: >-
+    Make the serving path actually stop: tokenizer eos to <|im_end|>, then find
+    why vLLM still samples past the answer ([354], [385], [575]).
+
+# ---- 6b. outcome ------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-08a3dad0
+  launch_i: 247
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [118, 132, 140, 176]
+    setup: [182, 187, 189, 217, 247]
+    evaluation: [281, 314, 361, 509]
+    result: [267, 275, 291, 310, 312, 314, 354]
+    conclusion: [291, 310, 313, 354]
+  snapshot_files:
+    - build_data.py
+    - train.py
+    - train.log
+    - baseline.json
+    - eval_3047.json
+    - eval_6094.json
+    - eval_9141.json
+    - eval_sftout.json
+    - eval_sftout2.json
+    - eval_clean.json
+    - sft_smoke.jsonl
+    - evaluate.py
+    - timer.sh
+  smoke_runs:
+    - {launch_i: 226, outcome: "passed: 800-example subset (head -n 800 sft_data.jsonl), 1 epoch, bs 8; it showed the model continuing past 'ANSWER: 72' [291]"}
+  extractor: null
+  unresolved:
+    - "The launch block [247] also runs `rm -rf smoke_out` before the trainer; argv above is the trainer invocation only."
+    - "train.py in the snapshot is the final revision; its save-time config block was rewritten at [710] and [804]. The TrainingArguments this launch used are the ones in the [217] script text."
+    - "n_examples 101209 is the denominator of train.log's `kept 97473/101209`; the build script's own print at [189] is not in the digest. 101209 - 97473 = 3736 = int(0.5 * 7473), i.e. the length filter appears to have dropped exactly the few-shot-prefixed copies; the agent never checked this."
+    - "eval_sftout2.json and eval_clean.json (both 0.0467) are evals of the same sft_out weights after the tokenizer eos was changed to <|im_end|>; the command that made that change is not in the digest (the agent announces it at [354]) and the [509] result block is not in the digest."
+    - "No contamination checker is run anywhere in the stream; task/contamination_judgement.txt ('no contamination detected') and task/disallowed_model_judgement.txt were not produced by any command in the digest."

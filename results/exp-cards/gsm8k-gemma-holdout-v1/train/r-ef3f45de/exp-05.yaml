@@ -1,0 +1,162 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    "The bottleneck is gradient checkpointing + per-step time" [143]. At ~9.7 s
+    per step the GSM-only epoch still projected to ~7 h of a 9.7 h budget
+    [139]-[140], leaving no room to merge and evaluate.
+  evidence:
+    - path: /home/ben/task/timer.sh
+      locator: "[120]-[121], [178]-[179]"
+      observation: "9:41 remaining at the first kill; 9:26 remaining once a workable configuration was found"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "Bigger batch size (8 or 16) without gradient accumulation ... Let me try a
+    100K subset with larger batch for faster training, and also try to disable
+    gradient_checkpointing (since with LoRA + bf16, a 4B model should fit on H100
+    80GB even with larger batches)" [143], with flash-attention-2 for the
+    attention kernel.
+  mechanism: >-
+    Gradient checkpointing trades memory for a second forward pass per step;
+    turning it off removes that pass, and flash-attention-2 lowers the attention
+    cost, so a 4B LoRA model at batch 16 should still fit in 80 GB and step faster.
+  expected_effect:
+    metric: null
+    direction: null
+    against: exp-04
+    magnitude: null
+  falsified_if: >-
+    Implicitly, an out-of-memory error - which is what happened [161].
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/training_data_gsm_only.jsonl
+      source: "HF meta-math/MetaMathQA (GSM_* only) + HF openai/gsm8k (main, train)"
+      n_examples: 247471
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python3, prepare_data.py]
+      selection: >-
+        As exp-04: MetaMathQA GSM_* (239,998) + gsm8k train (7,473), eval-prompt
+        wrapper, "\n\nANSWER: {n}" ending, raw <|im_start|> turns, no system
+        message, no <|endoftext|>, seed 42 [71].
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 / transformers 4.57.3 / peft 0.18.1 / torch 2.8.0+cu129"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj bias=none"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        --no-grad-checkpoint (gradient_checkpointing=False) and
+        --attn-impl flash_attention_2 were passed on the command line; the flags
+        themselves were added to train.py in the rewrite at [151]. packing=True,
+        save_total_limit=3, weight_decay=0.01, lr_scheduler_type=cosine, seed=42
+        are that script's constants (workspace copy, and shown at [152]) and were
+        not overridden. Effective batch = 32.
+    target_format: >-
+      raw text: the eval's user turn verbatim, then "<|im_start|>assistant\n" +
+      reasoning + "\n\nANSWER: {n}" + "<|im_end|>\n".
+  command:
+    argv: [python3, train.py, --data-file, training_data_gsm_only.jsonl, --output-dir, trained_model_v1,
+           --epochs, "1.0", --lr, "2e-4", --batch-size, "16", --grad-accum, "2",
+           --max-seq-length, "1024", --lora-r, "64", --lora-alpha, "128",
+           --warmup-ratio, "0.03", --save-steps, "500", --logging-steps, "25",
+           --no-grad-checkpoint, --attn-impl, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  duration_h: null
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "Died before any logged step; no loss, no checkpoint."
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    "OOM with batch_size=16 and no gradient checkpointing" [161]. The agent's own
+    report; the traceback itself is not in the digest.
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Turning gradient checkpointing off at batch 16 does not fit in 80 GB: the run
+    OOM'd immediately [161]. The speed problem stands, but this way of solving it
+    is closed; only the flash-attention half of the change survives.
+  decision: abandon_line
+  next_step: >-
+    "Let me use gradient checkpointing but with flash attention and a reasonable
+    batch size" [161] - relaunched with checkpointing back on (exp-06).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-ef3f45de
+  launch_i: 157
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [140, 143]
+    setup: [151, 152, 157]
+    evaluation: []
+    result: [158, 161]
+    conclusion: [161]
+  snapshot_files:
+    - prepare_data.py
+    - train.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The OOM traceback is not in the digest; only the agent's one-line report at [161]."
+    - "No accuracy was measured on this card, so the verdict is inconclusive even though the throughput hypothesis was plainly refuted by the OOM." 

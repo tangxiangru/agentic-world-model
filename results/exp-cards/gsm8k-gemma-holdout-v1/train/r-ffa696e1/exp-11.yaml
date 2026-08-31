@@ -1,0 +1,187 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-11
+created_at: null
+elapsed_h: 7.06
+
+problem:
+  statement: >-
+    GRPO with beta=0.0 collapsed: with no KL anchor to the reference model the
+    policy degenerated into repeated garbage tokens, ran to the 4000-token cap on
+    every sample and scored 0%.
+  evidence:
+    - path: null
+      locator: "[852], [853], [854]"
+      observation: "GRPO step-1000 = 0.0% at --limit 30; mean output_tokens 4000/4000; outputs are repeated 'FFFF/PF'"
+    - path: /home/ben/task/grpo_run.log
+      locator: "[770]"
+      observation: "reward_correct drifted 0.81 -> 0.75 late in the run while the policy was degenerating"
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Rerunning GRPO with proper KL regularisation (beta=0.04) and a lower learning
+    rate (1e-6) will keep the policy anchored to the SFT reference and let the
+    correctness reward raise accuracy above the 75.3% SFT ceiling.
+  mechanism: >-
+    The KL term penalises drift from the reference policy, which is what the
+    beta=0.0 run lacked when it collapsed.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-07
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, train split), prompts only"
+      n_examples: 7473
+      built_by: /home/ben/task/grpo.py
+      build_command: [python, grpo.py, --limit, "7473"]
+      selection: "identical to exp-10; 0.5 epochs consumed roughly half of it"
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: grpo
+    framework: "trl.GRPOTrainer with vLLM colocate generation"
+    peft: none
+    hyperparams:
+      lr: 1.0e-06
+      epochs: 0.5
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 384
+      scheduler: constant_with_warmup
+      warmup: 10
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        num_generations 8, beta 0.04 (KL anchor to the reference model),
+        temperature 1.0, max_completion_length 400, max_prompt_length 384,
+        vllm_gpu_memory_utilization 0.3, save_steps 120, save_total_limit 3.
+        lr_scheduler_type constant_with_warmup, warmup_steps 10, max_grad_norm 0.2,
+        gradient_checkpointing True and bf16 are grpo.py defaults, not overridable.
+        Same two reward functions as exp-10.
+    target_format: "same single-turn prompt as the SFT data; completion ends at <|im_end|>"
+  command:
+    argv: [nohup, python, grpo.py, --init, final_model, --out, out_grpo2, --limit, "7473",
+           --epochs, "0.5", --num-gen, "8", --bs, "8", --grad-accum, "4", --lr, "1e-6",
+           --beta, "0.04", --temp, "1.0", --max-completion-len, "400", --max-prompt-len, "384",
+           --vllm-mem, "0.3", --save-steps, "120"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo.py
+    env: {HF_HOME: /home/ben/.cache/huggingface, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/grpo_run2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "out_grpo2/checkpoint-934", --limit, "150",
+              --json-output-file, eval_grpo2_934.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.7533
+    path: /home/ben/task/eval_checkpoint-2781.json
+  diagnostic:
+    what: "mean/max output_tokens and fraction over 1000 tokens, to check the collapse did not recur"
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.82
+  output_checkpoint: /home/ben/task/out_grpo2/checkpoint-934
+  training_summary:
+    final_loss: 0.0459
+    steps: 934
+    notes: >-
+      train_runtime 2862.5 s, epoch 0.5, final logged rewards/reward_correct/mean
+      0.797, kl 0.0154, entropy 0.273, completions/mean_length 132.7
+      (grpo_run2.log). Agent at [876]: "reward_correct ~0.7-0.87, entropy stable
+      ~0.2-0.4 - NOT collapsing like v1. The beta=0.04 KL anchor is working."
+      Checkpoints 720/840/934 saved.
+  measurements:
+    - metric: accuracy
+      value: 0.78
+      n: 50
+      path: null
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.8333
+      n: 150
+      path: /home/ben/task/eval_grpo2_934.json
+      delta_vs_comparator: 0.08
+    - metric: accuracy
+      value: 0.8
+      n: 150
+      path: /home/ben/task/eval_ck720.json
+      delta_vs_comparator: 0.0467
+    - metric: accuracy
+      value: 0.6867
+      n: 150
+      path: /home/ben/task/eval_ck840.json
+      delta_vs_comparator: -0.0667
+  diagnostic_result:
+    value: 121
+    path: null
+    notes: "mean 121 output tokens at --limit 50, no rambling ([889])"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    Agent at [895]: "GRPO v2 = 83.3%! A huge +8% jump over the SFT ceiling
+    (75.3%)." Measured against the SFT incumbent under the same --limit 150. The
+    KL anchor is what changed: reward rose and entropy stayed stable where
+    beta=0.0 had collapsed. The three saved checkpoints scored 80.0 / 68.7 / 83.3%,
+    which the agent read at [915] as real gain plus checkpoint variance.
+  decision: adopt
+  next_step: >-
+    Copy checkpoint-934 into final_model, verify it at the graded path, then try a
+    short GRPO continuation from it.
+
+provenance:
+  kind: extracted
+  run_ref: r-ffa696e1
+  launch_i: 859
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [852, 853, 854, 856]
+    setup: [859]
+    evaluation: [884, 890, 896]
+    result: [874, 876, 883, 889, 895, 905, 915]
+    conclusion: [895, 915]
+  snapshot_files:
+    - grpo.py
+    - grpo_run2.log
+    - prep_ckpt.sh
+    - fix_config.py
+    - eval_grpo2_934.json
+    - eval_grpo2_934.log
+    - eval_ck840.json
+    - eval_ck720.json
+    - eval_checkpoint-2781.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the --limit 50 confirmation (78%) was written to /tmp/g2_934.json, which is not in the workspace snapshot"
+    - "checkpoint-840 scoring 68.7% between 720's 80% and 934's 83.3% was never explained; the agent called it checkpoint variance"
+    - "grpo_run2.log's completions/clipped_ratio is 0.969, i.e. almost every sampled completion hit the 400-token cap during training, which the agent did not comment on"

@@ -1,0 +1,158 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 1.54
+
+problem:
+  statement: >-
+    The checkpoint answers correctly when called directly with temperature 0 ([181]) but
+    still produces garbage under the eval harness, so the remaining suspect is the decoding
+    configuration the serving stack uses.
+  evidence:
+    - path: /home/ben/task/eval_v1_fixed2.json
+      locator: "[171], workspace file"
+      observation: "0.06 at --limit 150 after both EOS fixes"
+    - path: /home/ben/task/logs/2026-04-20T03-29-32+02-00_gsm8k_axNVFzEbcWD2EKPjULGg3s.json
+      locator: "[177], [178]"
+      observation: "eval outputs still degenerate after both EOS fixes"
+    - path: /home/ben/task/checkpoints/sft-v1/generation_config.json
+      locator: "[180], [181]"
+      observation: "direct vllm call with SamplingParams(temperature=0) returns a correct answer and finish_reason stop"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Writing greedy decoding into the checkpoint's generation_config.json
+    (temperature 0.0, top_p 1.0, top_k -1, do_sample False) will make the eval decode the
+    way the direct vllm call did and recover accuracy.
+  mechanism: >-
+    The eval does not set a temperature, so the serving stack samples at its default;
+    the model's own generation_config is the one place the agent can force greedy decoding.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft-v1
+    origin: exp-03
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: null
+    peft: "none"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: "in-place edit of checkpoints/sft-v1/generation_config.json: temperature 0.0, top_p 1.0, top_k -1, do_sample False (eos_token_id already 151645)"
+    target_format: null
+  command:
+    argv:
+      - python
+      - -c
+      - |
+        import json
+        with open('checkpoints/sft-v1/generation_config.json') as f:
+            c = json.load(f)
+        # Add greedy decoding config
+        c['temperature'] = 0.0
+        c['top_p'] = 1.0
+        c['top_k'] = -1
+        c['do_sample'] = False
+        with open('checkpoints/sft-v1/generation_config.json', 'w') as f:
+            json.dump(c, f, indent=2)
+        print(c)
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, checkpoints/sft-v1, --limit, "150", --max-connections, "2", --max-tokens, "1536", --gpu-memory-utilization, "0.5", --json-output-file, eval_v1_greedy.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.06
+    path: /home/ben/task/eval_v1_fixed2.json
+  diagnostic:
+    what: "read the per-sample outputs of the greedy eval to see what the model degenerates into [211]"
+    command: []
+    path: /home/ben/task/logs/2026-04-20T03-40-49+02-00_gsm8k_2aagh5u8LdNZCtaJyTjJxV.json
+
+result:
+  execution: completed
+  wall_h: null
+  steps: null
+  duration_h: null
+  output_checkpoint: /home/ben/task/checkpoints/sft-v1
+  training_summary: {final_loss: null, steps: null, notes: "config edit only, no training"}
+  measurements:
+    - metric: accuracy
+      value: 0.013333333333333334
+      n: 150
+      path: /home/ben/task/eval_v1_greedy.json
+      delta_vs_comparator: -0.04666666666666667
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-04-20T03-40-49+02-00_gsm8k_2aagh5u8LdNZCtaJyTjJxV.json
+    notes: "under greedy decoding the outputs collapse into endless repetitions of '<think>' [212]; one of the five inspected samples answered correctly"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Greedy decoding dropped the score to 0.013 at --limit 150, the worst of the v1 series,
+    but it exposed the real fault: the agent's reading at [214] was "model trained with
+    `<think>\n\n</think>\n\n` prefix gets stuck in loops at eval". The v1 line was dropped
+    and the checkpoint deleted at [224].
+  decision: reject
+  next_step: >-
+    Retrain from the base model with a chat template that does not wrap the assistant turn
+    in a <think> block ([220], [224]).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-87e033c4
+  launch_i: 201
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [177, 178, 180, 181]
+    setup: [201, 202]
+    evaluation: [203]
+    result: [211, 212]
+    conclusion: [214, 224]
+  snapshot_files:
+    - eval_v1_fixed2.json
+    - eval_v1_greedy.json
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "eval_v1_greedy.json ran in the background and its score is never printed in the stream; the 0.0133 is read from the workspace file the launch named."
+    - "The agent never stated an expectation in words before this launch; the claim is the minimal reconstruction of the edit at [201] following the temperature-0 test at [181], flagged stated_by_agent.hypothesis: false."

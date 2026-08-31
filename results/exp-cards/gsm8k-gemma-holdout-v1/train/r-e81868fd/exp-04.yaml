@@ -1,0 +1,192 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null                        # digest header: "no timestamps in this run"
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    exp-02's model gets 54% on 150 samples: it produces the right format but short
+    answers, makes calculation errors, and loses items to answer formatting (commas,
+    scientific notation). [213]: "The model generates too little output (6,612 output
+    tokens vs 61,831 input for 30 samples = ~220 output tokens per sample) ... the
+    training data reasoning is too short."
+  evidence:
+    - path: /home/ben/task/eval_run1_150.json
+      locator: "[246]"
+      observation: "\"54% accuracy on 150 samples with the first model\" (accuracy 0.54, stderr 0.0408)"
+    - path: /home/ben/task/eval_run1_30.json
+      locator: "[220]"
+      observation: "\"Correct: 13, Incorrect: 17 / Accuracy: 13/30 = 0.433\" printed from the 30-sample eval log"
+  affected_share: null
+  failure_examples:
+    - id: "sample 5 (30-sample eval)"
+      source: "/home/ben/task/logs/2026-02-13T13-12-00+01-00_gsm8k_*.json"
+      question: "A candle melts by 2 centimeters every hour that it burns. How many centimeters shorter will a candle be after burning from 1:00 PM to 5:00 PM?"
+      gold: "8"
+      model_output: "There are 5 hours between 1:00 PM and 5:00 PM. During this time, the candle will melt 5 hours x 2 centimeters/hour = 10 centimeters. ... ANSWER: 10"
+      failure: "counted 5 hours between 1:00 PM and 5:00 PM instead of 4"
+    - id: "sample 26 (30-sample eval)"
+      source: "/home/ben/task/logs/2026-02-13T13-12-00+01-00_gsm8k_*.json"
+      question: null
+      gold: null
+      model_output: "The total cost of the pastries is $73,440 + $3,840 + $18,900 = $ <<73440+3840+18900=118,080>>118,080. ANSWER: 118080"
+      failure: "scored incorrect; the parsed answer came back as 1.1808e+05"
+    - id: "sample 27 (30-sample eval)"
+      source: "/home/ben/task/logs/2026-02-13T13-12-00+01-00_gsm8k_*.json"
+      question: "Josh buys a house for $80,000, puts in $50,000 of repairs, and the value increases by 150%. How much profit did he make?"
+      gold: null
+      model_output: "his total cost is $80,000 + $50,000 = $130,000 ... the new value is $130,000 x 1.5 = $195,000 ... $195,000 - $130,000 = $65,000. ANSWER: 65,000"
+      failure: "scored incorrect; answer written with a thousands comma (\"65,000\")"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    [236]/[249]: "I need to make the model better at actual math reasoning. I'll add
+    Orca-Math data" - a fresh 1-epoch fine-tune from the base model on an enlarged
+    mixture (GSM8K train repeated 3x + all MetaMathQA GSM types + Orca-Math 200K +
+    non-GSM MetaMathQA) will beat exp-02's 54%.
+  mechanism: >-
+    [276]: "Orca-Math with only 200K achieves 81.5% on GSM8K"; repeating GSM8K train
+    three times weights the target distribution more heavily, and Orca-Math's longer
+    GPT-4-style solutions lengthen the reasoning the model imitates.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model                 # train.py hard-codes the base model; it does not take --model-path
+    hash: null
+  data:
+    - path: /home/ben/task/train_data_v2_train.jsonl
+      source: "local: openai/gsm8k + meta-math/MetaMathQA + microsoft/orca-math-word-problems-200k"
+      n_examples: 464470
+      built_by: /home/ben/task/prepare_data_v2.py
+      build_command: [python3, prepare_data_v2.py]
+      selection: >-
+        GSM8K train x3 = 22,419 + 240,000 MetaMathQA GSM types + 192,559 of 200,035
+        Orca-Math (regex answer extraction; unparseable rows dropped) + 10,000 random
+        non-GSM MetaMathQA = 464,970 total, shuffled with seed 42, first 500 held out
+        as /home/ben/task/train_data_v2_val.jsonl (passed as --val-file). Written
+        pre-rendered in the "text" field rather than as messages.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: "GSM8K train x3, everything else x1"
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129) [23]"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        lr/epochs/batch/grad_accum/max_seq_len/warmup/save_steps from the launch argv at
+        [262]. scheduler=cosine, weight_decay=0.01, bf16=True, packing=True,
+        gradient_checkpointing=True, dataset_text_field="text", eval_steps=500 are
+        hard-coded in /home/ben/task/train.py (script text is in the workspace and the
+        launch did not override them). No training seed set.
+    target_format: >-
+      same chat-template text as exp-02, with the assistant turn
+      "<think>{reasoning}</think>{reasoning}\n\nANSWER: {n}"
+  command:
+    argv: [python3, train.py, --train-file, train_data_v2_train.jsonl, --val-file, train_data_v2_val.jsonl,
+           --output-dir, checkpoints_v2, --num-epochs, "1", --batch-size, "8",
+           --gradient-accumulation-steps, "4", --learning-rate, "2e-5",
+           --max-seq-length, "2048", --warmup-ratio, "0.03", --save-steps, "1000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/training_run2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [18]"
+    planned_h: 6.2
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol: null                       # killed before any checkpoint was written or evaluated
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: killed
+  wall_h: 0.16
+  duration_h: 0.16
+  steps: 154
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: 154
+    notes: >-
+      /home/ben/task/training_run2.log stops at step 154/5962 after 9 min 35 s; the
+      first save was set for step 1000, so nothing was written. Killed by "pkill -f
+      train.py" at [272]. Launched in the background as "rm -rf checkpoints_v2 &&
+      python3 train.py ... | tee training_run2.log &".
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    [271]: "The v2 training has 5962 total steps at ~3.75s/step = ~6.2 hours. That's
+    too long - I'll have almost no time left for evaluation and iteration." Killed on
+    budget with 5.9 h remaining; the enlarged mixture was never tested.
+  decision: abandon_line
+  next_step: >-
+    [276]: "the issue with v2 is just that the dataset is too large (464K)" - instead
+    continue training the existing exp-02/exp-03 model on a smaller focused set
+    (GSM8K x5 + Orca-Math) at a lower learning rate.
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-e81868fd
+  launch_i: 262
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [213, 220, 223, 226, 229, 246]
+    setup: [237, 239, 240, 262]
+    evaluation: []
+    result: [271, 272]
+    conclusion: [271, 274, 275, 276]
+  snapshot_files:
+    - prepare_data_v2.py
+    - train.py
+    - train_data_v2_val.jsonl
+    - training_run2.log
+    - eval_run1_30.json
+    - eval_run1_150.json
+  smoke_runs:
+    - {launch_i: 250, outcome: "crashed: the v2 file already carries a `text` field and train.py re-ran its messages formatter over it; fixed at [260] and relaunched"}
+  extractor: claude-opus-5
+  unresolved:
+    - "the eval log the failure examples were printed from (logs/2026-02-13T13-12-00+01-00_gsm8k_*.json) is not in the workspace snapshot; only the printed excerpts survive"
+    - "for the printed failures other than the candle item the agent never printed the gold answer, so `gold` is unknown; the agent itself misread these as correct-but-mismarked at [221]"
+    - "the workspace contains contamination_judgement.txt (\"no contamination detected\"), but no event in the stream shows the agent running a contamination checker"

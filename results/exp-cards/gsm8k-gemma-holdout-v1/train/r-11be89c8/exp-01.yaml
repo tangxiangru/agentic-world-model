@@ -1,0 +1,170 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The base model scores only 16.3% on an 80-sample GSM8K slice. The eval
+    prompts with 10 in-context GSM8K train examples and scores strict numeric
+    matching on a required "ANSWER: ..." line, and the base model is not tuned
+    to produce that format.
+  evidence:
+    - path: /home/ben/task/baseline_metrics.json
+      locator: "[30], [45]"
+      observation: "base model, evaluate.py --limit 80: accuracy 0.1625 (stderr 0.0415)"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-11be89c8.md
+      locator: "[28]"
+      observation: >-
+        agent's reading of the task code: 10 in-context train examples, strict
+        numeric match on a required "ANSWER:" line
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    LoRA SFT on the GSM8K train split with the eval-style few-shot system
+    message, assistant_only_loss and long context (3072) for 2 epochs will
+    align the model to the graded answer format and beat the base model.
+  mechanism: >-
+    Training with the same 10-shot system block the eval uses teaches the model
+    the exact prompt/answer shape it will be scored on ("long-context
+    alignment", [104]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (config main, train split), loaded in-process by the training script"
+      n_examples: null
+      built_by: /home/ben/task/train_sft_gsm8k.py
+      build_command: []
+      selection: >-
+        train_test_split(test_size=512, seed=42, shuffle=True); each remaining
+        train row rendered as a 3-turn chat (system / user / assistant), the
+        system turn being 10 GSM8K train examples (--system-mode fewshot;
+        --fewshot-k 10 and --fewshot-seed 42 are script defaults, not passed at
+        launch); the assistant turn is the gold rationale with the "####"
+        delimiter stripped, ending in "ANSWER: <target>"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl 0.27.2 SFTTrainer (transformers 4.57.3, peft 0.18.1, torch 2.8.0+cu129) [43]"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,up_proj,down_proj,gate_proj]"
+    hyperparams:
+      lr: 1.5e-04
+      epochs: 2.0
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        assistant_only_loss=True, gradient_checkpointing=True, packing=False,
+        load_best_model_at_end=True on eval_loss, eval/save every 100 steps,
+        save_total_limit=3, chat_template_path=templates/smollm.jinja.
+        Not overridden at launch, taken from train_sft_gsm8k.py argparse
+        defaults (script text is in the workspace): lora_r=64, lora_alpha=128,
+        lora_dropout=0.05, weight_decay=0.0, seed=42, model_name=
+        HuggingFaceTB/SmolLM3-3B-Base, attn_implementation=flash_attention_2.
+        lr_scheduler_type=cosine, bf16=True and packing/assistant-only flags
+        are set in the script body.
+    target_format: >-
+      chat messages serialised with templates/smollm.jinja; assistant turn is
+      the GSM8K rationale followed by "ANSWER: <number>", i.e. the line the
+      grader matches
+  command:
+    argv:
+      - /bin/bash
+      - -lc
+      - "python train_sft_gsm8k.py --output-dir expA_fewshot_e2 --val-size 512 --num-train-epochs 2.0 --learning-rate 1.5e-4 --warmup-ratio 0.05 --per-device-train-batch-size 2 --per-device-eval-batch-size 2 --gradient-accumulation-steps 8 --max-length 3072 --assistant-only-loss --gradient-checkpointing --system-mode fewshot --logging-steps 10 --eval-steps 100 --save-steps 100 --save-total-limit 3"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [42]"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: /home/ben/task/expA_fewshot_e2/checkpoint-400
+  training_summary:
+    final_loss: null
+    steps: 500
+    notes: >-
+      held-out eval_loss (512 train-split rows) 0.4095 / 0.3927 / 0.3839 /
+      0.3751 / 0.3887 at steps 100/200/300/400/500; best checkpoint-400
+      ([149],[158],[169],[177]). Killed by pkill at [182] after step 500
+      regressed; checkpoints 300/400/500 left on disk [188].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Validation loss improved to step 400 and regressed at step 500, so the run
+    was stopped and checkpoint-400 promoted as the candidate ([179]). No GSM8K
+    accuracy was measured on this adapter directly, so the hypothesis is
+    untested at this card.
+  decision: adopt
+  next_step: >-
+    Merge checkpoint-400 into base weights and score it on evaluate.py
+    --limit 120 (exp-02).
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-11be89c8
+  launch_i: 106
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [28, 45]
+    setup: [104, 106]
+    evaluation: []
+    result: [117, 149, 158, 169, 177, 182, 188]
+    conclusion: [179, 190]
+  snapshot_files:
+    - train_sft_gsm8k.py
+    - baseline_metrics.json
+  smoke_runs:
+    - {launch_i: 78, outcome: "passed (exp_smoke, 64 train rows, 0.05 epochs, 4 logged steps, train_loss 1.4813)"}
+    - {launch_i: 84, outcome: "passed (exp_smoke2, 16 train rows, 0.02 epochs, 1 step, --assistant-only-loss)"}
+    - {launch_i: 87, outcome: "passed: merged the smoke adapter into exp_smoke2_merged"}
+    - {launch_i: 88, outcome: "crashed: FileNotFoundError exp_smoke2_merged/config.json - eval launched before the merge had written the model dir"}
+    - {launch_i: 96, outcome: "passed (re-run of the 20-sample eval, accuracy 0.150, exp_smoke2_eval.json)"}
+  extractor: claude-opus-5
+  unresolved:
+    - "n_examples for the training set is never printed; train_meta.json is not in the workspace snapshot."
+    - "No stdout/stderr log path for the training process appears in the stream."
+    - "wall-clock for this run is not printed; the stream has no event timestamps."

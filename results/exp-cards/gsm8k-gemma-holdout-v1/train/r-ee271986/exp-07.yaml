@@ -1,0 +1,151 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-07
+created_at: null
+elapsed_h: 5.31
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    GRPO produced a LoRA adapter, but the eval loads full models only, so the adapter
+    has to be merged into the SFT checkpoint before its effect on greedy accuracy can
+    be measured.
+  evidence:
+    - path: /home/ben/task/ckpts/grpo
+      locator: "[517], [527]"
+      observation: "ckpts/grpo/adapter_model.safetensors saved; no full model weights"
+    - path: /home/ben/task/scripts/merge_lora.py
+      locator: "[444], [445]"
+      observation: "merge script written precisely because 'GRPO produces an adapter, but the eval needs a full merged model'"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: null                # packaging step; the accuracy claim belongs to exp-06
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/sft_v1/checkpoint-2968
+    origin: exp-01
+    hash: null
+  data:
+    - path: /home/ben/task/ckpts/grpo
+      source: derived:exp-06
+      n_examples: null
+      built_by: /home/ben/task/scripts/train_grpo.py
+      build_command: [nohup, python, scripts/train_grpo.py, --model, ckpts/sft_v1/checkpoint-2968,
+                      --out, ckpts/grpo, --steps, "250", --lr, "1e-5", --num_gen, "8", --bs, "8",
+                      --accum, "2", --max_len, "768", --max_prompt, "512", --temp, "1.0"]
+      selection: "the LoRA adapter saved by the GRPO run"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: merge
+    framework: "peft PeftModel.merge_and_unload + transformers save_pretrained"
+    peft: "merging LoRA r=32 alpha=64 into the base weights"
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16       # AutoModelForCausalLM.from_pretrained(..., dtype=torch.bfloat16) at [445]
+      seed: null
+      other: "after merging, the script rewrites generation_config.json to temperature 0.0 / top_p 1.0 / do_sample false / eos 151645 and tokenizer_config eos to <|im_end|> ([445])"
+    target_format: null
+  command:
+    argv: [python, scripts/merge_lora.py, --base, ckpts/sft_v1/checkpoint-2968, --adapter, ckpts/grpo,
+           --out, ckpts/grpo_merged]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/merge_lora.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/grpo_merged, --limit, "150",
+              --max-connections, "16", --json-output-file, logs/eval_grpo.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.84
+    path: /home/ben/task/logs/eval_v1_ep2.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: failed
+  wall_h: 0.02
+  duration_h: 0.02
+  steps: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      The merge itself ran; save_pretrained rejected the merged model's
+      generation_config. wall_h from event timestamps [528] (t=+5.31h) to [533]
+      (t=+5.33h). The eval chained after the merge in the same command never ran.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    No traceback text reached the stream. Agent's reading at [533]: "The merge failed
+    at save_pretrained - the base checkpoint-2968's generation_config was patched to
+    temperature=0.0, which is invalid for transformers' save validation", refined at
+    [539]: "GenerationConfig(eos_token_id=151645, do_sample=False) is valid - only the
+    explicit temperature field breaks save."
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The greedy generation_config written by exp-02 into checkpoint-2968 is carried into
+    the merged model and fails transformers' save validation, so no merged checkpoint
+    was produced and GRPO stayed unmeasured.
+  decision: abandon_line
+  next_step: >-
+    Reset the merged model's generation_config to a valid state before saving and
+    re-run the merge ([539], [540]) - done as exp-08.
+
+provenance:
+  kind: extracted
+  run_ref: r-ee271986
+  launch_i: 528
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [444, 445, 517, 527]
+    setup: [445, 528]
+    evaluation: [528]
+    result: [533, 539]
+    conclusion: [533, 539, 540]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "The actual traceback was not shown in the stream; the failure is recorded from the agent's description."

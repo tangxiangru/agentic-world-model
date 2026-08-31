@@ -1,0 +1,145 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.88
+
+problem:
+  statement: >-
+    The round-1 SFT launch OOM'd in its first forward pass: fp32 master weights plus
+    logits plus long-sequence activations exceeded the 79 GiB card at bs 6 x accum 6
+    with no activation recomputation.
+  evidence:
+    - path: /home/ben/task/logs/train_r1.log
+      locator: "[24177]"
+      observation: "torch.OutOfMemoryError at qwen3 RMSNorm; 79.03 GiB already in use, 0/3049 steps"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Reconstructed from the launch: gradient checkpointing (use_reentrant False),
+    optim adamw_torch_fused and PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True will
+    bring the same round-1 SFT recipe inside 80 GB so it can train to completion.
+  mechanism: >-
+    Recomputing activations removes the dominant long-sequence memory term; the fused
+    optimizer and expandable segments reduce optimizer-state overhead and fragmentation.
+  expected_effect:
+    metric: null
+    direction: null
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_round1
+      source: "local: openai/gsm8k train + nvidia/OpenMathInstruct-2 (gsm8k / augmented_gsm8k rows)"
+      n_examples: null
+      built_by: /home/ben/task/build_data_round1.py
+      build_command: ["python", "build_data_round1.py"]
+      selection: >-
+        unchanged from exp-01: GSM8K-train gold x4 (calculator annotations stripped) plus
+        <=80000 OpenMathInstruct-2 gsm8k/augmented_gsm8k rows (code-free, exactly one
+        \boxed{}, <=2200 chars, <=6 per problem, first 12 parquet shards); prompt mixture
+        55/25/10/10; MAX_LEN 3072. The agent later measured this set at ~220M tokens [30768].
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights, bf16 autocast (bf16=True), sdpa attention"
+      seed: null
+      other: >-
+        gradient_checkpointing=True with gradient_checkpointing_kwargs={"use_reentrant":
+        False} and optim="adamw_torch_fused" were added to train_sft.py at [26246] before
+        this launch; scheduler/warmup/weight_decay are hard-coded in the script and were
+        not overridden by the launch. group_by_length=True, save every 0.5 epoch.
+    target_format: >-
+      "{solution}\n\nANSWER: {n}<|im_end|>", completion-only loss (prompt masked -100).
+  command:
+    argv: ["PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True", "nohup", "python", "train_sft.py", "--data", "data/sft_round1", "--out", "ckpt/round1", "--epochs", "1", "--lr", "1e-5", "--bs", "8", "--accum", "4"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/train_r1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.21
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Trained without OOM (GPU 100% util, ~47% MFU by the agent's reading) but the agent
+      killed it at [30769] because the ~220M-token set projected to 4.9 h of the 10 h
+      budget. wall_h derived from the launch [26284] t=+0.88h and the kill [30769] t=+1.09h.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The memory fix worked - training ran healthily - but no checkpoint or score came out
+    of it: "Training is healthy (~47% MFU) but the 220M-token budget means 4.9h - too slow
+    for iteration" [30768], and the agent killed it 12 minutes in.
+  decision: abandon_line
+  next_step: >-
+    Drop gradient checkpointing and shrink the token budget instead: rebalance the mixture
+    toward shorter prompts (gold x3, OM2 62k, 35/20/15/30) to ~130M tokens and run at
+    bs 2 / accum 16 [30768], [31026].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-a759897f
+  launch_i: 26284
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [24177, 26243]
+    setup: [26244, 26246, 26284]
+    evaluation: []
+    result: [26666, 30768, 30769, 30775]
+    conclusion: [30768, 31025, 31026]
+  snapshot_files:
+    - build_data_round1.py
+    - data_lib.py
+    - train_sft.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the step count and any loss values of this partial run were never printed; the agent's own progress watcher at [26287] used a total of 3436 steps"
+    - "the ~220M-token figure for this dataset version is the agent's statement at [30768]; the build log's row/token print for this version is not in the digest"

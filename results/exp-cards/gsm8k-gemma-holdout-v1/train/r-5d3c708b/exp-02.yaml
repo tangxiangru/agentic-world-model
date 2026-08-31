@@ -1,0 +1,219 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.25
+
+problem:
+  statement: >-
+    exp-01 stops cleanly, so the 30 remaining failures on the 150-sample dev
+    slice are "genuine reasoning/comprehension mistakes" rather than format or
+    stopping errors ([210]).
+  evidence:
+    - path: /home/ben/task/logs/*_gsm8k_BVdUoK37kZ7BP6aTvVbb6n.json
+      locator: "[208] - 4 INCORRECT samples printed"
+      observation: >-
+        120 correct / 30 incorrect; failing outputs are short, well formatted and
+        end in a clean ANSWER line, but set the problem up wrongly
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/*_gsm8k_BVdUoK37kZ7BP6aTvVbb6n.json
+      question: null
+      gold: "221"
+      model_output: >-
+        "... 129 slices * $3/slice = $387 ... 92 slices * $4/slice = $368 ...
+        $387 + $368 = $755 / ANSWER: 755"
+      failure: "wrong quantities carried into the revenue computation; answered 755 against gold 221"
+    - id: null
+      source: /home/ben/task/logs/*_gsm8k_BVdUoK37kZ7BP6aTvVbb6n.json
+      question: null
+      gold: "16"
+      model_output: >-
+        "Julia rowed 20 feet in 16 seconds, so she rowed 20 * 64 = 1280 feet in
+        64 seconds. ... 1280 / 10 = 128 sets of 2 liters ... 128 * 2 = 256 liters.
+        / ANSWER: 256"
+      failure: "answered the wrong quantity (litres of water instead of the asked-for value); 256 against gold 16"
+    - id: null
+      source: /home/ben/task/logs/*_gsm8k_BVdUoK37kZ7BP6aTvVbb6n.json
+      question: null
+      gold: "6"
+      model_output: >-
+        "Marissa has 6 miles left to hike because 12 - 4 - 2 = 6 / She has 2
+        hours left because 4 - 1 - 1 = 2 / She needs to hike at 3 miles per hour
+        because 6 / 2 = 3 / ANSWER: 3"
+      failure: "solved for the wrong final quantity; 3 against gold 6"
+    - id: null
+      source: /home/ben/task/logs/*_gsm8k_BVdUoK37kZ7BP6aTvVbb6n.json
+      question: null
+      gold: "6"
+      model_output: >-
+        "Solo has to read 4 + 20 + 7 + 8 = 39 pages in total. He has 4 more days
+        to read 39 pages, so he needs to read 39/4 = 9.75 pages per day. /
+        ANSWER: 9.75"
+      failure: "mis-read the setup and produced a non-integer answer; 9.75 against gold 6"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Adding rejection-sampled self-generated solutions (sampled from exp-01 on
+    GSM8K-train and kept only when the final answer matches gold) to the SFT mix
+    will attack the remaining reasoning errors that plain SFT cannot ([210]).
+  mechanism: >-
+    Filtered self-samples give several diverse, verified reasoning paths per
+    question in the model's own distribution, instead of the single human
+    reference solution.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/work/gsm8k_train.jsonl
+      source: "openai/gsm8k main:train"
+      n_examples: null
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --out, work/gsm8k_train.jsonl]
+      selection: >-
+        as exp-01: answer split at "####", <<calc>> annotations stripped,
+        completion = reasoning + "ANSWER: <final>"
+      contamination_check: not_run
+      mixture_weight: null
+    - path: /home/ben/task/work/rft_all.jsonl
+      source: "synthetic:self (sampled from exp-01's checkpoint)"
+      n_examples: null
+      built_by: /home/ben/task/generate_rft.py
+      build_command: [python, generate_rft.py, --model, work/sft1, --out, work/rft_all.jsonl, --n, "8", --temp, "0.8", --top_p, "0.95", --max_tokens, "512", --keep_per_q, "4", --gpu_mem, "0.9"]
+      selection: >-
+        8 samples per GSM8K-train question at temperature 0.8 / top_p 0.95; each
+        sample truncated at its FIRST "ANSWER:" line to discard post-answer
+        rambling; kept only if the extracted number equals gold; quality filter
+        (must contain "=", must end in "ANSWER: <n>", at least 30 chars, at most
+        25 non-empty lines); deduped by the tuple of numbers appearing in the
+        reasoning; at most 4 shortest kept per question
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: rft
+    framework: "transformers.Trainer (transformers 4.57.3)"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        as exp-01: scheduler, warmup, weight_decay, precision, seed and optimiser
+        are not on the command line and come from train_sft.py in the workspace,
+        which the launch did not override. Training restarts from the base model
+        (BASE_MODEL is hardcoded in train_sft.py), not from exp-01's checkpoint.
+    target_format: >-
+      same as exp-01; the RFT rows carry the model's own solution text as the
+      assistant turn, terminated by <|im_end|>
+  command:
+    argv: [python, train_sft.py, --data, work/gsm8k_train.jsonl, work/rft_all.jsonl, --out, work/sft2, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2", --max_len, "1024", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/sft2.log
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, work/sft2, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, logs/iter2.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.80
+    path: /home/ben/task/logs/iter1.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.4
+  output_checkpoint: /home/ben/task/work/sft2
+  training_summary:
+    final_loss: 0.11
+    steps: 3060
+    notes: >-
+      3060 optimizer steps at ~1.26 s/it; the agent reported "training completed
+      cleanly (final loss ~0.11)" at [346]. A chained wait-patch-eval script
+      launched at [319] aborted on a race condition (it looked for
+      work/sft2/config.json mid-save), so the eval was re-launched by hand at
+      [347] after running finalize.py on the checkpoint.
+  measurements:
+    - metric: accuracy
+      value: 0.8066666666666666
+      n: 150
+      path: /home/ben/task/logs/iter2.json
+      delta_vs_comparator: 0.0067
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "Iter2 (RFT): 80.67% - statistically tied with iter1 (80%). RFT added
+    diversity but the model has plateaued on what SFT can extract (~80%)"
+    ([356]). Measured against exp-01 under the same --limit 150, but the +0.67 pt
+    delta on n=150 is inside the noise band, so the claim is neither supported
+    nor contradicted.
+  decision: adopt
+  next_step: >-
+    "The remaining errors are genuine reasoning mistakes - exactly what GRPO
+    (RLVR) targets" ([356]); use this checkpoint as the GRPO starting point.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5d3c708b
+  launch_i: 287
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [207, 208, 210]
+    setup: [125, 215, 229, 231, 241, 287]
+    evaluation: [347]
+    result: [341, 346, 348, 351, 356]
+    conclusion: [356]
+  snapshot_files:
+    - prepare_data.py
+    - generate_rft.py
+    - train_sft.py
+    - finalize.py
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 219, outcome: "ran on 64 questions; only a 17% solve rate because at temperature 1.0 the model emits the correct ANSWER line then rambles, so the last-number extractor scored its own samples wrong ([224], [228])"}
+    - {launch_i: 235, outcome: "passed (64 questions) after truncating each sample at the first ANSWER: line; kept completions are clean"}
+  extractor: null
+  unresolved:
+    - "logs/iter1.json and logs/iter2.json are not in the workspace snapshot; the values are the numbers the agent printed at [206] and [356]."
+    - "generate_rft.py's summary line (questions solved, samples kept) and the line count of work/rft_all.jsonl were requested at [267] but never appear in the stream, so n_examples for both training files is unknown."
+    - "the digest truncates the iter1 eval sample-log filename to '...27+02-00_gsm8k_BVdUoK37kZ7BP6aTvVbb6n.json' ([208]); only the suffix is certain."

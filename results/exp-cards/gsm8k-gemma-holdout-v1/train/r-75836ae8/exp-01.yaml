@@ -1,0 +1,215 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The untuned base model scores 0.10 on a 20-item GSM8K slice, so there is
+    large headroom; it is unknown whether the gap is plain task/instruction
+    alignment or whether broader math supervision is required [79][123].
+  evidence:
+    - path: /home/ben/task/baseline20.json
+      locator: "[45] launch, [79] the agent's reading"
+      observation: "base model accuracy 0.10 on --limit 20"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full fine-tuning on official GSM8K train alone is the fastest high-signal
+    experiment: its result will say whether the core issue is just
+    instruction/task alignment or whether a broader math-data stage is needed
+    [123].
+  mechanism: >-
+    Supervised post-training on math supervision close to the benchmark, in the
+    evaluator's answer format, should align the base model to the task rather
+    than change the evaluator [17].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm_only
+      source: "openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prepare_math_data.py
+      build_command:
+        - python
+        - scripts/prepare_math_data.py
+        - --output-dir
+        - data/gsm_only
+        - --metamath-types
+        - none
+      selection: >-
+        official GSM8K train only, no MetaMath rows; the builder splits each
+        gold answer on '####' into reasoning plus final answer; no
+        evaluator-style few-shot system message and no assistant suffix (those
+        flags were not passed) [96][414].
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, via the run's own scripts/train_sft.py [35][392]"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        --logging-steps 20. bf16=True, tf32=True, gradient_checkpointing=True,
+        optim=adamw_torch_fused and lr_scheduler_type='cosine' are hardcoded in
+        the training script as shown in the stream [392]. warmup_ratio,
+        weight_decay, seed and save_strategy were left at the script's argparse
+        defaults; the script text is not in the workspace snapshot, so they are
+        left null rather than guessed.
+    target_format: >-
+      reasoning followed by a final line of the form 'ANSWER: <number>', the
+      form the evaluator requires [33].
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --dataset-dir
+      - data/gsm_only
+      - --output-dir
+      - runs/exp1_gsm_only_full
+      - --max-length
+      - "768"
+      - --learning-rate
+      - "1e-5"
+      - --num-train-epochs
+      - "3"
+      - --per-device-train-batch-size
+      - "8"
+      - --gradient-accumulation-steps
+      - "4"
+      - --logging-steps
+      - "20"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - runs/exp1_gsm_only_full/merged
+      - --limit
+      - "100"
+      - --json-output-file
+      - exp1_gsm100.json
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "1200"
+      - --gpu-memory-utilization
+      - "0.55"
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.1
+    path: /home/ben/task/baseline20.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.13
+  duration_h: 0.13
+  steps: 702
+  output_checkpoint: /home/ben/task/runs/exp1_gsm_only_full/merged
+  training_summary:
+    final_loss: 0.4503
+    steps: 702
+    notes: >-
+      train_runtime 480.79 s, mean train_loss 0.5050, last logged step loss
+      0.4503; loss fell from about 1.16 to 0.45 [136][137].
+  measurements:
+    - metric: accuracy
+      value: 0.01
+      n: 100
+      path: /home/ben/task/exp1_gsm100.json
+      delta_vs_comparator: -0.09
+    - metric: accuracy
+      value: 0.0
+      n: 20
+      path: /home/ben/task/exp1_fix20.json
+      delta_vs_comparator: -0.1
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+outcome:
+  official_accuracy: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The checkpoint "collapsed into very long outputs and essentially failed the
+    scorer (1% on 100), which points to a formatting/inference mismatch rather
+    than 'not enough training'" [150]; the agent then found the model was
+    terminating on the chat end token instead of the configured EOS [164], and
+    that its training data never contained the evaluator's 10-shot system
+    message [181]. A re-eval after patching the saved generation config still
+    scored 0.00 on 20 [172]. The comparator was measured under --limit 20 while
+    the main eval used --limit 100, so no verdict is claimed.
+  decision: reject
+  next_step: >-
+    Rebuild the training data so every sample carries the evaluator's exact
+    10-shot system message and retrain from base [185] (launched as exp-02).
+
+provenance:
+  kind: extracted
+  run_ref: r-75836ae8
+  launch_i: 124
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [79, 123]
+    setup: [93, 96, 124]
+    evaluation: [139, 172]
+    result: [137, 150, 163, 172]
+    conclusion: [150, 164, 181, 185]
+  snapshot_files:
+    - baseline20.json
+    - exp1_gsm100.json
+    - exp1_fix20.json
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 82, outcome: "passed (LoRA, --max-steps 20, tiny 200-row MetaMath mix); the merged smoke checkpoint scored 0.05 on the 20-item slice at [91], which the agent read as 'short LoRA nudges are noisy and not worth optimizing' [117]"}
+  extractor: claude-opus-5
+  unresolved:
+    - "elapsed_h unknown: the digest carries no event timestamps; the nearest timer reading is 9:46 remaining of 10 h at [135], just after this launch."
+    - "The launch did not pass --model-name-or-path, so the parent is the script's default; it is recorded as the run's base model on the strength of the agent's description of this as a full fine-tune of the base model [123] and its later base-vs-merged comparison [161]."
+    - "The comparator (base, 0.10) was measured with --limit 20 --max-connections 1 --max-tokens 1200, while this checkpoint was scored with --limit 100; the numbers are not under one protocol."
+    - "The generation-config/stop-token fix applied in place to this checkpoint before the re-eval at [172] is described at [164][169] but appears in the digest as no command, so it is recorded here rather than as its own card."
+    - "The eval-log sample dump at [153] has no result block in the digest, so the specific failing items behind [159] are not recoverable; failure_examples is empty."

@@ -1,0 +1,178 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 0.88
+
+problem:
+  statement: >-
+    "The eval sends no temperature, so the server uses its default - which is
+    sampling (0/8 stop). At temperature=0 it's 8/8. My saved
+    generation_config.json dropped the do_sample: false / temperature default, so
+    the server samples at high temp and rambles" [381]. The checkpoint itself is
+    fine: offline it stops at every demo count and gets ~65%, yet the eval scored
+    4%.
+  evidence:
+    - path: null
+      locator: "[341]"
+      observation: >-
+        offline demo-count sweep on the checkpoint: stops 19-20/20 at 0, 2, 5 and
+        10 demos and ~65% correct, against 4% and 148/150 max_tokens in the eval
+    - path: /home/ben/task/logs/sft_v2_eval.log
+      locator: "[368], [369], [372], [373]"
+      observation: >-
+        the request the eval sent carries only messages, tools, tool_choice,
+        extra_headers, model and max_tokens=1024 - no temperature; both the eval's
+        server and a manually started one loaded the same model generation config
+    - path: null
+      locator: "[376], [381]"
+      observation: >-
+        live-server probe on 8 items: no temperature in the request -> 0/8 stop;
+        temperature=0.0 -> 8/8 stop
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "The fix: bake temperature=0 (greedy) into the model's generation_config.json,
+    which vLLM uses as the server default" [381] - doing so will make the served
+    model stop and lift the measured accuracy from 4% to roughly what the offline
+    probes show.
+  mechanism: >-
+    The eval's chat request omits temperature, so the serving stack falls back to
+    the checkpoint's generation_config.json; writing do_sample=false,
+    temperature=0.0, top_p=1.0, top_k=-1 there makes the served default greedy,
+    and greedy decoding reliably emits <|im_end|> after "ANSWER: X".
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/work/sft_gsm8k_fs_v2
+    origin: exp-03
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: raw json edit of generation_config.json; model served with `vllm serve`
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        no training. work/sft_gsm8k_fs_v2/generation_config.json patched to
+        do_sample=false, temperature=0.0, top_p=1.0, top_k=-1 (eos 151645,
+        pad 151643 were already set by the training script).
+    target_format: >-
+      unchanged; only the decode defaults the serving stack reads out of the
+      checkpoint.
+  command:
+    argv:
+      - python
+      - "-"
+      - "<<'EOF'"
+      - 'p="work/sft_gsm8k_fs_v2/generation_config.json"'
+      - c=json.load(open(p))
+      - 'c["do_sample"]=False'
+      - 'c["temperature"]=0.0'
+      - 'c["top_p"]=1.0'
+      - 'c["top_k"]=-1'
+      - 'json.dump(c, open(p,"w"), indent=2)'
+      - EOF
+    cwd: /home/ben/task
+    script: null
+    env: {}
+    log: /home/ben/task/logs/server_test2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, work/sft_gsm8k_fs_v2, "150", "1024", sft_v2_fixed]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.04
+    path: /home/ben/task/logs/sft_v2_metrics.json
+  diagnostic:
+    what: >-
+      hit the live `vllm serve` chat endpoint with the eval's exact 10-shot
+      messages and no temperature field, counting finish_reason == "stop"
+    command: [python, "-", "<<'EOF'", 'client.chat.completions.create(model="work/sft_gsm8k_fs_v2",', "max_tokens=1024)  # NO temperature -> server default (should now be greedy)", EOF]
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/work/sft_gsm8k_fs_v2
+  training_summary: {final_loss: null, steps: null, notes: "config-only change; no training"}
+  measurements:
+    - metric: accuracy
+      value: 0.64
+      n: 150
+      path: /home/ben/task/logs/sft_v2_fixed_metrics.json
+      delta_vs_comparator: 0.6
+  diagnostic_result:
+    value: 1.0
+    path: null
+    notes: >-
+      "NO-temperature request -> stop=15/15 correct=11/15" [387], [392]: with the
+      patched config the served model stops on every request even when the client
+      sends no temperature (0/8 before the patch, [376]).
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "Real eval confirms 64% (up from 4%)! Both fixes were needed: few-shot
+    training (so the model emits <|im_end|> in few-shot context) + greedy default
+    in generation_config.json (since the eval sends no temperature)" [400].
+    Measured against exp-03 under the same --limit 150, and the stopping probe
+    moved with it, so the mechanism is confirmed and not just the score.
+  decision: adopt
+  next_step: >-
+    Write the greedy generation-config into the training script so every future
+    checkpoint carries it [393], then train a bigger mix (GSM8K + MetaMath) [406].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-4254277e
+  launch_i: 382
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [341, 347, 356, 362, 367, 368, 372, 375, 376, 381]
+    setup: [382]
+    evaluation: [387, 392, 395]
+    result: [392, 400]
+    conclusion: [400, 407]
+  snapshot_files:
+    - evaluate.py
+    - NOTES.md
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "logs/sft_v2_fixed_metrics.json is never printed; the 0.64 is the agent's own words at [400] and in NOTES.md"
+    - "the patch edits exp-03's checkpoint directory in place, so work/sft_gsm8k_fs_v2 after [382] is not byte-identical to what exp-03 measured"
+    - "the same fix, re-applied inside the training script at [393], crashed model.save_pretrained on the next run and had to be reworked at [556]"

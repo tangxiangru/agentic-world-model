@@ -1,0 +1,196 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    Full-strength LoRA SFT costs accuracy even once generation terminates
+    correctly: the previous run scored 0.15 on 20 samples against the base
+    model's 0.30, which the agent read as catastrophic shift away from base
+    behaviour [238].
+  evidence:
+    - path: /home/ben/task/experiments/exp2_limit20.json
+      locator: "[236]"
+      observation: "exp2_merged, --limit 20 --max-tokens 768: accuracy 0.150 vs base 0.300"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "A much gentler adaptation (exp3: lower LR, fewer trainable params, 1 epoch)
+    to reduce catastrophic shift while still tuning for GSM8K" [238].
+  mechanism: >-
+    A much lighter LoRA footprint (~33M trainable params) should preserve base
+    behaviour better [243].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: gsm8k train split (loaded in the trainer script, no local file)
+      n_examples: null
+      built_by: null
+      build_command: []
+      selection: >-
+        reference answer split on "####" into reasoning and final target;
+        assistant text = reasoning + "ANSWER: <target>" [49]
+      contamination_check: passed
+      mixture_weight: null
+  method:
+    family: sft
+    framework: transformers.Trainer + peft LoRA (versions not stated in the stream)
+    peft: "LoRA r=16 alpha=32 dropout=0.05 targets=<not stated>; ~33M trainable params [243]"
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 1
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        scheduler=cosine and bf16/tf32 are hardcoded in the trainer's
+        TrainingArguments as printed at [330], not argparse defaults;
+        gradient checkpointing on. Warmup, weight decay and seed were not passed
+        and the trainer script is not in the workspace snapshot, so they are null.
+    target_format: >-
+      chat template, assistant turn ending in "ANSWER: <number>" with explicit EOS
+  command:
+    argv:
+      - python
+      - scripts/train_gsm8k_lora.py
+      - --output-dir
+      - checkpoints/exp3
+      - --merge-output-dir
+      - checkpoints/exp3_merged
+      - --num-epochs
+      - "1"
+      - --learning-rate
+      - "2e-5"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "8"
+      - --max-length
+      - "1536"
+      - --lora-r
+      - "16"
+      - --lora-alpha
+      - "32"
+      - --lora-dropout
+      - "0.05"
+      - --gradient-checkpointing
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_gsm8k_lora.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - checkpoints/exp3_merged
+      - --limit
+      - "20"
+      - --json-output-file
+      - experiments/exp3_limit20.json
+      - --max-connections
+      - "1"
+      - --max-tokens
+      - "768"
+      - --gpu-memory-utilization
+      - "0.5"
+    dev_set: "official --limit 20"
+    n: 20
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.30
+    path: /home/ben/task/experiments/baseline_limit20.json
+  diagnostic:
+    what: >-
+      per-eval-log scan of the completions: how many spill into a new user turn,
+      how many contain "ANSWER:", mean output length [413][416]
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/checkpoints/exp3_merged
+  training_summary:
+    final_loss: null
+    steps: 234
+    notes: >-
+      trainer_state exp3/checkpoint-234: 234 steps, epoch 1.0, first loss 1.0616,
+      last logged loss 0.4157 [363]
+  measurements:
+    - metric: accuracy
+      value: 0.10
+      n: 20
+      path: /home/ben/task/experiments/exp3_limit20.json
+      delta_vs_comparator: -0.20
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      20-sample eval: spill 5/20 into a new user turn, "ANSWER:" present 19/20,
+      mean length 1680.8 chars [417] - drift is worse than the previous run, not
+      better
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    The gentler LoRA scored 0.10 on 20 samples, below both the previous fine-tune
+    (0.15) and the base model (0.30), and a quarter of its completions spill into
+    a fresh user turn. Reducing rank and LR did not preserve base behaviour.
+  decision: reject
+  next_step: >-
+    "switching to a distribution-matching strategy: train with the same fixed
+    few-shot system context style used by evaluate.py (10-shot GSM8K train
+    exemplars), so the model learns under the exact inference format" [255]
+
+provenance:
+  kind: extracted
+  run_ref: r-e2ebe966
+  launch_i: 239
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [236, 238]
+    setup: [239, 243, 330]
+    evaluation: [249]
+    result: [351, 363, 417, 498]
+    conclusion: [255, 280]
+  snapshot_files:
+    - evaluate.py
+    - contamination_judgement.txt
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "no result block for the eval launched at [249]; the 0.10 comes from the log listing at [351] and the metrics roll-up at [498]"
+    - "this output was never evaluated at --limit 60"
+    - "cited experiments/*.json and scripts/train_gsm8k_lora.py are not in the workspace snapshot; their values are read from the stream"

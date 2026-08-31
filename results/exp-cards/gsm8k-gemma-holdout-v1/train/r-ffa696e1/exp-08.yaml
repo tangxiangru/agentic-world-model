@@ -1,0 +1,178 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-08
+created_at: null
+elapsed_h: 3.67
+
+problem:
+  statement: null
+  evidence: []
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A second rejection-sampling round - sampling K=8 at temperature 0.7 from the
+    75.3% model and merging its correct solutions with the first round's - will
+    push accuracy above 75.3%.
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py, --metamath, --metamath-max, "200000"]
+      selection: "same reformatting as exp-01"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 2
+    - path: /home/ben/task/data/rft_all.jsonl
+      source: "synthetic:self (round 1 from exp-05's checkpoint, round 2 from exp-07's final_model)"
+      n_examples: 26872
+      built_by: /home/ben/task/rft_generate.py
+      build_command: [python, rft_generate.py, --model, final_model, --out, "data/rft_raw2.jsonl",
+                      --k, "8", --temp, "0.7", --top-p, "0.95", --max-tokens, "512",
+                      --gpu-mem, "0.9"]
+      selection: >-
+        round 2: K=8 per GSM8K train question at temperature 0.7 / top_p 0.95
+        (at least one correct on 4502/7473 = 0.602 by rft_generate.py's own
+        last-number check); rft_filter.py --max-per-q 3 kept 20,944 examples from
+        7239/7473 questions. Combined with round 1's 14,037 and deduped on
+        (last 80 chars of prompt, first 120 chars of completion) at [646],
+        giving 26,872 unique examples.
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+    - path: /home/ben/task/data/metamath_gsm.jsonl
+      source: "HF meta-math/MetaMathQA (rows whose type starts with GSM)"
+      n_examples: 40000
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py, --metamath, --metamath-max, "200000"]
+      selection: "capped at 40000 by --max-per-file"
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: rft
+    framework: "transformers.Trainer, custom tokenization + completion-only loss"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        --grad-ckpt on, --max-per-file 40000, --repeat-gsm8k 2. scheduler, warmup,
+        weight_decay, seed, bf16, flash_attention_2, save_strategy="epoch" are
+        train_sft.py defaults, not overridden. 81,818 total rows of which 14,946
+        GSM8K, per train_v4.log.
+    target_format: "same as exp-01"
+  command:
+    argv: [nohup, python, train_sft.py, --train-files, data/gsm8k_train.jsonl, data/rft_all.jsonl,
+           data/metamath_gsm.jsonl, --max-per-file, "40000", --repeat-gsm8k, "2",
+           --epochs, "2", --lr, "1e-5", --max-len, "1024", --per-device-batch-size, "16",
+           --grad-accum, "2", --grad-ckpt, --output-dir, out_v4]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/.cache/huggingface, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/train_v4.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "out_v4/checkpoint-2557", --limit, "150",
+              --json-output-file, "eval_checkpoint-2557.json"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.7533
+    path: /home/ben/task/eval_checkpoint-2781.json
+  diagnostic:
+    what: >-
+      split the 37 failures into long outputs (ramble / no stop, >1200 chars) and
+      short outputs (wrong answer), and print the tails of the short ones
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.56
+  output_checkpoint: /home/ben/task/out_v4/checkpoint-2557
+  training_summary:
+    final_loss: null
+    steps: 2557
+    notes: "killed at the end of epoch 1 of 2 at [662], following the same epoch-1 pattern"
+  measurements:
+    - metric: accuracy
+      value: 0.7533
+      n: 150
+      path: null
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      agent at [676]: "Failures are 36/37 genuine reasoning errors (only 1 ramble
+      - format is solid). The model has hit a reasoning ceiling at 75.3%."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    Agent at [672]: "v4 = 75.3% - identical to v3. We've plateaued at ~75.3%."
+    A second, larger rejection-sampling round measured under the same --limit 150
+    moved the score not at all, so more self-generated data was not the lever.
+  decision: reject
+  next_step: >-
+    Examine the failures (done at [673]) and try a different lever - a higher
+    learning rate on the same data.
+
+provenance:
+  kind: extracted
+  run_ref: r-ffa696e1
+  launch_i: 650
+  stated_by_agent:
+    problem: false
+    hypothesis: true
+  anchors:
+    problem: []
+    setup: [623, 639, 646, 647, 650]
+    evaluation: [662, 667]
+    result: [661, 672, 673, 674, 676]
+    conclusion: [672, 676]
+  snapshot_files:
+    - train_sft.py
+    - rft_generate.py
+    - rft_filter.py
+    - rft_gen2.log
+    - prep_ckpt.sh
+    - train_v4.log
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "eval_checkpoint-2557.json and .log were overwritten by exp-09, whose checkpoint had the same step number; the 75.3% survives only as the agent's statement at [672]"
+    - "the per-checkpoint eval that produced the failure analysis at [674] read the newest logs/*.json, which is not in the workspace snapshot"

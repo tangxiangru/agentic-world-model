@@ -1,0 +1,227 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 3.28
+
+problem:
+  statement: >-
+    "Format is 100% solved - all 41 failures are pure reasoning errors. The
+    bottleneck is now math capability -> RFT (verified self-distillation) + more
+    high-quality data is the right lever" [27448]. v1 stands at 72.7% at limit
+    150 and every remaining failure is a reasoning error.
+  evidence:
+    - path: /home/ben/task/results/v1-ckpt-sft_v1-checkpoint-1214-limit150.json
+      locator: "[26446]"
+      observation: "v1 = 72.7% at limit 150, baseline 13.3%"
+    - path: "/home/ben/task/logs/*gsm8k*.json (most recent at [26447]; exact filename not printed)"
+      locator: "[26447], [26448] - analyze_failures.py output"
+      observation: "0 format failures; all 41 failures at limit 150 are reasoning errors"
+  affected_share: 1.0
+  failure_examples:
+    - id: null
+      source: "/home/ben/task/logs/*gsm8k*.json (v1 eval log at [26448])"
+      question: "(not printed - a boat/water-intake rate problem)"
+      gold: "16"
+      model_output: >-
+        "First find how many 10-foot segments there are in 64 seconds: 64
+        seconds / 16 seconds/segment = 4 segments ... 0.8 liters/second * 4
+        seconds = 3.2 liters  ANSWER: 3.2"
+      failure: "wrong rate decomposition; answered 3.2 instead of 16"
+    - id: null
+      source: "/home/ben/task/logs/*gsm8k*.json (v1 eval log at [26448])"
+      question: "(not printed - Marissa's walking-speed problem)"
+      gold: "6"
+      model_output: >-
+        "Marissa has already walked a total of 4 + 2 = 6 miles ... 6/1.5 = 4
+        miles per hour  ANSWER: 4"
+      failure: "answers the wrong quantity; answered 4 instead of 6"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Retraining from base on the v2 corpus - the v1 corpus plus
+    OpenMathInstruct-2 gsm8k rows plus RFT round-1 answer-verified
+    self-solutions from the v1 model - will raise accuracy above v1's 72.7% at
+    limit 150 [27448].
+  mechanism: >-
+    "RFT (verified self-distillation) + more high-quality data is the right
+    lever" [27448] - training on the model's own verified solutions and a larger
+    verified corpus targets reasoning errors, which are now 100% of the failures.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: local
+      n_examples: null
+      built_by: /home/ben/task/build_v2.py
+      build_command: []
+      selection: >-
+        v1 rows kept as-is + nvidia/OpenMathInstruct-2 gsm8k-sourced rows
+        (single \boxed{} answer equal to expected_answer, rewritten to an
+        "ANSWER:" line, body <= 2600 chars, max 2 per normalized question,
+        decontaminated against gsm8k test by exact match + 8-gram containment >
+        0.55) + the RFT round-1 rows below; prompt variants re-drawn per row
+        (12% exact eval few-shot system prompt, 8% random 10-shot, 13% random
+        1-8-shot, 67% none). The build_v2.py invocation is not in the filtered
+        digest; RESULTS.md [39153] describes v2 as ~185K rows / 150M tokens.
+      repeats: null
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: synthetic:self
+      n_examples: null
+      built_by: /home/ben/task/rft_generate.py
+      build_command: [nohup, python, rft_generate.py, --model, export/v1-ckpt-sft_v1-checkpoint-1214]
+      selection: >-
+        Rejection sampling with the exported v1 checkpoint over all 7473 GSM8K
+        train questions (k=6) plus 12000 OpenMathInstruct-2 augmented questions
+        (k=4), temperature 0.9, top_p 0.95, max_tokens 700, random 4-shot system
+        prompt; keep completions whose ANSWER (or last number) matches gold,
+        body 80-1800 chars, shortest per distinct opening, at most 3 per
+        question. k/temperature/max-keep/n-aug are rft_generate.py argparse
+        defaults at [27449]; the launch overrode none. RESULTS.md [39153]
+        reports 44.7K verified self-solutions. Component of data/sft_v2.jsonl.
+      repeats: "at most 3 solutions per question"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (custom packed Dataset), flash_attn 2.8.3, torch 2.8.0+cu129"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.6
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: "fp32 weights with bf16 autocast (dtype=torch.float32, bf16=True)"
+      seed: 7
+      other: >-
+        --token-budget 150000000 and --save-steps 573 from the launch;
+        batch_size (--packs-per-micro 2), grad_accum (16) and max_seq_len (4096)
+        are train_sft.py argparse defaults the launch did not override;
+        scheduler/warmup/weight_decay/max_grad_norm/seed/optim are hard-coded in
+        train_sft.py. Packing: first-fit-decreasing with capacity buckets
+        [19151]. Completion-only loss. Full schedule was 1868 steps; the agent
+        cut training at checkpoint-1719 (1.5 epochs, "LR ~ 1.3e-7 - fully
+        converged") to bank time for evaluation [31001], [31109].
+    target_format: >-
+      assistant turn = "<reasoning>\n\nANSWER: <n>" followed by <|im_end|>, in the
+      eval's chat rendering.
+  command:
+    argv: [nohup, env, "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True", python, train_sft.py, --data, data/sft_v2.jsonl, --out, ckpt/sft_v2, --epochs, "1.6", --lr, "1e-5", --save-steps, "573", --token-budget, "150000000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/train_v2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 3.0
+
+evaluation:
+  protocol:
+    command: [bash, run_evals.sh, "ckpt/sft_v2/checkpoint-1146 ckpt/sft_v2/checkpoint-1719", v2, "150", "16"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.727
+    path: /home/ben/task/results/v1-ckpt-sft_v1-checkpoint-1214-limit150.json
+  diagnostic:
+    what: "failure-category breakdown (format failures vs reasoning errors) over the eval log"
+    command: [python, analyze_failures.py]
+    path: null
+
+result:
+  execution: killed
+  wall_h: 3.07
+  duration_h: 3.07
+  steps: 1719
+  output_checkpoint: /home/ben/task/ckpt/sft_v2/checkpoint-1719
+  training_summary:
+    final_loss: null
+    steps: 1719
+    notes: >-
+      Deliberately stopped at 1719 of 1868 steps (1.5 epochs) at [31110] to
+      leave time for evaluation, after the agent judged the schedule converged
+      ("LR ~ 1.3e-7") [31001], [31109]. checkpoint-1146 and checkpoint-1719 were
+      both saved, exported and evaluated. No loss values appear in the digest.
+  measurements:
+    - metric: accuracy
+      value: 0.78
+      n: 150
+      path: /home/ben/task/results/v2-ckpt-sft_v2-checkpoint-1146-limit150.json
+      delta_vs_comparator: 0.053
+    - metric: accuracy
+      value: 0.8266666666666667
+      n: 150
+      path: /home/ben/task/results/v2-ckpt-sft_v2-checkpoint-1719-limit150.json
+      delta_vs_comparator: 0.0997
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "Still pure reasoning slips - format is perfect" [32538]; the category
+      counter line itself is not in the digest.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "v2 @ 1.5 epochs: 82.7% (from 13.3% baseline)" [31448] - +10.0 pts over v1
+    under the same limit-150 protocol, and the failure breakdown still shows no
+    format failures, so the gain came from the added verified data and RFT
+    round-1 as hypothesised.
+  decision: adopt
+  next_step: >-
+    "RFT round 2 from v2-1719 + continue-training on fresh data, then full-test
+    the winner" [32538]; checkpoint-1719 became the generator for RFT round 2
+    [32541] and the parent checkpoint of exp-08.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-89603e49
+  launch_i: 29614
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [26446, 26447, 26448, 27448]
+    setup: [22848, 27449, 27452, 29614]
+    evaluation: [31110, 31116, 38654]
+    result: [31001, 31109, 31110, 31448, 38654]
+    conclusion: [31448, 32538]
+  snapshot_files:
+    - train_sft.py
+    - build_v2.py
+    - rft_generate.py
+    - run_evals.sh
+    - export_model.py
+    - analyze_failures.py
+    - evaluate.py
+    - RESULTS.md
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "data/sft_v2.jsonl row count and source mixture are not printed anywhere in the digest"
+    - "no training loss values for this run appear in the digest"
+    - "the final scheduled checkpoint (step 1868) was never produced, so the 1.6-epoch endpoint is unmeasured"

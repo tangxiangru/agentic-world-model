@@ -1,0 +1,164 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.29
+
+problem:
+  statement: >-
+    The raw base model scores 17% on the 10-shot benchmark: it rambles without
+    stopping (one completion 9541 chars), goes off-topic, and only sometimes
+    produces clean chain-of-thought, so the scorer's "last number in the
+    completion" is almost always wrong.
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-6c4c222b/baseline_metrics.json
+      locator: "[101]"
+      observation: "baseline accuracy 0.17 (n=100) on the raw base model"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-6c4c222b.md
+      locator: "[103], [105]"
+      observation: >-
+        printed baseline completions: correct answer never reached, output
+        degenerates into repeated tokens and invented follow-up problems
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-6c4c222b.md
+      question: "(sample 0 of the baseline eval; question not printed)"
+      gold: "40"
+      model_output: >-
+        ".Percent 6 of a 20 km run is 5 / 10 (or 0.5). ... 36 + 200 = 236 km."
+        then a fabricated new problem, then "MakeRange" repeated ~40 times
+      failure: >-
+        off-topic reasoning, never stops, extracted answer was 590; completion
+        length 9541 chars
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full fine-tuning the base model on cleaned GSM-style chain-of-thought data
+    that ends in "ANSWER: X" followed by <|im_end|> will make it produce a
+    single clean solution and stop, lifting accuracy above the 17% baseline.
+  mechanism: >-
+    "17% is real - the base model desperately needs SFT to reliably produce CoT
+    + 'ANSWER: X' and stop cleanly" [105]. Loss is taken only on the assistant
+    response plus the trailing stop token, and the final generation_config eos
+    is set to [151645, 151643] so the server stops on <|im_end|> [111].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/train.jsonl
+      source: "derived: meta-math/MetaMathQA (GSM subsets) + openai/gsm8k train"
+      n_examples: 96846
+      built_by: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-6c4c222b/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        MetaMathQA rows of type GSM_Rephrased/GSM_AnsAug/GSM_FOBAR/GSM_SV plus
+        openai/gsm8k train rationales with <<>> calculator annotations stripped;
+        answer markers cut and replaced with a single "ANSWER: <n>" line;
+        dedup on (question[:200], answer); shuffled with seed 42
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer (full fine-tune, flash_attention_2)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 32
+      grad_accum: 2
+      max_seq_len: 768
+      scheduler: cosine_with_min_lr
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        not overridden on the command line, so taken from the script text in the
+        workspace snapshot: scheduler cosine_with_min_lr with min_lr_rate=0.1,
+        warmup_ratio=0.03, weight_decay=0.0, seed=42, bf16=True,
+        optim=adamw_torch_fused, max_grad_norm=1.0, group_by_length=True.
+        gradient_checkpointing was False in the script at this launch.
+    target_format: >-
+      <|im_start|>user\n{MATH_PROMPT(question)}<|im_end|>\n<|im_start|>assistant\n
+      {CoT}\nANSWER: X<|im_end|>, loss on the assistant span only
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/train.jsonl, --output_dir, sft_out,
+           --epochs, "3", --lr, "1e-5", --per_device_batch, "32", --grad_accum, "2",
+           --max_len, "768", --save_steps, "-1"]
+    cwd: /home/ben/task
+    script: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-6c4c222b/train_sft.py
+    env: {}
+    log: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-6c4c222b/train_sft.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol: null
+  comparator: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: failed
+  wall_h: null
+  output_checkpoint: null
+  training_summary: {final_loss: null, steps: null, notes: "no checkpoint written"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: >-
+    OOM. "OOM at batch 32 without checkpointing" [195]; the launch was observed
+    for 90 s and then abandoned.
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The first full SFT launch died of out-of-memory at per-device batch 32 with
+    gradient checkpointing off, so the hypothesis was never measured.
+  decision: abandon_line
+  next_step: >-
+    "the best fix is to enable gradient checkpointing so I can keep a large
+    batch" [195] - relaunched as exp-02.
+
+# joined by the pipeline, never written by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-6c4c222b
+  launch_i: 189
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [101, 103, 105]
+    setup: [88, 112, 189]
+    evaluation: []
+    result: [190, 195]
+    conclusion: [195]
+  snapshot_files:
+    - prepare_data.py
+    - train_sft.py
+    - train_sft.log
+    - baseline_metrics.json
+  smoke_runs:
+    - {launch_i: 162, outcome: "crashed: lr_scheduler_kwargs key min_lr_ratio not accepted by this transformers version (fixed to min_lr_rate)"}
+    - {launch_i: 176, outcome: "passed (256 examples, 1 epoch)"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "train_sft.log in the snapshot is the log of the third launch (exp-03); it was overwritten by each relaunch, so this launch's OOM traceback is not preserved"

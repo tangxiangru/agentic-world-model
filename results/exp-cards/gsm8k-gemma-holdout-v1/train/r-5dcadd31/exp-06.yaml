@@ -1,0 +1,151 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 8.03
+
+problem:
+  statement: >-
+    The first llama4 relabelling of the shipped checkpoint was not equivalent to
+    the original: vllm's llama4 loader permutes q/k assuming the
+    Meta-interleaved rotary layout, while SmolLM3 weights are already neox, and
+    attention_chunk_size None does not reproduce global attention.
+  evidence:
+    - path: /home/ben/task/ckpts/pkg2000_l4
+      locator: "[676], [682]"
+      observation: >-
+        next-token logits of the converted checkpoint were compared against the
+        SmolLM3 original twice, each time followed by a change to the converter
+    - path: /home/ben/task/scripts/convert_llama4.py
+      locator: "[696]"
+      observation: >-
+        the agent's own comment: vllm's Llama4ForCausalLM.load_weights applies a
+        permute, so the stored weights must be inverse-permuted
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    With the q/k projections inverse-permuted, attention_chunk_size equal to the
+    context cap and tied embeddings declared, the llama4-format checkpoint is
+    logit-identical to the SmolLM3 one and can be served on vllm's native llama4
+    path instead of the corrupting Transformers fallback.
+  mechanism: >-
+    the corruption is a property of the fallback serving path, not of the
+    weights; an identical model on a native path should serve cleanly.
+  expected_effect:
+    metric: "corrupted-output rate under vllm serve"
+    direction: lower
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/pkg2000
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: other
+    framework: "safetensors + transformers (architecture relabelling, no training)"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: 8192
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        as exp-05 plus the three edits at [696], [698] and [700]: q_proj and
+        k_proj inverse-permuted (view(n_heads, 2, head_dim/2, out).transpose(1,2))
+        so vllm's load-time permute restores the neox layout,
+        attention_chunk_size 8192 (equal to max_position_embeddings, i.e. global
+        attention), moe_layers [] and tie_word_embeddings True.
+    target_format: unchanged from exp-02
+  command:
+    argv: [python, scripts/convert_llama4.py, --src, ckpts/pkg2000, --dst, ckpts/pkg2000_l4]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/convert_llama4.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, scripts/validate.py, --model, ckpts/pkg2000_l4, --n, "250", --fewshot, eval10, --gpu-mem, "0.35", --out, results/val2000_l4.json]
+    dev_set: /home/ben/task/data/holdout.jsonl
+    n: 250
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.948
+    path: /home/ben/task/results/val2000.json
+  diagnostic:
+    what: "logits at every position of the converted checkpoint against the SmolLM3 original on the same prompt, through transformers"
+    command: [python, "-"]   # inline heredoc in the same block as the conversion, [702]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.06
+  output_checkpoint: /home/ben/task/ckpts/pkg2000_l4
+  training_summary: {final_loss: null, steps: null, notes: "conversion launch; no training"}
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      the printed max |logit diff| from [702] and the holdout accuracy from [708]
+      are not in the stream; the agent's own conclusion at [826] is that the
+      conversion was "verified logit-equivalent"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The corrected conversion was, in the agent's words, verified logit-equivalent
+    to the SmolLM3 checkpoint, but it could not be used: the eval script picks a
+    chat template from the architecture name, and a llama architecture routes to
+    llama3.jinja, which is not in templates/ [826]. The escape route from the
+    serving bug was therefore dropped, and the fix that shipped was to keep the
+    eval's default --max-connections 2.
+  decision: abandon_line
+  next_step: >-
+    Keep serving the SmolLM3-format model at the eval's default concurrency;
+    record the conversion recipe as a note for any future case where the
+    fallback backend has to be escaped.
+
+# ---- official accuracy (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5dcadd31
+  launch_i: 702
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [676, 682, 696]
+    setup: [696, 698, 700, 702]
+    evaluation: [708]
+    result: [702, 708]
+    conclusion: [826]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "no number from this line appears in the stream: neither the logit difference at [702] nor the holdout accuracy at [708]"
+    - "the template-routing blocker is stated by the agent at [826] and is consistent with evaluate.py in the snapshot, which maps any llama architecture to templates/llama3.jinja"

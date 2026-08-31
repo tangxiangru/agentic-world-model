@@ -1,0 +1,173 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.56
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The fine-tuned checkpoint scored 42.7% at --limit 150, below the 44% base
+    model, but the weights are fine: the task's evaluate.py starts a vLLM server
+    without passing a temperature, so generation runs at the server default
+    temperature=1.0 and the freshly fine-tuned model derails - it rambles past
+    the "ANSWER:" line until max_tokens (stop_reason None) instead of stopping at
+    <|im_end|> ([294]).
+  evidence:
+    - path: /home/ben/task/eval_sft_v1.json
+      locator: "[258]"
+      observation: "accuracy 0.4267 at --limit 150, below the 0.44 base-model comparator"
+    - path: /home/ben/task/logs/2026-06-03T08-37-04+02-00_gsm8k_UHUm9TYenuBUp6k29yS8BU.json
+      locator: "[261], [291]"
+      observation: >-
+        the eval's own sample dump: no temperature in the eval config and
+        sample 0 has stop_reason None, i.e. generation ran to max_tokens
+    - path: /home/ben/task/probe.py
+      locator: "[271], [276]"
+      observation: >-
+        the same checkpoint queried directly through vLLM at temperature 0 with
+        the eval's 10-shot prompt produced 3/3 correct, properly stopped outputs
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    [294] baking greedy sampling defaults into generation_config.json in the
+    model directory - which vLLM serve reads - will stop the derailing and
+    restore the checkpoint's accuracy.
+  mechanism: >-
+    vLLM serve applies the model directory's generation_config.json as its
+    sampling defaults, so temperature 0.0 / top_p 1.0 / top_k -1 plus
+    eos_token_id 151645 (<|im_end|>) makes the eval decode the same way the
+    direct probe did, which already produced correct, terminated answers ([276]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/sft_v1
+    origin: exp-01
+    hash: null
+  data: []
+  method:
+    family: decode-config
+    framework: "vLLM server defaults, read from the model directory's generation_config.json by the task's evaluate.py"
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        the intervention is generation_config.json written into the sft_v1
+        directory with temperature 0.0, top_p 1.0, top_k -1 and
+        eos_token_id 151645 (<|im_end|>), as the agent describes it at [316].
+        The write itself does not appear as an event in the digest; it is stated
+        at [294] and first exercised by the launch at [297].
+    target_format: null
+  command:
+    argv: [timeout, "1800", python, evaluate.py, --model-path, sft_v1, --limit, "50", --max-connections, "8", --gpu-memory-utilization, "0.85", --json-output-file, eval_sft_v1_greedy.json, ">", eval_sft_v1_greedy.log, "2>&1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/eval_sft_v1_greedy.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 0.5
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [timeout, "1800", python, evaluate.py, --model-path, sft_v1, --limit, "150", --max-connections, "8", --gpu-memory-utilization, "0.85", --json-output-file, eval_sft_v1_full.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.4266666666666667
+    path: /home/ben/task/eval_sft_v1.json
+  diagnostic:
+    what: >-
+      direct greedy vLLM generation from the same checkpoint on 3 test questions
+      with the eval's 10-shot prompt, printing finish_reason/stop_reason
+    command: [python, probe.py]
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/sft_v1
+  training_summary: {final_loss: null, steps: null, notes: "no training; the checkpoint of exp-01 with a greedy generation_config.json"}
+  measurements:
+    - metric: accuracy
+      value: 0.78
+      n: 50
+      path: /home/ben/task/eval_sft_v1_greedy.json
+      delta_vs_comparator: null
+    - metric: accuracy
+      value: 0.8133333333333334
+      n: 150
+      path: /home/ben/task/eval_sft_v1_full.json
+      delta_vs_comparator: 0.3866666666666667
+  diagnostic_result:
+    value: null
+    path: null
+    notes: "[276] all 3 probe generations were correct and stopped properly under greedy decoding; no output file was kept"
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    [311] "Greedy fix works: 78% on 50 samples (up from 42.7%). The temperature
+    was the whole problem." The full --limit 150 rerun gave 81.3% against the
+    same checkpoint's 42.7% under the eval's default decoding, so the loss was
+    entirely a decode-configuration artefact.
+  decision: adopt
+  next_step: >-
+    [335] save this checkpoint as the safe final_model, then pursue
+    rejection-sampling fine-tuning to push higher.
+
+# ---- Outcome (joined by the pipeline, never by the extractor) ---------------
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-01ed5927
+  launch_i: 297
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [258, 261, 271, 276, 290, 291, 294]
+    setup: [294, 297, 316]
+    evaluation: [297, 312]
+    result: [304, 311, 328, 335]
+    conclusion: [311, 335]
+  snapshot_files:
+    - probe.py
+    - evaluate.py
+    - eval_sft_v1.json
+    - eval_sft_v1_greedy.json
+    - eval_sft_v1_full.json
+  extractor: withheld
+  unresolved:
+    - "The generation_config.json write for sft_v1 is not itself an event in the digest; the launch cited here is the first command that runs under the changed config ([297]), and the file's contents are only as the agent describes them at [316]."
+    - "The eval sample-dump the agent examined (logs/2026-06-03T08-37-04+02-00_gsm8k_*.json) is not in the workspace snapshot."
+    - "The 50-sample and 150-sample greedy evals used --max-connections 8 / --gpu-memory-utilization 0.85, while the 42.7% comparator eval used --max-connections 4; only --limit is matched at n=150."

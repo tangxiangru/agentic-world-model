@@ -1,0 +1,207 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The LoRA model reasons correctly on most items but emits stray non-Latin
+    tokens right after the "ANSWER: X" line, so the scorer extracts the wrong
+    number and accuracy collapses to 0.133 on 30 samples. The agent's diagnosis
+    at [105]: "the reasoning is often correct but the scorer can't extract the
+    answer ... because LoRA doesn't change enough weights to cleanly learn the
+    format."
+  evidence:
+    - path: /home/ben/task/logs/2026-03-20T13-46-22+01-00_gsm8k_GgH2ENFyrRMWkouz4uLm32.json
+      locator: "samples 2, 3, 4; printed at [103]"
+      observation: >-
+        Each printed sample carries correct arithmetic in the chain of thought
+        and a corrupted final answer line; the scorer's extracted answer differs
+        from the number the model actually computed.
+    - path: null
+      locator: "[99]"
+      observation: "accuracy 0.133, stderr 0.063 on 30 samples."
+  affected_share: null
+  failure_examples:
+    - id: "sample 2"
+      source: /home/ben/task/logs/2026-03-20T13-46-22+01-00_gsm8k_GgH2ENFyrRMWkouz4uLm32.json
+      question: null
+      gold: "2"
+      model_output: "Marie spent $50 - $33 = <<50-33=17>>17 on the boxes of pizza.\nTherefore, Marie ordered $17/$8.50 = <<17/8.5=2>>2 boxes of pizza.\n\nANSWER: 2กับการ"
+      failure: "correct answer computed; the answer line is followed by stray tokens"
+    - id: "sample 3"
+      source: /home/ben/task/logs/2026-03-20T13-46-22+01-00_gsm8k_GgH2ENFyrRMWkouz4uLm32.json
+      question: null
+      gold: "7"
+      model_output: "... 84 eggs used in a month and there are 12 eggs in a dozen so, 84/12 = <<84/12=7>>7 dozens\n\nANSWER: 7เปอร์"
+      failure: "reasoning correct, answer 7; the scorer extracted 12 and marked it incorrect"
+    - id: "sample 4"
+      source: /home/ben/task/logs/2026-03-20T13-46-22+01-00_gsm8k_GgH2ENFyrRMWkouz4uLm32.json
+      question: null
+      gold: "18"
+      model_output: "... She sells those eggs at $2 per egg, so she makes 9 x $2 = $<<9*2=18>>18 every day.\n\nANSWER: 18จังหว"
+      failure: "reasoning correct, answer 18; the scorer extracted 2 and marked it incorrect"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    From the script's own header at [117]: full fine-tuning (no LoRA) will learn
+    the output format cleanly, trained on GSM8K train only ("cleaner, more
+    relevant"), without packing (clean example boundaries), for more epochs, and
+    with generation_config.json fixed to include <|im_end|> as an eos token.
+  mechanism: >-
+    LoRA does not change enough weights to learn the stop behaviour; a full
+    fine-tune plus an explicit <|im_end|> eos should end generation right after
+    the answer line instead of trailing garbage.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k
+      n_examples: 7473
+      built_by: /home/ben/task/train_v2.py
+      build_command: []
+      selection: >-
+        gsm8k main/train only, built in-process; answer split on "####";
+        assistant turn = reasoning + blank line + "ANSWER: <target>"; 40% of
+        items (seed 42) carry a system message with 5 few-shot examples;
+        shuffled with seed 42 [120].
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: 1
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (transformers 4.57.3, torch 2.8.0+cu129) [21]"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 5
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=False, optim=adamw_torch_fused, gradient_checkpointing=True
+        (use_reentrant=False), attn_implementation=flash_attention_2,
+        save_strategy=epoch, save_total_limit=2, no peft_config (full
+        fine-tune). All values are hard-coded in train_v2.py [117]; the launch
+        passed no flags. After saving, the script overwrites
+        generation_config.json with eos_token_id [151643, 151645],
+        pad_token_id 151643, do_sample=true, temperature 0.7, top_p 0.8.
+    target_format: >-
+      ChatML text: user turn = the eval's MATH_PROMPT_TEMPLATE, assistant turn =
+      reasoning + blank line + "ANSWER: <target>", closed with <|im_end|>.
+  command:
+    argv: [python3, /home/ben/task/train_v2.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_v2.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, /home/ben/task/evaluate.py, --model-path, /home/ben/task/final_model, --limit, "150", --max-connections, "2", --max-tokens, "2048", --gpu-memory-utilization, "0.85", --json-output-file, /home/ben/task/eval_v2_results.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.133
+    path: /home/ben/task/logs/2026-03-20T13-46-22+01-00_gsm8k_GgH2ENFyrRMWkouz4uLm32.json
+  diagnostic:
+    what: >-
+      Re-read the tail of each sample's output in the eval log to check that the
+      "ANSWER: X" line is clean and that the remaining errors are arithmetic.
+    command: []
+    path: /home/ben/task/logs/2026-03-20T15-20-11+01-00_gsm8k_89YUSW3tpeTsb5L426RdSy.json
+
+result:
+  execution: completed
+  wall_h: 1.47
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.08
+    steps: null
+    notes: >-
+      The agent's own summary at [128]: final loss 0.08, token accuracy 99%,
+      ~88 minutes, 5 epochs on 7,473 examples, full fine-tuning. Per-epoch
+      checkpoints checkpoint-1872 and checkpoint-2340 were left under
+      ./output_run2 [164].
+  measurements:
+    - metric: accuracy
+      value: 0.700
+      n: 30
+      path: /home/ben/task/logs/2026-03-20T15-20-11+01-00_gsm8k_89YUSW3tpeTsb5L426RdSy.json
+      delta_vs_comparator: 0.567
+    - metric: accuracy
+      value: 0.7266666666666667
+      n: 150
+      path: /home/ben/task/eval_v2_results.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-03-20T15-20-11+01-00_gsm8k_89YUSW3tpeTsb5L426RdSy.json
+    notes: >-
+      From [136]: "the format is now clean - no more garbage characters. The
+      model outputs clean 'ANSWER: X' format. 8/10 correct in the first 10
+      samples. The incorrect ones are math errors, not format issues." The two
+      wrong items printed at [135] are arithmetic/setup errors (target 18 vs
+      24, target 64 vs 128).
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    Under the same --limit 30 protocol as exp-03, accuracy went from 0.133 to
+    0.700 [132], and on 150 samples the model scored 0.7267 [138]. The failure
+    mode the hypothesis targeted is gone: the answer lines are clean and the
+    remaining errors are arithmetic [136].
+  decision: adopt
+  next_step: >-
+    Cheap decode-setting sweep on the same checkpoint, then check an earlier
+    epoch checkpoint for overfitting.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-9142b2d3
+  launch_i: 119
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [99, 101, 103, 105]
+    setup: [117, 119]
+    evaluation: [131, 137]
+    result: [120, 128, 130, 132, 135, 138]
+    conclusion: [133, 136, 141]
+  snapshot_files:
+    - train_v2.py
+    - eval_v2_results.json
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The comparator (exp-03) was measured at --limit 30 only; the headline 0.7267 at --limit 150 has no same-protocol comparator."
+    - "./output_run2 and ./final_model were deleted at [180], so this checkpoint no longer exists in the workspace."

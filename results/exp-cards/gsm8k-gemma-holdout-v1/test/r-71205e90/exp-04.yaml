@@ -1,0 +1,210 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 0.33
+
+problem:
+  statement: >-
+    The base model scores 7.3% at --limit 150, and its failures are dominated by
+    rambling/degeneration after the answer: the eval sends no temperature, so
+    vLLM samples at the checkpoint's own default (temp 1.0) and the model never
+    stops, while the scorer takes the last number in the completion.
+  evidence:
+    - path: /home/ben/task/baseline_150.json
+      locator: "[8652] launch, accuracy read at [14734]"
+      observation: "google/gemma-3-4b-pt at --limit 150 scores 0.0733 (stderr 0.0214)"
+    - path: null
+      locator: "[15017]"
+      observation: >-
+        agent: "Failures are dominated by rambling/degeneration after the answer
+        (temp-1.0 sampling, no stop discipline) - exactly what SFT + greedy
+        decoding will fix."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Full fine-tuning on GSM8K-train solutions formatted byte-exactly like the
+    eval prompt, with the completion ending in "ANSWER: X<end_of_turn>", plus a
+    greedy generation_config on the served checkpoint, will fix the rambling
+    failures and lift accuracy far above the 7.3% baseline. (agent, [15017];
+    this launch is the third relaunch of that training after the crashes and
+    kills recorded as exp-01 to exp-03)
+  mechanism: >-
+    The eval never sends temperature/top_p, so the served checkpoint's own
+    generation_config controls decoding; training the model to emit
+    <end_of_turn> right after the ANSWER line gives the scorer a clean last
+    number ([7874], [15017]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/build_sft_v1.py
+      build_command: [python3, build_sft_v1.py]
+      selection: >-
+        every gsm8k train row (7473; 11.1M tokens, length p50/p95/max
+        2190/2466/2869 per train_v1.log); prompt rendered through
+        gsm8k_eval_prompt.py with 40% the exact 10-shot eval prefix (train
+        split, seed 42), 20% random 10-shot prefixes (seeds 1000-1019), 40%
+        zero-shot; completion = gold reasoning +
+        "\n\nANSWER: {target}<end_of_turn>"; loss on completion tokens only.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer + Liger fused CE + FlashAttention-2, custom /home/ben/task/train_sft.py (versions not printed in the digest)"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        lr/epochs/bs/accum on the command line at [17974] (effective batch 32).
+        warmup_ratio 0.03 is the argparse default of train_sft.py and was NOT
+        overridden. Fixed in the script body: MAX_LEN 3072 (longer rows
+        dropped), cosine scheduler, seed 42, optim="adamw_torch_fused",
+        attn_implementation="flash_attention_2" ([17971]),
+        use_liger_kernel=True ([15716]), bf16 weights ([17350]),
+        gradient_checkpointing with use_reentrant=False, group_by_length,
+        save_strategy="epoch" + save_only_model (so ckpts/v1/checkpoint-234 =
+        epoch 1, checkpoint-468 = epoch 2, final = epoch 3), max_grad_norm 1.0,
+        logging_steps 10. Vision tower and multi-modal projector frozen (420M
+        params). No weight_decay is set. Final save is cast to bf16 and the
+        tokenizer/processor files are copied from the base snapshot.
+    target_format: >-
+      "<bos><start_of_turn>user\n{fewshot prefix + eval MATH_PROMPT_TEMPLATE}<end_of_turn>\n<start_of_turn>model\n"
+      as prompt; "{reasoning}\n\nANSWER: {target}<end_of_turn>" as completion,
+      so the scorer's last number is the answer and the model stops.
+  command:
+    argv: [sleep, "10", PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, python3, train_sft.py, --data, data/sft_v1.jsonl, --out, ckpts/v1, --epochs, "3", --lr, 2e-5, --bs, "16", --accum, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/train_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [bash, run_eval.sh, ckpts/serve_v1e3, "150", v1e3]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0733333333333333
+    path: /home/ben/task/baseline_150.json
+  diagnostic:
+    what: >-
+      failure-mode breakdown of the epoch-3 eval log (correct / wrong final
+      answer / too long / no ANSWER marker), to check whether the format
+      contract, not the reasoning, was the thing SFT fixed
+    command: [python3, "-", "<<'EOF'"]
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.725
+  output_checkpoint: /home/ben/task/ckpts/v1/final
+  training_summary:
+    final_loss: 0.1614
+    steps: 702
+    notes: >-
+      train_v1.log: train_runtime 2609.89 s (0.725 h), 702 optimizer steps,
+      mean train_loss 0.2808, epoch 3.0, "saved to ckpts/v1/final"; dataset 7473
+      rows / 11.1M tokens; 420M vision params frozen. ~5.3 s/step ([18585]).
+      Per-epoch checkpoints ckpts/v1/checkpoint-234 and checkpoint-468 were also
+      written; each was prepared for serving by prep_ckpt.py (bf16 cast,
+      tokenizer/processor copy, greedy generation_config with
+      eos_token_id [1,106]) into ckpts/serve_v1e1 [22842] and ckpts/serve_v1e2 /
+      ckpts/serve_v1e3 [23228].
+  measurements:
+    - metric: accuracy
+      value: 0.5866666666666667
+      n: 150
+      path: /home/ben/task/results_v1e3.json
+      delta_vs_comparator: 0.5133333333333333
+    - metric: accuracy
+      value: 0.5
+      n: 150
+      path: /home/ben/task/results_v1e2.json
+      delta_vs_comparator: 0.4266666666666667
+  diagnostic_result:
+    value: 0.968
+    path: null
+    notes: >-
+      [23523]: {'correct': 88, 'wrong_final_answer': 60, 'too_long': 2,
+      'no_marker': 2} on the 150-sample epoch-3 log; agent at [23998]: "Format
+      contract is solved - 60/62 remaining errors are genuine reasoning errors."
+      Average output fell to ~182 tokens ([23518]) from ~2200 at baseline.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "58.7% (vs 7.3% baseline). Clean stopping now (avg 182 output tokens)"
+    ([23518]) - a +51.3 pt move under the same --limit 150 protocol, and the
+    failure breakdown shows the gain came exactly where the hypothesis said it
+    would: only 4 of 62 remaining errors are format failures. Epoch 3 beat
+    epoch 2 (58.7 vs 50.0 at --limit 150, [27119]), so 3 epochs were not
+    overfitting.
+  next_step: >-
+    "Launching rejection-sampling generation with this model (critical path for
+    v2)" ([23518], [23519]).
+  decision: adopt
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-71205e90
+  launch_i: 17974
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [8652, 14734, 15017]
+    setup: [13872, 15716, 17350, 17352, 17971, 17974]
+    evaluation: [22842, 23228, 23233]
+    result: [18585, 23233, 23518, 23522, 23523, 26333, 27119]
+    conclusion: [23518, 23998]
+  snapshot_files:
+    - build_sft_v1.py
+    - gsm8k_eval_prompt.py
+    - train_sft.py
+    - prep_ckpt.py
+    - run_eval.sh
+    - train_v1.log
+    - results_v1e3.json
+    - results_v1e2.json
+    - baseline_150.json
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the epoch-1 checkpoint was prepared for serving as ckpts/serve_v1e1 at [22842] but no eval of it appears in the digest and no results file for it is in the workspace."
+    - "prep_ckpt.py is what writes the greedy generation_config (do_sample=false, temperature 0.0, top_p 1.0, top_k -1, eos_token_id [1,106]); it is applied identically to every checkpoint in this run, so it is recorded here rather than as its own decode-config card. The run never measured a non-greedy variant of a fine-tuned checkpoint, so the decode half of the hypothesis is not separately isolated."
+    - "the diagnostic at [23522] reads a logs/*.json eval log that is not part of the workspace snapshot; only its printed counts at [23523] survive."

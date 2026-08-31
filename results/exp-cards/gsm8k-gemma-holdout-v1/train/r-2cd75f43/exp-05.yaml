@@ -1,0 +1,180 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-05
+created_at: null
+elapsed_h: 3.06
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    "v3 is also 48%. Let me check actual failure modes - are we still running long or
+    making reasoning errors?" ([267]) - the extra data changed nothing, and 41 of 150
+    generations run past 2000 characters, 39 of the 78 wrong answers being those long ones.
+  evidence:
+    - path: /home/ben/task/logs/2026-04-16T19-57-40+02-00_gsm8k_kHQmxc3MNcqBeVs5HtUNRp.json
+      locator: "[268] script, [269] output"
+      observation: "Mean 2000.88 / median 413 / max 11809 chars; 78 incorrect, 39 of them longer than 2000 chars"
+    - path: /home/ben/task/logs/2026-04-16T19-57-40+02-00_gsm8k_kHQmxc3MNcqBeVs5HtUNRp.json
+      locator: "[271] script, [272] output"
+      observation: "a long wrong sample starts a correct plan, switches to writing Python, then drifts into unrelated text"
+  affected_share: 0.5        # 39 of 78 failures are the long/degenerate kind ([269])
+  failure_examples:
+    - id: null
+      source: /home/ben/task/logs/2026-04-16T19-57-40+02-00_gsm8k_kHQmxc3MNcqBeVs5HtUNRp.json
+      question: null          # only the target and three slices of the output were printed
+      gold: "20"
+      model_output: >-
+        "Step 1: First, find out how many cookies Cody eats ... Let's calculate this using
+        Python code. ```python ... " then, by 1000 characters in, unrelated text about a
+        vote and a game show, ending "IS THIS,"
+      failure: "never reaches an ANSWER line; the generation degenerates into unrelated text"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: null               # launched without saying why 6 epochs at 2e-5 on GSM8K alone should help
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "HF gsm8k (main) train split"
+      n_examples: 7473
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: >-
+        all 7473 GSM8K train rows, no filtering; answer split on "####" into reasoning and
+        target; user turn = the eval's math prompt template, assistant turn = reasoning +
+        "ANSWER: {target}" ([59], [62]). The MetaMathQA mixture of exp-04 is dropped.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 6.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 640
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        every value except scheduler / weight_decay / precision / seed is a launch arg at
+        [278] (warmup_ratio 0.03 passed explicitly). scheduler=cosine, weight_decay=0.0 and
+        bf16 are hard-coded in TrainingArguments in train_sft.py, which is in the workspace
+        snapshot; seed=42 is that script's argparse default, not overridden.
+    target_format: >-
+      raw "<|im_start|>user ... <|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n",
+      prompt span masked out of the loss ([147])
+  command:
+    argv: [nohup, python, train_sft.py, --data, /home/ben/task/train_data.jsonl, --output,
+           /home/ben/task/ckpt_sft_v4, --epochs, "6.0", --lr, "2e-5", --batch_size, "16",
+           --grad_accum, "2", --max_length, "640", --warmup_ratio, "0.03"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /tmp/train_v4.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpt_sft_v4, --limit, "150",
+              --json-output-file, /tmp/eval_v4.json, --max-connections, "4"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.480
+    path: /tmp/eval_v2b.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/ckpt_sft_v4
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      launched t=+3.06h, evaluated at t=+3.69h; no loss or step count in the stream. Before
+      the eval, generation_config.json was rewritten with eos_token_id [151643, 151645] in
+      the same event as the eval ([294]). Output tokens over the 150 items fell to 32,797,
+      against 95,224 for exp-04 - the rambling is gone.
+  measurements:
+    - metric: accuracy
+      value: 0.713
+      n: 150
+      path: /tmp/eval_v4.json
+      delta_vs_comparator: 0.233
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    "Huge jump to 71.3%!" ([297]) - GSM8K alone for 6 epochs at lr 2e-5 beats the 48%
+    incumbent by 23.3 points under the same --limit 150 protocol. No hypothesis was stated
+    before the launch, so what carried the gain (more epochs, higher lr, or dropping
+    MetaMathQA) is not separated here.
+  decision: adopt
+  next_step: "save as final_model and try to push further ([297])"
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-2cd75f43
+  launch_i: 278
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [267, 268, 269, 271, 272]
+    setup: [278]
+    evaluation: [294]
+    result: [295]
+    conclusion: [297]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null                # withheld: hard rule 5 forbids a model name in these cards
+  unresolved:
+    - "this launch changed three things at once against exp-04 - data (GSM8K only), epochs
+       (2.0 -> 6.0) and lr (1e-5 -> 2e-5) - and the run never separates them; the later
+       epoch sweep (exp-08 to exp-11) varies epochs and lr but never re-tests the data axis
+       at 6 epochs / 2e-5"
+    - "no eval JSON survives in the workspace snapshot; /tmp/eval_v4.json is the path as it
+       appears in the stream"
+    - "the workspace snapshot holds a contamination_judgement.txt reading \"contamination
+       detected\"; no event in the stream shows what produced that verdict or which data it
+       refers to, and the agent itself ran no contamination check (every data[].contamination_check
+       on these cards is not_run)"

@@ -1,0 +1,186 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-06
+created_at: null
+elapsed_h: 5.48
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    v2 (247K examples, 2 epochs) rambles far more than v1: 62 of 150 completions
+    exceed 3000 characters and never stop, and it scores 47.3% against v1's
+    61.3%. Stopping reliability, not data volume, is the dominant factor, and 2
+    epochs taught the <|im_end|> stop less reliably than 3.
+  evidence:
+    - path: /home/ben/task/eval_v2.json
+      locator: "[759], [771]"
+      observation: "v2 accuracy 0.4733 at --limit 150 vs 0.6133 for v1"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-08a3dad0.md
+      locator: "[772], [773]"
+      observation: "median completion 455 chars, max 12123, 62/150 over 3000 chars"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "3 epochs (v1) learned the im_end stop far more reliably than 2 epochs (v2).
+    The stopping reliability is the dominant factor. Let me launch v3: full 247K
+    data at 3 epochs" [803] - the larger set at 3 epochs should stop as reliably
+    as v1 and beat 61.3%.
+  mechanism: >-
+    A third epoch over the same data reinforces the <|im_end|> termination that
+    the 2-epoch run under-learned [803].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_data2.jsonl
+      source: "local: built from HF openai/gsm8k (main, train) + meta-math/MetaMathQA (GSM_* types)"
+      n_examples: 262471
+      built_by: /home/ben/task/build_data2.py
+      build_command: [python, build_data2.py]
+      selection: >-
+        as exp-04: META_CAP=240000 MetaMathQA GSM_* rows + GSM8K train + 15000
+        few-shot-prefixed copies drawn from all sources.
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129, flash_attention_2, datasets 4.5.0)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr/epochs/bs/accum are the launch flags; max_seq_len(2048), cosine
+        schedule, warmup_ratio(0.03), weight_decay(0.0), bf16, seed(0),
+        group_by_length, gradient_checkpointing, save_strategy=epoch are train.py
+        values the launch did not override. Uses the train.py revision of [804]
+        (raw-JSON greedy generation_config, eos 151645, tokenizer eos <|im_end|>).
+    target_format: >-
+      prompt = templates/qwen3.jinja chat template; completion = reasoning +
+      "ANSWER: N" + <|im_end|>; loss on the completion only.
+  command:
+    argv: [nohup, python, train.py, --data, sft_data2.jsonl, --out, sft_out3, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/train3.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_out3, --limit, "150", --json-output-file, eval_v3.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.6133333333333333
+    path: /home/ben/task/eval_fixed.json
+  diagnostic:
+    what: "check sft_out3's saved eos / generation_config after the low score [909], [919]"
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 3.69
+  output_checkpoint: /home/ben/task/sft_out3
+  training_summary:
+    final_loss: 0.1389006437908297
+    steps: 23202
+    notes: >-
+      train_runtime 13298.67 s (3:41:38), 1.745 steps/s; "kept 247471/262471";
+      "DONE sft_out3". Epoch 1 reached in 74 min at 2.19 it/s [881]; the run
+      overran the agent's estimate and finished with 46 minutes of budget left
+      [890]. train3.log holds only this run (the [806] attempt's log was
+      truncated by this relaunch).
+  measurements:
+    - metric: accuracy
+      value: 0.04
+      n: 150
+      path: /home/ben/task/eval_v3.json
+      delta_vs_comparator: -0.5733333333333334
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "[919] v3's config is correct, yet it rambles" - the low score is not the
+      eos/greedy misconfiguration that caused the early low scores; the block
+      holding that config check is not in the digest.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    "V3 shows 4% - the rambling signature again" [909]; "3 epochs on the larger
+    247K set degraded it (the epoch/data interaction is clearly not monotonic)"
+    [919]. Both v2 (47.3%) and v3 (4.0%) underperformed v1: "the larger 247K
+    dataset hurt, likely the backward SV/FOBAR augmentations causing greedy
+    repetition loops" [930].
+  decision: reject
+  next_step: >-
+    Verify and keep final_model (v1, 61.3%) as the submission [919], [920]; no
+    further training - 31 minutes of budget remained [930].
+
+# ---- 6b. outcome ------------------------------------------------------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-08a3dad0
+  launch_i: 841
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [771, 772, 773, 803]
+    setup: [804, 841]
+    evaluation: [891, 901]
+    result: [843, 850, 865, 873, 881, 882, 890, 891, 892, 894, 895, 901, 909, 919]
+    conclusion: [909, 919, 930]
+  snapshot_files:
+    - train.py
+    - train3.log
+    - build_data2.py
+    - eval_v3.json
+    - eval_v3.log
+    - eval_fixed.json
+    - fix_config.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The first eval attempt at [891] exited 1 and left no eval_v3.log [894], [895]; the number recorded here comes from the retry at [901]."
+    - "fix_config.py was written at [866] to repair checkpoint configs before evaluating them, but the digest shows no invocation of it, so it gets no card."
+    - "The agent never inspected v3's completions directly; the '4% = rambling signature' reading at [909] is asserted, not measured."
+    - "sft_out3 was never packaged or submitted; final_model still holds the exp-03 copy of the v1 weights."

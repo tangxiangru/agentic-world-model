@@ -1,0 +1,209 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The un-tuned base model scores 0.35 on the official 20-sample slice, and the
+    benchmark's contract is narrow: it injects 10 GSM8K training examples as
+    few-shot context and scores a numeric match on the final answer, so "the
+    main leverage is improving arithmetic reasoning and answer formatting, not
+    instruction tuning in the abstract" [36]. The agent wanted a clean read on
+    whether plain in-domain SFT moves that number at all before layering in
+    synthetic data [175].
+  evidence:
+    - path: /home/ben/task/baseline_limit20.json
+      locator: "[47], quoted as 'the 35% official baseline slice' at [180]"
+      observation: "base model, official evaluator, 20 samples: accuracy 0.35, stderr 0.1094"
+    - path: /home/ben/task/evaluate.py
+      locator: "[21], [24], [36]"
+      observation: "agent read the evaluator: qwen3 chat template, 10 GSM8K train few-shots in context, numeric match on the final answer"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A conservative GSM8K-only LoRA SFT pass over the base model, with targets
+    written in the exact "ANSWER:" format the evaluator parses, will show
+    whether pure in-domain SFT helps before any synthetic arithmetic is layered
+    in [94], [175].
+  mechanism: >-
+    Training on GSM8K train in the evaluator's own answer format teaches the
+    base model to end its solution in the parsed ANSWER line, so correct
+    reasoning is actually scored [94].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: null
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/gsm8k_train_sft.jsonl
+      source: "HF openai/gsm8k (config main, split train)"
+      n_examples: 6961
+      built_by: /home/ben/task/scripts/prepare_data.py
+      build_command:
+        - python
+        - scripts/prepare_data.py
+        - --output-dir
+        - data
+        - --tinygsm-count
+        - "20000"
+        - --tinygsm-max-shards
+        - "1"
+        - --val-size
+        - "512"
+      selection: >-
+        the GSM8K-train-only shard of the prep run at [168]: 6961 train rows
+        after a 512-row GSM8K validation split is held out; the same invocation
+        also wrote a 20000-row TinyGSM shard and a 26961-row mix, neither of
+        which this launch reads. The exact formatting rule is in
+        scripts/prepare_data.py, which is not in the workspace snapshot.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: null
+    peft: "LoRA r=64 alpha=128 dropout=0.05; target modules not stated"
+    hyperparams:
+      lr: 5.0e-05
+      epochs: 1.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: null
+      seed: null
+      other: >-
+        every value here is from the launch argv at [176]; scripts/train_sft.py
+        is not in the workspace snapshot, so no argparse default was adopted.
+        Also passed: --logging-steps 10 --save-steps 250. The trainer library is
+        never named in the stream (peft, trl, bitsandbytes and accelerate are
+        all importable [70]).
+    target_format: >-
+      the evaluator's "ANSWER:" format [94]; the exact prompt/target shaping is
+      in scripts/prepare_data.py, which is not in the snapshot
+  command:
+    argv:
+      - python
+      - scripts/train_sft.py
+      - --train-file
+      - data/gsm8k_train_sft.jsonl
+      - --output-dir
+      - runs/gsm8k_only_v1
+      - --num-train-epochs
+      - "1.0"
+      - --per-device-train-batch-size
+      - "8"
+      - --gradient-accumulation-steps
+      - "4"
+      - --learning-rate
+      - "5e-5"
+      - --max-seq-length
+      - "768"
+      - --logging-steps
+      - "10"
+      - --save-steps
+      - "250"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --lora-dropout
+      - "0.05"
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.35
+    path: /home/ben/task/baseline_limit20.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: /home/ben/task/runs/gsm8k_only_v1
+  training_summary:
+    final_loss: 0.4057
+    steps: null
+    notes: >-
+      last logged loss 0.4057 at epoch 0.96; the trainer's reported mean
+      train_loss is 0.4364520847250562 over 1.0 epoch, train_runtime 418.3096 s
+      (0.116 h), 16.641 samples/s, 0.521 steps/s [196]. The step count is never
+      printed. The LoRA adapter itself was never scored; it was measured only
+      after being merged (exp-02, exp-03).
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The GSM8K-only LoRA epoch trained cleanly to a mean train_loss of 0.4365 in
+    about 7 minutes [196], but this launch's own output is an adapter and was
+    never evaluated as such, so it carries no measurement. Its merged export
+    (exp-03) later landed "exactly at the base-model baseline on the official
+    slice" [235].
+  decision: adopt
+  next_step: >-
+    Merge the adapter into a standalone checkpoint and run the official
+    evaluator on it, which "will decide whether this stays the lead model or
+    becomes the second stage for a mixed-data run" [198].
+
+outcome:
+  official_accuracy: null       # never written by the extractor; joined by the pipeline
+
+provenance:
+  kind: extracted
+  run_ref: r-60904922
+  launch_i: 176
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [36, 46, 47, 175, 180]
+    setup: [94, 168, 169, 176]
+    evaluation: [47]
+    result: [196]
+    conclusion: [198, 235]
+  snapshot_files:
+    - baseline_limit20.json
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 111, outcome: "crashed: NameError: name 'int' is not defined while evaluating a TinyGSM program"}
+    - {launch_i: 118, outcome: "crashed: ValueError: unsupported expression: JoinedStr in the TinyGSM renderer"}
+    - {launch_i: 147, outcome: "passed (0.2 epoch, 7 steps, train_loss 0.671) - explicitly 'one short smoke-train ... to validate the LoRA/trainer path' [142]"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "scripts/train_sft.py, scripts/prepare_data.py, scripts/merge_lora.py, scripts/generate_rft_dataset.py and scripts/eval_gsm8k_local.py are not in the workspace snapshot, so every hyper-parameter here comes from the launch argv and none from an argparse default."
+    - "the launch passes no base-model argument, so the parent path is not in the stream; origin base_model comes from the plan at [94] ('Train Qwen/Qwen3-4B-Base with LoRA') and from [392] ('starting from the base model again')."
+    - "decision follows the rule 'adopt if the output is the parent of a later card' - this adapter is the parent of exp-02 and exp-03; on score the line was neutral and was dropped at [235]."
+    - "the workspace holds contamination_judgement.txt ('no contamination detected') and disallowed_model_judgement.txt ('only allowed use detected'), but neither check appears in the stream, so contamination_check is left not_run."
+    - "the digest header states this run recorded no event timestamps, so elapsed_h is null; the only clock readings in the stream are timer.sh at [9] (9:59 of 10 h remaining) and [267] (9:15 remaining)."

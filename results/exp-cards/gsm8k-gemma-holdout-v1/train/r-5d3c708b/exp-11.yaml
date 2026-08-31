@@ -1,0 +1,176 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-11
+created_at: null
+elapsed_h: 7.15
+
+problem:
+  statement: >-
+    The KL-regularised continuation could not run - "grpo3 OOM'd at startup (the
+    KL reference model added ~8GB)" ([629]) - while the question it was meant to
+    answer stands: g2_400 sits at 91.0% (--limit 500) / 90.0% (full) and beta=0
+    GRPO is known to collapse if run too long ([595]).
+  evidence:
+    - path: /home/ben/task/logs/grpo3.log
+      locator: "[633]"
+      observation: "torch.OutOfMemoryError at startup with beta=0.04; 70.73 GiB in use before the first step"
+    - path: /home/ben/task/logs/sel_work_grpo2_checkpoint-600.json
+      locator: "[595]"
+      observation: "beta=0 GRPO collapsed to 0.652 by step 600 of the previous continuation"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "a clean beta=0 short continuation from g2_400 (no reference model, no OOM)
+    with dense checkpoints to probe just past the known peak - keeping g2_400 as
+    the locked baseline" ([635]): a short run with frequent checkpoints will find
+    a point slightly better than g2_400 before drift sets in.
+  mechanism: >-
+    The collapse appeared only after several hundred steps, so 120 steps with a
+    checkpoint every 40 should stay inside the improving region.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-08
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/work/g2_400
+    origin: exp-08
+    hash: null
+  data:
+    - path: null
+      source: "openai/gsm8k main:train"
+      n_examples: null
+      built_by: /home/ben/task/grpo_train.py
+      build_command: []
+      selection: "as exp-08"
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: grpo
+    framework: "trl.GRPOTrainer 0.27.2 with vLLM 0.11.0 colocate"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-06
+      epochs: null
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: null
+      scheduler: constant_with_warmup
+      warmup: 10
+      weight_decay: null
+      precision: bf16
+      seed: 42
+      other: >-
+        from the command line - max_steps=120, save_steps=40, num_generations=8,
+        max_completion_length=400, temperature=1.0, beta=0.0,
+        vllm_gpu_memory_utilization=0.3. Everything else from grpo_train.py in
+        the workspace as in exp-08.
+    target_format: >-
+      eval chat template prompt; completions end in "ANSWER: <n>" and terminate
+      on <|im_end|>
+  command:
+    argv: [python, -u, grpo_train.py, --init, work/g2_400, --out, work/grpo3, --steps, "120", --save_steps, "40", --lr, "1e-6", --num_gen, "8", --pdbs, "4", --accum, "8", --max_completion, "400", --temp, "1.0", --beta, "0.0", --vllm_mem, "0.3"]
+    cwd: /home/ben/task
+    script: /home/ben/task/grpo_train.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/grpo3.log
+  budget:
+    gpu: "1x H100 80GB HBM3"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, work/g3_40, --limit, "-1", --max-connections, "2", --gpu-memory-utilization, "0.4", --max-tokens, "2048", --json-output-file, logs/val_g3_40.json]
+    dev_set: "official --limit -1 (all 1319)"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-08
+    value: 0.9000
+    path: /home/ben/task/logs/val_work_g2_400.json
+  diagnostic:
+    what: "reward_correct trend at the end of the short continuation"
+    command: []
+    path: /home/ben/task/logs/grpo3.log
+
+result:
+  execution: completed
+  wall_h: 0.29
+  output_checkpoint: /home/ben/task/work/grpo3/checkpoint-40
+  training_summary:
+    final_loss: null
+    steps: 120
+    notes: >-
+      checkpoints at 40/80/120, saved cleanly; "reward noisy, near saturation"
+      ([648]). checkpoint-40 was re-saved as clean bf16 to work/g3_40 by
+      to_bf16.py at [659] - a dtype cast of the same weights - before the
+      full-test validation.
+  measurements:
+    - metric: accuracy
+      value: 0.914
+      n: 500
+      path: /home/ben/task/logs/sel_work_grpo3_checkpoint-40.json
+      delta_vs_comparator: 0.004
+    - metric: accuracy
+      value: 0.912
+      n: 500
+      path: /home/ben/task/logs/sel_work_grpo3_checkpoint-80.json
+      delta_vs_comparator: 0.002
+    - metric: accuracy
+      value: 0.9075
+      n: 1319
+      path: /home/ben/task/logs/val_g3_40.json
+      delta_vs_comparator: 0.0075
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/grpo3.log
+    notes: "reward noisy and near saturation by the end of the run ([648])"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    "grpo3 checkpoint-40 (91.4%) and checkpoint-80 (91.2%) edge out g2_400
+    (91.0%) at limit 500, but within noise" ([658]); on the full test set
+    "g3_40 = 90.75% full test - beats g2_400 (90.0%) by a genuine margin. This is
+    my best model" ([670]). The full-test comparison is same-protocol, so the
+    +0.75 pt gain stands, though the --limit 500 screen alone would not separate
+    them.
+  decision: adopt
+  next_step: "switch final_model to g3_40 and re-run the grader-config confirmation ([670])."
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-5d3c708b
+  launch_i: 636
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [629, 633, 635]
+    setup: [636]
+    evaluation: [649, 659]
+    result: [642, 648, 658, 665, 670]
+    conclusion: [658, 670]
+  snapshot_files:
+    - grpo_train.py
+    - select_eval.sh
+    - to_bf16.py
+    - finalize.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "logs/sel_work_grpo3_checkpoint-*.json and logs/val_g3_40.json are not in the workspace snapshot; the values are the numbers the agent printed at [658] and [670]."
+    - "checkpoint-120 was in the --limit 500 sweep at [649] but its score never appears in the stream."
+    - "the full-test validation ran at --gpu-memory-utilization 0.4 --max-tokens 2048, matching the g2_400 validation but not the grader's 0.3 / 4000."

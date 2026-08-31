@@ -1,0 +1,231 @@
+# Reconstructed experiment card (extracted, not agent-written).
+# Paths are the absolute paths the stream states; the run's working directory is
+# /home/ben/task. Files under runs/ and logs/ are named by the stream but are NOT
+# in the workspace snapshot (only the scripts are).
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.21
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The un-tuned base model scores 0.40 on 50 official items, and the failures are
+    formatting, not reasoning: "the base model (1) echoes the prompt and
+    hallucinates new problems, (2) doesn't stop after the answer, (3) sometimes
+    gives non-numeric answers" ([105]). The eval scores the last numeric token of
+    the completion, so a model that keeps generating past its answer is scored on
+    whatever it drifts into.
+  evidence:
+    - path: /home/ben/task/runs/baseline_50.json
+      locator: "[97]"
+      observation: 'accuracy 0.4, stderr 0.06998542122237651 on --limit 50'
+    - path: /home/ben/task/logs/
+      locator: "[101], [103]"
+      observation: >-
+        the inspect json log of the baseline eval; the three completions printed at
+        [103] show one item drifting into a hallucinated second problem
+        ("Solve the following math problem step by step...") mid-completion, and
+        one item ("sample 2", target 30) answered correctly and cleanly.
+    - path: null
+      locator: "[84]"
+      observation: >-
+        the eval's vllm provider stops at the model's eos_token_id (151643,
+        <|endoftext|>), while the chat template ends turns with <|im_end|>
+        (151645), so nothing terminates a chat-formatted completion.
+  affected_share: null
+  failure_examples: []                 # the [103] print is truncated in the digest and
+                                       # the failing items' targets are not shown
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "SFT will fix all of these" ([105], [111]): supervised fine-tuning of the base
+    model on all 7473 gsm8k train solutions, reformatted into the eval's exact user
+    turn with a completion that ends "ANSWER: <n><|im_end|>", will remove the
+    echo / no-stop / non-numeric failures and lift accuracy well above 0.40.
+  mechanism: >-
+    Training on the exact eval prompt with an <|im_end|>-terminated target teaches
+    one clean chain of thought followed by a stop; saving the checkpoint with
+    eos_token_id=[151645, 151643] makes the eval's vLLM server honour that stop
+    ([84], [112], [124]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+    # the launch passes no --model, so train_sft.py's BASE default applies
+  data:
+    - path: /home/ben/task/data/sft_gsm8k.jsonl
+      source: "openai/gsm8k (main, train)"
+      n_examples: 7473                 # not printed for this file; gsm8k train is 7473
+                                       # rows ([358] "7361/7473") and exp-02's trainer
+                                       # loads 7473 + 28099 = 35572 ([368])
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --out, data/sft_gsm8k.jsonl]
+      selection: >-
+        every openai/gsm8k main/train row; the answer field is split on "####" into
+        reasoning and target, <<...>> calculator markers are stripped from the
+        reasoning and commas from the target; prompt = inspect_evals'
+        MATH_PROMPT_TEMPLATE wrapped as
+        "<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n"; completion =
+        reasoning + "\n\nANSWER: <target><|im_end|>"; rows with an empty reasoning
+        or target are dropped. No dedup, no repeats.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57 (hand-written tokenize/mask + DataCollatorForSeq2Seq; no TRL)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        lr / epochs / bs / accum / max_len are all on the launch argv [132].
+        warmup_ratio 0.03 and weight_decay 0.0 are train_sft.py's argparse
+        defaults and the launch does not override them. Hard-coded in the script:
+        lr_scheduler_type cosine, max_grad_norm 1.0, bf16, gradient_checkpointing
+        (use_reentrant False), optim adamw_torch, save_strategy "no",
+        logging_steps 20, seed 42. flash_attention_2 attention; completion-only
+        loss (prompt tokens labelled -100). env TOKENIZERS_PARALLELISM=false.
+    target_format: >-
+      the eval's own user turn, then the gsm8k reasoning with calculator markers
+      removed, then "ANSWER: <n>" followed immediately by <|im_end|>. On --save the
+      script rewrites config.json / generation_config.json with
+      eos_token_id=[151645, 151643] and pad_token_id=151643.
+  command:
+    argv: [nohup, python, train_sft.py, --data, data/sft_gsm8k.jsonl, --out, sft_v1, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2", --max_len, "1024", --save]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {TOKENIZERS_PARALLELISM: "false"}
+    log: /home/ben/task/runs/train_v1.log
+  budget:
+    gpu: "1x H100 80GB"                # [398]; the OOM at [421] reports 79.18 GiB total
+    planned_h: 0.25                    # "702 steps, ~1.2s/step (~14 min total)" ([161])
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, sft_v1, --limit, "150", --max-connections, "16", --json-output-file, runs/eval_v1_150.json]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k, 10-shot, served through vllm)"
+    n: 150
+    seed: null
+    # launched as `bash run_eval.sh sft_v1 150 16 v1` [254]; run_eval.sh expands to
+    # exactly the argv above
+  comparator:
+    ref: base_model
+    value: 0.40
+    path: /home/ben/task/runs/baseline_50.json
+    # measured at --limit 50, NOT the 150 used here - the two numbers are not
+    # under the same protocol
+  diagnostic:
+    what: >-
+      format audit of the 150 eval completions: stop_reason counts, count of
+      completions with no numeric token, count over 3000 characters, and the tail
+      of four wrong items - i.e. does anything still fail for formatting reasons
+    command: [python, -c, "<inline stop_reason / non-numeric / length audit over logs/*.json>"]
+    path: null                         # printed to stdout at [285], never written to a file
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/sft_v1
+  training_summary:
+    final_loss: 0.27                   # "final train_loss 0.27" ([253]); last logged step loss 0.19
+    steps: 702                         # [161]
+    notes: >-
+      Launched [132] t=+0.21h, reported trained and saved by [253] t=+0.46h, so
+      wall time is under 0.25 h; train_runtime itself never appears in the digest.
+      "loss 0.64 -> 0.19 ... no overfitting" ([253]). sft_v1 was saved by the
+      pre-[184] train_sft.py, which wrote the eos ids but not a greedy
+      generation_config, so [217] patched sft_v1/generation_config.json in place to
+      do_sample=False, temperature 0.0, top_p 1.0, top_k -1, max_new_tokens 1024,
+      eos [151645, 151643]. That patch is folded into this card: it changed no
+      weights and produced no candidate distinct from sft_v1.
+  measurements:
+    - metric: accuracy
+      value: 0.7867
+      n: 150
+      path: /home/ben/task/runs/eval_v1_150.json
+      delta_vs_comparator: 0.3867      # against the base model's 0.40, which was
+                                       # measured at --limit 50, not 150
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      "n= 150 / stop_reasons= {'stop': 150} / nonnumeric= 0 | very long(>3000ch): 0
+      / num wrong: 32" ([285]). Every completion terminated on its own and every
+      one ended in a number, so the three baseline failure modes are gone; the four
+      wrong items printed are arithmetic/relational reasoning errors with clean
+      formatting.
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    0.7867 at --limit 150 against a 0.40 base measured at --limit 50 - a large
+    lift, but the two evals are not the same protocol, so the card cannot call the
+    claim supported on the number alone. The mechanism is settled: "all 150 stopped
+    cleanly, 0 format/non-numeric issues - SFT completely fixed formatting. The 32
+    errors are now *genuine reasoning mistakes*" ([287]).
+  decision: iterate
+  next_step: >-
+    "So the bottleneck is reasoning quality. My best levers: (1) rejection-sampling
+    (RFT) to reinforce correct reasoning paths, (2) more diverse high-quality data,
+    (3) RL" ([287]). sft_v1's weights are not carried forward - exp-02 retrains from
+    base - but sft_v1 is the sampler that produces exp-02's rejection-sampled data.
+
+# ---- joined by the pipeline, never by the extractor --------------------------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-5f4b22de
+  launch_i: 132
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [84, 97, 99, 101, 103, 105]
+    setup: [106, 112, 114, 124, 132]
+    evaluation: [254, 277, 284]
+    result: [161, 217, 253, 283, 285]
+    conclusion: [287]
+  snapshot_files:
+    - prepare_data.py
+    - train_sft.py
+    - run_eval.sh
+    - evaluate.py
+    - timer.sh
+    - download.log
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "prepare_data.py printed its row count at [114] but that result block is not in the digest; 7473 is inferred from gsm8k train's size ([358]) and exp-02's loaded total 35572 ([368])."
+    - "no train_runtime line for v1 is in the digest, so wall_h is only bounded (<=0.25 h) by the [132] and [253] timestamps."
+    - "the workspace copy of train_sft.py is the end-of-run version, which includes the greedy generation_config block added at [184] AFTER this launch; the running process used the pre-[184] version, hence the manual patch at [217]."
+    - "the workspace holds contamination_judgement.txt ('no contamination detected') and disallowed_model_judgement.txt ('only allowed use detected'), but no launch in the stream produced them; every dataset here is recorded as contamination_check: not_run."
+    - "runs/ and logs/ are absent from the workspace snapshot, so none of the eval json files this card cites can be re-read."

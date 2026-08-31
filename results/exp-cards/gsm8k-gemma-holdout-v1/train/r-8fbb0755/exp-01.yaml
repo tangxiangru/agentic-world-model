@@ -1,0 +1,149 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.32
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: "The base model scores 20% on the benchmark eval and the SFT pipeline is unproven: it is not yet known whether fine-tuning on the prepared data lifts accuracy, nor whether a fine-tuned checkpoint stops cleanly under the vLLM eval (the base eos is <|end_of_text|> 128001 while the chat-formatted model will emit <|im_end|> 128012)."
+  evidence:
+    - path: /home/ben/task/baseline_metrics.json
+      locator: "[117], [123]"
+      observation: "Baseline is 20% (limit 50) - 'confirms the base model struggles (likely also the stopping/rambling issue)'."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: "A de-risk SFT run on ~25K of the prepared examples will confirm that accuracy jumps over the 20% baseline and that outputs stop correctly."
+  mechanism: "Assistant-only-loss SFT on GSM8K/MetaMathQA reasoning rendered with the eval's own chat template teaches the format the grader scores (last number, 'ANSWER: X'), and the saved generation_config sets eos_token_id=[128001,128012] so vLLM stops at <|im_end|>."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--HuggingFaceTB--SmolLM3-3B-Base/snapshots/d78a42f79198603e614095753484a04c10c2b940
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "openai/gsm8k train + meta-math/MetaMathQA GSM_* subset"
+      n_examples: 25000
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py]
+      selection: "GSM8K train (7473) with <<calc>> annotations, '#### N' markers and residual 'The answer is:' lines stripped; MetaMathQA capped at GSM_Rephrased 50000, GSM_AnsAug 50000, GSM_FOBAR 30000, GSM_SV 30000, only numeric answers kept, MATH_* excluded; shuffled seed 0. This launch used --limit 25000, i.e. the first 25000 rows of the 167473-example file."
+      contamination_check: passed
+      mixture_weight: null
+      repeats: null
+  method:
+    family: sft
+    framework: trl.SFTTrainer
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 1.0
+      batch_size: 48
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: "Full fine-tune, flash_attention_2, gradient_checkpointing, padding_free=True, packing=False, assistant_only_loss=True, group_by_length=False, optim=adamw_torch, max_grad_norm=1.0, completion_only_loss=False. warmup_ratio 0.03, scheduler, weight_decay, precision and seed are not on this launch's argv; they are constants/argparse defaults in /home/ben/task/train_sft.py, whose text is in the workspace and which this launch did not override. padding_free was switched on at [152], just before this launch."
+    target_format: "chat messages rendered with templates/smollm.jinja: system = brief 'careful math assistant' instruction, user = the inspect_evals MATH_PROMPT_TEMPLATE, assistant = step-by-step reasoning ending in a line 'ANSWER: <number>'; loss on assistant tokens only."
+  command:
+    argv: [nohup, python, train_sft.py, --limit, "25000", --epochs, "1", --bs, "48", --accum, "2", --max-len, "1024", --save-steps, "100000", --out, sft_derisk, --lr, "1e-5"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/derisk_train.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [nohup, python, evaluate.py, --model-path, sft_derisk, --limit, "50", --max-connections, "4", --json-output-file, derisk_metrics.json]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.2
+    path: /home/ben/task/baseline_metrics.json
+  diagnostic:
+    what: "Inspect the eval log's completions to check the model stops cleanly (stop reason and completion length) rather than rambling."
+    command: [python, -, "logs/*.json"]
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.167
+  duration_h: 0.167
+  steps: 261
+  output_checkpoint: /home/ben/task/sft_derisk
+  training_summary:
+    final_loss: 0.17457954123102384
+    steps: 261
+    notes: "train_runtime 600.61s, 41.6 samples/s, entropy 1.087, mean_token_accuracy 0.935, epoch 1.0. Saved with generation_config eos_token_id=[128001,128012], pad_token_id=128001, verified at [201]/[202]."
+  measurements:
+    - metric: accuracy
+      value: 0.56
+      n: 50
+      path: /home/ben/task/derisk_metrics.json
+      delta_vs_comparator: 0.36
+  diagnostic_result:
+    value: null
+    path: null
+    notes: "Sampled completions end cleanly at 'ANSWER: <n>' with no rambling; later re-measured at [317]/[318] as 26% of the 50 completions containing <<>> calculator annotations."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "The de-risk fine-tune reached 56% on limit 50 against the base model's 20% under the same protocol, and outputs stopped cleanly with the eos override in place [204]. It validated the pipeline; the checkpoint itself was never carried forward - the full run was started from the base model instead."
+  decision: reject
+  next_step: "Launch the full 167473-example run (2 epochs, lr 2e-5) from the base model [211]."
+
+# ---- Outcome (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-8fbb0755
+  launch_i: 155
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [117, 123]
+    setup: [152, 155]
+    evaluation: [205]
+    result: [201, 202, 204]
+    conclusion: [204, 211]
+  snapshot_files:
+    - train_sft.py
+    - prepare_data.py
+    - derisk_train.log
+    - derisk_metrics.json
+    - derisk_eval.log
+    - baseline_metrics.json
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 134, outcome: "4-step pipeline check (--limit 2000 --max-steps 4 --out sft_smoke); no error reported in the stream"}
+    - {launch_i: 146, outcome: "passed (30 steps, --limit 8000 --bs 32 --out sft_smoke2); throughput ~20 samples/s with padding, which motivated padding_free=True"}
+  extractor: claude-opus-5
+  unresolved:
+    - "The de-risk eval's own accuracy is in derisk_metrics.json, but the per-sample inspect log (logs/*.json) is not in the workspace snapshot, so the stop-reason diagnostic cannot be re-checked."

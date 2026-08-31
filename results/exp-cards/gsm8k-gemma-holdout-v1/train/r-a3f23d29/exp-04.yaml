@@ -1,0 +1,210 @@
+# Reconstructed experiment card (extracted, not agent-written).
+# Paths are relative to the run's working directory: the stream never states its
+# absolute location. Every cited file is in the run's workspace snapshot.
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 3.64
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    Both candidates so far sit at 84.0% on 500 samples and all 80 failures are
+    genuine reasoning errors with clean termination - "84% is the capability
+    ceiling of this data" ([565]). Neither gold GSM8K, MetaMath augmentations,
+    nor the model's own rejection-sampled solutions add anything further.
+  evidence:
+    - path: eval_v2_500.json
+      locator: "[551], [565]"
+      observation: >-
+        420 correct / 80 incorrect at --limit 500, every failure with stop_reason
+        "stop"; "recoverable (ans right but marked wrong): 0, genuine wrong: 80".
+    - path: eval_v1_500.json
+      locator: "[530], [549]"
+      observation: "the previous candidate measures 0.840 on the same 500 items - identical, so the plateau is not specific to one mixture."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    "To improve generalization, I'll add high-quality diverse solutions from
+    OpenMathInstruct-2 (GSM-augmented, 405B-generated)." ([565]) Training on gold
+    GSM8K plus the self-sampled solutions plus an OpenMathInstruct-2 GSM subset
+    will lift accuracy above the 84.0% plateau.
+  mechanism: >-
+    The plateau is attributed to the data, not the recipe; OpenMathInstruct-2's
+    GSM-sourced solutions are written by a much stronger model and are more
+    diverse than either the gold traces or the incumbent's own samples, so they
+    should carry reasoning the current mixture cannot ([565]).
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+    # again no --model on the launch, so train_sft.py's default applies: fresh
+    # from base, not a continuation of exp-03.
+  data:
+    - path: train_v3.jsonl
+      source: "local (openai/gsm8k train + synthetic:self + nvidia/OpenMathInstruct-2)"
+      n_examples: 29336                 # printed by the trainer: "examples 29336" (train_v3.log)
+      built_by: prep_data_v3.py
+      build_command: [python, prep_data_v3.py]
+      selection: >-
+        all 7473 openai/gsm8k train items as gold solutions, plus all 14443 rows
+        of rs.jsonl (reused unchanged from exp-03), plus every row of
+        oi_gsm.jsonl, shuffled under random.seed(2). MetaMathQA is dropped
+        entirely from this mixture. prep_data_v3.py's stdout at [643] is not in
+        the digest; the OpenMathInstruct-2 share is 29336 - 7473 - 14443 = 7420.
+      contamination_check: not_run
+      mixture_weight: 1.0
+    - path: oi_gsm.jsonl
+      source: "nvidia/OpenMathInstruct-2"
+      n_examples: null                  # collector was killed early; the wc -l at [641]/[643] is not in the digest
+      built_by: collect_oi.py
+      build_command: [nohup, python, collect_oi.py, "35000"]
+      selection: >-
+        streamed from nvidia/OpenMathInstruct-2 train, keeping rows whose
+        problem_source starts with "gsm" and whose expected_answer parses as a
+        number; \boxed{...} is unwrapped, empty solutions dropped, duplicates
+        dropped on hash((problem, answer)); each row becomes
+        "<generated_solution>\nANSWER: <expected_answer>". Target was 35000 but
+        the collector was killed at [641] after ~9 minutes of streaming, so the
+        file holds far fewer (7420 implied by the train_v3.jsonl total).
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: "transformers.Trainer (custom prompt/completion masking and pad collator; no TRL)"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: null
+      other: >-
+        Unchanged from exp-01 and exp-03: lr / epochs / bs / accum from the launch
+        argv at [650]; max_seq_len 1024 is train_sft.py's --maxlen default, not
+        overridden; scheduler, warmup_ratio, weight_decay, bf16, max_grad_norm,
+        optim and gradient checkpointing are hard-coded in the script. No seed is
+        set. Only --data and --out differ, so this is again a data-only
+        intervention.
+    target_format: >-
+      same hand-built "<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n"
+      sequence with prompt tokens masked; solutions end in a bare "ANSWER: <n>"
+      line.
+  command:
+    argv: [nohup, python, train_sft.py, --data, train_v3.jsonl, --out, sft_v3, --epochs, "3", --lr, "1e-5", --bs, "16", --accum, "2"]
+    cwd: null
+    script: train_sft.py
+    env: {}
+    log: train_v3.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: 1.0                      # "v3 training running (~60 min ETA)" ([656])
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, model_v3, --limit, "500", --max-connections, "48", --json-output-file, eval_v3_500.json]
+    dev_set: "official --limit 500 (inspect_evals/gsm8k, 10-shot, served through vllm)"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.84
+    path: eval_v2_500.json              # "v1/v2 were both 0.840" ([670])
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.03                          # train_runtime 3703.637 s (train_v3.log)
+  output_checkpoint: sft_v3             # packaged to model_v3 at [670], promoted to final_model at [693]
+  training_summary:
+    final_loss: 0.2003                  # train_loss at epoch 3.0 (train_v3.log); last logged step loss 0.1638
+    steps: 2751
+    notes: >-
+      Launched at [650] t=+3.64h, found complete, packaged and evaluated at [670]
+      t=+4.68h. Higher final loss than exp-01/exp-03 (0.200 vs 0.136/0.144),
+      consistent with the OpenMathInstruct-2 traces being off the model's own
+      distribution. Promoted to final_model at [693] with
+      `rm -rf final_model && cp -r model_v3 final_model`.
+  measurements:
+    - metric: accuracy
+      value: 0.846
+      n: 500
+      path: eval_v3_500.json
+      delta_vs_comparator: 0.006
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "v3: 84.6% - marginal gain, essentially plateaued at 84-85%." ([692])
+    Measured against exp-03 under the identical --limit 500 protocol the delta is
+    +0.6 pts, well inside the eval's own 1.6 pt stderr, so a single run at n=500
+    cannot say whether OpenMathInstruct-2 helped. The agent nonetheless promoted
+    it to final_model as the best number so far.
+  decision: adopt
+  next_step: >-
+    "Let me lock in v3 as the current best final_model, then try one
+    combined-data run (v4) as a final attempt while keeping the best." ([692])
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-a3f23d29
+  launch_i: 650
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [551, 565]
+    setup: [566, 578, 586, 641, 643, 650]
+    evaluation: [670]
+    result: [670, 692, 693]
+    conclusion: [692]
+  snapshot_files:
+    - collect_oi.py
+    - collect_oi.log
+    - prep_data_v3.py
+    - train_sft.py
+    - train_v3.log
+    - package_model.py
+    - eval_v3_500.json
+    - eval_v2_500.json
+    - data_source_notes.md
+  smoke_runs: []
+  extractor: null                       # omitted: hard rule 5 forbids model names in the card
+  unresolved:
+    - "oi_gsm.jsonl's row count was printed at [641]/[643] but neither result block is in the digest; collect_oi.log in the workspace is empty. 7420 is implied by the trainer's 29336 total minus the known gold (7473) and rs.jsonl (14443) counts."
+    - "The intervention is not clean: v3 both adds OpenMathInstruct-2 and drops MetaMathQA's 18000 rows relative to v2, so the +0.6 pts cannot be attributed to either change. The agent never ran an add-only variant."
+    - "The +0.6 pt delta is smaller than the 500-item stderr (0.0162) on either side; no repeat run exists."
+    - "final_model held exp-02's checkpoint until [693] and holds this one only until [774], when exp-05's output replaces it."
+
+# ---- joined by the pipeline, never by the extractor ------------------------
+outcome:
+  official_accuracy: null

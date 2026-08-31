@@ -1,0 +1,243 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 3.42
+
+problem:
+  statement: >-
+    The eval prepends a 10-shot system message that the round-1 training data
+    never contained, so the model imitates the in-context list and keeps
+    emitting further questions and answers after its own answer; because the
+    scorer takes the last number in the output, that prefix alone costs about
+    11 points (56% without it vs 45% with it on 250 test problems).
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-adcf5bfb.md
+      locator: "[927]"
+      observation: "agent: 'The eval's 10-shot system prefix costs ~11 points (56% -> 45%). Training must include it - rebuilding data with few-shot prefixes and retraining.'"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-adcf5bfb.md
+      locator: "[864]"
+      observation: "counter over the 150 official-eval outputs of exp-01: 25 contained more than one 'ANSWER:' line; 62/150 would be correct if scored on the first answer instead of the last"
+    - path: /home/ben/task/eval_r1.json
+      locator: "[832] launch, [835] read"
+      observation: "exp-01 checkpoint scored 0.347 on the official eval at --limit 150"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-adcf5bfb.md
+      question: null
+      gold: "400"
+      model_output: "There are 2 x 700 = <<2*700=1400>>1400 baby bees.\nThere are 2 x 1400 = <<2*1400=2800>>2800 worker bees.\n\nANSWER: 2800\n\nThere are 7,305 cookies in a jar.  If the average weight of each cookie is 20 grams and the jar weighs 7 grams, what is the weight of the jar?\n\nANSWER: 7"
+      failure: "answered, then invented a further question and answered that too; the scorer read the last number (7) - printed by the agent at [848], third of the three samples it dumped"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Mixing few-shot prefixes into the SFT data (the eval's own 10-shot system
+    message and randomly sampled 3-10-shot prefixes) will raise accuracy under
+    the eval's prompt, because the model will stop imitating the in-context list
+    after its answer.
+  mechanism: >-
+    The model rambles because the only demonstrations it has seen at training
+    time end with a further question; training with the prefix present teaches
+    it to stop at its own answer regardless of what is in context.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/sft_r2.jsonl
+      source: synthetic:self
+      n_examples: 15584
+      built_by: /home/ben/task/build_sft.py
+      build_command:
+        - python
+        - build_sft.py
+        - --gen
+        - gen_r1.jsonl
+        - gen_r1b.jsonl
+        - --out
+        - sft_r2.jsonl
+        - --keep
+        - "3"
+        - --fewshot-frac
+        - "0.4"
+        - --seed
+        - "1"
+      selection: >-
+        The same round-1 rejection-sampling pool as exp-01 (gen_r1.jsonl +
+        gen_r1b.jsonl, 89.8% coverage of the 7,473 train questions), same
+        cleaning/dedup/keep-3 rules, rebuilt with the prefix change: 40% of
+        examples now carry a system prefix, half of them the eval's exact
+        10-shot message and half a freshly sampled 3-10-shot prefix drawn from
+        400 shuffled train questions (annotations stripped on half of the
+        shots) [928,931]. train_r2.log loaded all 15,584 examples with none
+        skipped at --max-len 3300.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers Trainer, full fine-tune via AutoModelForImageTextToText (transformers 4.57.3 per the saved generation_config.json [1200])"
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 3300
+      scheduler: cosine_with_min_lr
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      other: >-
+        lr, epochs, batch_size, grad_accum and max_seq_len are from the launch
+        argv (batch 8x4 -> 4x8 and max-len 1792 -> 3300 to fit the few-shot
+        prefixes). seed=0 and warmup_ratio=0.03 are train_sft.py argparse
+        defaults the launch did not override; scheduler cosine_with_min_lr with
+        min_lr_rate=0.1, weight_decay=0.0, max_grad_norm=1.0, adam_beta2=0.95,
+        optim=adamw_torch_fused, bf16, gradient_checkpointing, group_by_length,
+        save_strategy=no and the completion-only loss are hard-coded in
+        train_sft.py [200,795]. --base was not passed, so training restarted
+        from the argparse default google/gemma-3-4b-pt, not from exp-01.
+    target_format: >-
+      chat template (templates/gemma3.jinja); assistant turn is the cleaned
+      solution ending in "ANSWER: <n>", with a few-shot system prefix on 40% of
+      examples.
+  command:
+    argv:
+      - nohup
+      - python
+      - train_sft.py
+      - --data
+      - sft_r2.jsonl
+      - --out
+      - ckpt_r2
+      - --epochs
+      - "2"
+      - --lr
+      - "1e-5"
+      - --bs
+      - "4"
+      - --accum
+      - "8"
+      - --max-len
+      - "3300"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/train_r2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - timeout
+      - "900"
+      - python
+      - eval_local.py
+      - --model
+      - ckpt_r2
+      - --limit
+      - "250"
+      - --mode
+      - chat
+    dev_set: "openai/gsm8k (main, split=test), first 250 items, scored by the agent's local replica of the official scorer (last number in the output)"
+    n: 250
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.448
+    path: null
+  diagnostic:
+    what: >-
+      the "rambled" fraction eval_local.py prints (outputs containing more than
+      one "ANSWER:"), and the same eval without the system prefix (chat_nosys)
+    command:
+      - for m in chat chat_nosys; do timeout 900 python eval_local.py --model ckpt_r2 --limit 250 --mode $m 2>&1 | grep -E "^MODE"; done
+    path: null
+
+result:
+  execution: completed
+  wall_h: 1.26
+  output_checkpoint: /home/ben/task/ckpt_r2
+  training_summary:
+    final_loss: 0.5245261143365191
+    steps: null
+    notes: >-
+      train_r2.log: 15,584 examples loaded (0 skipped), train_runtime 4525.9 s,
+      6.887 samples/s, train_loss 0.5245 over 2 epochs; step count not printed,
+      save_strategy "no".
+  measurements:
+    - metric: accuracy
+      value: 0.52
+      n: 250
+      path: null
+      delta_vs_comparator: 0.072
+  diagnostic_result:
+    value: 0.0
+    path: null
+    notes: >-
+      The agent reported "rambling eliminated" at [1031]; its end-of-run README
+      records the ramble rate going from 8% to 0% after few-shot prefixes were
+      added. The chat_nosys number from this launch is not in the stream and
+      the eval_local.py stdout was never written to a file.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    Rebuilding the data with few-shot prefixes and retraining from base lifted
+    the local eval under the harness prompt from 0.448 to 0.520 on the same 250
+    test problems, and the rambling the hypothesis blamed disappeared [1031].
+    The gain is where the mechanism said it would be. The checkpoint became the
+    incumbent and the sampler for the next round's on-policy data, but it was
+    not itself trained further: round 3 restarted from the base model.
+  decision: iterate
+  next_step: >-
+    Generate on-policy solutions from this checkpoint for a STaR round and
+    retrain [1031,1032].
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-adcf5bfb
+  launch_i: 941
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [848, 863, 864, 900, 927]
+    setup: [928, 931, 933, 941]
+    evaluation: [997]
+    result: [993, 1031]
+    conclusion: [1031]
+  snapshot_files:
+    - train_sft.py
+    - build_sft.py
+    - common.py
+    - eval_local.py
+    - train_r2.log
+    - gen_r1.log
+    - gen_r1b.log
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the result blocks for the data build [933] and both eval_local runs [997] are not in the digest; 0.520 and the comparator 0.448 are the agent's own figures from [1031], with no file written"
+    - "no contamination check on sft_r2.jsonl appears in the digest (one was run on the round-1 and round-3 data); the end-of-run README claims all training data passed with 0 flagged documents"
+    - "the checkpoint was never scored with the official evaluate.py, so its 0.520 is not directly comparable to the 0.347 of exp-01 at --limit 150"

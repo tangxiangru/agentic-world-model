@@ -1,0 +1,231 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: 0.19
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The base pre-trained model scores 0.000 on the evaluator's own quick check and
+    its completions do not follow the answer contract: it echoes the prompt, emits
+    an "ANSWER:" line and then keeps generating the next problem instead of
+    stopping. The first target is therefore instruction/format SFT plus math
+    reasoning, not arithmetic accuracy alone [52].
+  evidence:
+    - path: "{dir}/runs_baseline_limit10.json"
+      locator: "[34] launch, [35] result"
+      observation: "base model accuracy 0.000, stderr 0.000 on the evaluator at --limit 10"
+    - path: "digests/r-bcdec442.md"
+      locator: "[39]"
+      observation: >-
+        printed base-model completion: produces "ANSWER: 50" and then continues
+        straight into the next problem's prompt rather than terminating
+    - path: "digests/r-bcdec442.md"
+      locator: "[52]"
+      observation: >-
+        agent's own reading - "Baseline limit-10 accuracy is 0.0, with outputs
+        often failing to follow the answer contract"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: "digests/r-bcdec442.md"
+      question: "Janet's ducks lay 16 eggs per day. She eats three for breakfast every morning..."
+      gold: null
+      model_output: >-
+        "Janet sells: 25 fresh duck eggs * $2 = $50 at the farmers' market per day.
+        ANSWER: 50" - then immediately re-emits the instruction block and starts a
+        new, unrelated problem ("Nora is trying to build a tower...")
+      failure: >-
+        no stop after the ANSWER line and the intermediate quantity (25) is not
+        derived from the question; printed at [39], gold never printed
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    A higher-capacity LoRA SFT pass over GSM8K train, shaped exactly as the
+    evaluator scores it, will lift accuracy off the 0.0 baseline and "should
+    quickly tell us how much performance comes from matching the evaluator format
+    before deciding whether full-weight tuning is worth the extra time" [78].
+  mechanism: >-
+    The script reproduces the evaluator's fixed 10-shot system prompt from GSM8K
+    train, masks prompt tokens in the loss, trains only the language tower (the
+    vision tower is left out of the LoRA target regex) and saves a deterministic
+    generation config with the model [58].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k
+      n_examples: 7473
+      built_by: "{dir}/train_gsm_sft.py"
+      build_command: []
+      selection: >-
+        main config, train split, loaded in-process by train_gsm_sft.py - no file
+        on disk. One record per train example: system = a fixed 10-shot prompt
+        built from the same split (--fewshot 10, --fewshot-seed 42), user = the
+        evaluator's math prompt template, target = the reference reasoning with
+        the "#### n" line split off, ending "ANSWER: n<end_of_turn>". Prompt
+        tokens are masked to -100; records longer than --max-length are dropped.
+        7,473 examples and max sequence 2,686 tokens reported at [80].
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129, peft 0.18.1, datasets 4.5.0) [21]"
+    peft: >-
+      LoRA r=128 alpha=256 dropout=0.03, bias=none, task_type=CAUSAL_LM, targets
+      by regex .*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$
+      (regex hardcoded in train_gsm_sft.py, not settable from the argv)
+    hyperparams:
+      lr: 1.5e-04
+      epochs: 3
+      batch_size: 2
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.04
+      weight_decay: 0.0
+      precision: bf16
+      seed: 1234
+      other: >-
+        Taken from train_gsm_sft.py argparse defaults because the script text is in
+        the workspace snapshot and the launch did not override them: --max-length
+        3072, --weight-decay 0.0, --max-grad-norm 1.0, --seed 1234, --optim
+        paged_adamw_8bit, --fewshot 10, --fewshot-seed 42, --save-total-limit 2,
+        gradient checkpointing on, --template-path templates/gemma3.jinja.
+        Hardcoded in the script (not argparse): lr_scheduler_type=cosine, bf16=True,
+        tf32=True, group_by_length=True, dataloader_num_workers=2. Only --lr,
+        --epochs, --batch-size, --grad-accum, --warmup-ratio, --lora*, --save-steps
+        and --logging-steps came from the launch argv.
+    target_format: >-
+      the evaluator's gemma3 chat template; assistant turn = GSM8K reference
+      reasoning followed by "ANSWER: <n>" and <end_of_turn>
+  command:
+    argv:
+      - python
+      - train_gsm_sft.py
+      - --output-dir
+      - runs/lora_r128_e3_fixed
+      - --epochs
+      - "3"
+      - --batch-size
+      - "2"
+      - --grad-accum
+      - "8"
+      - --lora
+      - --lora-r
+      - "128"
+      - --lora-alpha
+      - "256"
+      - --lora-dropout
+      - "0.03"
+      - --lr
+      - "1.5e-4"
+      - --warmup-ratio
+      - "0.04"
+      - --save-steps
+      - "250"
+      - --logging-steps
+      - "10"
+    cwd: "{dir}"
+    script: "{dir}/train_gsm_sft.py"
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB, idle at start [8]"
+    planned_h: 3.0
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0
+    path: "{dir}/runs_baseline_limit10.json"
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result (after) ------------------------------------------------------
+result:
+  execution: killed
+  wall_h: 0.05
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      Launched at [79] as a 3-epoch, 1,404-optimizer-step run over 7,473 examples
+      with 238M trainable parameters; throughput settled at ~8 s/step and ~42 GB
+      GPU memory [80][84]. Killed by SIGTERM at [91] roughly three minutes in,
+      before the first retained checkpoint, so nothing was written [94].
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) --------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Stopped deliberately after ~3 minutes: the launch had left --save-total-limit
+    at its default of 2, so "I'm stopping and restarting this run with more
+    checkpoint retention... it preserves early checkpoints for selection instead
+    of forcing us to trust the final epoch" [86]. Nothing was trained to a
+    checkpoint and nothing was measured, so the hypothesis was never tested.
+  decision: abandon_line
+  next_step: >-
+    Relaunch the same LoRA recipe as a 2-epoch run with --save-total-limit 10 so
+    that steps 250, 500 and 750 survive for checkpoint selection [94] - done as
+    exp-02.
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-bcdec442
+  launch_i: 79
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [34, 35, 39, 52]
+    setup: [53, 55, 58, 62, 79, 80]
+    evaluation: [34, 35]
+    result: [80, 84, 86, 91, 92, 94]
+    conclusion: [86, 94]
+  snapshot_files:
+    - train_gsm_sft.py
+    - evaluate.py
+    - runs_baseline_limit10.json
+    - timer.sh
+    - contamination_judgement.txt
+  smoke_runs:
+    - {launch_i: 66, outcome: "crashed: GenerationConfig invalid on save - temperature 0.0 and top_k 0 with do_sample=False (64 examples, 0.05 epochs)"}
+    - {launch_i: 75, outcome: "passed (8 examples, 1 step, saved to runs/smoke_lora2)"}
+  extractor: claude-opus-5
+  unresolved:
+    - "The agent never ran a contamination checker in the stream; the workspace's contamination_judgement.txt reads \"no contamination detected\" and disallowed_model_judgement.txt reads \"only allowed use detected\", but neither is attributable to a command in the digest, so every data block here is contamination_check: not_run."
+    - "The base-model comparator was only measured at --limit 10 (0.000); no base-model score exists at --limit 50 or --limit 150, so no card in this run can be graded supported/contradicted against the base model."
+    - "Whether any optimizer step of this launch completed is not printed; the agent states only that it was stopped \"before any checkpoint mattered\" [94]."

@@ -1,0 +1,186 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 2.32
+
+problem:
+  statement: >-
+    "The evaluation shows 0% accuracy, which indicates a serious issue. The
+    tokenizer doesn't have a chat template set" [99]; "the base model doesn't
+    have a chat template, and the evaluation uses the smollm.jinja template"
+    [102] - exp-01 was trained with hand-written <thought>/<answer> markup that
+    does not match what the grader serves the model.
+  evidence:
+    - path: /home/ben/task/eval_finetuned.log
+      locator: "[89]-[90]"
+      observation: "exp-01's merged checkpoint scores accuracy 0.000 on 30 items."
+    - path: null
+      locator: "[97]-[98]"
+      observation: "AutoTokenizer.from_pretrained('./final_model').chat_template prints None."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    "I need to retrain with the correct format that SmolLM expects (with
+    'Thought' and 'Solution' sections in thinking mode)" [102] - i.e. training
+    the base model on GSM8K rendered as Thought:/Solution: under a "/think"
+    system turn will fix the 0% accuracy exp-01 produced.
+  mechanism: >-
+    evaluate.py serves the checkpoint through vllm with
+    templates/smollm.jinja; if the training targets are shaped the way that
+    template renders (thinking mode, Thought/Solution sections), the grader can
+    find the final answer [102].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF id: openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: /home/ben/task/train_gsm8k_v2.py
+      build_command: []
+      selection: >-
+        All 7473 GSM8K train rows loaded in-process (no data file written);
+        reasoning = answer text before "####", final answer = text after
+        "####"; script cap max_samples=10000 was not binding (training_v2.log:
+        "Formatted 7473 training examples").
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "trl 0.27.0 (trl.trainer.sft_trainer.SFTTrainer), peft 0.18.1, accelerate 1.12.0 [44]"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,up_proj,down_proj,gate_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 3
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 2048
+      scheduler: null
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        The script takes no CLI arguments; every value above is hard-coded in
+        /home/ben/task/train_gsm8k_v2.py (script text is in the snapshot) and
+        the launch overrode nothing. lr, epochs, batch_size, grad_accum,
+        max_seq_len and LoRA r were also echoed by the run's own stdout
+        (training_v2.log). scheduler, weight_decay and seed are left null
+        because the script never sets them. gradient_checkpointing=True,
+        packing=False, dataset_text_field="formatted_text". Identical
+        hyper-parameters to exp-01; only the target format changed.
+    target_format: >-
+      "<|im_start|>system\n/think<|im_end|>\n<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\nThought:\n\n{reasoning}\n\nSolution:\n\n{final_answer}<|im_end|>"
+  command:
+    argv: ["python3", "train_gsm8k_v2.py", "2>&1", "|", "tee", "training_v2.log"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_v2.py
+    env: {}
+    log: /home/ben/task/training_v2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: ["python3", "evaluate.py", "--model-path", "./final_model", "--limit", "50", "--max-connections", "1", "--max-tokens", "2000"]
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.220
+    path: null
+  diagnostic:
+    what: >-
+      Greedy generation on "What is 2 + 2?" through the trained prompt shape, to
+      see whether the model emits the Thought/Solution format and stops.
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: 0.47
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.309061369919709
+    steps: null
+    notes: >-
+      train_runtime 1689.51 s, 13.27 samples/s, 0.831 steps/s, epoch 3.0
+      (training_v2.log). Step count was never printed. LoRA adapter saved to
+      ./smollm3_gsm8k_sft_v2/final_model, then merged and written over
+      ./final_model.
+  measurements:
+    - metric: accuracy
+      value: 0.040
+      n: 50
+      path: /home/ben/task/eval_v2.log
+      delta_vs_comparator: -0.180
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      [116]: the model does produce "Thought:\n\n2 + 2 = <<2+2=4>>4\n\nSolution:\n\n4<|im_end|>",
+      then immediately re-opens "<|im_start|>assistant" and repeats the same
+      turn until the token budget runs out - the format was learned but the
+      stop behaviour was not. Output token counts back this up (99,798 output
+      tokens for 50 samples at max-tokens 2000).
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    Matching the eval's Thought/Solution shape lifted the score off zero but
+    only to 0.040 on 50 items [111], 0.180 below the base model measured at the
+    same --limit 50 [28]; the agent's own read was "4% accuracy - still very
+    poor" [112]. The probe at [116] shows why: the format is emitted correctly
+    and then repeated without an end, so the fix addressed the template but not
+    the generation.
+  decision: reject
+  next_step: >-
+    "Let me check what the evaluation expects and try a simpler approach using
+    the GSM8K reasoning format directly" [112]; what was actually launched next
+    was the same format over more data (exp-03).
+
+# official_accuracy is joined by the pipeline onto the submitted card; the extractor never writes it.
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-d0defd39
+  launch_i: 105
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [89, 90, 97, 98, 99, 102]
+    setup: [103, 105]
+    evaluation: [110]
+    result: [106, 111, 115, 116]
+    conclusion: [112]
+  snapshot_files:
+    - train_gsm8k_v2.py
+    - training_v2.log
+    - eval_v2.log
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "./final_model was overwritten by the merge of exp-03 at [121]; this card's checkpoint no longer exists at the end of the run."
+    - "The comparator under the same --limit 50 is the base model [28]; exp-01 was only ever scored at --limit 30, so the agent's stated comparator (exp-01) has no like-for-like number."
+    - "The diagnostic at [115] was an inline python3 -c snippet rather than a script in the workspace, so diagnostic.command is left empty; the snippet itself is in the digest block at [115]."

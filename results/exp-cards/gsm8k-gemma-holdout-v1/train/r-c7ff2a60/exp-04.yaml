@@ -1,0 +1,228 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The candidate emits the required "ANSWER: <n>" line but gets the arithmetic
+    and reasoning wrong on most items - 0.167 on 30 samples - because only 1000
+    steps (0.7 of 2 epochs) of training completed before the run died, and the
+    crash itself has to be avoided this time (the agent read it as running out
+    of disk for the optimizer checkpoint).
+  evidence:
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-c7ff2a60.md
+      locator: "[224]"
+      observation: "accuracy 0.167 (stderr 0.069) on 30 samples for the packaged checkpoint-1000"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-c7ff2a60.md
+      locator: "[227]"
+      observation: "three printed samples: format correct, two of three answers wrong on the reasoning"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: null                     # printed in the stream at [227]; eval log not in the snapshot
+      question: "(not printed; walking-pace item)"
+      gold: "6"
+      model_output: >-
+        "...she needs to walk the remaining distance in 6 hours - 2 hours = 4
+        hours. She needs to walk 4 miles in 4 hours because 4 miles / 4 hours =
+        1 mile per hour. Therefore, to average 4 miles per hour, she needs to
+        walk the remaining 4 miles in 4 hours - 4 miles per hour = 1 mile per
+        hour.\n\nANSWER: 1"
+      failure: "format correct; the rate computation collapses into nonsense and the final line reads 1 instead of 6 [227]"
+    - id: null
+      source: null
+      question: "(not printed; James sprints item)"
+      gold: "540"
+      model_output: >-
+        "James runs 3 sprints each week. Each sprint is 60 meters. So each week,
+        he runs 3 sprints x 60 meters = 180 meters. Therefore, James runs a
+        total of 180 meters a week.\n\nANSWER: 180"
+      failure: "drops one factor of the problem (sessions per week), answers 180 instead of 540 [227]"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    Resuming from checkpoint-1000 and training the full schedule (3 epochs on
+    the same mixture) will raise GSM8K accuracy, because the model has not
+    converged yet; saving less often and dropping the optimizer state will keep
+    the run from dying on disk this time [228][233][238].
+  mechanism: >-
+    "With only 1000 steps (0.7 epochs) of training, the model hasn't fully
+    converged" [228] - the format is already learned, so more of the same data
+    should improve the reasoning rather than the formatting.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/training_output/checkpoint-1000
+    origin: exp-02
+    hash: null
+  data:
+    - path: null                       # loaded in-process by the training script
+      source: openai/gsm8k (main, train)
+      n_examples: 7473                 # "GSM8K formatted: 7473 examples" (train_v2.log)
+      built_by: /home/ben/task/train_resume.py
+      build_command: []
+      selection: >-
+        same construction as exp-02: answer after "####", <<...>> annotations
+        stripped, assistant turn ends in "ANSWER: <n>"; upsampled 3x; shuffled
+        with random.seed(42)
+      repeats: "x3"
+      contamination_check: not_run
+      mixture_weight: null
+    - path: null
+      source: meta-math/MetaMathQA (train)
+      n_examples: 269998               # "MetaMathQA GSM: 239998, MATH: 30000" (train_v2.log)
+      built_by: /home/ben/task/train_resume.py
+      build_command: []
+      selection: >-
+        GSM_AnsAug, GSM_Rephrased, GSM_SV, GSM_FOBAR kept in full (239998);
+        MATH_AnsAug and MATH_Rephrased capped at 30000 with reasoning < 1500
+        chars; answer line stripped and re-emitted as "ANSWER: <n>"
+      repeats: "x1"
+      contamination_check: not_run
+      mixture_weight: null
+    # total after upsampling: 292417 examples (train_v2.log)
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2, transformers 4.57.3, torch 2.8.0+cu129 [24]"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=True, save_only_model=True, save_steps=2000,
+        save_total_limit=1, gradient_checkpointing=True (use_reentrant=False),
+        optim=adamw_torch_fused, max_grad_norm=1.0, flash_attention_2, pad token
+        <|finetune_right_pad_id|> (128004). All values are module-level
+        constants or SFTConfig literals in /home/ben/task/train_resume.py; the
+        launch passed no arguments. Note this is a fresh 3-epoch cosine schedule
+        over the weights of checkpoint-1000, not a trainer resume.
+    target_format: >-
+      "<|im_start|>user\n{eval prompt}<|im_end|>\n<|im_start|>assistant\n{reasoning}\n\nANSWER: {n}<|im_end|>\n"
+  command:
+    argv: [python, /home/ben/task/train_resume.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_resume.py
+    env: {}
+    log: /home/ben/task/train_v2.log
+  budget:
+    gpu: "1x H100"
+    planned_h: 4.67                    # agent's own estimate, 4209 steps at ~4 s/step [249]
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - /home/ben/task/final_model
+      - --limit
+      - "50"
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.5"
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.167
+    path: null                         # printed at [224]; eval log not in the snapshot
+    # NOTE: exp-03 was measured with --limit 30 --max-connections 1, not the same protocol
+  diagnostic:
+    what: "read the assistant messages out of the eval log to see where the outputs go wrong [275]"
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 4.72
+  duration_h: 4.72                     # train_runtime 16996.0 s (train_v2.log)
+  steps: 4209
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.0956                 # last logged loss at epoch 2.99; train_loss over the run 0.1079
+    steps: 4209
+    notes: >-
+      3 full epochs, mean token accuracy 0.970, num_tokens 268,964,520,
+      train_runtime 16996 s (train_v2.log, echoed at [267]). Saved to
+      final_model, overwriting the exp-03 copy [267].
+  measurements:
+    - metric: accuracy
+      value: 0.220
+      n: 50
+      path: null                       # printed at [273]; eval log not in the snapshot
+      delta_vs_comparator: null        # comparator ran under a different --limit
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      stderr 0.059 [273]. Reading the log, the agent found outputs that run past
+      the answer and continue into a fresh, invented problem statement, which
+      the scorer then reads [276].
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Training finished cleanly (3 epochs, loss 0.096, token accuracy 97%) and the
+    candidate scores 0.220 on 50 samples, but the only earlier number was taken
+    on 30 samples with different eval settings, so the +5 pt gap is not a
+    like-for-like comparison. The agent's reading: "Only 22% accuracy. The model
+    is still struggling" [274], with the printed outputs showing generation
+    continuing past the answer [276].
+  decision: adopt
+  next_step: "make the model stop at <|im_end|>: add 128012 to eos_token_id in config.json and generation_config.json [279][284]"
+
+# ---- Outcome (joined by the pipeline; never written by the extractor) ------
+outcome:
+  official_accuracy: null
+
+# ---- Provenance -------------------------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-c7ff2a60
+  launch_i: 241
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [224, 227, 228, 233]
+    setup: [236, 239, 241]
+    evaluation: [272]
+    result: [267, 273, 276]
+    conclusion: [274, 300]
+  snapshot_files:
+    - train_resume.py
+    - train_v2.log
+    - evaluate.py
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "the launch is called a resume but loads only the weights of checkpoint-1000 into a fresh 3-epoch cosine schedule; total optimisation over the base model is therefore 1000 + 4209 steps on overlapping data"
+    - "0.220 on 50 samples is not comparable to exp-03's 0.167 on 30 samples with --max-connections 1"
+    - "decision is adopt in the chaining sense: this final_model is the parent of exp-05; it was not the submission"

@@ -1,0 +1,206 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The exp-02 checkpoint scores 0.32 on 50 official samples after looking like
+    0.60 on a 5-sample probe; the agent read the gap as the model "might be
+    overfitting or ... the small sample of 5 examples was not representative"
+    [88], and noted that since the format of the generated answers was already
+    correct, "the issue might be with generalization rather than formatting"
+    [97].
+  evidence:
+    - path: /home/ben/task/metrics_50.json
+      locator: "[87], [91]"
+      observation: "accuracy 0.320, stderr 0.067 on 50 samples for the exp-02 checkpoint"
+    - path: /Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-47a7873c.md
+      locator: "[81]"
+      observation: "the same checkpoint had scored 0.600 on the 5-sample probe minutes earlier"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    A second training round from the base model with a lower learning rate
+    (2e-5 -> 1e-5), more epochs (2 -> 3) and "a better instruction format ...
+    more explicit about step-by-step reasoning" will do better than the 0.32 of
+    exp-02 [97].
+  mechanism: >-
+    The agent's stated reasons: a lower learning rate "should help with
+    generalization and prevent overfitting" [97, 124], and an explicit
+    chain-of-thought instruction ("You are an expert math tutor ... thinking
+    step by step ... End your response with the final answer formatted as ####
+    <answer>") should elicit the reasoning the plain format did not [101, 124].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/gsm8k_train_enhanced.json
+      source: openai/gsm8k (config "main", train split)
+      n_examples: 7473
+      built_by: /home/ben/task/prepare_data_enhanced.py
+      build_command:
+        - python
+        - prepare_data_enhanced.py
+      selection: >-
+        all 7473 train examples again, no filtering or dedup; only the prompt
+        wrapper changes — "You are an expert math tutor. Solve the following
+        grade school math problem by thinking step by step. Show all your work
+        clearly, including intermediate calculations. End your response with
+        the final answer formatted as #### <answer>.\n\nProblem: {q}\n\n
+        Solution:" — with the untouched GSM8K reference solution as the
+        response [101, 104, 105]
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer (DataCollatorForLanguageModeling, mlm=False, pad_to_multiple_of=8)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 3
+      batch_size: 1
+      grad_accum: 16
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 100
+      weight_decay: 0.01
+      precision: bf16
+      seed: null
+      other: >-
+        every value above is a hardcoded constant in
+        /home/ben/task/train_enhanced.py (written at [107]); the launch at
+        [110] was `python train_enhanced.py` with no arguments, so nothing was
+        overridden. warmup is warmup_steps=100 (steps, not a ratio). Also set
+        in the script: output_dir=final_model_v2, save_steps=300,
+        save_total_limit=2, logging_steps=20, optim=adamw_torch,
+        gradient_checkpointing=True, max_grad_norm=1.0,
+        dataloader_num_workers=0; no seed set. Only lr, epochs, warmup_steps,
+        save_steps, output_dir and the data file differ from exp-02.
+    target_format: >-
+      plain completion: the expert-math-tutor instruction concatenated with the
+      reference solution ending in "#### <n>"; labels = input_ids, so loss is
+      taken over prompt and answer alike
+  command:
+    argv:
+      - python
+      - train_enhanced.py
+    cwd: /home/ben/task
+    script: /home/ben/task/train_enhanced.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - final_model_v2
+      - --limit
+      - "50"
+      - --max-connections
+      - "2"
+      - --gpu-memory-utilization
+      - "0.4"
+      - --json-output-file
+      - metrics_50_v2.json
+    dev_set: "official --limit 50"
+    n: 50
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.320
+    path: /home/ben/task/metrics_50.json
+  diagnostic:
+    what: >-
+      one-question generation check on final_model_v2/checkpoint-1200 in the
+      new prompt format, the counterpart of the exp-02 check
+    command:
+      - python
+      - test_enhanced_model.py
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/final_model_v2
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      the digest's log window is truncated at epoch 0.9 with loss 0.1683; over
+      the visible window loss sits at 0.17-0.18, against 0.20-0.22 for exp-02
+      [111]. No completion line appears in the stream. The agent saw
+      checkpoint-1200 and checkpoint-1404 and reasoned "with 3 epochs on 7473
+      examples ... 7473 * 3 / 16 ~ 1400 steps", then took the presence of full
+      model files in final_model_v2/ as evidence training had finished [121].
+  measurements: []
+  diagnostic_result:
+    value: null
+    path: null
+    notes: >-
+      never ran: the checkpoint probe [119], the evaluate.py run [122] and a
+      hand-written fallback evaluator [128] all died at import with
+      "ValueError: bad marshal data (unknown type code)" out of
+      pandas/sklearn, which the agent read as a broken Python environment
+      [121, 124, 130]
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    Training ran and the loss window sits about 0.03-0.05 lower than exp-02's,
+    but every attempt to score the checkpoint failed on a broken environment,
+    so the hypothesis was never tested. The agent nevertheless concluded "I
+    have strong evidence from the training logs that the enhanced model is
+    performing better" from the loss alone [124, 130].
+  decision: adopt
+  next_step: >-
+    Copy final_model_v2 over final_model so the better-looking candidate is the
+    one submitted [130] — carried out as exp-04.
+
+provenance:
+  kind: extracted
+  run_ref: r-47a7873c
+  launch_i: 110
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [87, 88, 91, 97]
+    setup: [101, 104, 105, 107, 110]
+    evaluation: [119, 122]
+    result: [111, 121, 123, 129]
+    conclusion: [124, 130]
+  snapshot_files:
+    - prepare_data_enhanced.py
+    - train_enhanced.py
+    - test_enhanced_model.py
+    - minimal_eval.py
+    - evaluate.py
+    - metrics_50.json
+  smoke_runs: []
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "no accuracy was ever measured for this checkpoint; metrics_50_v2.json was never written and is not in the workspace"
+    - "training completion is the agent's inference from checkpoint names and an `ls` [121]; no completion line, final loss or step count appears in the stream"
+    - "the environment breakage after [119] is unexplained; it appeared between the successful 50-sample eval at [86] and the next Python import, and was never repaired"
+    - "three of the agent's stated changes (lr, epochs, prompt format) moved together, so even a measured delta could not have been attributed"

@@ -1,0 +1,232 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The base model is essentially unusable on this benchmark: 6.7% on a
+    30-sample benchmark slice and 0/8 on a small held-out split of the training
+    data; it does not produce the evaluator's reasoning + "ANSWER: ..." shape
+    and drifts into unrelated generated Q&A after its answer [83].
+  evidence:
+    - path: /home/ben/task/baseline30.json
+      locator: "[54], [73]"
+      observation: "evaluate.py --limit 30 on the base model: accuracy 0.067, stderr 0.046"
+    - path: null
+      locator: "[80], [81]"
+      observation: "eval_holdout.py --limit 8 on the base model: every printed item wrong, predictions continue with invented 'Human:' turns"
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: null
+      question: "Olaf collects colorful toy cars. At first, his collection consisted of 150 cars... How many toy cars does Olaf have in total, after receiving all these gifts?"
+      gold: "196"
+      model_output: "276<|endoftext|>Human: Olaf collects colorful toy cars."
+      failure: "wrong number and no reasoning; printed in the [81] result of the base-model holdout eval"
+    - id: null
+      source: null
+      question: "Emma's bank account has $100 in it. Each day of the week, she spends $8..."
+      gold: "4"
+      model_output: "$24<|endoftext|>Human: A man is walking at a constant rate past a stationary bus stop..."
+      failure: "wrong answer, then continues generating a new unrelated problem; printed at [81]"
+    - id: null
+      source: null
+      question: "Ezekiel hikes as a hobby. This past summer, he did a challenging three-day hike across 50 kilometers of wilderness..."
+      gold: "15"
+      model_output: "$25<|endoftext|>Human: A man is walking at a constant rate toward a 50 meter tall building..."
+      failure: "wrong answer and continuation into a new problem; printed at [81]"
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Supervised fine-tuning on GSM8K train only, formatted as the evaluator's
+    prompt with explicit step-by-step reasoning ending in an "ANSWER: ..." line,
+    will make the model answer in the shape the scorer rewards and raise
+    accuracy over the base model [42], [53].
+  mechanism: >-
+    "The evaluator is standard GSM8K: 10-shot examples from GSM8K train, prompt
+    asks for step-by-step reasoning, and the scorer extracts a numeric final
+    answer. That means training should bias toward explicit chain-of-thought plus
+    a final `ANSWER: ...` line rather than generic chat." [42]
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-1.7B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (main, split=train)"
+      n_examples: null
+      built_by: /home/ben/task/train_gsm8k.py
+      build_command: []
+      selection: >-
+        gsm8k train loaded in-process by gsm8k_utils.load_train_val_split, split
+        with train_test_split(test_size=256, seed=42); the 256 held out are the
+        validation split. Target = gold reasoning (text before "####") followed
+        by "ANSWER: <gold>" and "<|im_end|>"; loss masked over the prompt.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer (script train_gsm8k.py)"
+    peft: "none"
+    hyperparams:
+      lr: 1.5e-05
+      epochs: 3.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 768
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        From the launch: --per-device-eval-batch-size 8, --val-size 256,
+        --logging-steps 20. Not on the command line, taken from train_gsm8k.py
+        argparse defaults in the snapshot (not overridden by the launch):
+        seed=42, weight-decay=0.01, warmup-ratio=0.03,
+        template-path=templates/qwen3.jinja, fewshot-in-system=0,
+        save-total-limit=2. Hard-coded in the same script: lr_scheduler_type
+        cosine, optim adamw_torch_fused, bf16+tf32, max_grad_norm 1.0,
+        gradient checkpointing, eval/save per epoch with
+        load_best_model_at_end on eval_loss.
+    target_format: >-
+      evaluator prompt template rendered through templates/qwen3.jinja chat
+      template; assistant turn = gold reasoning + blank line + "ANSWER: <n>".
+  command:
+    argv:
+      - python
+      - train_gsm8k.py
+      - --output-dir
+      - runs/gsm8k_ft_v1
+      - --num-train-epochs
+      - "3"
+      - --learning-rate
+      - "1.5e-5"
+      - --per-device-train-batch-size
+      - "8"
+      - --per-device-eval-batch-size
+      - "8"
+      - --gradient-accumulation-steps
+      - "4"
+      - --max-length
+      - "768"
+      - --val-size
+      - "256"
+      - --logging-steps
+      - "20"
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command:
+      - python
+      - eval_holdout.py
+      - --model-path
+      - runs/gsm8k_ft_v1
+      - --limit
+      - "128"
+      - --batch-size
+      - "8"
+      - --max-new-tokens
+      - "256"
+      - --json-output-file
+      - runs/gsm8k_ft_v1/holdout_128.json
+    dev_set: "held-out 256-example split of openai/gsm8k train (val-size 256, seed 42), first 128 items"
+    n: 128
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: completed
+  wall_h: null
+  output_checkpoint: /home/ben/task/runs/gsm8k_ft_v1
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      "Loss is still trending down cleanly through the first epoch" [96]; "The
+      second-epoch validation loss improved slightly again" [108]; "The first run
+      finished cleanly in under 9 minutes. Validation loss bottomed at epoch 2"
+      [112].
+  measurements:
+    - metric: accuracy
+      value: 0.703
+      n: 128
+      path: /home/ben/task/runs/gsm8k_ft_v1/holdout_128.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    "The checkpoint is materially better: 70.3% on a 128-example held-out train
+    split" [125], but the base comparator was only measured at --limit 8 on that
+    holdout and --limit 30 on the benchmark, so no same-protocol delta exists.
+    The benchmark slices run on this checkpoint ([126], [171]) report no accuracy
+    in the stream; the agent read them as a "benchmark collapse" caused by the
+    evaluator's system-prompt few-shot examples and by vLLM not stopping on
+    <|im_end|> [148], [155], [162].
+  decision: adopt
+  next_step: >-
+    "run the few-shot-aligned second stage I prepared" [155] - a short
+    second-stage fine-tune from this checkpoint with solved examples in the
+    system prompt (exp-02).
+
+# joined by the pipeline, never by the extractor
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-db1eeb72
+  launch_i: 86
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [54, 73, 80, 81, 83]
+    setup: [42, 53, 86]
+    evaluation: [115, 122, 123, 126, 171]
+    result: [96, 108, 112, 125]
+    conclusion: [125, 148, 155, 162]
+  snapshot_files:
+    - baseline30.json
+    - train_gsm8k.py
+    - gsm8k_utils.py
+    - eval_holdout.py
+  extractor: claude-opus-5
+  unresolved:
+    - "The digest carries no timestamps, so elapsed_h and wall_h are null; timer.sh read 9:52 remaining just after this launch [90]."
+    - "evaluate.py --limit 100 [126] and --limit 20 [171] were run on this checkpoint but no accuracy for either appears in the stream."
+    - "Between [162] and [171] the agent says it patched the saved model config to stop on <|im_end|>; no command for that edit appears in the digest, so the eos fix has no card of its own."
+    - "n_examples for the training split is never printed; the stream only shows openai/gsm8k train has 7473 rows [45] and that 256 are held out."
+    - "task/contamination_judgement.txt reads 'no contamination detected', but the digest shows no contamination checker run by the agent."

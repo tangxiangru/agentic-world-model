@@ -1,0 +1,202 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-01
+created_at: null
+elapsed_h: null
+
+# ---- 1. Problem ----
+problem:
+  statement: "The un-tuned base model scores 0.175 on a 40-sample run of the real evaluator [34]. The evaluator uses a fixed prompt that requires a final `ANSWER: ...` line and grades it by numeric matching [33], and the SmolLM chat template it selects defaults to `Reasoning Mode: /think` [18], so the base model's output is not shaped the way the grader scores it."
+  evidence:
+    - path: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-130da32f/baseline40.json"
+      locator: "[20], [34]"
+      observation: "base-model baseline through the real evaluator at --limit 40 --max-tokens 512: accuracy 0.175, stderr 0.061"
+    - path: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-130da32f/evaluate.py"
+      locator: "[11], [12], [13], [33]"
+      observation: "the evaluator routes this model to templates/smollm.jinja and scores a final `ANSWER: ...` line by numeric match; this fixes the training target format"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ----
+hypothesis:
+  claim: "LoRA fine-tuning of the base model on the openai/gsm8k train split only, written in the evaluator's exact prompt shape (`Reasoning:` then a final `ANSWER:` line) with prompt-loss masking, will raise accuracy over the base baseline [42], [44], [51]."
+  mechanism: "Training targets are built from the evaluator's own MATH_PROMPT_TEMPLATE with the gold `####` answer rewritten as `ANSWER: <n>`, so the model learns to emit exactly the string the grader matches; loss is taken on the completion only [44], [51]."
+  expected_effect:
+    metric: "accuracy"
+    direction: "higher"
+    against: "base_model"
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ----
+setup:
+  parent_checkpoint:
+    path: "HuggingFaceTB/SmolLM3-3B-Base"
+    origin: "base_model"
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (config main, split train), loaded in-process by the training script"
+      n_examples: null
+      built_by: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-130da32f/train_gsm8k_lora.py"
+      build_command:
+        - "python"
+        - "train_gsm8k_lora.py"
+        - "--output-dir"
+        - "runs/exp1_adapter"
+        - "--merged-output-dir"
+        - "runs/exp1_merged"
+        - "--epochs"
+        - "2"
+        - "--lr"
+        - "2e-4"
+        - "--batch-size"
+        - "8"
+        - "--grad-accum"
+        - "2"
+        - "--max-length"
+        - "2048"
+        - "--mask-prompt-loss"
+      selection: "every row of gsm8k main/train; prompt = the evaluator's MATH_PROMPT_TEMPLATE around the question, completion = the gold reasoning with the `#### <n>` line rewritten as `ANSWER: <n>`, plus eos; rows whose tokenised prompt+completion exceed --max-length 2048 are dropped. Row count was never printed by the agent; the trainer's own throughput line (18.854 samples/s x 792.7 s over 2 epochs [139]) implies roughly 7.5k rows per epoch."
+      repeats: 1
+      contamination_check: "passed"
+      mixture_weight: null
+  method:
+    family: "sft"
+    framework: "transformers.Trainer + peft LoRA over a 4-bit nf4 double-quantised base (QLoRA); the same script merges the adapter into a full model directory. No library versions appear in the digest."
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 0.0002
+      epochs: 2.0
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 2048
+      scheduler: "cosine"
+      warmup: 0.03
+      weight_decay: 0.01
+      precision: "bf16 compute over a 4-bit nf4 double-quantised base; tf32 enabled; optim=paged_adamw_8bit"
+      seed: 42
+      other: "--mask-prompt-loss (completion-only loss). lr, epochs, batch_size, grad_accum and max_seq_len come from the launch argv [52]. From train_gsm8k_lora.py in the workspace snapshot, NOT overridden by this launch: lora r=64/alpha=128/dropout=0.05, seed=42, scheduler=cosine, warmup_ratio=0.03, weight_decay=0.01, max_grad_norm=0.3, bf16+tf32, optim=paged_adamw_8bit, save_strategy=epoch, logging_steps=10, gradient checkpointing, 4-bit nf4 quantisation. CAUTION: the snapshot copy of the script carries a `--disable-tqdm` flag that the version echoed at [45] does not, and the script was re-compiled at [76] after this launch, so the snapshot text is not byte-identical to what ran."
+    target_format: "raw text, no chat template applied at train time: the evaluator's MATH_PROMPT_TEMPLATE ending in `Reasoning:\\n`, then the gold reasoning, a blank line, `ANSWER: <n>`, then eos; prompt tokens masked to -100"
+  command:
+    argv:
+      - "python"
+      - "train_gsm8k_lora.py"
+      - "--output-dir"
+      - "runs/exp1_adapter"
+      - "--merged-output-dir"
+      - "runs/exp1_merged"
+      - "--epochs"
+      - "2"
+      - "--lr"
+      - "2e-4"
+      - "--batch-size"
+      - "8"
+      - "--grad-accum"
+      - "2"
+      - "--max-length"
+      - "2048"
+      - "--mask-prompt-loss"
+    cwd: null
+    script: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/task/r-130da32f/train_gsm8k_lora.py"
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+# ---- 4. Evaluation ----
+evaluation:
+  protocol:
+    command:
+      - "python"
+      - "evaluate.py"
+      - "--model-path"
+      - "runs/exp1_merged"
+      - "--limit"
+      - "40"
+      - "--max-connections"
+      - "1"
+      - "--max-tokens"
+      - "128"
+      - "--gpu-memory-utilization"
+      - "0.3"
+      - "--json-output-file"
+      - "runs/exp1_eval40_t128.json"
+    dev_set: "official --limit 40"
+    n: 40
+    seed: null
+  comparator:
+    ref: "base_model"
+    value: 0.075
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result ----
+result:
+  execution: "completed"
+  wall_h: null
+  duration_h: 0.22
+  steps: null
+  output_checkpoint: "runs/exp1_merged"
+  training_summary:
+    final_loss: 0.2364
+    steps: null
+    notes: "train_runtime 792.7 s, 18.854 samples/s, 1.181 steps/s, mean train_loss 0.35044278357273495 over 2 epochs; last logged step loss 0.2364 at epoch 1.99 [139]. Epoch 1 ended at global_step 468 with loss 0.4208 [120]; the total step count was never printed. Training and the adapter merge both ran inside this one launch and completed [139], [157]."
+  measurements:
+    - metric: accuracy
+      value: 0.225
+      n: 40
+      path: null
+      delta_vs_comparator: 0.15
+      notes: "written by the agent to runs/exp1_eval40_t128.json, which is not in the workspace snapshot; the agent read it as 0.225 at [249] and repeated it at [256] and [282]. Measured with --max-tokens 128, a cap the agent adopted for speed at [238]."
+  diagnostic_result:
+    value: null
+    path: null
+    notes: null
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----
+conclusion:
+  verdict: "supported"
+  mechanism_verdict: not_tested
+  summary: "The merged epoch-2 LoRA model scored 0.225 against the base model's 0.075 under an identical quick protocol (--limit 40, --max-tokens 128), which the agent called \"a strong gain in matched quick settings\" [256], [282]. Four earlier attempts to score this same checkpoint (--limit 150, --limit 100, and two --limit 40 runs) never produced a number: two were killed for slowness, one died on a vLLM start-up failure from leftover GPU processes [188], [204], [210], [235]."
+  decision: "adopt"
+  next_step: "Merge and score the epoch-1 adapter checkpoint (checkpoint-468) under the same quick setting to see whether early stopping beats epoch 2, then promote the winner to final_model [256]."
+
+# ---- outcome (joined by the pipeline, never written by the extractor) ----
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction) ----
+provenance:
+  kind: extracted
+  run_ref: r-130da32f
+  launch_i: 52
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [18, 20, 33, 34]
+    setup: [42, 44, 45, 51, 52]
+    evaluation: [238, 239, 248, 249]
+    result: [120, 139, 157]
+    conclusion: [256, 282]
+  snapshot_files:
+    - "train_gsm8k_lora.py"
+    - "evaluate.py"
+    - "baseline40.json"
+    - "contamination_judgement.txt"
+  digest: "/Users/jerryliu/agentic-world-model/data/exp-cards/gsm8k-gemma-holdout-v1/digests/r-130da32f.md"
+  extractor: "automated card extractor (model id omitted: these cards name no model other than the trained base model)"
+  unresolved:
+    - "cwd is never printed in the digest; every path in the launch is relative, so `runs/exp1_merged` and the eval JSONs cannot be resolved to absolute paths"
+    - "no eval output file for this card is in the workspace snapshot: runs/exp1_eval40_t128.json and runs/base_eval40_t128.json hold the 0.225 and 0.075 numbers but only the digest carries them"
+    - "the 0.175 baseline in baseline40.json was measured at --max-tokens 512 [20], a different protocol from the --max-tokens 128 comparator used here, so the two base numbers (0.175 and 0.075) are not comparable to each other"
+    - "no shell command for the base 40-sample --max-tokens 128 comparator's result appears; only the launch [248] and the agent's reading [256] are in the stream"
+    - "contamination_judgement.txt in the snapshot reads 'no contamination detected', but no contamination check is run anywhere in the digest; the agent only asserted 'train split only (no test contamination)' [42], [282]"
+    - "the training data row count was never printed, only inferable from the trainer's throughput line"

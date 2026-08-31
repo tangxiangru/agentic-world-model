@@ -1,0 +1,207 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-23
+created_at: null
+elapsed_h: 6.18
+
+problem:
+  statement: >-
+    The synthetic-only run was trained no-system, and its exact-prompt validation
+    loss stayed at ~0.473 from step 500 to 1000, so the data source could not be
+    judged: the prompt distribution never matched the evaluator's.
+  evidence:
+    - path: null
+      locator: "[630], [636]"
+      observation: >-
+        "The synthetic-only checkpoint at 500 has poor exact-prompt validation
+        loss (0.474) ... preparing a more evaluator-aligned variant: train
+        synthetic examples with the same few-shot system prompt instead of
+        no-system only"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Mixing a smaller synthetic subset into GSM8K-train and rendering the
+    synthetic examples with the same few-shot system prompt will show whether the
+    synthetic data is useful once the prompt distribution matches.
+  mechanism: >-
+    "That should test whether the data is useful once the prompt distribution
+    matches" [630].
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-08
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k (main, train)
+      n_examples: null
+      built_by: null
+      build_command: []
+      selection: >-
+        gsm8k train, exact-system plus no-system variants (--include-no-system)
+      contamination_check: not_run
+      mixture_weight: null
+    - path: /home/ben/task/data/synthgsm_10k.jsonl
+      source: clarkkitchen22/SynthGSM8K-50K
+      n_examples: 10000
+      built_by: /home/ben/task/prepare_synthgsm.py
+      build_command:
+        - python
+        - prepare_synthgsm.py
+        - --output
+        - data/synthgsm_10k.jsonl
+        - --limit
+        - "10000"
+      selection: >-
+        same filter as the 50k file ("wrote 10000 rows / skipped_empty 0 /
+        skipped_test_overlap 0" [633]); --extra-with-system renders these rows
+        with the evaluator-style few-shot system prompt instead of no-system only
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: sft
+    framework: transformers.Trainer + peft LoRA (transformers 4.57.3)
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: null
+      batch_size: 4
+      grad_accum: 4
+      max_seq_len: 4096
+      scheduler: cosine
+      warmup: 0.04
+      weight_decay: 0.0
+      precision: bf16
+      seed: 42
+      other: >-
+        --max-steps 1200 caps the run. max_seq_len (4096), weight_decay (0.0) and
+        seed (42) are train_gsm8k_sft.py argparse defaults not overridden by the
+        launch; cosine schedule, bf16+tf32, gradient_checkpointing,
+        group_by_length, adamw_torch_fused and max_grad_norm=0.3 are hardcoded.
+        --save-steps 300, --save-total-limit 5, --merge, --completion-end eos.
+        Mixture weights were never stated - the two sources are simply
+        concatenated.
+    target_format: >-
+      evaluator-style chat prompt for both sources; assistant turn ends
+      "ANSWER: <n>" + tokenizer eos token
+  command:
+    argv:
+      - python
+      - train_gsm8k_sft.py
+      - --model-name
+      - Qwen/Qwen3-4B-Base
+      - --output-dir
+      - runs/sft_lora_v12_gsm_synth10k_system_eos1200
+      - --final-dir
+      - runs/sft_lora_v12_gsm_synth10k_system_eos1200/merged
+      - --max-steps
+      - "1200"
+      - --learning-rate
+      - "2e-4"
+      - --warmup-ratio
+      - "0.04"
+      - --lora-r
+      - "64"
+      - --lora-alpha
+      - "128"
+      - --lora-dropout
+      - "0.05"
+      - --batch-size
+      - "4"
+      - --grad-accum
+      - "4"
+      - --val-size
+      - "384"
+      - --extra-jsonl
+      - data/synthgsm_10k.jsonl
+      - --extra-with-system
+      - --include-no-system
+      - --completion-end
+      - eos
+      - --save-steps
+      - "300"
+      - --save-total-limit
+      - "5"
+      - --merge
+    cwd: /home/ben/task
+    script: /home/ben/task/train_gsm8k_sft.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: 0.31
+  output_checkpoint: /home/ben/task/runs/sft_lora_v12_gsm_synth10k_system_eos1200/checkpoint-300
+  training_summary:
+    final_loss: null
+    steps: 317
+    notes: >-
+      killed with SIGINT at 317/1200; eval_loss 0.32142 at step 300, above the
+      known-good ~0.26-0.30 band [653], [659]
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: "KeyboardInterrupt during training_step at 317/1200 [659]"
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The agent's stated stopping rule was "if it does not move toward the known
+    good validation loss, I'll stop it and revert to checkpoint selection" [651];
+    step-300 eval_loss came in at 0.321 and the run was killed. Never benchmarked.
+  decision: abandon_line
+  next_step: >-
+    return to the MetaMath line with an EOS-only stop nudge [660]
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-77b138a8
+  launch_i: 643
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [630, 636]
+    setup: [632, 633, 643, 651]
+    evaluation: []
+    result: [652, 653, 655, 657, 659]
+    conclusion: [651, 659]
+  snapshot_files:
+    - train_gsm8k_sft.py
+    - prepare_synthgsm.py
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "mixture weights between gsm8k train and the synthetic subset were never stated"
+    - "no benchmark score exists for this branch"

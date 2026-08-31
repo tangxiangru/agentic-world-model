@@ -1,0 +1,187 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-03
+created_at: null
+elapsed_h: null
+
+problem:
+  statement: >-
+    The previous training run left "incomplete training output", which the agent
+    deleted [76]; the recipe had to be made cheaper before it could produce a
+    candidate. The agent gave no further explanation.
+  evidence:
+    - path: null
+      locator: "[76]"
+      observation: >-
+        "rm -rf /home/ben/task/output_run1 /home/ben/task/final_model" with the
+        description "Clean up incomplete training output".
+    - path: null
+      locator: "[84]"
+      observation: >-
+        The relaunch is described as "Run optimized training with packing
+        enabled".
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Reconstructed from what changed in the script at [82]: enabling packing,
+    doubling the per-device batch to 8 with grad-accum 2, cutting to 2 epochs
+    and oversampling GSM8K 2x will let the same LoRA SFT recipe finish and
+    produce a merged checkpoint.
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: Qwen/Qwen3-4B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: null
+      source: openai/gsm8k
+      n_examples: 7473
+      built_by: /home/ben/task/train.py
+      build_command: []
+      selection: >-
+        gsm8k main/train built in-process; answer split on "####"; assistant
+        turn = reasoning + blank line + "ANSWER: <target>"; 40% of items (seed
+        42) carry a system message with 5 few-shot examples. Concatenated with
+        itself, so it enters the mixture twice [85].
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 2
+    - path: null
+      source: microsoft/orca-math-word-problems-200k
+      n_examples: 19947
+      built_by: /home/ben/task/train.py
+      build_command: []
+      selection: >-
+        shuffled seed 42, capped at max_samples=20000; the target is taken from
+        an "the answer is X" regex over the ORCA answer, else the last number in
+        it; the full ORCA answer is the reasoning. 19,947 of 20,000 survived
+        extraction [85].
+      contamination_check: not_run
+      mixture_weight: null
+      repeats: 1
+  method:
+    family: sft
+    framework: "trl.SFTTrainer 0.27.2 (transformers 4.57.3, peft 0.18.1, torch 2.8.0+cu129) [21]"
+    peft: "LoRA r=128 alpha=256 dropout=0.05 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    hyperparams:
+      lr: 2.0e-04
+      epochs: 2
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: 0.01
+      precision: bf16
+      seed: 42
+      other: >-
+        packing=True, gradient_checkpointing=True (use_reentrant=False),
+        attn_implementation=flash_attention_2, save_strategy=epoch,
+        save_total_limit=2. Total training set 34,893 examples (GSM8K 2x +
+        ORCA-Math) [85]. All values are hard-coded in the script written at
+        [82]; the launch passed no flags. After training the LoRA adapter is
+        merged into the base weights (merge_and_unload) and saved to
+        ./final_model.
+    target_format: >-
+      ChatML text: user turn = the eval's MATH_PROMPT_TEMPLATE, assistant turn =
+      reasoning + blank line + "ANSWER: <target>".
+  command:
+    argv: [python3, train.py]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: null
+  budget:
+    gpu: "1x H100"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: [python3, /home/ben/task/evaluate.py, --model-path, /home/ben/task/final_model, --limit, "30", --max-connections, "2", --max-tokens, "2048", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 30"
+    n: 30
+    seed: null
+  comparator: null
+  diagnostic:
+    what: >-
+      Read the sample outputs in the eval log to see whether the failures are
+      formatting or arithmetic.
+    command: []
+    path: /home/ben/task/logs/2026-03-20T13-46-22+01-00_gsm8k_GgH2ENFyrRMWkouz4uLm32.json
+
+result:
+  execution: completed
+  wall_h: 1.35
+  output_checkpoint: /home/ben/task/final_model
+  training_summary:
+    final_loss: 0.145
+    steps: null
+    notes: >-
+      The agent's own summary at [92]: final loss ~0.145, mean token accuracy
+      ~0.964, training time ~4857 s (~81 minutes), 2 epochs over 34,893 examples
+      with packing. The merged model's files were confirmed at [96].
+  measurements:
+    - metric: accuracy
+      value: 0.133
+      n: 30
+      path: /home/ben/task/logs/2026-03-20T13-46-22+01-00_gsm8k_GgH2ENFyrRMWkouz4uLm32.json
+      delta_vs_comparator: null
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/2026-03-20T13-46-22+01-00_gsm8k_GgH2ENFyrRMWkouz4uLm32.json
+    notes: >-
+      Of the printed samples, three ended their answer line with stray
+      non-Latin tokens - "ANSWER: 2กับการ", "ANSWER: 7เปอร์", "ANSWER: 18จังหว" -
+      and the scorer extracted a different number in each case [103]. The agent
+      read this as a format failure, not a reasoning failure [105].
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The merged LoRA model scored 0.133 on 30 samples [99]; no comparator was
+    measured under the same protocol, so nothing is confirmed or refuted. The
+    agent's reading at [105]: the reasoning is often correct but the model
+    "is generating garbage characters after ANSWER: X ... because LoRA doesn't
+    change enough weights to cleanly learn the format".
+  decision: reject
+  next_step: >-
+    Full fine-tuning without LoRA, GSM8K only, no packing, more epochs, and a
+    generation_config that lists <|im_end|> as an eos token [117].
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-9142b2d3
+  launch_i: 84
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [76, 84]
+    setup: [82, 84]
+    evaluation: [98]
+    result: [85, 92, 96, 99]
+    conclusion: [101, 103, 105]
+  snapshot_files:
+    - train.py
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "The checkpoint was deleted at [113], so the 0.133 measurement cannot be reproduced from the workspace."
+    - "No baseline evaluation of the base model was ever run, so this and every later card lack a base_model comparator."

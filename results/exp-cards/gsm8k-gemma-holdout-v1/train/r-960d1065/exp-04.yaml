@@ -1,0 +1,255 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-04
+created_at: null
+elapsed_h: 3.20
+
+# ---- 1. Problem -------------------------------------------------------------
+problem:
+  statement: >-
+    The SFT model scores 76.7% on the 150-sample eval; the agent read the wrong
+    answers and moved to optimise answer correctness directly.
+  evidence:
+    - path: /home/ben/task/logs/eval_sft_v2_l150.json
+      locator: "[249]"
+      observation: "accuracy 0.7667, stderr 0.0346 on n=150"
+    - path: null
+      locator: "[250]"
+      observation: >-
+        "wrong 35 of 150" printed from the inspect-ai sample log; the first five
+        failures were dumped as TARGET / completion pairs
+  affected_share: null
+  failure_examples:
+    - id: null
+      source: null
+      question: null
+      gold: "400"
+      model_output: "There are 700 / 4 = 175 queen bees. There are 175 * 2 = 350 baby bees. There are 350 * 2 = 700 bee that are workers. ANSWER: 700"
+      failure: "misreads the structure of the problem and returns the total, 700, instead of 400"
+    - id: null
+      source: null
+      question: null
+      gold: "50"
+      model_output: "Last year, Henry baked 50 cookies because 60 - 15 = 45. Henry was supposed to bake 40 cookies because (110 + 5 - 15) / 3 = 40. Therefore, Henry baked 20 cookies last year because 40 / 2 = 20. ANSWER: 20"
+      failure: "self-contradictory chain (states 50 then derives 20); arithmetic in the justification does not match the sentence"
+    - id: null
+      source: null
+      question: null
+      gold: "10000"
+      model_output: "Each patient is seen for 24 / 60 = 0.4 hours. So the doctors cost the hospital 0.4 * $150 = $60 per patient. The hospital makes a profit of $200 - $60 = $140 per patient. So the hospital makes a total profit of $140 * 500 = $70,000 per day. ANSWER: 70000"
+      failure: "plan plausible but the wrong quantity is computed; off by a factor of 7"
+    - id: null
+      source: null
+      question: null
+      gold: "20"
+      model_output: " * $6 = $<<9*6=54>>54. The weight of the 9 square feet of tile is 9 * 3 = <<9*3=27>>27 kilograms. The cost of shipping the 27 kilograms of tile is 27 * $0.20 = $<<27*0.20=5.40>>5.40. The total cost of replacing the section of the kitchen floor with marble tile, including shipping, is $54 + $5.40 = $"
+      failure: "emits raw <<...>> calculator annotations from the training data and is cut off before any ANSWER line"
+    - id: null
+      source: null
+      question: null
+      gold: "5"
+      model_output: "year, she will use 1 cup x 180 days = 180 cups of dog food. If one bag of dog food contains 110 cups, then Cecilia will need 180 cups / 110 cups per bag = 1.64 bags of dog food. Since we can't have a fraction of a bag, Cecilia will need to use 2 bags of dog food in the first year. #### 2 ANSWER: 2"
+      failure: "wrong quantities carried in; also leaks the MetaMath-style '#### n' line before the ANSWER line"
+  watch_set: null
+
+# ---- 2. Hypothesis ----------------------------------------------------------
+hypothesis:
+  claim: >-
+    GRPO on GSM8K train with a reward that matches the final answer will improve
+    answer correctness over the SFT checkpoint.
+  mechanism: null
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: null
+  falsified_if: null
+
+# ---- 3. Setup ---------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/checkpoints/sft_v2
+    origin: exp-02
+    hash: null
+  data:
+    - path: null
+      source: "HF openai/gsm8k (config main), split train"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/train_grpo.py
+      build_command: []
+      selection: >-
+        Loaded inside the training script: each train row becomes {prompt, target},
+        the prompt being the eval's own math instruction wrapped by
+        apply_chat_template(add_generation_prompt=True) with the eval template
+        templates/qwen3.jinja, and the target the text after "####". No file is
+        written. n=7,473 is the GSM8K train size printed at [36]; the script's own
+        "GRPO dataset size" line is not visible in the stream.
+      repeats: null
+      contamination_check: not_run
+      mixture_weight: null
+  method:
+    family: grpo
+    framework: trl.GRPOTrainer
+    peft: none
+    hyperparams:
+      lr: 5.0e-07
+      epochs: 1.0
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: null
+      scheduler: cosine
+      warmup: 0.05
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        Launch flags at [301]: --max-steps 400, --num-generations 8,
+        --max-completion-length 640, --temperature 1.0, --save-steps 100,
+        --logging-steps 5. Hard-coded in the GRPOConfig as written into the stream at
+        [268] and [289]: beta=0.0, warmup_ratio=0.05, lr_scheduler_type="cosine",
+        bf16=True, max_grad_norm=1.0, gradient_checkpointing=True,
+        optim="adamw_torch_fused", remove_unused_columns=False, and
+        generation_kwargs={"eos_token_id": [151645, 151643], "pad_token_id":
+        151643} - the last added at [289] after the smoke test showed completions
+        running past the answer.
+    target_format: >-
+      Single reward function on the sampled completion: +1.0 if the parsed answer
+      normalises equal to gold, +0.1 if an "ANSWER:" line is present at all, -0.5 if
+      no answer can be parsed, minus a length penalty min(0.2, max(0, (len-800)/4000)).
+      Answers are parsed from "ANSWER: ..." and reduced to the first number-like token.
+  command:
+    argv:
+      - nohup
+      - python
+      - -u
+      - /home/ben/task/scripts/train_grpo.py
+      - --model
+      - /home/ben/task/checkpoints/sft_v2
+      - --output-dir
+      - /home/ben/task/checkpoints/grpo_v1
+      - --num-train-epochs
+      - "1"
+      - --max-steps
+      - "400"
+      - --learning-rate
+      - "5e-7"
+      - --per-device-train-batch-size
+      - "16"
+      - --gradient-accumulation-steps
+      - "2"
+      - --num-generations
+      - "8"
+      - --max-completion-length
+      - "640"
+      - --temperature
+      - "1.0"
+      - --logging-steps
+      - "5"
+      - --save-steps
+      - "100"
+    cwd: null
+    script: /home/ben/task/scripts/train_grpo.py
+    env: {}
+    log: /home/ben/task/logs/grpo_v1.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3"
+    planned_h: null
+
+# ---- 4. Evaluation ----------------------------------------------------------
+evaluation:
+  protocol:
+    command:
+      - python
+      - /home/ben/task/evaluate.py
+      - --model-path
+      - /home/ben/task/checkpoints/grpo_v1
+      - --limit
+      - "150"
+      - --json-output-file
+      - /home/ben/task/logs/eval_grpo_v1_l150.json
+      - --max-connections
+      - "2"
+      - --max-tokens
+      - "2000"
+      - --gpu-memory-utilization
+      - "0.45"
+    dev_set: "official inspect_evals/gsm8k --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.7667
+    path: /home/ben/task/logs/eval_sft_v2_l150.json
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+# ---- 5. Result --------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.46
+  duration_h: 1.46
+  steps: 400
+  output_checkpoint: /home/ben/task/checkpoints/grpo_v1
+  training_summary:
+    final_loss: null
+    steps: 400
+    notes: >-
+      400 / 400 steps in 1:27:45 at ~13.2 s/step; "Saved GRPO model to
+      /home/ben/task/checkpoints/grpo_v1" at [328]. The only visible metric tail is
+      "...3770588419982232, 'epoch': 0.21" - the run covered about a fifth of an
+      epoch. generation_config was patched to eos_token_id [151645, 151643] at [331]
+      before evaluating.
+  measurements:
+    - metric: accuracy
+      value: 0.78
+      n: 150
+      path: /home/ben/task/logs/eval_grpo_v1_l150.json
+      delta_vs_comparator: 0.0133
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ----------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    400 GRPO steps (about 0.2 epoch) moved the 150-sample score from 76.7% to 78.0%
+    - the agent's own reading, "GRPO edged up to 78%" [342]. The +1.3 pt delta is
+    well inside the 3.4 pt standard error, and the comparator was measured with
+    --max-tokens 1024 against 2000 here, so the improvement is not established.
+  decision: adopt
+  next_step: >-
+    Announced at [342]: mine GSM8K-train problems the model still fails and run
+    focused GRPO on those. mine_hard.py was written at [343] but never run.
+
+# ---- outcome (joined by the pipeline; never written by the extractor) --------
+outcome:
+  official_accuracy: null
+
+# ---- provenance (extraction only) -------------------------------------------
+provenance:
+  kind: extracted
+  run_ref: r-960d1065
+  launch_i: 301
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [249, 250, 252]
+    setup: [268, 289, 300, 301]
+    evaluation: [331]
+    result: [327, 328, 332, 340]
+    conclusion: [342]
+  snapshot_files:
+    - evaluate.py
+  smoke_runs:
+    - {launch_i: 270, outcome: "3-step GRPO smoke; completions ran past the answer, so no reward signal separation - motivated the generation_kwargs fix"}
+    - {launch_i: 290, outcome: "passed (2 steps) with eos_token_id [151645, 151643] wired into generation_kwargs"}
+  extractor: claude-opus-5[1m]
+  unresolved:
+    - "Launch [301] is one shell block that also packages exp-03; the argv above is the training half."
+    - "The five failure examples at [250] were printed from the inspect-ai sample log for the 150-sample eval; the stream never names that log file, so `source` is left null."
+    - "No reward_std / reward-mean value was ever captured (the monitor loop greps for them at [315] but no line appears in the stream), so the mechanism was not checked."
+    - "This checkpoint's checkpoint-300 and checkpoint-400 subdirectories were deleted at [438]."

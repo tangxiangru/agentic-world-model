@@ -1,0 +1,162 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 0.25
+
+problem:
+  statement: >-
+    The SFT v1 launch crashed out of memory in the cross-entropy: Gemma3's 262K
+    vocabulary makes the materialised logits tensor enormous
+    (8 x 2000 x 262K x 4B = 17GB), so a full fine-tune at batch 8 does not fit
+    on the 80GB H100.
+  evidence:
+    - path: null
+      locator: "[15707]"
+      observation: >-
+        agent: "OOM in cross-entropy: Gemma3's 262K vocab makes logits enormous
+        (8x2000x262Kx4B = 17GB). Fix: Liger kernel fused CE (no materialized
+        logits)."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: >-
+    Enabling the Liger fused cross-entropy kernel (use_liger_kernel=True) lets
+    the same full fine-tune (3 epochs, lr 2e-5, bs 8 x accum 4) run to
+    completion on one H100. (agent, [15707])
+  mechanism: >-
+    The fused kernel never materialises the full [batch, seq, 262K] logits
+    tensor, which is what exhausted memory ([15707]).
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: google/gemma-3-4b-pt
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "HF openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/build_sft_v1.py
+      build_command: [python3, build_sft_v1.py]
+      selection: >-
+        as exp-01: every gsm8k train row, prompt rendered through
+        gsm8k_eval_prompt.py with 40% exact 10-shot eval prefix / 20% random
+        10-shot prefixes / 40% zero-shot, completion = reasoning +
+        "\n\nANSWER: {target}<end_of_turn>", completion-only loss.
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer + Liger fused CE, custom /home/ben/task/train_sft.py"
+    peft: none
+    hyperparams:
+      lr: 2.0e-05
+      epochs: 3.0
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: "fp32 weights + bf16=True autocast"
+      seed: 42
+      other: >-
+        Identical command line to exp-01. warmup_ratio 0.03 is the argparse
+        default of train_sft.py, not overridden. The only change from exp-01 is
+        use_liger_kernel=True, edited in at [15716]. Script body otherwise as at
+        [13872]: optim="adamw_bnb_8bit", attn_implementation="sdpa",
+        torch_dtype=float32, gradient_checkpointing, group_by_length,
+        save_strategy="epoch", seed 42, max_grad_norm 1.0, vision tower frozen.
+    target_format: >-
+      unchanged from exp-01: prompt ends with "<start_of_turn>model\n";
+      completion = reasoning + "\n\nANSWER: {target}<end_of_turn>".
+  command:
+    argv: [PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, python3, train_sft.py, --data, data/sft_v1.jsonl, --out, ckpts/v1, --epochs, "3", --lr, 2e-5, --bs, "8", --accum, "4"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/train_v1.log
+  budget:
+    gpu: "1x H100 80GB"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: null
+    n: null
+    seed: null
+  comparator:
+    ref: null
+    value: null
+    path: null
+  diagnostic:
+    what: null
+    command: []
+    path: null
+
+result:
+  execution: killed
+  wall_h: null
+  output_checkpoint: null
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: >-
+      The launch simply stops appearing: no result block, no loss line and no
+      save follow it in the digest. The next event on this thread is the agent
+      editing train_sft.py at [17350] (torch_dtype float32 -> bfloat16) and
+      [17352] (optim adamw_bnb_8bit -> adamw_torch_fused), then relaunching at
+      [17355] with a larger batch, which is why this launch is recorded as
+      killed rather than completed.
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The Liger-kernel retry produced no logged step, no checkpoint and no
+    statement from the agent; it was superseded within four minutes by a
+    memory-lighter configuration (pure bf16 weights + fused Adam at batch 16).
+    Nothing about the SFT hypothesis was learned here.
+  next_step: >-
+    Switch the model to bf16 weights and optim=adamw_torch_fused, raise the
+    batch to 16 x accum 2, and relaunch ([17350], [17352], [17355]).
+  decision: abandon_line
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-71205e90
+  launch_i: 15718
+  stated_by_agent:
+    problem: true
+    hypothesis: true
+  anchors:
+    problem: [15707]
+    setup: [15716, 15718]
+    evaluation: []
+    result: []
+    conclusion: [17350, 17352, 17355]
+  snapshot_files:
+    - build_sft_v1.py
+    - train_sft.py
+    - train_v1.log
+  smoke_runs: []
+  extractor: claude-opus-5
+  unresolved:
+    - "the digest carries no result, traceback or say block between this launch [15718] and the script edits at [17350]; whether it OOMed again or was killed for speed cannot be settled from the stream."
+    - "train_v1.log in the workspace is the log of the [17974] relaunch (each launch pipes through `tee train_v1.log`), so nothing of this launch survives in the snapshot."

@@ -1,0 +1,202 @@
+schema_version: awm-experiment-card-v1
+card_id: exp-02
+created_at: null
+elapsed_h: 1.22
+
+problem:
+  statement: >-
+    "54% accuracy on 150 samples. Let me look at some generated samples to
+    understand failures." [156]. The exp-01 checkpoint answers in the graded
+    shape but gets the problem itself wrong - it mis-reads a percentage and
+    mis-directs a ratio - so 69 of 150 items fail [160].
+  evidence:
+    - path: /home/ben/task/logs/2026-04-21T01-41-23+02-00_gsm8k_UxsVu6kEPT4xzc3D82NjHc.json
+      locator: "[159]-[160], the two first wrong samples of the 150-sample eval"
+      observation: "Right: 81, Wrong: 69; both printed failures produce a well-formed ANSWER line for a mis-read problem"
+    - path: /home/ben/task/logs/2026-04-21T01-41-23+02-00_gsm8k_UxsVu6kEPT4xzc3D82NjHc.json
+      locator: "[154]"
+      observation: "gsm8k (150 samples): accuracy 0.540, stderr 0.041"
+  affected_share: null
+  failure_examples:
+    - id: "150-sample eval at [153], first wrong sample"
+      source: /home/ben/task/logs/2026-04-21T01-41-23+02-00_gsm8k_UxsVu6kEPT4xzc3D82NjHc.json
+      question: "A basket contains 25 oranges among which 1 is bad, 20% are unripe, 2 are sour and the rest are good. How many oranges are good?"
+      gold: "17"
+      model_output: >-
+        "Out of the 25 oranges, 1 is bad, 20% are unripe, so 40/100 x 25 =
+        <<40/100*25=10>>10 are unripe. And there are 2 oranges that are sour, so
+        the remaining number of oranges is 25 - 1 - 10 - 2 = <<25-1-10-2=12>>12
+        oranges. ANSWER: 12"
+      failure: "reads 20% as 40/100, so 10 unripe instead of 5"
+    - id: "150-sample eval at [153], second wrong sample"
+      source: /home/ben/task/logs/2026-04-21T01-41-23+02-00_gsm8k_UxsVu6kEPT4xzc3D82NjHc.json
+      question: "There are 700 bees in a hive. There are twice as many worker bees as baby bees, and there are twice as many babies as queens. How many worker bees are there?"
+      gold: "400"
+      model_output: >-
+        "If there are 2 worker bees for every baby bee, that means there are
+        700/2 = <<700/2=350>>350 baby bees. If there are twice as many babies as
+        queens, that means there are 350/2 = <<350/2=175>>175 queen bees.
+        Therefore, there are 350 x 2 = <<350*2=700>>700 worker bees. ANSWER: 700"
+      failure: "treats the 700 total as the worker:baby ratio base; never sets up the 4:2:1 split"
+  watch_set: null
+
+hypothesis:
+  claim: null
+  mechanism: null
+  expected_effect:
+    metric: null
+    direction: null
+    against: null
+    magnitude: null
+  falsified_if: null
+
+setup:
+  parent_checkpoint:
+    path: HuggingFaceTB/SmolLM3-3B-Base
+    origin: base_model
+    hash: null
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: "HF openai/gsm8k (train) + HF meta-math/MetaMathQA (GSM_* subsets)"
+      n_examples: 247473
+      built_by: /home/ben/task/prepare_data.py
+      build_command:
+        - python
+        - prepare_data.py
+        - "80000"
+      selection: >-
+        the same build as exp-01 with the per-type MetaMathQA cap raised from
+        15,000 to 80,000 [167],[169], which takes every GSM_* row available
+        (80,000 GSM_Rephrased + 80,000 GSM_AnsAug + 40,000 GSM_SV + 40,000
+        GSM_FOBAR [71]) on top of the 7,473 gsm8k train rows; "Dataset size:
+        247473" (sft_v2.log). Same prompt/answer formatting and random.seed(42)
+        shuffle; overwrites the file exp-01 trained on.
+      contamination_check: not_run
+      mixture_weight: 1.0
+      repeats: null
+  method:
+    family: sft
+    framework: "trl 0.27.2 (SFTTrainer/SFTConfig) / transformers 4.57.3 [22]"
+    peft: "none"
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1
+      batch_size: 8
+      grad_accum: 2
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: null
+      precision: bf16
+      seed: null
+      other: >-
+        identical to exp-01 apart from --save_steps 3000 --logging_steps 50; the
+        SFTConfig constants (cosine, bf16, adamw_torch_fused,
+        completion_only_loss, assistant_only_loss, packing=False) are
+        train_sft.py's own and were not overridden, --no_grad_ckpt was passed.
+        weight_decay and seed are never set in the script. Effective batch = 16;
+        15,468 optimiser steps (sft_v2.log).
+    target_format: >-
+      chat messages under templates/smollm.jinja; user turn = the eval prompt,
+      assistant turn = solution ending in "ANSWER: {n}"; assistant-only loss.
+  command:
+    argv:
+      - |-
+        rm -rf /home/ben/task/sft_out_v1/checkpoint-* 2>/dev/null
+        nohup python train_sft.py \
+          --batch_size 8 --grad_accum 2 --epochs 1 \
+          --lr 1e-5 --max_seq_len 1024 --no_grad_ckpt \
+          --warmup_ratio 0.03 --save_steps 3000 --logging_steps 50 \
+          --output_dir /home/ben/task/sft_out_v2 > /home/ben/task/sft_v2.log 2>&1 &
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/sft_v2.log
+  budget:
+    gpu: "1x NVIDIA H100 80GB HBM3 [22]"
+    planned_h: null
+
+evaluation:
+  protocol:
+    command: []
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.540
+    path: /home/ben/task/logs/2026-04-21T01-41-23+02-00_gsm8k_UxsVu6kEPT4xzc3D82NjHc.json
+  diagnostic:
+    what: >-
+      share of wrong answers caused by a missing "ANSWER:" line rather than by
+      wrong reasoning, counted over the 150-sample eval log [197]
+    command: []
+    path: /home/ben/task/logs/2026-04-21T04-29-19+02-00_gsm8k_GQe65bd9w8c89ZxquHo6gP.json
+
+result:
+  execution: completed
+  wall_h: 2.64
+  duration_h: 2.64
+  steps: 15468
+  output_checkpoint: /home/ben/task/sft_out_v2
+  training_summary:
+    final_loss: 0.1386
+    steps: 15468
+    notes: >-
+      train_runtime 9511.9 s, 26.0 samples/s, 15468/15468 steps in 2:38:31
+      (sft_v2.log); checkpoint-* dirs deleted at [192].
+  measurements:
+    - metric: accuracy
+      value: 0.580
+      n: 150
+      path: /home/ben/task/logs/2026-04-21T04-29-19+02-00_gsm8k_GQe65bd9w8c89ZxquHo6gP.json
+      delta_vs_comparator: 0.040
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/logs/2026-04-21T04-29-19+02-00_gsm8k_GQe65bd9w8c89ZxquHo6gP.json
+    notes: "\"Wrong due to no ANSWER: format: 0\" [198] - all 63 failures are reasoning failures, not format failures"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    3.7x more MetaMathQA data for the same one epoch from base moved 150-sample
+    accuracy from 0.540 to 0.580 ("Right: 87, Wrong: 63" [198]; "v2 (247K
+    MetaMath+GSM, 1 epoch): 58%" [346]) - +4 pts against a stderr of ~4 pts, and
+    the agent itself later records that a 150-sample run of one model varies
+    62-71% [346], so the gain is inside its own noise band.
+  decision: adopt
+  next_step: >-
+    None stated in words; the agent went straight to sampling this checkpoint for
+    rejection-sampling data ("Generate rejection sampling data using v2 model on
+    GSM8K training set" [206]) and warm-started exp-03 from it.
+
+outcome:
+  official_accuracy: null
+
+provenance:
+  kind: extracted
+  run_ref: r-d2611dd8
+  launch_i: 174
+  stated_by_agent:
+    problem: true
+    hypothesis: false
+  anchors:
+    problem: [154, 156, 159, 160]
+    setup: [167, 169, 174]
+    evaluation: [197, 198]
+    result: [175, 192, 193, 198]
+    conclusion: [198, 200, 346]
+  snapshot_files:
+    - prepare_data.py
+    - train_sft.py
+    - sft_v2.log
+    - run_eval.sh
+    - evaluate.py
+  smoke_runs: []
+  extractor: null
+  unresolved:
+    - "the eval launch for sft_out_v2 is not in the digest: the block at [192] deletes its checkpoints and [197] already reads the finished log, so the accuracy is reconstructed from the agent's own count of that log (87 correct of 150) and its later note \"v2 ...: 58%\" [346]; the --limit and eval argv are inferred from the log holding exactly 150 samples, not stated"
+    - "no eval output file is in the workspace snapshot"
