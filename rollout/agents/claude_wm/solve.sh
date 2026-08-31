@@ -112,14 +112,22 @@ CORPUS_VALIDATOR=/home/ben/agent/validate_study_corpus.py
 BASE_CACHE_VALIDATOR=/home/ben/agent/validate_base_model_cache.py
 RUNTIME_ATTESTER=/home/ben/agent/attest_claude_runtime.py
 WMA_VALIDATOR=/home/ben/agent/validate_wma_session.py
+FINAL_MODEL_VALIDATOR=/home/ben/agent/validate_c1_final_model.py
 STREAM_REDACTOR=/home/ben/agent/redact_claude_stream.py
 RESULT_SANITIZER=/home/ben/agent/sanitize_result_tree.py
+BASE_MODEL_REVISION=cc012e0a6d0787b4adcc0fa2c4da74402494554d
+BASE_MODEL_CHECKPOINT=/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
 [ -x "${CORPUS_VALIDATOR}" ] || { echo "ERROR: study corpus validator is missing" >&2; exit 2; }
 [ -x "${BASE_CACHE_VALIDATOR}" ] || { echo "ERROR: base-model cache validator is missing" >&2; exit 2; }
 [ -x "${RUNTIME_ATTESTER}" ] || { echo "ERROR: Claude runtime attester is missing" >&2; exit 2; }
 [ -x "${WMA_VALIDATOR}" ] || { echo "ERROR: WMA session validator is missing" >&2; exit 2; }
+[ -x "${FINAL_MODEL_VALIDATOR}" ] || { echo "ERROR: final-model validator is missing" >&2; exit 2; }
 [ -x "${STREAM_REDACTOR}" ] || { echo "ERROR: Claude stream redactor is missing" >&2; exit 2; }
 [ -x "${RESULT_SANITIZER}" ] || { echo "ERROR: result-tree sanitizer is missing" >&2; exit 2; }
+[ -d "${BASE_MODEL_CHECKPOINT}" ] && [ ! -L "${BASE_MODEL_CHECKPOINT}" ] || {
+    echo "ERROR: cannot resolve the read-only official base-model checkpoint" >&2
+    exit 2
+}
 if [ "${AWM_STUDY_CONDITION}" = c2 ]; then
     python3 "${CORPUS_VALIDATOR}" raw /home/ben/prior_runs \
         --sides "${SIDES}" \
@@ -194,7 +202,8 @@ else
 fi
 INIT_ARGS=(--arm "${ARM}" --submission /home/ben/task/final_model --submission-mode copy
            --memory-root "${MEM}" --memory-sides "${SIDES}"
-           --wma-model "${AWM_WMA_MODEL}" "${CORPUS_ARGS[@]}")
+           --wma-model "${AWM_WMA_MODEL}" --wma-max-budget-usd 2.0
+           "${CORPUS_ARGS[@]}")
 INIT_ARGS+=(--memory-readonly --split-side test)
 awm wm --dir /home/ben/task init "${INIT_ARGS[@]}" || { echo "ERROR: awm wm init failed" >&2; exit 1; }
 echo "${AWM_SHA}" > /home/ben/task/wm/awm_sha.txt
@@ -276,18 +285,17 @@ fi
     echo "ERROR: Claude exited successfully without a non-empty final_model/" >&2
     exit 1
 }
-WMA_VALIDATOR_ARGS=(--expected-base-model google/gemma-3-4b-pt)
-if [ "${AWM_STUDY_MODE}" = smoke ]; then
-    BASE_MODEL_CHECKPOINT=/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
-    [ -d "${BASE_MODEL_CHECKPOINT}" ] && [ ! -L "${BASE_MODEL_CHECKPOINT}" ] || {
-        echo "ERROR: smoke validation cannot resolve the read-only official base-model checkpoint" >&2
-        exit 2
-    }
-    WMA_VALIDATOR_ARGS+=(--expected-base-checkpoint "${BASE_MODEL_CHECKPOINT}")
-fi
 python3 "${WMA_VALIDATOR}" /home/ben/task \
     --record /home/ben/task/wma-session-attestation.json \
     --study-input /home/ben/task/study-input.json \
-    "${WMA_VALIDATOR_ARGS[@]}" || exit 2
+    --expected-base-model google/gemma-3-4b-pt \
+    --expected-base-checkpoint "${BASE_MODEL_CHECKPOINT}" || exit 2
+python3 "${FINAL_MODEL_VALIDATOR}" /home/ben/task/final_model \
+    --expected-base-model google/gemma-3-4b-pt \
+    --expected-base-revision "${BASE_MODEL_REVISION}" \
+    --expected-base-checkpoint "${BASE_MODEL_CHECKPOINT}" \
+    --task-root /home/ben/task \
+    --study-input /home/ben/task/study-input.json \
+    --record /home/ben/task/wma-final-model-attestation.json || exit 2
 ls -la /home/ben/task/final_model
 echo "claude_wm done"

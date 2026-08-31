@@ -393,6 +393,236 @@ def _validate_smoke_card(
     }
 
 
+def _absolute_path(value: Any, label: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ValidationError(f"{label} is not a non-empty path")
+    return Path(os.path.abspath(value))
+
+
+def _validate_base_lineage(
+    session: Path,
+    rows: list[dict[str, Any]],
+    qualified_cards: set[str],
+    expected_base_model: str,
+    expected_base_checkpoint: Path,
+) -> dict[str, Any]:
+    """Attest every executed card and the final incumbent back to one exact base."""
+    base = Path(os.path.abspath(expected_base_checkpoint))
+    if not base.is_dir() or base.is_symlink():
+        raise ValidationError(
+            "expected official base checkpoint is missing, not a directory, or linked"
+        )
+    base_resolved = base.resolve()
+
+    training_started: dict[str, int] = {}
+    finalized: dict[str, int] = {}
+    adopted_events: list[dict[str, Any]] = []
+    for row in rows:
+        card_id = row.get("card_id")
+        if not isinstance(card_id, str):
+            continue
+        if row.get("event") == "training_started":
+            if card_id in training_started:
+                raise ValidationError(f"base lineage has duplicate training_started for {card_id}")
+            training_started[card_id] = int(row["seq"])
+        elif row.get("event") == "card_closed" and row.get("how") == "finalize":
+            if card_id in finalized:
+                raise ValidationError(f"base lineage has duplicate finalization for {card_id}")
+            finalized[card_id] = int(row["seq"])
+        elif row.get("event") == "adopted" and isinstance(row.get("checkpoint"), str):
+            adopted_events.append(row)
+
+    if not adopted_events:
+        raise ValidationError("base lineage has no adopted incumbent event")
+    final_adopted = adopted_events[-1]
+    final_card_id = str(final_adopted["card_id"])
+    if final_card_id not in qualified_cards:
+        raise ValidationError(
+            f"final incumbent {final_card_id} lacks a successful WMA call, seal, and finalization"
+        )
+    if final_card_id not in training_started:
+        raise ValidationError(f"final incumbent {final_card_id} has no training_started event")
+
+    for card_id, started in training_started.items():
+        if card_id not in finalized:
+            raise ValidationError(
+                f"base lineage card {card_id} has no terminal card_closed/finalize event"
+            )
+        if finalized[card_id] <= started:
+            raise ValidationError(
+                f"base lineage card {card_id} finalization does not follow training_started"
+            )
+    if not (
+        training_started[final_card_id]
+        < int(final_adopted["seq"])
+        < finalized[final_card_id]
+    ):
+        raise ValidationError(
+            f"final incumbent {final_card_id} adoption is not between training and finalization"
+        )
+
+    incumbent = read_object(session / "wm" / "incumbent.json")
+    incumbent_card_id = incumbent.get("card_id")
+    incumbent_checkpoint = _absolute_path(
+        incumbent.get("checkpoint"), "wm/incumbent.json checkpoint"
+    )
+    adopted_checkpoint = _absolute_path(
+        final_adopted.get("checkpoint"), "final adopted checkpoint"
+    )
+    if (
+        incumbent_card_id != final_card_id
+        or incumbent_checkpoint != adopted_checkpoint
+        or incumbent_checkpoint.resolve() != adopted_checkpoint.resolve()
+    ):
+        raise ValidationError("wm/incumbent.json does not match the final adopted event")
+    if final_adopted.get("submission") != str(session / "final_model"):
+        raise ValidationError("final adopted event does not name this session's final_model")
+
+    lineage_ids = set(training_started)
+    lineage_ids.add(final_card_id)
+    card_root = session / "wm" / "cards"
+    cards: dict[str, dict[str, Any]] = {}
+    parent_paths: dict[str, Path] = {}
+    parent_origins: dict[str, str] = {}
+    output_paths: dict[str, Path] = {}
+    for card_id in lineage_ids:
+        card_path = card_root / card_id / "card.yaml"
+        if not inside(card_path, card_root):
+            raise ValidationError(f"base lineage card path escapes the session: {card_id}")
+        card = read_yaml_object(card_path)
+        if card.get("card_id") != card_id:
+            raise ValidationError(f"base lineage card file disagrees with {card_id}")
+        setup = card.get("setup")
+        if not isinstance(setup, dict):
+            raise ValidationError(f"base lineage card {card_id} has no setup")
+        if setup.get("base_model") != expected_base_model:
+            raise ValidationError(
+                f"base lineage card {card_id} base model is not {expected_base_model}"
+            )
+        parent = setup.get("parent_checkpoint")
+        if not isinstance(parent, dict):
+            raise ValidationError(f"base lineage card {card_id} has no parent checkpoint")
+        parent_path = _absolute_path(
+            parent.get("path"), f"base lineage card {card_id} parent checkpoint"
+        )
+        origin = parent.get("origin")
+        if not isinstance(origin, str) or not origin:
+            raise ValidationError(f"base lineage card {card_id} has no parent origin")
+        if not parent_path.is_dir() or parent_path.is_symlink():
+            raise ValidationError(
+                f"base lineage card {card_id} parent checkpoint is missing or linked"
+            )
+        result = card.get("result")
+        output = result.get("output_checkpoint") if isinstance(result, dict) else None
+        output_path = _absolute_path(
+            output, f"base lineage card {card_id} output checkpoint"
+        )
+        if not inside(output_path, session):
+            raise ValidationError(
+                f"base lineage card {card_id} output checkpoint escapes the session"
+            )
+        if not output_path.is_dir() or output_path.is_symlink():
+            raise ValidationError(
+                f"base lineage card {card_id} output checkpoint is missing or linked"
+            )
+        output_paths[card_id] = output_path
+        cards[card_id] = card
+        parent_paths[card_id] = parent_path
+        parent_origins[card_id] = origin
+
+    output_owners: dict[Path, list[str]] = {}
+    for card_id, output_path in output_paths.items():
+        output_owners.setdefault(output_path, []).append(card_id)
+    duplicated_outputs = {
+        path: owners for path, owners in output_owners.items() if len(owners) != 1
+    }
+    if duplicated_outputs:
+        raise ValidationError("base lineage has ambiguous reused output checkpoint paths")
+
+    parents: dict[str, str | None] = {}
+    for card_id, parent_path in parent_paths.items():
+        if parent_path == base and parent_path.resolve() == base_resolved:
+            if parent_origins[card_id] != "base_model":
+                raise ValidationError(
+                    f"base lineage root {card_id} does not declare origin base_model"
+                )
+            parents[card_id] = None
+            continue
+        owners = output_owners.get(parent_path, [])
+        if len(owners) != 1:
+            raise ValidationError(
+                f"base lineage card {card_id} parent does not reference the official base "
+                "or one executed card output checkpoint"
+            )
+        if parent_origins[card_id] != owners[0]:
+            raise ValidationError(
+                f"base lineage card {card_id} parent origin does not name {owners[0]}"
+            )
+        parents[card_id] = owners[0]
+
+    for card_id in lineage_ids:
+        chain: set[str] = set()
+        cursor: str | None = card_id
+        while cursor is not None:
+            if cursor in chain:
+                raise ValidationError(f"base lineage contains a cycle through {cursor}")
+            chain.add(cursor)
+            cursor = parents[cursor]
+
+    for card_id, parent_id in parents.items():
+        if parent_id is None:
+            continue
+        child_started = training_started.get(card_id)
+        parent_finalized = finalized.get(parent_id)
+        if (
+            child_started is None
+            or parent_finalized is None
+            or parent_finalized >= child_started
+        ):
+            raise ValidationError(
+                f"base lineage card {card_id} does not follow an earlier finalized card output"
+            )
+
+    final_output = output_paths.get(final_card_id)
+    if (
+        final_output is None
+        or final_output != incumbent_checkpoint
+        or final_output.resolve() != incumbent_checkpoint.resolve()
+        or not final_output.is_dir()
+        or final_output.is_symlink()
+    ):
+        raise ValidationError(
+            f"final incumbent {final_card_id} does not match its real output checkpoint"
+        )
+    conclusion = cards[final_card_id].get("conclusion")
+    if not isinstance(conclusion, dict) or conclusion.get("decision") != "adopt":
+        raise ValidationError(f"final incumbent {final_card_id} card is not an adoption")
+
+    ordered = sorted(
+        lineage_ids,
+        key=lambda card_id: (training_started.get(card_id, int(final_adopted["seq"])), card_id),
+    )
+    return {
+        "base_model": expected_base_model,
+        "base_checkpoint": str(base),
+        "executed_card_ids": sorted(
+            training_started, key=lambda card_id: training_started[card_id]
+        ),
+        "final_card_id": final_card_id,
+        "final_checkpoint": str(final_output),
+        "cards": [
+            {
+                "card_id": card_id,
+                "parent": parents[card_id] or "base_model",
+                "output_checkpoint": (
+                    str(output_paths[card_id]) if card_id in output_paths else None
+                ),
+            }
+            for card_id in ordered
+        ],
+    }
+
+
 def validate(
     session: Path,
     *,
@@ -505,6 +735,18 @@ def validate(
                 "no adopted card completed the correlated smoke lifecycle: "
                 + "; ".join(failures)
             )
+    if (expected_base_model is None) != (expected_base_checkpoint is None):
+        raise ValidationError(
+            "base lineage validation requires both expected base model and checkpoint"
+        )
+    if expected_base_model is not None and expected_base_checkpoint is not None:
+        result["base_lineage"] = _validate_base_lineage(
+            session,
+            rows,
+            set(qualified),
+            expected_base_model,
+            expected_base_checkpoint,
+        )
     return result
 
 

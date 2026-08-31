@@ -23,13 +23,23 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections import Counter
+from collections.abc import Callable
 from contextlib import nullcontext
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 
+from ...credential_guard import (
+    RULESET_VERSION as CREDENTIAL_RULESET_VERSION,
+)
+from ...credential_guard import (
+    format_credential_rejection,
+    scan_credential_files,
+)
+from ..schema import WMError, dump_json, inside, now, sha256_file
 from .base import (
     Advice,
     Brief,
@@ -37,7 +47,6 @@ from .base import (
     observation_evidence,
     observation_summary,
 )
-from ..schema import WMError, dump_json, inside, now, sha256_file
 
 # All file access goes through the fixed MCP server.  In particular, do not
 # expose Claude Code's built-in Read tool: its working directory also contains
@@ -909,31 +918,104 @@ def _validate_server_tool_audit(
         for event in events
         if event.get("event") == "tool_use" and event.get("name") in SCRATCH_TOOLS
     ]
-    client_results = {
-        event.get("tool_use_id"): event
-        for event in events
-        if event.get("event") == "tool_result"
-    }
+    client_results: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        if event.get("event") != "tool_result":
+            continue
+        tool_use_id = event.get("tool_use_id")
+        if isinstance(tool_use_id, str):
+            client_results.setdefault(tool_use_id, []).append(event)
     if len(server_calls) != len(client_uses):
         raise WMError(
             "WMA MCP audit/CLI trace call count mismatch: "
             f"server={len(server_calls)} client={len(client_uses)}"
         )
-    for index, (server, client) in enumerate(zip(server_calls, client_uses)):
-        short_name = str(client.get("name", "")).removeprefix("mcp__awm_scratch__")
-        result = client_results.get(client.get("id"))
-        if result is None:
-            raise WMError(f"WMA MCP call {index} has no client result")
+
+    server_records: Counter[str] = Counter()
+    for server in server_calls:
         server_result = server.get("result")
-        if (
-            server.get("tool") != short_name
-            or server.get("arguments") != client.get("input")
-            or not isinstance(server_result, dict)
-            or bool(server_result.get("isError")) != bool(result.get("is_error"))
-            or _tool_result_text(server_result.get("content"))
-            != result.get("content_text")
-        ):
-            raise WMError(f"WMA MCP audit/CLI trace mismatch at custom call {index}")
+        server_records[
+            _canonical_tool_audit_record(
+                tool=server.get("tool"),
+                arguments=server.get("arguments"),
+                is_error=(
+                    server_result.get("isError")
+                    if isinstance(server_result, dict)
+                    else None
+                ),
+                content_text=(
+                    _tool_result_text(server_result.get("content"))
+                    if isinstance(server_result, dict) and "content" in server_result
+                    else None
+                ),
+            )
+        ] += 1
+
+    client_records: Counter[str] = Counter()
+    seen_client_use_ids: set[str] = set()
+    for client in client_uses:
+        tool_use_id = client.get("id")
+        if not isinstance(tool_use_id, str) or not tool_use_id:
+            raise WMError("WMA MCP client call has no usable correlation id")
+        if tool_use_id in seen_client_use_ids:
+            raise WMError("WMA MCP client call/result correlation is not one-to-one")
+        seen_client_use_ids.add(tool_use_id)
+        matching_results = client_results.get(tool_use_id, [])
+        if len(matching_results) != 1:
+            raise WMError("WMA MCP client call/result correlation is not one-to-one")
+        result = matching_results[0]
+        short_name = str(client.get("name", "")).removeprefix("mcp__awm_scratch__")
+        client_records[
+            _canonical_tool_audit_record(
+                tool=short_name,
+                arguments=client.get("input"),
+                is_error=result.get("is_error"),
+                content_text=result.get("content_text"),
+            )
+        ] += 1
+
+    if server_records != client_records:
+        server_only = server_records - client_records
+        client_only = client_records - server_records
+        # Do not interpolate canonical records: arguments and tool output can
+        # contain private model-generated material. Aggregate multiplicities
+        # are sufficient to diagnose the correlation failure without leaking it.
+        raise WMError(
+            "WMA MCP audit/CLI trace mismatch (multiset mismatch): "
+            f"server_only_groups={len(server_only)} "
+            f"server_only_calls={sum(server_only.values())} "
+            f"client_only_groups={len(client_only)} "
+            f"client_only_calls={sum(client_only.values())}"
+        )
+
+
+def _canonical_tool_audit_record(
+    *, tool: Any, arguments: Any, is_error: Any, content_text: Any
+) -> str:
+    """Return an exact, deterministic key without rendering it in failures."""
+    if (
+        not isinstance(tool, str)
+        or not tool
+        or not isinstance(arguments, dict)
+        or not isinstance(is_error, bool)
+        or not isinstance(content_text, str)
+    ):
+        raise WMError("WMA MCP audit contains a malformed canonical call record")
+    try:
+        return json.dumps(
+            {
+                "tool": tool,
+                "arguments": arguments,
+                "is_error": is_error,
+                "content_text": content_text,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise WMError("WMA MCP audit contains a non-JSON canonical call record") from exc
 
 
 def _validate_tool_trace(
@@ -1571,6 +1653,7 @@ def _validate_raw_corpus(root: Path, visible_sides: tuple[str, ...]) -> dict[str
         manifest_by_run[run] = entry
     indexed: dict[str, Path] = {}
     verified_hashes: dict[Path, str] = {}
+    credential_files: list[tuple[Path, str]] = []
     total_trace_bytes = 0
     for i, row in enumerate(rows):
         run = row.get("run")
@@ -1617,6 +1700,7 @@ def _validate_raw_corpus(root: Path, visible_sides: tuple[str, ...]) -> dict[str
             if digest != attestation["sha256"]:
                 raise WMError(f"raw corpus immutable manifest hash/size mismatch: {file_path}")
             verified_hashes[file_path.resolve()] = digest
+            credential_files.append((file_path, f"{run}/{name}"))
         if row.get("has_trace") is not True:
             raise WMError(f"raw corpus index does not mark trace present: {run}")
         try:
@@ -1627,6 +1711,9 @@ def _validate_raw_corpus(root: Path, visible_sides: tuple[str, ...]) -> dict[str
             raise WMError(f"raw corpus trace size mismatch: {trace}")
         indexed[run] = trace
         total_trace_bytes += trace.stat().st_size
+    findings = scan_credential_files(credential_files)
+    if findings:
+        raise WMError(format_credential_rejection(findings))
     if set(manifest_by_run) != set(indexed):
         raise WMError("raw corpus immutable manifest and index name different runs")
     expected_metadata = _derive_raw_metadata(root, manifest_runs)
@@ -1681,6 +1768,11 @@ def _validate_raw_corpus(root: Path, visible_sides: tuple[str, ...]) -> dict[str
         "manifest_sha256": sha256_file(corpus_manifest_path),
         "split_id": manifest_split["id"],
         "dataset": manifest_dataset,
+        "credential_scan": {
+            "ruleset_version": CREDENTIAL_RULESET_VERSION,
+            "file_count": len(credential_files),
+            "finding_group_count": 0,
+        },
         "inventory_sha256": _sha256_text(
             json.dumps(sorted(inventory, key=lambda row: row["path"]), separators=(",", ":"))
         ),

@@ -200,13 +200,15 @@ PAYLOAD_ROOT="$DST/agents/claude_wm/payload"
 PAYLOAD_STAGE="$(mktemp -d "$DST/agents/claude_wm/.payload-stage.XXXXXX")"
 mkdir -p "$PAYLOAD_STAGE/awm-src"
 git -C "$AWM_SOURCE_DIR" archive --format=tar "$AWM_REPO_COMMIT" \
-    awm input .claude rollout/validate_study_corpus.py rollout/validate_base_model_cache.py rollout/attest_claude_runtime.py rollout/validate_wma_session.py rollout/redact_claude_stream.py rollout/sanitize_result_tree.py \
+    awm input .claude rollout/validate_study_corpus.py rollout/validate_base_model_cache.py rollout/validate_c1_final_model.py rollout/attest_claude_runtime.py rollout/validate_wma_session.py rollout/redact_claude_stream.py rollout/sanitize_result_tree.py \
     | tar -x -C "$PAYLOAD_STAGE/awm-src"
 printf '%s\n' "${AWM_REPO_COMMIT,,}" > "$PAYLOAD_STAGE/awm-src/AWM_COMMIT"
 mv "$PAYLOAD_STAGE/awm-src/rollout/validate_study_corpus.py" \
     "$PAYLOAD_STAGE/validate_study_corpus.py"
 mv "$PAYLOAD_STAGE/awm-src/rollout/validate_base_model_cache.py" \
     "$PAYLOAD_STAGE/validate_base_model_cache.py"
+mv "$PAYLOAD_STAGE/awm-src/rollout/validate_c1_final_model.py" \
+    "$PAYLOAD_STAGE/validate_c1_final_model.py"
 mv "$PAYLOAD_STAGE/awm-src/rollout/attest_claude_runtime.py" \
     "$PAYLOAD_STAGE/attest_claude_runtime.py"
 mv "$PAYLOAD_STAGE/awm-src/rollout/validate_wma_session.py" \
@@ -218,6 +220,7 @@ mv "$PAYLOAD_STAGE/awm-src/rollout/sanitize_result_tree.py" \
 rmdir "$PAYLOAD_STAGE/awm-src/rollout"
 chmod 0755 "$PAYLOAD_STAGE/validate_study_corpus.py"
 chmod 0755 "$PAYLOAD_STAGE/validate_base_model_cache.py"
+chmod 0755 "$PAYLOAD_STAGE/validate_c1_final_model.py"
 chmod 0755 "$PAYLOAD_STAGE/attest_claude_runtime.py"
 chmod 0755 "$PAYLOAD_STAGE/validate_wma_session.py"
 chmod 0755 "$PAYLOAD_STAGE/redact_claude_stream.py"
@@ -231,6 +234,8 @@ install -m 0755 "$PAYLOAD_STAGE/validate_study_corpus.py" \
     "$C1_PAYLOAD_STAGE/validate_study_corpus.py"
 install -m 0755 "$PAYLOAD_STAGE/validate_base_model_cache.py" \
     "$C1_PAYLOAD_STAGE/validate_base_model_cache.py"
+install -m 0755 "$PAYLOAD_STAGE/validate_c1_final_model.py" \
+    "$C1_PAYLOAD_STAGE/validate_c1_final_model.py"
 install -m 0755 "$PAYLOAD_STAGE/attest_claude_runtime.py" \
     "$C1_PAYLOAD_STAGE/attest_claude_runtime.py"
 install -m 0755 "$PAYLOAD_STAGE/redact_claude_stream.py" \

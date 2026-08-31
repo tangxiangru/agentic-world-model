@@ -72,11 +72,13 @@ curl -fsS --connect-timeout 3 -o /dev/null -H 'Metadata-Flavor: Google' \
 
 CORPUS_VALIDATOR=/home/ben/agent/validate_study_corpus.py
 BASE_CACHE_VALIDATOR=/home/ben/agent/validate_base_model_cache.py
+C1_MODEL_VALIDATOR=/home/ben/agent/validate_c1_final_model.py
 RUNTIME_ATTESTER=/home/ben/agent/attest_claude_runtime.py
 STREAM_REDACTOR=/home/ben/agent/redact_claude_stream.py
 RESULT_SANITIZER=/home/ben/agent/sanitize_result_tree.py
 [ -x "${CORPUS_VALIDATOR}" ] || { echo "ERROR: study corpus validator is missing" >&2; exit 2; }
 [ -x "${BASE_CACHE_VALIDATOR}" ] || { echo "ERROR: base-model cache validator is missing" >&2; exit 2; }
+[ -x "${C1_MODEL_VALIDATOR}" ] || { echo "ERROR: C1 final-model validator is missing" >&2; exit 2; }
 [ -x "${RUNTIME_ATTESTER}" ] || { echo "ERROR: Claude runtime attester is missing" >&2; exit 2; }
 [ -x "${STREAM_REDACTOR}" ] || { echo "ERROR: Claude stream redactor is missing" >&2; exit 2; }
 [ -x "${RESULT_SANITIZER}" ] || { echo "ERROR: result-tree sanitizer is missing" >&2; exit 2; }
@@ -165,5 +167,21 @@ python3 "${RUNTIME_ATTESTER}" model "${SCIENTIST_STREAM}" \
     echo "ERROR: Claude exited successfully without a non-empty final_model/" >&2
     exit 1
 }
+BASE_MODEL_REVISION=cc012e0a6d0787b4adcc0fa2c4da74402494554d
+BASE_MODEL_CHECKPOINT=/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+[ -d "${BASE_MODEL_CHECKPOINT}" ] && [ ! -L "${BASE_MODEL_CHECKPOINT}" ] || {
+    echo "ERROR: cannot resolve the read-only official base-model checkpoint" >&2
+    exit 2
+}
+# This rejects accidental substitutions using the independently attested base
+# and the candidate's local HF structure. It intentionally does not claim to
+# prove the causal process that trained the candidate weights.
+python3 "${C1_MODEL_VALIDATOR}" /home/ben/task/final_model \
+    --expected-base-model google/gemma-3-4b-pt \
+    --expected-base-revision "${BASE_MODEL_REVISION}" \
+    --expected-base-checkpoint "${BASE_MODEL_CHECKPOINT}" \
+    --task-root /home/ben/task \
+    --study-input /home/ben/task/study-input.json \
+    --record /home/ben/task/c1-final-model-attestation.json || exit 2
 ls -la /home/ben/task/final_model
 echo "claude_fulltraj_noawm done"

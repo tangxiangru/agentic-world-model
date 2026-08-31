@@ -695,7 +695,109 @@ def _write_valid_wma_session(root: Path) -> tuple[Path, list[dict]]:
     submission = session / "final_model"
     submission.mkdir()
     (submission / "config.json").write_text("{}\n")
+    (session / "wm" / "incumbent.json").write_text(
+        json.dumps(
+            {"card_id": card_id, "checkpoint": str(checkpoint), "obs_id": "obs-1"}
+        )
+        + "\n"
+    )
     return session, events
+
+
+def _append_valid_lineage_card(
+    session: Path,
+    events: list[dict],
+    *,
+    card_id: str = "exp-02",
+    parent_card_id: str = "exp-01",
+) -> tuple[list[dict], Path]:
+    parent_card = json.loads(
+        (session / "wm" / "cards" / parent_card_id / "card.yaml").read_text()
+    )
+    parent_checkpoint = parent_card["result"]["output_checkpoint"]
+    checkpoint = session / "checkpoints" / f"checkpoint-{card_id}"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps({"model_type": "gemma3"}) + "\n")
+
+    card_dir = session / "wm" / "cards" / card_id
+    audit = card_dir / "wma-calls" / "brief-1" / "audit.json"
+    audit.parent.mkdir(parents=True)
+    audit.write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "card_id": card_id,
+                "phase": "brief",
+                "tool_event_count": 1,
+                "citation_count": 1,
+            }
+        )
+        + "\n"
+    )
+    card = {
+        "schema_version": "awm-experiment-card-v1",
+        "card_id": card_id,
+        "setup": {
+            "base_model": "google/gemma-3-4b-pt",
+            "parent_checkpoint": {
+                "path": parent_checkpoint,
+                "origin": parent_card_id,
+            },
+        },
+        "result": {
+            "execution": "completed",
+            "output_checkpoint": str(checkpoint),
+            "training_summary": {"steps": 1},
+        },
+        "conclusion": {"decision": "adopt"},
+    }
+    (card_dir / "card.yaml").write_text(json.dumps(card) + "\n")
+
+    appended = [
+        {"event": "card_proposed", "card_id": card_id},
+        {
+            "event": "wma_call",
+            "card_id": card_id,
+            "path": str(audit),
+            "phase": "brief",
+            "tool_event_count": 1,
+            "citation_count": 1,
+        },
+        {"event": "training_started", "card_id": card_id},
+        {
+            "event": "sealed",
+            "card_id": card_id,
+            "obs_id": "obs-2",
+            "checkpoint": str(checkpoint),
+        },
+        {
+            "event": "adopted",
+            "card_id": card_id,
+            "checkpoint": str(checkpoint),
+            "submission": str(session / "final_model"),
+            "mode": "copy",
+        },
+        {
+            "event": "card_closed",
+            "card_id": card_id,
+            "how": "finalize",
+            "decision": "adopt",
+        },
+    ]
+    next_sequence = max(row["seq"] for row in events) + 1
+    for sequence, row in enumerate(appended, next_sequence):
+        row["seq"] = sequence
+    events = [*events, *appended]
+    (session / "wm" / "events.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in events)
+    )
+    (session / "wm" / "incumbent.json").write_text(
+        json.dumps(
+            {"card_id": card_id, "checkpoint": str(checkpoint), "obs_id": "obs-2"}
+        )
+        + "\n"
+    )
+    return events, checkpoint
 
 
 def test_wma_session_postcondition_requires_successful_call_and_adoption(tmp_path: Path) -> None:
@@ -846,6 +948,7 @@ def test_wma_production_postcondition_keeps_broad_existing_semantics(tmp_path: P
     session, events = _write_valid_wma_session(tmp_path)
     events = [
         next(row for row in events if row["event"] == "wma_call"),
+        next(row for row in events if row["event"] == "training_started"),
         next(row for row in events if row["event"] == "sealed"),
         next(row for row in events if row["event"] == "adopted"),
         next(row for row in events if row["event"] == "card_closed"),
@@ -865,9 +968,136 @@ def test_wma_production_postcondition_keeps_broad_existing_semantics(tmp_path: P
             str(record),
             "--study-input",
             str(study_input),
+            "--expected-base-model",
+            "google/gemma-3-4b-pt",
+            "--expected-base-checkpoint",
+            str(tmp_path / "base-model"),
         ]
     ) == 0
-    assert json.loads(record.read_text())["adopted_card_ids"] == ["exp-01"]
+    evidence = json.loads(record.read_text())
+    assert evidence["adopted_card_ids"] == ["exp-01"]
+    assert "smoke_lifecycle" not in evidence
+    assert evidence["base_lineage"]["final_card_id"] == "exp-01"
+
+
+def test_wma_production_base_lineage_accepts_ordered_two_card_chain(
+    tmp_path: Path,
+) -> None:
+    validator = _load(REPO / "rollout" / "validate_wma_session.py")
+    session, events = _write_valid_wma_session(tmp_path)
+    _events, checkpoint = _append_valid_lineage_card(session, events)
+    evidence = validator.validate(
+        session,
+        expected_base_model="google/gemma-3-4b-pt",
+        expected_base_checkpoint=tmp_path / "base-model",
+    )
+    lineage = evidence["base_lineage"]
+    assert lineage["executed_card_ids"] == ["exp-01", "exp-02"]
+    assert lineage["final_card_id"] == "exp-02"
+    assert lineage["final_checkpoint"] == str(checkpoint)
+    assert [card["parent"] for card in lineage["cards"]] == [
+        "base_model",
+        "exp-01",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("wrong_base_model", "base model is not google/gemma-3-4b-pt"),
+        ("wrong_root_checkpoint", "does not reference the official base"),
+        ("unknown_parent", "does not reference the official base or one executed card"),
+        ("wrong_parent_origin", "parent origin does not name exp-01"),
+        ("forward_parent", "does not follow an earlier finalized card output"),
+        ("cycle", "contains a cycle"),
+        ("missing_parent_finalization", "has no terminal card_closed/finalize"),
+        ("missing_output", "output checkpoint is missing or linked"),
+        ("final_without_training", "has no training_started event"),
+        ("incumbent_mismatch", "does not match the final adopted event"),
+    ],
+)
+def test_wma_production_base_lineage_rejects_invalid_chains(
+    tmp_path: Path, damage: str, message: str
+) -> None:
+    validator = _load(REPO / "rollout" / "validate_wma_session.py")
+    session, events = _write_valid_wma_session(tmp_path)
+    events, second_checkpoint = _append_valid_lineage_card(session, events)
+    first_path = session / "wm" / "cards" / "exp-01" / "card.yaml"
+    second_path = session / "wm" / "cards" / "exp-02" / "card.yaml"
+    first = json.loads(first_path.read_text())
+    second = json.loads(second_path.read_text())
+
+    if damage == "wrong_base_model":
+        second["setup"]["base_model"] = "unsloth/gemma-3-4b-pt"
+    elif damage == "wrong_root_checkpoint":
+        wrong_root = tmp_path / "other-base-model"
+        wrong_root.mkdir()
+        first["setup"]["parent_checkpoint"]["path"] = str(wrong_root)
+    elif damage == "unknown_parent":
+        unknown = session / "checkpoints" / "unknown-parent"
+        unknown.mkdir()
+        second["setup"]["parent_checkpoint"]["path"] = str(unknown)
+    elif damage == "wrong_parent_origin":
+        second["setup"]["parent_checkpoint"]["origin"] = "incumbent"
+    elif damage == "forward_parent":
+        first["setup"]["parent_checkpoint"] = {
+            "path": str(second_checkpoint),
+            "origin": "exp-02",
+        }
+        second["setup"]["parent_checkpoint"] = {
+            "path": str(tmp_path / "base-model"),
+            "origin": "base_model",
+        }
+    elif damage == "cycle":
+        first["setup"]["parent_checkpoint"] = {
+            "path": str(second_checkpoint),
+            "origin": "exp-02",
+        }
+    elif damage == "missing_parent_finalization":
+        events = [
+            row
+            for row in events
+            if not (row["event"] == "card_closed" and row.get("card_id") == "exp-01")
+        ]
+        for sequence, row in enumerate(events, 1):
+            row["seq"] = sequence
+    elif damage == "missing_output":
+        second["result"]["output_checkpoint"] = str(
+            session / "checkpoints" / "missing-output"
+        )
+    elif damage == "final_without_training":
+        events = [
+            row
+            for row in events
+            if not (
+                row["event"] == "training_started" and row.get("card_id") == "exp-02"
+            )
+        ]
+        for sequence, row in enumerate(events, 1):
+            row["seq"] = sequence
+    elif damage == "incumbent_mismatch":
+        (session / "wm" / "incumbent.json").write_text(
+            json.dumps(
+                {
+                    "card_id": "exp-01",
+                    "checkpoint": first["result"]["output_checkpoint"],
+                    "obs_id": "obs-1",
+                }
+            )
+            + "\n"
+        )
+
+    first_path.write_text(json.dumps(first) + "\n")
+    second_path.write_text(json.dumps(second) + "\n")
+    (session / "wm" / "events.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in events)
+    )
+    with pytest.raises(validator.ValidationError, match=message):
+        validator.validate(
+            session,
+            expected_base_model="google/gemma-3-4b-pt",
+            expected_base_checkpoint=tmp_path / "base-model",
+        )
 
 
 def test_wma_cli_enforces_correlated_lifecycle_only_for_smoke(tmp_path: Path) -> None:
@@ -1651,11 +1881,13 @@ def test_claude_agents_use_vertex_passthrough_without_oauth() -> None:
     for packaged in (
         "rollout/validate_study_corpus.py",
         "rollout/validate_base_model_cache.py",
+        "rollout/validate_c1_final_model.py",
         "rollout/attest_claude_runtime.py",
     ):
         assert packaged in setup
     assert setup.count('validate_study_corpus.py"') >= 2
     assert setup.count('validate_base_model_cache.py"') >= 3
+    assert setup.count('validate_c1_final_model.py"') >= 4
     assert setup.count('attest_claude_runtime.py"') >= 2
     assert setup.count('validate_wma_session.py"') >= 2
     assert setup.count('redact_claude_stream.py"') >= 3
@@ -1718,14 +1950,42 @@ def test_claude_agents_propagate_failure_and_require_submission() -> None:
         assert "--require-readonly" in solve
         assert "--record /home/ben/task/study-input.json" in solve
     wm_solve = (agent_root / "claude_wm" / "solve.sh").read_text()
+    c1_solve = (agent_root / "claude_fulltraj_noawm" / "solve.sh").read_text()
+    assert "validate_c1_final_model.py" in c1_solve
+    assert "c1-final-model-attestation.json" in c1_solve
+    assert "--expected-base-model google/gemma-3-4b-pt" in c1_solve
+    assert "--expected-base-revision" in c1_solve
+    assert "--expected-base-checkpoint" in c1_solve
+    assert (
+        "/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d"
+        in c1_solve
+    )
     assert "validate_wma_session.py" in wm_solve
     assert "wma-session-attestation.json" in wm_solve
+    assert "validate_c1_final_model.py" in wm_solve
+    assert "wma-final-model-attestation.json" in wm_solve
     assert "--expected-base-model google/gemma-3-4b-pt" in wm_solve
+    assert "--expected-base-revision" in wm_solve
     assert "--expected-base-checkpoint" in wm_solve
     assert (
         "/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d"
         in wm_solve
     )
+    validator_call = wm_solve[wm_solve.index('python3 "${WMA_VALIDATOR}"') :]
+    assert "--expected-base-model google/gemma-3-4b-pt" in validator_call
+    assert '--expected-base-checkpoint "${BASE_MODEL_CHECKPOINT}"' in validator_call
+    final_model_validator_call = wm_solve[
+        wm_solve.index('python3 "${FINAL_MODEL_VALIDATOR}"') :
+    ]
+    assert "/home/ben/task/final_model" in final_model_validator_call
+    assert "--expected-base-model google/gemma-3-4b-pt" in final_model_validator_call
+    assert '--expected-base-revision "${BASE_MODEL_REVISION}"' in final_model_validator_call
+    assert '--expected-base-checkpoint "${BASE_MODEL_CHECKPOINT}"' in final_model_validator_call
+    assert "--study-input /home/ben/task/study-input.json" in final_model_validator_call
+    assert "--record /home/ben/task/wma-final-model-attestation.json" in (
+        final_model_validator_call
+    )
+    assert "WMA_VALIDATOR_ARGS" not in wm_solve
 
 
 def test_wm_agent_separates_llm_raw_from_llm_cards_and_pins_models() -> None:
@@ -1740,6 +2000,7 @@ def test_wm_agent_separates_llm_raw_from_llm_cards_and_pins_models() -> None:
     assert "C3 requires seeded card memory" in solve
     assert "--wma-corpus-kind cards" in solve
     assert '--wma-model "${AWM_WMA_MODEL}"' in solve
+    assert "--wma-max-budget-usd 2.0" in solve
     assert "private empty memory" not in solve
     assert "AWM_REPO_REF" not in solve and "--branch" not in solve
     assert "AWM_REPO_COMMIT" in solve
@@ -1912,6 +2173,7 @@ def test_setup_fresh_private_clone_is_idempotent_and_removes_stale_auth(tmp_path
     for name in (
         "validate_study_corpus.py",
         "validate_base_model_cache.py",
+        "validate_c1_final_model.py",
         "attest_claude_runtime.py",
         "validate_wma_session.py",
         "redact_claude_stream.py",
@@ -1921,6 +2183,9 @@ def test_setup_fresh_private_clone_is_idempotent_and_removes_stale_auth(tmp_path
     assert (private / "agents" / "claude_fulltraj_noawm" / "payload" / "attest_claude_runtime.py").is_file()
     assert (
         private / "agents" / "claude_fulltraj_noawm" / "payload" / "validate_base_model_cache.py"
+    ).is_file()
+    assert (
+        private / "agents" / "claude_fulltraj_noawm" / "payload" / "validate_c1_final_model.py"
     ).is_file()
     assert (private / "agents" / "claude_fulltraj_noawm" / "payload" / "redact_claude_stream.py").is_file()
     assert (

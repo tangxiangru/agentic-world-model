@@ -5,23 +5,24 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
 import yaml
 
-import awm.wm.scratch_server as scratch_server
 from awm.cli import build_parser
+from awm.wm import scratch_server
 from awm.wm.agents.llm import (
     ALLOWED_TOOLS,
     LLMAgent,
     _extract_tool_events,
-    _validate_server_tool_audit,
     _validate_citations,
     _validate_grounding_references,
     _validate_raw_corpus,
     _validate_reported_models,
     _validate_reported_tools,
+    _validate_server_tool_audit,
     _validate_tool_trace,
     _vertex_subprocess_env,
 )
@@ -32,8 +33,13 @@ from awm.wm.scratch_server import call_tool, handle_message, probe_sandbox
 
 
 def _init_row(tools: tuple[str, ...] = ALLOWED_TOOLS, model: str = "claude-opus-5") -> dict:
-    return {"type": "system", "subtype": "init", "tools": [*tools],
-            "model": model, "apiKeySource": "none"}
+    return {
+        "type": "system",
+        "subtype": "init",
+        "tools": [*tools],
+        "model": model,
+        "apiKeySource": "none",
+    }
 
 
 def _read_tool_rows(
@@ -42,7 +48,7 @@ def _read_tool_rows(
     *,
     tool_id: str = "read-1",
     offset: int = 0,
-    limit: int = 200_000,
+    limit: int = scratch_server.MAX_READ_BYTES,
 ) -> list[dict]:
     data = path.read_bytes()
     chunk = data[offset : offset + limit]
@@ -60,18 +66,32 @@ def _read_tool_rows(
         sort_keys=True,
     )
     return [
-        {"type": "assistant", "message": {"content": [{
-            "type": "tool_use",
-            "id": tool_id,
-            "name": "mcp__awm_scratch__read_corpus",
-            "input": {"root": 0, "path": relative, "offset": offset, "limit": limit},
-        }]}},
-        {"type": "user", "message": {"content": [{
-            "type": "tool_result",
-            "tool_use_id": tool_id,
-            "is_error": False,
-            "content": [{"type": "text", "text": payload}],
-        }]}},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": tool_id,
+                        "name": "mcp__awm_scratch__read_corpus",
+                        "input": {"root": 0, "path": relative, "offset": offset, "limit": limit},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "is_error": False,
+                        "content": [{"type": "text", "text": payload}],
+                    }
+                ]
+            },
+        },
     ]
 
 
@@ -154,13 +174,20 @@ def _raw_bundle(tmp_path: Path, *, include_test: bool = False) -> tuple[Path, li
         (run / "metrics.json").write_text(json.dumps({"accuracy": 0.3 + i / 10}))
         (run / "time_taken.txt").write_text("01:00:00\n")
         accuracy = 0.3 + i / 10
-        rows.append({
-            "run": rel.as_posix(), "agent_config": f"agent-{side}",
-            "run_name": f"gsm8k_model_{i}", "side": side,
-            "base_model": "model", "accuracy": accuracy, "time_taken": "01:00:00",
-            "has_trace": True, "trace_bytes": trace.stat().st_size,
-            "path": f"/home/ben/prior_runs/{rel.as_posix()}",
-        })
+        rows.append(
+            {
+                "run": rel.as_posix(),
+                "agent_config": f"agent-{side}",
+                "run_name": f"gsm8k_model_{i}",
+                "side": side,
+                "base_model": "model",
+                "accuracy": accuracy,
+                "time_taken": "01:00:00",
+                "has_trace": True,
+                "trace_bytes": trace.stat().st_size,
+                "path": f"/home/ben/prior_runs/{rel.as_posix()}",
+            }
+        )
         files = {}
         for name in ("solve_out.txt", "metrics.json", "time_taken.txt"):
             path = run / name
@@ -173,12 +200,17 @@ def _raw_bundle(tmp_path: Path, *, include_test: bool = False) -> tuple[Path, li
     rows.sort(key=lambda row: (-row["accuracy"], row["run"]))
     (root / "index.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
     lines = [
-        "# Prior runs", "",
-        (f"{len(rows)} previous attempts at this task by autonomous agents, one directory each, "
-         "laid out as `<agent config>/<run>/`. Each holds `solve_out.txt` (the agent's complete "
-         "session trace), `metrics.json` (official accuracy), and `time_taken.txt`. "
-         "No optional run artifacts or `task/` workspace snapshots are exposed."),
-        "", "Sorted by official accuracy, best first.", "",
+        "# Prior runs",
+        "",
+        (
+            f"{len(rows)} previous attempts at this task by autonomous agents, one directory each, "
+            "laid out as `<agent config>/<run>/`. Each holds `solve_out.txt` (the agent's complete "
+            "session trace), `metrics.json` (official accuracy), and `time_taken.txt`. "
+            "No optional run artifacts or `task/` workspace snapshots are exposed."
+        ),
+        "",
+        "Sorted by official accuracy, best first.",
+        "",
         "| accuracy | base model | agent config | time | trace | path |",
         "|---:|---|---|---|---:|---|",
     ]
@@ -192,15 +224,25 @@ def _raw_bundle(tmp_path: Path, *, include_test: bool = False) -> tuple[Path, li
         "Read-only copy of prior PostTrainBench runs for this task, built by "
         "tools/build_prior_runs.py. Start with INDEX.md.\n"
     )
-    (root / "corpus-manifest.json").write_text(json.dumps({
-        "schema_version": "awm-prior-runs-v1",
-        "split": {"id": "test/split-v1", "sides": sides},
-        "dataset": {"repo": "example/prior-runs", "repo_type": "dataset",
-                    "revision": "a" * 40},
-        "file_scope": ["solve_out.txt", "metrics.json", "time_taken.txt"],
-        "run_count": len(manifest_rows),
-        "runs": manifest_rows,
-    }, indent=2, sort_keys=True) + "\n")
+    (root / "corpus-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "awm-prior-runs-v1",
+                "split": {"id": "test/split-v1", "sides": sides},
+                "dataset": {
+                    "repo": "example/prior-runs",
+                    "repo_type": "dataset",
+                    "revision": "a" * 40,
+                },
+                "file_scope": ["solve_out.txt", "metrics.json", "time_taken.txt"],
+                "run_count": len(manifest_rows),
+                "runs": manifest_rows,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     return root, traces
 
 
@@ -217,7 +259,9 @@ def test_seed_materialises_exact_idempotent_corpus_and_completeness(tmp_path: Pa
 
     writer = Memory(root, session="seed-again", arm="null")
     assert writer.seed_from_exp_cards(source, side="train") == 1
-    rows = [json.loads(line) for line in (root / "structured" / "cards.jsonl").read_text().splitlines()]
+    rows = [
+        json.loads(line) for line in (root / "structured" / "cards.jsonl").read_text().splitlines()
+    ]
     train_rows = [row for row in rows if row["provenance"]["split_side"] == "train"]
     assert len(train_rows) == 1
     assert train_rows[0]["corpus_path"] == "corpus/train/r-train000/exp-01.yaml"
@@ -237,25 +281,40 @@ def test_llm_uses_full_visible_corpus_and_writes_audit(tmp_path: Path, monkeypat
     def fake_runner(**kwargs) -> int:
         captured.update(kwargs)
         response = {
-            "claims": [{"text": "A prior SFT card improved over its comparator.",
-                        "citation_ids": ["C1", "C2"]}],
+            "claims": [
+                {
+                    "text": "A prior SFT card improved over its comparator.",
+                    "citation_ids": ["C1", "C2"],
+                }
+            ],
             "citations": [
-                {"id": "C1", "path": str(cited),
-                 "locator": "result.measurements[0]",
-                 "observation": "measurement value is 0.4"},
-                {"id": "C2", "path": str(cited),
-                 "locator": "evaluation.comparator.value",
-                 "observation": "comparator is 0.3"},
+                {
+                    "id": "C1",
+                    "path": str(cited),
+                    "locator": "result.measurements[0]",
+                    "observation": "measurement value is 0.4",
+                },
+                {
+                    "id": "C2",
+                    "path": str(cited),
+                    "locator": "evaluation.comparator.value",
+                    "observation": "comparator is 0.3",
+                },
             ],
             "objections": [],
         }
         rows = [
             _init_row(),
             *_read_tool_rows(root / "corpus" / "train", cited, tool_id="tool-1"),
-            {"type": "result", "subtype": "success", "is_error": False,
-             "session_id": "wma-session", "total_cost_usd": 0.12,
-             "modelUsage": {"claude-opus-5": {"provider": "vertex"}},
-             "structured_output": response},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "session_id": "wma-session",
+                "total_cost_usd": 0.12,
+                "modelUsage": {"claude-opus-5": {"provider": "vertex"}},
+                "structured_output": response,
+            },
         ]
         kwargs["stdout_path"].write_text("\n".join(json.dumps(row) for row in rows) + "\n")
         kwargs["stderr_path"].write_text("")
@@ -349,9 +408,7 @@ def test_llm_init_and_hidden_side_fail_closed(tmp_path: Path, monkeypatch) -> No
     assert session.agent.session_dir == (tmp_path / "valid").resolve()
     assert session.config["wma_model"] == "claude-opus-5"
 
-    args = build_parser().parse_args(
-        ["wm", "init", "--arm", "llm", "--wma-model", "claude-opus-5"]
-    )
+    args = build_parser().parse_args(["wm", "init", "--arm", "llm", "--wma-model", "claude-opus-5"])
     assert args.wma_model == "claude-opus-5"
 
 
@@ -395,18 +452,26 @@ def test_raw_corpus_is_full_tool_source_with_grounded_read(tmp_path: Path, monke
         captured.update(kwargs)
         response = {
             "claims": [{"text": "The prior trace launched training.", "citation_ids": ["C1"]}],
-            "citations": [{
-                "id": "C1", "path": str(traces[1]), "locator": "line 2",
-                "observation": "the trace says launch training",
-            }],
+            "citations": [
+                {
+                    "id": "C1",
+                    "path": str(traces[1]),
+                    "locator": "line 2",
+                    "observation": "the trace says launch training",
+                }
+            ],
             "objections": [],
         }
         rows = [
             _init_row(),
             *_read_tool_rows(raw, traces[1], tool_id="raw-read"),
-            {"type": "result", "subtype": "success", "is_error": False,
-             "modelUsage": {"claude-opus-5": {"provider": "vertex"}},
-             "structured_output": response},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "modelUsage": {"claude-opus-5": {"provider": "vertex"}},
+                "structured_output": response,
+            },
         ]
         kwargs["stdout_path"].write_text("\n".join(json.dumps(row) for row in rows) + "\n")
         kwargs["stderr_path"].write_text("")
@@ -457,8 +522,14 @@ def test_failed_or_unread_historical_citation_fails_closed(
     def fake_runner(**kwargs) -> int:
         response = {
             "claims": [{"text": "Historical claim.", "citation_ids": ["C1"]}],
-            "citations": [{"id": "C1", "path": str(cited_path), "locator": "line 1",
-                           "observation": "claimed evidence"}],
+            "citations": [
+                {
+                    "id": "C1",
+                    "path": str(cited_path),
+                    "locator": "line 1",
+                    "observation": "claimed evidence",
+                }
+            ],
             "objections": [],
         }
         read_rows = _read_tool_rows(raw, read_path)
@@ -469,8 +540,12 @@ def test_failed_or_unread_historical_citation_fails_closed(
         rows = [
             _init_row(),
             *read_rows,
-            {"type": "result", "subtype": "success", "is_error": False,
-             "structured_output": response},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "structured_output": response,
+            },
         ]
         kwargs["stdout_path"].write_text("\n".join(json.dumps(row) for row in rows) + "\n")
         kwargs["stderr_path"].write_text("")
@@ -492,44 +567,58 @@ def test_failed_or_unread_historical_citation_fails_closed(
             card,
             [{"check": "example", "passed": True, "detail": "ok"}],
             memory,
-            {"wma_model": "claude-opus-5", "wma_provider": "vertex",
-             "wma_corpus_kind": "raw", "wma_corpus_root": str(raw)},
+            {
+                "wma_model": "claude-opus-5",
+                "wma_provider": "vertex",
+                "wma_corpus_kind": "raw",
+                "wma_corpus_root": str(raw),
+            },
         )
     audit = next((card_dir / "wma-calls").glob("*/audit.json"))
     assert json.loads(audit.read_text())["status"] == "validation_error"
 
 
 def test_vertex_subprocess_env_is_not_nested_or_oauth() -> None:
-    filtered = _vertex_subprocess_env({
-        "PATH": "/bin",
-        "HOME": "/tmp/home",
-        "CLAUDE_CODE_USE_VERTEX": "1",
-        "ANTHROPIC_VERTEX_PROJECT_ID": "project",
-        "ANTHROPIC_VERTEX_REGION": "us-east5",
-        "VERTEX_REGION_CLAUDE_4_8_OPUS": "us-east5",
-        "GOOGLE_APPLICATION_CREDENTIALS": "/tmp/adc.json",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "pinned-opus",
-        "CLAUDECODE": "nested",
-        "AWM_SESSION_DIR": "/scientist",
-        "CLAUDE_CODE_OAUTH_TOKEN": "secret",
-        "ANTHROPIC_API_KEY": "secret",
-        "GOOGLE_UNRELATED_TOKEN": "secret",
-        "VERTEX_UNRELATED_TOKEN": "secret",
-        "NO_PROXY": "internal.example",
-        "UNRELATED_SECRET": "secret",
-    })
+    filtered = _vertex_subprocess_env(
+        {
+            "PATH": "/bin",
+            "HOME": "/tmp/home",
+            "CLAUDE_CODE_USE_VERTEX": "1",
+            "ANTHROPIC_VERTEX_PROJECT_ID": "project",
+            "ANTHROPIC_VERTEX_REGION": "us-east5",
+            "VERTEX_REGION_CLAUDE_4_8_OPUS": "us-east5",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/tmp/adc.json",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "pinned-opus",
+            "CLAUDECODE": "nested",
+            "AWM_SESSION_DIR": "/scientist",
+            "CLAUDE_CODE_OAUTH_TOKEN": "secret",
+            "ANTHROPIC_API_KEY": "secret",
+            "GOOGLE_UNRELATED_TOKEN": "secret",
+            "VERTEX_UNRELATED_TOKEN": "secret",
+            "NO_PROXY": "internal.example",
+            "UNRELATED_SECRET": "secret",
+        }
+    )
     assert filtered["ANTHROPIC_VERTEX_PROJECT_ID"] == "project"
     assert filtered["GOOGLE_APPLICATION_CREDENTIALS"] == "/tmp/adc.json"
     assert filtered["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "pinned-opus"
     assert filtered["ANTHROPIC_VERTEX_REGION"] == "us-east5"
     assert filtered["VERTEX_REGION_CLAUDE_4_8_OPUS"] == "us-east5"
-    for host in ("127.0.0.1", "localhost", "::1", "metadata.google.internal",
-                 "169.254.169.254"):
+    for host in ("127.0.0.1", "localhost", "::1", "metadata.google.internal", "169.254.169.254"):
         assert host in filtered["NO_PROXY"].split(",")
         assert host in filtered["no_proxy"].split(",")
-    assert not ({"CLAUDECODE", "AWM_SESSION_DIR", "CLAUDE_CODE_OAUTH_TOKEN",
-                 "ANTHROPIC_API_KEY", "GOOGLE_UNRELATED_TOKEN",
-                 "VERTEX_UNRELATED_TOKEN", "UNRELATED_SECRET"} & set(filtered))
+    assert not (
+        {
+            "CLAUDECODE",
+            "AWM_SESSION_DIR",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "GOOGLE_UNRELATED_TOKEN",
+            "VERTEX_UNRELATED_TOKEN",
+            "UNRELATED_SECRET",
+        }
+        & set(filtered)
+    )
 
 
 def test_cli_tool_inventory_and_tool_paths_fail_closed(tmp_path: Path) -> None:
@@ -547,10 +636,23 @@ def test_cli_tool_inventory_and_tool_paths_fail_closed(tmp_path: Path) -> None:
     stream_rows = _read_tool_rows(raw, traces[0], tool_id="read")
     content_text = stream_rows[1]["message"]["content"][0]["content"][0]["text"]
     good = [
-        {"event": "tool_use", "id": "read", "name": "mcp__awm_scratch__read_corpus",
-         "input": {"root": 0, "path": rel, "offset": 0, "limit": 200_000}},
-        {"event": "tool_result", "tool_use_id": "read", "is_error": False,
-         "content_text": content_text},
+        {
+            "event": "tool_use",
+            "id": "read",
+            "name": "mcp__awm_scratch__read_corpus",
+            "input": {
+                "root": 0,
+                "path": rel,
+                "offset": 0,
+                "limit": scratch_server.MAX_READ_BYTES,
+            },
+        },
+        {
+            "event": "tool_result",
+            "tool_use_id": "read",
+            "is_error": False,
+            "content_text": content_text,
+        },
     ]
     assert _validate_tool_trace(good, "raw", [raw.resolve()], scratch) == {
         traces[0]: [(0, traces[0].stat().st_size)]
@@ -561,48 +663,81 @@ def test_cli_tool_inventory_and_tool_paths_fail_closed(tmp_path: Path) -> None:
         traces[0]: [(0, traces[0].stat().st_size)]
     }
     rejected_schema_mistake = good + [
-        {"event": "tool_use", "id": "bad-list",
-         "name": "mcp__awm_scratch__list_corpus",
-         "input": {"text": "mistaken structured output"}},
-        {"event": "tool_result", "tool_use_id": "bad-list", "is_error": True,
-         "content_text": "glob must be non-empty"},
+        {
+            "event": "tool_use",
+            "id": "bad-list",
+            "name": "mcp__awm_scratch__list_corpus",
+            "input": {"text": "mistaken structured output"},
+        },
+        {
+            "event": "tool_result",
+            "tool_use_id": "bad-list",
+            "is_error": True,
+            "content_text": "glob must be non-empty",
+        },
     ]
-    assert _validate_tool_trace(
-        rejected_schema_mistake, "raw", [raw.resolve()], scratch
-    ) == {traces[0]: [(0, traces[0].stat().st_size)]}
+    assert _validate_tool_trace(rejected_schema_mistake, "raw", [raw.resolve()], scratch) == {
+        traces[0]: [(0, traces[0].stat().st_size)]
+    }
     rejected_write_schema = good + [
-        {"event": "tool_use", "id": "bad-write",
-         "name": "mcp__awm_scratch__write_file",
-         "input": {"text": "mistaken structured output", "citation_ids": ["C1"]}},
-        {"event": "tool_result", "tool_use_id": "bad-write", "is_error": True,
-         "content_text": "content must be a string"},
+        {
+            "event": "tool_use",
+            "id": "bad-write",
+            "name": "mcp__awm_scratch__write_file",
+            "input": {"text": "mistaken structured output", "citation_ids": ["C1"]},
+        },
+        {
+            "event": "tool_result",
+            "tool_use_id": "bad-write",
+            "is_error": True,
+            "content_text": "content must be a string",
+        },
     ]
-    assert _validate_tool_trace(
-        rejected_write_schema, "raw", [raw.resolve()], scratch
-    ) == {traces[0]: [(0, traces[0].stat().st_size)]}
+    assert _validate_tool_trace(rejected_write_schema, "raw", [raw.resolve()], scratch) == {
+        traces[0]: [(0, traces[0].stat().st_size)]
+    }
     with_structured_output = good + [
-        {"event": "tool_use", "id": "schema", "name": "StructuredOutput",
-         "input": {"claims": [], "citations": [], "objections": []}},
-        {"event": "tool_result", "tool_use_id": "schema", "is_error": False,
-         "content_text": "Structured output provided successfully"},
+        {
+            "event": "tool_use",
+            "id": "schema",
+            "name": "StructuredOutput",
+            "input": {"claims": [], "citations": [], "objections": []},
+        },
+        {
+            "event": "tool_result",
+            "tool_use_id": "schema",
+            "is_error": False,
+            "content_text": "Structured output provided successfully",
+        },
     ]
-    assert _validate_tool_trace(
-        with_structured_output, "raw", [raw.resolve()], scratch
-    ) == {traces[0]: [(0, traces[0].stat().st_size)]}
+    assert _validate_tool_trace(with_structured_output, "raw", [raw.resolve()], scratch) == {
+        traces[0]: [(0, traces[0].stat().st_size)]
+    }
 
     escaping = good + [
-        {"event": "tool_use", "id": "write", "name": "mcp__awm_scratch__write_file",
-         "input": {"path": "../outside.py", "content": "print('bad')"}},
+        {
+            "event": "tool_use",
+            "id": "write",
+            "name": "mcp__awm_scratch__write_file",
+            "input": {"path": "../outside.py", "content": "print('bad')"},
+        },
         {"event": "tool_result", "tool_use_id": "write", "is_error": True},
     ]
     with pytest.raises(WMError, match="attempted to escape"):
         _validate_tool_trace(escaping, "raw", [raw.resolve()], scratch)
     rejected_escape = good + [
-        {"event": "tool_use", "id": "bad-read",
-         "name": "mcp__awm_scratch__read_corpus",
-         "input": {"path": "../scientist-secret"}},
-        {"event": "tool_result", "tool_use_id": "bad-read", "is_error": True,
-         "content_text": "path must stay inside its declared root"},
+        {
+            "event": "tool_use",
+            "id": "bad-read",
+            "name": "mcp__awm_scratch__read_corpus",
+            "input": {"path": "../scientist-secret"},
+        },
+        {
+            "event": "tool_result",
+            "tool_use_id": "bad-read",
+            "is_error": True,
+            "content_text": "path must stay inside its declared root",
+        },
     ]
     with pytest.raises(WMError, match="attempted to escape"):
         _validate_tool_trace(rejected_escape, "raw", [raw.resolve()], scratch)
@@ -625,8 +760,14 @@ def test_partial_reads_bogus_locators_and_ungrounded_observations_fail_closed(
     only_first_line = {traces[0]: [(0, first_line_end)]}
     base = {
         "claims": [{"text": "claim", "citation_ids": ["C1"]}],
-        "citations": [{"id": "C1", "path": str(traces[0]), "locator": "line 2",
-                       "observation": "launch training"}],
+        "citations": [
+            {
+                "id": "C1",
+                "path": str(traces[0]),
+                "locator": "line 2",
+                "observation": "launch training",
+            }
+        ],
         "objections": [],
     }
     with pytest.raises(WMError, match="not covered"):
@@ -646,17 +787,21 @@ def test_partial_reads_bogus_locators_and_ungrounded_observations_fail_closed(
 
 def test_claim_and_objection_prose_cannot_add_uncited_values() -> None:
     response = {
-        "claims": [{
-            "text": "Qwen/Qwen3-4B measured 0.4 on r-train000.",
-            "citation_ids": ["C1"],
-        }],
+        "claims": [
+            {
+                "text": "Qwen/Qwen3-4B measured 0.4 on r-train000.",
+                "citation_ids": ["C1"],
+            }
+        ],
         "citations": [{"id": "C1"}],
-        "objections": [{
-            "field": "setup.method",
-            "severity": "advisory",
-            "fix": "Keep Qwen/Qwen3-4B because its cited value is 0.4.",
-            "citation_ids": ["C1"],
-        }],
+        "objections": [
+            {
+                "field": "setup.method",
+                "severity": "advisory",
+                "fix": "Keep Qwen/Qwen3-4B because its cited value is 0.4.",
+                "citation_ids": ["C1"],
+            }
+        ],
     }
     material = {
         "C1": "path: r-train000/exp-01.yaml\n"
@@ -685,18 +830,343 @@ def test_actual_model_and_server_audit_must_match(tmp_path: Path) -> None:
         )
 
     events = [
-        {"event": "tool_use", "id": "t1", "name": "mcp__awm_scratch__list_corpus",
-         "input": {"root": 0, "glob": "**/*"}},
-        {"event": "tool_result", "tool_use_id": "t1", "is_error": False,
-         "content_text": "{}"},
+        {
+            "event": "tool_use",
+            "id": "t1",
+            "name": "mcp__awm_scratch__list_corpus",
+            "input": {"root": 0, "glob": "**/*"},
+        },
+        {"event": "tool_result", "tool_use_id": "t1", "is_error": False, "content_text": "{}"},
     ]
     audit = tmp_path / "scratch-tools.jsonl"
-    audit.write_text(json.dumps({
-        "tool": "list_corpus", "arguments": {"root": 0, "glob": "**/*"},
-        "result": {"isError": False, "content": [{"type": "text", "text": "tampered"}]},
-    }) + "\n")
+    audit.write_text(
+        json.dumps(
+            {
+                "tool": "list_corpus",
+                "arguments": {"root": 0, "glob": "**/*"},
+                "result": {"isError": False, "content": [{"type": "text", "text": "tampered"}]},
+            }
+        )
+        + "\n"
+    )
     with pytest.raises(WMError, match="audit/CLI trace mismatch"):
         _validate_server_tool_audit(audit, events)
+
+
+def test_server_audit_reconciliation_is_order_independent_and_counts_duplicates(
+    tmp_path: Path,
+) -> None:
+    first_arguments = {"root": 0, "glob": "**/*"}
+    first_result = {
+        "isError": False,
+        "content": [{"type": "text", "text": '{"files": ["one"]}'}],
+    }
+    second_arguments = {"root": 0, "glob": "**/*.txt", "pattern": "needle"}
+    second_result = {
+        "isError": False,
+        "content": [{"type": "text", "text": '{"matches": []}'}],
+    }
+    audit = tmp_path / "scratch-tools.jsonl"
+    audit.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {
+                    "tool": "search_corpus",
+                    "arguments": second_arguments,
+                    "result": second_result,
+                },
+                {
+                    "tool": "list_corpus",
+                    "arguments": first_arguments,
+                    "result": first_result,
+                },
+                {
+                    "tool": "list_corpus",
+                    "arguments": first_arguments,
+                    "result": first_result,
+                },
+            )
+        )
+        + "\n"
+    )
+    events = []
+    for tool_id, name, arguments, result in (
+        ("list-1", "list_corpus", first_arguments, first_result),
+        ("list-2", "list_corpus", first_arguments, first_result),
+        ("search-1", "search_corpus", second_arguments, second_result),
+    ):
+        events.extend(
+            [
+                {
+                    "event": "tool_use",
+                    "id": tool_id,
+                    "name": f"mcp__awm_scratch__{name}",
+                    "input": arguments,
+                },
+                {
+                    "event": "tool_result",
+                    "tool_use_id": tool_id,
+                    "is_error": result["isError"],
+                    "content_text": result["content"][0]["text"],
+                },
+            ]
+        )
+
+    _validate_server_tool_audit(audit, events)
+
+    events[-1]["content_text"] = "different but private result"
+    with pytest.raises(WMError, match="multiset mismatch") as caught:
+        _validate_server_tool_audit(audit, events)
+    assert "different but private result" not in str(caught.value)
+
+    events[-1]["content_text"] = second_result["content"][0]["text"]
+    events[2]["id"] = "list-1"
+    with pytest.raises(WMError, match="correlation is not one-to-one"):
+        _validate_server_tool_audit(audit, events)
+
+
+def test_concurrent_calls_reconcile_when_arrival_order_is_reversed(
+    tmp_path: Path,
+) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "evidence.txt").write_text("needle\n")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    audit = tmp_path / "scratch-tools.jsonl"
+    logical_calls = {
+        "first": ("list_corpus", {"glob": "**/*"}),
+        "second": ("search_corpus", {"glob": "**/*", "pattern": "needle"}),
+    }
+    responses: dict[str, dict] = {}
+    errors: list[BaseException] = []
+    release_first = threading.Event()
+
+    def invoke(label: str) -> None:
+        try:
+            if label == "first" and not release_first.wait(timeout=5):
+                raise TimeoutError("second request did not complete")
+            name, arguments = logical_calls[label]
+            responses[label] = call_tool(
+                name,
+                arguments,
+                scratch=scratch,
+                roots=[corpus],
+                audit_path=audit,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if label == "second":
+                release_first.set()
+
+    first = threading.Thread(target=invoke, args=("first",))
+    second = threading.Thread(target=invoke, args=("second",))
+    first.start()
+    second.start()
+    first.join(timeout=10)
+    second.join(timeout=10)
+    assert not first.is_alive() and not second.is_alive()
+    assert not errors
+
+    server_calls = [
+        row
+        for row in (json.loads(line) for line in audit.read_text().splitlines())
+        if row.get("tool")
+    ]
+    assert [row["tool"] for row in server_calls] == ["search_corpus", "list_corpus"]
+
+    events = []
+    for label in ("first", "second"):
+        name, arguments = logical_calls[label]
+        result = responses[label]
+        events.extend(
+            [
+                {
+                    "event": "tool_use",
+                    "id": label,
+                    "name": f"mcp__awm_scratch__{name}",
+                    "input": arguments,
+                },
+                {
+                    "event": "tool_result",
+                    "tool_use_id": label,
+                    "is_error": result["isError"],
+                    "content_text": result["content"][0]["text"],
+                },
+            ]
+        )
+    _validate_server_tool_audit(audit, events)
+
+
+def test_oversized_scratch_results_are_paged_bounded_and_exactly_audited(
+    tmp_path: Path, monkeypatch
+) -> None:
+    corpus = tmp_path / "corpus"
+    listed_root = corpus / "listed"
+    listed_root.mkdir(parents=True)
+    expected_files = []
+    for index in range(1_000):
+        path = listed_root / f"trajectory-{index:04d}-with-a-descriptive-name.txt"
+        path.write_text("x")
+        expected_files.append(path.relative_to(corpus).as_posix())
+
+    search_path = corpus / "large-search.txt"
+    search_path.write_text("".join(f"needle {index:03d} {'x' * 3_000}\n" for index in range(50)))
+    read_path = corpus / "large-read.bin"
+    read_path.write_bytes(b"\x00" * 10_000)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    audit = tmp_path / "scratch-tools.jsonl"
+    calls: list[tuple[str, dict, dict]] = []
+
+    def checked_call(name: str, arguments: dict) -> dict:
+        result = call_tool(
+            name,
+            arguments,
+            scratch=scratch,
+            roots=[corpus],
+            audit_path=audit,
+        )
+        response = {"jsonrpc": "2.0", "id": len(calls) + 1, "result": result}
+        assert len(json.dumps(response, sort_keys=True).encode()) <= (
+            scratch_server.MAX_MCP_RESPONSE_BYTES
+        )
+        calls.append((name, arguments, result))
+        return json.loads(result["content"][0]["text"])
+
+    listed: list[str] = []
+    offset = 0
+    while True:
+        arguments = {"glob": "listed/*.txt", "offset": offset, "limit": 10_000}
+        payload = checked_call("list_corpus", arguments)
+        listed.extend(payload["files"])
+        if payload["next_offset"] is None:
+            assert not payload["truncated"]
+            break
+        assert payload["truncated"]
+        assert payload["next_offset"] > offset
+        offset = payload["next_offset"]
+    assert listed == expected_files
+
+    found_lines: list[int] = []
+    cursor = None
+    while True:
+        arguments = {
+            "glob": "large-search.txt",
+            "pattern": "needle",
+            "limit": scratch_server.MAX_SEARCH_MATCHES,
+        }
+        if cursor is not None:
+            arguments["cursor"] = cursor
+        payload = checked_call("search_corpus", arguments)
+        found_lines.extend(match["line"] for match in payload["matches"])
+        cursor = payload["next_cursor"]
+        if cursor is None:
+            assert not payload["truncated"]
+            break
+        assert payload["truncated"]
+    assert found_lines == list(range(1, 51))
+
+    total_read = 0
+    offset = 0
+    while True:
+        arguments = {
+            "path": read_path.relative_to(corpus).as_posix(),
+            "offset": offset,
+            "limit": scratch_server.MAX_READ_BYTES,
+        }
+        payload = checked_call("read_corpus", arguments)
+        total_read += payload["bytes"]
+        if payload["next_offset"] is None:
+            break
+        assert payload["next_offset"] > offset
+        offset = payload["next_offset"]
+    assert total_read == read_path.stat().st_size
+
+    class FakePopen:
+        returncode = 0
+        pid = 12345
+
+        def __init__(self, _command, *, stdout, stderr, start_new_session) -> None:
+            assert start_new_session
+            stdout.write(b"\x00" * 100_000)
+            stderr.write(b"\xff" * 100_000)
+
+        def wait(self, timeout=None) -> int:
+            assert timeout is not None
+            return self.returncode
+
+    monkeypatch.setattr(scratch_server.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(scratch_server.subprocess, "Popen", FakePopen)
+    run_payload = checked_call("run", {"argv": ["python3", "tool.py"], "timeout_s": 5})
+    assert run_payload["stdout_truncated"]
+    assert run_payload["stderr_truncated"]
+    assert run_payload["stdout_bytes"] == 100_000
+    assert run_payload["stderr_bytes"] == 100_000
+    assert run_payload["truncation_guidance"]
+
+    missing_arguments = {"glob": "*"}
+    missing_result = call_tool(
+        "list_corpus",
+        missing_arguments,
+        scratch=None,
+        roots=[corpus],
+        audit_path=audit,
+    )
+    assert missing_result["isError"]
+    assert (
+        len(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": len(calls) + 1, "result": missing_result},
+                sort_keys=True,
+            ).encode()
+        )
+        <= scratch_server.MAX_MCP_RESPONSE_BYTES
+    )
+    calls.append(("list_corpus", missing_arguments, missing_result))
+
+    unknown_audit = tmp_path / "unknown-tool.jsonl"
+    unknown_result = call_tool(
+        "unknown-" + "x" * 20_000,
+        {},
+        scratch=scratch,
+        roots=[corpus],
+        audit_path=unknown_audit,
+    )
+    assert unknown_result["isError"]
+    assert (
+        len(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": 1, "result": unknown_result}, sort_keys=True
+            ).encode()
+        )
+        <= scratch_server.MAX_MCP_RESPONSE_BYTES
+    )
+    unknown_row = json.loads(unknown_audit.read_text())
+    assert unknown_row["result"] == unknown_result
+
+    events: list[dict] = []
+    for index, (name, arguments, result) in enumerate(calls, 1):
+        tool_id = f"tool-{index}"
+        events.extend(
+            [
+                {
+                    "event": "tool_use",
+                    "id": tool_id,
+                    "name": f"mcp__awm_scratch__{name}",
+                    "input": arguments,
+                },
+                {
+                    "event": "tool_result",
+                    "tool_use_id": tool_id,
+                    "is_error": bool(result.get("isError")),
+                    "content_text": result["content"][0]["text"],
+                },
+            ]
+        )
+    _validate_server_tool_audit(audit, events)
 
 
 def test_scratch_tools_are_auditable_and_execution_is_confined(tmp_path: Path) -> None:
@@ -709,30 +1179,47 @@ def test_scratch_tools_are_auditable_and_execution_is_confined(tmp_path: Path) -
     audit = tmp_path / "tools.jsonl"
 
     listed = call_tool(
-        "list_corpus", {"glob": "**/*"}, scratch=scratch,
-        roots=[corpus], audit_path=audit,
+        "list_corpus",
+        {"glob": "**/*"},
+        scratch=scratch,
+        roots=[corpus],
+        audit_path=audit,
     )
     assert not listed["isError"] and "evidence.txt" in listed["content"][0]["text"]
     searched = call_tool(
-        "search_corpus", {"root": 0, "glob": "**/*", "pattern": "historical"},
-        scratch=scratch, roots=[corpus], audit_path=audit,
+        "search_corpus",
+        {"root": 0, "glob": "**/*", "pattern": "historical"},
+        scratch=scratch,
+        roots=[corpus],
+        audit_path=audit,
     )
     assert not searched["isError"] and "beta historical fact" in searched["content"][0]["text"]
     assert not call_tool(
-        "write_file", {"path": "tool.py", "content": "print('ok')\n"},
-        scratch=scratch, roots=[corpus], audit_path=audit,
+        "write_file",
+        {"path": "tool.py", "content": "print('ok')\n"},
+        scratch=scratch,
+        roots=[corpus],
+        audit_path=audit,
     )["isError"]
     assert call_tool(
-        "write_file", {"path": "../escape", "content": "bad"},
-        scratch=scratch, roots=[corpus], audit_path=audit,
+        "write_file",
+        {"path": "../escape", "content": "bad"},
+        scratch=scratch,
+        roots=[corpus],
+        audit_path=audit,
     )["isError"]
 
     probe_sandbox(scratch, [corpus])
     run = call_tool(
         "run",
-        {"argv": ["python3", "-c",
-                  "import pathlib; print(pathlib.Path('/corpus/0/evidence.txt').read_text()); "
-                  "print(pathlib.Path('/home').exists())"]},
+        {
+            "argv": [
+                "python3",
+                "-c",
+                "import pathlib; print(pathlib.Path('/corpus/0/evidence.txt').read_text()); "
+                "print(pathlib.Path('/home').exists())",
+            ]
+        },
         scratch=scratch,
         roots=[corpus],
         audit_path=audit,
@@ -742,8 +1229,13 @@ def test_scratch_tools_are_auditable_and_execution_is_confined(tmp_path: Path) -
     assert "False" in run["content"][0]["text"]
     forbidden = call_tool(
         "run",
-        {"argv": ["python3", "-c",
-                  "import pathlib; pathlib.Path('/corpus/0/forbidden').write_text('x')"]},
+        {
+            "argv": [
+                "python3",
+                "-c",
+                "import pathlib; pathlib.Path('/corpus/0/forbidden').write_text('x')",
+            ]
+        },
         scratch=scratch,
         roots=[corpus],
         audit_path=audit,
@@ -751,12 +1243,19 @@ def test_scratch_tools_are_auditable_and_execution_is_confined(tmp_path: Path) -
     assert forbidden["isError"] and not (corpus / "forbidden").exists()
     audit_rows = [json.loads(line) for line in audit.read_text().splitlines()]
     assert {row.get("tool") for row in audit_rows} >= {
-        "list_corpus", "search_corpus", "write_file", "run"
+        "list_corpus",
+        "search_corpus",
+        "write_file",
+        "run",
     }
 
     init = handle_message(
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-         "params": {"protocolVersion": "2025-06-18"}},
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        },
         scratch=scratch,
         roots=[corpus],
         audit_path=audit,
@@ -765,9 +1264,27 @@ def test_scratch_tools_are_auditable_and_execution_is_confined(tmp_path: Path) -
     assert init["result"]["protocolVersion"] == "2025-06-18"
     malformed = handle_message(
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": []},
-        scratch=scratch, roots=[corpus], audit_path=audit,
+        scratch=scratch,
+        roots=[corpus],
+        audit_path=audit,
     )
     assert malformed["error"]["code"] == -32602
+    for invalid_version in (None, "1.0", 2.0):
+        invalid = handle_message(
+            {
+                "jsonrpc": invalid_version,
+                "id": "must-not-be-reflected",
+                "method": "ping",
+            },
+            scratch=scratch,
+            roots=[corpus],
+            audit_path=audit,
+        )
+        assert invalid == {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "request must declare jsonrpc 2.0"},
+        }
 
 
 def test_directory_jail_mounts_clone_and_lock_the_complete_tree(
@@ -796,9 +1313,7 @@ def test_directory_jail_mounts_clone_and_lock_the_complete_tree(
     assert verified == [target]
 
 
-def test_recursive_readonly_fallback_is_still_verified(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_recursive_readonly_fallback_is_still_verified(tmp_path: Path, monkeypatch) -> None:
     target = tmp_path / "target"
     target.mkdir()
     calls: list[list[str]] = []
@@ -811,9 +1326,7 @@ def test_recursive_readonly_fallback_is_still_verified(
         assert check is True
         calls.append(argv)
 
-    monkeypatch.setattr(
-        scratch_server, "_mount_setattr_readonly_recursive", unavailable
-    )
+    monkeypatch.setattr(scratch_server, "_mount_setattr_readonly_recursive", unavailable)
     monkeypatch.setattr(scratch_server.subprocess, "run", fake_run)
     monkeypatch.setattr(
         scratch_server,
@@ -842,15 +1355,11 @@ def test_readonly_mount_verification_checks_nested_and_escaped_mounts(
 
     root_row = f"10 1 0:1 / {escaped(target)} ro,nosuid - tmpfs tmpfs rw"
     child_ro = f"11 10 0:2 / {escaped(child)} ro,nodev - tmpfs tmpfs rw"
-    scratch_server._require_readonly_mount_tree(
-        target, mountinfo=f"{root_row}\n{child_ro}\n"
-    )
+    scratch_server._require_readonly_mount_tree(target, mountinfo=f"{root_row}\n{child_ro}\n")
 
     child_rw = f"11 10 0:2 / {escaped(child)} rw,nodev - tmpfs tmpfs rw"
     with pytest.raises(RuntimeError, match=r"writable mount.*injected library"):
-        scratch_server._require_readonly_mount_tree(
-            target, mountinfo=f"{root_row}\n{child_rw}\n"
-        )
+        scratch_server._require_readonly_mount_tree(target, mountinfo=f"{root_row}\n{child_rw}\n")
 
     with pytest.raises(RuntimeError, match="absent from mountinfo"):
         scratch_server._require_readonly_mount_tree(target, mountinfo=f"{child_ro}\n")
@@ -898,9 +1407,7 @@ def test_raw_manifest_and_every_exposed_file_are_fail_closed(tmp_path: Path) -> 
         _validate_raw_corpus(raw3, ("train",))
 
 
-def test_sandbox_self_test_failure_blocks_real_llm_init(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_sandbox_self_test_failure_blocks_real_llm_init(tmp_path: Path, monkeypatch) -> None:
     _source, root = _seed(tmp_path)
     monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
     monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "vertex-project")

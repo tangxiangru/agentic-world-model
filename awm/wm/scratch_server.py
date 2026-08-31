@@ -9,6 +9,9 @@ allowed corpus mounted read-only.
 
 from __future__ import annotations
 
+import contextlib
+import ctypes
+import http.server
 import json
 import os
 import re
@@ -19,14 +22,11 @@ import signal
 import subprocess
 import sys
 import tempfile
-import ctypes
-import contextlib
-import http.server
 import threading
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
-from collections.abc import Iterator
 
 SERVER_NAME = "awm_scratch"
 SERVER_VERSION = "1.0.0"
@@ -35,11 +35,24 @@ SCRATCH_ENV = "AWM_WMA_SCRATCH_ROOT"
 CORPUS_ENV = "AWM_WMA_CORPUS_ROOTS"
 AUDIT_ENV = "AWM_WMA_SCRATCH_AUDIT"
 MAX_WRITE_BYTES = 1_000_000
-MAX_RESULT_BYTES = 1_000_000
+# Claude Code spills large MCP results to a local file and replaces the trace
+# content with a notice.  That breaks the byte-for-byte reconciliation between
+# the authoritative server audit and Claude's tool trace.  Keep the complete
+# JSON-RPC response below 16 KiB: the target runtime passed about 21.6 KiB and
+# spilled about 71.8 KiB, so 16 KiB is conservatively inside the observed-safe
+# side.  Reserve 2 KiB for the envelope/request id.  Tool-specific builders
+# page or truncate before this last-resort bound.
+MAX_MCP_RESPONSE_BYTES = 16 * 1024
+MAX_TOOL_RESULT_BYTES = 14 * 1024
+MAX_RESULT_BYTES = 16_384
 MAX_LIST = 10_000
 MAX_SEARCH_MATCHES = 5_000
 MAX_SEARCH_BYTES = 20_000_000
-MAX_READ_BYTES = 500_000
+MAX_READ_BYTES = 1_536
+MAX_PATH_BYTES = 512
+MAX_GLOB_BYTES = 1_024
+MAX_PATTERN_BYTES = 1_024
+MAX_RUN_ARGV_BYTES = 4_096
 MAX_TIMEOUT_S = 120
 MAX_SCRATCH_BYTES = 10_000_000
 MAX_SCRATCH_ENTRIES = 10_000
@@ -72,13 +85,15 @@ TOOLS: tuple[dict[str, Any], ...] = (
         "name": "list_corpus",
         "description": (
             "List files across the complete allowed corpus using a caller-chosen glob. "
-            "No host-ranked shortlist is applied. Root defaults to 0 only when one root exists."
+            "No host-ranked shortlist is applied. Continue from next_offset when truncated. "
+            "Root defaults to 0 only when one root exists."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "root": {"type": "integer", "minimum": 0},
                 "glob": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST},
             },
             "required": ["glob"],
@@ -87,9 +102,10 @@ TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "search_corpus",
         "description": (
-            "Literal-search text files selected by a caller-chosen glob over a complete corpus root. "
-            "Returns file, line number, and matching line; the response states if the chosen limit "
-            "truncates it. Root defaults to 0 only when one root exists."
+            "Literal-search text files selected by a caller-chosen glob over a complete "
+            "corpus root. Returns file, line number, byte offset, and matching line. Pass "
+            "next_cursor back as cursor "
+            "until truncated is false. Root defaults to 0 only when one root exists."
         ),
         "inputSchema": {
             "type": "object",
@@ -97,6 +113,16 @@ TOOLS: tuple[dict[str, Any], ...] = (
                 "root": {"type": "integer", "minimum": 0},
                 "glob": {"type": "string"},
                 "pattern": {"type": "string"},
+                "cursor": {
+                    "type": "object",
+                    "properties": {
+                        "file_index": {"type": "integer", "minimum": 0},
+                        "byte_offset": {"type": "integer", "minimum": 0},
+                        "line": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["file_index", "byte_offset", "line"],
+                    "additionalProperties": False,
+                },
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_SEARCH_MATCHES},
             },
             "required": ["glob", "pattern"],
@@ -106,7 +132,8 @@ TOOLS: tuple[dict[str, Any], ...] = (
         "name": "read_corpus",
         "description": (
             "Read a byte range from an exact corpus file. Paths are relative to the selected root. "
-            "Use successive offsets for large trajectory files. Root defaults to 0 only when one root exists."
+            "The explicit limit is at most 1536 bytes; continue from next_offset until null. "
+            "Root defaults to 0 only when one root exists."
         ),
         "inputSchema": {
             "type": "object",
@@ -116,7 +143,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
                 "offset": {"type": "integer", "minimum": 0},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_READ_BYTES},
             },
-            "required": ["path"],
+            "required": ["path", "limit"],
         },
     },
     {
@@ -134,9 +161,12 @@ TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "run",
         "description": (
-            "Run a scratch-local program with argv (for example ['python3','tool.py']). It executes "
+            "Run a scratch-local program with argv (for example "
+            "['python3','tool.py']). It executes "
             "offline in an isolated chroot: /work is writable scratch and /corpus/N are read-only "
-            "complete corpus roots. No scientist/session directory is mounted."
+            "complete corpus roots. No scientist/session directory is mounted. Large stdout/stderr "
+            "are truncated with exact returned/total byte counts; make programs summarize "
+            "or persist output under /work when complete output is needed."
         ),
         "inputSchema": {
             "type": "object",
@@ -153,6 +183,41 @@ TOOLS_BY_NAME = {tool["name"]: tool for tool in TOOLS}
 
 def _result(text: str, *, is_error: bool = False) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
+
+
+def _encoded_bytes(value: Any) -> int:
+    return len(json.dumps(value, sort_keys=True, default=str).encode())
+
+
+def _json_result(payload: dict[str, Any], *, is_error: bool = False) -> dict[str, Any]:
+    """Render one structured tool result and enforce the transport budget."""
+    result = _result(json.dumps(payload, sort_keys=True), is_error=is_error)
+    if _encoded_bytes(result) > MAX_TOOL_RESULT_BYTES:
+        raise ValueError(
+            "tool result cannot fit the fixed MCP response budget; request a smaller page"
+        )
+    return result
+
+
+def _fits_json_result(payload: dict[str, Any], *, is_error: bool = False) -> bool:
+    return (
+        _encoded_bytes(_result(json.dumps(payload, sort_keys=True), is_error=is_error))
+        <= MAX_TOOL_RESULT_BYTES
+    )
+
+
+def _bound_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed before auditing if an unexpected branch exceeds the cap."""
+    if _encoded_bytes(result) <= MAX_TOOL_RESULT_BYTES:
+        return result
+    return _json_result(
+        {
+            "error": "tool result exceeded the fixed MCP response budget",
+            "retry": "request a smaller page or make the scratch program summarize",
+            "truncated": True,
+        },
+        is_error=True,
+    )
 
 
 def _roots(environ: dict[str, str] | None = None) -> list[Path]:
@@ -180,6 +245,8 @@ def _scratch(environ: dict[str, str] | None = None) -> Path | None:
 def _relative_file(root: Path, raw: Any, *, must_exist: bool = True) -> Path:
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError("path must be a non-empty relative path")
+    if len(raw.encode()) > MAX_PATH_BYTES:
+        raise ValueError(f"path exceeds {MAX_PATH_BYTES} bytes")
     rel = Path(raw)
     if rel.is_absolute() or ".." in rel.parts:
         raise ValueError("path must stay inside its declared root")
@@ -217,22 +284,24 @@ def call_tool(
     audit_path: Path | None = None,
 ) -> dict[str, Any]:
     if scratch is None or not roots:
-        return _result("scratch/corpus configuration is missing", is_error=True)
-    try:
-        if name == "list_corpus":
-            result = _list_corpus(arguments, roots)
-        elif name == "search_corpus":
-            result = _search_corpus(arguments, roots)
-        elif name == "read_corpus":
-            result = _read_corpus(arguments, roots)
-        elif name == "write_file":
-            result = _write_file(arguments, scratch)
-        elif name == "run":
-            result = _run(arguments, scratch, roots)
-        else:
-            return _result(f"unknown tool: {name}", is_error=True)
-    except (OSError, ValueError, re.error) as exc:
-        result = _result(str(exc), is_error=True)
+        result = _result("scratch/corpus configuration is missing", is_error=True)
+    elif name not in TOOLS_BY_NAME:
+        result = _result(f"unknown tool: {name}", is_error=True)
+    else:
+        try:
+            if name == "list_corpus":
+                result = _list_corpus(arguments, roots)
+            elif name == "search_corpus":
+                result = _search_corpus(arguments, roots)
+            elif name == "read_corpus":
+                result = _read_corpus(arguments, roots)
+            elif name == "write_file":
+                result = _write_file(arguments, scratch)
+            else:
+                result = _run(arguments, scratch, roots)
+        except (OSError, ValueError, re.error) as exc:
+            result = _result(str(exc), is_error=True)
+    result = _bound_tool_result(result)
     _audit(name, arguments, result, environ=os.environ, audit_path=audit_path)
     return result
 
@@ -241,14 +310,14 @@ def _safe_glob(raw: Any) -> str:
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError("glob must be non-empty")
     pattern = raw.strip()
+    if len(pattern.encode()) > MAX_GLOB_BYTES:
+        raise ValueError(f"glob exceeds {MAX_GLOB_BYTES} bytes")
     if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
         raise ValueError("glob must stay inside the selected corpus root")
     return pattern
 
 
-def _bounded_int(
-    value: Any, *, default: int, minimum: int, maximum: int, name: str
-) -> int:
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int, name: str) -> int:
     if value is None:
         return default
     if isinstance(value, bool) or not isinstance(value, int):
@@ -269,9 +338,7 @@ def _scratch_usage(root: Path) -> int:
             for entry in entries:
                 entry_count += 1
                 if entry_count > MAX_SCRATCH_ENTRIES:
-                    raise ValueError(
-                        f"scratch exceeds {MAX_SCRATCH_ENTRIES} filesystem entries"
-                    )
+                    raise ValueError(f"scratch exceeds {MAX_SCRATCH_ENTRIES} filesystem entries")
                 if entry.is_dir(follow_symlinks=False):
                     if depth >= MAX_SCRATCH_DEPTH:
                         raise ValueError(
@@ -288,21 +355,100 @@ def _scratch_usage(root: Path) -> int:
 def _list_corpus(arguments: dict[str, Any], roots: list[Path]) -> dict[str, Any]:
     index, root = _root_at(roots, arguments.get("root"))
     pattern = _safe_glob(arguments.get("glob"))
+    offset = _bounded_int(
+        arguments.get("offset"),
+        default=0,
+        minimum=0,
+        maximum=(1 << 63) - 1,
+        name="offset",
+    )
     limit = _bounded_int(
-        arguments.get("limit"), default=MAX_LIST, minimum=1,
-        maximum=MAX_LIST, name="limit"
+        arguments.get("limit"),
+        default=MAX_LIST,
+        minimum=1,
+        maximum=MAX_LIST,
+        name="limit",
     )
     matches: list[str] = []
-    truncated = False
+    eligible_index = 0
+    next_offset: int | None = None
+    truncation_reason: str | None = None
     for path in sorted(root.glob(pattern)):
         if not path.is_file() or path.is_symlink():
             continue
-        matches.append(path.relative_to(root).as_posix())
+        if eligible_index < offset:
+            eligible_index += 1
+            continue
         if len(matches) >= limit:
-            truncated = True
+            next_offset = eligible_index
+            truncation_reason = "limit"
             break
-    return _result(json.dumps({"root": index, "glob": pattern, "files": matches,
-                               "truncated": truncated}, sort_keys=True))
+        relative = path.relative_to(root).as_posix()
+        if len(relative.encode()) > MAX_PATH_BYTES:
+            raise ValueError(
+                f"corpus path at offset {eligible_index} exceeds {MAX_PATH_BYTES} bytes"
+            )
+        candidate = [*matches, relative]
+        candidate_payload = {
+            "root": index,
+            "glob": pattern,
+            "offset": offset,
+            "files": candidate,
+            "returned": len(candidate),
+            "next_offset": eligible_index + 1,
+            "truncated": True,
+            "truncation_reason": "response_bytes",
+        }
+        if not _fits_json_result(candidate_payload):
+            if not matches:
+                raise ValueError("one corpus path cannot fit the MCP response budget")
+            next_offset = eligible_index
+            truncation_reason = "response_bytes"
+            break
+        matches = candidate
+        eligible_index += 1
+
+    payload = {
+        "root": index,
+        "glob": pattern,
+        "offset": offset,
+        "files": matches,
+        "returned": len(matches),
+        "next_offset": next_offset,
+        "truncated": next_offset is not None,
+        "truncation_reason": truncation_reason,
+    }
+    return _json_result(payload)
+
+
+def _search_cursor(raw: Any) -> tuple[int, int, int]:
+    if raw is None:
+        return 0, 0, 1
+    if not isinstance(raw, dict) or set(raw) != {"file_index", "byte_offset", "line"}:
+        raise ValueError("cursor must contain only file_index, byte_offset, and line")
+    return (
+        _bounded_int(
+            raw.get("file_index"),
+            default=0,
+            minimum=0,
+            maximum=(1 << 63) - 1,
+            name="cursor.file_index",
+        ),
+        _bounded_int(
+            raw.get("byte_offset"),
+            default=0,
+            minimum=0,
+            maximum=(1 << 63) - 1,
+            name="cursor.byte_offset",
+        ),
+        _bounded_int(
+            raw.get("line"),
+            default=1,
+            minimum=1,
+            maximum=(1 << 63) - 1,
+            name="cursor.line",
+        ),
+    )
 
 
 def _search_corpus(arguments: dict[str, Any], roots: list[Path]) -> dict[str, Any]:
@@ -310,65 +456,174 @@ def _search_corpus(arguments: dict[str, Any], roots: list[Path]) -> dict[str, An
     glob = _safe_glob(arguments.get("glob"))
     pattern = arguments.get("pattern")
     if not isinstance(pattern, str) or not pattern:
-        raise ValueError("pattern must be a non-empty regex")
-    if len(pattern.encode()) > 4_000:
-        raise ValueError("pattern exceeds 4000 bytes")
+        raise ValueError("pattern must be a non-empty literal string")
+    if len(pattern.encode()) > MAX_PATTERN_BYTES:
+        raise ValueError(f"pattern exceeds {MAX_PATTERN_BYTES} bytes")
+    start_file, start_byte, start_line = _search_cursor(arguments.get("cursor"))
     limit = _bounded_int(
-        arguments.get("limit"), default=500, minimum=1,
-        maximum=MAX_SEARCH_MATCHES, name="limit"
+        arguments.get("limit"),
+        default=500,
+        minimum=1,
+        maximum=MAX_SEARCH_MATCHES,
+        name="limit",
     )
     matches: list[dict[str, Any]] = []
-    truncated = False
     scanned_bytes = 0
     scanned_files = 0
-    for path in sorted(root.glob(glob)):
-        if not path.is_file() or path.is_symlink():
-            continue
+    next_cursor: dict[str, int] | None = None
+    truncation_reason: str | None = None
+    paths = [path for path in sorted(root.glob(glob)) if path.is_file() and not path.is_symlink()]
+    if start_file > len(paths):
+        raise ValueError(f"cursor.file_index exceeds the {len(paths)} matching files")
+    for file_index, path in enumerate(paths[start_file:], start=start_file):
+        relative = path.relative_to(root).as_posix()
+        if len(relative.encode()) > MAX_PATH_BYTES:
+            raise ValueError(
+                f"corpus path at file index {file_index} exceeds {MAX_PATH_BYTES} bytes"
+            )
+        byte_offset = start_byte if file_index == start_file else 0
+        line_number = start_line if file_index == start_file else 1
         size = path.stat().st_size
-        if scanned_bytes + size > MAX_SEARCH_BYTES:
-            truncated = True
-            break
-        scanned_bytes += size
+        if byte_offset > size:
+            raise ValueError(f"cursor.byte_offset exceeds file size at file index {file_index}")
         scanned_files += 1
-        with path.open(errors="replace") as file:
-            for lineno, line in enumerate(file, 1):
-                if pattern in line:
-                    matches.append({"path": path.relative_to(root).as_posix(),
-                                    "line": lineno, "text": line.rstrip()[:4000]})
-                    if len(matches) >= limit:
-                        truncated = True
+        with path.open("rb") as file:
+            file.seek(byte_offset)
+            while True:
+                line_start = file.tell()
+                if scanned_bytes >= MAX_SEARCH_BYTES:
+                    next_cursor = {
+                        "file_index": file_index,
+                        "byte_offset": line_start,
+                        "line": line_number,
+                    }
+                    truncation_reason = "scan_bytes"
+                    break
+                raw_line = file.readline()
+                if not raw_line:
+                    break
+                scanned_bytes += len(raw_line)
+                text = raw_line.decode(errors="replace").rstrip()
+                if pattern in text:
+                    rendered = text[:2_000]
+                    match = {
+                        "path": relative,
+                        "line": line_number,
+                        "byte_offset": line_start,
+                        "text": rendered,
+                        "text_truncated": len(rendered) < len(text),
+                    }
+                    after = {
+                        "file_index": file_index,
+                        "byte_offset": file.tell(),
+                        "line": line_number + 1,
+                    }
+                    candidate_payload = {
+                        "root": index,
+                        "glob": glob,
+                        "pattern": pattern,
+                        "cursor": (
+                            None
+                            if arguments.get("cursor") is None
+                            else {
+                                "file_index": start_file,
+                                "byte_offset": start_byte,
+                                "line": start_line,
+                            }
+                        ),
+                        "matches": [*matches, match],
+                        "returned": len(matches) + 1,
+                        "next_cursor": after,
+                        "truncated": True,
+                        "truncation_reason": "response_bytes",
+                        "scanned_bytes": scanned_bytes,
+                        "scanned_files": scanned_files,
+                    }
+                    if not _fits_json_result(candidate_payload):
+                        if not matches:
+                            # The text preview is the only unbounded part left;
+                            # progressively shorten it while retaining the hit.
+                            while rendered and not _fits_json_result(candidate_payload):
+                                rendered = rendered[: len(rendered) // 2]
+                                match["text"] = rendered
+                                match["text_truncated"] = True
+                            if not _fits_json_result(candidate_payload):
+                                raise ValueError(
+                                    "one search match cannot fit the MCP response budget"
+                                )
+                            matches.append(match)
+                            next_cursor = after
+                        else:
+                            next_cursor = {
+                                "file_index": file_index,
+                                "byte_offset": line_start,
+                                "line": line_number,
+                            }
+                        truncation_reason = "response_bytes"
                         break
-        if truncated:
+                    matches.append(match)
+                    if len(matches) >= limit:
+                        next_cursor = after
+                        truncation_reason = "limit"
+                        break
+                line_number += 1
+        if next_cursor is not None:
             break
-    return _result(json.dumps({"root": index, "glob": glob, "pattern": pattern,
-                               "matches": matches, "truncated": truncated,
-                               "scanned_bytes": scanned_bytes,
-                               "scanned_files": scanned_files}, sort_keys=True))
+
+    cursor_payload = (
+        None
+        if arguments.get("cursor") is None
+        else {
+            "file_index": start_file,
+            "byte_offset": start_byte,
+            "line": start_line,
+        }
+    )
+    payload = {
+        "root": index,
+        "glob": glob,
+        "pattern": pattern,
+        "cursor": cursor_payload,
+        "matches": matches,
+        "returned": len(matches),
+        "next_cursor": next_cursor,
+        "truncated": next_cursor is not None,
+        "truncation_reason": truncation_reason,
+        "scanned_bytes": scanned_bytes,
+        "scanned_files": scanned_files,
+    }
+    return _json_result(payload)
 
 
 def _read_corpus(arguments: dict[str, Any], roots: list[Path]) -> dict[str, Any]:
     index, root = _root_at(roots, arguments.get("root"))
     path = _relative_file(root, arguments.get("path"))
+    if "limit" not in arguments:
+        raise ValueError("limit is required so every read is an explicit bounded page")
     offset = _bounded_int(
-        arguments.get("offset"), default=0, minimum=0,
-        maximum=(1 << 63) - 1, name="offset"
+        arguments.get("offset"), default=0, minimum=0, maximum=(1 << 63) - 1, name="offset"
     )
     limit = _bounded_int(
-        arguments.get("limit"), default=200_000, minimum=1,
-        maximum=MAX_READ_BYTES, name="limit"
+        arguments.get("limit"),
+        default=MAX_READ_BYTES,
+        minimum=1,
+        maximum=MAX_READ_BYTES,
+        name="limit",
     )
     with path.open("rb") as file:
         file.seek(offset)
         data = file.read(limit)
         more = bool(file.read(1))
-    return _result(json.dumps({
-        "root": index,
-        "path": path.relative_to(root).as_posix(),
-        "offset": offset,
-        "bytes": len(data),
-        "next_offset": offset + len(data) if more else None,
-        "content": data.decode(errors="replace"),
-    }, sort_keys=True))
+    return _json_result(
+        {
+            "root": index,
+            "path": path.relative_to(root).as_posix(),
+            "offset": offset,
+            "bytes": len(data),
+            "next_offset": offset + len(data) if more else None,
+            "content": data.decode(errors="replace"),
+        }
+    )
 
 
 def _write_file(arguments: dict[str, Any], scratch: Path) -> dict[str, Any]:
@@ -385,9 +640,7 @@ def _write_file(arguments: dict[str, Any], scratch: Path) -> dict[str, Any]:
         raise ValueError("path must stay inside the scratch root")
     existing = scratch / rel
     previous_size = (
-        existing.stat().st_size
-        if existing.is_file() and not existing.is_symlink()
-        else 0
+        existing.stat().st_size if existing.is_file() and not existing.is_symlink() else 0
     )
     projected = _scratch_usage(scratch) - previous_size + len(content.encode())
     if projected > MAX_SCRATCH_BYTES:
@@ -426,8 +679,9 @@ def _write_file(arguments: dict[str, Any], scratch: Path) -> dict[str, Any]:
         os.replace(tmp, leaf, src_dir_fd=current_fd, dst_dir_fd=current_fd)
     finally:
         os.close(current_fd)
-    return _result(json.dumps({"path": rel.as_posix(),
-                               "bytes": len(content.encode())}, sort_keys=True))
+    return _result(
+        json.dumps({"path": rel.as_posix(), "bytes": len(content.encode())}, sort_keys=True)
+    )
 
 
 def _run(arguments: dict[str, Any], scratch: Path, roots: list[Path]) -> dict[str, Any]:
@@ -439,9 +693,10 @@ def _run(arguments: dict[str, Any], scratch: Path, roots: list[Path]) -> dict[st
         or not all(isinstance(arg, str) and arg and "\x00" not in arg for arg in argv)
     ):
         raise ValueError("argv must contain 1..64 non-empty strings")
+    if sum(len(arg.encode()) for arg in argv) > MAX_RUN_ARGV_BYTES:
+        raise ValueError(f"argv exceeds {MAX_RUN_ARGV_BYTES} bytes; write a scratch program first")
     timeout = _bounded_int(
-        arguments.get("timeout_s"), default=30, minimum=1,
-        maximum=MAX_TIMEOUT_S, name="timeout_s"
+        arguments.get("timeout_s"), default=30, minimum=1, maximum=MAX_TIMEOUT_S, name="timeout_s"
     )
     if _scratch_usage(scratch) > MAX_SCRATCH_BYTES:
         raise ValueError(f"scratch aggregate exceeds {MAX_SCRATCH_BYTES} bytes")
@@ -478,21 +733,46 @@ def _run(arguments: dict[str, Any], scratch: Path, roots: list[Path]) -> dict[st
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
                 return _result(f"scratch program timed out after {timeout}s", is_error=True)
-        stdout_data = stdout_path.read_bytes()
-        stderr_data = stderr_path.read_bytes()
-        stdout = stdout_data[:MAX_RESULT_BYTES].decode(errors="replace")
-        stderr = stderr_data[:MAX_RESULT_BYTES].decode(errors="replace")
+        stdout_bytes = stdout_path.stat().st_size
+        stderr_bytes = stderr_path.stat().st_size
+        with stdout_path.open("rb") as file:
+            stdout_data = file.read(MAX_RESULT_BYTES)
+        with stderr_path.open("rb") as file:
+            stderr_data = file.read(MAX_RESULT_BYTES)
         scratch_bytes = _scratch_usage(scratch)
         over_limit = scratch_bytes > MAX_SCRATCH_BYTES
-        return _result(json.dumps({"argv": argv, "returncode": proc.returncode,
-                                   "stdout": stdout, "stderr": stderr,
-                                   "stdout_bytes": len(stdout_data),
-                                   "stderr_bytes": len(stderr_data),
-                                   "stdout_truncated": len(stdout_data) > MAX_RESULT_BYTES,
-                                   "stderr_truncated": len(stderr_data) > MAX_RESULT_BYTES,
-                                   "scratch_bytes": scratch_bytes,
-                                   "scratch_over_limit": over_limit}, sort_keys=True),
-                       is_error=proc.returncode != 0 or over_limit)
+        stdout_limit = len(stdout_data)
+        stderr_limit = len(stderr_data)
+        while True:
+            stdout_page = stdout_data[:stdout_limit]
+            stderr_page = stderr_data[:stderr_limit]
+            payload = {
+                "argv": argv,
+                "returncode": proc.returncode,
+                "stdout": stdout_page.decode(errors="replace"),
+                "stderr": stderr_page.decode(errors="replace"),
+                "stdout_bytes": stdout_bytes,
+                "stderr_bytes": stderr_bytes,
+                "stdout_returned_bytes": len(stdout_page),
+                "stderr_returned_bytes": len(stderr_page),
+                "stdout_truncated": len(stdout_page) < stdout_bytes,
+                "stderr_truncated": len(stderr_page) < stderr_bytes,
+                "truncation_guidance": (
+                    "persist output under /work and rerun a scratch pager"
+                    if len(stdout_page) < stdout_bytes or len(stderr_page) < stderr_bytes
+                    else None
+                ),
+                "scratch_bytes": scratch_bytes,
+                "scratch_over_limit": over_limit,
+            }
+            if _fits_json_result(payload, is_error=proc.returncode != 0 or over_limit):
+                return _json_result(payload, is_error=proc.returncode != 0 or over_limit)
+            if stdout_limit == 0 and stderr_limit == 0:
+                raise ValueError("run metadata cannot fit the MCP response budget")
+            if stdout_limit >= stderr_limit and stdout_limit:
+                stdout_limit //= 2
+            elif stderr_limit:
+                stderr_limit //= 2
     finally:
         shutil.rmtree(jail, ignore_errors=True)
 
@@ -563,15 +843,11 @@ def _make_mount_tree_readonly(target: Path) -> None:
         # Older kernels can still use util-linux's per-mount recursive path.
         # Verification below is load-bearing because some older mount builds
         # return success after changing only the top-level bind.
-        subprocess.run(
-            ["mount", "-R", "-o", "remount,ro,bind", str(target)], check=True
-        )
+        subprocess.run(["mount", "-R", "-o", "remount,ro,bind", str(target)], check=True)
     _require_readonly_mount_tree(target)
 
 
-def _require_readonly_mount_tree(
-    target: Path, *, mountinfo: str | None = None
-) -> None:
+def _require_readonly_mount_tree(target: Path, *, mountinfo: str | None = None) -> None:
     """Fail unless the bind itself and every nested mount are read-only."""
     root = target.resolve()
     if mountinfo is None:
@@ -597,9 +873,7 @@ def _require_readonly_mount_tree(
         raise RuntimeError(f"read-only bind is absent from mountinfo: {root}")
     if writable:
         rendered = ", ".join(str(path) for path in sorted(writable))
-        raise RuntimeError(
-            f"read-only bind contains writable mount(s) below {root}: {rendered}"
-        )
+        raise RuntimeError(f"read-only bind contains writable mount(s) below {root}: {rendered}")
 
 
 def jail_run(root: Path, scratch: Path, roots: list[Path], argv: list[str]) -> int:
@@ -696,7 +970,7 @@ def probe_sandbox(scratch: Path, roots: list[Path]) -> None:
     the post-exec Linux capability sets instead of assuming that ``unshare``
     implies a safe child.
     """
-    probe = r'''
+    probe = r"""
 import json, os, pathlib, socket, subprocess
 
 status = {}
@@ -760,7 +1034,7 @@ except OSError:
 
 print(json.dumps(checks, sort_keys=True))
 raise SystemExit(0 if all(checks.values()) else 23)
-'''
+"""
     result = _run({"argv": ["python3", "-c", probe], "timeout_s": 15}, scratch, roots)
     if result.get("isError"):
         detail = result.get("content") or result
@@ -822,9 +1096,17 @@ def handle_message(
 ) -> dict[str, Any] | None:
     if not isinstance(message, dict):
         return _error(None, -32600, "request must be an object")
+    if message.get("jsonrpc") != "2.0":
+        return _error(None, -32600, "request must declare jsonrpc 2.0")
     method = message.get("method")
     message_id = message.get("id")
     notification = "id" not in message
+    if not notification and (
+        isinstance(message_id, bool)
+        or not isinstance(message_id, (str, int, float, type(None)))
+        or _encoded_bytes(message_id) > 256
+    ):
+        return _error(None, -32600, "request id must be a short JSON-RPC scalar")
     if method == "initialize":
         raw_params = message.get("params")
         if raw_params is not None and not isinstance(raw_params, dict):
@@ -863,12 +1145,24 @@ def handle_message(
         return _error(message_id, -32601, f"unknown method: {method}")
     if notification:
         return None
-    return {"jsonrpc": "2.0", "id": message_id, "result": result}
+    response = {"jsonrpc": "2.0", "id": message_id, "result": result}
+    if _encoded_bytes(response) > MAX_MCP_RESPONSE_BYTES:
+        # Tool results have already been capped and audited before reaching
+        # this point.  With the bounded request id this is an internal bug, not
+        # a client-controlled spill path.
+        raise RuntimeError("MCP response exceeded its fixed transport budget")
+    return response
 
 
 def _error(message_id: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": message_id,
-            "error": {"code": code, "message": message}}
+    rendered = str(message)
+    if len(rendered.encode()) > 4_096:
+        rendered = rendered.encode()[:4_096].decode(errors="ignore") + "...[truncated]"
+    return {
+        "jsonrpc": "2.0",
+        "id": message_id,
+        "error": {"code": code, "message": rendered},
+    }
 
 
 def serve(stdin: TextIO | None = None, stdout: TextIO | None = None) -> int:
@@ -957,8 +1251,10 @@ def http_server(scratch: Path, roots: list[Path], audit_path: Path) -> Iterator[
                     )
             except Exception as exc:
                 _audit_server(
-                    "rpc_error", audit_path=audit_path, transport="http",
-                    error=f"{type(exc).__name__}: {exc}"
+                    "rpc_error",
+                    audit_path=audit_path,
+                    transport="http",
+                    error=f"{type(exc).__name__}: {exc}",
                 )
                 response = _error(message.get("id"), -32603, "internal tool server error")
             if response is None:

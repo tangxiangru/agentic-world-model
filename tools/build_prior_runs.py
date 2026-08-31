@@ -41,8 +41,7 @@ import sys
 import tempfile
 import uuid
 from collections import defaultdict
-from pathlib import Path
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -169,6 +168,20 @@ def _validated_run_files(run: str, src: Path, *, copied: bool) -> tuple[dict, st
     if not time_taken:
         raise PriorRunsError(f"invalid {run}/time_taken.txt: value is blank")
     return metrics, time_taken
+
+
+def _reject_run_credentials(runs: list[tuple[str, str]], data_root: Path) -> None:
+    """Reject credential-bearing evidence without placing matched bytes in an error."""
+    from awm.credential_guard import format_credential_rejection, scan_credential_files
+
+    files = [
+        (data_root / run / name, f"{run}/{name}")
+        for run, _side in runs
+        for name in MANDATORY_FILES
+    ]
+    findings = scan_credential_files(files)
+    if findings:
+        raise PriorRunsError(format_credential_rejection(findings))
 
 
 def run_record(run: str, side: str, src: Path) -> dict:
@@ -408,6 +421,7 @@ def build(
             raise PriorRunsError("--replace cannot be combined with --index-only")
         _validate_exact_output(declared, out, require_metadata=False)
         _validate_manifest(declared, out, provenance)
+        _reject_run_credentials(declared, out)
         summary = _write_metadata(declared, out, out)
         _validate_exact_output(declared, out, require_metadata=True)
         _validate_manifest(declared, out, provenance)
@@ -419,6 +433,9 @@ def build(
         raise PriorRunsError(f"refusing to replace a non-directory or symlink: {out}")
     for run, _side in declared:
         _validated_run_files(run, raw_dir / run, copied=False)
+    # Scan the immutable-source candidates before any byte is copied into a
+    # publishable staging directory.
+    _reject_run_credentials(declared, raw_dir)
     _verify_source_revision(declared, raw_dir, provenance["dataset"]["revision"])
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -434,6 +451,9 @@ def build(
         # its sidecars after copying before attesting to the staged bytes.
         _verify_source_revision(declared, raw_dir, provenance["dataset"]["revision"])
         _validate_exact_output(declared, stage, require_metadata=False)
+        # Re-scan the exact copied bytes immediately before manifest creation,
+        # closing source-mutation and copy-hook gaps without rewriting evidence.
+        _reject_run_credentials(declared, stage)
         _write_manifest(declared, stage, provenance)
         summary = _write_metadata(declared, stage, out)
         _validate_exact_output(declared, stage, require_metadata=True)

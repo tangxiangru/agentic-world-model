@@ -124,6 +124,15 @@ only this model's public artifacts (hard links are sufficient) and set
 environment, so set it explicitly rather than relying on a private `.env` to
 override an inherited cluster-wide value.
 
+Every condition fails unless its submission is a local, non-symlink,
+self-contained Hugging Face Gemma 3 4B safetensors artifact whose architecture,
+tokenizer, declared identities, and exact tensor names/shapes/dtypes agree with
+that pinned base. C1 writes `c1-final-model-attestation.json`; C2/C3 write
+`wma-final-model-attestation.json` after the separate WMA lifecycle check. This
+guards accidental model substitution; it is explicitly a
+structural/declarative check, not proof of the causal process that trained the
+weights.
+
 The two study agents receive the canonical generated prompt as the read-only
 file `/home/ben/task/instruction.md`, not through PTB's legacy multiline
 `PROMPT` environment value. Apptainer 1.5.3 truncates that value at the first
@@ -332,6 +341,7 @@ nonzero cell status.
 | `attest_claude_runtime.py` | exact npm CLI installation and requested-versus-reported scientist model attestation |
 | `validate_study_corpus.py` | standalone in-sandbox verifier/attestor packaged into C1/C2/C3 |
 | `validate_base_model_cache.py` | exact model-only cache allowlist and full-hash smoke attester |
+| `validate_c1_final_model.py` | structural/declarative C1/C2/C3 final-model compatibility attester; does not claim causal training provenance |
 | `validate_wma_session.py` | fail-closed C2/C3 successful-call/seal/adopt/finalize postcondition |
 | `redact_claude_stream.py` | credential scrubber on the retained Claude JSONL/PTY trajectory stream |
 | `sanitize_result_tree.py` | final recursive text-artifact scrubber/attester; any redaction quarantines the cell |

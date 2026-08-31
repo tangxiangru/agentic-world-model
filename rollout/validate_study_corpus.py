@@ -16,9 +16,10 @@ import math
 import os
 import re
 import tempfile
+from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any
-
 
 RAW_SCHEMA = "awm-prior-runs-v1"
 CARD_SCHEMA = "awm-exp-card-corpus-v1"
@@ -31,9 +32,235 @@ RAW_README = (
 HEX40 = re.compile(r"[0-9a-fA-F]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 
+# C1 receives this validator as a single file and intentionally has no AWM
+# package.  This credential contract therefore mirrors awm/credential_guard.py
+# in-place.  tests/test_credential_guard.py compares both the declaration and
+# behaviour so either copy changing alone fails CI.
+RULESET_VERSION = "awm-raw-credential-guard-v1"
+DIRECT_RULE_SPECS: tuple[tuple[str, bytes, int, bytes], ...] = (
+    (
+        "private-key-block",
+        rb"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
+        0,
+        b"-----BEGIN ",
+    ),
+    (
+        "huggingface-token",
+        rb"(?<![A-Za-z0-9])hf_[A-Za-z0-9]{20,}\b",
+        0,
+        b"hf_",
+    ),
+    (
+        "secret-key-token",
+        rb"(?<![A-Za-z0-9])sk-(?:ant-|proj-|svcacct-)?[A-Za-z0-9_-]{20,}\b",
+        0,
+        b"sk-",
+    ),
+    (
+        "google-oauth-token",
+        rb"(?<![A-Za-z0-9])ya29\.[A-Za-z0-9._~+/-]{20,}",
+        0,
+        b"ya29.",
+    ),
+    (
+        "github-token",
+        rb"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b",
+        0,
+        b"gh",
+    ),
+)
+PLACEHOLDER_VALUES = frozenset(
+    {
+        "",
+        "undefined",
+        "null",
+        "none",
+        "nil",
+        "unset",
+        "not-set",
+        "not_set",
+        "redacted",
+        "omitted",
+        "<redacted>",
+        "<omitted>",
+        "<omitted-api-key>",
+        "[redacted]",
+        "[omitted]",
+        "***redacted***",
+        "n/a",
+        "na",
+    }
+)
+SENSITIVE_KEY_PARTS = frozenset({"token", "secret", "password", "passwd", "authorization"})
+SENSITIVE_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "access_token",
+        "accesstoken",
+        "refresh_token",
+        "refreshtoken",
+        "client_secret",
+        "clientsecret",
+        "private_key",
+        "privatekey",
+    }
+)
+_DIRECT_RULES = tuple(
+    (rule_id, re.compile(pattern, flags), marker)
+    for rule_id, pattern, flags, marker in DIRECT_RULE_SPECS
+)
+_SENSITIVE_KEY_PATTERN = (
+    rb"(?:[A-Za-z][A-Za-z0-9_.-]{0,70})?"
+    rb"(?:token|secret|password|passwd|authorization|api[_-]?key|private[_-]?key)"
+)
+_SENSITIVE_ENV_KEY_PATTERN = (
+    rb"(?:[A-Za-z][A-Za-z0-9_]{0,70})?"
+    rb"(?:TOKEN|SECRET|PASSWORD|PASSWD|AUTHORIZATION|API_KEY|PRIVATE_KEY)"
+)
+_ENV_ASSIGNMENT = re.compile(
+    rb"(?m)(?<![A-Za-z0-9_])(?:export[ \t]+)?"
+    rb"(?P<key>" + _SENSITIVE_ENV_KEY_PATTERN + rb")[ \t]*=[ \t]*"
+    rb"(?P<value>\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s;,]+)",
+    re.IGNORECASE,
+)
+_JSON_ASSIGNMENT = re.compile(
+    rb'"(?P<key>' + _SENSITIVE_KEY_PATTERN + rb')"[ \t]*:[ \t]*'
+    rb'"(?P<value>(?:\\.|[^"\\\r\n]){1,4096})"',
+    re.IGNORECASE,
+)
+_FIELD_ASSIGNMENT = re.compile(
+    rb"^[ \t]*(?P<key>" + _SENSITIVE_KEY_PATTERN + rb")[ \t]*:[ \t]*"
+    rb"(?P<value>[^\r\n]{1,4096})$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_BEARER = re.compile(
+    rb"(?i)\bauthorization[ \t]*[\"']?[ \t]*[:=][ \t]*[\"']?"
+    rb"bearer[ \t]+(?P<value>[A-Za-z0-9._~+/-]{20,}={0,2})"
+)
+
 
 class ValidationError(RuntimeError):
     """The mounted corpus does not equal its declared immutable inventory."""
+
+
+def credential_ruleset_contract() -> dict[str, object]:
+    """Return the standalone scanner's stable, secret-free contract."""
+    return {
+        "version": RULESET_VERSION,
+        "direct": [
+            {
+                "rule_id": rule_id,
+                "pattern": pattern.decode("ascii"),
+                "flags": flags,
+                "marker": marker.decode("ascii"),
+            }
+            for rule_id, pattern, flags, marker in DIRECT_RULE_SPECS
+        ],
+        "placeholders": sorted(PLACEHOLDER_VALUES),
+        "sensitive_key_parts": sorted(SENSITIVE_KEY_PARTS),
+        "sensitive_keys": sorted(SENSITIVE_KEYS),
+        "context_patterns": {
+            "env_assignment": _ENV_ASSIGNMENT.pattern.decode("ascii"),
+            "json_assignment": _JSON_ASSIGNMENT.pattern.decode("ascii"),
+            "field_assignment": _FIELD_ASSIGNMENT.pattern.decode("ascii"),
+            "bearer": _BEARER.pattern.decode("ascii"),
+            "sensitive_key": _SENSITIVE_KEY_PATTERN.decode("ascii"),
+            "sensitive_env_key": _SENSITIVE_ENV_KEY_PATTERN.decode("ascii"),
+        },
+    }
+
+
+def _normalise_credential_value(value: bytes) -> str:
+    text = value.decode("ascii", errors="ignore").strip()
+    for escaped_suffix in (r"\n", r"\r", r"\t"):
+        while text.endswith(escaped_suffix):
+            text = text[: -len(escaped_suffix)].rstrip()
+    changed = True
+    while changed:
+        changed = False
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"`":
+            text = text[1:-1].strip()
+            changed = True
+        elif len(text) >= 4 and text[:2] in (r"\"", r"\'") and text[-2:] == text[:2]:
+            text = text[2:-2].strip()
+            changed = True
+    return text.rstrip(",;").strip().lower()
+
+
+def _is_material_secret(value: bytes, *, key: bytes | None = None) -> bool:
+    normalised = _normalise_credential_value(value)
+    if key is not None:
+        normalised_key = key.decode("ascii", errors="ignore").strip().lower()
+        if normalised in {
+            normalised_key,
+            f"${normalised_key}",
+            "${" + normalised_key + "}",
+        }:
+            return False
+    return normalised not in PLACEHOLDER_VALUES and len(normalised) >= 8
+
+
+def _is_sensitive_key(value: bytes) -> bool:
+    text = value.decode("ascii", errors="ignore")
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", text)
+    normalised = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    if normalised in SENSITIVE_KEYS or any(
+        normalised.endswith(f"_{key}") for key in SENSITIVE_KEYS
+    ):
+        return True
+    return any(part in SENSITIVE_KEY_PARTS for part in normalised.split("_"))
+
+
+def scan_credential_bytes(data: bytes, *, path: str) -> list[dict[str, object]]:
+    """Return secret-free finding records for one file's bytes."""
+    counts: Counter[str] = Counter()
+    for rule_id, pattern, marker in _DIRECT_RULES:
+        if marker in data:
+            counts[rule_id] += sum(1 for _match in pattern.finditer(data))
+    for match in _ENV_ASSIGNMENT.finditer(data):
+        if _is_sensitive_key(match.group("key")) and _is_material_secret(
+            match.group("value"), key=match.group("key")
+        ):
+            counts["secret-env-assignment"] += 1
+    for pattern, rule_id in (
+        (_JSON_ASSIGNMENT, "secret-json-field"),
+        (_FIELD_ASSIGNMENT, "secret-text-field"),
+    ):
+        for match in pattern.finditer(data):
+            if _is_sensitive_key(match.group("key")) and _is_material_secret(match.group("value")):
+                counts[rule_id] += 1
+    if b"Bearer" in data or b"bearer" in data or b"BEARER" in data:
+        for match in _BEARER.finditer(data):
+            if _is_material_secret(match.group("value")):
+                counts["authorization-bearer"] += 1
+    return [
+        {"path": path, "rule_id": rule_id, "count": count}
+        for rule_id, count in sorted(counts.items())
+        if count
+    ]
+
+
+def scan_credential_files(files: Iterable[tuple[Path, str]]) -> list[dict[str, object]]:
+    """Scan ``(filesystem path, report path)`` pairs without decoding them."""
+    findings: list[dict[str, object]] = []
+    for file_path, report_path in files:
+        findings.extend(scan_credential_bytes(file_path.read_bytes(), path=report_path))
+    return sorted(findings, key=lambda row: (str(row["path"]), str(row["rule_id"])))
+
+
+def format_credential_rejection(findings: Iterable[dict[str, object]]) -> str:
+    """Render findings without ever interpolating matched credential bytes."""
+    rows = list(findings)
+    details = "; ".join(
+        "rule_id={rule} path={path} count={count}".format(
+            rule=row["rule_id"],
+            path=json.dumps(str(row["path"]), ensure_ascii=True),
+            count=row["count"],
+        )
+        for row in rows
+    )
+    return f"raw corpus credential guard rejected {len(rows)} finding group(s): {details}"
 
 
 def sha256_file(path: Path) -> str:
@@ -139,6 +366,7 @@ def validate_raw(root: Path, sides: tuple[str, ...], expected_sha256: str) -> di
         raise ValidationError(f"raw corpus manifest provenance/scope is malformed: {manifest_path}")
 
     attested: dict[str, str] = {}
+    credential_files: list[tuple[Path, str]] = []
     for number, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise ValidationError(f"raw manifest run {number} is not an object")
@@ -166,7 +394,12 @@ def validate_raw(root: Path, sides: tuple[str, ...], expected_sha256: str) -> di
                 or sha256_file(path) != record["sha256"]
             ):
                 raise ValidationError(f"raw corpus hash/size mismatch: {path}")
+            credential_files.append((path, f"{run}/{name}"))
         attested[run] = str(side)
+
+    findings = scan_credential_files(credential_files)
+    if findings:
+        raise ValidationError(format_credential_rejection(findings))
 
     index_rows = read_jsonl(root / "index.jsonl")
     indexed: dict[str, str] = {}
@@ -286,6 +519,11 @@ def validate_raw(root: Path, sides: tuple[str, ...], expected_sha256: str) -> di
         "split_id": split["id"],
         "dataset_revision": dataset["revision"].lower(),
         "run_count": len(attested),
+        "credential_scan": {
+            "ruleset_version": RULESET_VERSION,
+            "file_count": len(credential_files),
+            "finding_group_count": 0,
+        },
         "index_sha256": sha256_file(root / "index.jsonl"),
         "overview_sha256": sha256_file(root / "INDEX.md"),
         "readme_sha256": sha256_file(root / "README.md"),
