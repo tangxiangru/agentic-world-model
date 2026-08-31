@@ -1501,6 +1501,7 @@ def test_study_runner_own_reaper_spares_unattributed_same_uid_process(
 def test_study_shell_scripts_parse() -> None:
     scripts = [
         REPO / "rollout" / "setup.sh",
+        REPO / "rollout" / "pin_ptb_source.sh",
         REPO / "rollout" / "wm_pack.sbatch",
         REPO / "rollout" / "agents" / "claude_fulltraj_noawm" / "solve.sh",
         REPO / "rollout" / "agents" / "claude_wm" / "solve.sh",
@@ -1528,7 +1529,14 @@ def test_source_pin_snapshot_executes_only_snapshot_inputs(tmp_path: Path) -> No
         "cat agents/claude_fulltraj_noawm/marker\n"
     )
     (source / "src" / "run_task.sh").chmod(0o755)
-    for prompt in ("prompt_fulltraj.txt", "prompt_wm.txt", "prompt_wm_fulltraj.txt"):
+    prompts = (
+        "prompt_fulltraj.txt",
+        "prompt_wm.txt",
+        "prompt_wm_fulltraj.txt",
+        "prompt_wm_smoke.txt",
+        "prompt_wm_fulltraj_smoke.txt",
+    )
+    for prompt in prompts:
         (source / "src" / "eval" / "general" / prompt).write_text("original prompt\n")
     # PTB's generated test copies are deliberately untracked. The snapshot
     # still has to preserve the setup-attested bytes.
@@ -1558,6 +1566,8 @@ def test_source_pin_snapshot_executes_only_snapshot_inputs(tmp_path: Path) -> No
     snapshot = Path(result.stdout.strip())
     assert snapshot == target
     assert not list(snapshot.glob("agents/*/auth.json"))
+    for prompt in prompts:
+        assert (snapshot / "src" / "eval" / "general" / prompt).read_text() == "original prompt\n"
     assert (
         snapshot / "src" / "eval" / "tasks" / "gsm8k" / "test_data.json"
     ).read_bytes() == test_data.read_bytes()

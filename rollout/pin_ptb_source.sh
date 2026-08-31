@@ -21,6 +21,8 @@ for path in .env src/run_task.sh \
     src/eval/general/prompt_fulltraj.txt \
     src/eval/general/prompt_wm.txt \
     src/eval/general/prompt_wm_fulltraj.txt \
+    src/eval/general/prompt_wm_smoke.txt \
+    src/eval/general/prompt_wm_fulltraj_smoke.txt \
     src/eval/tasks/gsm8k/test_data.json; do
     [ -f "${SOURCE}/${path}" ] && [ ! -L "${SOURCE}/${path}" ] || {
         echo "FATAL: prepared PTB source lacks regular study file: ${path}" >&2
@@ -35,7 +37,8 @@ STAGE="$(mktemp -d "${TARGET}.tmp.XXXXXX")"
 git clone --quiet --shared "${SOURCE}" "${STAGE}"
 install -m 0600 "${SOURCE}/.env" "${STAGE}/.env"
 install -m 0755 "${SOURCE}/src/run_task.sh" "${STAGE}/src/run_task.sh"
-for prompt in prompt_fulltraj.txt prompt_wm.txt prompt_wm_fulltraj.txt; do
+for prompt in prompt_fulltraj.txt prompt_wm.txt prompt_wm_fulltraj.txt \
+    prompt_wm_smoke.txt prompt_wm_fulltraj_smoke.txt; do
     install -m 0644 "${SOURCE}/src/eval/general/${prompt}" \
         "${STAGE}/src/eval/general/${prompt}"
 done
