@@ -112,6 +112,12 @@ also B" is several cards.
 awm wm propose {dir}/memory/cards/exp-NN.yaml
 ```
 
+The autonomous WMA may need several minutes to search its full corpus. Run
+`propose` with a Bash-tool timeout of at least 1200000 ms. If the command is
+moved to a background task, wait for and poll that same task until it is
+terminal; never launch a duplicate proposal or delete its `wm/cards/exp-NN`
+directory while it may still be running.
+
 - `problem` — the concrete failure you observed, with `evidence` entries pointing at real files
   under `{dir}`, `failure_examples` giving 3–10 actual items the model gets wrong, and a
   `watch_set` file (jsonl of `{"id","question","gold"}`) of the currently failing items. Every item

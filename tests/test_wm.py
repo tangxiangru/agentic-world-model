@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 
 import pytest
@@ -147,6 +148,49 @@ def make_ckpt(sd: Path, card_id: str, step: int, score: float) -> Path:
     (ckpt / "config.json").write_text(json.dumps({"model_type": "fake"}))
     (ckpt / "score.txt").write_text(str(score))
     return ckpt
+
+
+def test_concurrent_propose_is_locked_without_corrupting_first_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session, sd = make_session(tmp_path, parent_score=0.30)
+    card_path = write_card(sd)
+    entered = threading.Event()
+    release = threading.Event()
+    original_brief = session._brief
+    outcome: list[dict] = []
+    errors: list[BaseException] = []
+
+    def blocking_brief(card, grounding, state):
+        entered.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test did not release first proposal")
+        return original_brief(card, grounding, state)
+
+    monkeypatch.setattr(session, "_brief", blocking_brief)
+
+    def first_proposal() -> None:
+        try:
+            outcome.append(session.propose(card_path))
+        except (WMError, TimeoutError) as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=first_proposal)
+    thread.start()
+    assert entered.wait(timeout=5)
+    try:
+        with pytest.raises(WMError, match="already has a propose call in progress"):
+            session.propose(card_path)
+        assert (session.card_dir("exp-01") / "card.yaml").is_file()
+    finally:
+        release.set()
+        thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert not errors
+    assert outcome and outcome[0]["kind"] == "brief"
+    events = [json.loads(line) for line in (session.wm / "events.jsonl").read_text().splitlines()]
+    assert not [row for row in events if row["event"] == "agent_failed"]
 
 
 def test_full_loop_select_best_and_adopt(tmp_path: Path) -> None:

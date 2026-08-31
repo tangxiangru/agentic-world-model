@@ -48,7 +48,14 @@ MAX_RESULT_BYTES = 16_384
 MAX_LIST = 10_000
 MAX_SEARCH_MATCHES = 5_000
 MAX_SEARCH_BYTES = 20_000_000
+# The paged reader must remain safe even for escape-heavy/binary content, whose
+# double JSON encoding can expand far beyond the raw byte count. Structured
+# cards use read_corpus_complete, which checks the actual encoded result against
+# the independent transport cap before returning it.
 MAX_READ_BYTES = 1_536
+# A complete read is intended for compact structured cards. Bound source bytes
+# before allocation; the encoded result is independently capped below this.
+MAX_COMPLETE_READ_BYTES = 14 * 1_024
 MAX_PATH_BYTES = 512
 MAX_GLOB_BYTES = 1_024
 MAX_PATTERN_BYTES = 1_024
@@ -144,6 +151,26 @@ TOOLS: tuple[dict[str, Any], ...] = (
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_READ_BYTES},
             },
             "required": ["path", "limit"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "read_corpus_complete",
+        "description": (
+            "Read one exact corpus file completely in a single auditable result. Use this for YAML "
+            "experiment cards. Paths are relative to the selected root. The call fails closed when "
+            "the source exceeds 14336 bytes or the complete encoded result cannot fit the fixed "
+            "transport cap; only then fall back to paged read_corpus. Root defaults to 0 only when "
+            "one root exists."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {"type": "integer", "minimum": 0},
+                "path": {"type": "string"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
         },
     },
     {
@@ -295,6 +322,8 @@ def call_tool(
                 result = _search_corpus(arguments, roots)
             elif name == "read_corpus":
                 result = _read_corpus(arguments, roots)
+            elif name == "read_corpus_complete":
+                result = _read_corpus_complete(arguments, roots)
             elif name == "write_file":
                 result = _write_file(arguments, scratch)
             else:
@@ -621,6 +650,31 @@ def _read_corpus(arguments: dict[str, Any], roots: list[Path]) -> dict[str, Any]
             "offset": offset,
             "bytes": len(data),
             "next_offset": offset + len(data) if more else None,
+            "content": data.decode(errors="replace"),
+        }
+    )
+
+
+def _read_corpus_complete(arguments: dict[str, Any], roots: list[Path]) -> dict[str, Any]:
+    """Return a complete exact file only when it fits the fixed MCP result budget."""
+    index, root = _root_at(roots, arguments.get("root"))
+    path = _relative_file(root, arguments.get("path"))
+    with path.open("rb") as file:
+        size = os.fstat(file.fileno()).st_size
+        if size > MAX_COMPLETE_READ_BYTES:
+            raise ValueError(
+                f"complete read exceeds {MAX_COMPLETE_READ_BYTES} source bytes; use paged read_corpus"
+            )
+        data = file.read(MAX_COMPLETE_READ_BYTES + 1)
+    if len(data) != size:
+        raise ValueError("corpus file changed during complete read")
+    return _json_result(
+        {
+            "root": index,
+            "path": path.relative_to(root).as_posix(),
+            "offset": 0,
+            "bytes": len(data),
+            "next_offset": None,
             "content": data.decode(errors="replace"),
         }
     )

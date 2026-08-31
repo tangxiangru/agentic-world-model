@@ -99,6 +99,9 @@ def default_config(session_dir: Path, arm: str = "null") -> dict[str, Any]:
         "wma_effort": "high",
         "wma_max_budget_usd": 1.0,
         "wma_timeout_s": 900,
+        # Opt in above one only in a controlled harness. Every attempt must
+        # still pass the same fail-closed tool/citation/provider validators.
+        "wma_validation_attempts": 1,
         "official_argv": None,      # default: python evaluate.py --model-path {checkpoint} --limit {n} --json-output-file {out}/metrics.json
         "official_cwd": None,       # default: the session dir
         "custom_argv": None,        # default: python -m awm.wm.score_items ...
@@ -210,6 +213,42 @@ class Session:
     def propose(self, card_path: str | os.PathLike) -> dict[str, Any]:
         card = load_yaml(Path(card_path))
         grounding = validate_card(card, self.dir)
+        card_id = card["card_id"]
+        lock_dir = self.wm / "locks"
+        if lock_dir.is_symlink():
+            raise WMError(f"proposal lock directory must not be a symlink: {lock_dir}")
+        lock_dir.mkdir(exist_ok=True)
+        lock_path = lock_dir / f"{card_id}.propose.lock"
+        try:
+            lock_fd = os.open(
+                lock_path,
+                os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+        except OSError as exc:
+            raise WMError(f"cannot open safe proposal lock {lock_path}: {exc}") from exc
+        lock = os.fdopen(lock_fd, "a")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            lock.close()
+            raise WMError(
+                f"{card_id} already has a propose call in progress; wait for that command "
+                "instead of starting another"
+            ) from exc
+        try:
+            return self._propose_locked(card_path, card, grounding)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
+
+    def _propose_locked(
+        self,
+        card_path: str | os.PathLike,
+        card: dict[str, Any],
+        grounding: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Complete one proposal while its card-scoped inter-process lock is held."""
         card_id = card["card_id"]
         cdir = self.card_dir(card_id)
         if (cdir / "state.json").is_file():

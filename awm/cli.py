@@ -334,6 +334,7 @@ def _wm_init(args: argparse.Namespace) -> int:
         "wma_effort": args.wma_effort,
         "wma_max_budget_usd": args.wma_max_budget_usd,
         "wma_timeout_s": args.wma_timeout_s,
+        "wma_validation_attempts": args.wma_validation_attempts,
     }
     s = Session.init(args.dir, arm=args.arm, **overrides)
     print(f"initialised {s.wm} (arm={s.config['arm']}, memory={s.config['memory_root']})")
@@ -559,9 +560,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="read-only indexed prior-run root for --wma-corpus-kind raw")
     wi.add_argument("--wma-effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)
     wi.add_argument("--wma-max-budget-usd", type=float, default=None,
-                    help="maximum Vertex spend per WMA call (default 1.0)")
+                    help="logical-call Vertex cap, divided across validation attempts (default 1.0)")
     wi.add_argument("--wma-timeout-s", type=float, default=None,
-                    help="wall timeout per WMA call (default 900)")
+                    help="logical wall timeout shared across validation attempts (default 900)")
+    wi.add_argument("--wma-validation-attempts", type=int, choices=range(1, 6), default=None,
+                    help="bounded fresh attempts for invalid model output (default 1)")
     wi.add_argument("--official-argv", help="shell string with {checkpoint} {n} {out}; default runs evaluate.py")
     wi.add_argument("--official-cwd", help="cwd for the official evaluator (default: session dir)")
     wi.add_argument("--custom-argv", help="shell string with {checkpoint} {items} {out} {n}; default awm.wm.score_items")

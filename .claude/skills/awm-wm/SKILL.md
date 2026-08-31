@@ -17,6 +17,10 @@ Everything it says lands in `{dir}/wm/inbox.md` and as files under
 and before you end a turn.** Lines marked `REPLY NEEDED` block your turn until
 answered.
 
+`{dir}/wm/` is the runtime's durable audit record. Read it freely, but never
+create, edit, move, or delete anything there yourself; mutate it only through
+`awm wm` commands.
+
 ## 1. Propose
 
 Write sections 1–4 of the card (`{dir}/exp-card.template.yaml`) to
@@ -30,6 +34,12 @@ optimizer steps) — without them there is no mid-training evaluation.
 ```bash
 awm wm propose memory/cards/exp-03.yaml
 ```
+
+`propose` can take several minutes while the autonomous WMA searches its full
+corpus. Run it with a Bash-tool timeout of at least 1200000 ms. If the tool moves
+the command to a background task, wait for and poll that same task until it is
+terminal. Never start a second `propose`, and never delete `wm/cards/exp-03`,
+while the first command may still be running.
 
 This returns the **brief**: grounding-check results, precedents from memory
 (if any), a prediction (if the agent has one), objections, and a proposed

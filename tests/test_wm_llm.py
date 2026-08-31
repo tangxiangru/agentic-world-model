@@ -5,18 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 from pathlib import Path
 
 import pytest
 import yaml
 
+import awm.wm.agents.llm as llm_module
 from awm.cli import build_parser
 from awm.wm import scratch_server
 from awm.wm.agents.llm import (
     ALLOWED_TOOLS,
     LLMAgent,
     _extract_tool_events,
+    _response_schema,
+    _validation_repair_guidance,
     _validate_citations,
     _validate_grounding_references,
     _validate_raw_corpus,
@@ -75,6 +79,55 @@ def _read_tool_rows(
                         "id": tool_id,
                         "name": "mcp__awm_scratch__read_corpus",
                         "input": {"root": 0, "path": relative, "offset": offset, "limit": limit},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "is_error": False,
+                        "content": [{"type": "text", "text": payload}],
+                    }
+                ]
+            },
+        },
+    ]
+
+
+def _complete_read_tool_rows(
+    root: Path,
+    path: Path,
+    *,
+    tool_id: str = "complete-read-1",
+) -> list[dict]:
+    data = path.read_bytes()
+    relative = path.relative_to(root).as_posix()
+    payload = json.dumps(
+        {
+            "root": 0,
+            "path": relative,
+            "offset": 0,
+            "bytes": len(data),
+            "next_offset": None,
+            "content": data.decode(errors="replace"),
+        },
+        sort_keys=True,
+    )
+    return [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": tool_id,
+                        "name": "mcp__awm_scratch__read_corpus_complete",
+                        "input": {"root": 0, "path": relative},
                     }
                 ]
             },
@@ -305,7 +358,7 @@ def test_llm_uses_full_visible_corpus_and_writes_audit(tmp_path: Path, monkeypat
         }
         rows = [
             _init_row(),
-            *_read_tool_rows(root / "corpus" / "train", cited, tool_id="tool-1"),
+            *_complete_read_tool_rows(root / "corpus" / "train", cited, tool_id="tool-1"),
             {
                 "type": "result",
                 "subtype": "success",
@@ -368,6 +421,231 @@ def test_llm_uses_full_visible_corpus_and_writes_audit(tmp_path: Path, monkeypat
     assert mcp_config["mcpServers"]["awm_scratch"]["url"].startswith("<expired-")
 
 
+def test_bounded_validation_retry_repairs_complete_card_read(tmp_path: Path, monkeypatch) -> None:
+    _source, root = _seed(tmp_path)
+    session = tmp_path / "retry-session"
+    card_dir = session / "wm" / "cards" / "exp-01"
+    card_dir.mkdir(parents=True)
+    card = _current_card(session)
+    (card_dir / "card.yaml").write_text(yaml.safe_dump(card))
+    cited = root / "corpus" / "train" / "r-train000" / "exp-01.yaml"
+    prompts: list[str] = []
+    invocations: list[dict] = []
+
+    def fake_runner(**kwargs) -> int:
+        prompts.append(kwargs["prompt"])
+        invocations.append(kwargs)
+        response = {
+            "claims": [{"text": "Prior measurement is 0.4.", "citation_ids": ["C1"]}],
+            "citations": [
+                {
+                    "id": "C1",
+                    "path": str(cited),
+                    "locator": "result.measurements[0].value",
+                    "observation": "measurement value is 0.4",
+                }
+            ],
+            "objections": [],
+        }
+        if len(prompts) == 1:
+            read_rows = [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "list-only",
+                                "name": "mcp__awm_scratch__list_corpus",
+                                "input": {"glob": "r-*/exp-*.yaml"},
+                            }
+                        ]
+                    },
+                },
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "list-only",
+                                "is_error": False,
+                                "content": "{}",
+                            }
+                        ]
+                    },
+                },
+            ]
+        else:
+            read_rows = _complete_read_tool_rows(root / "corpus" / "train", cited)
+        rows = [
+            _init_row(),
+            *read_rows,
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "modelUsage": {"claude-opus-5": {"provider": "vertex"}},
+                "structured_output": response,
+            },
+        ]
+        kwargs["stdout_path"].write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        kwargs["stderr_path"].write_text("")
+        return 0
+
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "vertex-project")
+    memory = Memory(
+        root,
+        session="retry",
+        arm="llm",
+        readonly=True,
+        visible_sides=("train",),
+    )
+    brief = LLMAgent(session_dir=session, process_runner=fake_runner).on_proposal(
+        card,
+        [{"check": "example", "passed": True, "detail": "ok"}],
+        memory,
+        {
+            "wma_model": "claude-opus-5",
+            "wma_provider": "vertex",
+            "wma_validation_attempts": 2,
+            "wma_max_budget_usd": 4.0,
+        },
+    )
+
+    assert len(prompts) == 2
+    for invocation in invocations:
+        budget_at = invocation["argv"].index("--max-budget-usd")
+        assert float(invocation["argv"][budget_at + 1]) == 2.0
+        assert 0 < invocation["timeout_s"] <= 900
+    assert "direct StructuredOutput object" in prompts[0]
+    assert "Do not wrap that object in a text field" in prompts[0]
+    assert "Repair category: complete_primary_read" in prompts[1]
+    audits = sorted((card_dir / "wma-calls").glob("*/audit.json"))
+    assert [json.loads(path.read_text())["status"] for path in audits] == [
+        "validation_error",
+        "success",
+    ]
+    successful_request = json.loads((Path(brief.audit["path"]).parent / "request.json").read_text())
+    assert successful_request["validation_attempt"] == 2
+    assert successful_request["repair_code"] == "complete_primary_read"
+    assert successful_request["logical_max_budget_usd"] == 4.0
+    assert successful_request["attempt_max_budget_usd"] == 2.0
+
+
+@pytest.mark.parametrize(
+    "failure,match",
+    [
+        ("nonzero", "Claude exited"),
+        ("provider", "provider is not exactly Vertex"),
+        ("model", "model does not exactly match"),
+        ("tool_policy", "disallowed tools"),
+        ("unexpected", "invalid WMA output"),
+    ],
+)
+def test_nonrepairable_wma_failures_are_not_retried(
+    tmp_path: Path, monkeypatch, failure: str, match: str
+) -> None:
+    _source, root = _seed(tmp_path)
+    session = tmp_path / f"fatal-{failure}"
+    card_dir = session / "wm" / "cards" / "exp-01"
+    card_dir.mkdir(parents=True)
+    card = _current_card(session)
+    (card_dir / "card.yaml").write_text(yaml.safe_dump(card))
+    cited = root / "corpus" / "train" / "r-train000" / "exp-01.yaml"
+    calls = 0
+
+    def fake_runner(**kwargs) -> int:
+        nonlocal calls
+        calls += 1
+        kwargs["stderr_path"].write_text("")
+        if failure == "nonzero":
+            kwargs["stdout_path"].write_text("")
+            return 1
+        response = {
+            "claims": [{"text": "Prior measurement is 0.4.", "citation_ids": ["C1"]}],
+            "citations": [
+                {
+                    "id": "C1",
+                    "path": str(cited),
+                    "locator": "result.measurements[0].value",
+                    "observation": "measurement value is 0.4",
+                }
+            ],
+            "objections": [],
+        }
+        actual_model = "claude-opus-4-6" if failure == "model" else "claude-opus-5"
+        provider = "anthropic" if failure == "provider" else "vertex"
+        extra_rows = []
+        if failure == "tool_policy":
+            extra_rows = [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "tool_use", "id": "bad", "name": "Read", "input": {}}
+                        ]
+                    },
+                },
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "bad",
+                                "is_error": False,
+                                "content": "forbidden",
+                            }
+                        ]
+                    },
+                },
+            ]
+        rows = [
+            _init_row(model=actual_model),
+            *_complete_read_tool_rows(root / "corpus" / "train", cited),
+            *extra_rows,
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "modelUsage": {actual_model: {"provider": provider}},
+                "structured_output": response,
+            },
+        ]
+        kwargs["stdout_path"].write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        return 0
+
+    if failure == "unexpected":
+        def fail_unexpected(*_args, **_kwargs):
+            raise RuntimeError("validator bug")
+
+        monkeypatch.setattr(llm_module, "_validate_citations", fail_unexpected)
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "vertex-project")
+    memory = Memory(
+        root,
+        session=f"fatal-{failure}",
+        arm="llm",
+        readonly=True,
+        visible_sides=("train",),
+    )
+    with pytest.raises(WMError, match=match):
+        LLMAgent(session_dir=session, process_runner=fake_runner).on_proposal(
+            card,
+            [{"check": "example", "passed": True, "detail": "ok"}],
+            memory,
+            {
+                "wma_model": "claude-opus-5",
+                "wma_provider": "vertex",
+                "wma_validation_attempts": 3,
+            },
+        )
+    assert calls == 1
+    assert len(list((card_dir / "wma-calls").glob("*/audit.json"))) == 1
+
+
 def test_llm_init_and_hidden_side_fail_closed(tmp_path: Path, monkeypatch) -> None:
     _source, root = _seed(tmp_path, include_test=True)
     monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
@@ -397,6 +675,15 @@ def test_llm_init_and_hidden_side_fail_closed(tmp_path: Path, monkeypatch) -> No
             memory_readonly=True,
             wma_model="opus",
         )
+    with pytest.raises(WMError, match="wma_validation_attempts"):
+        Session.init(
+            tmp_path / "invalid-attempts",
+            arm="llm",
+            memory_root=str(root),
+            memory_readonly=True,
+            wma_model="claude-opus-5",
+            wma_validation_attempts=0,
+        )
     session = Session.init(
         tmp_path / "valid",
         arm="llm",
@@ -408,8 +695,20 @@ def test_llm_init_and_hidden_side_fail_closed(tmp_path: Path, monkeypatch) -> No
     assert session.agent.session_dir == (tmp_path / "valid").resolve()
     assert session.config["wma_model"] == "claude-opus-5"
 
-    args = build_parser().parse_args(["wm", "init", "--arm", "llm", "--wma-model", "claude-opus-5"])
+    args = build_parser().parse_args(
+        [
+            "wm",
+            "init",
+            "--arm",
+            "llm",
+            "--wma-model",
+            "claude-opus-5",
+            "--wma-validation-attempts",
+            "3",
+        ]
+    )
     assert args.wma_model == "claude-opus-5"
+    assert args.wma_validation_attempts == 3
 
 
 def test_card_corpus_integrity_failure_blocks_init(tmp_path: Path, monkeypatch) -> None:
@@ -1000,6 +1299,208 @@ def test_concurrent_calls_reconcile_when_arrival_order_is_reversed(
     _validate_server_tool_audit(audit, events)
 
 
+def test_complete_card_read_is_exact_bounded_and_trace_validated(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    card_dir = corpus / "r-production"
+    card_dir.mkdir(parents=True)
+    card = card_dir / "exp-01.yaml"
+    card.write_text(yaml.safe_dump({"problem": {"statement": "x" * 10_000}}))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    audit = tmp_path / "tools.jsonl"
+    arguments = {"root": 0, "path": "r-production/exp-01.yaml"}
+    result = call_tool(
+        "read_corpus_complete",
+        arguments,
+        scratch=scratch,
+        roots=[corpus],
+        audit_path=audit,
+    )
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["content"].encode() == card.read_bytes()
+    assert payload["bytes"] == card.stat().st_size
+    assert payload["offset"] == 0 and payload["next_offset"] is None
+
+    events = [
+        {
+            "event": "tool_use",
+            "id": "complete",
+            "name": "mcp__awm_scratch__read_corpus_complete",
+            "input": arguments,
+        },
+        {
+            "event": "tool_result",
+            "tool_use_id": "complete",
+            "is_error": False,
+            "content_text": result["content"][0]["text"],
+        },
+    ]
+    _validate_server_tool_audit(audit, events)
+    successful_reads = _validate_tool_trace(events, "cards", [corpus.resolve()], scratch)
+    assert successful_reads == {
+        card.resolve(): [(0, card.stat().st_size)]
+    }
+
+    # A corpus mutation after tool-trace reconciliation must not make citation
+    # validation allocate or parse an unbounded replacement file.
+    card.write_bytes(b"x" * (llm_module.MAX_STRUCTURED_CITATION_BYTES + 1))
+    with pytest.raises(WMError, match="exceeds citation source cap"):
+        _validate_citations(
+            {
+                "citations": [
+                    {
+                        "id": "C1",
+                        "path": str(card),
+                        "locator": "problem.statement",
+                        "observation": "statement x",
+                    }
+                ]
+            },
+            "cards",
+            [corpus.resolve()],
+            tmp_path / "current-card",
+            successful_reads,
+        )
+
+    hostile = card_dir / "exp-02.yaml"
+    hostile.write_text("payload: \"" + ("\\\\" * 13_000) + "\"\n")
+    oversized = call_tool(
+        "read_corpus_complete",
+        {"path": "r-production/exp-02.yaml"},
+        scratch=scratch,
+        roots=[corpus],
+    )
+    assert oversized["isError"] is True
+    assert "use paged read_corpus" in oversized["content"][0]["text"]
+    page = call_tool(
+        "read_corpus",
+        {"path": "r-production/exp-02.yaml", "offset": 0, "limit": 512},
+        scratch=scratch,
+        roots=[corpus],
+    )
+    assert page["isError"] is False
+    assert json.loads(page["content"][0]["text"])["bytes"] == 512
+
+    # The complete-read transport cap is smaller than the independently
+    # bounded structured-citation cap. Exact pages through EOF can therefore
+    # support a citation, while partial page coverage remains rejected.
+    paged_events: list[dict] = []
+    offset = 0
+    page_number = 0
+    while True:
+        page_number += 1
+        arguments = {
+            "path": "r-production/exp-02.yaml",
+            "offset": offset,
+            "limit": scratch_server.MAX_READ_BYTES,
+        }
+        result = call_tool(
+            "read_corpus",
+            arguments,
+            scratch=scratch,
+            roots=[corpus],
+        )
+        assert result["isError"] is False
+        tool_id = f"page-{page_number}"
+        paged_events.extend(
+            [
+                {
+                    "event": "tool_use",
+                    "id": tool_id,
+                    "name": "mcp__awm_scratch__read_corpus",
+                    "input": arguments,
+                },
+                {
+                    "event": "tool_result",
+                    "tool_use_id": tool_id,
+                    "is_error": False,
+                    "content_text": result["content"][0]["text"],
+                },
+            ]
+        )
+        payload = json.loads(result["content"][0]["text"])
+        if payload["next_offset"] is None:
+            break
+        offset = payload["next_offset"]
+
+    paged_reads = _validate_tool_trace(
+        paged_events, "cards", [corpus.resolve()], scratch
+    )
+    response = {
+        "citations": [
+            {
+                "id": "C1",
+                "path": str(hostile),
+                "locator": "payload",
+                "observation": "payload field",
+            }
+        ]
+    }
+    evidence, _material = _validate_citations(
+        response,
+        "cards",
+        [corpus.resolve()],
+        tmp_path / "current-card",
+        paged_reads,
+    )
+    assert evidence[0]["locator"] == "payload"
+    with pytest.raises(WMError, match="not covered"):
+        _validate_citations(
+            response,
+            "cards",
+            [corpus.resolve()],
+            tmp_path / "current-card",
+            {hostile.resolve(): paged_reads[hostile.resolve()][:-1]},
+        )
+
+
+def test_historical_text_locator_streams_with_line_and_byte_caps(tmp_path: Path) -> None:
+    trace = tmp_path / "solve_out.txt"
+    trace.write_bytes(b"first fact\nsecond fact\n" + b"tail\n" * 1_000_000)
+    material, start, end = llm_module._resolve_locator(
+        trace,
+        "lines 1-2",
+        bounded_historical_source=True,
+    )
+    assert material == "first fact\nsecond fact\n"
+    assert (start, end) == (0, len(material.encode()))
+
+    with pytest.raises(WMError, match="over-broad"):
+        llm_module._resolve_locator(
+            trace,
+            "lines 1-501",
+            bounded_historical_source=True,
+        )
+
+    huge_line = tmp_path / "huge-line.txt"
+    huge_line.write_bytes(b"x" * (llm_module.MAX_LINE_LOCATOR_MATERIAL_BYTES + 1))
+    with pytest.raises(WMError, match="line exceeds locator byte cap"):
+        llm_module._resolve_locator(
+            huge_line,
+            "line 1",
+            bounded_historical_source=True,
+        )
+
+
+def test_locator_schema_rejects_prose_annotations() -> None:
+    pattern = _response_schema("brief")["properties"]["citations"]["items"][
+        "properties"
+    ]["locator"]["pattern"]
+    assert re.fullmatch(pattern, "problem.statement; hypothesis.claim")
+    assert re.fullmatch(pattern, "card.setup.command.argv[2]")
+    assert re.fullmatch(pattern, "lines 12-18")
+    assert not re.fullmatch(pattern, "card.setup.command.argv (--max-steps 1")
+    assert not re.fullmatch(pattern, "problem.statement = arithmetic errors")
+
+    raw_code, raw_guidance = _validation_repair_guidance(
+        "WMA citation C1 locator was not covered", "raw"
+    )
+    assert raw_code == "complete_raw_range"
+    assert "solve_out.txt" in raw_guidance
+    assert "exp-*.yaml" not in raw_guidance
+
+
 def test_oversized_scratch_results_are_paged_bounded_and_exactly_audited(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1454,8 +1955,9 @@ def test_vertex_cli_loopback_mcp_end_to_end(tmp_path: Path) -> None:
         {
             "wma_model": model,
             "wma_provider": "vertex",
-            "wma_max_budget_usd": 0.25,
-            "wma_timeout_s": 180,
+            "wma_max_budget_usd": 0.75,
+            "wma_timeout_s": 540,
+            "wma_validation_attempts": 3,
             "wma_effort": "low",
         },
     )
