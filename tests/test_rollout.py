@@ -701,7 +701,10 @@ def test_study_runner_patch_applies_to_pinned_head_and_is_idempotent(tmp_path: P
     assert 'POST_TRAIN_BENCH_CELL_TOKEN' in combined
     assert "OS-visible GPU isolation probe" in combined
     assert "env -u CUDA_VISIBLE_DEVICES -u NVIDIA_VISIBLE_DEVICES" in combined
-    assert "gpu_device_count={count}" in combined and "print(count)" not in combined
+    # A tuple is intentionally not valid JSON: PTB's Claude parser must not
+    # mistake the diagnostic device count for a JSON event object.
+    assert "print((count,))" in combined
+    assert "print(count)" not in combined
     assert "count == 1 else 86" in combined
     assert "math.isfinite(float(accuracy))" in combined
     assert 'nvidia-smi --query-compute-apps=pid --format=csv,noheader |' not in combined

@@ -195,7 +195,7 @@ NEW_SOLVE_LINE = (
     '        bash -o pipefail -c "{ echo OS-visible GPU isolation probe >&2; '
     'env -u CUDA_VISIBLE_DEVICES -u NVIDIA_VISIBLE_DEVICES '
     "python -c 'import sys,torch; count=torch.cuda.device_count(); "
-    "print(f\"gpu_device_count={count}\"); "
+    "print((count,)); "
     "sys.exit(0 if count == 1 else 86)' || exit \\$?; "
     'python /home/ben/check_cuda.py && python '
     '/home/ben/check_cuda_writing.py || exit 1; bash /home/ben/system_monitor.sh & '
