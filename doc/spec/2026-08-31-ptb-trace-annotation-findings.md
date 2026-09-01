@@ -1,6 +1,6 @@
 # PTB 轨迹标注:逐条详情
 
-**这是详情记录,不是 reference。** `doc/reference/verifier_tiers_and_change_types.md` 说方法论和结论;本文件说这 24 条轨迹各自发生了什么。任何 reference 里的数字都应能追回这里的某一节。
+**这是详情记录,不是 reference。** `doc/reference/verifier_tiers_and_change_types.md` 说方法论和结论;本文件说这 32 条轨迹各自发生了什么。**本文件里的分布量未达 reference 的引用门槛**(见下),它们放在这里正是因为放不进那边。
 
 **规格**:`doc/spec/2026-08-31-ptb-trace-annotation.md` **生成**:`awm/traj/findings.py`
 
@@ -8,26 +8,38 @@
 
 | | |
 |---|---|
-| 已标注 run | **24** |
-| 判断条数 | 1437 |
-| **指针校验作废** | **1 条(0.07%)** |
-| 改动 / 训练 / 验证 | 522 / 209 / 430 |
-| `unclear` 占训练 | 17% |
-| 提案 | 新类别 36 · 定义缺陷 153 · 边界情形 86 |
+| 已标注 run | **32** |
+| 判断条数 | 1922 |
+| **指针校验作废** | **1 条(0.05%)** |
+| 改动 / 训练 / 验证 | 725 / 297 / 544 |
+| 提案 | 新类别 48 · 定义缺陷 194 · 边界情形 113 |
 
-### 缺口 2 的答案:训练时间能拆到什么程度
+## 标注一致性(决定这些数字能引用到什么程度)
 
-163 段真实训练、190 小时:
+7 条 run 各由两名互不可见的标注者做同一份骨架:
+
+| 字段 | n | 一致率 | κ | 判定 |
+|---|---|---|---|---|
+| `tested_variable` | 67 | 0.821 | **0.741** | findings_only |
+| `category` | 119 | 0.739 | **0.690** | findings_only |
+| `judges_changes` | — | — | Jaccard 0.792 | — |
+
+**两个字段都在 findings_only 档(0.6 ≤ κ < 0.8)。** 门槛 κ ≥ 0.8 是在看到数字之前定的。
+剔除冒烟行后 κ 只从 0.764 动到 0.771——schema 缺口不是主因;分歧集中在「数据改动强制的超参改动」该记 C3 还是 both。
+
+## 缺口 2 的分布(findings 档,不可引用进 reference 主表)
+
+218 段真实训练、244 小时:
 
 | 受测变量 | 段数 | 小时 | 占比 |
 |---|---|---|---|
-| **both**(数据与超参同时变) | 79 | 95.2 | 50% |
-| **C3** 数据配方 | 33 | 60.1 | 32% |
-| **C4** 方法超参 | 37 | 29.4 | 15% |
-| unclear | 14 | 5.2 | 3% |
+| **both**(数据与超参同时变) | 102 | 112.4 | 46% |
+| **C3** 数据配方 | 50 | 82.0 | 34% |
+| **C4** 方法超参 | 49 | 44.7 | 18% |
+| 判不出 | 17 | 5.3 | 2% |
 
-**47% 的训练时间可以拆给单一维度,50% 是真正联合的。**
-后者不是测量失败,是 agent 行为——它们很少做单变量训练。C3 单独占用的时间是 C4 的两倍,单段中位也长得多。
+**52% 可拆给单一维度,46% 真正联合。**
+两名标注者在每条 run 上都同意的定性结论:**agent 极少做单变量训练**。
 
 ---
 
@@ -359,6 +371,70 @@
   - i=1026 的模型选择:在两次独立训练的成品(run1 vs run2)之间挑一个交。C5 的定义是「在已训好的若干步数里挑一个交」,即同一次训练内部选 checkpoint;跨训练的成品选择按现定义判不了,但它和 C5 一样是零训练成本的纯选择动作、效应量级相同(2/30 vs 1/30)。要么把 C5 的边界扩到「任何已存在权重之间的选择」,要么单列。顺带:本 run 存了 6 个 run1…(i=1026, i=665)
   - 建好但从未拿去训练的数据集算不算一次 change?c8(sft_openr1_x2,跑到 57,713 行)整个被放弃,c9/c10/c11 造出的 76,140 条混合集也只有 48,000 条进过训练。按 §1「为提升分数而做的一次有意图的修改」它们都算,但它们在 changes↔verifications 链接表里是永远没有入边的孤立点。如果算,C3 的计数会被大量未被任何验证器判定过的候…(i=386, i=640, i=845)
 
+## claude_non_api_claude-opus-5_10h_run1__aime2025_Qwen_Qwen3-4B-Base_17415288
+| agent | harness | benchmark | base model | 时长 | 最终分 |
+|---|---|---|---|---|---|
+| claude-opus-5 | claude-code | aime2025 | Qwen_Qwen3-4B-Base | 8.91h | 0.1666666666… |
+
+### 改动序列(19 条)
+
+| i | 类别 | 做了什么 | 证据 |
+|---|---|---|---|
+| 391 | C3 | 建立训练数据池:OpenR1-Math-220k(只取 correctness_math_verify 通过的 generation)+ nvidia/OpenMathReasoning cot(DeepSeek-R1)+ jonathanyin AIME 1983-2023 R1 traces,并… | i=391, i=391, i=391 |
+| 391 | C2 | 训练样本逐字采用评测的 USER_PROMPT_TEMPLATE,completion 以 'ANSWER: {answer}' 结尾,对齐 aime_scorer 的 match(numeric=True, location='end')(只看输出里最后一个数字)。 | i=391, i=1199 |
+| 454 | C4 | 全参 SFT 方案定型:TRL SFTTrainer + bf16 + flash_attention_2 + BFD packing@16384 + padding_free + completion_only_loss + adamw_bnb_8bit + 梯度检查点 + cosine/3% w… | i=454, i=454, i=454 |
+| 454 | C2 | 训练时把 EOS 设成 <\|im_end\|>(base tokenizer 默认是 <\|endoftext\|>),让模型学会在评测里正常终止。 | i=454, i=475 |
+| 533 | C3 | 写 mix.py 加权取样器:来源权重(amc_aime 3.0 / aops_forum 2.0 / olympiads 1.0 ...) x 难度分桶(pass_rate)x 长度分桶,从 41k 池里选出训练子集。 | i=533, i=533, i=546 |
+| 605 | C4 | 冒烟 OOM 后启用 liger fused cross-entropy(use_liger_kernel=True)并配合 expandable_segments,以保住 bs=2 x 16384 的配置(边界见 boundary_case b1)。 | i=605, i=585 |
+| 649 | C2 | 训练 prompt 改为逐字渲染成 harness 真实产生的 '<\|im_start\|>user\n...<\|im_end\|>\n<\|im_start\|>assistant\n',先用第一档做 token 级比对确认相等再改。 | i=649, i=648 |
+| 672 | C4 | 第一轮真实 SFT 的超参:1 epoch、lr 1.4e-5(从默认 1e-5 上调)、bs 2 x accum 4、save-steps 150。 | i=672 |
+| 729 | C7 | 自建代理验证器 eval_dev.py:AIME2024(训练数据已排除 2024 年及以后)30 题、n=4 采样,离线 vLLM 一次加载,同时统计 acc / mean_len / trunc_rate / fmt_ok_rate。 | i=729, i=729 |
+| 961 | C1 | 写 package_model.py,给提交模型整份重写 generation_config.json:eos_token_id=[151645,151643]、do_sample=true、temperature 0.6/top_p 0.95/top_k 20;base 原有的 do_sample… | i=961, i=961, i=475 |
+| 1047 | C7 | 自建 eval_dev_multi.py:一次加载权重、循环多组 SamplingParams(固定 seed=1234、固定题目与 n),用于做解码配置的单字段消融。 | i=1047, i=1047 |
+| 1084 | C3 | prep_data.py 的去重规则从『保留首次出现』改成『每题保留最短的正确 trace』,目的是压低生成长度。 | i=1084, i=1084 |
+| 1128 | C3 | mix.py 的长度权重重排:偏好 2k-4k token 的 trace、把 8k+ 压到 0.15,理由写在注释里(模型推理时长度约翻倍,超 16k 直接 0 分)。 | i=1128, i=1128 |
+| 1174 | C1 | 把 repetition_penalty=1.05 写进提交模型的 generation_config.json;该值来自 i=1050 的自建解码消融(同权重同题同 seed,单加这一个字段:acc 0.1583->0.225、截断 0.75->0.5083)。 | i=1174, i=1091, i=1096 |
+| 1356 | C3 | 第二轮数据:改用最短-trace 去重后的 train_all3 池重取 19000 条(mean 3.77k tok),取代第一轮的 10000 条(mean 6.28k tok)。 | i=1356, i=1359 |
+| 1551 | C3 | 写 make_wrapup.py 造 s1 式 budget-forcing 数据:把长 think 段在 4-7.5k token 处截断,插入一句预设的收尾语后再接原解答,教模型在 16k 预算内终止(该改动是否属于 C3 见 proposed_category)。 | i=1551, i=1551, i=1559 |
+| 1631 | C3 | 第三轮数据 = 2700 条新的短 trace(1000-4500 tok,排除 r2b 已用问题,seed 5)+ 1300 条 wrapup 样本,共 4000 条 15.2M token。 | i=1631, i=1634 |
+| 1701 | C4 | 第三轮改为从 ckpt/sft2/final 续训(不再从 base 重训),lr 从 1.4e-5 降到 7e-6。 | i=1701 |
+| 1789 | C5 | 最终提交换成 ckpt/sft3/final(此前 final_model 里装的是 sft1/final),依据是三者在自建 dev 上分数相当(0.225/0.183/0.217)而 sft2/sft3 用了更多去重后的数据。 | i=1789, i=1772 |
+
+### 训练序列(7 段)
+
+| i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
+|---|---|---|---|---|---|
+| 582 | smoke | 0.02h | returned | **C4** | baseline(本 run 第一次训练):--max-steps 6 的吞吐/显存冒烟,数据 train_mix8k,bs 2 x accum 4、max_length 16384。真实结局不是『跑通』而是 OOM(i=585),机械表的 returned 只表示前台命令返回了。 |
+| 607 | smoke | 0.04h | returned | **C4** | 与 i=582 逐字同数据(train_mix8k)、同 --max-steps 6 --save-steps 1000 --bs 2 --accum 4;只新增了 use_liger_kernel=True(i=605)与 PYTORCH_CUDA_ALLOC_CONF=expandable_se… |
+| 672 | real | 1.80h | consumed | **both** | baseline:第一次真实训练。相对冒烟同时动了数据(train_mix8k -> train_mix10k,10000 条 62.8M token)与超参(--max-steps 6 -> --epochs 1、lr 1.4e-5、save-steps 150),两类变量一起变,分不开。结束有据… |
+| 1154 | real | 0.95h | superseded | **C3** | 相对 sft1(i=672)只换数据:train_mix10k(10000 条,mean 6.28k tok)-> train_mix_r2(24000 条,mean 3.76k tok,最短-completion 去重 + 长度权重偏好 2-4k);--epochs 1 --lr 1.4e-5 -… |
+| 1360 | real | 0.60h | consumed | **C3** | 相对 sft1(i=672)只换数据:train_mix10k(10000 条,mean 6.28k tok,62.8M token)-> train_mix_r2b(19000 条,mean 3.77k tok,71.6M token,来自最短-trace 去重池);--epochs 1 --lr… |
+| 1641 | real | 0.00h | consumed | **unclear** | 这次启动实际从未发生,所以它不测任何变量:同一条命令开头的 `pkill -f eval_dev_multi` 匹配到了命令行里含该字符串的自身 wrapper shell,整条命令(含 nohup)被杀死。40 分钟后 i=1666 显示 runs/sft3.log 根本不存在,i=1679 的 … |
+| 1701 | real | 0.00h | consumed | **both** | 相对 sft2(i=1360)同时动了两类:数据 train_mix_r2b -> train_mix_r3(2700 条 1000-4500 tok 的新短 trace + 1300 条 make_wrapup 造的截断-收尾样本,共 4000 条 15.2M token)= C3;初始化从 ba… |
+
+### 验证序列(2 次)
+
+| i | 档位 | 样本量 | 拿到信号 | 判定了哪些改动 | 读到什么 |
+|---|---|---|---|---|---|
+| 152 | 4 | 30 | 是 |  | 0.0 |
+| 1792 | 4 | 30 | 是 | c9, c12, c17 | 0.23333333333333334 |
+
+### 异常与存疑
+
+- **1 段训练的受测变量判不出**:i=[1641]
+- **分类学缺口提案 1 条**
+  - proposed:target-rewriting(i=1551, i=1551, i=1631, i=1634)
+- **定义缺陷 5 条**
+  - (i=1360, i=1431, i=1448, i=1705, i=1710)
+  - (i=1641, i=1666, i=1679, i=1700)
+  - (i=472, i=475, i=1177, i=1791)
+  - (i=152, i=1792, i=1846)
+  - (i=1050, i=1091, i=1096, i=1772)
+- **边界情形 3 条**
+  - 『让训练跑起来』的实现层修改:i=605 的 use_liger_kernel=True(OOM 之后)、i=1336/1351 把 liger 装到 /home/ben/task/liglib 再用 PYTHONPATH 绕开被写满的 16MB root overlay 弄坏的包、i=1755/1761 杀掉占卡的僵尸 vLLM。(i=605, i=1306, i=1351)
+  - 自建代理验证器上的单字段解码消融,既是 C7 的产物又是 C1 的证据。i=1050 在同一份 ckpt/sft1/final 权重、同一批 30 题、同 n=4、同 seed=1234、同 max_tokens 下只加 repetition_penalty=1.05 一个字段:acc 0.1583 -> 0.225、截断 0.75 -> 0.5083;i=1431 在 sft2 上又跑了 3 个…(i=1050, i=1091, i=1096, i=1586)
+  - 在三条不同配方产出的 final 之间挑一个提交:i=1789 用 sft3/final 覆盖了 i=1176 装进去的 sft1/final。(i=1789, i=1176, i=1772, i=1096)
+
 ## claude_non_api_max_claude-fable-5_1m__10h_run1__bfcl_HuggingFaceTB_SmolLM3-3B-Base_17412199
 | agent | harness | benchmark | base model | 时长 | 最终分 |
 |---|---|---|---|---|---|
@@ -564,6 +640,82 @@
   - 为绕过 transformers 保存校验而改写 policy 的 GenerationConfig。(i=754, i=644)
   - v4 相对 v2 同时换了混料(C3)并**首次加上** --seed 43(v2 未指定种子)。(i=559, i=364)
 
+## claude_non_api_max_claude-opus-4-8_10h_run1__bfcl_Qwen_Qwen3-1.7B-Base_17315719
+| agent | harness | benchmark | base model | 时长 | 最终分 |
+|---|---|---|---|---|---|
+| claude-opus-4-8 | claude-code | bfcl | Qwen_Qwen3-1.7B-Base | 9.54h | 0.92 |
+
+### 改动序列(17 条)
+
+| i | 类别 | 做了什么 | 证据 |
+|---|---|---|---|
+| 150 | C2 | prep_data.py:把训练样本的 prompt 用评测同一份 templates/qwen3.jinja + inspect_ai 的 OpenAI tool 序列化渲染,completion 手工拼 '<tool_call>\n{...}\n</tool_call><\|im_end\|>'… | i=150, i=122 |
+| 162 | C3 | 数据来源定为本地缓存的 NewEden/xlam-function-calling-60k-shareGPT(过滤成单次调用,28,461 条)+ interstellarninja(478)+ gorilla(1),合计 28,940 条写入 data/train_full.jsonl。原始 Sa… | i=162, i=175, i=96 |
+| 166 | C4 | train.py:全参 SFT(非 LoRA),completion-only loss(prompt 位置 label=-100),bf16 + flash_attention_2,把 model.config/generation_config 的 eos_token_id 从 base 的 1… | i=166, i=166, i=166 |
+| 208 | C4 | OOM 修复:per-device bs 16→8、grad_accum 2→4(有效 batch 不变 32),并加 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True。原因是 151,936 的词表让 logits 张量过大。 | i=208, i=208, i=202 |
+| 252 | proposed:base_token_repa… | 第一版特殊 token 修复:把 151644/151645/151657/151658/151667/151668 六行 embedding 设成已训练 token 的均值 + 小噪声。失败——高维均值互相抵消,norm 只有 0.381,与原来的 0.3748 没有区别。 | i=252, i=252, i=259 |
+| 262 | proposed:base_token_repa… | 第二版特殊 token 修复(决定性改动):按已训练 token 的逐维 mean/std 采样高斯初始化 5 个 token(norm 1.539),并把 base 已训练的 <\|endoftext\|>(151643)那一行直接拷进 <\|im_end\|>(norm 1.883)。诊断来自第… | i=262, i=262, i=269, i=249 |
+| 323 | C7 | 自建 analyze_errors.py:解析官方 inspect_ai 日志,把每条失败归到 no_toolcall / multi_toolcall / wrong_fn / wrong_args 四类。它不替代官方评测(读的正是官方日志),但后续每一次改动方向都由它的输出决定。 | i=323, i=332 |
+| 375 | C1 | 在 train.py 的保存路径里把 temperature=0.0 / top_p=1.0 / do_sample=false 写进保存出来的 generation_config.json,并 pop 掉 top_k,以便 vLLM 的 --generation-config auto 走贪婪解码… | i=375, i=374, i=447 |
+| 393 | C3 | 配方改动:把 4,760 条计算/科学类样本再复制一份接到 train_full 后面并打散,得到 data/train_boost.jsonl(33,700 条),提高与 exec_simple 题型的匹配比例。 | i=393, i=394 |
+| 438 | C1 | finalize.py:幂等地把 eos_token_id=151645、bos=151643、do_sample=false、temperature=0.0、top_p=1.0 写进任一模型目录的 config.json / generation_config.json,并可复制成 final_m… | i=438, i=667, i=124 |
+| 537 | C5 | 候选选择 + 回归守卫:v1 拿到 0.91 后立刻 finalize 并复制成 final_model,此后只有分数严格超过 0.91 才允许覆盖(v3/v4/v5 都是 0.91,都没覆盖)。 | i=537, i=537 |
+| 551 | C4 | v2:epochs 3→4,数据(data/train_full.jsonl)、lr(2e-5)、bs/grad_accum(train_eval.sh 固定 8/4)与 v1 逐字相同。是本条 run 里第一次干净的单变量 C4 对照,但因保存崩溃没拿到结果。 | i=551, i=551, i=506 |
+| 660 | C1 | 流水线自伤修复:去掉对 in-memory GenerationConfig 的 temperature/top_p/top_k 赋值(transformers 4.57 在 save 时会拒绝 do_sample=False 与 temperature=0.0 同时出现),改为保存完再写 raw … | i=660, i=653 |
+| 705 | C3 | 自造 2,900 条定向合成数据(gen_synth.py):平行列表 item/quantity/price 的对位映射、类型多样、只给必需参数;与 xlam 混成 data/train_synth.jsonl(31,840 条)。函数名与测试集 50 个函数零重叠。 | i=705, i=710, i=716 |
+| 793 | C3 | 再加一批"条件性可选参数"合成数据(gen_synth_optional.py):只有当查询显式提到时才带上可选参数,否则省略走默认;合成 data/train_synth2.jsonl(33,540 条)。针对 v1 的 calculate_investment_value 多带 adjust_f… | i=793, i=840 |
+| 895 | C4 | v6:重做 v2 的 epochs 3→4(同数据 train_full、同 lr 2e-5、同 bs/ga),这次保存成功,拿到 0.92——全 run 唯一一次超过 0.91。 | i=895, i=894 |
+| 933 | C5 | 最终提交:v6 拿到 0.92 后把 model_v6 finalize 并覆盖 final_model,并在 i=937 对 final_model 目录本身再跑一次全量评测复核。 | i=933, i=934 |
+
+### 训练序列(11 段)
+
+| i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
+|---|---|---|---|---|---|
+| 188 | smoke | 0.07h | superseded | **unclear** | baseline(本 run 第一次训练)。冒烟:train_full 前 3000 条、1 epoch、bs16 ga2 lr1e-5,目的是验管线(尤其 eos/停止行为)能不能跑通,不在验 C3 也不在验 C4。**真实结局不是 superseded 而是崩溃**:第 13/94 步 CUDA… |
+| 208 | smoke | 0.07h | consumed | **C4** | 数据逐字相同(data/train_full.jsonl 同一 --subset 3000)、epochs/lr 相同;只改 bs 16→8、grad_accum 2→4,并加 expandable_segments。纯超参,为绕开 OOM。真实结局:跑完,train_runtime 147.24s… |
+| 256 | smoke | 0.02h | superseded | **both** | 同时改了四项:subset 3000→5000、epochs 1→2、lr 1e-5→2e-5,以及新增特殊 token embedding 均值初始化(c5)。数据量与训练方法同时变,属混杂。**结局存疑**:机械层记 superseded/0.02h,但 22:08:56 的 `ps -C py… |
+| 264 | smoke | 0.14h | consumed | **C4** | 命令行与 i=256 **逐字相同**(同数据、同 subset、同 epochs、同 lr、同 bs/ga);唯一差别是 train.py 里的 embedding 初始化方式由均值改成逐维高斯 + 拷 base eos(c6)。这是本 run 结构上最接近单变量的一次训练对照,但因两个进程写同一… |
+| 341 | real | 0.14h | consumed | **both** | 相对冒烟:数据从 5,000 条子集换成全量 28,940 条(C3),epochs 2→3(C4);bs/ga/lr 与 i=264 相同,embedding 修复保留。数据规模与轮数同时变,属混杂。**真实时长远大于机械层记的 0.14h**:22:14:09 启动,2,715 步 × ~1.5… |
+| 551 | real | 7.55h | run_end | **C4** | 相对 v1(i=341):**只改 epochs 3→4**,data/train_full.jsonl、lr 2e-5、bs 8、grad_accum 4 全部逐字相同(train_eval.sh 把 bs/ga 写死)。**真实结局不是 run_end(7.55h)而是崩溃**:4 个 epoc… |
+| 664 | smoke | 0.01h | returned | **unclear** | 64 条样本、1 epoch 的前台冒烟,唯一目的是验证 c14 的保存修复能不能落盘,不在验数据配方也不在验方法。结局与机械层一致:前台返回,exit 0,/tmp/testsave/model.safetensors 存在,generation_config.json 里 eos=151645 … |
+| 670 | real | 5.84h | run_end | **C3** | 相对 v1(i=341):**只改数据**,train_full.jsonl(28,940)→ train_boost.jsonl(33,700,计算类样本 ×2);epochs 3、lr 2e-5、bs 8、ga 4 由 train_eval.sh 固定,与 v1 逐字相同。这是本 run 里唯一… |
+| 721 | real | 5.72h | run_end | **C3** | 对应的训练是 v4:相对 v1 **只改数据**,train_full(28,940)→ train_synth(31,840 = train_full + 2,900 条定向合成);epochs/lr/bs/ga 与 v1 逐字相同。**机械层在这里记错了对象**:i=721 启动的是 /tmp/… |
+| 837 | real | 3.09h | run_end | **C3** | 相对 v4:**只改数据**,train_synth(31,840)→ train_synth2(33,540 = train_full + 定向合成 + 条件性可选参数合成);epochs/lr/bs/ga 不变。**真实结局不是 run_end(3.09h)**:03:57:24 启动,3,14… |
+| 895 | real | 1.65h | run_end | **C4** | 相对 v1:**只改 epochs 3→4**(数据 train_full、lr 2e-5、bs 8、ga 4 全部逐字相同),即 v2 那次崩掉的配置重做。**真实结局不是 run_end(1.65h)而是正常跑完并被消费**:05:23:50 启动,3,620 步 × ~1.55s ≈ 94 分… |
+
+### 验证序列(9 次)
+
+| i | 档位 | 样本量 | 拿到信号 | 判定了哪些改动 | 读到什么 |
+|---|---|---|---|---|---|
+| 67 | — | — | 是 |  | 未拿到分数——该事件根本不是评测。它是 /tmp/render_real.py:用 bfcl_evaluation_co… |
+| 85 | 3 | 25 | 是 |  | 0.0(base 模型基线,--limit 25)。分数不是在 i=85 拿到的:i=85 只是 nohup 启动,直到… |
+| 224 | 3 | 25 | 是 | c1, c2, c3, c4 | 0.000。判定的是"第一版管线整体"(格式对齐 + xlam 数据 + 全参 SFT + bs8/ga4),此时还没有… |
+| 315 | 4 | — | 是 | c6, c1, c2, c3 | 0.72(全量 100 题,--max-connections 8)。这次评测判定的核心是 c6(高斯初始化 + 拷 b… |
+| 397 | — | — | 是 |  | 未拿到——这不是一次评测。i=397 启动的是 /tmp/wait_eval_v1.sh 编排脚本(先 while pg… |
+| 416 | — | — | 是 |  | 未拿到——同样是 wait_eval_v1.sh 编排脚本的第二次启动(harness 后台任务 b1cy25wrc),… |
+| 461 | — | — | 是 | c1, c2, c3, c6, c7, c8 | 0.91。这是三行编排脚本里唯一真正跑成的一次:它在 model_v1 训练结束后先 finalize(写 eos=15… |
+| 881 | 4 | — | 是 | c16, c8 | 0.91。判定对象不是某个新配方,而是**交付物本身**:直接对 final_model/ 目录(此时是 model_v… |
+| 937 | 4 | — | 是 | c13, c17, c8 | 0.92。最终交付物复核:model_v6 被 finalize 并覆盖 final_model 之后,再对 final… |
+
+### 异常与存疑
+
+- **2 段训练的受测变量判不出**:i=[188, 664]
+- **分类学缺口提案 1 条**
+  - base_token_repair(i=249, i=249, i=245, i=262, i=312)
+- **定义缺陷 7 条**
+  - (i=67, i=67, i=70)
+  - (i=397, i=410, i=454, i=460, i=534)
+  - (i=506, i=670, i=930, i=930)
+  - (i=341, i=397, i=397, i=519, i=521)
+  - (i=653, i=769, i=774, i=874, i=934)
+  - (i=256, i=259, i=294, i=282, i=306)
+  - (i=200, i=200, i=202)
+- **边界情形 4 条**
+  - (i=323, i=334, i=780)
+  - (i=537, i=806, i=933)
+  - (i=183, i=663, i=664)
+  - (i=660, i=655, i=667)
+
 ## claude_non_api_max_claude-opus-4-8_10h_run1__bfcl_Qwen_Qwen3-4B-Base_17409821
 | agent | harness | benchmark | base model | 时长 | 最终分 |
 |---|---|---|---|---|---|
@@ -731,6 +883,100 @@
 - **边界情形 2 条**
   - bc1_serving_artifact_vs_decoding_config(i=221, i=212, i=516)
   - bc2_official_log_analysis_vs_proxy_verifier(i=242, i=244, i=415)
+
+## claude_non_api_max_claude-opus-4-8_10h_run1__gpqamain_google_gemma-3-4b-pt_17314663
+| agent | harness | benchmark | base model | 时长 | 最终分 |
+|---|---|---|---|---|---|
+| claude-opus-4-8 | claude-code | gpqamain | google_gemma-3-4b-pt | 8.68h | 0.2611607142… |
+
+### 改动序列(23 条)
+
+| i | 类别 | 做了什么 | 证据 |
+|---|---|---|---|
+| 123 | C3 | 数据来源定为 nvidia/Llama-Nemotron-Post-Training-Dataset 的 SFT/science split(R1 蒸馏的科学 MCQ 推理),流式抽样并用 GPQA shingle 做去污染过滤;全程只此一个来源。 | i=97, i=123 |
+| 143 | C2 | train.py 用评测同一份 gemma3.jinja 渲染训练样本:user 侧 add_generation_prompt=True 取裸 assistant 头再手工拼 completion,prompt token 全部 mask 成 -100,目标文本以 'ANSWER: X' 收尾——… | i=143, i=123 |
+| 143 | C4 | LoRA r=32 / alpha=64,target 正则只挂 language_model 下的 q/k/v/o/gate/up/down_proj(排除 vision tower),不设 modules_to_save,lm_head 与 embed_tokens 不训。 | i=143 |
+| 143 | C1 | train.py 在每个 merged 目录**整份重写** generation_config.json 为贪婪六字段;相对 base 的 {do_sample:true, top_k:64, top_p:0.95} 是「加 temperature:0.0 / do_sample:false,并顺… | i=143, i=79, i=75 |
+| 189 | proposed:train_feasibili… | 装 liger-kernel 并在 train.py 顶部 apply_liger_kernel_to_gemma3(fused_linear_cross_entropy=True),绕开 262k 词表 logits 转 fp32 的瞬时显存——bs=16 OOM 的真因。 | i=173, i=189, i=166 |
+| 205 | proposed:train_feasibili… | 给 train.py 加 --grad_ckpt 开关并把梯度检查点改成条件执行,以便实测「liger 省下显存后能否关掉检查点提速」。 | i=203, i=205 |
+| 269 | C7 | 自建 show_eval.py,从 inspect_ai 日志里抽出官方 accuracy 之外的诊断量:no-ANSWER-found 计数、avg_comp_chars、逐样本输出尾部。此后每一次配方判断实际都靠这两个量,而不是靠 accuracy。 | i=269 |
+| 407 | C1 | 给 work/out_v1/merged 的 generation_config 加 repetition_penalty=1.3(只加这一个字段,其余原样保留),测「重复惩罚能否救回 39% 的 no-ANSWER」。 | i=407 |
+| 413 | proposed:target_text_sha… | 新建 build_concise.py:同一批 Nemotron 源行,改用 </think> 之后的后验总结当训练目标(丢掉 think 块的绕圈探索),max_assist_tok 由 2048 降到 700;prompt TEMPLATE 与 build_data.py 逐字相同。 | i=413, i=412 |
+| 435 | proposed:target_text_sha… | 修 build_concise 的目标文本:把开头**行内**的 'The answer is (X).' 也剥掉,强制推理在前、答案在后。 | i=435 |
+| 478 | C1 | 把 repetition_penalty 从 v1 的 config 里 pop 掉,恢复纯贪婪,理由写明是「for clean comparison later」。 | i=478, i=478 |
+| 521 | proposed:train_feasibili… | 写 wait_eval.sh:训练日志一出现 'saved merged model' 就自动接评测,消掉训练→评测之间的 GPU 空转;此后 v2–v6 全部走这条链。 | i=521 |
+| 552 | C3 | v3 配方:从 science_summary_big 里按 assist_tok>=180 筛出「实质性总结」子集(37,987 行),不改写文本、只改选样阈值。 | i=552, i=552 |
+| 566 | proposed:target_text_sha… | 新建 build_deriv.py:改用 think 块本身(真实推导步骤)当目标,并按「每 100 词回溯标记 >2.5 个」过滤掉 R1 的绕圈轨迹。 | i=566, i=566 |
+| 612 | C3 | v4 配方:45k 推导 + 30k 总结混合(seed 42),第一次把两种目标形态按比例混在一起。 | i=612, i=611 |
+| 662 | C3 | v5 配方:推导加重到 45k 推导 + 15k 总结(约 75/25)。 | i=662 |
+| 662 | C4 | v5 同时把 LoRA rank 32→48、alpha 64→96(加容量),与 c16 的配方改动同批进行。 | i=662 |
+| 695 | C3 | v6 配方:回到均衡的 45k 推导 + 40k 总结(改用 science_summary_big,seed 11),deriv 占比 0.53。 | i=695, i=694 |
+| 695 | C4 | v6 把 rank/alpha 退回 32/64,撤销 v5 的容量增加(agent 判定「data balance, not capacity, is the bottleneck」)。 | i=695, i=694 |
+| 716 | C7 | 写 rep_sweep.sh:一个解码配置扫描器,循环改写目标目录 generation_config 的 repetition_penalty 再跑 evaluate.py,并同时报 no-ANSWER-found——把 C1 的判定自动化成一条命令。 | i=716, i=716 |
+| 738 | C1 | 把 work/out_v6/merged 逐字节拷成 final_model,并**整份重写** generation_config 为纯贪婪六字段(与 train.py 写的一致,即不含 repetition_penalty)。 | i=738, i=738 |
+| 781 | C1 | 锁定 final_model 的解码配置:再次整份重写,在贪婪六字段基础上加 repetition_penalty:1.1(依据是 i=778 读回的 256 题对照)。 | i=781 |
+| 836 | C1 | 把 work/out_v6/merged 的 config 整份重写回纯贪婪(删掉 rep_sweep 留下的 repetition_penalty),用于和 final_model 做同权重、单字段、全量 448 题的对照。 | i=836, i=836 |
+
+### 训练序列(14 段)
+
+| i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
+|---|---|---|---|---|---|
+| 155 | smoke | 0.01h | returned | **C4** | baseline(全 run 第一次训练)。48 样本、bs 4、accum 2、attn eager 的可行性冒烟,验的是 Gemma3 多模态 forward + LoRA + 梯度检查点能不能跑通。结局:前台返回,成功(loss 1.50,59.6M 可训参数)。 |
+| 161 | smoke | 0.04h | superseded | **C4** | 相对 i=155:bs 4→16、accum 2→1、attn eager→flash_attention_2、limit 48→256,为吞吐。**真实结局:OOM 崩溃**(transformers trainer.compute_loss 里 262k 词表 logits 转 fp32),不是… |
+| 191 | smoke | 0.03h | returned | **C4** | 相对 i=161:超参不变(bs 16 / FA2),变的是训练脚本装上了 liger 融合 CE(见 c5)。结局:前台返回,成功,8 samples/s、loss 1.43→1.20。 |
+| 197 | smoke | 0.03h | superseded | **C4** | 相对 i=191:bs 16→32,纯吞吐对比。**真实结局:跑完并返回了 train_runtime**(50.61s、7.587 samples/s、峰值 47967 MiB),不是被作废——agent 据此判定 bs=32 更慢,回到 16。 |
+| 207 | smoke | 0.15h | discarded | **C4** | 相对 i=197:bs 回 16、新加 --grad_ckpt 0(关梯度检查点)。**真实结局:OOM 崩溃**(峰值 80383 MiB / 79.18 GiB 卡),据此锁定 grad_ckpt=1。 |
+| 213 | real | 0.06h | consumed | **unclear** | 相对 i=207:limit 512→1024、grad_ckpt 回 1、首次 --save_merged 1。它验的既不是数据配方也不是超参,而是 merge→save→vLLM-load 这条**产物落盘与服务链路**(见 boundary_case #1)。结局:跑完并落出 work/val… |
+| 238 | real | 1.19h | consumed | **both** | baseline(第一次真实训练)。同时确定了数据(40k Nemotron science 全 trace)与超参(1 epoch / bs 16 / accum 2 / lr 2e-4 / rank 32 / alpha 64),两者都是首次设定,预算无法拆给 C3 或 C4 任一方。结局:01… |
+| 478 | real | 0.08h | superseded | **both** | 相对 v1(i=238):数据换成 build_concise 产出的 50k 后验总结(C3/目标文本改写),同时 epochs 1→2、bs 16→32、新加 --max_len 1408(C4)。**真实结局:agent 在 i=501 主动 `kill 9140` 杀掉**(嫌 2 epoc… |
+| 501 | real | 0.03h | last_seen | **C4** | 相对 i=478:数据逐字相同(data/science_summary.jsonl),其余超参逐字相同,**只把 --epochs 2 改成 1**。这是本 run 少数几次单变量训练之一,但动机是省时而非验证。**真实结局:跑完**(约 38 分钟,02:41→03:20),由 wait_eva… |
+| 560 | real | 0.03h | last_seen | **both** | 相对 v2(i=501):数据换成 science_v3.jsonl(assist_tok>=180 的实质性总结子集,C3),同时 epochs 1→2(C4)。两项一起变,是 v3 回归到 0.164 之后无法归因的直接原因——agent 自己把它归给 epochs(『2 epochs over… |
+| 612 | real | 4.06h | last_seen | **both** | 相对 v3(i=560):数据换成 45k 推导 + 30k 总结的混合(C3),同时 epochs 2→1(C4)。注:相对 **v2**(i=501)超参逐字相同、只差数据,按那个基准就是纯 C3——见 boundary_case #3。**真实结局:跑完,约 1.26h**(04:34:50→… |
+| 662 | real | 0.00h | discarded | **unclear** | 【骨架此行不是训练】产物 data/science_deriv2.jsonl 由 work/build_deriv.py 生成,是一次 **CPU 数据构建**,不是 train.py 启动,没有受测变量可言。**真实结局:agent 在 13 秒后自己 `kill 16768` 并 `rm -f`… |
+| 662 | real | 0.00h | discarded | **both** | 【骨架漏掉的第 7 次真实训练:v5】同一条 Bash 事件里还启动了 `train.py --out work/out_v5`。相对 v4(i=612):数据换成推导加重的 45k+15k 混合(C3),同时 rank 32→48 / alpha 64→96(C4)。agent 原话即『deriv… |
+| 695 | real | 1.39h | consumed | **both** | 相对 v5(i=662 的训练):数据换成均衡的 45k+40k 混合(C3),同时 rank 48→32 / alpha 96→64(C4)。相对 v4(i=612)则超参逐字相同、只差数据(纯 C3)——见 boundary_case #3。**真实结局:跑完,约 1.35h**(06:59:3… |
+
+### 验证序列(15 次)
+
+| i | 档位 | 样本量 | 拿到信号 | 判定了哪些改动 | 读到什么 |
+|---|---|---|---|---|---|
+| 82 | 3 | 8 | 是 |  | 0.0 |
+| 225 | 3 | 16 | 是 | c1, c2, c3 | 0.125 |
+| 356 | 3 | 128 | 是 | c4, c1, c2, c3 | 0.125 |
+| 407 | 3 | 96 | 是 | c8 | 0.13541666666666666 |
+| 523 | 3 | 128 | 是 |  | 未拿到——该链在 8 秒后被 i=527 的 `kill 9786` 杀掉 |
+| 529 | 3 | 128 | 是 | c10, c11 | 0.234375 |
+| 576 | 3 | 128 | 是 | c14 | 0.1640625 |
+| 616 | 3 | 128 | 是 |  | 未拿到——该链被 i=622 的 `pkill -f "wait_eval.sh logs/train_v4"` 杀掉 |
+| 633 | 3 | 128 | 是 | c15, c12 | 0.2734375 |
+| 672 | 3 | 128 | 是 | c16, c17 | 0.21875 |
+| 707 | 3 | 128 | 是 | c18, c19 | 0.296875 |
+| 742 | 3 | 256 | 否 | c22, c20 | 0.2422(无惩罚)/ 0.293(repetition_penalty=1.1),均为 limit=256 |
+| 785 | — | — | — | c22, c15, c20 | 0.2695(v6 @ rep 1.15)/ 0.2656(v4 @ rep 1.1),均为 limit=256 |
+| 803 | 4 | 448 | 是 | c22, c21, c18 | 0.27232142857142855 |
+| 836 | 4 | 448 | 否 | c23, c22 | 0.22321428571428573 |
+
+### 异常与存疑
+
+- **2 段训练的受测变量判不出**:i=[213, 662]
+- **3 次验证没有拿到信号**:i=[742, 785, 836]
+- **分类学缺口提案 2 条**
+  - train_feasibility(i=173, i=200, i=210, i=521)
+  - target_text_shaping(i=413, i=566, i=404, i=549)
+- **定义缺陷 9 条**
+  - (i=662, i=662, i=692)
+  - (i=404, i=475, i=549)
+  - (i=778, i=833, i=860)
+  - (i=785, i=800)
+  - (i=527, i=622)
+  - (i=612, i=656, i=785)
+  - (i=200, i=202, i=210, i=212)
+  - (i=143, i=79, i=404, i=549)
+  - (i=738, i=781, i=836, i=833, i=860, i=265)
+- **边界情形 3 条**
+  - schema 只给了 C3 / C4 / both / unclear 四个取值,但本 run 有两次训练验的既不是数据配方也不是超参:i=155 验的是「Gemma3 多模态 forward + LoRA + 梯度检查点能不能跑通」,i=213 验的是「merge→save→vLLM-load 这条产物落盘与服务链路」。按现定义只能记 `unclear`,但这不是「证据不足」——证据非常充分,是…(i=154, i=212)
+  - C5 的定义是「训练中途密集存 checkpoint,扫描多个步数挑一个交」。本 run 的 train.py 是 `save_strategy='no'`(i=143),一个中间 checkpoint 都没存过;它挑的是 v1…v6 **六次独立训练**的终点产物(i=738 选 v6,i=785 又回头复测 v4)。判定手段与 C5 一模一样——第三/四档、零重训、每个候选几分钟——但对象不在…(i=143, i=738, i=785)
+  - schema 写的是「与上一次训练相比」。按这个基准,v4(i=612)与 v6(i=695)都得记 `both`:v4 相对 v3 变了数据 + epochs,v6 相对 v5 变了数据 + rank。但 v4、v6 相对 **v2(i=501)与 v4(i=612)** 的超参串是**逐字相同**的 `--epochs 1 --bs 32 --accum 2 --lr 2e-4 --rank …(i=612, i=695, i=662)
 
 ## claude_non_api_claude-opus-5_10h_run1__gpqamain_Qwen_Qwen3-4B-Base_17415823
 | agent | harness | benchmark | base model | 时长 | 最终分 |
@@ -1038,6 +1284,92 @@
   - smoke-has-no-tested-variable(i=89, i=85)
   - cross-recipe-candidate-selection-vs-C5(i=60, i=157, i=258)
   - passive-hyperparam-adjustment(i=221, i=245, i=145)
+
+## claude_non_api_claude-opus-4-7_10h_run3__gsm8k_google_gemma-3-4b-pt_17127053
+| agent | harness | benchmark | base model | 时长 | 最终分 |
+|---|---|---|---|---|---|
+| claude-opus-4-7 | claude-code | gsm8k | google_gemma-3-4b-pt | 6.62h | 0.6603487490… |
+
+### 改动序列(20 条)
+
+| i | 类别 | 做了什么 | 证据 |
+|---|---|---|---|
+| 96 | C3 | v1 SFT 数据来源:GSM8K train 全量上采样 3 倍 + MetaMathQA 的 GSM 子集(GSM_AnsAug/GSM_Rephrased)约 5 万行,合计 72,419 行。 | i=96, i=100 |
+| 96 | C2 | 把训练样本的 prompt/answer 与评测口径对齐:逐字复制 inspect_evals gsm8k 的 MATH_PROMPT_TEMPLATE 作为 user 轮,剥掉 GSM8K 的 <<...>> 计算器标注,响应统一以 "ANSWER: X" 结尾。 | i=96, i=96, i=102 |
+| 102 | C4 | v1 训练方法:全参微调(非 LoRA),bf16 + 8bit AdamW + gradient checkpointing,手工拼 gemma3 turn 格式而不走 apply_chat_template。 | i=102, i=102 |
+| 132 | proposed:infra-fit | v1 正式训练的 batch 32→16、grad-accum 1→2。动机是 bs=32 在真实训练中 OOM,不是为了提分。按 §3 C4 的对象清单会被收进 C4;若不接受 infra-fit 提案则归 C4。见 definition_defect d1。 | i=132, i=154 |
+| 222 | C1 | 改 sft_out/final/config.json 的 eos_token_id:1 → [1, 106],想让 vLLM 在 <end_of_turn> 停下。 | i=222, i=223 |
+| 239 | C1 | 把 tokenizer 侧的 eos_token 从 <eos> 覆盖成 <end_of_turn>(special_tokens_map.json + tokenizer_config.json)。 | i=239, i=239 |
+| 260 | C1 | 回滚 c5+c6:tokenizer eos 改回 <eos>,config.json eos_token_id 改回 1。agent 判定这两次改动无效甚至有害。 | i=260, i=259 |
+| 268 | C2 | 造 fewshot 版训练数据,逐条模仿评测时模型真实看到的 10-shot 布局:system 位放 N 条 GSM8K train 的示例,target 放 user 轮,响应以 ANSWER 收尾。这是本 run 分数跃迁的主因。 | i=268, i=268 |
+| 272 | C2 | train_sft_fewshot.py:在训练文本里复现 gemma3 模板把 system 前置进第一个 user 轮的行为,并在 <end_of_turn> 之后再显式补一个 <eos>,让 vLLM 一定停。 | i=272, i=272 |
+| 283 | C3 | 收缩 fewshot 配方:每题重复 3 轮→2 轮,shot 数从 [3,5,8,10]→[2,3,4,5,6],数据量 22,419 → 14,946 行(为了压短序列)。 | i=283, i=286 |
+| 338 | C1 | final_model/generation_config.json 一次改四个字段:do_sample true→false、新增 temperature 0.0、pop 掉 top_k(64)与 top_p(0.95)。i=326 与 i=340 构成一次半受控 C1 对照:权重是 i=329 … | i=338, i=338, i=339 |
+| 346 | C3 | v3 数据配方:GSM8K train ×2 + MetaMathQA 四个 GSM 变体各取共 15,000 + 5,000 条纯 GSM8K,合计 34,946 行(v2 是 14,946)。 | i=346, i=349, i=349 |
+| 371 | proposed:infra-fit | v3 训练的 batch 12→6、grad-accum 2→4,并加 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True。是 i=356 在第 1 步 OOM 之后的资源适配,不是为提分;若不接受 infra-fit 提案则归 C4。见 definit… | i=371, i=371, i=367 |
+| 437 | C1 | 把 final_model 的贪婪 generation_config.json 整份 cp 到 sft_out3/final —— 新 checkpoint 保存时又生成了自己的采样版 config,必须每次重新覆盖。整份覆盖顺手删掉了新 config 里原有的字段(见 §4 的字段级 diff)… | i=437, i=438 |
+| 470 | C5 | 把提交目录 final_model 从 v2(sft_out2/final)整体换成 v3(sft_out3/final)。依据是 500 题上 0.666 vs 0.664——差距 0.2 点,远小于噪声。 | i=470, i=469 |
+| 491 | C4 | v4:从 sft_out3/final 继续训练,lr 5e-6→2e-6、epochs 1→0.5,数据不变(fewshot_data_v2)。纯 C4 单向变化。 | i=491, i=490 |
+| 533 | C1 | 从 sft_out3/final/generation_config.json 里删掉 "temperature": 0.0。动机是 transformers 的 GenerationConfig 保存校验拒收 do_sample=false + temperature=0.0 的组合,导致 v4 … | i=533, i=516 |
+| 539 | C1 | 同样从提交目录 final_model/generation_config.json 里删掉 "temperature": 0.0。这一步没有任何评测背书,直接把提交模型从贪婪解码打回采样解码,代价 6.8 个点(见 i=584)。 | i=539, i=538 |
+| 570 | C1 | 给 sft_out4/final/generation_config.json 补 "do_sample": false —— v4 的 save_pretrained 存出来的 config 里既没有 do_sample 也没有 temperature。 | i=570, i=564 |
+| 593 | C1 | 把 "temperature": 0.0 加回 final_model/generation_config.json(撤销 c18)。i=584 与 i=595 因此构成一次严格单字段 C1 对照:i=581 的 ls -la 记下 final_model 权重 shard 的 mtime 是 Ap… | i=593, i=592, i=582 |
+
+### 训练序列(17 段)
+
+| i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
+|---|---|---|---|---|---|
+| 104 | smoke | 0.02h | returned | **unclear** | baseline —— train_sft.py 写完 3 秒后的第一次执行,没有任何可比对象;它在验的是「脚本跑不跑得通」,不是 C3 也不是 C4。 |
+| 109 | smoke | 0.02h | returned | **C4** | 数据与脚本不变;batch 2→8、max-length 显式设 1024。显存/吞吐探针。 |
+| 115 | smoke | 0.01h | returned | **C4** | batch 8→16、grad-accum 2→1、max-length 1024→768;数据不变。 |
+| 120 | smoke | 0.02h | returned | **C4** | batch 16→32、max-length 768→640;数据不变。是本批显存探针的上界试探。 |
+| 127 | real | 0.03h | superseded | **C4** | 第一次全量真实训练:沿用 i=120 探到的 bs32/len640,加 lr 2e-5、save-steps 500、后台跑。真实结局:bs=32 在真实训练中 OOM,被 i=132 取代(机械层记 superseded 是对的)。 |
+| 132 | real | 0.96h | consumed | **C4** | 与 i=127 只差 batch 32→16、grad-accum 1→2(OOM 适配),数据逐字相同。真实结局:跑满 2264 步 / epoch 1.0 正常结束,产物 sft_out/final 落盘,GPU 归零。 |
+| 277 | smoke | 0.02h | returned | **both** | 与上一次训练(i=132)同时换了两件事:数据从 sft_data 换成 fewshot_data(C3/C2),脚本换成 train_sft_fewshot.py 且起点从 base 改成 sft_out/final、max-length 640→2048(C4)。 |
+| 280 | smoke | 0.02h | returned | **C4** | batch 2→4;数据与脚本不变。 |
+| 288 | smoke | 0.01h | returned | **both** | i=285 用改过的 prepare_fewshot_data.py 重生成了数据(22,419→14,946 行、shot 数变短),同时 max-length 2048→1536。数据与超参一起动了。 |
+| 291 | smoke | 0.02h | returned | **C4** | batch 4→8、grad-accum 2→1、max-length 1536→1280;数据不变。 |
+| 294 | real | 0.68h | consumed | **both** | v2 正式训练。相对 v1(i=132)数据换成 fewshot 版(C3/C2),同时起点从 base 换成 sft_out/final、lr 2e-5→5e-6、max-length 640→1472(C4)。两类同时变,拆不开。真实结局:跑满 935 步正常结束,sft_out2/final … |
+| 351 | smoke | 0.01h | returned | **C4** | 数据仍是默认的 fewshot_data(命令里没有 --data-dir),只把起点换成 sft_out2/final、batch 8→16、max-length 1280→1200。真实结局:CUDA OOM,机械层记的 returned 只是进程返回,这次冒烟本身失败了。 |
+| 353 | smoke | 0.02h | returned | **C4** | batch 16→12,其余与 i=351 逐字相同。OOM 之后的下探。 |
+| 356 | real | 0.03h | superseded | **both** | v3 第一次尝试:数据换成 fewshot_data_v2(14,946→34,946 行,C3),同时 batch 8→12、grad-accum 2、max-length 1472→1400(C4)。真实结局:第 1 步就 CUDA OOM 进程死亡,agent 在 i=365 查 ps 发现进… |
+| 371 | real | 1.54h | consumed | **C4** | 相对上一次训练(i=356)只改 batch 12→6、grad-accum 2→4 并加 expandable_segments,数据逐字相同——所以这一段单独看是纯 C4(且是资源适配)。相对上一次「成功的」训练 i=294 才是 both。真实结局:跑满 1457 步,train_runtim… |
+| 491 | real | 0.82h | superseded | **C4** | v4 第一次尝试:数据(fewshot_data_v2)与 batch/grad-accum/max-length 全部与 i=371 逐字相同,只改 lr 5e-6→2e-6、epochs 1→0.5、起点换成 sft_out3/final、save-steps 500→1000。真实结局是机械层… |
+| 541 | real | 0.75h | consumed | **C4** | 与 i=491 逐字相同,只把 --save-steps 1000 改成 2000;真正解除阻塞的是 i=533 删掉源 checkpoint 配置里的 temperature。所以它是 i=491 那次 C4 实验(lr 2e-6、0.5 epoch)的重跑。真实结局:跑满 729 步,sft_o… |
+
+### 验证序列(14 次)
+
+| i | 档位 | 样本量 | 拿到信号 | 判定了哪些改动 | 读到什么 |
+|---|---|---|---|---|---|
+| 62 | 3 | 30 | 是 |  | 0.000 |
+| 198 | 3 | 100 | 是 | c1, c2, c3 | 0.230 |
+| 224 | 3 | 100 | 是 | c5 | 0.220 |
+| 241 | 3 | 100 | 是 | c6 | 0.210 |
+| 322 | 3 | 100 | 是 | c8, c9 | 0.610 |
+| 326 | 3 | 150 | 是 | c8, c9 | 0.600 |
+| 340 | 3 | 150 | 是 | c11 | 0.660 |
+| 439 | 3 | 150 | 是 | c12, c14 | 0.680 |
+| 450 | 3 | 500 | 是 | c12, c14 | 0.666 |
+| 461 | 3 | 500 | 是 | c12 | 0.664 |
+| 474 | 3 | 200 | 是 | c15 | 0.685 |
+| 572 | 3 | 500 | 是 | c16, c19 | 0.578 |
+| 584 | 3 | 500 | 是 | c15, c18 | 0.602 |
+| 595 | 3 | 500 | 是 | c20 | 0.670 |
+
+### 异常与存疑
+
+- **1 段训练的受测变量判不出**:i=[104]
+- **分类学缺口提案 1 条**
+  - infra-fit(i=371, i=367, i=352, i=541, i=154)
+- **定义缺陷 4 条**
+  - (i=367, i=371)
+  - (i=528, i=530, i=567)
+  - (i=437)
+  - (i=513, i=516, i=522)
+- **边界情形 3 条**
+  - (i=222, i=239, i=221)
+  - (i=470, i=469, i=458)
+  - (i=539, i=538, i=590)
 
 ## claude_non_api_max_claude-opus-4-8_10h_run1__gsm8k_Qwen_Qwen3-1.7B-Base_17315721
 | agent | harness | benchmark | base model | 时长 | 最终分 |
@@ -1433,6 +1765,87 @@
   - (i=402, i=409, i=415)
   - (i=157, i=391, i=391)
 
+## claude_non_api_claude-opus-5_10h_run1__humaneval_Qwen_Qwen3-4B-Base_17415833
+| agent | harness | benchmark | base model | 时长 | 最终分 |
+|---|---|---|---|---|---|
+| claude-opus-5 | claude-code | humaneval | Qwen_Qwen3-4B-Base | 8.41h | 0.8170731707… |
+
+### 改动序列(31 条)
+
+| i | 类别 | 做了什么 | 证据 |
+|---|---|---|---|
+| 263 | C2 | codeutil.py: AST-rewrite every training target so it survives the official scorer — one top-level def, imports moved INSIDE the body, helpers after; e… | i=263, i=263 |
+| 315 | C3 | prep_data.py: pick the SFT sources — bigcode/self-oss-instruct-sc2-exec-filter-50k, MBPP full, Magicoder-OSS-Instruct-75K, Magicoder-Evol-Instruct-110… | i=315, i=320 |
+| 348 | C3 | codeutil edit: drop degenerate solutions (bare pass / NotImplementedError) and keep only the top-level helpers/classes the target actually references,… | i=348, i=348 |
+| 350 | C2 | codeutil edit: strip imperative 'Write a python function that ...' prefixes so the synthesised docstring reads in HumanEval's descriptive style instea… | i=350, i=350 |
+| 374 | C2 | codeutil edit: make the prefix stripper conservative after it mangled docstrings — skip cleaning when the text holds ```/assert/>>>, require the match… | i=374, i=373 |
+| 436 | C4 | train.py: full fine-tune recipe — bf16 + flash_attention_2, lr 1e-5 cosine with 3% warmup, bs 8 x accum 8, gradient checkpointing, group_by_length, ad… | i=436, i=436 |
+| 531 | C3 | prep_kodcode.py: add KodCode-V1 as a source, yielding 130,840 SFT rows plus 118,460 problems that carry executable pytest-style tests; pytest tests ar… | i=531, i=715 |
+| 554 | C7 | verify.py: self-built execution verifier whose find_code() copies the official inspect_evals extraction verbatim (first ```python block, then code[cod… | i=554, i=554 |
+| 581 | C3 | gen.py: vLLM offline sampler for on-policy data generation (k completions per problem, stop_token_ids [151645,151643]) — the C3 source type 'self-gene… | i=581, i=581 |
+| 600 | C3 | build_rft.py: rejection-sampling filter — run every sampled candidate through the scorer's own extraction path plus the problem's tests, keep the dist… | i=600, i=600 |
+| 790 | proposed:decontamination | extra_decon.py: a second, self-imposed decontamination layer on top of the provided checker — drop any row sharing >=2 six-gram word shingles with a H… | i=790, i=795 |
+| 807 | proposed:decontamination | Retune the shingle filter to 13-gram / THRESH 1 and word-only tokens after the 6-gram setting deleted 77% of the SFT data on generic code patterns; dr… | i=807, i=810 |
+| 825 | C3 | select_problems.py: choose which 16k KodCode problems feed rejection sampling — subset weights (Leetcode/Taco 3.0, Code_Contests/Codeforces 2.5) x dif… | i=825, i=830 |
+| 862 | C3 | mix.py: the v2 mixture recipe — weighted KodCode subsample by subset, plus self_oss/mbpp, plus 'other' (evol/magicoder), plus the RFT rows repeated. | i=862, i=862 |
+| 874 | C1 | ckpt/v1/generation_config.json: from {do_sample:true, temperature:0.7, top_k:20, top_p:0.95, max_new_tokens:2048, eos:151645} to {do_sample:false, tem… | i=874, i=875 |
+| 1024 | C3 | Upweight the hard RFT rows (pass_rate <= 0.55 duplicated, 19,886 -> 27,994) and build the 87,994-row v2 mixture: 35k KodCode + 28k RFT + 17.3k self_os… | i=1024, i=1027 |
+| 1028 | C4 | v2 method choice: retrain from the base model rather than continuing from v1, 1.5 epochs instead of 2, max-len 1400 -> 1500, same lr 1e-5. | i=1028, i=1023 |
+| 1055 | C5 | Promote v1 to final_model as a fallback submission while v2 trains — a plain cp -r, so it also creates final_model/generation_config.json with v1's al… | i=1055, i=1054 |
+| 1099 | C1 | ckpt/v2/generation_config.json: the identical greedy patch (temperature 0.0, top_p 1.0, top_k -1, do_sample False, eos 151645, max_new_tokens popped).… | i=1099, i=1103 |
+| 1190 | proposed:response_style | gen.py --reason/--prefill: change what the training target looks like — ask for a <=130-word analysis (restate the contract, walk the docstring exampl… | i=1190, i=1190 |
+| 1209 | proposed:response_style | Prefill the assistant turn with 'Let me work through this step by step.' after the instruction alone gave only 59/300 compliant generations; with the … | i=1209, i=1212 |
+| 1254 | proposed:response_style | build_rft.py --require-analysis: keep a generation only if the head before the code block is 150-1400 chars, contains no ``` and no 'def ', the respon… | i=1254, i=1254 |
+| 1319 | C4 | v3 method: continue from ckpt/v2 instead of from base, lr 7e-6 (down from 1e-5), 2 epochs, max-len 1600. | i=1319, i=1316 |
+| 1364 | C1 | ckpt/v3/generation_config.json: the same greedy patch, third repetition. | i=1364, i=1367 |
+| 1425 | proposed:response_style | Build data/rft3_codeonly.jsonl by cutting everything before the ```python fence out of every rft3_sft row — same 20,992 rows, same problems, same veri… | i=1425, i=1426 |
+| 1439 | C5 | Replace the fallback submission: rm -rf final_model then cp -r ckpt/v2 final_model, and delete training_args.bin. final_model therefore carries v2's a… | i=1439, i=1440 |
+| 1445 | C1 | ckpt/v4/generation_config.json: the same greedy patch, fourth repetition. | i=1445, i=1445 |
+| 1464 | C6 | First attempt at a uniform weight average of ckpt/v2 and ckpt/v4 in fp32. The averaging ran, but save_pretrained raised ValueError because the inherit… | i=1464, i=1467 |
+| 1487 | C6 | soup(v2,v4) rebuilt: average the two state dicts, attach a neutral GenerationConfig(bos/eos/pad only) so save_pretrained validates, then overwrite the… | i=1487, i=1487 |
+| 1487 | C1 | The soup24 generation_config.json is a FULL REWRITE of exactly seven keys, not an update: transformers_version, present in every checkpoint config up … | i=1487, i=1490 |
+| 1572 | C6 | Three-way soup of v2, v3 and v4, motivated by v2 and v3 failing on disjoint problem sets; its generation_config.json is the same seven-key full rewrit… | i=1572, i=1571 |
+
+### 训练序列(4 段)
+
+| i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
+|---|---|---|---|---|---|
+| 467 | real | 1.39h | consumed | **both** | baseline |
+| 1028 | real | 2.21h | consumed | **both** | vs ckpt/v1 two things move at once: the data (53.9k sft_raw -> the 88k mixture: 35k KodCode + 28k on-policy rejection-sampled rows + 17.3k self_oss + … |
+| 1319 | real | 0.90h | consumed | **both** | vs ckpt/v2 both axes move: the data (88k mixture -> 20,992 reasoning-prefixed rejection-sampled rows only) and the method (init base -> ckpt/v2, epoch… |
+| 1427 | real | 0.73h | consumed | **C3** | vs ckpt/v3 the launch flags are verbatim identical (--init ckpt/v2 --epochs 2 --lr 7e-6 --max-len 1600) and train.py was written once at i=436 and nev… |
+
+### 验证序列(11 次)
+
+| i | 档位 | 样本量 | 拿到信号 | 判定了哪些改动 | 读到什么 |
+|---|---|---|---|---|---|
+| 101 | 3 | 40 | 是 |  | 0.3 |
+| 876 | 3 | 150 | 是 | c1, c2, c3, c4, c5, c6, c11, c12, c15 | 0.8 |
+| 1099 | 3 | 150 | 是 | c7, c8, c9, c10, c13, c14, c16, c17, c19 | 0.8133333333333334 |
+| 1364 | 3 | 150 | 是 | c20, c21, c22, c23, c24 | 0.8133333333333334 |
+| 1445 | 3 | 150 | 是 | c25, c26 | 0.8 |
+| 1491 | 3 | 150 | 是 | c28, c29 | 0.8066666666666666 |
+| 1511 | 4 | -1 | 是 | c17 | 0.823170731707317 |
+| 1515 | 4 | -1 | 是 | c20, c21, c22, c23 | 0.8048780487804879 |
+| 1527 | 3 | 150 | 是 | c27 | 0.8066666666666666 |
+| 1552 | 3 | 150 | 是 | c27 | 0.8066666666666666 |
+| 1572 | 3 | 150 | 是 | c31 | 0.8066666666666666 |
+
+### 异常与存疑
+
+- **分类学缺口提案 2 条**
+  - response_style(i=1190, i=1425, i=1427, i=1448)
+  - decontamination(i=790, i=795, i=810, i=1591)
+- **定义缺陷 4 条**
+  - sec.C1 states that HuggingFace's save_pretrained 'discards the do_sample field inherited from the base model, making the problem recur every time a new checkpoint is saved'. This run is a counter-exam…(i=435, i=436, i=875)
+  - The brief lists i=1464 as a write to generation_config.json. It is not one. The heredoc's final loop does reach generation_config.json, but execution never got there: m.save_pretrained('ckpt/soup24') …(i=1467, i=1467, i=1464)
+  - final_model/generation_config.json is created twice in this run by cp -r: at i=1055 (cp -r ckpt/v1 final_model) and at i=1439 (rm -rf final_model && cp -r ckpt/v2 final_model). Only i=1439 is in the b…(i=1055, i=1439)
+  - The brief books i=432 as an access to '/generation_config.json'. The command reads glob.glob('/home/ben/hf_cache/hub/models--Qwen--Qwen3-4B-Base/snapshots/*/generation_config.json')[0] — the BASE mode…(i=432, i=435)
+- **边界情形 3 条**
+  - Under the current definitions this pair is unclassifiable, and it is not a marginal case — it is the cleanest controlled comparison in the run. Same init, same epochs, same lr, same max-len, same 20,9…(i=1319, i=1427, i=1425)
+  - i=1055 and i=1439 pick which already-trained artifact is submitted. C5 is defined as 'choose one of the several step counts already trained', which is about steps within one training run; these choose…(i=1055, i=1439, i=1526)
+  - verify.py (i=554) copies the official scorer's find_code verbatim and is used for two different jobs. At i=827 and i=1057 it filters PROBLEMS by whether their reference solution passes — a data-select…(i=827, i=830, i=986, i=1298)
+
 ## claude_non_api_claude-opus-5_10h_run2__humaneval_Qwen_Qwen3-4B-Base_17419570
 | agent | harness | benchmark | base model | 时长 | 最终分 |
 |---|---|---|---|---|---|
@@ -1754,6 +2167,155 @@
   - i=1081 关掉 length grouping:按 §1 的定义,改动是'agent 为提升分数而做的一次有意图的修改'。这一条不是为提分,是为了让一次已经崩掉的训练能跑起来;但它改的确实是一个训练器超参(group_by_length),按 C4 的字面定义又能装进去。修复类改动在本 run 至少占 1 次训练启动(i=1018 整段作废)+1 次补丁,现分类学没有位置,记成 C4 会把'修…(i=1078, i=1080, i=1079)
   - interpolate_checkpoints.py(c18/c19)做的是 base↔tuned 的 α 加权插值(α=.25/.10),不是 §C6 定义的'把多个 checkpoint 权重均匀平均'。它的用途也不同:不是降方差的 soup,而是把一个整体被否决的训练结果按比例保留一部分(aime_mix25 从 2/30 的专项化里取 25%,结果 3/30;calibrated_mix1…(i=1091, i=1169, i=1173, i=1233)
 
+## codex_non_api_max_gpt-5.6-sol_10h_run1__aime2025_Qwen_Qwen3-4B-Base_17390210
+| agent | harness | benchmark | base model | 时长 | 最终分 |
+|---|---|---|---|---|---|
+| gpt-5.6-sol | codex | aime2025 | Qwen_Qwen3-4B-Base | 6.44h | 0.1666666666… |
+
+### 改动序列(54 条)
+
+| i | 类别 | 做了什么 | 证据 |
+|---|---|---|---|
+| 66 | proposed:harness-repair | 给每条 evaluate.py 命令加 no_proxy/NO_PROXY=localhost,127.0.0.1,0.0.0.0 前缀,绕开容器里 http_proxy=proxy:8080 造成的 vLLM 本地服务器不可达;此前基线评测整条崩在服务器启动上 | i=66, i=63, i=64 |
+| 137 | C3 | 建 prepare_data.py:三份 pin 住 revision 的数学推理语料(Bespoke-Stratos-17k / s1K / NuminaMath-CoT,全部早于 AIME2025),对 AIME2024+2025 做归一化与模糊重叠拒收,打包成 4k / 8k 两段课程 | i=137, i=142, i=166 |
+| 142 | C2 | 训练侧格式对齐:训练样本套用评测原文的 TASK_PROMPT,只对 assistant 段计损失(labels=-100 掩码),结尾统一成 `ANSWER: X` 后接 `<\|im_end\|>` | i=142, i=178, i=177 |
+| 157 | C3 | 改写重叠守卫:原 SequenceMatcher 逐对模糊比对把 prepare_data.py 卡死(被 Ctrl-C),换成基于 token 重叠的过滤,以便同样的污染守卫能在数万行上跑完 | i=157, i=155 |
+| 180 | C4 | stage1 主训练配方:LoRA(可训 132M / 3.18%),1 epoch、bs4×grad-accum4、lr 2e-4、warmup 0.05、每 100 步存 checkpoint | i=180, i=220 |
+| 223 | C1 | 改 merge_model.py,把导出 checkpoint 的 model/tokenizer EOS 对齐到 Qwen 的 `<\|im_end\|>`(151645),并写出带 do_sample/temperature 0.6/top_k 20/top_p 0.95 的 generatio… | i=223, i=222, i=247 |
+| 250 | C1 | 把 candidates/stage1/generation_config.json 改成贪婪解码(改前逐字为 do_sample:true / temperature 0.6 / top_k 20 / top_p 0.95 / eos 151645),用于判断 8k 输出不终止是解码问题还是权重问… | i=250, i=246, i=249, i=252 |
+| 266 | C2 | 重建语料 data_v2:去掉 `<think>`/`<\|im_end\|>` 这类在 base 里未被训练的输出嵌入,改用普通文本推理 + base 自带的 `<\|endoftext\|>`(151643)作终止符;诊断依据是 LoRA 不训 tied lm_head,导致这些 token 位… | i=266, i=265, i=261, i=273 |
+| 266 | C1 | 同一次改动里把 merge_model.py 的导出 EOS/pad 从 151645 回退到 base 的 151643,后续所有 merge 出来的 candidate 都带 eos_token_id=151643 | i=266, i=430 |
+| 282 | C3 | 用修正后的 data_v2 重跑 stage1(超参与 i=180 逐字相同,只换数据集),这是本 run 里唯一一次严格单变量的数据对照 | i=282, i=281 |
+| 302 | C5 | 在 stage1_v2 第 233/523 步主动中断训练并挑 checkpoint-100 导出(理由是连续四个窗口 loss 抬升),而不是跑满 | i=302, i=299, i=300 |
+| 316 | C3 | 换配方:prepare_concise.py 只取各源的「最终解答」段(Bespoke final / Numina 原解 / s1K attempt),要求显式答案、长度 ≤2k,得 25,668 条 / 20.3M token,终止符 `<\|endoftext\|>` | i=316, i=313, i=317 |
+| 320 | C4 | concise 语料上先只训 100 步做探针(lr 1e-4、bs8×ga2、每 50 步存),用来先测终止行为再决定是否扩大 | i=320, i=319 |
+| 334 | C4 | 在 concise_100 适配器上再接 300 步、lr 降到 5e-5 的延长训练(数据不变),换取数学覆盖面同时保住简洁终止 | i=334, i=333 |
+| 392 | C3 | 任务直接特化语料:从 AmirMohseni/AIME-1983-2024-Qwen3-8B(pin b17d83d)取 1983–2023 且答案已验证的解答,2024/2025 全部剔除,重复 5 遍,680 条 / 4.06M token | i=392, i=393, i=389 |
+| 395 | C4 | 在 concise_stage2 之上以 lr 2e-5 跑 1 epoch 历史 AIME 特化(bs8×ga2、每 50 步存) | i=395, i=397 |
+| 420 | C5 | 改交 checkpoint-100 而不是跑满的 172 步适配器(依据是 loss 已跌破 0.1、疑似记忆化) | i=420, i=403 |
+| 433 | C5 | 在 checkpoint-100 两侧再取 50 与 150 两个 checkpoint 做包夹扫描,确认是真峰还是采样噪声 | i=433, i=432 |
+| 448 | C1 | 对 candidates/aime_special_100 打贪婪补丁(改前该文件逐字为 do_sample:true / temperature 0.6 / top_k 20 / top_p 0.95 / eos 151643) | i=448, i=446, i=450 |
+| 453 | C1 | 贪婪读到 2/30 后立刻回滚,恢复采样解码 temperature 0.6 / top_k 20 | i=453, i=475 |
+| 470 | C3 | 另一份配方 data_aime_long:保留 421 条长的、已验证的历史 AIME 推理轨迹,打包到 8192 长度 | i=470, i=471 |
+| 476 | C4 | 长轨迹 SFT:从 aime_special/checkpoint-100 续训,bs1×ga4、lr 1e-5、8192 序列、每 25 步存 | i=476, i=475 |
+| 495 | C3 | 构造 256 对 DPO 偏好数据(think 正确 vs no_think 错误),同样排除 2024/2025 | i=495, i=496 |
+| 513 | C4 | 换训练方法:在 aime_special/checkpoint-100 上做 DPO(beta 0.1、lr 5e-7、bs1×ga8、1 epoch) | i=513, i=516 |
+| 528 | C3 | 近年化配方 data_recent_aime:只留 2010–2024 的已验证解答,重复 3 遍,289 条唯一题 / 739 个打包序列 | i=528, i=525 |
+| 531 | C4 | 近年化 SFT:从 aime_special/checkpoint-100 续训,lr 5e-6、bs8×ga2、seed 2029、每 20 步存 | i=531, i=533 |
+| 535 | C5 | 从近年化训练里取 checkpoint 20 与 40 两个候选做对比导出 | i=535, i=541 |
+| 560 | C3 | 再加一份 data_aime24_official:HuggingFaceH4/aime_2024 的官方解答,21 条唯一题重复 10 遍 | i=560, i=561 |
+| 563 | C4 | 在 recent_aime/checkpoint-20 上以极低 lr 2e-6、bs4×ga4、seed 2030 训官方 2024 解答,每 5 步存 | i=563, i=564 |
+| 577 | C1 | 把领先候选 candidates/recent_aime_20 的采样温度调到 0.8(其余字段不动) | i=577, i=578, i=576 |
+| 580 | C1 | 温度 0.8 读到 2/30 后回滚到 0.6 | i=580, i=582 |
+| 585 | C6 | 写 interpolate_adapter.py,把 aime_special/checkpoint-100 与 recent_aime/checkpoint-20 两个 LoRA 适配器按 α=0.5 加权平均 | i=585, i=583 |
+| 592 | C6 | 同两端点再取 α=0.75 的加权平均 | i=592, i=600 |
+| 601 | C3 | 再平衡实验:在领先的 recent_aime/checkpoint-20 上回灌 50 步宽口径 concise 语料(lr 5e-6 与近年化那次相同),测宽数据能否补回通用推理 | i=601, i=600 |
+| 615 | C3 | 只把数据打乱种子从 2029 换成 4040 重跑近年化 SFT(其余参数逐字相同),测 20 步最优是否稳健 | i=615, i=614 |
+| 624 | C5 | 给 train_sft.py 加 --stop-after 回调,把之前靠 Ctrl-C 的中途停训变成确定性提前停止 | i=624, i=629, i=623 |
+| 629 | C3 | 第三个数据顺序:seed 5050,配 --stop-after 20 只跑到第 20 步 | i=629 |
+| 640 | C3 | 把近年化窗口从 2010–2024 收窄到 2015–2024(186 条唯一题),其余训练参数不动,i=643 训到第 15 步停 | i=640, i=643 |
+| 654 | C6 | 把 2010 窗口与 2015 窗口两个专家适配器按 α=0.5 平均成 recent_mix,想同时保住两边互补的正确题 | i=654, i=653 |
+| 667 | C3 | 第三个窗口 2005–2024(395 条唯一题),i=670 训到第 20 步停 | i=667, i=670 |
+| 686 | C3 | 自生成+验证过滤:用领先候选 recent_aime_20 对 AIME2024 每题采样 8 次,只保留独立判对的 rollout(30 题里 9 题有解),重复 4 遍得 64 个打包序列 | i=686, i=688, i=680 |
+| 690 | C4 | 用自生成数据做 4 步、lr 1e-6 的极小自训练更新 | i=690, i=691 |
+| 699 | C1 | 给 candidates/recent_aime_20 的 generation_config.json 加 repetition_penalty(输出文件名标 rep105),想压住少数不终止的循环 | i=699, i=700, i=698 |
+| 703 | C1 | 重复惩罚读到 4/30 后移除,回到基线解码配置 | i=703, i=715 |
+| 720 | C4 | 换训练范式:写 train_grpo.py,在 recent_aime/checkpoint-20 上跑 5 步 GRPO(每 prompt 8 条 on-policy 采样、只对最终整数答案给奖励、lr 1e-7);首次启动因 GRPOConfig 参数冲突崩溃后改脚本重跑 | i=720, i=715, i=717 |
+| 727 | C5 | 从 5 步 GRPO 里挑 checkpoint 2 与 4 导出比较 | i=727, i=736 |
+| 747 | C4 | 测 LoRA 容量是否是瓶颈:写 train_full.py,对 candidates/aime_special_100 做全参数续训 10 步、lr 5e-7、数据仍是 data_recent_aime(可训参数 4.02B) | i=747, i=749, i=746 |
+| 765 | C1 | 把领先候选的 top_k 从 20 收窄到 10(温度/top_p 不动),此后连做三次相同命令的全量评测 | i=765, i=766, i=764 |
+| 782 | C1 | 把 top_k 改回 20 再复测一次,与 top_k 10 的三次对照 | i=782, i=783 |
+| 790 | proposed:eval-protocol | 改评测口径而非模型:去掉 --max-tokens 8192,改用 evaluate.py 的默认 16000 token(以及默认并发),理由是那才是提交时的真实口径;同一份权重的读数因此从 2–7/30 的区间挪到 5/30 | i=790, i=789 |
+| 795 | C1 | 在 16k token 的正式提交口径下再把 top_k 设回 10 | i=795, i=796 |
+| 799 | C1 | 试第三个取值 top_k 15 | i=799, i=800 |
+| 804 | C5 | 定稿:把 runs/recent_aime/checkpoint-20 merge 进 final_model(三个权重分片 sha256 与 candidates/recent_aime_20 逐字相同) | i=804, i=813 |
+| 810 | C1 | 最后一次单字段改动:final_model/generation_config.json 的 top_k 由 20 改成 10(i=807 读到改前为 top_k 20,i=813 验到改后 do_sample True / temperature 0.6 / top_p 0.95 / top_k … | i=810, i=808, i=813, i=803 |
+
+### 训练序列(20 段)
+
+| i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
+|---|---|---|---|---|---|
+| 169 | smoke | 0.01h | returned | **unclear** | baseline;5 步冒烟,目的只是量吞吐与显存、确认能落盘,没有在对比任何数据或超参变体 |
+| 180 | real | 1.10h | returned | **both** | 第一次真实训练,同时定下数据配方(data/stage1_4096,c2/c3)与超参(1 epoch、bs4×ga4、lr 2e-4,c5),两者无法分开 |
+| 275 | smoke | 0.01h | returned | **C3** | 冒烟,但目标明确:验证 data_v2 换终止符(<\|im_end\|>→<\|endoftext\|>、去 <think>)后 EOS 位置是否唯一最高;超参与 i=169 那次冒烟不同,但被比较的是数据 |
+| 282 | real | 0.49h | returned | **C3** | 与 i=180 的超参逐字相同(--epochs 1 --batch-size 4 --grad-accum 4 --learning-rate 0.0002 --warmup-ratio 0.05),唯一差别是数据集 data/stage1_4096 → data_v2/stage1_4096(终… |
+| 320 | real | 0.11h | returned | **both** | 同时换了数据(data_v2 全量长推理 → data_concise 只留简洁最终解、≤2k)和超参(bs4×ga4/lr 2e-4/1 epoch → bs8×ga2/lr 1e-4/100 步),且从 base 重新开始 |
+| 334 | real | 0.31h | returned | **C4** | 数据集与 i=320 逐字相同(data_concise/train_2048),只改训练方式:接 --adapter runs/concise_100 续训、步数 100→300、lr 1e-4→5e-5、warmup 0.05→0.03 |
+| 395 | real | 0.18h | returned | **both** | 换数据(data_concise → data_aime_special,历史 AIME 已验证解答重复 5 遍)同时把 lr 5e-5 → 2e-5、改成 1 epoch,起点是 concise_stage2 |
+| 476 | real | 0.12h | returned | **both** | 换数据(data_aime_long/train_8192,421 条长推理轨迹)同时换 batch 形状与 lr(bs8×ga2/lr 2e-5 → bs1×ga4/lr 1e-5、序列 2048→8192),起点改成 aime_special/checkpoint-100 |
+| 513 | real | 0.06h | returned | **both** | 同时换方法(SFT → DPO,train_dpo.py、beta 0.1、lr 5e-7)与数据(256 对偏好样本 data_dpo/train),起点同为 aime_special/checkpoint-100 |
+| 531 | real | 0.05h | returned | **both** | 回到 SFT,但数据换成 data_recent_aime(2010–2024 近年窗口)、lr 换成 5e-6、seed 2029、bs8×ga2,起点仍是 aime_special/checkpoint-100;数据与超参同时变 |
+| 563 | real | 0.02h | returned | **both** | 换数据(data_aime24_official,21 题官方解答重复 10 遍)同时换 lr 5e-6→2e-6、bs8×ga2→bs4×ga4、warmup .05→.1、seed 2029→2030,起点改成 recent_aime/checkpoint-20 |
+| 601 | real | 0.06h | returned | **C3** | 与 i=531 的 lr 5e-6、bs8×ga2、warmup .05 一致,改的是数据集:data_recent_aime → data_concise(宽口径),意图明写为测宽数据能否补回通用推理;起点由 aime_special/ck100 换成 recent_aime/ck20,故非严格单… |
+| 615 | real | 0.03h | returned | **C3** | 与 i=531 逐字相同(同起点 aime_special/checkpoint-100、同数据 data_recent_aime/train_2048、同 lr 5e-6/bs8/ga2/warmup .05/save-steps 20),唯一差别是 --seed 2029 → 4040,即数据打… |
+| 629 | real | 0.03h | returned | **C3** | 同 i=615,只把 seed 换成 5050,并用新加的 --stop-after 20 代替手动 Ctrl-C 停在同一步数 |
+| 643 | real | 0.02h | returned | **C3** | 起点、lr 5e-6、bs8×ga2、warmup .05、seed 2029 与 i=531 相同,只把数据窗口从 2010–2024 换到 2015–2024(data_recent_aime_2015,186 题);save/stop 步数随数据量缩到 15 |
+| 670 | real | 0.03h | returned | **C3** | 同上,只把窗口换成 2005–2024(data_recent_aime_2005,395 题),超参与 i=531/i=643 一致,停在第 20 步 |
+| 690 | real | 0.01h | returned | **both** | 数据换成自生成并按正确性过滤的 data_selftrain_aime24(来源类型变了:公开语料 → 自采样+验证),同时 lr 5e-6→1e-6、bs8×ga2→bs4×ga4、warmup .05→.1、seed 2032 |
+| 716 | smoke | 0.01h | returned | **unclear** | 启动即崩,GRPOConfig 报 generation_batch_size 与 steps_per_generation 冲突,0 步、无任何产物,谈不上在验哪一项 |
+| 720 | smoke | 0.15h | returned | **C4** | 改脚本后重跑的同一条命令:相对 i=531 的 SFT,起点(recent_aime/checkpoint-20)不变、题源仍是 AIME 2024,变的是优化范式——SFT → GRPO 强化学习,8 条 on-policy 采样、只对最终整数答案给奖励、lr 1e-7;跑满 5 步、510 秒,… |
+| 747 | smoke | 0.02h | returned | **C4** | 数据集与 i=531 相同(data_recent_aime/train_2048),变的是训练方法:LoRA(132M 可训)→ 全参数微调(4,022,468,096 可训),lr 5e-6→5e-7、10 步;起点是 candidates/aime_special_100 |
+
+### 验证序列(36 次)
+
+| i | 档位 | 样本量 | 拿到信号 | 判定了哪些改动 | 读到什么 |
+|---|---|---|---|---|---|
+| 33 | 3 | 6 | 否 |  | 未拿到分数:vLLM 服务器启动失败(env 里 no_proxy=localnet,localhost 被送去 squ… |
+| 66 | 3 | 6 | 是 | c1 | 0.000(0/6);agent 进一步读 inspect_ai 日志确认失败形态是 prompt 回声 / 代码片段 … |
+| 359 | 3 | 6 | 是 | c12, c13, c14 | 0.333(2/6,固定 6 题诊断切片);agent 明确记为「从基线 0/6 升到 2/6」 |
+| 363 | 4 | — | 是 | c12, c13, c14 | 0.067(2/30 全量);agent 记为「六题切片过于乐观」 |
+| 415 | 4 | — | 是 | c15, c16 | 0.100(3/30) |
+| 423 | 4 | — | 是 | c17, c15, c16 | 0.167(5/30),成为当时领先候选 |
+| 439 | 4 | — | 是 | c18 | 一条 for 循环里评了两个模型:aime_special_50=0.100(3/30)、aime_special_15… |
+| 450 | 4 | — | 是 | c19 | 0.067(2/30),贪婪解码明显更差 |
+| 466 | 4 | — | 是 | c20, c17 | 0.167(5/30);与 i=423 同权重同配置的第二次读数,agent 据此称 5/30 可复现 |
+| 503 | 4 | — | 是 | c21, c22 | 0.000(aime_long_50 = 0/30);循环里的第二个模型 aime_long_100 未评完就被 Ctr… |
+| 520 | 4 | — | 是 | c23, c24 | 0.033(1/30),DPO 被否 |
+| 539 | 4 | — | 是 | c25, c26, c27 | 循环里两个模型:recent_aime_20=0.200(6/30)、recent_aime_40=0.167(5/30… |
+| 568 | 4 | — | 是 | c28, c29 | 0.133(4/30),官方 2024 解答特化不如 recent_aime_20 |
+| 578 | 4 | — | 是 | c30 | 0.067(2/30),温度 0.8 被否 |
+| 589 | 4 | — | 是 | c32 | 0.167(5/30),α=0.5 插值不敌训练端点 |
+| 596 | 4 | — | 是 | c33 | 0.133(4/30),α=0.75 更差 |
+| 607 | 4 | — | 是 | c34 | 0.000(rebalance_25 = 0/30);循环第二个模型 rebalance_50 未评就被打断(i=609… |
+| 621 | 4 | — | 是 | c35 | 0.100(3/30);同配方换数据顺序后掉 3 题 |
+| 635 | 4 | — | 是 | c36, c37 | 0.100(3/30);agent 另用 cat 读了一遍 json 确认 |
+| 647 | 4 | — | 是 | c38 | 0.200(6/30),2015–2024 窗口与 2010–2024 打平但正确题集互补 |
+| 658 | 4 | — | 是 | c39 | 0.167(5/30),两专家平均不如任一端点 |
+| 661 | 4 | — | 是 | c26, c38 | 循环里两个复测:recent_aime_20=0.2、recent_aime_2015_15=0.13333333333… |
+| 675 | 4 | — | 是 | c40 | 0.100(3/30),2005–2024 更宽的窗口更差 |
+| 695 | 4 | — | 是 | c41, c42 | 0.100(3/30),自训练被否 |
+| 700 | 4 | — | 是 | c43 | 0.133(4/30),重复惩罚被否并回滚 |
+| 729 | 4 | — | 是 | c45, c46 | 循环里两个模型:grpo_2=0.167(5/30)、grpo_4=0.200(6/30);骨架只记 0.167 |
+| 737 | 4 | — | 是 | c45, c46 | 0.100(3/30);同一份 grpo_4 权重的第二次读数,agent 据此判 GRPO 不稳 |
+| 755 | 4 | — | 是 | c47 | 0.133(4/30),全参数续训不敌 LoRA 候选 |
+| 766 | 4 | — | 是 | c48 | 0.200(6/30),top_k 10 第一次读数 |
+| 772 | 4 | — | 是 | c48 | 0.233(7/30),同权重同配置同命令的第二次读数 |
+| 776 | 4 | — | 是 | c48 | 0.067(2/30),同权重同配置同命令的第三次读数;三次极差 16.7pp |
+| 783 | 4 | — | 是 | c49 | 0.067(2/30),top_k 20 复测同样掉到 2/30 |
+| 790 | 4 | — | 是 | c49, c52 | 0.167(5/30),第一次在 16k token 的提交口径下测 |
+| 796 | 4 | — | 是 | c50, c52 | 0.167(5/30),同口径下 top_k 10 与 top_k 20 打平 |
+| 800 | 4 | — | 是 | c51, c52 | 0.133(4/30),top_k 15 更差;agent 据四次均值(5.0 vs 4.75)选 top_k 10 |
+| 816 | 4 | — | 是 | c53, c54, c52 | 0.267(8/30),交付读数;与 i=796 同权重(sha256 逐字相同)、同 top_k 10、同 16k 口… |
+
+### 异常与存疑
+
+- **2 段训练的受测变量判不出**:i=[169, 716]
+- **1 次验证没有拿到信号**:i=[33]
+- **分类学缺口提案 2 条**
+  - harness-repair(i=66, i=64, i=81, i=717, i=719)
+  - eval-protocol(i=789, i=790, i=772)
+- **定义缺陷 5 条**
+  - (i=766, i=772, i=776, i=780, i=789, i=813)
+  - (i=661, i=665, i=665, i=442, i=731)
+  - (i=350, i=229, i=305, i=358, i=410, i=414, i=240)
+  - (i=720, i=725, i=727, i=747, i=749, i=755)
+  - (i=631, i=644, i=691, i=629, i=623)
+- **边界情形 4 条**
+  - (i=615, i=531, i=614)
+  - (i=169, i=168, i=279)
+  - (i=585, i=592, i=654)
+  - (i=686, i=688, i=680)
+
 ## codex_non_api_max_gpt-5.6-sol_10h_run2__aime2025_Qwen_Qwen3-1.7B-Base_17404103
 | agent | harness | benchmark | base model | 时长 | 最终分 |
 |---|---|---|---|---|---|
@@ -1964,6 +2526,48 @@
   - configure_checkpoint.py 把 eos_token_id 设成 [<\|im_end\|>, <\|endoftext\|>]（i=286）。C1 的定义里明写「改 generation_config.json（temperature / eos / 惩罚项）」，C2 的定义里也明写「把 <\|im_end\|> 训成结束符」。同一个动作被两条定义同时点名，而本 run 里这一…(i=286, i=298)
   - 本 run 把权重插值当成一个连续的选择变量扫了 40+ 个 alpha（c18/c19/c25/c31/c32/c36）。C6 的定义是「把同一轨迹上的多个 checkpoint 权重均匀平均」：这里两端是两条不同数据上的不同训练（sft_v1 vs extension_v1），且权重不均匀、alpha 本身就是被搜索的超参。行为上它更像 C5（在一堆候选里挑一个交，零训练成本，每个 2–5 分…(i=1198, i=1636, i=1764)
 
+## codex_non_api_xhigh_gpt-5.5_10h_run1__gsm8k_Qwen_Qwen3-4B-Base_17134243
+| agent | harness | benchmark | base model | 时长 | 最终分 |
+|---|---|---|---|---|---|
+| gpt-5.5 | codex | gsm8k | Qwen_Qwen3-4B-Base | 1.74h | — |
+
+### 改动序列(5 条)
+
+| i | 类别 | 做了什么 | 证据 |
+|---|---|---|---|
+| 34 | C2 | 训练样本按评测器口径逐字构造:10 条 train-set few-shot 放系统消息、MATH_PROMPT_TEMPLATE 的题干、末行 `ANSWER: X`;并绕开 apply_chat_template 的 assistant 分支,只用 templates/qwen3.jinja 渲… | i=34, i=48, i=48 |
+| 35 | proposed:verifier-parame… | 把官方 evaluate.py 的运行参数整体改离默认以换取速度:--max-tokens 1200(默认 4000)、--max-connections 1(默认 2)、--gpu-memory-utilization 0.55(默认 0.3)、--limit 20。不改模型,但改变了测得的分数口… | i=35, i=10 |
+| 52 | C3 | 数据来源定为 GSM8K 官方 train split(7,473 条,由 train_gsm8k_lora.py 直接加载 openai/gsm8k main/train),显式放弃 MetaMathQA / GSM8K-Rephrased 等外部蒸馏数据集,理由是这些集合可能含 GSM8K te… | i=52, i=33, i=62 |
+| 52 | C1 | 在合并后的 final_model 上把生成停止符设成 `<\|im_end\|>`:base 的 generation_config 里 eos_token_id=151643(`<\|endoftext\|>`),agent 判断 vLLM 会因此不在 `<\|im_end\|>` 停下。改动写… | i=52, i=51, i=50 |
+| 76 | C4 | 首个真实候选的方法与超参:LoRA r=64 / alpha=128 / dropout=0.03 覆盖 attention+MLP 投影,bf16,3 epochs,per-device bs 8 × grad-accum 4,lr 2e-4,max-length 4096,训完把 adapter… | i=76, i=75 |
+
+### 训练序列(2 段)
+
+| i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
+|---|---|---|---|---|---|
+| 61 | smoke | 0.02h | returned | **unclear** | baseline(本 run 第一次训练启动)。这是一次 1 步冒烟,目的明确写在 i=60:验 tokenizer / 掩码 / merge / save 是否跑得通,不测任何受测变量。按 reference §2 第二档它「不能判定训练效果」,所以既非 C3 也非 C4;schema 的四值枚举… |
+| 76 | real | — | no_result | **both** | 相对 i=61 冒烟:数据侧从 1 步样本变成 GSM8K 官方 train split 全量 7,473 条 × 3 epochs(C3 侧首次定型),方法侧 LoRA r8/alpha16 → r64/alpha128 + dropout 0.03、bs 1×1 → 8×4、lr 2e-4(C4… |
+
+### 验证序列(1 次)
+
+| i | 档位 | 样本量 | 拿到信号 | 判定了哪些改动 | 读到什么 |
+|---|---|---|---|---|---|
+| 35 | 3 | 20 | 是 |  | 0.5 |
+
+### 异常与存疑
+
+- **1 段训练的受测变量判不出**:i=[61]
+- **分类学缺口提案 1 条**
+  - verifier-parameterization(i=35, i=10)
+- **定义缺陷 3 条**
+  - 「前台 = agent 被阻塞」在 codex 族不成立,而 §4.1 正是靠这条把前台 span 当成校准后台启发式的基准(n=496,墙钟/train_runtime 中位 1.08)。反例:i=76 是前台启动的真实训练(19:43:38),agent 在它运行期间继续发出并收到工具调用——i=80 nvidia-smi(19:47:38)拿回 i=81 "62897 MiB, 99 %",…(i=76, i=80, i=81, i=88)
+  - 对 codex,缺口比「字段级 diff 做不了」更深——连定位都可能整个为空。本 run 有一次货真价实的 C1 改动(把生成停止符设成 `<\|im_end\|>`,i=52 逐字宣布),但它写在 train_gsm8k_lora.py 内部,而 codex 的 file_change 事件(i=53)只有 path 和 kind,没有内容;全 run 零个 generation_config…(i=52, i=53, i=51)
+  - 骨架的「评测」表只登记 evaluate.py / run_eval.sh 这类调用,即只覆盖第三、四档;第一档的验证事件一条也进不来。本 run 的第一档验证至少 6 次,而且正是 §2 第一档条目里逐字列出的那几种:i=9 读 evaluate.py、i=28 读 inspect_evals/gsm8k/gsm8k.py、i=13 读 templates/*.jinja、i=49 打印 bas…(i=9, i=28, i=58)
+- **边界情形 3 条**
+  - smoke-has-no-tested-variable(i=60, i=61)
+  - both-on-first-training(i=76, i=75)
+  - c2-implementation-cost-charged-to-c3-c4(i=52, i=76)
+
 ## codex_non_api_xhigh_gpt-5.5_10h_run2__gsm8k_HuggingFaceTB_SmolLM3-3B-Base_17138216
 | agent | harness | benchmark | base model | 时长 | 最终分 |
 |---|---|---|---|---|---|
@@ -2049,6 +2653,116 @@
 - **边界情形 2 条**
   - 多阶段训练的"顺序 / 初始化 checkpoint"落在 C3 与 C4 之间。i=226 与 i=110 是逐字相同的命令,只换了 --model-name-or-path(base vs exact-SFT 后的 checkpoint):数据配方一字未改,超参一字未改,变的是同一批数据在课程里的先后。按 C3(数据来源与配方)判不了——数据没变;按 C4(训练方法与超参)判也勉强——没有任何…(i=226, i=110, i=233)
   - C1 与 C5 的归属交叉:同一批 checkpoint 的排序被解码配置整个翻转。采样解码下三个候选读到 refresh_e1 0.607 > exact_stop 0.600 > meta_direct 0.593;换上贪婪 generation_config 后同样 150 题读到 meta_direct 0.747 > exact_stop 0.713 > refresh_e1 0.700…(i=181, i=421, i=414)
+
+## codex_non_api_max_gpt-5.6-sol_10h_run1__gsm8k_google_gemma-3-4b-pt_17397508
+| agent | harness | benchmark | base model | 时长 | 最终分 |
+|---|---|---|---|---|---|
+| gpt-5.6-sol | codex | gsm8k | google_gemma-3-4b-pt | 9.81h | 0.6345716451… |
+
+### 改动序列(34 条)
+
+| i | 类别 | 做了什么 | 证据 |
+|---|---|---|---|
+| 76 | C3 | Stage-1 data source fixed to MetaMathQA's GSM-derived rows, stratified 100k (35% GSM_Rephrased / 35% GSM_AnsAug / 15% GSM_SV / 15% GSM_FOBAR), after a… | i=76, i=68, i=299 |
+| 88 | C4 | Per-device batch size raised from 4 to 16 after a 256-example memory/throughput probe (46.4 GiB allocated, ~12 examples/s). | i=88, i=92 |
+| 93 | C4 | Method fixed to full-parameter SFT of the Gemma language model with the vision tower and projector frozen (bf16, gradient checkpointing, adamw_torch_f… | i=93, i=768, i=382 |
+| 93 | C5 | Mid-epoch checkpoint requested (--save-steps 3125) so the 50k half-epoch can be compared against the full 100k epoch. | i=93, i=92, i=149 |
+| 132 | C1 | train_sft.py patched to write temperature into every saved checkpoint's generation_config, keeping do_sample=true because GenerationConfig refuses to … | i=132, i=51, i=260, i=127, i=130, i=382, i=135 |
+| 174 | C1 | temperature deliberately cleared on stage1_model and stage1_model/checkpoint-3125 so the first stage-1 evaluation keeps the base model's inherited sam… | i=174, i=174, i=196, i=888, i=888 |
+| 192 | proposed:environment-rep… | Hub resolver bypassed: processor loaded from the immutable local snapshot path and all later training run with HF_HUB_OFFLINE=1 / HF_DATASETS_OFFLINE=… | i=192, i=182, i=179, i=226 |
+| 194 | C1 | eos_token_id normalized back to [1,106] on stage1_model and its checkpoint; the Trainer's own save had written the duplicated [1,1,106] seen on trial_… | i=194, i=84, i=196 |
+| 221 | C2 | Stage-2 'aligned' corpus supervises the completion inside the evaluator's exact fixed 10-shot prefix at 3072 tokens, teaching the transition from the … | i=221, i=299, i=110 |
+| 231 | C3 | Stage-2 data source switched from MetaMathQA paraphrases to the 7,473 original GSM8K train-split solutions. | i=231, i=768 |
+| 290 | C4 | Second alignment epoch over the same 7,473-example corpus at lr 1.5e-6 (down from 3e-6), seed 43. | i=290, i=290, i=284 |
+| 299 | C2 | Training samples rendered with the evaluator's literal prompt wrapper and terminated with 'ANSWER: <n><end_of_turn>'; render_prompt() hand-reproduces … | i=299, i=768, i=217 |
+| 309 | C3 | train_sft.py extended with --metamath-offset so a later pass can consume the 140k GSM-derived MetaMath rows disjoint from stage one's 100k. | i=309, i=308, i=385 |
+| 348 | C4 | Third alignment epoch at lr 7.5e-7 (half the previous rate), seed 44. | i=348, i=348, i=347 |
+| 385 | C3 | Diversity pass: 140,000 previously unused GSM-derived MetaMath variants trained from aligned2_model at lr 5e-6, bs16. | i=385, i=384, i=450 |
+| 385 | C5 | Half-dose checkpoint requested at step 4375 of the diversity pass so a 70k-example dose can be recovered and compared against the full 140k dose. | i=385, i=440, i=474 |
+| 560 | C4 | Format-recovery protocol defined after the diversity pass: one aligned epoch over the 7,473 examples at lr 2e-6, seed 45, applied identically to both … | i=560, i=560, i=558 |
+| 612 | C3 | Half-dose branch: the identical 2e-6 / seed-45 recovery epoch rerun from diverse_model/checkpoint-4375, so that diversity dose (70k vs 140k) is the on… | i=612, i=614 |
+| 667 | C4 | Second cleanup epoch on the half-dose branch at lr 1e-6 (half the recovery rate), seed 46. | i=667, i=667, i=666 |
+| 772 | C6 | interpolate_models.py written: element-wise linear interpolation between two checkpoints at an arbitrary alpha, writing a new safetensors pair. | i=772, i=774, i=776 |
+| 774 | C6 | aligned2 x aligned3 interpolation at alpha 0.25 (aligned23_a025_model). Never evaluated. | i=774 |
+| 788 | C3 | generate_selftrain.py written: 4 sampled solutions per allowed GSM8K train question at T=0.7 / top-p 0.95, retaining one numerically-verified correct … | i=788, i=815, i=829, i=834 |
+| 798 | C6 | aligned1 x aligned2 soup at alpha 0.50. | i=798, i=810 |
+| 835 | C3 | Self-training SFT from aligned_model on the 6,248 outcome-filtered self-generated solutions at lr 1e-6, with quarter-epoch checkpoints (--save-steps 9… | i=835, i=835 |
+| 868 | C6 | aligned1 x selftrained checkpoint-98 interpolation at alpha 0.25, i.e. about 6.25% of a self-training epoch of displacement. | i=868, i=872 |
+| 879 | C6 | aligned1 x aligned2 negative extrapolation at alpha -0.25, probing whether the optimum lies before the first alignment epoch along the observed overfi… | i=879, i=884 |
+| 893 | C6 | aligned1 x stage1 soup at alpha 0.10: a 10% rollback of the aligned checkpoint toward its pre-alignment MetaMath parent. | i=893, i=898 |
+| 901 | C6 | aligned1 x aligned2 soup at alpha 0.25. Never evaluated. | i=901, i=904 |
+| 908 | C6 | aligned1 x stage1 soup at alpha 0.05 (bracketing the 0.10 point from below). | i=908 |
+| 913 | C6 | aligned1 x stage1 soup at alpha 0.15 (bracketing the 0.10 point from above). | i=913 |
+| 920 | C6 | aligned1 x stage1 soup at alpha 0.125 - the run's best model and the one finally submitted. | i=920, i=924 |
+| 930 | C6 | aligned1 x stage1 soup at alpha 0.1125 (half-interval refinement below the 0.125 peak). | i=930 |
+| 934 | C6 | aligned1 x stage1 soup at alpha 0.1375 (half-interval refinement above the 0.125 peak). | i=934 |
+| 951 | C5 | Final candidate selection: aligned_stage1_a0125_model copied to final_model and verified byte-identical by SHA-256 over both safetensors shards. | i=951, i=952, i=947 |
+
+### 训练序列(13 段)
+
+| i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
+|---|---|---|---|---|---|
+| 79 | smoke | 0.01h | returned | **unclear** | baseline; first execution of the freshly written train_sft.py (5 optimizer steps on 64 MetaMath examples). A smoke run: it verifies that the pipeline … |
+| 88 | smoke | 0.01h | returned | **C4** | Same stage/data as i=79 but batch size 4 -> 16 and 64 -> 256 examples: a hyperparameter probe whose purpose was to pick the batch size for the real ru… |
+| 93 | real | 1.61h | returned | **both** | baseline (first real training). It fixes the data recipe (100k stratified GSM-derived MetaMathQA rows) and the method (full-parameter SFT, bs16, lr 1e… |
+| 222 | smoke | 0.02h | returned | **unclear** | First smoke of the new 'aligned' stage (3 steps, 64 examples, 3072 tokens, lr 3e-6) on top of stage1_model. It died before training on HuggingFace HEA… |
+| 226 | smoke | 0.01h | returned | **unclear** | Byte-identical relaunch of i=222 with HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 prepended, after the network repair. Still a code-path smoke run: it repo… |
+| 231 | real | 0.54h | returned | **C3** | First real alignment epoch from stage1_model. Data changes from MetaMathQA paraphrases (100k, 1024 tokens) to the 7,473 original GSM8K train solutions… |
+| 290 | real | 0.54h | returned | **C4** | Identical 7,473-example aligned corpus; only the method changes - a second epoch continued from aligned_model at lr 3e-6 -> 1.5e-6, seed 42 -> 43. Acc… |
+| 348 | real | 0.54h | returned | **C4** | Same corpus again; third epoch from aligned2_model at lr 1.5e-6 -> 7.5e-7, seed 44. Rejected on n=150 (91/150 vs 93/150) and again on the full set (60… |
+| 385 | real | 2.20h | returned | **C3** | Returns to the metamath stage but on 140,000 rows disjoint from stage one's 100k (--metamath-offset 100000), started from aligned2_model at lr 5e-6 (s… |
+| 560 | real | 0.54h | returned | **C3** | Format-recovery epoch on the full-dose diversity model (diverse_model), lr 2e-6, seed 45, otherwise the same 7,473-example aligned corpus and schedule… |
+| 612 | real | 0.54h | returned | **C3** | The single cleanest contrast in this run: byte-identical to i=560 in corpus, seed 45, batching, lr 2e-6 and schedule; only the parent checkpoint diffe… |
+| 667 | real | 0.54h | returned | **C4** | Same aligned corpus; second cleanup epoch from midpoint_aligned_model at lr 2e-6 -> 1e-6, seed 45 -> 46. Accepted on n=150 (95/150 vs 94/150) then rev… |
+| 835 | real | 0.46h | returned | **C3** | New data source: 6,248 outcome-filtered self-generated solutions (source type (d)) instead of MetaMathQA or the human GSM8K solutions, trained from al… |
+
+### 验证序列(26 次)
+
+| i | 档位 | 样本量 | 拿到信号 | 判定了哪些改动 | 读到什么 |
+|---|---|---|---|---|---|
+| 20 | 3 | 30 | 是 |  | 0.033 |
+| 199 | 3 | 150 | 是 | c1, c3, c5, c8 | 0.04 |
+| 266 | 3 | 150 | 是 | c6, c10, c11 | 0.5933333333333334 |
+| 337 | 3 | 150 | 是 | c12 | 0.62 |
+| 372 | 3 | 150 | 是 | c13 | 0.607 |
+| 606 | 3 | 150 | 是 | c15, c18 | 0.607 |
+| 654 | 3 | 150 | 是 | c16, c17 | 0.6266666666666667 |
+| 708 | 3 | 150 | 是 | c19 | 0.633 |
+| 723 | 4 | -1 | 是 | c19 | 0.6027293404094011 |
+| 730 | 4 | -1 | 是 | c16, c17 | 0.6072782410917361 |
+| 738 | 4 | -1 | 是 | c12, c15, c17, c19 | 0.623199393479909 |
+| 751 | 4 | -1 | 是 | c13 | 0.6087945413191812 |
+| 770 | 4 | -1 | 是 | c10, c11 | 0.6262319939347991 |
+| 802 | 4 | -1 | 是 | c22 | 0.62 |
+| 860 | 4 | -1 | 是 | c23, c24 | 0.6171341925701289 |
+| 866 | 4 | -1 | 是 | c23, c24 | 0.6118271417740713 |
+| 876 | 4 | -1 | 是 | c25 | 0.618 |
+| 885 | 4 | -1 | 是 | c26 | 0.622 |
+| 899 | 4 | -1 | 是 | c27 | 0.6315390447308568 |
+| 912 | 4 | -1 | 是 | c29 | 0.6239575435936315 |
+| 918 | 4 | -1 | 是 | c30 | 0.6277482941622441 |
+| 925 | 4 | -1 | 是 | c31 | 0.6376042456406369 |
+| 933 | 4 | -1 | 是 | c32 | 0.624 |
+| 940 | 4 | -1 | 是 | c33 | 0.6368460955269143 |
+| 967 | 4 | -1 | 是 | c34 | 0.6292645943896892 |
+| 996 | 4 | -1 | 是 | c34 | 0.6338134950720242 |
+
+### 异常与存疑
+
+- **3 段训练的受测变量判不出**:i=[79, 222, 226]
+- **分类学缺口提案 2 条**
+  - environment-repair(i=179, i=182, i=180, i=192, i=226, i=224)
+  - verifier-policy(i=736, i=862, i=722, i=750)
+- **定义缺陷 4 条**
+  - (i=84, i=130, i=127, i=129)
+  - (i=952, i=963, i=974, i=986, i=980, i=995)
+  - (i=920, i=879, i=961, i=796, i=929)
+  - (i=231, i=203, i=271, i=217)
+- **边界情形 4 条**
+  - Training i=231 sits between C2 and C3 and the tested_variable value set has no C2. One launch changes both the data source (MetaMathQA paraphrases -> the 7,473 original GSM8K train solutions) and the …(i=231, i=221, i=271, i=768)
+  - Smoke runs test neither C3 nor C4. i=79, i=222 and i=226 (3 of 13 training rows here) exist to verify that code runs - reference tier 2 - and have no variable under test. They are recorded 'unclear', …(i=79, i=222, i=226)
+  - generate_selftrain.py falls between C3(d) and C7. It is a data-production step (self-sampled solutions, kept only when the final ANSWER line matches the training label - 17,769 correct of 29,892 candi…(i=788, i=818, i=829, i=786)
+  - judges_changes cannot express confounded changes inside one artifact. Verification i=266 (aligned_model, n=150, 0.593) is the first evaluation of a checkpoint that carries BOTH the C2/C3 alignment tra…(i=196, i=199, i=888, i=891, i=114, i=271)
 
 ## codex_non_api_max_gpt-5.6-sol_10h_run2__gsm8k_Qwen_Qwen3-1.7B-Base_17404247
 | agent | harness | benchmark | base model | 时长 | 最终分 |
