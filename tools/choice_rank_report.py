@@ -8,16 +8,57 @@ because a cell holds ~40 runs from ~20 agent families and agent identity is 66 %
 of the variance. Any arm that looks good on a full cell has to be shown again
 somewhere that table cannot work.
 
-So everything is reported on three populations:
+So everything is reported on four populations:
 
   full cell          ~40 candidates, agent identity visible and decisive
   within family      the sub-set of a cell written by one agent family
+  within scaffold    the sub-set of a cell produced by one harness
+                     (claude_code / codex / opencode / cursor)
   agent-blind cell   a full cell, but every arm that could use agent identity
                      is replaced by its leave-one-out-by-family version
 
 and against four baselines: random, the agent-family lookup table, the 21
 bucketed features, and the self-report regex. `--bootstrap` resamples cells,
 since 28 cells is the real sample size, not 1,175 runs.
+
+`within scaffold` is here because `within family` wins partly by blinding the
+opponent: the family table is CONSTANT on 100 % of within-family sets and on 0 %
+of within-scaffold ones, which hold a median of 5 distinct families and never
+fewer than 3. It is also a condition you hold before any run exists -- which
+harness you operate -- rather than a property of what the agent turned out to do,
+so it is a choice set someone is actually in. The header prints that blinding
+fraction for every population, so a row that wins by muting the baseline cannot
+be read as a result.
+
+Sub-sets of one cell are NOT independent draws: they share that cell's runs, its
+stage-A calls and its leave-one-out family table, and their per-cell advantages
+correlate +0.54 (scaffold) to +0.79 (peft) with the full cell's. So every paired
+test below is CLUSTERED on the parent cell -- the bootstrap resamples the 28
+cells and the sign test counts cells, not sets. The set-level counts are printed
+alongside and are systematically more significant; that gap is the over-count,
+not evidence. Calibration: shuffling accuracies within each cell rejects the
+percentile CI 8-10 % of the time against a nominal 5 % on every population,
+while the clustered sign test rejects 3-4 %, so the sign test is the load-bearing
+one and the CI should be read as ~90 %. And cutting each cell into RANDOM chunks
+of the within-scaffold size profile gives +0.0094 [+0.0034,+0.0169] over 200
+draws against scaffold's +0.0122 at the 19th percentile -- the extra power comes
+from measuring the same 28 cells on smaller sets, and scaffold is a typical such
+partition rather than a lucky one.
+
+A baseline has to be given the scale it is averaged on. The agent-family table
+used to average RAW accuracies across cells, which understated it badly: cell
+mean accuracy runs 0.003 to 0.820, so the table was mostly reporting which
+family drew the easy cells. Averaging within-cell z-scores instead takes it from
+0.0248 to 0.0070 on full cells, better in 11 of 28 cells and worse in none, and
+that DELETES the headline -- `stage A - agent table` was -0.0167, 10-2,
+p=0.0386, and is now +0.0011, 3-6, p=0.508, i.e. at k=3 on a full cell stage A
+and the lookup table are indistinguishable. That tie is specific to k=3 and to
+the whole cell: at k=1 the same full cells give stage A 0.0200 against the
+corrected table's 0.0480 (stage A better in 200/200 random tie-breaks), and on
+the ambiguous-family cells below it is 0.0135 against 0.0265, -0.0162 under
+matched random tie-breaks, 12-1, sign p=0.0034 against an MDE of 0.0133. The
+within-family population, where the table cannot work at all, is the largest
+but not the only thing left. See `cell_z`.
 
 Every arm is a SCORE, and every score is reported twice: once with ties settled
 by job id, which is what the pipeline does, and once with ties settled at random.
@@ -114,9 +155,55 @@ def sc_selfreport(rows, sr):
     return [sr[r["run"]] if sr.get(r["run"]) is not None else -1.0 for r in rows]
 
 
+def cell_z(rows):
+    """Every run's accuracy re-expressed as a z-score WITHIN its own cell.
+
+    The family lookup table is an average over cells, and a raw accuracy is not
+    comparable across cells: cell mean accuracy runs 0.003 to 0.820 and the
+    median within-cell spread is 0.655, so a family that happened to be given
+    the easy cells scores high for a reason that is not the family. It is not a
+    hypothetical -- `claude-opus-5` ran in 24 of 28 cells with mean difficulty
+    0.291 against `claude-opus-4-8`'s 0.334, so the raw mean ranks it THIRD
+    while every scale-corrected table ranks it second, and it is the family that
+    produced the winning run in most cells. Correlation between a family's raw
+    mean and the mean accuracy of the cells it was run in is -0.171; on z-scores
+    it is -0.508, i.e. the strong families were deliberately given the hard cells.
+    """
+    acc = collections.defaultdict(list)
+    for r in rows:
+        acc[(r["benchmark"], r["trained_model"])].append(r)
+    out = {}
+    for rs in acc.values():
+        v = np.array([r["accuracy"] for r in rs], dtype=float)
+        s = v.std()
+        z = (v - v.mean()) / (s if s > 1e-12 else 1.0)
+        out.update({r["run"]: float(z[i]) for i, r in enumerate(rs)})
+    return out
+
+
+def fam_table(rows, zacc, held_cell):
+    """Leave-one-cell-out family table, on the within-cell scale.
+
+    Built from every OTHER cell, so it never sees this cell's own accuracies.
+    Mean-of-z (this), median-of-z, mean-of-within-cell-percentile, median-of-
+    percentile, mean of the within-cell min-max score and the MEDIAN of the raw
+    accuracies all give the SAME 28 per-cell regrets, 0.0070; only the raw MEAN
+    is different, at 0.0248. So this is a correction, not a choice of estimator.
+    """
+    acc = collections.defaultdict(list)
+    for r in rows:
+        if (r["benchmark"], r["trained_model"]) != held_cell:
+            acc[r["fam"]].append(zacc[r["run"]])
+    return {k: float(np.mean(v)) for k, v in acc.items()}
+
+
 def sc_famtable(rows, fam_mean):
-    """The table that saturates. Leave-one-out by construction: `fam_mean` is
-    built from every OTHER cell, so it never sees this cell's own accuracies."""
+    """The table that saturates, scored on the scale it is averaged over.
+
+    The default is 0.0, which on the z scale is an average family rather than
+    the worst one; 1 of 1175 runs has a family that appears in no other cell and
+    the number is the same under either default.
+    """
     return [fam_mean.get(r["fam"], 0.0) for r in rows]
 
 
@@ -132,14 +219,24 @@ def sc_features(rows, model, vec):
 
 
 def sc_stage_ab(cell, rows, short, b, a):
-    """Copeland over the shortlist, stage A below it, as one score. `wins` is an
-    integer and the stage-A term is far under 100, so this is exactly the
-    lexicographic order `CR.copeland` produces, only tie-breakable."""
+    """Copeland over the shortlist, stage A below it, as one score.
+
+    The Copeland term is a win RATE and not a win count -- see
+    `CR.copeland_score`. With the cached pairs covering 37.6 % of this
+    shortlist, a count ranks the 38.7 % of shortlisted runs that were never
+    compared dead last on no evidence, which is what the shipped +0.0026
+    "stage B costs points" was. It is also built from POSITIONS rather than by
+    scaling two numbers together, so it is exactly the lexicographic order
+    (Copeland, then stage A) whatever the two terms' magnitudes turn out to be:
+    the old form assumed the stage-A term was "far under 100" and it can reach
+    8.2, which is fine against integer wins and would not be against a rate.
+    """
     sa = dict(zip([r["run"] for r in rows], CR.rank_score(rows, a)))
-    wins = CR.copeland_wins(cell, short, b)
-    keep = {r["run"] for r in short}
-    return [(1e6 if r["run"] in keep else 0.0)
-            + 100.0 * wins[r["run"]] + sa[r["run"]] for r in rows]
+    cs = CR.copeland_score(cell, short, b)
+    pos = {r["run"]: i for i, r in enumerate(
+        sorted(short, key=lambda r: (-cs[r["run"]], -sa[r["run"]])))}
+    return [1e6 - pos[r["run"]] if r["run"] in pos else sa[r["run"]]
+            for r in rows]
 
 
 _FIT_CACHE: dict = {}
@@ -195,6 +292,7 @@ def fit_features(rows, cells_, held_cell):
 def main() -> int:
     rows = T.load_rows()
     cells_ = CR.cells(rows)
+    zacc = cell_z(rows)
 
     a = {}
     p = CR.OUT / "score_a.jsonl"
@@ -249,11 +347,13 @@ def main() -> int:
         "full cell": [(c, rs) for c, rs in cells_.items()],
         "within family": [],
     }
-    fg = collections.defaultdict(list)
-    for r in rows:
-        fg[(r["benchmark"], r["trained_model"], r["fam"])].append(r)
-    pops["within family"] = [(c, sorted(v, key=lambda r: r["run"]))
-                             for c, v in sorted(fg.items()) if len(v) >= 4]
+    for popname, col in (("within family", "fam"),
+                         ("within scaffold", "trace_format")):
+        g = collections.defaultdict(list)
+        for r in rows:
+            g[(r["benchmark"], r["trained_model"], r[col])].append(r)
+        pops[popname] = [(c, sorted(v, key=lambda r: r["run"]))
+                         for c, v in sorted(g.items()) if len(v) >= 4]
 
     ARMS = ("random", "agent table", "21 features", "self-report",
             "stage A", "stage A+B")
@@ -261,23 +361,21 @@ def main() -> int:
     for popname, sets in pops.items():
         spread = [max(r["accuracy"] for r in rs) - min(r["accuracy"] for r in rs)
                   for _, rs in sets]
-        print(f"=== {popname}: {len(sets)} sets, median size "
+        nfam = [len({r["fam"] for r in rs}) for _, rs in sets]
+        print(f"=== {popname}: {len(sets)} sets in "
+              f"{len({c[:2] for c, _ in sets})} cells, median size "
               f"{int(np.median([len(rs) for _, rs in sets]))}, "
-              f"median spread {np.median(spread):.3f} ===")
+              f"median spread {np.median(spread):.3f}, family table constant on "
+              f"{np.mean([n == 1 for n in nfam]):.0%} of sets ===")
 
         res = collections.defaultdict(list)
         res1 = collections.defaultdict(list)
         sol = collections.defaultdict(list)
         scores = []          # per set: {arm: score vector}, for the tie-break pass
-        bcov = []
+        bcov, bnil, bshort = [], [], []
         for c, rs in sets:
             cell = c[:2]
-            # leave-this-cell-out family table
-            fam_acc = collections.defaultdict(list)
-            for r in rows:
-                if (r["benchmark"], r["trained_model"]) != cell:
-                    fam_acc[r["fam"]].append(r["accuracy"])
-            fam_mean = {k: float(np.mean(v)) for k, v in fam_acc.items()}
+            fam_mean = fam_table(rows, zacc, cell)
             model, vec = fit_features(rows, cells_, cell)
 
             short = CR.rank_key(rs, a)[:6]
@@ -286,6 +384,10 @@ def main() -> int:
                       if (key, x["run"], y["run"]) in b)
             n = len(short)
             bcov.append(got / max(1, n * (n - 1)))
+            bnil.append(sum(1 for x in short if not any(
+                (key, x["run"], y["run"]) in b or (key, y["run"], x["run"]) in b
+                for y in short if y is not x)))
+            bshort.append(n)
 
             sc = {
                 "agent table": sc_famtable(rs, fam_mean),
@@ -311,14 +413,20 @@ def main() -> int:
         #: and job ids are issued in time order, so that is "prefer whatever ran
         #: first". Re-score every arm under random tie-breaks and print where the
         #: shipped job-id order sits in that distribution.
-        tb = {}
+        #: Keep the PER-SET regrets of every tie-break draw, not just their
+        #: mean: the same draws are what says whether a paired row's sign test
+        #: survives the tie-break, and that is a different question from
+        #: whether either arm's mean does. Both arms of a row see the SAME
+        #: jitter on draw s, so the control is paired.
+        tbv = {}
         for name in ARMS[1:]:
             sims = []
             for s in range(200):
                 rg = np.random.default_rng(7000 + s)
-                sims.append(np.mean([regret(_order(rs, scores[i][name], rg))
-                                     for i, (_, rs) in enumerate(sets)]))
-            tb[name] = np.array(sims)
+                sims.append([regret(_order(rs, scores[i][name], rg))
+                             for i, (_, rs) in enumerate(sets)])
+            tbv[name] = np.array(sims)                     # [200, n_sets]
+        tb = {k: v.mean(1) for k, v in tbv.items()}
 
         print(f'{"arm":>14} {"regret@3":>9} {"95% CI":>16} '
               f'{"solved@3":>9} {"regret@1":>9} {"tie-break":>19}')
@@ -344,22 +452,81 @@ def main() -> int:
         print("  order was worse than every random one, i.e. the row is an "
               "artefact of it.")
         print(f"  stage-B pair coverage of each set's own shortlist: "
-              f"{np.mean(bcov):.1%}")
+              f"{np.mean(bcov):.1%}; {sum(bnil)} of {sum(bshort)} shortlisted "
+              f"runs ({sum(bnil) / sum(bshort):.1%}) have NO cached comparison")
+        print("  at all, so the stage A+B row is that far from being a "
+              "measurement of stage B.")
 
-        # paired: 28 sets is the sample size, and the arms see the same sets
-        print(f'\n  paired vs the arm above it ({len(sets)} sets, '
-              f'bootstrap over sets + sign test on non-ties)')
+        # paired, CLUSTERED on the parent cell. 28 cells is the sample size on
+        # every population here, not the set count: two sub-sets of one cell
+        # share that cell's runs, its stage-A calls and its leave-one-out family
+        # table, and their per-cell advantages correlate +0.54 to +0.79 with the
+        # full cell's, so bootstrapping 84 of them as independent draws
+        # over-counts. The set-level counts are printed in the trailing bracket
+        # so the size of that over-count is visible rather than assumed away.
+        parent = [c[:2] for c, _ in sets]
+        cidx: dict = {}
+        for i, pc in enumerate(parent):
+            cidx.setdefault(pc, []).append(i)
+        clus = sorted(cidx)
+        nc = len(clus)
+
+        def _clus(v):
+            """set-level vector -> per-cell means, so a cell counts once however
+            many sub-sets it was cut into. Works on (nsets,) and (ndraws, nsets)."""
+            return np.array([np.asarray(v)[..., cidx[c]].mean(axis=-1)
+                             for c in clus]).T
+
+        print(f'\n  paired vs the arm above it ({len(sets)} sets in {nc} cells; '
+              f'bootstrap and sign test CLUSTERED on the cell; mde = the effect '
+              f'this many cells could find at 80 % power, tb = share of the 200 '
+              f'random tie-break draws in which the sign test still clears 0.05, '
+              f'and the mean effect over those draws)')
         from scipy.stats import binomtest
 
-        def paired(lo, hi):
-            d = np.array(res[lo]) - np.array(res[hi])   # >0 means `hi` is better
-            bs = d[rng.integers(0, len(d), (4000, len(d)))].mean(1)
+        def _signp(d):
             w = int((d > 1e-9).sum())
             ls = int((d < -1e-9).sum())
-            pv = binomtest(w, w + ls).pvalue if w + ls else 1.0
+            return w, ls, (binomtest(w, w + ls).pvalue if w + ls else 1.0)
+
+        def paired(lo, hi):
+            dset = np.array(res[lo]) - np.array(res[hi])  # >0 means `hi` better
+            d = _clus(dset)
+            bs = d[rng.integers(0, nc, (4000, nc))].mean(1)
+            w, ls, pv = _signp(d)
+            #: Two things a bare p hides on 28 sets. First, the smallest effect
+            #: this many sets could have found at 80 % power, from the observed
+            #: sd of the paired difference: a row whose effect is under its own
+            #: MDE is one this design was never powered to detect, whatever p
+            #: came out. Second, the sign test is decided by the handful of sets
+            #: that differ at all, and which ones those are depends on the
+            #: arbitrary job-id tie-break -- so re-run it on the 200 random
+            #: tie-break draws and say in how many of them the row still clears
+            #: 0.05. A row that clears it by job id and in half the draws is a
+            #: property of the job ids.
+            sd = d.std(ddof=1)
+            #: An all-zero difference has sd 0, so an MDE of 0 would flag a row
+            #: with nothing in it as adequately powered. Say n/a instead.
+            if sd > 0:
+                m = (1.959964 + 0.8416212) * sd / math.sqrt(nc)
+                flag = "<MDE" if abs(d.mean()) < m else "    "
+                mstr = f"mde={m:.4f} {flag}"
+            else:
+                mstr = "mde=  n/a     "
+            #: tb without its mean effect is the most misleading column here: a
+            #: row can clear 0.05 in 99 % of draws at a third of the job-id
+            #: effect, which says the effect is real and the headline size is a
+            #: property of the job ids. Print both.
+            tbp = "    n/a"
+            if lo in tbv and hi in tbv:
+                dd = _clus(tbv[lo] - tbv[hi])
+                ps = [_signp(dd[s])[2] for s in range(dd.shape[0])]
+                tbp = f"{np.mean(np.array(ps) < 0.05):4.0%} eff{-dd.mean():+7.4f}"
+            sw, sl, spv = _signp(dset)
+            tail = f"  (by set {sw}-{sl} p={spv:.3g})" if len(sets) != nc else ""
             print(f"    {hi:>12} - {lo:<12} {-d.mean():+8.4f} "
                   f"[{-np.quantile(bs,0.975):+7.4f},{-np.quantile(bs,0.025):+7.4f}] "
-                  f"  {w}-{ls}  p={pv:.3g}")
+                  f"  {w}-{ls}  p={pv:.3g}  {mstr}  tb{tbp}{tail}")
 
         for lo, hi in zip(ARMS, ARMS[1:]):
             paired(lo, hi)
@@ -388,11 +555,7 @@ def main() -> int:
                 and max(x["accuracy"] for x in v) > med for r in v]
         if len(keep) < 6:
             continue
-        fam_acc = collections.defaultdict(list)
-        for r in rows:
-            if (r["benchmark"], r["trained_model"]) != c:
-                fam_acc[r["fam"]].append(r["accuracy"])
-        fam_mean = {k: float(np.mean(v)) for k, v in fam_acc.items()}
+        fam_mean = fam_table(rows, zacc, c)
         model, vec = fit_features(rows, cells_, c)
         res["random"].append(rnd_regret(keep))
         sol["random"].append(rnd_solved(keep))

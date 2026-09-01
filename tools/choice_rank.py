@@ -335,10 +335,46 @@ def copeland_wins(cell, shortlist, b_pairs):
     return wins
 
 
+def copeland_score(cell, shortlist, b_pairs):
+    """Copeland as a win RATE over the comparisons that were actually made.
+
+    `copeland_wins` counts wins, and a count only ranks when every pair exists:
+    a run the comparator was never shown scores zero wins and so sorts BELOW a
+    run that lost every comparison it had. That is not hypothetical here. The
+    cached pairs were produced against a shortlist built on the old bare-
+    `quality` key; against the current key they cover 37.6 % of the shortlist,
+    65 of the 168 shortlisted runs (38.7 %) have no cached comparison at all,
+    and in 12 of the 28 cells one of those uncompared runs is the cell's own
+    winner. Ranking them last is what the `stage A+B` row was measuring.
+
+    `(wins - losses) / comparisons decided` is 0 both for "never compared" and
+    for "won as often as it lost", which is the right coincidence: a run nobody
+    compared keeps its stage-A place instead of being demoted for it.
+    """
+    key = f"{cell[0]}|{cell[1]}"
+    won, seen = collections.Counter(), collections.Counter()
+    for x, y in itertools.permutations(shortlist, 2):
+        w = b_pairs.get((key, x["run"], y["run"]))
+        if w not in ("A", "B"):
+            continue
+        seen[x["run"]] += 1
+        seen[y["run"]] += 1
+        won[x["run"] if w == "A" else y["run"]] += 1
+    return {r["run"]: ((2 * won[r["run"]] - seen[r["run"]]) / seen[r["run"]]
+                       if seen[r["run"]] else 0.0) for r in shortlist}
+
+
 def copeland(cell, shortlist, b_pairs, a_scores):
     """Copeland over the shortlist. Ties fall back to the stage-A score, which is
-    the only information Copeland lacks."""
-    wins = copeland_wins(cell, shortlist, b_pairs)
+    the only information Copeland lacks.
+
+    NOTE this is not the order the report scores. `rank_key` z-scores WITHIN
+    whatever list it is handed, so re-z-scoring the 6-run shortlist is a
+    different key from the 44-run one that built it, and the two disagree on
+    the top 3 in 8 of 28 cells. `choice_rank_report.sc_stage_ab` uses the
+    whole-set z-scores and is the one the numbers come from.
+    """
+    wins = copeland_score(cell, shortlist, b_pairs)
     # Copeland ties fall back to stage A's own order, which must be the SAME key
     # the shortlist was built with. It used to fall back to bare `quality`, so on
     # any cell where the comparator ties -- and with 1.0 % pair coverage within a
