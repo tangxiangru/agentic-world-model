@@ -271,3 +271,27 @@ class TestLoopedEvaluations:
         """Not the truth -- a floor, like every other row in this table."""
         assert eval_events.call_count("for s in 1 2; do python evaluate.py; done", "") == 1
 
+
+class TestEvaluatorVariant:
+    """``evaluate_aime2024.py`` is the scorer's code on someone else's test set."""
+
+    def test_it_is_recognised(self) -> None:
+        assert eval_events._form(
+            "python evaluate_2024.py --model-path ckpt/a --max-connections 6"
+        ) == "evaluator_variant"
+
+    def test_it_gets_no_official_tier(self) -> None:
+        """Even with an explicit --limit: the tiers are rungs on the official
+        set, and a copy aimed at AIME 2024 is a proxy however faithful."""
+        assert eval_events.tier_for(30, "aime2025", "evaluator_variant") is None
+        assert eval_events.tier_for(None, "aime2025", "evaluator_variant") is None
+
+    def test_the_official_scorer_is_unaffected(self) -> None:
+        assert eval_events._form("python evaluate.py --model-path ckpt/a") == "evaluate.py"
+
+
+class TestPassAtOneSpelling:
+    def test_a_self_built_scorer_names_it_pass1(self) -> None:
+        assert eval_events._accuracy_in('{"pass1": 0.2, "trunc_rate": 0.13}') == 0.2
+        assert eval_events._accuracy_in("pass@1: 0.747") == 0.747
+

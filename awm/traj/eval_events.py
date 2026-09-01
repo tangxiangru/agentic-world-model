@@ -102,6 +102,15 @@ _BASH_LC = re.compile(r"^\s*/bin/bash\s+-lc\s+(['\"])(?P<inner>.*)\1\s*$", re.S)
 #: source all name it without running it.
 _LAUNCH_PY = re.compile(r"\bpython3?\s+(?:-[\w-]+\s+)*[\w./-]*evaluate\.py\b")
 
+#: ``evaluate_aime2024.py``, ``evaluate_validation.py``, ``evaluate_historical.py``
+#: — the official scorer copied and pointed at a *different* test set. 43 calls
+#: across the corpus. They are not the official verifier and must not enter the
+#: four-tier table, but they are not invisible either: in one run the three calls
+#: to ``evaluate_2024.py`` carried that run's only cross-branch checkpoint choice.
+_LAUNCH_VARIANT = re.compile(
+    r"\bpython3?\s+(?:-[\w-]+\s+)*[\w./-]*evaluate[_-][\w-]+\.py\b"
+)
+
 #: ``python -c "import evaluate; evaluate.DEFAULT_EPOCHS=3; sys.argv=[…];
 #: evaluate.main()"`` runs the official scorer without ever naming its file on a
 #: command line. One run drove nine full evaluations this way -- including the
@@ -148,7 +157,11 @@ _BACKGROUND = re.compile(r"\bnohup\b|[^&>]&\s*(?:$|\n|;|echo\b)")
 #: score in a run whose evaluations all went through such a wrapper.
 #: The quote may also be a single one: ``print(json.load(open(f)))`` prints a
 #: Python dict repr, and that is how the codex runs habitually read a score back.
-_ACCURACY = re.compile(r'''["']?accuracy["']?(?:\s*[:=]\s*|\s+)([0-9.]+)''', re.I)
+#: ``pass@1`` is the same quantity under the name a self-built scorer gives it;
+#: 6 runs (3%) spell it that way.
+_ACCURACY = re.compile(
+    r'''["']?(?:accuracy|pass@?1)["']?(?:\s*[:=]\s*|\s+)([0-9.]+)''', re.I
+)
 
 #: The harness prints these when it moves a command off the foreground, and
 #: echoes the same id back on the retrieval that finally carries the output.
@@ -241,6 +254,8 @@ def _form(command: str, known: dict[str, set[str]] | None = None) -> str | None:
         return None
     if _LAUNCH_PY.search(outside) or _LAUNCH_IMPORT.search(outside):
         return "evaluate.py"
+    if _LAUNCH_VARIANT.search(outside):
+        return "evaluator_variant"
     if _LAUNCH_SH.search(outside):
         return "run_eval.sh"
     # An agent that wrapped evaluation in a script of its own naming — one run
@@ -270,7 +285,13 @@ def tier_for(limit: int | None, benchmark: str | None, form: str | None = None) 
     ``evaluate.py`` with no ``--limit`` scores the whole set: that is its
     default, and it is how one agent ran all seventeen of its full evaluations.
     Reading the absent flag as "unknown" left every one of them untiered.
+
+    A variant of the scorer pointed at another test set gets no tier at any
+    sample size. The four tiers are rungs on the *official* set; a copy aimed at
+    AIME 2024 is a self-built proxy, however faithfully it reuses the code.
     """
+    if form == "evaluator_variant":
+        return None
     if limit is None:
         if form != "evaluate.py" or benchmark not in _LIMIT_DEFAULT:
             return None
