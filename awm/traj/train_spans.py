@@ -57,6 +57,7 @@ from typing import Any, Iterator
 import pandas as pd
 
 from awm import paths
+from awm.traj import scripts
 
 #: Column -> pandas dtype, in table order. The whole contract of the table.
 DTYPES: dict[str, str] = {
@@ -84,6 +85,18 @@ _LAUNCH = re.compile(
     r"|\btorchrun\b"
     r"|\baccelerate\s+launch\b"
 )
+
+#: A command that *writes* a script naming a trainer or an evaluator is not
+#: running one. Agents build wrappers with ``cat > run_eval.sh <<'EOF' … EOF``,
+#: and the body holds a full command line; matching inside it invents launches
+#: that never happened, inflating both the count and the share that returned a
+#: score.
+_HEREDOC_BODY = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?.*?^\1", re.S | re.M)
+
+
+def strip_heredocs(command: str) -> str:
+    """The command without any here-document payload."""
+    return _HEREDOC_BODY.sub(" ", command)
 
 _OUT_DIR = re.compile(r"--out(?:put[-_]dir)?[= ]\s*['\"]?([^\s'\"]+)")
 
@@ -124,6 +137,12 @@ _CONSUME_VERBS = (
 #: Deleting the artifact ends the span too, but it is an abandonment, not a use.
 _DISCARD_VERB = r"\brm\s+-[rf]{1,2}\s+[^;&|]*?"
 
+#: ``pkill -f "train_sft.py"`` ends every training then running, and names the
+#: script rather than the artifact, so an out_dir-keyed rule never sees it. One
+#: run launched a training and killed it nine seconds later to free the GPU; the
+#: run-end fallback had scored that as 6.29 hours.
+_KILL = re.compile(r"\b(?:pkill|killall)\b[^;&|]*?(train[\w./-]*\.py|torchrun|accelerate)")
+
 _TRAIN_RUNTIME = re.compile(r"train_runtime['\"]?\s*[:=]\s*([0-9.]+)")
 
 
@@ -153,8 +172,14 @@ def _command(event: dict[str, Any]) -> str:
     return args.get("command") or ""
 
 
-def _is_launch(command: str) -> bool:
-    return bool(_LAUNCH.search(command))
+def _is_launch(command: str, known: dict[str, set[str]] | None = None) -> bool:
+    outside = strip_heredocs(command)
+    if _LAUNCH.search(outside):
+        return True
+    # Naming is a convention agents never agreed to: one run put its whole GRPO
+    # stage in ``work/grpo.py``. What the run's own writes say the script is for
+    # is the reliable signal.
+    return bool(known) and scripts.invoked(outside, known, "trainer")
 
 
 def _out_dir(command: str) -> str | None:
@@ -228,6 +253,7 @@ def _train_runtime_in(text: str | None) -> float | None:
 def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Every training this run launched, with the wall clock it occupied."""
     events = sorted(events, key=lambda e: (e.get("agent_id") or "", e.get("i") or 0))
+    known = scripts.learn(events)
     results = _result_index(events)
     uses = [e for e in events if e.get("type") == "tool_use"]
     last_ts = next((e.get("ts") for e in reversed(events) if e.get("ts")), None)
@@ -235,7 +261,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
     launches: list[tuple[int, dict[str, Any], str, str | None]] = []
     for pos, e in enumerate(uses):
         cmd = _command(e)
-        if _is_launch(cmd):
+        if _is_launch(cmd, known):
             launches.append((pos, e, cmd, _out_dir(cmd)))
 
     rows: list[dict[str, Any]] = []
@@ -263,8 +289,11 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
             last_seen: str | None = None
             for later in uses[pos + 1 :]:
                 later_cmd = _command(later)
-                if out_dir and _is_launch(later_cmd) and _out_dir(later_cmd) == out_dir:
+                if out_dir and _is_launch(later_cmd, known) and _out_dir(later_cmd) == out_dir:
                     ts_end, end_reason = later.get("ts"), "superseded"
+                    break
+                if _KILL.search(later_cmd):
+                    ts_end, end_reason = later.get("ts"), "killed"
                     break
                 if out_dir and _discards(later_cmd, out_dir):
                     ts_end, end_reason = later.get("ts"), "discarded"

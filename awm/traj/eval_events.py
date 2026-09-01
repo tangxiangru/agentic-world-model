@@ -69,6 +69,7 @@ from typing import Any, Iterator
 import pandas as pd
 
 from awm import paths
+from awm.traj import scripts
 
 DTYPES: dict[str, str] = {
     "run_id": "string",
@@ -101,6 +102,18 @@ _BASH_LC = re.compile(r"^\s*/bin/bash\s+-lc\s+(['\"])(?P<inner>.*)\1\s*$", re.S)
 _LAUNCH_PY = re.compile(r"\bpython3?\s+(?:-[\w-]+\s+)*[\w./-]*evaluate\.py\b")
 _LAUNCH_SH = re.compile(r"(?:^|[;&|]\s*|\bbash\s+|\bsh\s+)[\w./-]*run_eval[\w.-]*\.sh\b")
 
+#: A command that *writes* a script naming a trainer or an evaluator is not
+#: running one. Agents build wrappers with ``cat > run_eval.sh <<'EOF' … EOF``,
+#: and the body holds a full command line; matching inside it invents launches
+#: that never happened, inflating both the count and the share that returned a
+#: score.
+_HEREDOC_BODY = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?.*?^\1", re.S | re.M)
+
+
+def strip_heredocs(command: str) -> str:
+    """The command without any here-document payload."""
+    return _HEREDOC_BODY.sub(" ", command)
+
 _MODEL_PATH = re.compile(r"--model[-_]path[= ]\s*['\"]?([^\s'\"]+)")
 _LIMIT = re.compile(r"--limit[= ]\s*(-?\d+)")
 _MAXCONN = re.compile(r"--max[-_]connections[= ]\s*(\d+)")
@@ -108,9 +121,12 @@ _JSON_OUT = re.compile(r"--json[-_]output[-_]file[= ]\s*['\"]?([^\s'\"]+)")
 
 _BACKGROUND = re.compile(r"\bnohup\b|[^&>]&\s*(?:$|\n|;|echo\b)")
 
-#: Both spellings the corpus produces: ``"accuracy": 0.7266`` from the json the
-#: harness writes, and ``Accuracy: 0.2339 (±0.0402)`` from the log line.
-_ACCURACY = re.compile(r'"?accuracy"?\s*[:=]\s*([0-9.]+)', re.I)
+#: Three spellings the corpus produces: ``"accuracy": 0.7266`` from the json the
+#: harness writes, ``Accuracy: 0.2339 (±0.0402)`` from the log line, and
+#: ``accuracy  0.820`` — whitespace-aligned columns, no separator at all — from
+#: the wrappers agents write for themselves. Demanding a colon missed every
+#: score in a run whose evaluations all went through such a wrapper.
+_ACCURACY = re.compile(r'"?accuracy"?(?:\s*[:=]\s*|\s+)([0-9.]+)', re.I)
 
 #: The harness prints these when it moves a command off the foreground, and
 #: echoes the same id back on the retrieval that finally carries the output.
@@ -162,13 +178,22 @@ def _command(event: dict[str, Any]) -> str:
 _HELP_ONLY = re.compile(r"evaluate\.py\s+(?:[\w./-]+\s+)*--help\b")
 
 
-def _form(command: str) -> str | None:
-    if _HELP_ONLY.search(command):
+def _form(command: str, known: dict[str, set[str]] | None = None) -> str | None:
+    outside = strip_heredocs(command)
+    if _HELP_ONLY.search(outside):
         return None
-    if _LAUNCH_PY.search(command):
+    if _LAUNCH_PY.search(outside):
         return "evaluate.py"
-    if _LAUNCH_SH.search(command):
+    if _LAUNCH_SH.search(outside):
         return "run_eval.sh"
+    # An agent that wrapped evaluation in a script of its own naming — one run
+    # called it ``work/ev.sh`` and by name-matching never evaluated at all.
+    #
+    # A script that also trains is not one of these. Training scripts commonly
+    # score what they just trained, so they read as evaluators too; counting
+    # their launch as an evaluation turns every training into a phantom eval.
+    if known and scripts.invoked_purely(outside, known, "evaluator"):
+        return "own_wrapper"
     return None
 
 
@@ -234,6 +259,7 @@ def events_for_run(
 ) -> list[dict[str, Any]]:
     """Every evaluation this run launched, joined to the score it produced."""
     events = sorted(events, key=lambda e: (e.get("agent_id") or "", e.get("i") or 0))
+    known = scripts.learn(events)
     results = _result_index(events)
     uses = [e for e in events if e.get("type") == "tool_use"]
     ordered = [e for e in events if e.get("type") in ("tool_use", "tool_result")]
@@ -241,7 +267,7 @@ def events_for_run(
     rows: list[dict[str, Any]] = []
     for pos, event in enumerate(uses):
         command = _command(event)
-        form = _form(command)
+        form = _form(command, known)
         if form is None:
             continue
 
@@ -261,6 +287,16 @@ def events_for_run(
             leaf = model_path.rstrip("/").split("/")[-1]
             if len(leaf) >= 4:
                 artifacts.add(leaf)
+        if form in ("run_eval.sh", "own_wrapper"):
+            # The wrapper builds its own output name from a positional tag
+            # (``res_${T}.json``), so the tag is the only handle the launch
+            # carries. Take every word-like positional as a candidate.
+            outside = strip_heredocs(command)
+            m = _LAUNCH_SH.search(outside)
+            tail = outside[m.end():] if m else outside
+            for arg in re.findall(r"[\w./-]{4,}", tail.split("|")[0].split(";")[0][:200]):
+                artifacts.add(arg)
+                artifacts.add(arg.rstrip("/").split("/")[-1])
         handles = _handles(own_text)
 
         got, s_i, s_ts, via, acc = False, None, None, None, None
