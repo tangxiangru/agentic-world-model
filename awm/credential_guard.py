@@ -4,9 +4,8 @@ The guard deliberately rejects instead of rewriting evidence.  Its public
 error formatter exposes only a rule identifier, caller-supplied path, and
 match count; matched bytes never enter logs or exceptions.
 
-``rollout/validate_study_corpus.py`` carries a self-contained copy because the
-C1 payload intentionally contains no :mod:`awm` package.  Keep the two rule
-contracts and behaviours identical; focused tests enforce that invariant.
+This module is used only by optional offline corpus-building and WMA-memory
+tools. It is not installed or invoked as a PostTrainBench rollout gate.
 """
 
 from __future__ import annotations

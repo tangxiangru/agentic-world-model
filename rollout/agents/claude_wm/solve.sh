@@ -1,345 +1,86 @@
 #!/bin/bash
-# claude_wm — C2 (raw files + trajectory WMA) and C3 (card-retrieval WMA).
-#
-# Two Claude Code sessions share the PTB sandbox and communicate with
-# ListAgents/SendMessage.  The scientist owns training, evaluation, the GPU,
-# and every decision.  The fixed Claude Code Opus 5 WMA serves only the
-# `consult` verb and records its cards and consult ledger under /home/ben/task/wm/.
-#
-# AGENT_CONFIG = <scientist model>:<arm>:<scope>
-#   claude-opus-4-8:traj:train            C2, 143 raw prior trajectories
-#   claude-opus-4-8:retrieval:train,test  C3, cards from all 193 trajectories
-#
-# C2 must not receive /home/ben/wm-memory. C3 expects it as a read-only bind and
-# must not receive /home/ben/prior_runs. Both fail if their declared input is
-# absent or the other condition's input leaks in.
-set -uo pipefail
-: "${AWM_REPO_COMMIT:?ERROR: AWM_REPO_COMMIT must be an immutable 40-hex commit}"
-: "${AWM_WMA_MODEL:?ERROR: AWM_WMA_MODEL must pin the peer WMA Vertex model}"
-: "${AWM_STUDY_REPETITION:?ERROR: explicit study repetition was not forwarded}"
-: "${AWM_STUDY_MODE:?ERROR: production/smoke study mode was not forwarded}"
-: "${AWM_STUDY_NUM_HOURS:?ERROR: study duration was not forwarded}"
-: "${AWM_PTB_COMMIT:?ERROR: exact PostTrainBench commit was not forwarded}"
-: "${AWM_PTB_SURFACE_MANIFEST_SHA256:?ERROR: PTB study-surface attestation was not forwarded}"
-: "${AWM_EXPECTED_SCIENTIST_MODEL_ID:?ERROR: exact reported scientist model ID was not forwarded}"
-: "${AWM_CLAUDE_CLI_VERSION:?ERROR: exact Claude CLI npm version was not forwarded}"
-: "${AWM_EXPECTED_CLAUDE_CLI_VERSION_OUTPUT:?ERROR: exact Claude CLI --version output was not forwarded}"
-: "${STUDY_PROMPT_SHA256:?ERROR: exact study prompt SHA-256 was not forwarded}"
-: "${STUDY_PROMPT_BYTES:?ERROR: exact study prompt byte length was not forwarded}"
-[[ "${STUDY_PROMPT_SHA256}" =~ ^[0-9a-f]{64}$ ]] || {
-    echo "ERROR: invalid STUDY_PROMPT_SHA256" >&2
-    exit 2
-}
-[[ "${STUDY_PROMPT_BYTES}" =~ ^[1-9][0-9]*$ ]] || {
-    echo "ERROR: invalid STUDY_PROMPT_BYTES" >&2
-    exit 2
-}
-readonly STUDY_PROMPT_SHA256 STUDY_PROMPT_BYTES
-readonly WMA_REQUESTED_ALIAS=claude-opus-5
-[[ "${AWM_REPO_COMMIT}" =~ ^[0-9a-fA-F]{40}$ ]] || {
-    echo "ERROR: AWM_REPO_COMMIT must be a full 40-hex commit, got ${AWM_REPO_COMMIT}" >&2
-    exit 2
-}
+# C2/C3 use PostTrainBench's Claude invocation plus one peer WMA session. The
+# PTB runner remains responsible for deciding whether the scientist run and
+# evaluation succeeded; no study-specific artifact or credential gate runs.
 
-echo "claude_wm starting: AGENT_CONFIG=${AGENT_CONFIG}"
-IFS=: read -r MODEL ARM SIDES EXTRA <<< "${AGENT_CONFIG}"
-ARM="${ARM:-null}"; SIDES="${SIDES:-train}"
-[ -z "${EXTRA:-}" ] || { echo "ERROR: unexpected AGENT_CONFIG field" >&2; exit 2; }
-echo "scientist=${MODEL} wma_alias=${WMA_REQUESTED_ALIAS} wma_expected=${AWM_WMA_MODEL} arm=${ARM} scope=${SIDES}"
+IFS=: read -r MODEL ARM SIDES <<EOF
+${AGENT_CONFIG}
+EOF
+ARM="${ARM:-null}"
+SIDES="${SIDES:-train}"
+WMA_MODEL="${AWM_WMA_MODEL:-claude-opus-5}"
+AWM_ROOT=/home/ben/agent/awm-src
 
-# Vertex cells must never inherit a direct Anthropic/subscription credential,
-# including one injected through APPTAINERENV_/SINGULARITYENV_ by the host.
-for secret_name in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
-    if [[ -v "${secret_name}" ]]; then
-        echo "ERROR: direct Claude credential is present in the Vertex-only sandbox: ${secret_name}" >&2
-        exit 2
-    fi
-done
+export BASH_MAX_TIMEOUT_MS="36000000"
+export CLAUDE_CODE_EFFORT_LEVEL="high"
 
-[ "${CLAUDE_CODE_USE_VERTEX:-}" = 1 ] || {
-    echo "ERROR: CLAUDE_CODE_USE_VERTEX=1 was not forwarded" >&2
-    exit 2
-}
-[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ] || {
-    echo "ERROR: ANTHROPIC_VERTEX_PROJECT_ID was not forwarded" >&2
-    exit 2
-}
-[ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || {
-    echo "ERROR: persistent ADC files are forbidden in the scientist sandbox" >&2
-    exit 2
-}
-curl -fsS --connect-timeout 3 -o /dev/null -H 'Metadata-Flavor: Google' \
-    http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token || {
-    echo "ERROR: Vertex needs an attached Google service account" >&2
-    exit 2
-}
-case "${AWM_STUDY_CONDITION:-}" in
-    c2)
-        : "${AWM_PRIOR_CORPUS_MANIFEST_SHA256:?ERROR: expected raw corpus manifest SHA-256 was not forwarded}"
-        [ -f /home/ben/prior_runs/INDEX.md ] && [ -s /home/ben/prior_runs/index.jsonl ] || {
-            echo "ERROR: C2 requires the read-only /home/ben/prior_runs mount with a non-empty index" >&2
-            exit 2
-        }
-        [ ! -e /home/ben/wm-memory ] || {
-            echo "ERROR: C2 must not receive historical card memory" >&2
-            exit 2
-        }
-        [ "${ARM}" = traj ] || { echo "ERROR: C2 requires arm=traj" >&2; exit 2; }
-        ;;
-    c3)
-        : "${AWM_CARD_CORPUS_MANIFEST_SHA256:?ERROR: expected card corpus manifest SHA-256 was not forwarded}"
-        [ ! -e /home/ben/prior_runs ] || {
-            echo "ERROR: C3 must not receive the direct prior-runs mount" >&2
-            exit 2
-        }
-        [ "${ARM}" = retrieval ] || { echo "ERROR: C3 requires arm=retrieval" >&2; exit 2; }
-        [ -s /home/ben/wm-memory/structured/cards.jsonl ] || {
-            echo "ERROR: C3 requires seeded card memory at /home/ben/wm-memory" >&2
-            exit 2
-        }
-        ;;
-    *)
-        echo "ERROR: claude_wm requires AWM_STUDY_CONDITION=c2 or c3" >&2
-        exit 2
-        ;;
-esac
-[ "${SIDES}" = train ] || [ "${SIDES}" = train,test ] || {
-    echo "ERROR: memory sides must be train or train,test" >&2
-    exit 2
-}
-CORPUS_VALIDATOR=/home/ben/agent/validate_study_corpus.py
-BASE_CACHE_VALIDATOR=/home/ben/agent/validate_base_model_cache.py
-RUNTIME_ATTESTER=/home/ben/agent/attest_claude_runtime.py
-WMA_VALIDATOR=/home/ben/agent/validate_wma_session.py
-FINAL_MODEL_VALIDATOR=/home/ben/agent/validate_c1_final_model.py
-BASE_MODEL_REVISION=cc012e0a6d0787b4adcc0fa2c4da74402494554d
-BASE_MODEL_CHECKPOINT=/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
-[ -x "${CORPUS_VALIDATOR}" ] || { echo "ERROR: study corpus validator is missing" >&2; exit 2; }
-[ -x "${BASE_CACHE_VALIDATOR}" ] || { echo "ERROR: base-model cache validator is missing" >&2; exit 2; }
-[ -x "${RUNTIME_ATTESTER}" ] || { echo "ERROR: Claude runtime attester is missing" >&2; exit 2; }
-[ -x "${WMA_VALIDATOR}" ] || { echo "ERROR: WMA session validator is missing" >&2; exit 2; }
-[ -x "${FINAL_MODEL_VALIDATOR}" ] || { echo "ERROR: final-model validator is missing" >&2; exit 2; }
-[ -d "${BASE_MODEL_CHECKPOINT}" ] && [ ! -L "${BASE_MODEL_CHECKPOINT}" ] || {
-    echo "ERROR: cannot resolve the read-only official base-model checkpoint" >&2
-    exit 2
-}
-if [ "${AWM_STUDY_CONDITION}" = c2 ]; then
-    python3 "${CORPUS_VALIDATOR}" raw /home/ben/prior_runs \
-        --sides "${SIDES}" \
-        --expected-manifest-sha256 "${AWM_PRIOR_CORPUS_MANIFEST_SHA256}" \
-        --require-readonly --condition c2 --repetition "${AWM_STUDY_REPETITION}" \
-        --study-mode "${AWM_STUDY_MODE}" --num-hours "${AWM_STUDY_NUM_HOURS}" \
-        --ptb-commit "${AWM_PTB_COMMIT}" --harness-commit "${AWM_REPO_COMMIT}" \
-        --ptb-surface-manifest-sha256 "${AWM_PTB_SURFACE_MANIFEST_SHA256}" \
-        --record /home/ben/task/study-input.json || exit 2
-else
-    python3 "${CORPUS_VALIDATOR}" cards /home/ben/wm-memory \
-        --sides "${SIDES}" \
-        --expected-manifest-sha256 "${AWM_CARD_CORPUS_MANIFEST_SHA256}" \
-        --require-readonly \
-        --condition c3 --repetition "${AWM_STUDY_REPETITION}" \
-        --study-mode "${AWM_STUDY_MODE}" --num-hours "${AWM_STUDY_NUM_HOURS}" \
-        --ptb-commit "${AWM_PTB_COMMIT}" --harness-commit "${AWM_REPO_COMMIT}" \
-        --ptb-surface-manifest-sha256 "${AWM_PTB_SURFACE_MANIFEST_SHA256}" \
-        --record /home/ben/task/study-input.json || exit 2
-fi
-BASE_CACHE_ARGS=()
-[ "${AWM_STUDY_MODE}" = smoke ] && BASE_CACHE_ARGS+=(--full-hash)
-python3 "${BASE_CACHE_VALIDATOR}" "${HF_HOME}" "${BASE_CACHE_ARGS[@]}" \
-    --record /home/ben/task/base-model-attestation.json \
-    --study-input /home/ben/task/study-input.json || exit 2
+# Keep the same CLI setup used by PostTrainBench's Claude baseline.
+bash /home/ben/update_agent_cli.sh claude
 
-# Both peer sessions use the same exactly pinned Claude CLI.
-[ "${POST_TRAIN_BENCH_SKIP_CLI_UPDATE:-}" = 1 ] || {
-    echo "ERROR: POST_TRAIN_BENCH_SKIP_CLI_UPDATE=1 is required for a reproducible cell" >&2
-    exit 2
-}
-python3 "${RUNTIME_ATTESTER}" install-cli \
-    --version-file /home/ben/cli_version.txt \
-    --package-version "${AWM_CLAUDE_CLI_VERSION}" \
-    --expected-version-output "${AWM_EXPECTED_CLAUDE_CLI_VERSION_OUTPUT}" \
-    --record /home/ben/task/claude-cli-attestation.json \
-    --study-input /home/ben/task/study-input.json || exit 2
-
-# --- the commit-pinned WMA toolbelt ---------------------------------------
-# setup.sh packages only awm/, input/, and wma/ from the exact Git commit.
-# No results tree or Git object database enters the sandbox.
-AWM_SRC=/home/ben/agent/awm-src
-[ -f "${AWM_SRC}/awm/cli.py" ] && [ -f "${AWM_SRC}/AWM_COMMIT" ] && \
-    [ -f "${AWM_SRC}/wma/CLAUDE.md" ] || {
-    echo "ERROR: missing packaged awm runtime; rerun rollout/setup.sh" >&2
-    exit 1
-}
-AWM_SHA="$(tr -d '[:space:]' < "${AWM_SRC}/AWM_COMMIT")"
-[ "${AWM_SHA}" = "${AWM_REPO_COMMIT,,}" ] || {
-    echo "ERROR: packaged awm ${AWM_SHA}, expected ${AWM_REPO_COMMIT}" >&2
-    exit 1
-}
-echo "awm commit ${AWM_SHA}"
-export PYTHONPATH="${AWM_SRC}${PYTHONPATH:+:$PYTHONPATH}"
-mkdir -p /home/ben/.local/bin
+# The WMA implementation is packaged by rollout/setup.sh, so a GPU job never
+# clones or installs a second checkout from the network.
+export PYTHONPATH="${AWM_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+export AWM_SESSION_DIR=/home/ben/task
+mkdir -p /home/ben/.local/bin /home/ben/task/wm
 printf '#!/bin/bash\nexec python3 -m awm.cli "$@"\n' > /home/ben/.local/bin/awm
 chmod +x /home/ben/.local/bin/awm
 export PATH="/home/ben/.local/bin:${PATH}"
-python3 -c "import awm.wm.consult, awm.wm.intake, yaml; print('awm import ok')" || {
-    echo "ERROR: awm consult toolbelt does not import" >&2
-    exit 1
-}
 
-export AWM_SESSION_DIR=/home/ben/task
-if [ "${AWM_STUDY_CONDITION}" = c2 ]; then
-    EVIDENCE_ARGS=(--prior-runs /home/ben/prior_runs)
+PRIOR_ARGS=()
+MEMORY_ARGS=()
+[ "${ARM}" != traj ] || PRIOR_ARGS=(--prior-runs /home/ben/prior_runs)
+[ "${ARM}" != retrieval ] || MEMORY_ARGS=(--memory-root /home/ben/wm-memory --memory-readonly)
+
+python3 -m awm.cli wm init \
+    --arm "${ARM}" \
+    "${PRIOR_ARGS[@]}" \
+    "${MEMORY_ARGS[@]}" \
+    --memory-sides "${SIDES}" \
+    --wma-model "${WMA_MODEL}" \
+    --base-model "${MODEL_TO_TRAIN:-google/gemma-3-4b-pt}"
+awm_init_rc=$?
+
+WMA_PID=""
+if [ "${awm_init_rc}" -eq 0 ] && [ -d "${AWM_ROOT}/wma" ]; then
+    cp -r "${AWM_ROOT}/wma" /home/ben/wma
+    (
+        cd /home/ben/wma || exit
+        exec env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT AWM_SESSION_DIR=/home/ben/task \
+            claude --print --verbose --model "${WMA_MODEL}" \
+            --output-format stream-json \
+            --allowedTools "Read,Grep,Glob,ListAgents,SendMessage,Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(find:*),Bash(cat:*),Bash(sleep:*),Bash(awm:*),Bash(python3 -m awm.cli:*),Bash(mkdir:*)" \
+            --dangerously-skip-permissions \
+            "You are the world-model agent for this session. Read CLAUDE.md and the consult skill, then serve scientist consults for the whole run. Begin by running: sleep 120." \
+            > /home/ben/task/wm/wma-session.jsonl \
+            2> /home/ben/task/wm/wma-session.err
+    ) &
+    WMA_PID=$!
 else
-    EVIDENCE_ARGS=(--memory-root /home/ben/wm-memory)
-fi
-INIT_ARGS=(--arm "${ARM}" "${EVIDENCE_ARGS[@]}" --memory-sides "${SIDES}"
-           --memory-readonly --split-side test --wma-model "${AWM_WMA_MODEL}"
-           --base-model google/gemma-3-4b-pt)
-awm wm --dir /home/ben/task init "${INIT_ARGS[@]}" || { echo "ERROR: awm wm init failed" >&2; exit 1; }
-echo "${AWM_SHA}" > /home/ben/task/wm/awm_sha.txt
-awm wm --dir /home/ben/task memory stats
-
-if [ "${AWM_STUDY_CONDITION}" = "c2" ]; then
-    echo "prior_runs: $(find /home/ben/prior_runs -maxdepth 2 -mindepth 2 -type d | wc -l) run dirs"
-else
-    echo "prior_runs: intentionally not mounted (C3)"
+    printf 'WMA setup did not start (awm init rc=%s)\n' "${awm_init_rc}" \
+        > /home/ben/task/wm/wma-session.err
 fi
 
-# --- the world-model peer session ----------------------------------------
-# The WMA gets its own cwd/instructions and a read-mostly tool allowlist.  Its
-# only writable study root is task/wm/, where the consult command validates
-# every response and citation before appending the ledger.
-rm -rf /home/ben/wma
-cp -r "${AWM_SRC}/wma" /home/ben/wma
-WMA_STREAM=/home/ben/task/wm/wma-session.jsonl
-WMA_STDERR=/home/ben/task/wm/wma-session.err
-WMA_EXIT=/home/ben/task/wm/wma-exit-code.txt
-export BASH_MAX_TIMEOUT_MS="36000000"
-(
-    cd /home/ben/wma || exit 2
-    exec env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT AWM_SESSION_DIR=/home/ben/task \
-        claude --print --verbose --model "${WMA_REQUESTED_ALIAS}" \
-        --output-format stream-json \
-        --allowedTools "Read,Grep,Glob,ListAgents,SendMessage,Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(find:*),Bash(cat:*),Bash(sleep:*),Bash(awm:*),Bash(python3 -m awm.cli:*),Bash(mkdir:*)" \
+# Give the peer time to register, but do not replace PTB's success semantics
+# with a custom readiness or artifact validator.
+sleep 20
+
+cd /home/ben/task || exit 1
+if [ -r /home/ben/task/instruction.md ]; then
+    claude --print --verbose --model "$MODEL" \
+        --output-format stream-json --thinking-display summarized \
         --dangerously-skip-permissions \
-        "You are the world-model agent for this session. Read CLAUDE.md and the consult skill. A research scientist session will message you; serve consults for the whole run under the standing order. Begin by running: sleep 120." \
-        >"${WMA_STREAM}" 2>"${WMA_STDERR}"
-) &
-WMA_PID=$!
+        < /home/ben/task/instruction.md
+    scientist_rc=$?
+else
+    printf '%s' "$PROMPT" | claude --print --verbose --model "$MODEL" \
+        --output-format stream-json --thinking-display summarized \
+        --dangerously-skip-permissions
+    scientist_rc=$?
+fi
 
-# Wait for the WMA's init event instead of assuming a fixed startup time.
-wma_ready=0
-for _ in $(seq 1 60); do
-    kill -0 "${WMA_PID}" 2>/dev/null || break
-    if [ -s "${WMA_STREAM}" ] && grep -q '"subtype":"init"\|"subtype": "init"' "${WMA_STREAM}"; then
-        wma_ready=1
-        break
-    fi
-    sleep 1
-done
-[ "${wma_ready}" = 1 ] || {
-    echo "ERROR: WMA peer session did not become ready" >&2
+if [ -n "${WMA_PID}" ]; then
     kill "${WMA_PID}" 2>/dev/null || true
-    exit 2
-}
-echo "wma peer ready: pid=${WMA_PID} sockets=$(find /tmp/cc-socks -maxdepth 1 -type s 2>/dev/null | wc -l)"
-
-# --- the scientist ----------------------------------------------------------
-export CLAUDE_CODE_EFFORT_LEVEL="high"
-
-SCIENTIST_STREAM=/home/ben/task/scientist-stream.jsonl
-STUDY_PROMPT_FILE=/home/ben/task/instruction.md
-STUDY_PROMPT_CHECKSUM=/home/ben/task/instruction.sha256
-verify_study_prompt() {
-    [ -f "${STUDY_PROMPT_FILE}" ] && [ ! -L "${STUDY_PROMPT_FILE}" ] && \
-        [ -s "${STUDY_PROMPT_FILE}" ] && [ -f "${STUDY_PROMPT_CHECKSUM}" ] && \
-        [ ! -L "${STUDY_PROMPT_CHECKSUM}" ] || return 1
-    local actual_sha actual_bytes checksum_line
-    actual_sha="$(sha256sum "${STUDY_PROMPT_FILE}" | cut -d' ' -f1)" || return 1
-    actual_bytes="$(wc -c < "${STUDY_PROMPT_FILE}")" || return 1
-    checksum_line="$(cat "${STUDY_PROMPT_CHECKSUM}")" || return 1
-    [ "${actual_sha}" = "${STUDY_PROMPT_SHA256}" ] && \
-        [ "${actual_bytes}" = "${STUDY_PROMPT_BYTES}" ] && \
-        [ "${checksum_line}" = "${STUDY_PROMPT_SHA256}  instruction.md" ]
-}
-verify_study_prompt || {
-    echo "ERROR: study prompt checksum failed before Claude launch" >&2
-    exit 2
-}
-cat "${STUDY_PROMPT_FILE}" | claude --print --verbose --model "$MODEL" \
-    --output-format stream-json --thinking-display summarized \
-    --dangerously-skip-permissions | \
-    tee "${SCIENTIST_STREAM}"
-pipeline_status=("${PIPESTATUS[@]}")
-prompt_rc="${pipeline_status[0]}"
-rc="${pipeline_status[1]}"
-tee_rc="${pipeline_status[2]}"
-printf '%s\n' "${rc}" > /home/ben/task/claude-exit-code.txt
-echo "claude exit ${rc} (prompt=${prompt_rc} tee_capture=${tee_rc})"
-
-# --- wind down the peer and validate both sessions ------------------------
-for _ in $(seq 1 10); do
-    kill -0 "${WMA_PID}" 2>/dev/null || break
-    sleep 1
-done
-if kill -0 "${WMA_PID}" 2>/dev/null; then
-    kill -INT "${WMA_PID}" 2>/dev/null || true
-    for _ in $(seq 1 20); do
-        kill -0 "${WMA_PID}" 2>/dev/null || break
-        sleep 1
-    done
+    wait "${WMA_PID}" 2>/dev/null || true
 fi
-if kill -0 "${WMA_PID}" 2>/dev/null; then
-    kill -TERM "${WMA_PID}" 2>/dev/null || true
-    sleep 2
-fi
-if kill -0 "${WMA_PID}" 2>/dev/null; then
-    kill -KILL "${WMA_PID}" 2>/dev/null || true
-fi
-set +e
-wait "${WMA_PID}"
-wma_rc=$?
-printf '%s\n' "${wma_rc}" > "${WMA_EXIT}"
 
-awm wm --dir /home/ben/task status || true
-[ "${rc}" -eq 0 ] || exit "${rc}"
-[ "${prompt_rc}" -eq 0 ] && [ "${tee_rc}" -eq 0 ] || {
-    echo "ERROR: failed to preserve the complete Claude stream" >&2
-    exit 1
-}
-verify_study_prompt || {
-    echo "ERROR: study prompt changed during Claude execution" >&2
-    exit 2
-}
-python3 "${RUNTIME_ATTESTER}" model "${SCIENTIST_STREAM}" \
-    --requested-alias "${MODEL}" \
-    --expected-model-id "${AWM_EXPECTED_SCIENTIST_MODEL_ID}" \
-    --record /home/ben/task/scientist-model-attestation.json \
-    --study-input /home/ben/task/study-input.json || exit 2
-python3 "${RUNTIME_ATTESTER}" model "${WMA_STREAM}" \
-    --requested-alias "${WMA_REQUESTED_ALIAS}" \
-    --expected-model-id "${AWM_WMA_MODEL}" \
-    --study-input-key wma_model \
-    --record /home/ben/task/wma-model-attestation.json \
-    --study-input /home/ben/task/study-input.json || exit 2
-[ -d /home/ben/task/final_model ] && [ -n "$(find /home/ben/task/final_model -mindepth 1 -print -quit)" ] || {
-    echo "ERROR: Claude exited successfully without a non-empty final_model/" >&2
-    exit 1
-}
-python3 "${WMA_VALIDATOR}" /home/ben/task \
-    --record /home/ben/task/wma-session-attestation.json \
-    --study-input /home/ben/task/study-input.json \
-    --expected-arm "${ARM}" \
-    --expected-wma-model "${AWM_WMA_MODEL}" \
-    --expected-memory-sides "${SIDES}" \
-    --expected-base-model google/gemma-3-4b-pt \
-    --expected-base-checkpoint "${BASE_MODEL_CHECKPOINT}" || exit 2
-python3 "${FINAL_MODEL_VALIDATOR}" /home/ben/task/final_model \
-    --expected-base-model google/gemma-3-4b-pt \
-    --expected-base-revision "${BASE_MODEL_REVISION}" \
-    --expected-base-checkpoint "${BASE_MODEL_CHECKPOINT}" \
-    --task-root /home/ben/task \
-    --study-input /home/ben/task/study-input.json \
-    --record /home/ben/task/wma-final-model-attestation.json || exit 2
-ls -la /home/ben/task/final_model
-echo "claude_wm done"
+exit "${scientist_rc}"

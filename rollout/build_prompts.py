@@ -8,8 +8,9 @@ corpus runs only by what was added:
     prompt_wm.txt            PTB prompt + "The world-model agent"               (C3: WMA over memory)
     prompt_wm_fulltraj.txt   PTB prompt + "Prior runs" + "The world-model agent" (C2: raw files + WMA)
 
-The WMA section is ``input/wma_section.md`` (the source of truth); the rendered
-``prompt_wm.txt`` is also written to ``input/instruction.md`` for reference.
+The WMA section is ``input/wma_section.md`` (the source of truth). A normal
+review build also writes ``prompt_wm.txt`` to ``input/instruction.md``;
+``--no-review`` leaves the source tree untouched.
 ``get_prompt.py`` fills ``{model} {benchmark} {num_hours} ...`` by plain
 replacement, so the sections use those placeholders too. Run by
 rollout/setup.sh:
@@ -36,14 +37,8 @@ PRIOR_RUNS_SECTION = """## Prior runs
 
 WMA_SECTION = (ROOT / "input" / "wma_section.md").read_text()
 
-PINNED_BASE_SECTION = """## Pinned base checkpoint
-- This study permits only the official `google/gemma-3-4b-pt` base at revision `cc012e0a6d0787b4adcc0fa2c4da74402494554d`. It is already complete at the immutable read-only path `/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d`.
-- Load that exact snapshot locally. Do not inspect cache credential files, authenticate to Hugging Face, download a substitute, or use any mirror, fork, repack, instruction-tuned model, or other revision (including an `unsloth/*` model).
-
-"""
-
 SMOKE_SECTION = """## One-hour peer-session smoke protocol
-This is a labelled integration smoke, not a production research cell. Exercise the complete two-session path: message the world-model agent with one concrete plan before training, run one optimizer step from the pinned base, evaluate and leave a complete loadable `final_model/`, then tell the world-model agent what you shipped. The smoke tests mechanics, not model quality.
+This is a labelled integration smoke, not a production research cell. Exercise the complete two-session path: message the world-model agent with one concrete plan before training, run one optimizer step from the assigned base model, evaluate and leave a `final_model/`, then tell the world-model agent what you shipped. The smoke tests mechanics, not model quality.
 
 """
 
@@ -57,17 +52,15 @@ def _insert_before_rules(prompt: str, *sections: str) -> str:
 
 
 def ptb_fulltraj(ptb_prompt: str) -> str:
-    """C1: the PTB prompt with raw priors and the pinned-base rule."""
-    return _insert_before_rules(ptb_prompt, PRIOR_RUNS_SECTION, PINNED_BASE_SECTION)
+    """C1: the PTB prompt with raw priors."""
+    return _insert_before_rules(ptb_prompt, PRIOR_RUNS_SECTION)
 
 
 def wm_prompt(ptb_prompt: str, *, fulltraj: bool) -> str:
     """C2/C3: the PTB prompt with the world-model section (and prior runs for C2)."""
     if fulltraj:
-        return _insert_before_rules(
-            ptb_prompt, PRIOR_RUNS_SECTION, PINNED_BASE_SECTION, WMA_SECTION
-        )
-    return _insert_before_rules(ptb_prompt, PINNED_BASE_SECTION, WMA_SECTION)
+        return _insert_before_rules(ptb_prompt, PRIOR_RUNS_SECTION, WMA_SECTION)
+    return _insert_before_rules(ptb_prompt, WMA_SECTION)
 
 
 def smoke_prompt(prompt: str) -> str:
@@ -113,16 +106,14 @@ def main() -> int:
             (out_review / name).write_text(text)
         if ptb:
             (ptb / "src" / "eval" / "general" / name).write_text(text)
-    (ROOT / "input" / "instruction.md").write_text(files["prompt_wm.txt"])
+    if out_review:
+        (ROOT / "input" / "instruction.md").write_text(files["prompt_wm.txt"])
     destinations = []
     if out_review:
         destinations.append(str(out_review))
     if ptb:
         destinations.append(str(ptb / "src/eval/general"))
-    print(
-        f"wrote {', '.join(files)} to {' and '.join(destinations)}; "
-        "input/instruction.md = prompt_wm"
-    )
+    print(f"wrote {', '.join(files)} to {' and '.join(destinations)}")
     return 0
 
 

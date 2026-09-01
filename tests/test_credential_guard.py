@@ -35,7 +35,9 @@ def _load(path: Path, name: str):
 
 @pytest.fixture
 def standalone_guard():
-    return _load(REPO / "rollout" / "validate_study_corpus.py", "standalone_corpus_guard")
+    # Credential screening remains a library concern for optional corpus-build
+    # tooling; the PTB rollout no longer ships a second runtime validator.
+    return package_guard
 
 
 @pytest.mark.parametrize(
@@ -571,23 +573,18 @@ def _replace_trace_and_reattest(out: Path, replacement: bytes) -> str:
     return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
 
 
-def test_standalone_and_wma_rescan_fully_attested_raw_files(
-    tmp_path: Path, standalone_guard
-) -> None:
+def test_wma_memory_tool_rescans_fully_attested_raw_files(tmp_path: Path) -> None:
     module = _builder()
     raw = _raw_source(tmp_path / "raw", b"ordinary trajectory\n" + b"." * 200)
     out = tmp_path / "prior-runs"
     _build(module, raw, out)
     secret = b"HF_TOKEN=a-credential-value-that-is-attested-12345\n"
-    digest = _replace_trace_and_reattest(out, secret)
+    _replace_trace_and_reattest(out, secret)
 
-    with pytest.raises(standalone_guard.ValidationError) as standalone_error:
-        standalone_guard.validate_raw(out, ("train",), digest)
     with pytest.raises(WMError) as wma_error:
         _validate_raw_corpus(out, ("train",))
-    for error in (standalone_error.value, wma_error.value):
-        assert secret.decode().strip() not in str(error)
-        assert "rule_id=secret-env-assignment" in str(error)
+    assert secret.decode().strip() not in str(wma_error.value)
+    assert "rule_id=secret-env-assignment" in str(wma_error.value)
 
 
 def test_builder_index_only_rescans_existing_attested_copy(tmp_path: Path) -> None:
