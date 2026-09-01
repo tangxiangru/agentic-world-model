@@ -116,3 +116,123 @@ def test_unknown_jobs_become_enforceable_only_after_grace() -> None:
     seen, due = slurm_queue._enforcement_due(snapshot, seen, now=161.0, grace=60)
     assert seen == {"101": 100.0, "999": 100.0}
     assert due == ["101", "999"]
+
+
+def test_current_failures_and_history_are_separate_views() -> None:
+    snapshot = {
+        "updated_at": "2026-09-01T00:00:00+00:00",
+        "queue_name": "gangda",
+        "owner": "owner",
+        "ownership_ok": True,
+        "unknown_jobs": [],
+        "name_mismatches": [],
+        "nodes": [],
+        "gpus_allocated": 1,
+        "gpus_total": 1,
+        "sources": [
+            {
+                "id": "old",
+                "label": "old launch",
+                "kind": "receipt",
+                "path": "/tmp/old.json",
+                "batch_id": "batch",
+                "registered_at": "2026-09-01T00:00:00+00:00",
+                "manifest": "/tmp/manifest.yaml",
+                "spec": "doc/spec.md",
+                "counts": {"FAILED": 1},
+                "active": 0,
+                "jobs": [
+                    {
+                        "job_id": "101",
+                        "cell_id": "g01r1",
+                        "state": "FAILED",
+                        "elapsed": "00:01",
+                        "nodes": "node0",
+                    }
+                ],
+            },
+            {
+                "id": "retry",
+                "label": "retry launch",
+                "kind": "receipt",
+                "path": "/tmp/retry.json",
+                "batch_id": "batch",
+                "registered_at": "2026-09-01T01:00:00+00:00",
+                "manifest": "/tmp/manifest.yaml",
+                "spec": "doc/spec.md",
+                "counts": {"RUNNING": 1},
+                "active": 1,
+                "jobs": [
+                    {
+                        "job_id": "102",
+                        "cell_id": "g01r1",
+                        "state": "RUNNING",
+                        "elapsed": "00:10",
+                        "nodes": "node0",
+                    }
+                ],
+            },
+        ],
+    }
+
+    current = slurm_queue.render_snapshot(snapshot)
+    assert "retry launch" in current
+    assert "old launch" not in current
+    assert slurm_queue.failure_records(snapshot) == []
+    assert "NO UNRESOLVED FAILURES" in slurm_queue.render_failures(snapshot)
+    assert "old launch" in slurm_queue.render_history(snapshot)
+    assert "resolved_by=102:RUNNING" in slurm_queue.render_failures(snapshot, include_resolved=True)
+
+
+def test_show_resolves_job_to_receipt_cell(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "source": {"top_commit": "a" * 40, "ptb_commit": "b" * 40},
+                "cells": [
+                    {
+                        "id": "g01r1",
+                        "task": "gsm8k",
+                        "base_model": "Qwen/Qwen3-1.7B-Base",
+                        "agent": "claude_vertex_max",
+                        "effort": "max",
+                        "context_tokens": 1_000_000,
+                        "replicate": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    snapshot = {
+        "queue_name": "gangda",
+        "sources": [
+            {
+                "label": "batch",
+                "kind": "receipt",
+                "path": str(receipt),
+                "batch_id": "batch-v1",
+                "manifest": "/tmp/manifest.yaml",
+                "spec": "doc/spec.md",
+                "jobs": [
+                    {
+                        "job_id": "101",
+                        "cell_id": "g01r1",
+                        "state": "RUNNING",
+                        "nodes": "node0",
+                        "elapsed": "00:10",
+                        "expected_name": "branch.batch.g01r1",
+                    }
+                ],
+            }
+        ],
+    }
+
+    explanation = slurm_queue.explain_job(snapshot, "101")
+
+    assert explanation["cell"]["task"] == "gsm8k"
+    assert explanation["frozen_source"]["top_commit"] == "a" * 40
+    rendered = slurm_queue.render_job_explanation(explanation)
+    assert "base_model=Qwen/Qwen3-1.7B-Base" in rendered
+    assert "manifest=/tmp/manifest.yaml" in rendered

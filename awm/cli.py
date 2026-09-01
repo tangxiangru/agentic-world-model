@@ -320,6 +320,36 @@ def _slurm_queue(args: argparse.Namespace) -> int:
                 if not args.watch:
                     return 0 if snapshot["ownership_ok"] else 1
                 time.sleep(args.watch)
+        if args.cmd == "failures":
+            snapshot = slurm_queue.collect_snapshot(registry)
+            failures = slurm_queue.failure_records(snapshot, include_resolved=args.include_resolved)
+            if args.json:
+                print(json.dumps(failures, indent=2, sort_keys=True))
+            else:
+                print(
+                    slurm_queue.render_failures(snapshot, include_resolved=args.include_resolved),
+                    end="",
+                )
+            return 1 if failures or not snapshot["ownership_ok"] else 0
+        if args.cmd == "history":
+            snapshot = slurm_queue.collect_snapshot(registry)
+            if args.json:
+                print(json.dumps(snapshot, indent=2, sort_keys=True))
+            else:
+                print(
+                    slurm_queue.render_history(snapshot, include_jobs=not args.summary),
+                    end="",
+                )
+            return 0
+        if args.cmd == "show":
+            explanation = slurm_queue.explain_job(
+                slurm_queue.collect_snapshot(registry), args.job_id
+            )
+            if args.json:
+                print(json.dumps(explanation, indent=2, sort_keys=True))
+            else:
+                print(slurm_queue.render_job_explanation(explanation), end="")
+            return 0
         if args.cmd == "register-receipt":
             path = slurm_queue.register_receipt(
                 args.receipt, label=args.label, registry_path=registry
@@ -373,6 +403,23 @@ def build_parser() -> argparse.ArgumentParser:
     queue.add_argument("--summary", action="store_true")
     queue.add_argument("--watch", type=int, metavar="SECONDS", default=0)
     queue.set_defaults(func=_slurm_queue)
+    failures = slurm.add_parser(
+        "failures", help="show unresolved terminal failures and ownership violations"
+    )
+    failures.add_argument("--registry", type=Path)
+    failures.add_argument("--json", action="store_true")
+    failures.add_argument("--include-resolved", action="store_true")
+    failures.set_defaults(func=_slurm_queue)
+    history = slurm.add_parser("history", help="show terminal receipt and job history")
+    history.add_argument("--registry", type=Path)
+    history.add_argument("--json", action="store_true")
+    history.add_argument("--summary", action="store_true")
+    history.set_defaults(func=_slurm_queue)
+    show = slurm.add_parser("show", help="explain one job from Slurm through its experiment spec")
+    show.add_argument("job_id")
+    show.add_argument("--registry", type=Path)
+    show.add_argument("--json", action="store_true")
+    show.set_defaults(func=_slurm_queue)
     register_receipt = slurm.add_parser(
         "register-receipt", help="add every job in a PTB receipt to the ownership registry"
     )

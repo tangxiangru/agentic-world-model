@@ -14,6 +14,9 @@ and never free capacity by cancelling jobs outside the active experiment receipt
 
 ## Shared ownership queue
 
+The view semantics and command reference live in
+[`gangda_slurm_queue.md`](gangda_slurm_queue.md).
+
 The cross-CLI source of truth is `/rmeng_data/robtang/slurm-queue/registry.json`. It records exact
 job IDs and expected job names from formal receipts; an exceptional recovery job must be
 registered explicitly. Unix `UserId=root` is never ownership evidence.

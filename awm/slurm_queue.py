@@ -16,6 +16,8 @@ from typing import Any
 
 DEFAULT_QUEUE_ROOT = Path("/rmeng_data/robtang/slurm-queue")
 DEFAULT_NODES = [f"slurm2-a3nodesetondem-{index}" for index in range(4)]
+ACTIVE_STATES = {"RUNNING", "PENDING", "CONFIGURING", "COMPLETING", "SUSPENDED"}
+FAILURE_STATES = {"FAILED", "OUT_OF_MEMORY", "TIMEOUT", "NODE_FAIL", "BOOT_FAIL"}
 
 
 class QueueError(RuntimeError):
@@ -114,6 +116,9 @@ def register_receipt(
         "label": label or default_label,
         "path": str(receipt_path),
         "batch_id": batch_id,
+        "receipt_kind": receipt_kind,
+        "manifest": str(receipt.get("manifest", "")),
+        "spec": str((receipt.get("ownership") or {}).get("spec", "")),
         "jobs": normalized_jobs,
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -290,7 +295,6 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
 
     sources = []
     name_mismatches = []
-    active_states = {"RUNNING", "PENDING", "CONFIGURING", "COMPLETING", "SUSPENDED"}
     for source in registry["sources"]:
         jobs = []
         for expected_job in source.get("jobs", []):
@@ -301,6 +305,8 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
                     "job_id": job_id,
                     "cell_id": expected_job.get("cell_id", ""),
                     "expected_name": expected_job.get("job_name", ""),
+                    "work_dir": expected_job.get("work_dir", ""),
+                    "stdout": expected_job.get("stdout", ""),
                 }
             )
             actual_name = current.get("job_name", "")
@@ -320,8 +326,13 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
                 "label": source.get("label", source["id"]),
                 "kind": source.get("kind", "unknown"),
                 "path": source.get("path", ""),
+                "batch_id": source.get("batch_id", ""),
+                "receipt_kind": source.get("receipt_kind", ""),
+                "registered_at": source.get("registered_at", ""),
+                "manifest": source.get("manifest", ""),
+                "spec": source.get("spec", ""),
                 "counts": dict(sorted(counts.items())),
-                "active": sum(count for state, count in counts.items() if state in active_states),
+                "active": sum(count for state, count in counts.items() if state in ACTIVE_STATES),
                 "jobs": jobs,
             }
         )
@@ -345,7 +356,26 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
     return snapshot
 
 
+def _state_key(state: object) -> str:
+    return str(state or "UNKNOWN").split()[0].rstrip("+")
+
+
+def _job_line(job: dict[str, Any]) -> str:
+    cell = f" cell={job['cell_id']}" if job.get("cell_id") else ""
+    node = job.get("nodes") or "-"
+    reason = (
+        f" reason={job['reason']}"
+        if _state_key(job.get("state")) == "PENDING" and job.get("reason")
+        else ""
+    )
+    return (
+        f"    {job['job_id']} {job.get('state', 'UNKNOWN')} node={node}"
+        f" elapsed={job.get('elapsed', '-')}{cell}{reason}"
+    )
+
+
 def render_snapshot(snapshot: dict[str, Any], *, include_jobs: bool = True) -> str:
+    """Render the operational view: only jobs that are active now."""
     verdict = "OK" if snapshot["ownership_ok"] else "FAIL"
     lines = [
         f"updated={snapshot['updated_at']}",
@@ -361,35 +391,20 @@ def render_snapshot(snapshot: dict[str, Any], *, include_jobs: bool = True) -> s
             f"  {node['node']}: {node['gpus_allocated']}/{node['gpus_total']} state={node['state']}"
         )
     lines.append("SOURCES")
-    detail_states = {
-        "RUNNING",
-        "PENDING",
-        "CONFIGURING",
-        "COMPLETING",
-        "SUSPENDED",
-        "FAILED",
-        "OUT_OF_MEMORY",
-        "TIMEOUT",
-        "NODE_FAIL",
-    }
-    for source in snapshot["sources"]:
-        counts = " ".join(f"{state}={count}" for state, count in source["counts"].items())
-        lines.append(f"  {source['label']}: {counts or 'no jobs'}")
+    active_sources = [source for source in snapshot["sources"] if source["active"]]
+    for source in active_sources:
+        counts = " ".join(
+            f"{state}={count}"
+            for state, count in source["counts"].items()
+            if state in ACTIVE_STATES
+        )
+        lines.append(f"  {source['label']}: {counts}")
         if include_jobs:
             for job in source["jobs"]:
-                if job.get("state") not in detail_states:
-                    continue
-                cell = f" cell={job['cell_id']}" if job.get("cell_id") else ""
-                node = job.get("nodes") or "-"
-                reason = (
-                    f" reason={job['reason']}"
-                    if job.get("state") == "PENDING" and job.get("reason")
-                    else ""
-                )
-                lines.append(
-                    f"    {job['job_id']} {job.get('state', 'UNKNOWN')} node={node}"
-                    f" elapsed={job.get('elapsed', '-')}{cell}{reason}"
-                )
+                if _state_key(job.get("state")) in ACTIVE_STATES:
+                    lines.append(_job_line(job))
+    if not active_sources:
+        lines.append("  no active registered jobs")
     if snapshot["unknown_jobs"]:
         lines.append("UNKNOWN JOBS ON OWNED NODES")
         for job in snapshot["unknown_jobs"]:
@@ -403,6 +418,183 @@ def render_snapshot(snapshot: dict[str, Any], *, include_jobs: bool = True) -> s
                 f"  {mismatch['job_id']} expected={mismatch['expected']} "
                 f"actual={mismatch['actual']}"
             )
+    return "\n".join(lines) + "\n"
+
+
+def failure_records(snapshot: dict[str, Any], *, include_resolved: bool = False) -> list[dict]:
+    """Return terminal failures, suppressing ones replaced by a later healthy retry."""
+    candidates: dict[tuple[str, str], list[tuple[str, dict[str, Any], dict[str, Any]]]] = {}
+    for source in snapshot["sources"]:
+        batch_id = str(source.get("batch_id", ""))
+        registered_at = str(source.get("registered_at", ""))
+        for job in source["jobs"]:
+            cell_id = str(job.get("cell_id", ""))
+            if batch_id and cell_id:
+                candidates.setdefault((batch_id, cell_id), []).append((registered_at, source, job))
+
+    failures = []
+    for source in snapshot["sources"]:
+        source_time = str(source.get("registered_at", ""))
+        batch_id = str(source.get("batch_id", ""))
+        for job in source["jobs"]:
+            state = _state_key(job.get("state"))
+            if state not in FAILURE_STATES:
+                continue
+            cell_id = str(job.get("cell_id", ""))
+            replacement = None
+            for candidate_time, candidate_source, candidate_job in candidates.get(
+                (batch_id, cell_id), []
+            ):
+                candidate_state = _state_key(candidate_job.get("state"))
+                if candidate_time > source_time and candidate_state in (
+                    ACTIVE_STATES | {"COMPLETED"}
+                ):
+                    replacement = {
+                        "source": candidate_source["label"],
+                        "job_id": candidate_job["job_id"],
+                        "state": candidate_job.get("state", "UNKNOWN"),
+                    }
+                    break
+            record = {
+                "source": source["label"],
+                "source_path": source.get("path", ""),
+                "job": job,
+                "resolved": replacement is not None,
+                "replacement": replacement,
+            }
+            if include_resolved or not record["resolved"]:
+                failures.append(record)
+    return failures
+
+
+def render_failures(snapshot: dict[str, Any], *, include_resolved: bool = False) -> str:
+    failures = failure_records(snapshot, include_resolved=include_resolved)
+    lines = [
+        f"updated={snapshot['updated_at']}",
+        f"QUEUE {snapshot.get('queue_name', 'gangda')} FAILURES",
+    ]
+    if snapshot["unknown_jobs"] or snapshot["name_mismatches"]:
+        lines.append("OWNERSHIP FAIL")
+    if not failures:
+        lines.append("NO UNRESOLVED FAILURES")
+        return "\n".join(lines) + "\n"
+    for record in failures:
+        job = record["job"]
+        suffix = ""
+        if record["resolved"]:
+            replacement = record["replacement"]
+            suffix = (
+                f" resolved_by={replacement['job_id']}:{replacement['state']}"
+                f" source={replacement['source']}"
+            )
+        lines.append(
+            f"  {job['job_id']} {job.get('state', 'UNKNOWN')} source={record['source']}"
+            f" cell={job.get('cell_id') or '-'} elapsed={job.get('elapsed', '-')}{suffix}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def render_history(snapshot: dict[str, Any], *, include_jobs: bool = True) -> str:
+    lines = [
+        f"updated={snapshot['updated_at']}",
+        f"QUEUE {snapshot.get('queue_name', 'gangda')} HISTORY",
+    ]
+    historical_sources = []
+    for source in snapshot["sources"]:
+        terminal_jobs = [
+            job for job in source["jobs"] if _state_key(job.get("state")) not in ACTIVE_STATES
+        ]
+        if terminal_jobs:
+            historical_sources.append((source, terminal_jobs))
+    if not historical_sources:
+        lines.append("NO TERMINAL HISTORY")
+        return "\n".join(lines) + "\n"
+    for source, jobs in historical_sources:
+        counts = Counter(str(job.get("state", "UNKNOWN")) for job in jobs)
+        summary = " ".join(f"{state}={count}" for state, count in sorted(counts.items()))
+        lines.append(f"  {source['label']}: {summary}")
+        if source.get("path"):
+            lines.append(f"    receipt={source['path']}")
+        if source.get("manifest"):
+            lines.append(f"    manifest={source['manifest']}")
+        if source.get("spec"):
+            lines.append(f"    spec={source['spec']}")
+        if include_jobs:
+            lines.extend(_job_line(job) for job in jobs)
+    return "\n".join(lines) + "\n"
+
+
+def explain_job(snapshot: dict[str, Any], job_id: str) -> dict[str, Any]:
+    for source in snapshot["sources"]:
+        for job in source["jobs"]:
+            if str(job["job_id"]) != str(job_id):
+                continue
+            explanation: dict[str, Any] = {
+                "queue": snapshot.get("queue_name", "gangda"),
+                "source": {
+                    key: source.get(key, "")
+                    for key in ("label", "kind", "path", "batch_id", "manifest", "spec")
+                },
+                "job": job,
+                "cell": {},
+                "frozen_source": {},
+            }
+            receipt_path = Path(str(source.get("path", "")))
+            if receipt_path.is_file():
+                try:
+                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    raise QueueError(f"cannot read receipt {receipt_path}: {exc}") from exc
+                explanation["frozen_source"] = receipt.get("source") or {}
+                cell_id = str(job.get("cell_id", ""))
+                explanation["cell"] = next(
+                    (
+                        cell
+                        for cell in receipt.get("cells", [])
+                        if str(cell.get("id", "")) == cell_id
+                    ),
+                    {},
+                )
+            return explanation
+    raise QueueError(f"job is not registered in gangda: {job_id}")
+
+
+def render_job_explanation(explanation: dict[str, Any]) -> str:
+    job = explanation["job"]
+    source = explanation["source"]
+    cell = explanation["cell"]
+    frozen = explanation["frozen_source"]
+    lines = [
+        f"JOB {job['job_id']}",
+        (
+            f"  state={job.get('state', 'UNKNOWN')} node={job.get('nodes') or '-'} "
+            f"elapsed={job.get('elapsed', '-')}"
+        ),
+        f"  source={source.get('label') or '-'}",
+        f"  cell={job.get('cell_id') or '-'}",
+    ]
+    for key in (
+        "task",
+        "base_model",
+        "agent",
+        "agent_model",
+        "effort",
+        "context_tokens",
+        "replicate",
+    ):
+        if key in cell:
+            lines.append(f"  {key}={cell[key]}")
+    lines.append(f"  slurm_name={job.get('expected_name') or job.get('job_name') or '-'}")
+    for key in ("path", "manifest", "spec"):
+        if source.get(key):
+            lines.append(f"  {key}={source[key]}")
+    for key in ("top_commit", "ptb_commit"):
+        if frozen.get(key):
+            lines.append(f"  {key}={frozen[key]}")
+    if job.get("work_dir"):
+        lines.append(f"  work_dir={job['work_dir']}")
+    if job.get("stdout"):
+        lines.append(f"  stdout={job['stdout']}")
     return "\n".join(lines) + "\n"
 
 

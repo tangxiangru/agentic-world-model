@@ -15,6 +15,12 @@
   membership, or node placement is never
   sufficient ownership evidence. Query with `/rmeng_data/robtang/bin/awm-slurm-queue`; treat
   `OWNERSHIP FAIL` as an immediate investigation condition.
+- Use the queue views according to their distinct purpose:
+  - `gangda-slurm-queue` or `current --watch 5` shows only active and pending operations.
+  - `gangda-slurm-queue failures` shows unresolved failures; `--include-resolved` is audit-only.
+  - `gangda-slurm-queue history` shows terminal receipts/jobs and must not drive capacity claims.
+  - `gangda-slurm-queue show JOB_ID` resolves a job through receipt, cell, manifest, and spec.
+  The complete usage contract is `doc/reference/gangda_slurm_queue.md`.
 - Reserve `slurm2-a3nodesetondem-[0-3]` exclusively for the receipt-backed PTB batches. AWM full
   studies must use partition `ptb-a3`, reservation `robtang-wm-a3-ondem`, requested nodes
   `slurm2-a3nodesetondem-[4-12]`, and an explicit exclusion for `[0-3]`. Let Slurm pack one-GPU
