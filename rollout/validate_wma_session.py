@@ -155,8 +155,6 @@ def validate_peer_session(
 
     if _read_exit_code(wm / "wma-exit-code.txt", "WMA") != 0:
         raise ValidationError("WMA peer did not complete normally")
-    if _read_exit_code(wm / "wma-capture-exit-code.txt", "WMA capture") != 0:
-        raise ValidationError("WMA peer stream was not captured completely")
     stream = wm / "wma-session.jsonl"
     stream_rows = read_jsonl_objects(stream, "WMA stream")
     if not any(row.get("type") == "result" for row in stream_rows):

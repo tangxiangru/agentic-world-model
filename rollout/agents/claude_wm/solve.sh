@@ -112,8 +112,6 @@ BASE_CACHE_VALIDATOR=/home/ben/agent/validate_base_model_cache.py
 RUNTIME_ATTESTER=/home/ben/agent/attest_claude_runtime.py
 WMA_VALIDATOR=/home/ben/agent/validate_wma_session.py
 FINAL_MODEL_VALIDATOR=/home/ben/agent/validate_c1_final_model.py
-STREAM_REDACTOR=/home/ben/agent/redact_claude_stream.py
-RESULT_SANITIZER=/home/ben/agent/sanitize_result_tree.py
 BASE_MODEL_REVISION=cc012e0a6d0787b4adcc0fa2c4da74402494554d
 BASE_MODEL_CHECKPOINT=/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
 [ -x "${CORPUS_VALIDATOR}" ] || { echo "ERROR: study corpus validator is missing" >&2; exit 2; }
@@ -121,8 +119,6 @@ BASE_MODEL_CHECKPOINT=/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4
 [ -x "${RUNTIME_ATTESTER}" ] || { echo "ERROR: Claude runtime attester is missing" >&2; exit 2; }
 [ -x "${WMA_VALIDATOR}" ] || { echo "ERROR: WMA session validator is missing" >&2; exit 2; }
 [ -x "${FINAL_MODEL_VALIDATOR}" ] || { echo "ERROR: final-model validator is missing" >&2; exit 2; }
-[ -x "${STREAM_REDACTOR}" ] || { echo "ERROR: Claude stream redactor is missing" >&2; exit 2; }
-[ -x "${RESULT_SANITIZER}" ] || { echo "ERROR: result-tree sanitizer is missing" >&2; exit 2; }
 [ -d "${BASE_MODEL_CHECKPOINT}" ] && [ ! -L "${BASE_MODEL_CHECKPOINT}" ] || {
     echo "ERROR: cannot resolve the read-only official base-model checkpoint" >&2
     exit 2
@@ -218,11 +214,7 @@ cp -r "${AWM_SRC}/wma" /home/ben/wma
 WMA_STREAM=/home/ben/task/wm/wma-session.jsonl
 WMA_STDERR=/home/ben/task/wm/wma-session.err
 WMA_EXIT=/home/ben/task/wm/wma-exit-code.txt
-WMA_CAPTURE_EXIT=/home/ben/task/wm/wma-capture-exit-code.txt
-WMA_FIFO=/home/ben/task/wm/.wma-stream.fifo
 export BASH_MAX_TIMEOUT_MS="36000000"
-rm -f "${WMA_FIFO}"
-mkfifo -m 0600 "${WMA_FIFO}" || { echo "ERROR: cannot create WMA stream pipe" >&2; exit 2; }
 (
     cd /home/ben/wma || exit 2
     exec env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT AWM_SESSION_DIR=/home/ben/task \
@@ -231,12 +223,9 @@ mkfifo -m 0600 "${WMA_FIFO}" || { echo "ERROR: cannot create WMA stream pipe" >&
         --allowedTools "Read,Grep,Glob,ListAgents,SendMessage,Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(find:*),Bash(cat:*),Bash(sleep:*),Bash(awm:*),Bash(python3 -m awm.cli:*),Bash(mkdir:*)" \
         --dangerously-skip-permissions \
         "You are the world-model agent for this session. Read CLAUDE.md and the consult skill. A research scientist session will message you; serve consults for the whole run under the standing order. Begin by running: sleep 120." \
-        >"${WMA_FIFO}" 2>"${WMA_STDERR}"
+        >"${WMA_STREAM}" 2>"${WMA_STDERR}"
 ) &
 WMA_PID=$!
-python3 "${STREAM_REDACTOR}" --capture "${WMA_STREAM}" \
-    <"${WMA_FIFO}" >/dev/null &
-WMA_CAPTURE_PID=$!
 
 # Wait for the WMA's init event instead of assuming a fixed startup time.
 wma_ready=0
@@ -251,8 +240,6 @@ done
 [ "${wma_ready}" = 1 ] || {
     echo "ERROR: WMA peer session did not become ready" >&2
     kill "${WMA_PID}" 2>/dev/null || true
-    kill "${WMA_CAPTURE_PID}" 2>/dev/null || true
-    rm -f "${WMA_FIFO}"
     exit 2
 }
 echo "wma peer ready: pid=${WMA_PID} sockets=$(find /tmp/cc-socks -maxdepth 1 -type s 2>/dev/null | wc -l)"
@@ -282,13 +269,13 @@ verify_study_prompt || {
 cat "${STUDY_PROMPT_FILE}" | claude --print --verbose --model "$MODEL" \
     --output-format stream-json --thinking-display summarized \
     --dangerously-skip-permissions | \
-    python3 "${STREAM_REDACTOR}" --capture "${SCIENTIST_STREAM}"
+    tee "${SCIENTIST_STREAM}"
 pipeline_status=("${PIPESTATUS[@]}")
 prompt_rc="${pipeline_status[0]}"
 rc="${pipeline_status[1]}"
-redactor_rc="${pipeline_status[2]}"
+tee_rc="${pipeline_status[2]}"
 printf '%s\n' "${rc}" > /home/ben/task/claude-exit-code.txt
-echo "claude exit ${rc} (prompt=${prompt_rc} redactor_capture=${redactor_rc})"
+echo "claude exit ${rc} (prompt=${prompt_rc} tee_capture=${tee_rc})"
 
 # --- wind down the peer and validate both sessions ------------------------
 for _ in $(seq 1 10); do
@@ -312,22 +299,11 @@ fi
 set +e
 wait "${WMA_PID}"
 wma_rc=$?
-for _ in $(seq 1 10); do
-    kill -0 "${WMA_CAPTURE_PID}" 2>/dev/null || break
-    sleep 1
-done
-if kill -0 "${WMA_CAPTURE_PID}" 2>/dev/null; then
-    kill -TERM "${WMA_CAPTURE_PID}" 2>/dev/null || true
-fi
-wait "${WMA_CAPTURE_PID}"
-wma_capture_rc=$?
 printf '%s\n' "${wma_rc}" > "${WMA_EXIT}"
-printf '%s\n' "${wma_capture_rc}" > "${WMA_CAPTURE_EXIT}"
-rm -f "${WMA_FIFO}"
 
 awm wm --dir /home/ben/task status || true
 [ "${rc}" -eq 0 ] || exit "${rc}"
-[ "${prompt_rc}" -eq 0 ] && [ "${redactor_rc}" -eq 0 ] || {
+[ "${prompt_rc}" -eq 0 ] && [ "${tee_rc}" -eq 0 ] || {
     echo "ERROR: failed to preserve the complete Claude stream" >&2
     exit 1
 }
@@ -335,16 +311,6 @@ verify_study_prompt || {
     echo "ERROR: study prompt changed during Claude execution" >&2
     exit 2
 }
-python3 "${RESULT_SANITIZER}" /home/ben/task
-sanitizer_rc=$?
-case "${sanitizer_rc}" in
-    0) ;;
-    3)
-        echo "ERROR: credential material was removed from task artifacts; quarantining this cell" >&2
-        exit 3
-        ;;
-    *) exit 2 ;;
-esac
 python3 "${RUNTIME_ATTESTER}" model "${SCIENTIST_STREAM}" \
     --requested-alias "${MODEL}" \
     --expected-model-id "${AWM_EXPECTED_SCIENTIST_MODEL_ID}" \

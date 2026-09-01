@@ -74,14 +74,10 @@ CORPUS_VALIDATOR=/home/ben/agent/validate_study_corpus.py
 BASE_CACHE_VALIDATOR=/home/ben/agent/validate_base_model_cache.py
 C1_MODEL_VALIDATOR=/home/ben/agent/validate_c1_final_model.py
 RUNTIME_ATTESTER=/home/ben/agent/attest_claude_runtime.py
-STREAM_REDACTOR=/home/ben/agent/redact_claude_stream.py
-RESULT_SANITIZER=/home/ben/agent/sanitize_result_tree.py
 [ -x "${CORPUS_VALIDATOR}" ] || { echo "ERROR: study corpus validator is missing" >&2; exit 2; }
 [ -x "${BASE_CACHE_VALIDATOR}" ] || { echo "ERROR: base-model cache validator is missing" >&2; exit 2; }
 [ -x "${C1_MODEL_VALIDATOR}" ] || { echo "ERROR: C1 final-model validator is missing" >&2; exit 2; }
 [ -x "${RUNTIME_ATTESTER}" ] || { echo "ERROR: Claude runtime attester is missing" >&2; exit 2; }
-[ -x "${STREAM_REDACTOR}" ] || { echo "ERROR: Claude stream redactor is missing" >&2; exit 2; }
-[ -x "${RESULT_SANITIZER}" ] || { echo "ERROR: result-tree sanitizer is missing" >&2; exit 2; }
 python3 "${CORPUS_VALIDATOR}" raw /home/ben/prior_runs \
     --sides "${SIDES}" \
     --expected-manifest-sha256 "${AWM_PRIOR_CORPUS_MANIFEST_SHA256}" \
@@ -132,15 +128,15 @@ verify_study_prompt || {
 cat "${STUDY_PROMPT_FILE}" | claude --print --verbose --model "$MODEL" \
     --output-format stream-json --thinking-display summarized \
     --dangerously-skip-permissions | \
-    python3 "${STREAM_REDACTOR}" --capture "${SCIENTIST_STREAM}"
+    tee "${SCIENTIST_STREAM}"
 pipeline_status=("${PIPESTATUS[@]}")
 prompt_rc="${pipeline_status[0]}"
 claude_rc="${pipeline_status[1]}"
-redactor_rc="${pipeline_status[2]}"
+tee_rc="${pipeline_status[2]}"
 printf '%s\n' "${claude_rc}" > /home/ben/task/claude-exit-code.txt
-echo "claude exit ${claude_rc} (prompt=${prompt_rc} redactor_capture=${redactor_rc})"
+echo "claude exit ${claude_rc} (prompt=${prompt_rc} tee_capture=${tee_rc})"
 [ "${claude_rc}" -eq 0 ] || exit "${claude_rc}"
-[ "${prompt_rc}" -eq 0 ] && [ "${redactor_rc}" -eq 0 ] || {
+[ "${prompt_rc}" -eq 0 ] && [ "${tee_rc}" -eq 0 ] || {
     echo "ERROR: failed to preserve the complete Claude stream" >&2
     exit 1
 }
@@ -148,16 +144,6 @@ verify_study_prompt || {
     echo "ERROR: study prompt changed during Claude execution" >&2
     exit 2
 }
-python3 "${RESULT_SANITIZER}" /home/ben/task
-sanitizer_rc=$?
-case "${sanitizer_rc}" in
-    0) ;;
-    3)
-        echo "ERROR: credential material was removed from task artifacts; quarantining this cell" >&2
-        exit 3
-        ;;
-    *) exit 2 ;;
-esac
 python3 "${RUNTIME_ATTESTER}" model "${SCIENTIST_STREAM}" \
     --requested-alias "${MODEL}" \
     --expected-model-id "${AWM_EXPECTED_SCIENTIST_MODEL_ID}" \

@@ -83,7 +83,6 @@ def _session(tmp_path: Path, condition: str = "c2") -> tuple[Path, dict]:
         + "\n"
     )
     (wm / "wma-exit-code.txt").write_text("0\n")
-    (wm / "wma-capture-exit-code.txt").write_text("0\n")
     study = {
         "condition": condition,
         "wma_model": {

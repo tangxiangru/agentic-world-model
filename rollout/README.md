@@ -139,18 +139,10 @@ newline when the prompt contains multiple `=` characters. The runner passes an
 independent single-line SHA-256 and byte count instead; each solve verifies the
 file before and after Claude runs, and the instruction plus checksum remain in
 the task artifacts. Unrelated upstream PTB agents retain the legacy transport.
-Each study solve also filters the retained Claude JSONL stream through the
-commit-pinned `redact_claude_stream.py`: token-bearing environment assignments,
-common access-key forms, authorization headers, and sensitive JSON fields are
-replaced before `scientist-stream.jsonl` or PTB's `solve_out.txt` is written.
-The redactor securely creates the private retained file and forwards identical
-bytes itself, retrying pipe backpressure even if a shared descriptor is changed
-to nonblocking mode; the study agents do not use an external `tee` process.
-The scientist and WMA streams use the same redactor, and the harness scans every
-text artifact under the task before accepting a cell. Any late match is atomically
-redacted and the cell is quarantined rather than released. This protects
-stored/published trajectories; it is not a substitute for the model-only cache
-boundary.
+The scientist uses PTB's Claude arguments unchanged and a byte-for-byte `tee`
+capture for runtime attestation. No study-specific filter rewrites the stream or
+the result tree. The WMA peer, which exists only in C2/C3, writes its own JSONL
+stream directly to `task/wm/`.
 
 `AWM_REPO_COMMIT` is also the exact harness commit, not merely the WMA runtime
 revision. Setup refuses any live prompt builder, patcher, launcher, agent, or
@@ -347,8 +339,6 @@ nonzero cell status.
 | `validate_base_model_cache.py` | exact model-only cache allowlist and full-hash smoke attester |
 | `validate_c1_final_model.py` | structural/declarative C1/C2/C3 final-model compatibility attester; does not claim causal training provenance |
 | `validate_wma_session.py` | fail-closed C2/C3 peer-session, consult-ledger, card, and shipped-outcome postcondition |
-| `redact_claude_stream.py` | credential scrubber and durable backpressure-safe dual sink for the retained/live Claude JSONL trajectory |
-| `sanitize_result_tree.py` | final recursive text-artifact scrubber/attester; any redaction quarantines the cell |
 | `study_matrix.py` | emits or validates the exact 24 unique launcher specs |
 | `pin_ptb_source.sh` | creates the per-cell source snapshot and returns its root; cells execute relative dependencies only from that snapshot |
 | `build_prompts.py` | writes the C1/C2/C3 production prompts plus separate C2/C3 lifecycle-smoke prompts; review copies under `prompts/` |

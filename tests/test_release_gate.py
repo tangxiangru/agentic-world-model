@@ -208,15 +208,6 @@ def _smoke_result(tmp_path: Path, lock: dict, condition: str, name: str | None =
     _write_json(task / "base-model-attestation.json", base)
     _write_json(task / "claude-cli-attestation.json", cli)
     _write_json(task / "scientist-model-attestation.json", model)
-    _write_json(
-        task / "secret-sanitization.json",
-        {
-            "schema_version": "awm-secret-sanitization-v1",
-            "status": "clean",
-            "files_redacted": 0,
-            "redaction_count": 0,
-        },
-    )
     final_name = (
         "c1-final-model-attestation.json"
         if condition == "c1"

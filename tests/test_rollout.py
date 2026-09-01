@@ -1695,7 +1695,6 @@ def test_study_agent_streams_prompt_file_byte_exactly_to_claude(tmp_path: Path) 
             "MODEL": "claude-opus-4-6",
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "SCIENTIST_STREAM": str(stream),
-            "STREAM_REDACTOR": str(REPO / "rollout" / "redact_claude_stream.py"),
             "STUDY_PROMPT_SHA256": expected_sha,
             "STUDY_PROMPT_BYTES": str(len(prompt)),
         },
@@ -1707,49 +1706,6 @@ def test_study_agent_streams_prompt_file_byte_exactly_to_claude(tmp_path: Path) 
     assert capture.read_bytes() == prompt
     assert stream.read_bytes() == prompt
     assert result.stdout.encode() == prompt
-
-
-def test_claude_stream_redactor_scrubs_credentials_but_keeps_telemetry() -> None:
-    redactor = REPO / "rollout" / "redact_claude_stream.py"
-    event = {
-        "type": "user",
-        "message": {
-            "content": [
-                {
-                    "type": "tool_result",
-                    "content": (
-                        "CLAUDE_CODE_MESSAGING_TOKEN=deadbeefdeadbeefdeadbeef\n"
-                        "HF_TOKEN=hf_abcdefghijklmnopqrstuvwxyz123456\n"
-                        "Authorization: Bearer bearer-secret-value\n"
-                        "safe=value"
-                    ),
-                }
-            ]
-        },
-        "usage": {"input_tokens": 17, "cache_read_input_tokens": 9},
-        "access_token": "persistent-secret-value",
-        "signature": "telemetry-signature",
-    }
-    source = json.dumps(event) + "\n" + "hf_abcdefghijklmnopqrstuvwxyz654321\n"
-    result = subprocess.run(
-        [sys.executable, str(redactor)],
-        input=source,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 0 and result.stderr == ""
-    assert "deadbeef" not in result.stdout
-    assert "abcdefghijklmnopqrstuvwxyz" not in result.stdout
-    assert "bearer-secret-value" not in result.stdout
-    assert "persistent-secret-value" not in result.stdout
-    lines = result.stdout.splitlines()
-    clean = json.loads(lines[0])
-    assert clean["usage"] == {"input_tokens": 17, "cache_read_input_tokens": 9}
-    assert clean["signature"] == "telemetry-signature"
-    assert clean["access_token"] == "<redacted>"
-    assert clean["message"]["content"][0]["content"].endswith("safe=value")
-    assert lines[1] == "<redacted>"
 
 
 @pytest.mark.parametrize(
@@ -2087,8 +2043,8 @@ def test_claude_agents_use_vertex_passthrough_without_oauth() -> None:
     assert setup.count('validate_c1_final_model.py"') >= 4
     assert setup.count('attest_claude_runtime.py"') >= 2
     assert setup.count('validate_wma_session.py"') >= 2
-    assert setup.count('redact_claude_stream.py"') >= 3
-    assert setup.count('sanitize_result_tree.py"') >= 3
+    assert "redact_claude_stream.py" not in setup
+    assert "sanitize_result_tree.py" not in setup
     assert 'install -m 0755 "$HERE/pin_ptb_source.sh"' in setup
     assert 'install -m 0755 "$HERE/attest_ptb_surface.py"' in setup
     assert 'printf \'%s\\n\' "${AWM_REPO_COMMIT,,}"' in setup
@@ -2138,15 +2094,14 @@ def test_claude_agents_propagate_failure_and_require_submission() -> None:
         assert "Claude exited successfully without a non-empty final_model/" in solve
         assert "find /home/ben/task/final_model -mindepth 1 -print -quit" in solve
         assert "validate_study_corpus.py" in solve
-        assert "redact_claude_stream.py" in solve
-        assert 'python3 "${STREAM_REDACTOR}"' in solve
-        assert '--capture "${SCIENTIST_STREAM}"' in solve
-        assert '| tee "${SCIENTIST_STREAM}"' not in solve
-        assert "redactor_rc" in solve
-        assert "tee_rc" not in solve
-        assert "sanitize_result_tree.py" in solve
-        assert 'python3 "${RESULT_SANITIZER}" /home/ben/task' in solve
-        assert "quarantining this cell" in solve
+        assert '--capture "${SCIENTIST_STREAM}"' not in solve
+        assert 'tee "${SCIENTIST_STREAM}"' in solve
+        assert "STREAM_REDACTOR" not in solve
+        assert "redactor_rc" not in solve
+        assert "tee_rc" in solve
+        assert "sanitize_result_tree.py" not in solve
+        assert "RESULT_SANITIZER" not in solve
+        assert "quarantining this cell" not in solve
         assert "--require-readonly" in solve
         assert "--record /home/ben/task/study-input.json" in solve
     wm_solve = (agent_root / "claude_wm" / "solve.sh").read_text()
@@ -2383,8 +2338,6 @@ def test_setup_fresh_private_clone_is_idempotent_and_removes_stale_auth(tmp_path
         "validate_c1_final_model.py",
         "attest_claude_runtime.py",
         "validate_wma_session.py",
-        "redact_claude_stream.py",
-        "sanitize_result_tree.py",
     ):
         assert (private / "agents" / "claude_wm" / "payload" / name).is_file()
     assert (private / "agents" / "claude_fulltraj_noawm" / "payload" / "attest_claude_runtime.py").is_file()
@@ -2394,10 +2347,18 @@ def test_setup_fresh_private_clone_is_idempotent_and_removes_stale_auth(tmp_path
     assert (
         private / "agents" / "claude_fulltraj_noawm" / "payload" / "validate_c1_final_model.py"
     ).is_file()
-    assert (private / "agents" / "claude_fulltraj_noawm" / "payload" / "redact_claude_stream.py").is_file()
+    assert not (
+        private / "agents" / "claude_wm" / "payload" / "redact_claude_stream.py"
+    ).exists()
+    assert not (
+        private / "agents" / "claude_fulltraj_noawm" / "payload" / "redact_claude_stream.py"
+    ).exists()
     assert (
+        not (private / "agents" / "claude_wm" / "payload" / "sanitize_result_tree.py").exists()
+    )
+    assert not (
         private / "agents" / "claude_fulltraj_noawm" / "payload" / "sanitize_result_tree.py"
-    ).is_file()
+    ).exists()
     assert (private / "src" / "commit_utils" / "pin_src_locally.sh").is_file()
     assert (
         private / "src" / "eval" / "tasks" / "gsm8k" / "test_data.json"

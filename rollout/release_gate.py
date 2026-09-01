@@ -266,7 +266,6 @@ def verify_smoke_result(result: Path, lock: dict[str, Any], *, condition: str) -
         "metrics": result / "metrics.json",
         "study_input": study_input,
         "base_model": task / "base-model-attestation.json",
-        "secret_sanitization": task / "secret-sanitization.json",
         "claude_cli": task / "claude-cli-attestation.json",
         "scientist_model": task / "scientist-model-attestation.json",
         "claude_exit": task / "claude-exit-code.txt",
@@ -343,17 +342,6 @@ def verify_smoke_result(result: Path, lock: dict[str, Any], *, condition: str) -
         or study.get("base_model") != base
     ):
         raise ReleaseGateError("smoke base-model attestation is not the full locked cache")
-
-    secret = _load_object(required["secret_sanitization"])
-    if (
-        secret.get("schema_version") != "awm-secret-sanitization-v1"
-        or secret.get("status") != "clean"
-        or type(secret.get("files_redacted")) is not int
-        or secret["files_redacted"] != 0
-        or type(secret.get("redaction_count")) is not int
-        or secret["redaction_count"] != 0
-    ):
-        raise ReleaseGateError("smoke secret attestation is not clean")
 
     cli = _load_object(required["claude_cli"])
     if (
