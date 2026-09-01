@@ -303,7 +303,7 @@ diff_sampling_param["max_tokens"] = diff_sampling_param.pop("max_new_tokens")
 
 **还有第三态,比「不在」更贵:显式写成 `null`。** 一条 run 的 `generation_config.json` 里 `temperature` / `top_k` / `top_p` 三项都是 JSON null,vLLM 拿不到值就回落到自己的默认(采样)。把这三项改写成真值后,**逐字节相同的权重、逐字相同的评测调用,150 题上 0.460 → 0.613(+15.3 点)**——是那条 run 全程最大的杠杆。所以核查一份提交配置时,「字段在不在」不够,还要看它**是不是 null**。
 
-**这些字段还有第四种互相作用,方向是反的:写进去之后就存不出来了。** transformers 的保存期校验拒收 `do_sample=False` 与 `temperature=0.0` 并存,于是 agent 为提分写进 checkpoint 的那组贪婪配置,会在**下一次以该 checkpoint 续训时**让 `save_pretrained` 抛 ValueError。两名标注者各自记到它打死过一次跑到第 150 步的 GRPO、一次已跑完的全参训练和一次 bf16 转换。**所以 C1 的开销不总是「分钟级」——它可以等于一整段训练。**
+**这些字段还有第四种互相作用,方向是反的:写进去之后就存不出来了。** transformers 的保存期校验会拒收某些组合(**具体是哪个字段此前记错了**:一名标注者在 CPU 上直接跑了这个校验,`do_sample=False` 配 `temperature=0.0` **通过**;真正被拒的是同一块里写进去的 `top_k=-1` —— 那是 vLLM 的哨兵值,HF 的 validator 不收)。失败模式是真的,于是 agent 为提分写进 checkpoint 的那组贪婪配置,会在**下一次以该 checkpoint 续训时**让 `save_pretrained` 抛 ValueError。两名标注者各自记到它打死过一次跑到第 150 步的 GRPO、一次已跑完的全参训练和一次 bf16 转换。**所以 C1 的开销不总是「分钟级」——它可以等于一整段训练。**
 
 **丢字段还有第三条路,与前两条都无关:Trainer 自己在存盘前对齐。** 一条 run 的 base 是 `eos_token_id: [1, 106]`,而每次训练 Trainer 都打印 `model config and generation config were aligned accordingly … Updated tokens: {'eos_token_id': 1}` —— **在存盘之前就把它压成了标量**。所以核查一份 checkpoint 的 config 时,`save_pretrained` 的差分序列化、agent 自写的落盘路径、Trainer 的对齐,三条都要考虑。
 
@@ -687,7 +687,12 @@ diff_sampling_param["max_tokens"] = diff_sampling_param.pop("max_new_tokens")
 
 **还有一个方向相反、也更大的偏差:span 被记得比训练自己报的还短。** 一个 driver 脚本在**启动的瞬间**就写出输出目录名,于是「产物被消费」在启动后几秒就命中——有条 run 的三次训练因此各记 0.04h,而它们自报的 `train_runtime` 是两小时。全语料 141 段(9%)落在自报值以下,合计少记 152 小时。
 
-**判据是硬的:训练不可能比它自己报的时间还短。** 抽取器现在把这类 span 抬到自报值(`end_reason: self_reported`)。归属必须唯一——每份报告只归给**报告之前最后一次启动**该产物的 span,否则同名产物的六次重启会各自认领那一次成功的时长。落地后是 31 段被抬升;那 141 与 31 的差就是朴素统计里的重复计入。
+**判据是硬的:训练不可能比它自己报的时间还短。** 抽取器把这类 span 抬到自报值(`end_reason: self_reported`)。两条约束缺一不可:
+
+1. **归属唯一** —— 每份报告只归给**报告之前最后一次启动**该产物的 span,否则同名产物的六次重启会各自认领那一次成功的时长。
+2. **报告必须把产物说成「写到了这里」** —— 一句 `Saved model to X` 或 `--output-dir X` 才算。**只提到名字不算**:一名标注者发现某条 run 的 `train_runtime` 归错了 span,而它们的联系只是后一次训练结果里的一句 tokenizer 警告顺带引用了前一个目录名,那段 span 因此被记 0.53h 而它自报 291 秒——高估 5.8 倍。
+
+收紧之后落地 **9 段**(先前宽口径下是 31 段)。宽口径抬高的那 22 段里,产物名只是被顺带提及,不是它们自己的时长。
 
 **前台也不是无条件精确。** codex 用 `while [ ! -f 上一步产物 ]; do sleep 30; done; python train.py …` 把训练串成接力,于是 `tool_use → tool_result` 这个窗口里包含了**无上界的等待**。语料里 12 段训练启动是这种形状,其中 **3 段的等待被 `^C` 打断——训练根本没开始**。它们全部来自同一条 codex run,占全语料 span 的 0.15%,所以没有为它单独加规则;但「前台窗口精确、无需启发式」这句话对 codex 的接力写法不成立。
 

@@ -561,6 +561,29 @@ def _capped(sec: float | None, command: str) -> tuple[float | None, bool]:
     return float(cap), True
 
 
+#: The artifact named as a training's *starting point*, not its destination.
+#: ``--base-model runs/X`` means the next run resumes from X; the runtime that
+#: command reports belongs to the new run, not to X. Matching the bare name
+#: gave one span 0.53h against its own reported 291 seconds -- a 5.8x
+#: overstatement, and it was the later run's 1911 seconds.
+#: The artifact named as a training's *destination*. A bare mention is far too
+#: weak: a tokenizer warning that merely quotes the directory ("The tokenizer
+#: you are loading from 'runs/X'…") sat in a later run's result beside its own
+#: train_runtime, and X was credited with 0.53h against its own reported 291
+#: seconds. Only a mention that says "this is where it was written" counts.
+_AS_OUTPUT = (
+    r"--out(?:put)?(?:[-_]dir)?[= ]\s*['\"]?",
+    r"[Ss]av(?:ed|ing)[^\n]{0,40}?(?:to|into)\s+['\"]?",
+    r"output_dir['\"]?\s*[:=]\s*['\"]?",
+)
+
+
+def _names_as_output(text: str, leaf: str) -> bool:
+    """Does this text say the training wrote *there*?"""
+    target = r"(?:[\w./-]*/)?" + re.escape(leaf) + r"(?![\w-])"
+    return any(re.search(verb + target, text) for verb in _AS_OUTPUT)
+
+
 def _self_reported(
     rows: list[dict[str, Any]], events: list[dict[str, Any]]
 ) -> None:
@@ -592,7 +615,7 @@ def _self_reported(
             if not out or row.get("kind") != "real":
                 continue
             leaf = out.rstrip("/").split("/")[-1]
-            if len(leaf) < 4 or leaf not in text:
+            if len(leaf) < 4 or not _names_as_output(text, leaf):
                 continue
             start = row.get("ts_start")
             if start and start <= ts_report and (owner is None or start >= owner["ts_start"]):

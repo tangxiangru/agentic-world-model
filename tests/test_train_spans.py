@@ -537,7 +537,13 @@ class TestLogFileIsNotAnArtifact:
 
 
 class TestSelfReportedRuntime:
-    """A training cannot have taken less wall clock than it says it ran for."""
+    """A training cannot have taken less wall clock than it says it ran for.
+
+    The report has to name the artifact as a *destination*. A tokenizer warning
+    that merely quotes the directory sat in a later run's result beside its own
+    train_runtime, and the earlier span was credited 0.53h against its own
+    reported 291 seconds.
+    """
 
     def _events(self, second_launch: bool):
         events = [
@@ -553,7 +559,7 @@ class TestSelfReportedRuntime:
              "args": {"command": "python evaluate.py --model-path ckpt/run_b"}},
             {"run_id": "r", "i": 9, "type": "tool_result", "parent_tool_use": "t9",
              "ts": "2026-01-01T02:10:00Z",
-             "text": "ckpt/run_b done {'train_runtime': 7380.0, 'epoch': 1.0}"},
+             "text": "Saved model to ckpt/run_b\n{'train_runtime': 7380.0, 'epoch': 1.0}"},
         ]
         launch = {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
                   "ts": "2026-01-01T00:00:00Z",
@@ -577,4 +583,20 @@ class TestSelfReportedRuntime:
         claimed = [r for r in rows if r["end_reason"] == "self_reported"]
         assert len(claimed) == 1
         assert claimed[0]["i"] == 4
+
+    def test_a_bare_mention_does_not_credit_the_span(self) -> None:
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
+             "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "python train.py --out ckpt/run_b"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:05:00Z", "text": "done"},
+            {"run_id": "r", "i": 3, "type": "tool_result", "parent_tool_use": "t9",
+             "ts": "2026-01-01T03:00:00Z",
+             "text": "The tokenizer you are loading from 'ckpt/run_b' has an incorrect"
+                     " regex pattern\n{'train_runtime': 7380.0}"},
+        ]
+        rows = train_spans.spans_for_run("r", events)
+        assert rows[0]["end_reason"] == "returned"
+        assert rows[0]["sec"] == 300
 
