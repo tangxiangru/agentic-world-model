@@ -9,6 +9,10 @@ information conditions:
 | C2 | raw prior trajectories | trajectory WMA | PTB + prior-runs + WMA sections |
 | C3 | none of the raw trajectories | retrieval WMA over cards | PTB + WMA section |
 
+All three prompts also state the Claude CLI lifecycle explicitly: a final
+assistant response ends the scientist session, so the scientist must keep
+polling active training/evaluation work and verify model weights before exit.
+
 The matrix is two scientist models (`claude-opus-4-8`, `claude-opus-5`) ×
 three conditions × two information scopes (`train`, `train,test`) × two
 repetitions: 24 one-H100 cells. `rollout/study_matrix.py --format specs` emits

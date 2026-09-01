@@ -37,6 +37,11 @@ PRIOR_RUNS_SECTION = """## Prior runs
 
 WMA_SECTION = (ROOT / "input" / "wma_section.md").read_text()
 
+SESSION_COMPLETION_SECTION = """## Session completion
+A final assistant response ends this scientist session. Background tasks and waiters do not re-invoke you after that response. Do not finish, say you are waiting, or rely on a future notification while training, saving, or evaluation is still active. Keep polling with tool calls within their timeout until the work completes. Before your final response, verify that `final_model/config.json` and model weight files exist.
+
+"""
+
 SMOKE_SECTION = """## One-hour peer-session smoke protocol
 This is a labelled integration smoke, not a production research cell. Exercise the complete two-session path: message the world-model agent with one concrete plan before training, run one optimizer step from the assigned base model, evaluate and leave a `final_model/`, then tell the world-model agent what you shipped. The smoke tests mechanics, not model quality.
 
@@ -53,14 +58,21 @@ def _insert_before_rules(prompt: str, *sections: str) -> str:
 
 def ptb_fulltraj(ptb_prompt: str) -> str:
     """C1: the PTB prompt with raw priors."""
-    return _insert_before_rules(ptb_prompt, PRIOR_RUNS_SECTION)
+    return _insert_before_rules(
+        ptb_prompt, PRIOR_RUNS_SECTION, SESSION_COMPLETION_SECTION
+    )
 
 
 def wm_prompt(ptb_prompt: str, *, fulltraj: bool) -> str:
     """C2/C3: the PTB prompt with the world-model section (and prior runs for C2)."""
     if fulltraj:
-        return _insert_before_rules(ptb_prompt, PRIOR_RUNS_SECTION, WMA_SECTION)
-    return _insert_before_rules(ptb_prompt, WMA_SECTION)
+        return _insert_before_rules(
+            ptb_prompt,
+            PRIOR_RUNS_SECTION,
+            WMA_SECTION,
+            SESSION_COMPLETION_SECTION,
+        )
+    return _insert_before_rules(ptb_prompt, WMA_SECTION, SESSION_COMPLETION_SECTION)
 
 
 def smoke_prompt(prompt: str) -> str:

@@ -40,6 +40,8 @@ def test_prompts_are_ptb_plus_only_the_declared_study_sections() -> None:
     assert "## Prior runs" not in c3 and "## The world-model agent" in c3
     for prompt in (c1, c2, c3):
         assert "## Pinned base checkpoint" not in prompt
+        assert "## Session completion" in prompt
+        assert "Background tasks and waiters do not re-invoke you" in prompt
         assert prompt.count("## Rules") == 1
 
 
