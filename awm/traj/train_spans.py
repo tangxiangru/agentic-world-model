@@ -322,6 +322,23 @@ def _out_dir(command: str) -> str | None:
     return m.group(1).rstrip("/") if m else None
 
 
+#: ``timeout 900 python train.py`` — the command states its own ceiling, and a
+#: span paired to a later artifact cannot outlive it. Ten background spans (6% of
+#: the 156 launched under a timeout) were recorded longer than the limit they ran
+#: under, the worst claiming 4.37 hours against a 6-minute cap.
+#: ``-k``/``--kill-after`` takes a duration of its own, which must not be read
+#: as the timeout.
+_TIMEOUT = re.compile(
+    r"\btimeout\s+(?:(?:-k|--kill-after)[= ]\s*[\w.]+\s+|-[\w-]+\s+)*(\d+)(?:\s|$)"
+)
+
+
+def timeout_cap(command: str) -> int | None:
+    """The wall clock this command cannot exceed, when it says so itself."""
+    m = _TIMEOUT.search(command)
+    return int(m.group(1)) if m else None
+
+
 def _is_background(command: str) -> bool:
     return bool(_BACKGROUND.search(command))
 
@@ -435,6 +452,14 @@ def _train_runtime_in(text: str | None) -> float | None:
     return max(vals) if vals else None
 
 
+def _capped(sec: float | None, command: str) -> tuple[float | None, bool]:
+    """Clamp a span to the ceiling its own command declared."""
+    cap = timeout_cap(command)
+    if sec is None or cap is None or sec <= cap:
+        return sec, False
+    return float(cap), True
+
+
 def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Every training this run launched, with the wall clock it occupied."""
     events = sorted(events, key=lambda e: (e.get("agent_id") or "", e.get("i") or 0))
@@ -467,7 +492,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
         launches.append((pos, e, cmd, out))
 
     rows: list[dict[str, Any]] = []
-    for pos, event, cmd, out_dir in launches:
+    for pos, event, cmd, out_dir in launches:  # noqa: B007
         ts_start = event.get("ts")
         own_result = results.get(event.get("tool_use_id") or "")
         background = _is_background(cmd) or bool(
@@ -533,6 +558,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
                 default=None,
             )
 
+        capped, clamped = _capped(_seconds(ts_start, ts_end), cmd)
         rows.append(
             {
                 "run_id": run_id,
@@ -543,8 +569,8 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
                 "mode": "background" if background else "foreground",
                 "ts_start": ts_start,
                 "ts_end": ts_end,
-                "sec": _seconds(ts_start, ts_end),
-                "end_reason": end_reason,
+                "sec": capped,
+                "end_reason": "timeout_cap" if clamped else end_reason,
                 "train_runtime_s": runtime,
                 "command": cmd[:400],
             }

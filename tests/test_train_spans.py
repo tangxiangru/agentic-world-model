@@ -350,3 +350,47 @@ class TestEffectiveBatch:
         """Agents fix these inside the trainer too. Unknown is not unchanged."""
         assert train_spans.effective_batch("python train.py --bs 4") is None
 
+
+class TestTimeoutCeiling:
+    """``timeout 900 python train.py`` cannot have run for four hours."""
+
+    def test_the_command_states_its_own_ceiling(self) -> None:
+        assert train_spans.timeout_cap("timeout 900 python train.py") == 900
+        assert train_spans.timeout_cap("timeout -k 10 600 python train.py") == 600
+        assert train_spans.timeout_cap("python train.py") is None
+
+    def test_a_span_is_clamped_to_it(self) -> None:
+        """Artifact pairing put this span's end hours after the process died.
+        Ten background spans, 6% of those launched under a timeout, exceeded
+        the limit they ran under; the worst claimed 4.37h against six minutes.
+        """
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash",
+             "tool_use_id": "t1", "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "nohup timeout 900 python train.py --out ckpt/v1 &"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:00:01Z", "text": ""},
+            {"run_id": "r", "i": 3, "type": "tool_use", "tool": "Bash",
+             "tool_use_id": "t2", "ts": "2026-01-01T04:00:00Z",
+             "args": {"command": "python evaluate.py --model-path ckpt/v1"}},
+        ]
+        rows = train_spans.spans_for_run("r", events)
+        assert len(rows) == 1
+        assert rows[0]["sec"] == 900
+        assert rows[0]["end_reason"] == "timeout_cap"
+
+    def test_a_span_within_its_ceiling_is_untouched(self) -> None:
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash",
+             "tool_use_id": "t1", "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "nohup timeout 7200 python train.py --out ckpt/v1 &"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:00:01Z", "text": ""},
+            {"run_id": "r", "i": 3, "type": "tool_use", "tool": "Bash",
+             "tool_use_id": "t2", "ts": "2026-01-01T01:00:00Z",
+             "args": {"command": "python evaluate.py --model-path ckpt/v1"}},
+        ]
+        rows = train_spans.spans_for_run("r", events)
+        assert rows[0]["sec"] == 3600
+        assert rows[0]["end_reason"] == "consumed"
+
