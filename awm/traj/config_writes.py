@@ -192,6 +192,18 @@ def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
                 yield json.loads(line)
 
 
+#: Setting the decoding config on the *object*, then letting the trainer write
+#: it out. ``tok.eos_token = "<|im_end|>"`` → ``model.generation_config
+#: .eos_token_id = …`` → ``trainer.save_model()`` never names the file, so a
+#: filename-matching extractor records no config access at all. 40 of 234 runs
+#: (17%) do this, in 49 events that mention the filename nowhere.
+_OBJECT_WRITE = re.compile(
+    r"\b(?:model|m|trainer\.model)\.generation_config\s*\.\s*\w+\s*="
+    r"|\bgeneration_config\s*\.\s*(?:eos_token_id|temperature|top_p|top_k"
+    r"|do_sample|repetition_penalty|max_new_tokens)\s*="
+)
+
+
 def _refused(events: list[dict[str, Any]]) -> set[str]:
     """``tool_use_id`` of every call the harness declined.
 
@@ -224,10 +236,18 @@ def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, 
         writes_config = tool in ("Bash", "command_execution") and scripts.invoked(
             unwrap(args.get("command") or ""), known, "config_writer"
         )
-        if not names_file and not runs_finalizer and not writes_config:
+        edits_object = bool(_OBJECT_WRITE.search(blob))
+        if not names_file and not runs_finalizer and not writes_config and not edits_object:
             continue
 
         base = {"run_id": run_id, "i": e.get("i"), "ts": e.get("ts"), "tool": tool}
+
+        if edits_object and not names_file:
+            rows.append({**base, "path": None, "access": "write",
+                         "form": "object_attr", "content_available": False,
+                         "content": None,
+                         "command": unwrap(args.get("command") or "")[:400]})
+            continue
 
         if writes_config and not names_file:
             rows.append({**base, "path": None, "access": "write",

@@ -195,3 +195,27 @@ class TestVerbGovernsThePath:
             "command": "mkdir step20 && cp v1/checkpoint-20/generation_config.json step20/"}}]
         assert config_writes.writes_for_run("r", events)[0]["access"] == "write"
 
+
+class TestObjectAttributeWrite:
+    def test_setting_it_on_the_model_counts(self) -> None:
+        """``model.generation_config.eos_token_id = …`` then save_model().
+
+        The filename never appears, so a filename-matching extractor recorded
+        no config access for the whole run -- and in one run that was the only
+        C1 change it made. 40 of 234 runs (17%) work this way.
+        """
+        events = [{"run_id": "r", "i": 1, "type": "tool_use", "tool": "Write", "args": {
+            "file_path": "train_sft.py",
+            "content": 'tok.eos_token = "<|im_end|>"\n'
+                       "model.generation_config.eos_token_id = tok.eos_token_id\n"
+                       "trainer.save_model(out)\n"}}]
+        rows = config_writes.writes_for_run("r", events)
+        assert len(rows) == 1
+        assert (rows[0]["access"], rows[0]["form"]) == ("write", "object_attr")
+
+    def test_reading_the_attribute_is_not_a_write(self) -> None:
+        events = [{"run_id": "r", "i": 1, "type": "tool_use", "tool": "Write", "args": {
+            "file_path": "probe.py",
+            "content": "print(model.generation_config.eos_token_id)\n"}}]
+        assert config_writes.writes_for_run("r", events) == []
+
