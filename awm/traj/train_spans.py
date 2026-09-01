@@ -118,10 +118,12 @@ _MOVED_TO_BACKGROUND = re.compile(r"background \(ID: \w+\)|background with ID: \
 
 #: Deliberately reduced runs, by what the command asks for.
 #:
-#: Not ``--max-steps``: that is how a real GRPO run is configured, and treating
-#: it as a smoke marker labelled 51 multi-hour trainings as smoke tests. What
-#: does mark intent is naming the artifact as a throwaway, or asking for a slice
-#: of the data too small to train on.
+#: Not ``--max-steps``, in any form. It is how a real GRPO run is configured,
+#: and a step cap says nothing about intent: one run capped a full-parameter
+#: fine-tune and an 8.5-minute GRPO stage whose checkpoints were merged and
+#: evaluated. Both readings of the flag have now been tried and both misfile
+#: real trainings, so intent comes from the artifact's name or a slice of data
+#: too small to train on, and from nothing else.
 _SMOKE_SAMPLES = re.compile(r"--max[-_]samples[= ]\s*(\d+)")
 #: The marker may sit anywhere in the basename: one run named its throwaways
 #: ``work/sft_smoke`` and ``sft_smoke2``, and anchoring the pattern to the start
@@ -233,11 +235,6 @@ def _kind(command: str, out_dir: str | None) -> str:
         return "smoke"
     m = _SMOKE_SAMPLES.search(command)
     if m and int(m.group(1)) <= _SMOKE_MAX_SAMPLES:
-        return "smoke"
-    # ``--max-steps 2`` over twenty rows is a pipeline check whatever it is
-    # called. A handful of steps cannot train anything.
-    m = re.search(r"--max[-_]steps[= ]\s*(\d+)", command)
-    if m and int(m.group(1)) <= 20:
         return "smoke"
     return "real"
 

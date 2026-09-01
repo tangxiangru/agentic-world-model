@@ -16,27 +16,27 @@
 
 ## 标注一致性:这些数字能引用到什么程度
 
-7 条 run 各由两名互不可见的标注者做同一份骨架:
+8 条 run 各由两名互不可见的标注者做同一份骨架:
 
 | 字段 | n | 一致率 | κ | 判定 |
 |---|---|---|---|---|
-| `tested_variable` | 67 | 0.821 | **0.741** | findings_only |
-| `category` | 119 | 0.739 | **0.690** | findings_only |
-| `judges_changes` | — | — | Jaccard 0.792 | — |
+| `tested_variable` | 87 | 0.805 | **0.724** | findings_only |
+| `category` | 148 | 0.757 | **0.706** | findings_only |
+| `judges_changes` | — | — | Jaccard 0.717 | — |
 
 **两个字段都在 findings_only 档(0.6 ≤ κ < 0.8)。** 门槛 κ ≥ 0.8 是在看到数字之前定的,没有事后放宽。
 剔除冒烟行后 κ 几乎不动——schema 缺口不是主因;分歧集中在「数据改动强制的超参改动该记 C3 还是 both」。
 
 ## 缺口 2 的分布(findings 档)
 
-218 段真实训练、244 小时:
+229 段真实训练、245 小时:
 
 | 受测变量 | 段数 | 小时 | 占比 |
 |---|---|---|---|
 | **both**(数据与超参同时变) | 102 | 112.4 | 46% |
 | **C3** 数据配方 | 50 | 82.0 | 34% |
-| **C4** 方法超参 | 49 | 44.7 | 18% |
-| 判不出 | 17 | 5.3 | 2% |
+| **C4** 方法超参 | 56 | 45.0 | 18% |
+| 判不出 | 21 | 5.3 | 2% |
 
 **52% 可拆给单一维度,46% 真正联合。**
 两名标注者在每条 run 上都同意的定性结论:**agent 极少做单变量训练**。
@@ -239,8 +239,8 @@
 
 | i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
 |---|---|---|---|---|---|
-| 199 | smoke | 0.07h | superseded | **C4** | baseline —— 第一次启动 train_sft.py。20 步冒烟(--subset 3000 --max_steps 20 --grad_accum 4),目的是量 FFD+FA2 padding-free 管线的吞吐(实测 ~14k token/s、4.68 s/step)并确认不 OO… |
-| 211 | smoke | 0.01h | returned | **C4** | vs i=199:--subset 3000→2500、--max_steps 20→8、--grad_accum 4→1,并加 --no_ckpt。唯一被测的变量是**关掉 gradient checkpointing 能否换来吞吐**。结局:第 0 步就 OOM(峰值 80,855 MiB / … |
+| 199 | real | 0.07h | superseded | **C4** | baseline —— 第一次启动 train_sft.py。20 步冒烟(--subset 3000 --max_steps 20 --grad_accum 4),目的是量 FFD+FA2 padding-free 管线的吞吐(实测 ~14k token/s、4.68 s/step)并确认不 OO… |
+| 211 | real | 0.01h | returned | **C4** | vs i=199:--subset 3000→2500、--max_steps 20→8、--grad_accum 4→1,并加 --no_ckpt。唯一被测的变量是**关掉 gradient checkpointing 能否换来吞吐**。结局:第 0 步就 OOM(峰值 80,855 MiB / … |
 | 228 | real | 0.59h | killed | **both** | baseline(第一次真实训练)。同一次启动里**同时**固定了数据侧(OpenR1 shortest-correct、≤12288 token、25,159 例、119M token)和方法/超参侧(全参 SFT、2 epoch、lr 1e-5、grad_accum 8、cosine),没有任何… |
 | 476 | real | 7.82h | run_end | **both** | vs runA:--max_len 12288→10240、新增 --subset 20000(25,159→20,000 例)、--save_steps 200→250;lr / epochs / grad_accum / 数据来源逐字相同。agent 明写的意图有两条,分属两类:(a) 用更短的… |
 | 713 | real | 0.03h | superseded | **C3** | vs runM:--data data_sft_tokenized→data_concise(R1 长 CoT → OpenR1 简短参考解,中位长度 4222→677 token)、--max_len 10240→4096、--epochs 2→3、去掉 --subset。agent 声明的假设只… |
@@ -404,8 +404,8 @@
 
 | i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
 |---|---|---|---|---|---|
-| 582 | smoke | 0.02h | returned | **C4** | baseline(本 run 第一次训练):--max-steps 6 的吞吐/显存冒烟,数据 train_mix8k,bs 2 x accum 4、max_length 16384。真实结局不是『跑通』而是 OOM(i=585),机械表的 returned 只表示前台命令返回了。 |
-| 607 | smoke | 0.04h | returned | **C4** | 与 i=582 逐字同数据(train_mix8k)、同 --max-steps 6 --save-steps 1000 --bs 2 --accum 4;只新增了 use_liger_kernel=True(i=605)与 PYTORCH_CUDA_ALLOC_CONF=expandable_se… |
+| 582 | real | 0.02h | returned | **C4** | baseline(本 run 第一次训练):--max-steps 6 的吞吐/显存冒烟,数据 train_mix8k,bs 2 x accum 4、max_length 16384。真实结局不是『跑通』而是 OOM(i=585),机械表的 returned 只表示前台命令返回了。 |
+| 607 | real | 0.04h | returned | **C4** | 与 i=582 逐字同数据(train_mix8k)、同 --max-steps 6 --save-steps 1000 --bs 2 --accum 4;只新增了 use_liger_kernel=True(i=605)与 PYTORCH_CUDA_ALLOC_CONF=expandable_se… |
 | 672 | real | 1.80h | consumed | **both** | baseline:第一次真实训练。相对冒烟同时动了数据(train_mix8k -> train_mix10k,10000 条 62.8M token)与超参(--max-steps 6 -> --epochs 1、lr 1.4e-5、save-steps 150),两类变量一起变,分不开。结束有据… |
 | 1154 | real | 0.95h | superseded | **C3** | 相对 sft1(i=672)只换数据:train_mix10k(10000 条,mean 6.28k tok)-> train_mix_r2(24000 条,mean 3.76k tok,最短-completion 去重 + 长度权重偏好 2-4k);--epochs 1 --lr 1.4e-5 -… |
 | 1360 | real | 0.60h | consumed | **C3** | 相对 sft1(i=672)只换数据:train_mix10k(10000 条,mean 6.28k tok,62.8M token)-> train_mix_r2b(19000 条,mean 3.77k tok,71.6M token,来自最短-trace 去重池);--epochs 1 --lr… |
@@ -2252,9 +2252,9 @@
 | 643 | real | 0.02h | returned | **C3** | 起点、lr 5e-6、bs8×ga2、warmup .05、seed 2029 与 i=531 相同,只把数据窗口从 2010–2024 换到 2015–2024(data_recent_aime_2015,186 题);save/stop 步数随数据量缩到 15 |
 | 670 | real | 0.03h | returned | **C3** | 同上,只把窗口换成 2005–2024(data_recent_aime_2005,395 题),超参与 i=531/i=643 一致,停在第 20 步 |
 | 690 | real | 0.01h | returned | **both** | 数据换成自生成并按正确性过滤的 data_selftrain_aime24(来源类型变了:公开语料 → 自采样+验证),同时 lr 5e-6→1e-6、bs8×ga2→bs4×ga4、warmup .05→.1、seed 2032 |
-| 716 | smoke | 0.01h | returned | **unclear** | 启动即崩,GRPOConfig 报 generation_batch_size 与 steps_per_generation 冲突,0 步、无任何产物,谈不上在验哪一项 |
-| 720 | smoke | 0.15h | returned | **C4** | 改脚本后重跑的同一条命令:相对 i=531 的 SFT,起点(recent_aime/checkpoint-20)不变、题源仍是 AIME 2024,变的是优化范式——SFT → GRPO 强化学习,8 条 on-policy 采样、只对最终整数答案给奖励、lr 1e-7;跑满 5 步、510 秒,… |
-| 747 | smoke | 0.02h | returned | **C4** | 数据集与 i=531 相同(data_recent_aime/train_2048),变的是训练方法:LoRA(132M 可训)→ 全参数微调(4,022,468,096 可训),lr 5e-6→5e-7、10 步;起点是 candidates/aime_special_100 |
+| 716 | real | 0.01h | returned | **unclear** | 启动即崩,GRPOConfig 报 generation_batch_size 与 steps_per_generation 冲突,0 步、无任何产物,谈不上在验哪一项 |
+| 720 | real | 0.15h | returned | **C4** | 改脚本后重跑的同一条命令:相对 i=531 的 SFT,起点(recent_aime/checkpoint-20)不变、题源仍是 AIME 2024,变的是优化范式——SFT → GRPO 强化学习,8 条 on-policy 采样、只对最终整数答案给奖励、lr 1e-7;跑满 5 步、510 秒,… |
+| 747 | real | 0.02h | returned | **C4** | 数据集与 i=531 相同(data_recent_aime/train_2048),变的是训练方法:LoRA(132M 可训)→ 全参数微调(4,022,468,096 可训),lr 5e-6→5e-7、10 步;起点是 candidates/aime_special_100 |
 
 ### 验证序列(36 次)
 
@@ -2702,11 +2702,11 @@
 
 | i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |
 |---|---|---|---|---|---|
-| 79 | smoke | 0.01h | returned | **unclear** | baseline; first execution of the freshly written train_sft.py (5 optimizer steps on 64 MetaMath examples). A smoke run: it verifies that the pipeline … |
-| 88 | smoke | 0.01h | returned | **C4** | Same stage/data as i=79 but batch size 4 -> 16 and 64 -> 256 examples: a hyperparameter probe whose purpose was to pick the batch size for the real ru… |
+| 79 | real | 0.01h | returned | **unclear** | baseline; first execution of the freshly written train_sft.py (5 optimizer steps on 64 MetaMath examples). A smoke run: it verifies that the pipeline … |
+| 88 | real | 0.01h | returned | **C4** | Same stage/data as i=79 but batch size 4 -> 16 and 64 -> 256 examples: a hyperparameter probe whose purpose was to pick the batch size for the real ru… |
 | 93 | real | 1.61h | returned | **both** | baseline (first real training). It fixes the data recipe (100k stratified GSM-derived MetaMathQA rows) and the method (full-parameter SFT, bs16, lr 1e… |
-| 222 | smoke | 0.02h | returned | **unclear** | First smoke of the new 'aligned' stage (3 steps, 64 examples, 3072 tokens, lr 3e-6) on top of stage1_model. It died before training on HuggingFace HEA… |
-| 226 | smoke | 0.01h | returned | **unclear** | Byte-identical relaunch of i=222 with HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 prepended, after the network repair. Still a code-path smoke run: it repo… |
+| 222 | real | 0.02h | returned | **unclear** | First smoke of the new 'aligned' stage (3 steps, 64 examples, 3072 tokens, lr 3e-6) on top of stage1_model. It died before training on HuggingFace HEA… |
+| 226 | real | 0.01h | returned | **unclear** | Byte-identical relaunch of i=222 with HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 prepended, after the network repair. Still a code-path smoke run: it repo… |
 | 231 | real | 0.54h | returned | **C3** | First real alignment epoch from stage1_model. Data changes from MetaMathQA paraphrases (100k, 1024 tokens) to the 7,473 original GSM8K train solutions… |
 | 290 | real | 0.54h | returned | **C4** | Identical 7,473-example aligned corpus; only the method changes - a second epoch continued from aligned_model at lr 3e-6 -> 1.5e-6, seed 42 -> 43. Acc… |
 | 348 | real | 0.54h | returned | **C4** | Same corpus again; third epoch from aligned2_model at lr 1.5e-6 -> 7.5e-7, seed 44. Rejected on n=150 (91/150 vs 93/150) and again on the full set (60… |
