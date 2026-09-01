@@ -223,6 +223,19 @@ def _kills(kill_command: str, launch_command: str) -> bool:
 
 _TRAIN_RUNTIME = re.compile(r"train_runtime['\"]?\s*[:=]\s*([0-9.]+)")
 
+#: A background training that died leaves its traceback in some later result,
+#: and the artifact never appears — so pairing runs on to whatever supersedes
+#: it hours later. One span was recorded at 5.08 hours against four real
+#: minutes, the GPU idle in between behind an unbounded `until [ -d … ]` wait.
+#:
+#: The text must **name this span's artifact**. Matching a bare OOM instead
+#: found 99 spans and 66 hours, but most were evaluations running out of memory
+#: while a training was healthy; naming the artifact gives 11 spans and 16
+#: hours, and those are the ones that are actually this.
+_CRASH = re.compile(
+    r"Traceback \(most recent call last\)|torch\.OutOfMemoryError|CUDA out of memory", re.I
+)
+
 
 def _parse_ts(ts: Any) -> datetime | None:
     # Reads both raw events (``None``) and the frame's nullable strings
@@ -470,6 +483,27 @@ def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
                 yield json.loads(line)
 
 
+def _crashed_at(
+    events: list[dict[str, Any]], ts_start: str | None, out_dir: str | None
+) -> str | None:
+    """When a later result reported this training dying, if one did."""
+    if not ts_start or not out_dir:
+        return None
+    leaf = out_dir.rstrip("/").split("/")[-1]
+    if len(leaf) < 4:
+        return None
+    for e in events:
+        if e.get("type") != "tool_result":
+            continue
+        ts = e.get("ts")
+        if not ts or ts <= ts_start:
+            continue
+        text = e.get("text") or ""
+        if leaf in text and _CRASH.search(text):
+            return ts
+    return None
+
+
 def _result_index(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """``tool_use_id`` -> the ``tool_result`` answering it."""
     out: dict[str, dict[str, Any]] = {}
@@ -558,8 +592,14 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
             ts_end, end_reason, runtime = last_ts, "run_end", None
             window_texts: list[str] = []
             last_seen: str | None = None
+            crashed_at = _crashed_at(events, ts_start, out_dir)
             for later in uses[pos + 1 :]:
                 later_cmd = _command(later)
+                # A death report precedes anything a later command implies: the
+                # process was already gone when that command ran.
+                if crashed_at and (later.get("ts") or "") >= crashed_at:
+                    ts_end, end_reason = crashed_at, "crashed"
+                    break
                 if out_dir and _is_launch(later_cmd, known) and _out_dir(later_cmd, known) == out_dir:
                     ts_end, end_reason = later.get("ts"), "superseded"
                     break

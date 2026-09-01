@@ -178,6 +178,11 @@ _FULL_SIZE = {
     "aime2025": 30,
     "gpqamain": 448,
     "arenahardwriting": 250,
+    # ``Generating train split: 100 examples`` — bfcl's exec_simple split. One
+    # run confirmed it behaviourally: ``--limit`` unset read the same 0.96 as
+    # ``--limit 100``. Its noise floor is therefore 1 point per item, the same
+    # category error §2 flags for AIME.
+    "bfcl": 100,
 }
 
 #: ``--limit``'s default, read from each task's own ``evaluate.py``. It is *not*
@@ -264,7 +269,7 @@ def _form(command: str, known: dict[str, set[str]] | None = None) -> str | None:
     # A script that also trains is not one of these. Training scripts commonly
     # score what they just trained, so they read as evaluators too; counting
     # their launch as an evaluation turns every training into a phantom eval.
-    if known and scripts.invoked_purely(outside, known, "evaluator"):
+    if known and scripts.invoked_without_training(outside, known, "evaluator"):
         return "own_wrapper"
     return None
 

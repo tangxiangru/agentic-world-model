@@ -460,3 +460,50 @@ class TestKillReachesOnlyWhatItNames:
             'pkill -f "train.py --data sft_v1"'))
         assert rows[0]["end_reason"] == "killed"
 
+
+class TestBackgroundCrash:
+    def test_a_traceback_naming_the_artifact_ends_the_span(self) -> None:
+        """One span read 5.08 hours against four real minutes: it OOMed, the
+        GPU sat idle behind an unbounded wait, and pairing ran on to the
+        relaunch five hours later."""
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
+             "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "nohup python train.py --out runs/grpo1 &"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:00:01Z", "text": "started"},
+            {"run_id": "r", "i": 3, "type": "tool_use", "tool": "Bash", "tool_use_id": "t2",
+             "ts": "2026-01-01T00:05:00Z", "args": {"command": "tail -5 logs/grpo1.log"}},
+            {"run_id": "r", "i": 4, "type": "tool_result", "parent_tool_use": "t2",
+             "ts": "2026-01-01T00:05:01Z",
+             "text": "runs/grpo1: Traceback (most recent call last)\n"
+                     "torch.OutOfMemoryError: CUDA out of memory"},
+            {"run_id": "r", "i": 5, "type": "tool_use", "tool": "Bash", "tool_use_id": "t3",
+             "ts": "2026-01-01T05:00:00Z",
+             "args": {"command": "nohup python train.py --out runs/grpo1 &"}},
+        ]
+        rows = train_spans.spans_for_run("r", events)
+        assert rows[0]["end_reason"] == "crashed"
+        assert rows[0]["sec"] == 301
+
+    def test_an_unrelated_oom_does_not_end_it(self) -> None:
+        """An evaluation running out of memory beside a healthy training.
+        Matching a bare OOM found 99 spans; naming the artifact finds the 11
+        that are actually this."""
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
+             "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "nohup python train.py --out runs/grpo1 &"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:00:01Z", "text": "started"},
+            {"run_id": "r", "i": 3, "type": "tool_use", "tool": "Bash", "tool_use_id": "t2",
+             "ts": "2026-01-01T00:05:00Z", "args": {"command": "python evaluate.py --limit 30"}},
+            {"run_id": "r", "i": 4, "type": "tool_result", "parent_tool_use": "t2",
+             "ts": "2026-01-01T00:05:01Z", "text": "torch.OutOfMemoryError: CUDA out of memory"},
+            {"run_id": "r", "i": 5, "type": "tool_use", "tool": "Bash", "tool_use_id": "t3",
+             "ts": "2026-01-01T02:00:00Z",
+             "args": {"command": "python evaluate.py --model-path runs/grpo1"}},
+        ]
+        rows = train_spans.spans_for_run("r", events)
+        assert rows[0]["end_reason"] == "consumed"
+

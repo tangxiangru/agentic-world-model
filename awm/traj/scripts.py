@@ -41,9 +41,15 @@ _TRAINER_BODY = (
 )
 
 #: Calling the benchmark's scorer, at any remove, makes a file an evaluator.
+#: Running the scorer, not borrowing a type from it. ``from inspect_ai.model
+#: ._openai import openai_chat_tool_param`` is how a *data builder* reproduces
+#: the inference-time tool schema; matching the bare import made seven of one
+#: run's sixteen evaluation rows be `build_sft.py`, each handed a later
+#: evaluation's score.
 _EVAL_BODY = (
     re.compile(r"\bevaluate\.py\b"),
-    re.compile(r"\binspect_eval\b|\bfrom\s+inspect_ai\b"),
+    re.compile(r"\binspect_eval\s*\(|\binspect_ai\s*\.\s*eval\s*\("
+               r"|\bfrom\s+inspect_ai\s+import\s+[^\n]*\beval\b"),
 )
 
 #: Writing a decoding config makes a file a config writer. Agents package this
@@ -244,15 +250,30 @@ def invoked(command: str, known: dict[str, set[str]], role: str) -> bool:
 
 
 def invoked_purely(command: str, known: dict[str, set[str]], role: str) -> bool:
-    """As :func:`invoked`, but only for scripts whose *only* role is this one.
-
-    A trainer that scores its own output afterwards carries both roles. Its
-    launch is a training launch; reading it as an evaluation as well doubles
-    the count and leaves every phantom evaluation with no score attached.
-    """
+    """As :func:`invoked`, but only for scripts whose *only* role is this one."""
     command = _unwrap(command)
     return any(
         roles == {role} and _invocation(command, path) for path, roles in known.items()
+    )
+
+
+def invoked_without_training(command: str, known: dict[str, set[str]], role: str) -> bool:
+    """As :func:`invoked`, excluding scripts that also launch a training.
+
+    A trainer that scores its own output afterwards carries both roles, and its
+    launch is a training launch; counting it as an evaluation too doubles the
+    count and leaves a phantom evaluation with no score.
+
+    Demanding the role be the *only* one was too strong. An agent's thin
+    evaluation wrapper commonly stamps the decoding config before scoring, so
+    it carries ``config_writer`` as well — and one run lost 12 of its 15
+    evaluations that way, its fourth-tier count reading four times low. Only
+    ``trainer`` disqualifies.
+    """
+    command = _unwrap(command)
+    return any(
+        role in roles and "trainer" not in roles and _invocation(command, path)
+        for path, roles in known.items()
     )
 
 
@@ -267,4 +288,12 @@ def summary(known: dict[str, set[str]]) -> str:
     return json.dumps(by_role, ensure_ascii=False)
 
 
-__all__ = ["destination_for", "destinations", "invoked", "invoked_purely", "learn", "summary"]
+__all__ = [
+    "destination_for",
+    "destinations",
+    "invoked",
+    "invoked_purely",
+    "invoked_without_training",
+    "learn",
+    "summary",
+]
