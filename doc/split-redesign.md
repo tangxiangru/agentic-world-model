@@ -612,16 +612,16 @@ scorer to narrow and an `O(k²)` comparator to decide:
 | stage | what it sees | calls | cost |
 |---|---|---:|---:|
 | A | one redacted digest, alone, rate it 0–100 | 1,175 | $124.90 |
-| B | round-robin the top 6 of each cell, both orders, Copeland | 840 | $216.12 |
+| B | round-robin the top 6 of every choice set, both orders, Copeland | 4,568 | $884 |
+| B, K = 10 | the same at a wider shortlist | +4,086 | +$793 |
 
-Stage B does not survive this section, though not for the reason an earlier
-version of it gave. Once the shortlist is ranked on the right field and Copeland
-is scored as a *rate* rather than a count, the comparator is −0.0008 on full
-cells — nominally better, three times under its own MDE of 0.0019, on **2
-non-ties out of 28**. It is not a loss and it is not a win; at $216 for 840
-comparisons it is a measurement nobody can afford to repeat and nobody needs.
-Everything below is reported for both, and the recommendation at the end is to
-ship stage A by itself.
+Stage B took three attempts to measure and the first two were both wrong, in
+opposite directions — see §"Where the remaining regret is". What it is worth, at
+full pair coverage: −0.0043 on full cells (5–1, still under its MDE of 0.0072),
+−0.0022 within scaffold, and a wash within family. Solved@3 goes 67.9 % → 82.1 %
+on full cells. Everything below is reported for both stages, and the
+recommendation at the end is to ship both — with the caveat that the comparator's
+contribution is never a significant contrast, only a consistent point estimate.
 
 Stage A is the harder half and the new thing: scoring in isolation means
 supplying your own standard, where a pair only needs a relative difference. It
@@ -702,10 +702,10 @@ which `stage A − table` reaches p < 0.05. Leave-one-cell-out selection over th
 folds** and lands on the same 0.0070. There is no reading of the data on which the
 published number is the right one to have reported.
 
-### Where the remaining regret is
+### Where the remaining regret is, and the shortlist bug it exposed
 
-Decomposing stage A + B's residual over full cells — 0.0072 in total, i.e. the
-whole pipeline is within 0.7 accuracy points of oracle on the median cell:
+Decomposing stage A + B's residual over full cells — 0.0072 at the time, i.e. the
+whole pipeline within 0.7 accuracy points of oracle on the median cell:
 
 | bucket | share | cells |
 |---|---:|---:|
@@ -716,10 +716,103 @@ whole pipeline is within 0.7 accuracy points of oracle on the median cell:
 Stage A's top 6 contains the cell's winner in **25 of 28 cells**. The earlier
 "90.8 % / 9.2 %, no more than 0.0013 recoverable" split was computed when Copeland
 was still ranking uncompared runs last, so most of what it filed under "the
-comparator ranked it wrong" was the comparator having no data at all. The honest
-ceiling for comparator work is 0.0034, and **one cell** (`aime2025 × Qwen3-4B`,
-regret 0.0667) is the only place in the corpus where a comparator that saw the
-pairs still got it wrong. Everything else is shortlist recall or missing pairs.
+comparator ranked it wrong" was the comparator having no data at all.
+
+That middle row turned out not to be a budget decision but a bug. `stage_b` built
+its shortlist from `cells(rows)` alone, while the board scores three populations,
+and the top 6 of a within-family sub-set is mostly *not* the top 6 of its parent
+cell. So the comparator was being credited on pairs it had never been shown:
+
+| population | pair coverage of its own shortlist | shortlisted runs with no comparison at all |
+|---|---:|---:|
+| full cell | 37.6 % | 65 of 168 |
+| within scaffold | 13.3 % | 382 of 496 |
+| within family | 1.0 % | 359 of 369 |
+
+In 12 of the 28 cells one of the uncompared runs was that cell's own winner.
+`stage A+B` on those rows was stage A plus noise, which is the whole of the
+"stage B costs points" reading. `choice_sets` now enumerates what the report
+actually scores — the cell, plus each within-family and within-scaffold sub-set
+of four or more runs — with pairs still keyed on the parent cell so a pair two
+populations both need is fetched once. 3,728 new ordered comparisons, coverage
+98.8 / 100 / 100 %:
+
+| population | stage A+B before | after | solved@3 |
+|---|---:|---:|---:|
+| full cell | 0.0072 | **0.0038** | 75.0 % → 82.1 % |
+| within scaffold | 0.0061 | **0.0047** | 78.6 % → 79.8 % |
+| within family | 0.0029 | 0.0036 | 92.1 % → 89.5 % |
+
+Within family it is a wash and slightly negative (2-4, p = 0.688, MDE 0.0027) —
+reported rather than selected away, and the obvious structural excuse does not
+hold: splitting by whether K = 6 actually narrows the set (71 of those 76 sets
+have n ≤ 6) puts stage B behind on *both* sides, 1-2 either way, which is three
+sets deciding a direction.
+
+`aime2025 × Qwen3-4B-Base`, the single 0.0667 cell that was the entire "genuinely
+misranked" bucket, is now 0.0000.
+
+### Nothing else moves it: four levers, all measured, all null
+
+With coverage fixed, the residual is 0.0038 full cell against an oracle-over-the-
+top-6 of 0.0030 — 0.0008 of comparator headroom left at that budget. Four ways to
+spend more, in the order anyone would try them:
+
+| lever | cost | result |
+|---|---|---|
+| widen the shortlist to K = 10 | 4,086 calls, $793 | 0.0038 → 0.0033 full cell (1-0), 0.0047 → 0.0048 within scaffold, exactly nothing within family |
+| weight Copeland by the comparator's confidence | free | identical on full cells, worse within scaffold; dropping confidence ≤ 2 is worse on both |
+| Bradley-Terry instead of Copeland | free | indistinguishable at every blend weight |
+| blend Copeland with stage A instead of overriding | free | best in-sample weight is worth ≤ 0.0007; chosen leave-one-cell-out it is 0.0000 / −0.0005 / −0.0007 |
+| average the two stage-A passes (the run-id ablation is a second independent read) | free | +0.0004 / 0.0000 / −0.0016 at k = 3, though it helps at k = 1 on all three (0.0200 → 0.0188, 0.0265 → 0.0245, 0.0359 → 0.0322) |
+
+K = 10 is the informative one: the oracle floor *does* drop (0.0030 → 0.0018 full
+cell, 0.0017 → 0.0001 within scaffold), so the extra 4,086 comparisons genuinely
+put the winner in front of the comparator more often, and it converts almost none
+of that. A wider list gives a fixed-accuracy judge more chances to be wrong. Both
+sizes stay on the board rather than the better one being chosen, because picking
+K off 28 cells is fitting a hyperparameter on the test set.
+
+The blend null has a twist worth recording. On the 772 comparisons cached before
+the fix, stage A scored 83.8 % pairwise against stage B's 76.1 %, which says the
+lexicographic form is backwards — the weaker judge overriding the stronger one.
+On the same 7,753 comparisons it is stage B 79.0 % against stage A 76.8 %. The two
+stages had been graded on different pair sets, and the pre-fix set was the easy
+one. Split by how far apart the two runs really scored:
+
+| true gap | n | stage B | stage A |
+|---|---:|---:|---:|
+| under 0.02 | 1468 | 59.1 % | 56.6 % |
+| 0.02–0.05 | 2153 | 71.2 % | 70.8 % |
+| 0.05–0.15 | 2218 | 85.2 % | 80.7 % |
+| over 0.15 | 1914 | 95.7 % | 94.6 % |
+
+Stage B is the better judge, and only outside the narrow band — which is exactly
+the top of a shortlist. That is the ceiling, stated as a property of the task
+rather than of the method.
+
+### What the floor is made of
+
+Five cells of 28 carry all the remaining full-cell regret:
+
+| cell | regret | one graded item | items missed |
+|---|---:|---:|---:|
+| `aime2025 × gemma-3-4b-pt` | 0.0333 | 0.0333 | 1 |
+| `gpqamain × Qwen3-1.7B-Base` | 0.0312 | 0.0022 | 14 |
+| `gpqamain × SmolLM3-3B-Base` | 0.0201 | 0.0022 | 9 |
+| `humaneval × Qwen3-1.7B-Base` | 0.0122 | 0.0061 | 2 |
+| `arenahardwriting × Qwen3-1.7B-Base` | 0.0087 | — | continuous |
+
+The other 23 are solved exactly. The largest miss in the corpus is one AIME
+question. Beyond this the constraint is not the ranker but the design: the 28
+cells are 7 benchmarks × 4 models fully crossed, there is no 29th to add, and the
+787 further trajectories on disk fall inside those same 28 — they would deepen the
+sets without adding a cluster, and the clustered tests count clusters. At nc = 28
+the MDE is ~0.008–0.010, and the within-scaffold contrast (−0.0095, 13-5,
+p = 0.0963, 78 % tie-break robustness) sits just under its own. Even a perfect
+comparator there reaches −0.0125 against an MDE of ~0.010, so this population
+clears 0.05 only barely and only with a ranker that does not exist. **More power
+has to come from a second corpus, not from a better method on this one.**
 
 ### On a whole cell, the lookup table is not beaten
 
@@ -733,26 +826,37 @@ inside that distribution.
 | self-report (largest printed number) | 0.1126 | [0.0608, 0.1719] | 17.9 % | 0.1748 | 0.1047, p90 |
 | 21 bucketed features, fitted | 0.0242 | [0.0134, 0.0359] | 50.0 % | 0.0678 | no ties |
 | **stage A alone** | 0.0081 | [0.0027, 0.0148] | 67.9 % | **0.0200** | 0.0077, p68 |
-| stage A + B | 0.0072 | [0.0019, 0.0144] | 75.0 % | 0.0230 | no ties |
-| **agent-family lookup table** | **0.0070** | [0.0019, 0.0138] | **78.6 %** | 0.0480 | 0.0091, p22 |
+| **agent-family lookup table** | 0.0070 | [0.0019, 0.0138] | 78.6 % | 0.0480 | 0.0091, p22 |
+| stage A + B | 0.0038 | [0.0007, 0.0075] | 82.1 % | **0.0145** | no ties |
+| stage A + B, K = 10 | **0.0033** | [0.0006, 0.0070] | **85.7 %** | **0.0145** | no ties |
 
 **On a whole cell, a table of "which agent averages what" is as good as reading
 the trajectories, and this document should stop claiming otherwise.** Stage A is
-+0.0011 behind at 3–6 (p = 0.508), stage A + B is +0.0002 behind at 4–4 (p = 1),
-and both differences are under the 0.0110 the population can resolve. The one
-thing stage A does own here is `regret@1` — 0.0200 against the table's 0.0480 —
-i.e. it is better at naming the single winner even though the table is at least
-as good at getting the winner *somewhere* in three. That is a real difference and
-it is not the metric the thesis declared.
++0.0011 behind at 3–6 (p = 0.508), under the 0.0110 the population can resolve.
+The one thing stage A does own here is `regret@1` — 0.0200 against the table's
+0.0480 — i.e. it is better at naming the single winner even though the table is
+at least as good at getting the winner *somewhere* in three. That is a real
+difference and it is not the metric the thesis declared.
+
+The two `stage A + B` rows are ahead of the table on the point estimate, and they
+are still not a result: −0.0033 at 4–2, p = 0.688 with only **30 %** tie-break
+robustness, and −0.0037 at 4–1, p = 0.375 at 41 %. Six cells and five cells
+respectively differ at all. A row decided by five cells, half of which survive a
+re-draw of the tie-break, is a number to report and not to claim.
 
 The design rule this document set for itself was that any arm which only looks
 good where the agent table works has not been shown to work. Applied honestly, it
 now cuts the other way: the full-cell population is the one where the table works,
 and there is nothing to show there. The result lives in the two populations below.
 
-**Stage B is not worth buying either way.** At $216 for 840 comparisons it is
-−0.0008 against stage A alone on 2 non-ties out of 28 (p = 0.5, MDE 0.0019). The
-old **+0.0026 "stage B costs points"** was an artefact of Copeland counting wins:
+**Stage B is worth buying, and every previous sentence in this document about
+whether it was is void.** At full coverage it is −0.0043 against stage A alone,
+5–1 out of 28 (p = 0.219, MDE 0.0072 — still under, so "worth buying" is a point
+estimate and a solved-rate, not a significant contrast). Its three earlier
+headline numbers were each about the scaffolding. The **−0.0008 on 2 non-ties**
+immediately above was measured at 37.6 % pair coverage against a shortlist stage
+B had never been given. The older **+0.0026 "stage B costs points"** was an
+artefact of Copeland counting wins:
 a shortlisted run the comparator was never shown scored zero wins and therefore
 sorted *below* a run that lost every comparison it had, and 38.7 % of shortlisted
 runs are in that state. Scoring `(wins − losses) / comparisons decided` — 0 both
@@ -760,8 +864,9 @@ for "never compared" and for "even record" — removes it. And the older
 **−0.0072, 8–0, p = 0.008** in stage B's favour was real for the mirror-image
 reason: stage A was handing it a shortlist ordered by alphabetical tiebreak, so
 the comparator's whole measured value was undoing a defect that now costs $0 to
-fix. Both of stage B's headline numbers, in both directions, were about the
-scaffolding around it.
+fix. Every one of stage B's headline numbers, in every direction, has been about
+the scaffolding around it rather than about the comparator; the 79.0 % pairwise
+accuracy above is the first one that is not.
 
 ### 76 sets cut from 28 cells are not 76 independent observations
 
@@ -833,9 +938,13 @@ on this population and the mean effect is the fragile number.
 **Stage A + B is still not measured on this population.** Stage B only compared
 each *cell's* top six, and those six almost never fall inside one family — pair
 coverage of the within-family shortlists is **1.0 %**, and **359 of 369**
-shortlisted runs (97.3 %) have no cached comparison at all, against 37.6 % / 38.7 %
-on full cells. The two rows are identical to four decimal places with **0
-non-ties**: that is an absence of data, not a tie.
+shortlisted runs (97.3 %) had no cached comparison at all, against 37.6 % / 38.7 %
+on full cells, and the two rows were identical to four decimal places with **0
+non-ties** — an absence of data, not a tie. At full coverage stage A + B is
+0.0036 against stage A's 0.0029, 2–4, p = 0.688 against an MDE of 0.0027: a wash,
+and the only population where the comparator does not pay for itself. Median set
+size here is 5, so there is nothing for a shortlist to narrow, but that excuse
+does not survive checking — the five sets with n > 6 go 1–2 as well.
 
 ### A third population, where the table is neither useless nor sufficient
 
@@ -852,14 +961,26 @@ is genuinely ranking, and there are enough candidates for a ranker to be wrong.
 | 21 bucketed features, fitted | 0.0234 | [0.0151, 0.0330] | 57.1 % | 8–17, p = 0.11 |
 | agent-family lookup table | 0.0142 | [0.0077, 0.0218] | 73.8 % | — |
 | **stage A** | 0.0069 | [0.0030, 0.0122] | 76.2 % | 13–6, p = 0.17 |
-| **stage A + B** | **0.0061** | [0.0027, 0.0113] | **78.6 %** | 13–5, p = 0.096 |
+| **stage A + B** | **0.0047** | [0.0026, 0.0071] | **79.8 %** | 13–5, p = 0.096 |
+| stage A + B, K = 10 | 0.0048 | [0.0027, 0.0071] | 79.8 % | 12–5, p = 0.14 |
 
 Stage A halves the table's regret (0.0069 against 0.0142) and the sign test does
 not reject at 28 clusters — 13–6, p = 0.17, effect −0.0073 against an MDE of
-0.0085. This is the cleanest statement the corpus supports on a population where
-the table has real information: **the trajectory reader is at worst as good as the
-table and probably better, but 28 cells cannot tell those apart.** Reported as a
-positive result it would be exactly the overclaim the full-cell headline was.
+0.0085. Adding the comparator takes it to 0.0047, a third of the table, and moves
+the contrast to −0.0095 against an MDE of 0.0103 — still not rejecting at
+p = 0.0963, but the tie-break robustness goes from 24 % to **78 %**, i.e. the sign
+of the row stops being a property of the job ids. This is the cleanest statement
+the corpus supports on a population where the table has real information: **the
+trajectory reader is at worst as good as the table and probably better, but 28
+cells cannot tell those apart.** Reported as a positive result it would be exactly
+the overclaim the full-cell headline was.
+
+It is also as close as this corpus gets. The oracle over stage A's top 6 here is
+0.0017, so even a perfect comparator reaches −0.0125 against an MDE of ~0.010 —
+clearing 0.05, but only just, and with a ranker that does not exist. The 787
+unextracted trajectories on disk all fall inside these same 28 cells, so they
+deepen the sets without adding a cluster and the clustered test counts clusters.
+**The next real gain is a second corpus, not a better method on this one.**
 
 ### The leak control
 
@@ -957,9 +1078,9 @@ than recipe quality. Two controls down, that one open.
 
 ### What this settles and what it does not
 
-A model reading trajectories picks a set's winner into its top three **67.9 %** of
-the time on a whole cell, **76.2 %** within a scaffold, and **92.1 %** within an
-agent family.
+A model reading trajectories picks a set's winner into its top three **82.1 %** of
+the time on a whole cell, **79.8 %** within a scaffold, and **92.1 %** within an
+agent family — the first two with the comparator, the third without it.
 
 **It does not beat the agent-family lookup table on a whole cell.** That claim
 appeared in earlier versions of this document at 0.0167, p = 0.039, and it was an
@@ -973,12 +1094,15 @@ effect the population could not have resolved either way. What is left is:
 - **on the 24 cells where the winner's family also produced a below-median run**
   — the cells where "just look up the family" is genuinely ambiguous — stage A is
   0.0135 / 75.0 % solved against the table's 0.0265 / 54.2 %;
-- **within a scaffold**, 0.0069 against the table's 0.0142, directionally the same
-  and not significant at 28 clusters.
+- **within a scaffold**, 0.0047 against the table's 0.0142, directionally the same
+  and not significant at 28 clusters (p = 0.0963), though now robust to the
+  tie-break in 78 % of draws rather than 24 %.
 
-Four things this does not show. It is one $125 stage-A pass, not a trained
-predictor. The $216 comparator buys nothing measurable and the pipeline should
-ship as stage A alone. The fitted-features baseline, once the sub-sets are
+Four things this does not show. It is one $125 stage-A pass plus a $884 comparator
+over 8,654 comparisons, not a trained predictor. The comparator's contribution is
+a point estimate and a solved-rate, never a significant contrast — −0.0043 on
+5 non-tied cells full-cell, −0.0022 on 10 within scaffold, and a wash within
+family. The fitted-features baseline, once the sub-sets are
 clustered, is not distinguishable from random within a family — so "a metadata
 model does the job" is not supported either, in either direction. And none of it
 touches the underlying confound — every recipe in this corpus was written *and*
@@ -1137,7 +1261,8 @@ python3 tools/traj_read.py --arms summary,recipe,redact,raw    # ~$470, resumabl
 python3 tools/traj_read_report.py                              # every cut in the section above
 
 python3 tools/choice_rank.py --stage a           # 1175 calls, ~$125, resumable
-python3 tools/choice_rank.py --stage b --topk 6  #  840 calls, ~$216, buys nothing, see above
+python3 tools/choice_rank.py --stage b --topk 6  # 4568 calls, ~$884, all 188 choice sets
+python3 tools/choice_rank.py --stage b --topk 10 # 4086 more, ~$793, and worth ~0.0005
 python3 tools/choice_rank.py --stage noid        # 1175 calls, ~$125, the run-id ablation
 python3 tools/choice_rank_report.py              # the regret tables, free
 ```
