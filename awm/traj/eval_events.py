@@ -475,6 +475,14 @@ def _one(
             tail = re.sub(r"\d*>[&]?\d*", " ", tail)
             nums = [int(x) for x in re.findall(r"(?<![\w.-])(-?\d{1,6})(?![\w.-])", tail)]
             limit = next((n for n in nums if n == -1 or 1 <= n <= 100000), None)
+        # A positional number in a wrapper's argument list is only a sample
+        # size if it could be one. ``while kill -0 5208`` gave one run a
+        # "fourth-tier evaluation of 5208 questions" on HumanEval, whose whole
+        # set is 164 -- the number was a PID. Above the benchmark's size the
+        # parse is wrong, not the benchmark.
+        full = _FULL_SIZE.get(benchmark or "")
+        if limit is not None and full is not None and limit > full:
+            limit = None
         json_out = _str(_JSON_OUT, command)
         background = bool(_BACKGROUND.search(command)) or bool(_handles(own_text))
 

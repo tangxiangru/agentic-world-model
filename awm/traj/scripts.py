@@ -161,6 +161,12 @@ _DEST = (
     re.compile(r"""--out(?:put)?(?:[-_]dir)?['\"]?\s*,[^)]*?default\s*=\s*['\"]([\w./-]+)['\"]"""),
     re.compile(r"""(?:OUTPUT_DIR|OUT_DIR|SAVE_DIR|FINAL_DIR|output_dir|final_dir|out_dir)\s*=\s*['\"]([\w./-]+)['\"]"""),
     re.compile(r"""save_pretrained\(\s*['\"]([\w./-]+)['\"]"""),
+    # A shell wrapper passes the destination on the command line it builds:
+    # ``bash train_stage2.sh`` runs ``python3 -u train_sft.py --output
+    # ckpts/run2 …``. With no destination to pair against, both of one run's
+    # stage scripts ran to the end of the run — 4.17h and 2.19h recorded
+    # against 1.87h and 1.19h of `train_runtime`.
+    re.compile(r"--out(?:put)?(?:[-_]dir)?[= ]\s*['\"]?([\w./$-]+)"),
 )
 
 

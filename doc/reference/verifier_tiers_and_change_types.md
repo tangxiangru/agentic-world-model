@@ -242,7 +242,7 @@ vllm==0.11.0   transformers==4.57.3   peft==0.18.1   trl==0.27.2
 diff_sampling_param["max_tokens"] = diff_sampling_param.pop("max_new_tokens")
 ```
 
-**也就是说 `generation_config.json` 里的 `max_new_tokens` 会盖过 `evaluate.py` 显式传的 `max_tokens`。** 这把「整份重写顺手删掉 `max_new_tokens`」从一条无害的记账差异变成了一个真实杠杆:那条 run 的同一份 grpo1 权重,无上限时 0/30,加了 4096 上限并设 temperature 0 之后 3/30,**是它全程唯一有效的提分动作**。
+**也就是说 `generation_config.json` 里的 `max_new_tokens` 会成为服务端的 `max_tokens` 默认值。** 「默认值」这三个字要紧:`get_diff_sampling_param()` 返回的是**请求没指定时才生效**的那一套。一名标注者给了反例——同一份带 `max_new_tokens: 16000` 的 config,`--max-tokens 4096` 那档 total time 2:48,16000 那档 18:21,**显式传的值赢了**。两边不矛盾:config 里的值管的是 `evaluate.py` 没传时的情形。 这把「整份重写顺手删掉 `max_new_tokens`」从一条无害的记账差异变成了一个真实杠杆:那条 run 的同一份 grpo1 权重,无上限时 0/30,加了 4096 上限并设 temperature 0 之后 3/30,**是它全程唯一有效的提分动作**。
 
 **第二条已经从「单点转述」升级。** 三名标注者报了表面矛盾的结果:两条 run 里 base 的 `do_sample` 在自训 checkpoint 中消失,第三条(gemma-3-4b-pt)里它连同 `top_k: 64` / `top_p: 0.95` 完整保留。两边的**原始 JSON 都在轨迹里**,不是记述。
 

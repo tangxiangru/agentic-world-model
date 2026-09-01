@@ -236,6 +236,13 @@ _CRASH = re.compile(
     r"Traceback \(most recent call last\)|torch\.OutOfMemoryError|CUDA out of memory", re.I
 )
 
+#: A watcher names the very words it is waiting for:
+#: ``until grep -qE "saved to runs/sft1/final|Traceback|OutOfMemoryError"``.
+#: Echoed back in a task-control message it carries both the artifact and the
+#: crash keywords, and one healthy 3.05-hour training was cut to 0.27 hours on
+#: it. The pattern a command is searching for is not a report that it happened.
+_WATCH_PATTERN = re.compile(r"\bgrep\b[^\n]*?(['\"])[^'\"]*?\1")
+
 
 def _parse_ts(ts: Any) -> datetime | None:
     # Reads both raw events (``None``) and the frame's nullable strings
@@ -510,7 +517,7 @@ def _crashed_at(
         ts = e.get("ts")
         if not ts or ts <= ts_start:
             continue
-        text = e.get("text") or ""
+        text = _WATCH_PATTERN.sub(" ", e.get("text") or "")
         if leaf in text and _CRASH.search(text):
             return ts
     return None
