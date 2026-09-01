@@ -41,7 +41,8 @@ def test_prompts_are_ptb_plus_only_the_declared_study_sections() -> None:
     for prompt in (c1, c2, c3):
         assert "## Pinned base checkpoint" not in prompt
         assert "## Session completion" in prompt
-        assert "Background tasks and waiters do not re-invoke you" in prompt
+        assert "Background tasks and waiters do not themselves re-invoke you" in prompt
+        assert "the launcher may resume this conversation" in prompt
         assert prompt.count("## Rules") == 1
 
 
@@ -54,6 +55,17 @@ def test_c1_scientist_invocation_matches_ptb_claude_baseline() -> None:
         "--dangerously-skip-permissions",
     ):
         assert fragment in solve
+
+
+@pytest.mark.parametrize("agent", ("claude_fulltraj_noawm", "claude_wm"))
+def test_scientist_launchers_use_ptb_reprompt_lifecycle(agent: str) -> None:
+    solve = (ROLLOUT / f"agents/{agent}/solve.sh").read_text()
+    assert 'MIN_REMAINING_MINUTES=30' in solve
+    assert 'TIMER_OUTPUT="$(bash timer.sh 2>/dev/null)"' in solve
+    assert '--continue' in solve
+    assert 'The launcher resumed this scientist conversation' in solve
+    assert 'scientist_rc=$?' in solve
+    subprocess.run(["bash", "-n", str(ROLLOUT / f"agents/{agent}/solve.sh")], check=True)
 
 
 @pytest.mark.parametrize("agent", ("claude_fulltraj_noawm", "claude_wm"))

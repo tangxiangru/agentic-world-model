@@ -38,7 +38,7 @@ PRIOR_RUNS_SECTION = """## Prior runs
 WMA_SECTION = (ROOT / "input" / "wma_section.md").read_text()
 
 SESSION_COMPLETION_SECTION = """## Session completion
-A final assistant response ends this scientist session. Background tasks and waiters do not re-invoke you after that response. Do not finish, say you are waiting, or rely on a future notification while training, saving, or evaluation is still active. Keep polling with tool calls within their timeout until the work completes. Before your final response, verify that `final_model/config.json` and model weight files exist.
+A final assistant response ends the current Claude invocation. Background tasks and waiters do not themselves re-invoke you; the launcher may resume this conversation while budget remains. Do not finish, say you are waiting, or rely on a future notification while training, saving, or evaluation is still active. Keep polling with tool calls within their timeout until the work completes. Before claiming completion, verify that `final_model/config.json` and model weight files exist.
 
 """
 

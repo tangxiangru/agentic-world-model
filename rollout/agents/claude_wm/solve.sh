@@ -13,6 +13,7 @@ AWM_ROOT=/home/ben/agent/awm-src
 
 export BASH_MAX_TIMEOUT_MS="36000000"
 export CLAUDE_CODE_EFFORT_LEVEL="high"
+MIN_REMAINING_MINUTES=30
 
 # Keep the same CLI setup used by PostTrainBench's Claude baseline.
 bash /home/ben/update_agent_cli.sh claude
@@ -77,6 +78,33 @@ else
         --dangerously-skip-permissions
     scientist_rc=$?
 fi
+
+# Match PostTrainBench's claude_reprompt lifecycle. Keep the peer and outer
+# container alive while the same scientist conversation is resumed; this is
+# intentionally independent of model artifacts and PTB evaluation semantics.
+while true; do
+    TIMER_OUTPUT="$(bash timer.sh 2>/dev/null)"
+    if printf '%s\n' "${TIMER_OUTPUT}" | grep -q "expired"; then
+        break
+    fi
+
+    REMAINING_HOURS="$(printf '%s\n' "${TIMER_OUTPUT}" | grep -oP '^\d+(?=:)')"
+    REMAINING_MINS="$(printf '%s\n' "${TIMER_OUTPUT}" | grep -oP '(?<=:)\d+')"
+    if [ -z "${REMAINING_HOURS}" ] || [ -z "${REMAINING_MINS}" ]; then
+        break
+    fi
+    TOTAL_REMAINING_MINS=$((REMAINING_HOURS * 60 + REMAINING_MINS))
+    if [ "${TOTAL_REMAINING_MINS}" -lt "${MIN_REMAINING_MINUTES}" ]; then
+        break
+    fi
+
+    CONTINUATION_PROMPT="You still have ${REMAINING_HOURS}h ${REMAINING_MINS}m remaining. The launcher resumed this scientist conversation because your previous final response ended its Claude invocation. Check any training or evaluation processes and artifacts, recover them if necessary, and continue improving the result."
+    printf '%s' "${CONTINUATION_PROMPT}" | claude --print --verbose --continue \
+        --model "$MODEL" \
+        --output-format stream-json --thinking-display summarized \
+        --dangerously-skip-permissions
+    scientist_rc=$?
+done
 
 if [ -n "${WMA_PID}" ]; then
     kill "${WMA_PID}" 2>/dev/null || true
