@@ -898,7 +898,7 @@ stage A, reading the same characters, is at 0.0029. Whatever stage A is doing, i
 is not transcribing a printed score. What this control does *not* rule out is
 that the within-family headline is separable from model-free surface features of
 the redacted string — length, section counts, how much of the log survived
-redaction. That is open, and the next section shows one such feature is not zero.
+redaction. The next section takes the largest such feature and ablates it.
 
 ### What the digest still carries: the run id
 
@@ -923,21 +923,37 @@ Newest-first recovers **69.0 %** of stage A's whole gain over random on full cel
 rules out this being an artefact of how ties are broken: the ordering carries
 signed information about the label.
 
-**This does not show that stage A is reading the job number.** Stage A is still
-well ahead of newest-first on both populations, the intervals are wide, and a
-model given a trajectory has many reasons to score a later run higher that have
-nothing to do with parsing the id. What it does show is that a feature requiring
-no model at all reproduces most of the headroom this section is claiming for one,
-which is enough to make "the model is reading the trajectory" unestablished rather
-than established.
+That a *free* feature reproduces most of the headroom this section claims for a
+$125 model is enough to make "stage A reads the trajectory" unestablished. So it
+was tested rather than argued: `--stage noid` replaces the job number with an
+order-free hash of itself and re-runs the whole pass — same prompt, same
+redaction, same 1,175 digests, differing by eight characters each. It was run on
+**all 28 cells**, because running it only where the job-id arm looks strong would
+select the sample on the statistic under test. It cost **$124.89**.
 
-The experiment that settles it is small and expensive: strip the identifying line
-from `RC.render`, re-run stage A, compare. It is **1,175 calls, ≈ $302**, and it
-has to be run on **all 28 cells** — running it on the cells where the job-id arm
-looks strongest would be selecting the sample on the statistic under test. Until
-that is done, the within-family and ambiguous-family results should be read as
-"something in the digest predicts the winner", not as "the model understood the
-trajectory".
+| population | random | newest three | stage A, id present | **stage A, id removed** |
+|---|---:|---:|---:|---:|
+| full cell | 0.1307 | 0.0461 | 0.0081 | **0.0077** |
+| within family | 0.0271 | 0.0102 | 0.0029 | **0.0029** |
+| within scaffold | 0.0768 | 0.0262 | 0.0069 | **0.0082** |
+
+**Stage A keeps 100 % / 100 % / 98 % of its gain over random with the id gone**
+(cluster bootstrap [100 %, 102 %], [100 %, 100 %], [95 %, 100 %]); the largest
+change on any population is 0.0012 on 4 non-tied cells, p = 0.63. The two passes
+are genuinely independent — **0 of 1,174** rationales are identical — and they
+agree at Spearman **0.994** on `quality` and **0.997** on `predicted_accuracy`,
+which doubles as the test–retest reliability of stage A and is the reason the
+ablation has any power at this n.
+
+So the job-id arm and stage A are two things that both correlate with the label,
+not one thing wearing two hats. Stage A does not need the id and does not use it.
+
+What this closes and what it does not: it closes "the model is transcribing an
+identifier", the way the redaction control closes "the model is transcribing a
+printed score". It does not close the deeper version — the crossed rollout below
+measures that a corpus accuracy is ~90 % the executing agent, so whatever stage A
+reads off a trajectory to predict that number may still be agent identity rather
+than recipe quality. Two controls down, that one open.
 
 ### What this settles and what it does not
 
@@ -1064,11 +1080,15 @@ a measured quantity rather than a caveat, and it explains why the agent-family
 lookup table is such a strong baseline — the table is reading the thing that
 actually varies.
 
-The second is a threat to the predictor's interpretation. Stage A is trained on,
-and evaluated against, corpus accuracies that are ~90 % agent. So "the trajectory
-reader predicts the score" is substantially "the trajectory reader identifies the
-agent", which is the same reading the job-id arm above suggests from a completely
-different direction. Two independent lines now point at it.
+The second is a threat to the predictor's interpretation, and it is the one
+control that is still open. Stage A is evaluated against corpus accuracies that
+are ~90 % agent, so "the trajectory reader predicts the score" is substantially
+"the trajectory reader identifies the agent". The two surface-transcription
+explanations are closed — not the printed score (redaction) and not the run id
+(the `noid` ablation) — but reading a trajectory and recognising *how this agent
+works* is not surface transcription and neither control touches it. Settling it
+needs the blocked half of the crossing below: the same recipe under different
+agents.
 
 Two limits on this result, both real. **This 6-set cannot rank rankers**: with six
 candidates and three picks, the oracle scores 0.0000, taking them in corpus order
@@ -1118,6 +1138,7 @@ python3 tools/traj_read_report.py                              # every cut in th
 
 python3 tools/choice_rank.py --stage a           # 1175 calls, ~$125, resumable
 python3 tools/choice_rank.py --stage b --topk 6  #  840 calls, ~$216, buys nothing, see above
+python3 tools/choice_rank.py --stage noid        # 1175 calls, ~$125, the run-id ablation
 python3 tools/choice_rank_report.py              # the regret tables, free
 ```
 

@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import collections
 import gzip
+import hashlib
 import itertools
 import json
 import os
@@ -447,11 +448,38 @@ def _text_worker(t):
         txt, _ = redact(txt)
         return run, txt
     path = paths.events_dir("posttrainbench") / f"{ex}__{run}.jsonl.gz"
-    txt = RC.render(run, RC.select(path, budget=DIGEST_BUDGET), meta,
+    label = deident(run) if kind == "noid" else run
+    txt = RC.render(label, RC.select(path, budget=DIGEST_BUDGET), meta,
                     include_agent=False)
-    if kind == "redact":
+    if kind in ("redact", "noid"):
         txt, _ = redact(txt)
     return run, txt
+
+
+def deident(run: str) -> str:
+    """Strip the job number out of a run id, keeping everything else.
+
+    `RC.render` puts `# run: {run}` at the top of the digest, and a PTB run id
+    ends in the job number, which is issued in time order. That is enough on its
+    own to rank: taking each set's three HIGHEST job numbers scores 0.0461 on
+    full cells against random's 0.1307, recovering 69 % of stage A's whole gain
+    over random, and taking the three lowest scores 0.3187, far worse than
+    random. The signal is signed, so it is not a tie-break artefact.
+
+    The number appears exactly once per digest -- 0 of 200 sampled digests
+    mention it anywhere in the body -- so replacing it here is a complete
+    ablation of the ordering, not a partial one. Other time-correlated surface
+    features survive it (ISO dates in 3 % of digests, `claude-*` version strings
+    in 8 %), and that is the limit of what this controls for.
+
+    The pseudonym is a hash rather than a blank so the header keeps its shape,
+    and it is derived from the job number alone so it is stable across re-runs
+    while carrying no order.
+    """
+    stem, sep, job = run.rpartition("_")
+    if not sep or not job.isdigit():
+        return run
+    return f"{stem}_{hashlib.blake2s(job.encode(), digest_size=4).hexdigest()}"
 
 
 #: fields the extraction record must lose before it is shown -- everything the

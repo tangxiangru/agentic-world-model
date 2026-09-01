@@ -115,8 +115,14 @@ def cells(rows):
 
 # --- stage A: score every run on its own ---------------------------------------
 
-def stage_a(rows, workers=48, budget=T.DIGEST_BUDGET):
-    path = OUT / "score_a.jsonl"
+def stage_a(rows, workers=48, budget=T.DIGEST_BUDGET, kind="redact",
+            name="score_a.jsonl"):
+    """`kind="noid"` is the run-id ablation -- see `T.deident`. Same prompt, same
+    digest, same redaction, with the job number replaced by an order-free hash.
+    It writes to its own cache so the shipped pass is never mixed with it, and it
+    must be run over ALL 28 cells: restricting it to the cells where the job-id
+    arm looks strongest would select the sample on the statistic under test."""
+    path = OUT / name
     done = {}
     if path.exists():
         for line in path.open():
@@ -130,7 +136,7 @@ def stage_a(rows, workers=48, budget=T.DIGEST_BUDGET):
     if not todo:
         return done
 
-    jobs = [("redact", r["experiment"], r["run"],
+    jobs = [(kind, r["experiment"], r["run"],
              {k: r.get(k) for k in T.RC.HEADER_KEYS}) for r in todo]
     with ProcessPoolExecutor(16) as ex:
         text = dict(ex.map(T._text_worker, jobs, chunksize=4))
@@ -386,7 +392,8 @@ def copeland(cell, shortlist, b_pairs, a_scores):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", default="", help="a, b, ab, or empty")
+    ap.add_argument("--stage", default="",
+                    help="a, b, ab, noid (the run-id ablation), or empty")
     ap.add_argument("--topk", type=int, default=6)
     ap.add_argument("--workers", type=int, default=48)
     ap.add_argument("--report", action="store_true")
@@ -398,6 +405,10 @@ def main() -> int:
     print(f"{len(rows)} runs, {len(cs)} cells, "
           f"sizes {min(len(v) for v in cs.values())}-"
           f"{max(len(v) for v in cs.values())}")
+
+    if args.stage == "noid":
+        stage_a(rows, args.workers, kind="noid", name="score_a_noid.jsonl")
+        return 0
 
     a = {}
     if "a" in args.stage:

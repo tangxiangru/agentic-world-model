@@ -600,6 +600,78 @@ def main() -> int:
         for k, v in d.items():
             print(f"    {k:>22} {np.mean(v):7.4f}")
 
+    # --- the run-id ablation --------------------------------------------------
+    #: `RC.render` writes `# run: {run}` at the top of the digest, and a PTB run
+    #: id ends in the job number, which is issued in TIME order. That is enough
+    #: to rank on its own, so "stage A reads the trajectory" is not established
+    #: until the id is taken away and the pass is re-run. `--stage noid` does
+    #: that -- same prompt, same redaction, job number replaced by an order-free
+    #: hash -- over all 28 cells, because restricting it to the cells where the
+    #: job-id arm looks strong would select the sample on the statistic at issue.
+    print("\n=== run-id ablation: the same pass with the job number removed ===")
+    an = {}
+    pn = CR.OUT / "score_a_noid.jsonl"
+    if pn.exists():
+        for line in pn.open():
+            try:
+                d = json.loads(line)
+            except Exception:  # noqa: BLE001
+                continue
+            an[d["run"]] = d
+    scored = sum(1 for r in rows
+                 if isinstance(an.get(r["run"], {}).get("quality"), (int, float)))
+    if scored < len(rows):
+        print(f"  NOT RUN ({scored}/{len(rows)} scored). "
+              f"`python3 tools/choice_rank.py --stage noid`, 1175 calls, ~$302.")
+    else:
+        from scipy.stats import binomtest
+
+        def jobid(r):
+            _, _, j = r["run"].rpartition("_")
+            return int(j) if j.isdigit() else 0
+
+        for popname, sets in pops.items():
+            cidx = {}
+            for i, (c, _) in enumerate(sets):
+                cidx.setdefault(c[:2], []).append(i)
+            clus = sorted(cidx)
+            d = collections.defaultdict(list)
+            for c, rs in sets:
+                d["random"].append(rnd_regret(rs))
+                d["newest three (job id)"].append(
+                    regret(sorted(rs, key=lambda r: -jobid(r))))
+                d["stage A, id present"].append(regret(_order(rs, sc_stage_a(rs, a))))
+                d["stage A, id removed"].append(regret(_order(rs, sc_stage_a(rs, an))))
+            print(f"  {popname} ({len(sets)} sets in {len(clus)} cells)")
+            for k in ("random", "newest three (job id)",
+                      "stage A, id present", "stage A, id removed"):
+                print(f"    {k:>22} {np.mean(d[k]):7.4f}")
+            #: the number that decides it: how much of stage A's margin over
+            #: random survives losing the id, clustered on the cell.
+            def cm(v):
+                v = np.asarray(v)
+                return np.array([v[cidx[c]].mean() for c in clus])
+            R_ = cm(d["random"])
+            P_ = cm(d["stage A, id present"])
+            N_ = cm(d["stage A, id removed"])
+            gain_p, gain_n = (R_ - P_).mean(), (R_ - N_).mean()
+            keep = gain_n / gain_p if abs(gain_p) > 1e-12 else float("nan")
+            bs = []
+            nclu = len(clus)
+            for _ in range(4000):
+                ix = rng.integers(0, nclu, nclu)
+                g = (R_[ix] - P_[ix]).mean()
+                if abs(g) > 1e-12:
+                    bs.append((R_[ix] - N_[ix]).mean() / g)
+            lo, hi = np.quantile(bs, [0.025, 0.975]) if bs else (float("nan"),) * 2
+            dd = N_ - P_
+            w = int((dd > 1e-9).sum())
+            ls = int((dd < -1e-9).sum())
+            pv = binomtest(w, w + ls).pvalue if w + ls else 1.0
+            print(f"    keeps {keep:.0%} of stage A's gain over random "
+                  f"[95% CI {lo:.0%}, {hi:.0%}]; removing the id costs "
+                  f"{N_.mean() - P_.mean():+.4f}, {ls}-{w} cells, p={pv:.3g}")
+
     # --- per cell, so a mean is never the only thing on offer -----------------
     print("\n=== every cell, full-cell population ===")
     print(f'{"benchmark":>22} {"base model":>26} {"n":>4} {"best":>6} '
