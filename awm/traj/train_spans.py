@@ -80,11 +80,18 @@ COLUMNS: tuple[str, ...] = tuple(DTYPES)
 #: what separates a launch from the many commands that merely name one —
 #: ``sed -i 's/…/' train_grpo.py``, ``ps aux | grep -c train_sft``,
 #: ``tail logs/sft1.log`` — none of which put the script after ``python``.
+#: The basename must *begin* with ``train``: ``prepare_training_data.py`` merely
+#: contains the word and builds a corpus on CPU.
 _LAUNCH = re.compile(
-    r"\bpython3?\s+(?:-[\w-]+\s+)*[\w./-]*train[\w./-]*\.py"
+    r"\bpython3?\s+(?:-[\w-]+\s+)*(?:[\w./-]*/)?train[\w-]*\.py"
     r"|\btorchrun\b"
     r"|\baccelerate\s+launch\b"
 )
+
+#: ``pgrep -f "python train_sft.py --model x"`` and ``ps aux | grep`` quote a
+#: whole command line to *watch* it. The quoted text satisfies every launch
+#: pattern, so process inspection has to be excluded before matching.
+_INSPECTS_PROCESS = re.compile(r"\b(?:pgrep|pkill|ps)\b|\bgrep\b[^|;&]*python")
 
 #: A command that *writes* a script naming a trainer or an evaluator is not
 #: running one. Agents build wrappers with ``cat > run_eval.sh <<'EOF' … EOF``,
@@ -98,7 +105,7 @@ def strip_heredocs(command: str) -> str:
     """The command without any here-document payload."""
     return _HEREDOC_BODY.sub(" ", command)
 
-_OUT_DIR = re.compile(r"--out(?:put[-_]dir)?[= ]\s*['\"]?([^\s'\"]+)")
+_OUT_DIR = re.compile(r"--out(?:put)?(?:[-_]dir)?[= ]\s*['\"]?([^\s'\"]+)")
 
 #: ``nohup`` or a bare trailing ``&``. ``2>&1`` and ``&&`` must not match, hence
 #: the exclusion of ``>`` and ``&`` immediately before the ampersand.
@@ -111,7 +118,10 @@ _BACKGROUND = re.compile(r"\bnohup\b|[^&>]&\s*(?:$|\n|;|echo\b)")
 #: does mark intent is naming the artifact as a throwaway, or asking for a slice
 #: of the data too small to train on.
 _SMOKE_SAMPLES = re.compile(r"--max[-_]samples[= ]\s*(\d+)")
-_SMOKE_DIR = re.compile(r"(?:^|/)(?:smoke|sanity|bench|debug|dry|tiny|test)\w*/?$", re.I)
+#: The marker may sit anywhere in the basename: one run named its throwaways
+#: ``work/sft_smoke`` and ``sft_smoke2``, and anchoring the pattern to the start
+#: scored every one of them as a real training.
+_SMOKE_DIR = re.compile(r"(?:^|/)[\w-]*(?:smoke|sanity|debug|dryrun|tiny)[\w-]*/?$", re.I)
 
 #: Rows this small are a pipeline check, not a recipe. It bounds the *requested
 #: workload*, never the observed duration — classifying by how long a span turned
@@ -172,8 +182,15 @@ def _command(event: dict[str, Any]) -> str:
     return args.get("command") or ""
 
 
+def _launch_segments(command: str) -> list[str]:
+    """Shell segments, so a watcher in one does not vouch for a launch in another."""
+    return [seg for seg in re.split(r"&&|\|\||[;&|]|\n", command) if seg.strip()]
+
+
 def _is_launch(command: str, known: dict[str, set[str]] | None = None) -> bool:
     outside = strip_heredocs(command)
+    segments = [s for s in _launch_segments(outside) if not _INSPECTS_PROCESS.search(s)]
+    outside = " ; ".join(segments)
     if _LAUNCH.search(outside):
         return True
     # Naming is a convention agents never agreed to: one run put its whole GRPO

@@ -143,6 +143,13 @@ def brief(run_id: str, tables: dict[str, pd.DataFrame], meta: dict[str, Any]) ->
         limits.append(
             f"- **{n_unclear} 次训练启动后再没被提及**,结束时刻取的是 run 结尾,是上界。"
         )
+    n_open = int(spans["end_reason"].isin(["consumed", "last_seen"]).sum()) if len(spans) else 0
+    if n_open:
+        limits.append(
+            f"- **{n_open} 次训练的结束时刻靠「产物被消费」推断,崩溃的训练在这里两个方向都可能错**:"
+            "产物被中途读取会让时长偏短,崩溃后 GPU 空转会让时长偏长。请在流里找 traceback / "
+            "`pkill` / 显存归零,给出真实结局。"
+        )
     out.append("".join(limits) if limits else "*(无)*\n")
     return "".join(out)
 

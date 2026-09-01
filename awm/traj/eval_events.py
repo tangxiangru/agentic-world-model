@@ -114,6 +114,12 @@ def strip_heredocs(command: str) -> str:
     """The command without any here-document payload."""
     return _HEREDOC_BODY.sub(" ", command)
 
+#: One shell string often chains a training and an evaluation. Scanning the whole
+#: string for ``--limit`` took a trainer's ``--limit 25000`` as the evaluation's
+#: sample size and scored a 60-question run as a full test set, so flags are read
+#: from the launching segment alone.
+_SEGMENT = re.compile(r"&&|\|\||[;&|]|\n")
+
 _MODEL_PATH = re.compile(r"--model[-_]path[= ]\s*['\"]?([^\s'\"]+)")
 _LIMIT = re.compile(r"--limit[= ]\s*(-?\d+)")
 _MAXCONN = re.compile(r"--max[-_]connections[= ]\s*(\d+)")
@@ -178,6 +184,10 @@ def _command(event: dict[str, Any]) -> str:
 _HELP_ONLY = re.compile(r"evaluate\.py\s+(?:[\w./-]+\s+)*--help\b")
 
 
+def segments(command: str) -> list[str]:
+    return [s for s in _SEGMENT.split(command) if s.strip()]
+
+
 def _form(command: str, known: dict[str, set[str]] | None = None) -> str | None:
     outside = strip_heredocs(command)
     if _HELP_ONLY.search(outside):
@@ -207,16 +217,39 @@ def _str(pattern: re.Pattern[str], command: str) -> str | None:
     return m.group(1) if m else None
 
 
-def tier_for(limit: int | None, benchmark: str | None) -> int | None:
-    """Third tier for a subsample, fourth for the whole test set."""
+def tier_for(limit: int | None, benchmark: str | None, form: str | None = None) -> int | None:
+    """Third tier for a subsample, fourth for the whole test set.
+
+    ``evaluate.py`` with no ``--limit`` scores the whole set: that is its
+    default, and it is how one agent ran all seventeen of its full evaluations.
+    Reading the absent flag as "unknown" left every one of them untiered.
+    """
     if limit is None:
-        return None
+        return 4 if form == "evaluate.py" else None
     if limit < 0:
         return 4
     full = _FULL_SIZE.get(benchmark or "")
     if full is not None and limit >= full:
         return 4
     return 3
+
+
+def _own_slice(text: str | None, command: str) -> str | None:
+    """The part of a result that belongs to this launch, when it can be told.
+
+    Agents chain ``summarize_eval.py <previous log> && evaluate.py <next>``; the
+    result then opens with the previous run's score. When the evaluated model's
+    name appears in the text, everything before its first mention belongs to the
+    neighbour and is dropped.
+    """
+    if not text:
+        return text
+    model = _MODEL_PATH.search(command)
+    if not model:
+        return text
+    leaf = model.group(1).rstrip("/").split("/")[-1]
+    at = text.find(leaf)
+    return text[at:] if at > 0 else text
 
 
 def _accuracy_in(text: str | None) -> float | None:
@@ -266,14 +299,45 @@ def events_for_run(
 
     rows: list[dict[str, Any]] = []
     for pos, event in enumerate(uses):
-        command = _command(event)
-        form = _form(command, known)
-        if form is None:
-            continue
+        whole = _command(event)
+        # A command may launch several evaluations (``run_eval.sh a … ;
+        # run_eval.sh b …``); each is its own verification event, and reporting
+        # one dropped the highest subsample reading of an entire run.
+        launching = [
+            seg for seg in segments(strip_heredocs(whole)) if _form(seg, known) is not None
+        ]
+        for command in (launching or []):
+            form = _form(command, known)
+            rows.extend(_one(
+                run_id, event, pos, command, form, uses, ordered, results, benchmark, known
+            ))
+    return rows
 
+
+def _one(
+    run_id: str,
+    event: dict[str, Any],
+    pos: int,
+    command: str,
+    form: str,
+    uses: list[dict[str, Any]],
+    ordered: list[dict[str, Any]],
+    results: dict[str, dict[str, Any]],
+    benchmark: str | None,
+    known: dict[str, set[str]],
+) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
         own = results.get(event.get("tool_use_id") or "")
         own_text = (own or {}).get("text") or ""
         limit = _int(_LIMIT, command)
+        if limit is None and form in ("run_eval.sh", "own_wrapper"):
+            # The wrapper takes its sample size positionally. ``-1`` is the full
+            # test set and is the only form the fourth tier ever appears in for
+            # these runs; leaving it unparsed left every full evaluation untiered.
+            m = _LAUNCH_SH.search(command) or re.search(r"\b(?:bash|sh)\s+\S+", command)
+            tail = command[m.end():] if m else ""
+            nums = [int(x) for x in re.findall(r"(?<![\w.-])(-?\d{1,6})(?![\w.-])", tail)]
+            limit = next((n for n in nums if n == -1 or 1 <= n <= 100000), None)
         json_out = _str(_JSON_OUT, command)
         background = bool(_BACKGROUND.search(command)) or bool(_handles(own_text))
 
@@ -300,7 +364,9 @@ def events_for_run(
         handles = _handles(own_text)
 
         got, s_i, s_ts, via, acc = False, None, None, None, None
-        direct = _accuracy_in(own_text)
+        # A concatenated block can carry the previous evaluation's summary before
+        # this one's. Reading the first number attributed a neighbour's score.
+        direct = _accuracy_in(_own_slice(own_text, command))
         if direct is not None and not background:
             got, s_i, s_ts, via, acc = True, own.get("i"), own.get("ts"), "returned", direct
         else:
@@ -338,7 +404,7 @@ def events_for_run(
                 "max_connections": _int(_MAXCONN, command),
                 "json_output_file": json_out,
                 "mode": "background" if background else "foreground",
-                "tier": tier_for(limit, benchmark),
+                "tier": tier_for(limit, benchmark, form),
                 "got_signal": got,
                 "signal_i": s_i,
                 "signal_ts": s_ts,
@@ -348,7 +414,7 @@ def events_for_run(
                 "command": command[:400],
             }
         )
-    return rows
+        return rows
 
 
 def frame(rows: list[dict[str, Any]]) -> pd.DataFrame:

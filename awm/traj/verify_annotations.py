@@ -70,7 +70,14 @@ def event_text(event: dict[str, Any]) -> str:
 
 
 def stream_index(run_id: str, events_root: Path | None = None) -> dict[int, str]:
-    """``i`` -> searchable text, for one committed run."""
+    """``i`` -> searchable text, for one committed run.
+
+    ``i`` numbers each ``(run_id, agent_id)`` stream separately, so one run can
+    hold several events at the same index — 180 of them in the champion run, one
+    index carrying 33. Keeping only the last would reject valid pointers whose
+    event happened to be overwritten by a sub-agent's placeholder, so every
+    event at an index is concatenated and the fragment may match any of them.
+    """
     root = Path(events_root) if events_root is not None else paths.events_dir("posttrainbench")
     path = root / f"{run_id}.jsonl.gz"
     if not path.exists():
@@ -84,7 +91,9 @@ def stream_index(run_id: str, events_root: Path | None = None) -> dict[int, str]
             e = json.loads(line)
             i = e.get("i")
             if i is not None:
-                out[int(i)] = event_text(e)
+                text = event_text(e)
+                key = int(i)
+                out[key] = f"{out[key]} {text}" if key in out else text
     return out
 
 

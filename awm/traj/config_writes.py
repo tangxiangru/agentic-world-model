@@ -87,6 +87,23 @@ def _paths_in(text: str) -> list[str]:
     return seen
 
 
+#: The channel that actually writes most generation configs. Agents package a
+#: checkpoint for submission with a ``finalize``/``package``/``prep`` script that
+#: writes the file as a side effect, so the path never appears on the command
+#: line. Missing it left the decisive C1 change of two runs — setting
+#: ``temperature: 0.0`` — absent from the table entirely.
+_FINALIZER = re.compile(
+    r"\bpython3?\s+(?:-[\w-]+\s+)*(?:[\w./-]*/)?"
+    r"(?:finalize|finalise|package|prep|prepare|export|publish)[\w-]*\.py\b"
+)
+
+
+def finalizer_call(command: str) -> str | None:
+    """The finalizer invocation in this command, if any."""
+    m = _FINALIZER.search(command)
+    return m.group(0) if m else None
+
+
 def _classify_shell(command: str) -> tuple[str, str]:
     """``(access, form)`` for a shell command that names a generation config."""
     if _HEREDOC.search(command):
@@ -119,7 +136,11 @@ def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, 
         tool = e.get("tool") or ""
         args = e.get("args") or {}
         blob = json.dumps(args, ensure_ascii=False)
-        if "generation_config.json" not in blob:
+        names_file = "generation_config.json" in blob
+        runs_finalizer = tool in ("Bash", "command_execution") and bool(
+            finalizer_call(unwrap(args.get("command") or ""))
+        )
+        if not names_file and not runs_finalizer:
             continue
 
         base = {"run_id": run_id, "i": e.get("i"), "ts": e.get("ts"), "tool": tool}
@@ -159,7 +180,13 @@ def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, 
             continue
 
         command = unwrap(args.get("command") or "")
-        if not command or "generation_config.json" not in command:
+        if not command:
+            continue
+        if "generation_config.json" not in command:
+            if finalizer_call(command):
+                rows.append({**base, "path": None, "access": "write",
+                             "form": "finalizer", "content_available": False,
+                             "content": None, "command": command[:400]})
             continue
         access, form = _classify_shell(command)
         heredoc = _HEREDOC.search(command)
@@ -211,6 +238,7 @@ def load(path: Path) -> pd.DataFrame:
 
 __all__ = [
     "COLUMNS",
+    "finalizer_call",
     "DTYPES",
     "build",
     "empty",
