@@ -1,8 +1,11 @@
 # PTB Batch 1 GPU utilization and phase analysis
 
-**Status:** interim live-run snapshot  
-**Snapshot window:** approximately 2026-09-01 04:55–07:32 UTC  
-**Batch:** `gsm8k-aime2025-opus5-4x4x2-batch1-v3`  
+**Status:** interim live-run snapshot
+
+**Snapshot window:** approximately 2026-09-01 04:55–07:32 UTC
+
+**Batch:** `gsm8k-aime2025-opus5-4x4x2-batch1-v3`
+
 **Scope:** 32 effective formal cells, about 2.4–2.5 elapsed hours per cell
 
 This document records empirical observations from our self-run PostTrainBench batch. It is not an
