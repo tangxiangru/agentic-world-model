@@ -295,7 +295,7 @@ vllm==0.11.0   transformers==4.57.3   peft==0.18.1   trl==0.27.2
 
 **做什么**:修改提交模型目录里的 `generation_config.json`——设 `temperature: 0.0`、把 `eos_token_id` 设成 `[<|im_end|>, <|endoftext|>]` 两个都接受、加 `repetition_penalty` / `min_p`。
 
-**为什么必要**:`evaluate.py` 调 `inspect_eval()` 时只传 `max_tokens` 和 `max_connections`,**不传 temperature**——这一条在本仓库可验证。接下来两步是**外部佐证**(§2.5:vllm / transformers 源码不在树内):vLLM 回退去读模型目录的 `generation_config.json` 且**只认 `temperature`、忽略 `do_sample`**;HuggingFace 的 `save_pretrained` 会**丢弃 base 模型继承的 `do_sample` 字段**,使问题**每保存一个新 checkpoint 就复发一次**。行为证据(C1 那两行对照)与这条机制一致,但机制本身尚未在 pin 住的容器版本里复现过。
+**为什么必要**:`evaluate.py` 调 `inspect_eval()` 时只传 `max_tokens` 和 `max_connections`,**不传 temperature**——这一条在本仓库可验证。接下来两步是**外部佐证**(§2.5:vllm / transformers 源码不在树内):vLLM 回退去读模型目录的 `generation_config.json` 且**只认 `temperature`、忽略 `do_sample`**;HuggingFace 的 `save_pretrained` 走差分序列化,**只写与库默认不同的值**——`do_sample` 的库默认是 `False`,所以 base 写着 `do_sample: false` 的模型,存出的 checkpoint 里这个字段就**消失**,问题每保存一个新 checkpoint 复发一次;而 base 写着 `do_sample: true` 的(gemma-3-4b-pt 一族)连同 `top_k`/`top_p` **原样保留**,agent 反而要主动 `pop` 才能拿到贪婪解码。**判断某个 checkpoint 会不会丢字段,看的是那个值是否等于库默认**(机制与四条 run 的原始 config 见 §2.5)。行为证据(C1 那两行对照)与这条机制一致,但机制本身尚未在 pin 住的容器版本里复现过。
 
 **可用验证器**:第一档(读 vLLM 源码确认哪些字段被读)→ 第三档(复制 checkpoint、只改 JSON、重跑评测)。**不需要训练。**
 
