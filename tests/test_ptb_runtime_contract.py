@@ -74,6 +74,15 @@ def test_final_eval_caches_live_on_job_local_storage():
     assert '--env "TRITON_CACHE_DIR=${HOME}/.cache/triton"' in run_evaluation
 
 
+def test_host_runtime_uses_python3_and_rejects_an_empty_prompt():
+    script = RUN_TASK.read_text(encoding="utf-8")
+
+    assert "if ! PROMPT=$(python3 src/eval/general/get_prompt.py" in script
+    assert 'if [ -z "${PROMPT//[[:space:]]/}" ]; then' in script
+    assert 'python3 src/trace_parsing/parse_trace.py --agent "${AGENT}"' in script
+    assert 'python3 containers/delete_hf_models.py "${JOB_DIR}/task"' in script
+
+
 def test_recovery_eval_is_allocation_scoped_and_uses_unique_scratch():
     script = RECOVERY_EVAL.read_text(encoding="utf-8")
 
