@@ -222,7 +222,7 @@ class TestObjectAttributeWrite:
 
 class TestTransitiveEvaluator:
     def test_a_wrapper_around_a_wrapper_is_an_evaluator(self) -> None:
-        """``post_run3.py`` runs ``run_eval.py`` which runs ``evaluate.py``.
+        """``post_run3.sh`` runs ``run_eval.py`` which runs ``evaluate.py``.
 
         Role propagation existed for trainers and not for evaluators, so one
         run's fourth-tier count read 40% low.
@@ -233,10 +233,11 @@ class TestTransitiveEvaluator:
                 "file_path": "run_eval.py",
                 "content": "subprocess.run(['python', 'evaluate.py', '--model-path', sys.argv[1]])\n"}},
             {"run_id": "r", "i": 2, "type": "tool_use", "tool": "Write", "args": {
-                "file_path": "post_run3.py",
-                "content": "import subprocess\nsubprocess.run(['python', 'run_eval.py', 'ckpt/v3'])\n"}},
+                "file_path": "post_run3.sh",
+                "content": "#!/bin/bash\nset -x\n"
+                           "python run_eval.py --src ckpt_run3/checkpoint-1007 --dst run3e2\n"}},
         ]
         known = scripts.learn(events)
-        assert "evaluator" in known["post_run3.py"]
-        assert scripts.invoked_without_training("python post_run3.py", known, "evaluator")
+        assert "evaluator" in known["post_run3.sh"]
+        assert scripts.invoked_without_training("bash post_run3.sh", known, "evaluator")
 
