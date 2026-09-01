@@ -1,7 +1,7 @@
 #!/bin/bash
 # Create a private PostTrainBench checkout for the WMA study. The checkout is
-# upstream PTB plus two agents, three prompt templates, one read-only-bind hook,
-# one explicit environment allowlist, and one prompt-file bridge. No
+# upstream PTB plus two agents, three prompt templates, two mechanical bind
+# hooks, one explicit environment allowlist, and one prompt-file bridge. No
 # study-specific release or credential gate is installed.
 set -euo pipefail
 
@@ -57,6 +57,7 @@ git -C "${AWM_SOURCE_DIR}" archive --format=tar "${AWM_REPO_COMMIT}" awm input w
 printf '%s\n' "${AWM_REPO_COMMIT}" > "${PAYLOAD}/AWM_COMMIT"
 
 python3 "${HERE}/patches/apply_extra_binds.py" "${DST}/src/run_task.sh"
+python3 "${HERE}/patches/apply_eval_results_bind.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_env_passthrough.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_agent_payload.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_prompt_file.py" "${DST}/src/run_task.sh"

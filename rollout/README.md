@@ -24,7 +24,7 @@ peer WMA process. There is no study-specific credential scanner, stream
 redactor, result-tree sanitizer, model/cache attester, final-model validator,
 or release gate in the execution path.
 
-The private PTB checkout has four small mechanical bridges for the two study
+The private PTB checkout has five small mechanical bridges for the two study
 agents:
 
 - `POST_TRAIN_BENCH_EXTRA_BINDS` mounts the selected prior corpus or card
@@ -36,6 +36,9 @@ agents:
   payload.
 - The generated prompt is copied to `task/instruction.md` for the two study
   agents because long multiline prompt values can be truncated by Apptainer.
+- PTB's results directory is mounted at the identical absolute path in its
+  evaluation container, so the evaluator can open `final_model` on relocatable
+  unprivileged Apptainer installations.
 
 None of these bridges interprets credentials or model artifacts. PTB's own trace
 parsing and any sanitization it normally performs remain unchanged.

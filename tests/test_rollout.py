@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from rollout import build_prompts, study_matrix
-from rollout.patches import apply_extra_binds, apply_prompt_file
+from rollout.patches import apply_eval_results_bind, apply_extra_binds, apply_prompt_file
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -100,6 +100,18 @@ def test_extra_bind_patch_remains_idempotent() -> None:
     assert apply_extra_binds.apply(patched) == patched
 
 
+def test_eval_results_bind_patch_is_mechanical_and_idempotent() -> None:
+    original = (
+        "x\n"
+        "    with_huggingface_overlay apptainer exec \\\n"
+        '        --bind "${REPO_ROOT}:${REPO_ROOT}" \\\n'
+        "y\n"
+    )
+    patched = apply_eval_results_bind.apply(original)
+    assert '--bind "${EVAL_DIR}:${EVAL_DIR}"' in patched
+    assert apply_eval_results_bind.apply(patched) == patched
+
+
 def _fake_ptb(tmp_path: Path) -> tuple[Path, Path, Path]:
     ptb = tmp_path / "ptb"
     (ptb / "src/commit_utils").mkdir(parents=True)
@@ -184,6 +196,7 @@ def test_pack_calls_ptb_directly_with_one_gpu(
 def test_setup_installs_only_mechanical_ptb_extensions() -> None:
     setup = (ROLLOUT / "setup.sh").read_text()
     assert "apply_extra_binds.py" in setup
+    assert "apply_eval_results_bind.py" in setup
     assert "apply_prompt_file.py" in setup
     assert 'archive --format=tar "${AWM_REPO_COMMIT}" awm input wma' in setup
     assert "--exclude=awm/credential_guard.py" in setup
