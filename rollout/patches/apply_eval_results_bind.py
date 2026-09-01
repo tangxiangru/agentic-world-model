@@ -4,7 +4,9 @@
 PostTrainBench passes ``$EVAL_DIR/final_model`` to the evaluator as an absolute
 host path.  Relocatable unprivileged Apptainer does not automatically mount the
 sibling results tree, so the path is otherwise absent inside the container.
-Bind the directory at the identical path; this changes no PTB evaluation logic.
+Bind the stable results root at the identical path; this changes no PTB
+evaluation logic and avoids treating the comma in a ``train,test`` cell path as
+Apptainer's multi-bind separator.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from pathlib import Path
 MARK = "# --- awm: evaluation result bind (rollout/patches/apply_eval_results_bind.py) ---"
 EXEC_ANCHOR = "    with_huggingface_overlay apptainer exec \\\n"
 REPO_BIND = '        --bind "${REPO_ROOT}:${REPO_ROOT}" \\\n'
-EVAL_BIND = '        --bind "${EVAL_DIR}:${EVAL_DIR}" \\\n'
+EVAL_BIND = '        --bind "${POST_TRAIN_BENCH_RESULTS_DIR}:${POST_TRAIN_BENCH_RESULTS_DIR}" \\\n'
 
 
 def apply(text: str) -> str:

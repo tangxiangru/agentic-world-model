@@ -36,7 +36,7 @@ agents:
   payload.
 - The generated prompt is copied to `task/instruction.md` for the two study
   agents because long multiline prompt values can be truncated by Apptainer.
-- PTB's results directory is mounted at the identical absolute path in its
+- PTB's stable results root is mounted at the identical absolute path in its
   evaluation container, so the evaluator can open `final_model` on relocatable
   unprivileged Apptainer installations.
 

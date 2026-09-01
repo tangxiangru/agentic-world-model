@@ -108,7 +108,10 @@ def test_eval_results_bind_patch_is_mechanical_and_idempotent() -> None:
         "y\n"
     )
     patched = apply_eval_results_bind.apply(original)
-    assert '--bind "${EVAL_DIR}:${EVAL_DIR}"' in patched
+    assert (
+        '--bind "${POST_TRAIN_BENCH_RESULTS_DIR}:${POST_TRAIN_BENCH_RESULTS_DIR}"'
+        in patched
+    )
     assert apply_eval_results_bind.apply(patched) == patched
 
 
