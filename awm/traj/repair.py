@@ -47,6 +47,11 @@ def commands_by_line(path: Path) -> dict[int, str]:
             continue
         if not isinstance(payload, dict):
             continue
+        # Only the line that *started* a command. ``item.completed`` repeats
+        # the command, and counting both doubled the denominator — every codex
+        # run then read as having lost exactly half its commands.
+        if payload.get("type") != "item.started":
+            continue
         item = payload.get("item")
         if not isinstance(item, dict):
             continue
