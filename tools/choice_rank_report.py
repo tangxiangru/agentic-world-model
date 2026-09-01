@@ -340,7 +340,44 @@ def main() -> int:
           if isinstance(x, (int, float))]
     err = np.mean([abs(x - y) for x, y in ok])
     print(f"  its absolute accuracy guess is off by {err:.3f} on average "
-          f"(n={len(ok)}) -- ranking is the usable part, not calibration\n")
+          f"(n={len(ok)}) -- ranking is the usable part, not calibration")
+
+    #: Both stages judged on the SAME pairs, split by how far apart the two runs
+    #: really scored. This is the diagnostic that says where the ceiling is, and
+    #: it is the reason `sc_stage_ab` lets Copeland override stage A rather than
+    #: blending them: stage B is the better judge, but only outside the narrow
+    #: band, and the narrow band is exactly the top of a shortlist. Comparing
+    #: the two on DIFFERENT pair sets says the opposite and is how this was
+    #: first read backwards -- stage A looked like the stronger judge because it
+    #: was being graded on the easier 772.
+    acc = {r["run"]: r["accuracy"] for r in rows}
+    sa_all = {}
+    for c, rs in cells_.items():
+        s = CR.rank_score(rs, a)
+        sa_all.update({(f"{c[0]}|{c[1]}", r["run"]): s[i]
+                       for i, r in enumerate(rs)})
+    band = collections.defaultdict(lambda: [0, 0, 0])
+    for (c, x, y), w in b.items():
+        if w not in ("A", "B") or abs(acc[x] - acc[y]) < 1e-12:
+            continue
+        g = abs(acc[x] - acc[y])
+        k = ("under 0.02" if g < 0.02 else "0.02-0.05" if g < 0.05
+             else "0.05-0.15" if g < 0.15 else "over 0.15")
+        pb = x if w == "A" else y
+        pa_ = x if sa_all[(c, x)] > sa_all[(c, y)] else y
+        e = band[k]
+        e[2] += 1
+        e[0] += acc[pb] > acc[y if pb == x else x]
+        e[1] += acc[pa_] > acc[y if pa_ == x else x]
+    tt = [sum(band[k][i] for k in band) for i in range(3)]
+    print(f"  pairwise accuracy on the {tt[2]} non-tied comparisons stage B was "
+          f"asked, by how far apart the runs really scored:")
+    print(f"    {'true gap':>12} {'n':>6} {'stage B':>9} {'stage A':>9}")
+    for k in ("under 0.02", "0.02-0.05", "0.05-0.15", "over 0.15"):
+        o, p, n_ = band[k]
+        print(f"    {k:>12} {n_:6d} {100*o/n_:8.1f}% {100*p/n_:8.1f}%")
+    print(f"    {'all':>12} {tt[2]:6d} {100*tt[0]/tt[2]:8.1f}% "
+          f"{100*tt[1]/tt[2]:8.1f}%\n")
 
     # --- the three populations ------------------------------------------------
     pops = {
@@ -355,8 +392,14 @@ def main() -> int:
         pops[popname] = [(c, sorted(v, key=lambda r: r["run"]))
                          for c, v in sorted(g.items()) if len(v) >= 4]
 
+    #: Two shortlist sizes, both reported, because K is a BUDGET and its floor
+    #: is knowable before the comparator runs: the oracle over stage A's top K
+    #: is 0.0030 at 6 and 0.0018 at 10 on full cells, 0.0017 and 0.0001 within
+    #: scaffold. Picking K by which one wins the board would be fitting a
+    #: hyperparameter on 28 cells; printing both, next to a cost that grows as
+    #: K^2 (30 ordered comparisons per set at 6, 90 at 10), is the honest form.
     ARMS = ("random", "agent table", "21 features", "self-report",
-            "stage A", "stage A+B")
+            "stage A", "stage A+B", "stage A+B, K=10")
     keep_full = {}
     for popname, sets in pops.items():
         spread = [max(r["accuracy"] for r in rs) - min(r["accuracy"] for r in rs)
@@ -378,7 +421,8 @@ def main() -> int:
             fam_mean = fam_table(rows, zacc, cell)
             model, vec = fit_features(rows, cells_, cell)
 
-            short = CR.rank_key(rs, a)[:6]
+            ranked = CR.rank_key(rs, a)
+            short, wide = ranked[:6], ranked[:10]
             key = f"{cell[0]}|{cell[1]}"
             got = sum(1 for x, y in itertools.permutations(short, 2)
                       if (key, x["run"], y["run"]) in b)
@@ -395,6 +439,7 @@ def main() -> int:
                 "self-report": sc_selfreport(rs, sr),
                 "stage A": sc_stage_a(rs, a),
                 "stage A+B": sc_stage_ab(cell, rs, short, b, a),
+                "stage A+B, K=10": sc_stage_ab(cell, rs, wide, b, a),
             }
             scores.append(sc)
             # random is an expectation, not a draw, so it gets its own two exact
@@ -456,6 +501,25 @@ def main() -> int:
               f"runs ({sum(bnil) / sum(bshort):.1%}) have NO cached comparison")
         print("  at all, so the stage A+B row is that far from being a "
               "measurement of stage B.")
+
+        #: What the two stages are each still worth, which is not the same
+        #: question as which arm wins. `oracle over the top K` is the regret a
+        #: PERFECT comparator would reach on stage A's top K, so the gap from
+        #: stage A down to it is what any reranker can still buy at that budget
+        #: (a PRECISION headroom), and the gap from one K to the next is what
+        #: only a wider shortlist can buy (a RECALL headroom). They take
+        #: different fixes and the board otherwise shows neither.
+        orc = {k: [] for k in (3, 6, 10, 20)}
+        for _, rs in sets:
+            o = CR.rank_key(rs, a)
+            best = max(r["accuracy"] for r in rs)
+            for k in orc:
+                orc[k].append(best - max(r["accuracy"] for r in o[:k]))
+        print("  oracle over stage A's top K, i.e. the floor a perfect "
+              "comparator hits at that budget:")
+        print("    " + "   ".join(
+            f"K={k}: {np.mean(v):.4f} ({np.mean(np.array(v) < 1e-12):.0%} solved)"
+            for k, v in orc.items()))
 
         # paired, CLUSTERED on the parent cell. 28 cells is the sample size on
         # every population here, not the set count: two sub-sets of one cell
