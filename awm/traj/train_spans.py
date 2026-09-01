@@ -233,12 +233,27 @@ def _launch_segments(command: str) -> list[str]:
 #: an optimiser step. One run had four of its eight recorded trainings be these.
 #: ``--help`` prints the interface and exits. Reading a trainer's flags is a
 #: first-tier static check, not a training.
-_NO_TRAIN = re.compile(r"--skip[-_]train\b|--dry[-_]run\b|--no[-_]train\b|(?:^|\s)--help\b")
+#: Flags that mean this invocation takes no optimiser step, or keeps nothing if
+#: it does. ``--prepare-only`` builds a dataset; ``--help`` prints flags;
+#: ``--save-strategy no --no-final-save`` runs a throughput probe that cannot
+#: produce a candidate. One run had seven of its fourteen recorded trainings be
+#: these.
+_NO_TRAIN = re.compile(
+    r"--skip[-_]train\b|--dry[-_]run\b|--no[-_]train\b|--prepare[-_]only\b"
+    r"|--data[-_]only\b|(?:^|\s)--help\b"
+)
+
+#: Keeps no weights: a probe, not a candidate.
+_KEEPS_NOTHING = re.compile(r"--no[-_]final[-_]save\b")
 
 
 def _is_launch(command: str, known: dict[str, set[str]] | None = None) -> bool:
     outside = strip_heredocs(command)
     if _NO_TRAIN.search(outside):
+        return False
+    if _KEEPS_NOTHING.search(outside) and re.search(
+        r"--save[-_]strategy[= ]\s*(?:no|none)\b", outside
+    ):
         return False
     segments = [s for s in _launch_segments(outside) if not _INSPECTS_PROCESS.search(s)]
     outside = " ; ".join(segments)
