@@ -54,6 +54,19 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_git_tracked(repo: Path, relative: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", relative],
+            cwd=repo,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
 def load_manifest(filename: Path) -> dict[str, Any]:
     filename = filename.resolve()
     data = yaml.safe_load(filename.read_text(encoding="utf-8"))
@@ -96,12 +109,14 @@ def validate_manifest(data: dict[str, Any]) -> None:
         "judge_profile": "official",
         "research_judge_profile": "claude-opus-5[1m]-xhigh",
         "require_complete": True,
-        "run_index": 1,
         "cli_auto_update": False,
     }
     for key, value in expected.items():
         if contract.get(key) != value:
             raise ExperimentError(f"contract.{key} must be {value!r}")
+    expected_run_index = 2 if len(tasks) == 2 else 1
+    if contract.get("run_index") != expected_run_index:
+        raise ExperimentError(f"contract.run_index must be {expected_run_index}")
     if contract.get("agent_auth") != {
         "provider": "vertex",
         "project": "sercan-v1",
@@ -326,10 +341,15 @@ def local_issues(
         for relative in required_assets:
             if not (PTB_ROOT / relative).is_file():
                 issues.append(f"missing PTB task asset: {relative}")
+            elif not _is_git_tracked(PTB_ROOT, relative):
+                issues.append(f"untracked PTB task asset cannot enter frozen source: {relative}")
     for cell in selected_cells:
         for name in ("solve.sh", "api_keys.json", "profile.env"):
-            if not (PTB_ROOT / "agents" / cell["agent"] / name).is_file():
-                issues.append(f"missing agent asset: agents/{cell['agent']}/{name}")
+            relative = f"agents/{cell['agent']}/{name}"
+            if not (PTB_ROOT / relative).is_file():
+                issues.append(f"missing agent asset: {relative}")
+            elif not _is_git_tracked(PTB_ROOT, relative):
+                issues.append(f"untracked agent asset cannot enter frozen source: {relative}")
     env = read_ptb_env()
     containers = Path(env.get("POST_TRAIN_BENCH_CONTAINERS_DIR", PTB_ROOT / "containers"))
     hf_home = Path(env.get("HF_HOME", ""))

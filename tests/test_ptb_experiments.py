@@ -127,6 +127,11 @@ def test_aime2025_decontamination_asset_is_the_complete_numeric_test_set() -> No
     assert all(str(row["answer"]).isdigit() for row in test_rows)
 
 
+def test_frozen_source_tracks_both_task_decontamination_assets() -> None:
+    assert ptb._is_git_tracked(ptb.PTB_ROOT, "src/eval/tasks/gsm8k/test_data.json")
+    assert ptb._is_git_tracked(ptb.PTB_ROOT, "src/eval/tasks/aime2025/test_data.json")
+
+
 def test_pilot_is_b06_shape_and_one_hour() -> None:
     (launch,) = ptb.build_launches(ptb.load_manifest(MANIFEST), pilot=True)
     assert launch.cell_id == "b06"

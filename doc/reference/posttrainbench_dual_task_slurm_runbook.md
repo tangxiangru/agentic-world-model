@@ -1,6 +1,6 @@
 # PostTrainBench GSM8K + AIME Batch 1 runbook
 
-This runbook operates `gsm8k-aime2025-opus5-4x4x2-batch1` from branch `gangda_trial_0828`. The
+This runbook operates `gsm8k-aime2025-opus5-4x4x2-batch1-v2` from branch `gangda_trial_0828`. The
 only permitted nodes are `slurm2-a3nodesetondem-[0-3]`, via partition `ptb-a3` and reservation
 `robtang-a3`.
 
@@ -13,11 +13,11 @@ uv run awm ptb check --before-context-gate
 
 cd third_party/PostTrainBench
 bash src/commit_utils/slurm/run_gates.sh g1 slurm2-a3nodesetondem-0 \
-  gsm8k-aime2025-opus5-4x4x2-batch1
+  gsm8k-aime2025-opus5-4x4x2-batch1-v2
 bash src/commit_utils/slurm/run_gates.sh g2 slurm2-a3nodesetondem-0 \
-  gsm8k-aime2025-opus5-4x4x2-batch1
+  gsm8k-aime2025-opus5-4x4x2-batch1-v2
 bash src/commit_utils/slurm/run_gates.sh g3 slurm2-a3nodesetondem-0 \
-  gsm8k-aime2025-opus5-4x4x2-batch1
+  gsm8k-aime2025-opus5-4x4x2-batch1-v2
 cd ../..
 
 uv run awm ptb context-smoke \
@@ -35,9 +35,9 @@ The permanent Slurm template must contain `AccountingStorageTRES=gres/gpu`; all 
 ```bash
 uv run awm ptb submit --pilot
 uv run awm ptb status \
-  data/ptb/batches/gsm8k-aime2025-opus5-4x4x2-batch1/pilot-*.json
+  data/ptb/batches/gsm8k-aime2025-opus5-4x4x2-batch1-v2/pilot-*.json
 uv run awm ptb audit-receipt \
-  data/ptb/batches/gsm8k-aime2025-opus5-4x4x2-batch1/pilot-*.json
+  data/ptb/batches/gsm8k-aime2025-opus5-4x4x2-batch1-v2/pilot-*.json
 ```
 
 The pilot receipt contains `g06` (GSM8K) and `a06` (AIME 2025), each with a one-hour agent budget
