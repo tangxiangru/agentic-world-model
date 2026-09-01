@@ -11,6 +11,9 @@ MANIFEST = paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-opus5-4x4-batch1.
 DUAL_MANIFEST = (
     paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-aime2025-opus5-4x4x2-batch1.yaml"
 )
+REPLICATION_MANIFEST = (
+    paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-aime2025-opus5-4x4x2-batch2.yaml"
+)
 
 
 def test_manifest_is_exact_approved_matrix() -> None:
@@ -106,6 +109,22 @@ def test_dual_task_manifest_is_one_atomic_thirty_two_cell_matrix() -> None:
     tasks = [launch.command[launch.command.index("--eval") + 1] for launch in launches]
     assert tasks == ["gsm8k"] * 16 + ["aime2025"] * 16
     assert all("--hold" in launch.command for launch in ptb.build_launches(data, hold=True))
+
+
+def test_replication_manifest_is_an_independent_copy_of_the_batch1_matrix() -> None:
+    original = ptb.load_manifest(DUAL_MANIFEST)
+    replication = ptb.load_manifest(REPLICATION_MANIFEST)
+
+    assert replication["batch_id"] == "gsm8k-aime2025-opus5-4x4x2-batch2-r4"
+    assert replication["contract"]["run_index"] == 4
+    assert replication["ownership"]["spec"].endswith("batch2-replication.md")
+    assert replication["cells"] == original["cells"]
+    assert replication["contract"] == original["contract"] | {"run_index": 4}
+
+    launches = ptb.build_launches(replication, hold=True)
+    assert len(launches) == 32
+    assert all("--hold" in launch.command for launch in launches)
+    assert all(any("batch2-r4" in argument for argument in launch.command) for launch in launches)
 
 
 def test_dual_task_pilot_covers_both_evaluation_paths() -> None:
