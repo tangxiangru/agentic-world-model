@@ -83,6 +83,7 @@ DTYPES: dict[str, str] = {
     "mode": "string",
     "tier": "Int64",
     "n_calls": "Int64",
+    "scores_in_source": "Int64",
     "got_signal": "boolean",
     "signal_i": "Int64",
     "signal_ts": "string",
@@ -245,7 +246,7 @@ def segments(command: str) -> list[str]:
     # the same invocation, and splitting on the newline dropped a `--limit 40`
     # onto its own segment, filing a 40-question run as a full evaluation.
     command = re.sub(r"\\\s*\n\s*", " ", command)
-    return [s for s in _SEGMENT.split(command) if s.strip()]
+    return scripts.split_outside_quotes(command, _SEGMENT)
 
 
 def _form(command: str, known: dict[str, set[str]] | None = None) -> str | None:
@@ -348,6 +349,11 @@ def _own_slice(text: str | None, command: str) -> str | None:
     leaf = model.group(1).rstrip("/").split("/")[-1]
     at = text.find(leaf)
     return text[at:] if at > 0 else text
+
+
+def _scores_in(text: str | None) -> int:
+    """How many accuracies this text carries; above one the pick is a guess."""
+    return len(_ACCURACY.findall(text or ""))
 
 
 def _accuracy_in(text: str | None) -> float | None:
@@ -494,7 +500,7 @@ def _one(
                 artifacts.add(arg.rstrip("/").split("/")[-1])
         handles = _handles(own_text)
 
-        got, s_i, s_ts, via, acc = False, None, None, None, None
+        got, s_i, s_ts, via, acc, source_text = False, None, None, None, None, ""
         # A concatenated block can carry the previous evaluation's summary before
         # this one's. Reading the first number attributed a neighbour's score.
         direct = _accuracy_in(_own_slice(own_text, command))
@@ -502,6 +508,7 @@ def _one(
             direct = None
         if direct is not None and not background:
             got, s_i, s_ts, via, acc = True, own.get("i"), own.get("ts"), "returned", direct
+            source_text = own_text
         else:
             start_i = event.get("i") or 0
             if refused:
@@ -548,6 +555,7 @@ def _one(
                 else:
                     continue
                 got, s_i, s_ts, via, acc = True, later.get("i"), later.get("ts"), channel, value
+                source_text = text
                 break
 
         rows.append(
@@ -563,6 +571,12 @@ def _one(
                 "mode": "background" if background else "foreground",
                 "tier": tier_for(limit, benchmark, form),
                 "n_calls": call_count(command, own_text),
+                # How many accuracies the event the score came from carried.
+                # Above one, the attribution is a choice: the rule takes the
+                # first, and three annotators found cases where a neighbour's
+                # number was the first. 32% of scored rows are in this state,
+                # so anything quoting a single reading should check it.
+                "scores_in_source": _scores_in(source_text),
                 "got_signal": got,
                 "signal_i": s_i,
                 "signal_ts": s_ts,

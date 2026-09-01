@@ -320,3 +320,28 @@ class TestBenchmarkFromRunId:
         rows = eval_events.events_for_run("x_10h_run1__aime2025_Qwen_Qwen3-4B-Base_1", events)
         assert rows[0]["tier"] == 4
 
+
+class TestQuotedPipesAreNotSeparators:
+    """``grep -E 'a.py|python evaluate.py|vllm'`` has pipes inside a pattern.
+
+    Splitting on all of them left ``python evaluate.py`` standing alone with no
+    grep beside it, so a process watcher was recorded as a full evaluation --
+    and with no --limit on it, as a fourth-tier one.
+    """
+
+    WATCHER = ("ps -o pid,ppid,cmd | grep -E 'train_sft.py|python evaluate.py|vllm'"
+               " | grep -v grep")
+
+    def test_the_watcher_is_not_an_evaluation(self) -> None:
+        assert eval_events._form(self.WATCHER) is None
+
+    def test_the_real_pipes_still_split(self) -> None:
+        from awm.traj import scripts
+        parts = scripts.split_outside_quotes(self.WATCHER, eval_events._SEGMENT)
+        assert len(parts) == 3
+
+    def test_an_actual_evaluation_still_reads(self) -> None:
+        assert eval_events._form(
+            "python evaluate.py --model-path ckpt/a | tee log.txt"
+        ) == "evaluate.py"
+

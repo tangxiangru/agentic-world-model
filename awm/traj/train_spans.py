@@ -263,9 +263,14 @@ def _command(event: dict[str, Any]) -> str:
     return args.get("command") or ""
 
 
+#: Shell separators. Applied outside quotes only — see
+#: :func:`awm.traj.eval_events._split_outside_quotes`.
+_LAUNCH_SEP = re.compile(r"&&|\|\||[;&|]|\n")
+
+
 def _launch_segments(command: str) -> list[str]:
     """Shell segments, so a watcher in one does not vouch for a launch in another."""
-    return [seg for seg in re.split(r"&&|\|\||[;&|]|\n", command) if seg.strip()]
+    return scripts.split_outside_quotes(command, _LAUNCH_SEP)
 
 
 #: A trainer invoked with ``--skip-train`` builds or checks data and never takes

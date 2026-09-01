@@ -72,6 +72,43 @@ _HEREDOC_DEF = re.compile(
 _BASH_LC = re.compile(r"^\s*/bin/bash\s+-lc\s+(['\"])(?P<inner>.*)\1\s*$", re.S)
 
 
+def split_outside_quotes(command: str, pattern: re.Pattern[str]) -> list[str]:
+    """Split on shell separators, ignoring any that sit inside quotes.
+
+    ``ps … | grep -E 'train_sft.py|python evaluate.py|vllm' | grep -v grep``
+    has two real pipes and two more inside the pattern. Splitting on all four
+    left ``python evaluate.py`` standing alone, with no ``grep`` beside it to
+    mark it as a watcher, and the whole thing was recorded as a full evaluation.
+    """
+    out: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        m = pattern.match(command, i)
+        if m and m.end() > i:
+            out.append("".join(buf))
+            buf = []
+            i = m.end()
+            continue
+        buf.append(ch)
+        i += 1
+    out.append("".join(buf))
+    return [s for s in out if s.strip()]
+
+
 def _unwrap(command: str) -> str:
     m = _BASH_LC.match(command)
     return m.group("inner") if m else command
@@ -300,6 +337,7 @@ def summary(known: dict[str, set[str]]) -> str:
 
 
 __all__ = [
+    "split_outside_quotes",
     "destination_for",
     "destinations",
     "invoked",
