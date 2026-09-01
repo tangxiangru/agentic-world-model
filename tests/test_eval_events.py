@@ -196,3 +196,59 @@ class TestChampionRun:
     def test_some_evaluations_returned_nothing(self, rows: list[dict]) -> None:
         """Not every launch yields a number, and the table must show that."""
         assert any(r["got_signal"] is False for r in rows)
+
+
+class TestScoreInPythonRepr:
+    """``print(json.load(open(...)))`` prints a dict repr, with single quotes.
+
+    That is codex's habitual way of reading a score back, and the accuracy
+    pattern only admitted double quotes. The launch's own result then looked
+    empty of any score, and the retrieval loop went hunting -- in one run
+    landing on a stale number sitting in the README the agent happened to read
+    next. The evaluation that actually moved that run's score, +12.2 points on
+    byte-identical weights, was invisible for this reason alone.
+    """
+
+    def test_a_dict_repr_carries_a_score(self) -> None:
+        assert eval_events._accuracy_in(
+            "{'accuracy': 0.5466666666666666, 'stderr': 0.0407}"
+        ) == pytest.approx(0.5467, abs=1e-3)
+
+    def test_the_json_spelling_still_works(self) -> None:
+        assert eval_events._accuracy_in('{"accuracy": 0.7266}') == pytest.approx(0.7266)
+
+
+class TestEvaluationThatNeverRan:
+    """``usage: evaluate.py [-h] …`` -- argparse rejected the arguments.
+
+    Three of one run's evaluations failed this way and each was handed the
+    score of a later, successful rerun. A launch whose own result is an error
+    produced nothing, so no later number belongs to it.
+    """
+
+    def _events(self, own_text: str, is_error: bool):
+        return [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
+             "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "python evaluate.py --model-path ckpt/sft_v1 --limit 150"
+                                 " --json-output-file runs/sft_v1.json"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:02:00Z", "is_error": is_error, "text": own_text},
+            {"run_id": "r", "i": 3, "type": "tool_use", "tool": "Bash", "tool_use_id": "t2",
+             "ts": "2026-01-01T00:03:00Z", "args": {"command": "cat runs/sft_v1.json"}},
+            {"run_id": "r", "i": 4, "type": "tool_result", "parent_tool_use": "t2",
+             "ts": "2026-01-01T00:03:01Z", "text": '{"accuracy": 0.83}'},
+        ]
+
+    def test_a_rejected_invocation_gets_no_score(self) -> None:
+        rows = eval_events.events_for_run(
+            "r", self._events("usage: evaluate.py [-h] [--model-path MODEL_PATH]", True)
+        )
+        assert len(rows) == 1
+        assert rows[0]["got_signal"] is False
+        assert rows[0]["accuracy"] is None
+
+    def test_an_evaluation_that_ran_still_retrieves(self) -> None:
+        rows = eval_events.events_for_run("r", self._events("", False))
+        assert rows[0]["accuracy"] == pytest.approx(0.83)
+

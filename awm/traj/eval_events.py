@@ -145,7 +145,9 @@ _BACKGROUND = re.compile(r"\bnohup\b|[^&>]&\s*(?:$|\n|;|echo\b)")
 #: ``accuracy  0.820`` — whitespace-aligned columns, no separator at all — from
 #: the wrappers agents write for themselves. Demanding a colon missed every
 #: score in a run whose evaluations all went through such a wrapper.
-_ACCURACY = re.compile(r'"?accuracy"?(?:\s*[:=]\s*|\s+)([0-9.]+)', re.I)
+#: The quote may also be a single one: ``print(json.load(open(f)))`` prints a
+#: Python dict repr, and that is how the codex runs habitually read a score back.
+_ACCURACY = re.compile(r'''["']?accuracy["']?(?:\s*[:=]\s*|\s+)([0-9.]+)''', re.I)
 
 #: The harness prints these when it moves a command off the foreground, and
 #: echoes the same id back on the retrieval that finally carries the output.
@@ -386,6 +388,10 @@ def _one(
         rows: list[dict[str, Any]] = []
         own = results.get(event.get("tool_use_id") or "")
         own_text = (own or {}).get("text") or ""
+        # ``usage: evaluate.py [-h] …`` — argparse rejected the arguments and no
+        # evaluation happened. Three of one run's launches failed this way and
+        # each was handed the score of a later, successful rerun.
+        refused = bool(own is not None and own.get("is_error"))
         limit = _int(_LIMIT, command)
         if limit is None and form in ("run_eval.sh", "own_wrapper"):
             # The wrapper takes its sample size positionally. ``-1`` is the full
@@ -427,10 +433,14 @@ def _one(
         # A concatenated block can carry the previous evaluation's summary before
         # this one's. Reading the first number attributed a neighbour's score.
         direct = _accuracy_in(_own_slice(own_text, command))
+        if refused:
+            direct = None
         if direct is not None and not background:
             got, s_i, s_ts, via, acc = True, own.get("i"), own.get("ts"), "returned", direct
         else:
             start_i = event.get("i") or 0
+            if refused:
+                ordered = []
             # A launch that crashed and was relaunched writing the *same* output
             # file must not receive the relaunch's score. Three runs had a score
             # back-filled onto a launch that evaluated nothing, and one had six
