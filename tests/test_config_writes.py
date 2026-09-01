@@ -174,3 +174,24 @@ class TestProseInSource:
             "file_path": "ev.sh", "content": "python evaluate.py --model-path $1 --limit 150\n"}}]
         assert "evaluator" in scripts.learn(events)["ev.sh"]
 
+
+class TestVerbGovernsThePath:
+    def test_a_read_beside_writes_of_other_files_is_a_read(self) -> None:
+        """``mkdir && mv tokenizer.json … && cp … && sed -n '…' gc.json``.
+
+        The mv and cp act on the tokenizer four; the only verb touching the
+        generation config is sed. Classifying on the whole command called it a
+        write, and one run's config writes read as 11 instead of 3.
+        """
+        events = [{"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "args": {
+            "command": "mkdir -p v1/backup && mv v1/tokenizer.json v1/tokenizer_config.json"
+                       " v1/backup/ && cp ~/hf/tokenizer.json v1/"
+                       " && sed -n '/eos_token_id/,+4p' v1/generation_config.json"}}]
+        rows = config_writes.writes_for_run("r", events)
+        assert [(r["access"], r["form"]) for r in rows] == [("read", "shell_read")]
+
+    def test_a_copy_of_the_config_itself_is_still_a_write(self) -> None:
+        events = [{"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "args": {
+            "command": "mkdir step20 && cp v1/checkpoint-20/generation_config.json step20/"}}]
+        assert config_writes.writes_for_run("r", events)[0]["access"] == "write"
+

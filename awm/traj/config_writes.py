@@ -147,6 +147,28 @@ def mentions_only_in_prose(command: str) -> bool:
     )
 
 
+#: Where one command's verbs stop applying. ``mkdir … && mv tokenizer.json … &&
+#: cp … && sed -n '/eos/,+4p' exact_v1/generation_config.json`` writes four
+#: tokenizer files and *reads* the generation config; classifying on the whole
+#: command called it a write, and one run's config writes read as 11 instead of 3.
+_SEGMENT = re.compile(r"&&|\|\||[;|]|\n")
+
+
+def _governing_segment(command: str, path: str | None) -> str:
+    """The part of the command whose verbs act on this path.
+
+    A heredoc is never segmented — of any kind, ``cat > f <<TAG`` or
+    ``python - <<PY``: its body carries newlines, and splitting on them would
+    cut the path away from the verb acting on it two lines below.
+    """
+    if not path or "<<" in command:
+        return command
+    for seg in _SEGMENT.split(command):
+        if path in seg:
+            return seg
+    return command
+
+
 def _classify_shell(command: str) -> tuple[str, str]:
     """``(access, form)`` for a shell command that names a generation config."""
     if _HEREDOC.search(command):
@@ -257,10 +279,10 @@ def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, 
                              "form": "finalizer", "content_available": False,
                              "content": None, "command": command[:400]})
             continue
-        access, form = _classify_shell(command)
         heredoc = _HEREDOC.search(command)
         named = _paths_in(command) or [None]
         for p in named:
+            access, form = _classify_shell(_governing_segment(command, p))
             rows.append({
                 **base,
                 "path": p,
