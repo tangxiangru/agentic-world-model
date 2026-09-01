@@ -119,6 +119,43 @@ def tables(
     return {t: pd.DataFrame(rows) for t, rows in out.items()}
 
 
+def resolve_unclear(trainings: pd.DataFrame, spans: pd.DataFrame) -> pd.DataFrame:
+    """Split ``unclear`` into the schema's shortfall and genuine insufficiency.
+
+    Six annotators, independently, reported the same thing: a smoke test has no
+    tested variable and the first real training has nothing to be compared
+    against, so both were forced into ``unclear`` — the value the spec reserves
+    for *insufficient evidence*. Mixing them makes the unclear share, which §9
+    requires reported, mean two different things at once.
+
+    The separation needs no judgement: the mechanical layer already knows which
+    spans are smoke tests and which real training came first. Applying it here
+    rather than asking for re-annotation keeps the runs already annotated and
+    the ones still to come on the same footing.
+
+    What remains ``unclear`` after this is the honest number: restart chains
+    where every change is a memory compensation, and cases where the trace
+    genuinely does not say.
+    """
+    if not len(trainings) or "tested_variable" not in trainings:
+        return trainings
+    out = trainings.copy()
+    kind = {(r.run_id, r.i): r.kind for r in spans.itertuples()}
+    first_real = (
+        spans[spans["kind"] == "real"].groupby("run_id")["i"].min().to_dict()
+        if len(spans) else {}
+    )
+    for pos, row in out.iterrows():
+        if row.get("tested_variable") != "unclear":
+            continue
+        key = (row.get("run_id"), row.get("i"))
+        if kind.get(key) == "smoke":
+            out.at[pos, "tested_variable"] = "smoke"
+        elif first_real.get(row.get("run_id")) == row.get("i"):
+            out.at[pos, "tested_variable"] = "baseline"
+    return out
+
+
 def _by_key(rows: Iterable[dict[str, Any]], key: str) -> dict[Any, dict[str, Any]]:
     return {r[key]: r for r in rows if key in r}
 
@@ -198,6 +235,7 @@ def summarise(
 
 __all__ = [
     "Agreement",
+    "resolve_unclear",
     "KAPPA_FLOOR",
     "KAPPA_QUOTABLE",
     "agreement",

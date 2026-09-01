@@ -321,3 +321,32 @@ class TestLaunchThatNeverRan:
         rows = train_spans.spans_for_run("r", events)
         assert len(rows) == 1 and rows[0]["end_reason"] == "returned"
 
+
+class TestEffectiveBatch:
+    """The number the optimiser sees, which is what tells a tested
+    hyperparameter apart from a memory compensation."""
+
+    def test_the_transformers_spelling(self) -> None:
+        assert train_spans.effective_batch(
+            "python train.py --per-device-train-batch-size 4"
+            " --gradient-accumulation-steps 8"
+        ) == 32
+
+    def test_the_shell_variable_spelling(self) -> None:
+        assert train_spans.effective_batch("BS=2 GA=16 python train.py") == 32
+
+    def test_an_oom_compensation_leaves_it_unchanged(self) -> None:
+        """``bs 4->2`` with ``accum 4->8``: the same effective batch, refactored.
+
+        Four annotators reported this shape and each had to record it as a
+        hyperparameter change, because the schema offered nothing else. Half
+        the corpus's readable bs/accum changes are this.
+        """
+        before = train_spans.effective_batch("--bs 4 --accum 4")
+        after = train_spans.effective_batch("--bs 2 --accum 8")
+        assert before == after == 16
+
+    def test_unknown_when_the_command_states_only_one(self) -> None:
+        """Agents fix these inside the trainer too. Unknown is not unchanged."""
+        assert train_spans.effective_batch("python train.py --bs 4") is None
+

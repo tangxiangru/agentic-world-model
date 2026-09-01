@@ -129,3 +129,42 @@ class TestBatch:
         # Both said the evaluation judged the change anchored at i=5. They spell
         # its id differently (c1 / x1), which must not read as disagreement.
         assert out["judges_changes_jaccard"] == pytest.approx(1.0)
+
+
+class TestResolveUnclear:
+    """``unclear`` has to mean one thing: the evidence did not settle it."""
+
+    @pytest.fixture
+    def spans(self):
+        import pandas as pd
+        return pd.DataFrame([
+            {"run_id": "r", "i": 10, "kind": "smoke"},
+            {"run_id": "r", "i": 20, "kind": "real"},
+            {"run_id": "r", "i": 30, "kind": "real"},
+        ])
+
+    def _trainings(self, *values):
+        import pandas as pd
+        return pd.DataFrame([
+            {"run_id": "r", "i": i, "tested_variable": v}
+            for i, v in zip((10, 20, 30), values)
+        ])
+
+    def test_a_smoke_test_has_no_tested_variable(self, spans) -> None:
+        out = agg.resolve_unclear(self._trainings("unclear", "C3", "C4"), spans)
+        assert list(out["tested_variable"]) == ["smoke", "C3", "C4"]
+
+    def test_the_first_real_training_is_the_baseline(self, spans) -> None:
+        out = agg.resolve_unclear(self._trainings("unclear", "unclear", "C3"), spans)
+        assert list(out["tested_variable"]) == ["smoke", "baseline", "C3"]
+
+    def test_a_later_unclear_stays_unclear(self, spans) -> None:
+        """The third training had a predecessor to compare against. Whatever
+        left it unsettled is the thing the unclear share is meant to count."""
+        out = agg.resolve_unclear(self._trainings("C3", "C4", "unclear"), spans)
+        assert list(out["tested_variable"]) == ["C3", "C4", "unclear"]
+
+    def test_a_judged_value_is_never_overwritten(self, spans) -> None:
+        out = agg.resolve_unclear(self._trainings("C4", "C3", "both"), spans)
+        assert list(out["tested_variable"]) == ["C4", "C3", "both"]
+

@@ -65,6 +65,7 @@ DTYPES: dict[str, str] = {
     "i": "Int64",
     "out_dir": "string",
     "kind": "string",
+    "effective_batch": "Int64",
     "mode": "string",
     "ts_start": "string",
     "ts_end": "string",
@@ -278,6 +279,42 @@ def _is_launch(command: str, known: dict[str, set[str]] | None = None) -> bool:
     # stage in ``work/grpo.py``. What the run's own writes say the script is for
     # is the reliable signal.
     return bool(known) and scripts.invoked(outside, known, "trainer")
+
+
+#: Batch size and gradient accumulation, in the spellings the corpus uses:
+#: the transformers flag, the short form agents prefer, and the shell variable
+#: they set above a heredoc.
+_BATCH = re.compile(
+    r"--(?:per[-_]device[-_]train[-_])?(?:batch[-_]size|bs)[= ]\s*(\d+)"
+    r"|\bBS[= ](\d+)|\bbatch_size\s*=\s*(\d+)"
+)
+_ACCUM = re.compile(
+    r"--(?:gradient[-_]accumulation[-_]steps|accum|grad[-_]accum)[= ]\s*(\d+)"
+    r"|\bGA[= ](\d+)|\baccum\w*\s*=\s*(\d+)"
+)
+
+
+def _first_int(match: re.Match[str] | None) -> int | None:
+    return int(next(g for g in match.groups() if g)) if match else None
+
+
+def effective_batch(command: str) -> int | None:
+    """``batch_size x gradient_accumulation``, when the command states both.
+
+    The number that matters to the optimiser, and the one that tells a tested
+    hyperparameter apart from a memory compensation. Four annotators reported
+    the same shape independently — ``bs 4->2`` alongside ``accum 4->8``, forced
+    by an OOM — and had to call it a hyperparameter change because the schema
+    offered nothing else. Across the corpus, 98 of the 188 readable bs/accum
+    changes (52%) leave this product untouched: they refactor the same
+    effective batch rather than test a different one.
+
+    Only readable where the command line states both. Agents that fix them
+    inside the trainer are outside this, and the caller must treat ``None`` as
+    unknown rather than unchanged.
+    """
+    bs, ga = _first_int(_BATCH.search(command)), _first_int(_ACCUM.search(command))
+    return bs * ga if bs and ga else None
 
 
 def _out_dir(command: str) -> str | None:
@@ -502,6 +539,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
                 "i": event.get("i"),
                 "out_dir": out_dir,
                 "kind": _kind(cmd, out_dir),
+                "effective_batch": effective_batch(cmd),
                 "mode": "background" if background else "foreground",
                 "ts_start": ts_start,
                 "ts_end": ts_end,
