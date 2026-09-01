@@ -614,10 +614,14 @@ scorer to narrow and an `O(k²)` comparator to decide:
 | A | one redacted digest, alone, rate it 0–100 | 1,175 | $124.90 |
 | B | round-robin the top 6 of each cell, both orders, Copeland | 840 | $216.12 |
 
-Stage B does not survive this section: once stage A ranks on the right field, the
-comparator is +0.0026 worse than stage A alone on full cells and has no data at
-all within a family. Everything below is reported for both, and the recommendation
-at the end is to ship stage A by itself.
+Stage B does not survive this section, though not for the reason an earlier
+version of it gave. Once the shortlist is ranked on the right field and Copeland
+is scored as a *rate* rather than a count, the comparator is −0.0008 on full
+cells — nominally better, three times under its own MDE of 0.0019, on **2
+non-ties out of 28**. It is not a loss and it is not a win; at $216 for 840
+comparisons it is a measurement nobody can afford to repeat and nobody needs.
+Everything below is reported for both, and the recommendation at the end is to
+ship stage A by itself.
 
 Stage A is the harder half and the new thing: scoring in isolation means
 supplying your own standard, where a pair only needs a relative difference. It
@@ -664,15 +668,60 @@ bare `quality` there, so on any cell where the comparator ties — and at 1.0 %
 within-family pair coverage it ties on nearly all of them — the alphabetical
 order the shortlist fix removes came straight back in through the fallback.
 
+### The baseline was averaging accuracies across cells, and it was carrying the headline
+
+The same scrutiny the sort key got has to be applied to the thing it is measured
+against, and the baseline fails it harder. The agent-family lookup table scored a
+family by the **raw mean accuracy** of its runs, pooled over every other cell.
+Those cells' own mean accuracy runs from **0.003 to 0.820**. So a family that
+happened to appear mostly in `bfcl` cells outscored a family that appeared mostly
+in `aime2025` cells for reasons that have nothing to do with either family: the
+"baseline" was largely ranking families by which benchmarks they were sampled on.
+
+Averaging the **within-cell z-score** instead — the same leave-one-cell-out
+construction, the same data, the only change being that each run is standardised
+against its own cell before it is pooled — takes the table from **0.0248 to
+0.0070** on the full cell, and from 50.0 % to 78.6 % of cells solved.
+
+That single fix retracts this document's full-cell headline. The published claim
+was that stage A beats the table by **0.0167, 10–2, sign p = 0.0386**. Against a
+baseline on the right scale it is **+0.0011, 3–6, p = 0.508** — stage A is
+nominally *behind*, and the interval [−0.0069, +0.0085] contains zero comfortably.
+Neither direction is detectable: the MDE at 28 cells is 0.0110, an order of
+magnitude above the effect. It always was — the published 0.0167 was itself under
+the old MDE of 0.0266, with a t-test at p = 0.0908, and this document reported the
+sign test without the power calculation next to it.
+
+The obvious objection is that within-cell z is a baseline chosen after seeing that
+it hurts. It was checked the only way that objection can be answered: by enumerating
+the alternatives rather than picking one. Over **28 defensible definitions** of the
+table — {raw accuracy, within-cell z, within-cell rank} × {mean, median, 20 %-trimmed
+mean, max, …} — raw+mean is the **worst of the 28**, and the **only one** under
+which `stage A − table` reaches p < 0.05. Leave-one-cell-out selection over the
+28 definitions, scored on the held-out cell, picks a corrected form in **28 of 28
+folds** and lands on the same 0.0070. There is no reading of the data on which the
+published number is the right one to have reported.
+
 ### Where the remaining regret is
 
-Decomposing the residual over full cells: **90.8 %** of it is "the winner was
-never shortlisted" and **9.2 %** is "the comparator had it and ranked it below
-third". Stage B is already 85 % efficient at the job it is given, so no amount of
-work on the comparator can recover more than **0.0013**. All the headroom was in
-stage A, which is where the sort key lives.
+Decomposing stage A + B's residual over full cells — 0.0072 in total, i.e. the
+whole pipeline is within 0.7 accuracy points of oracle on the median cell:
 
-### On a whole cell, the lookup table is now beaten — narrowly
+| bucket | share | cells |
+|---|---:|---:|
+| the winner was never shortlisted at all | 52.7 % | 3 |
+| shortlisted, but the comparator was never shown it | 14.4 % | 3 |
+| shortlisted and compared, and ranked below third | 33.1 % | 1 |
+
+Stage A's top 6 contains the cell's winner in **25 of 28 cells**. The earlier
+"90.8 % / 9.2 %, no more than 0.0013 recoverable" split was computed when Copeland
+was still ranking uncompared runs last, so most of what it filed under "the
+comparator ranked it wrong" was the comparator having no data at all. The honest
+ceiling for comparator work is 0.0034, and **one cell** (`aime2025 × Qwen3-4B`,
+regret 0.0667) is the only place in the corpus where a comparator that saw the
+pairs still got it wrong. Everything else is shortlist recall or missing pairs.
+
+### On a whole cell, the lookup table is not beaten
 
 Median cell: 44 candidates, spread 0.655. `tie-break` is the same arm re-scored
 under 200 random tie-breaks, and the percentile the shipped job-id order sits at
@@ -682,41 +731,65 @@ inside that distribution.
 |---|---:|---|---:|---:|---|
 | random three | 0.1307 | [0.0903, 0.1756] | 11.4 % | 0.2640 | — |
 | self-report (largest printed number) | 0.1019 | [0.0516, 0.1629] | 21.4 % | 0.1663 | 0.0991, p64 |
-| agent-family lookup table | 0.0248 | [0.0097, 0.0447] | 50.0 % | 0.0490 | 0.0238, p92 |
 | 21 bucketed features, fitted | 0.0242 | [0.0134, 0.0359] | 50.0 % | 0.0678 | no ties |
-| stage A + B | 0.0107 | [0.0036, 0.0195] | 67.9 % | 0.0230 | no ties |
-| **stage A alone** | **0.0081** | [0.0027, 0.0148] | **67.9 %** | **0.0200** | 0.0077, p68 |
+| **stage A alone** | 0.0081 | [0.0027, 0.0148] | 67.9 % | **0.0200** | 0.0077, p68 |
+| stage A + B | 0.0072 | [0.0019, 0.0144] | 75.0 % | 0.0230 | no ties |
+| **agent-family lookup table** | **0.0070** | [0.0019, 0.0138] | **78.6 %** | 0.0480 | 0.0091, p22 |
 
-Against the lookup table, stage A is ahead by **0.0167, 10–2 of 12 non-ties,
-sign p = 0.0386, Wilcoxon p = 0.0269**, and the paired bootstrap over cells is
-[−0.0368, −0.0009] — excluding zero. That is the comparison the previous version
-of this table lost: the shipped pipeline was ahead by 0.0110 at **8–3, p = 0.227**,
-which is not a win. The non-tie count is the number to hold onto — 16 of the 28
-cells are solved by *every* arm including the table, so a sign test here has
-n ≈ 12 and this is a narrow result, not a comfortable one.
+**On a whole cell, a table of "which agent averages what" is as good as reading
+the trajectories, and this document should stop claiming otherwise.** Stage A is
++0.0011 behind at 3–6 (p = 0.508), stage A + B is +0.0002 behind at 4–4 (p = 1),
+and both differences are under the 0.0110 the population can resolve. The one
+thing stage A does own here is `regret@1` — 0.0200 against the table's 0.0480 —
+i.e. it is better at naming the single winner even though the table is at least
+as good at getting the winner *somewhere* in three. That is a real difference and
+it is not the metric the thesis declared.
 
-**Stage B now costs more than it returns.** At $216 for 840 comparisons it is
-+0.0026 *worse* than stage A alone (1–4 of 5 non-ties, p = 0.375) — not a
-significant loss, but there is no version of this where it is worth buying. With
-a shortlist that reads both fields, the comparator has nothing left to add and
-occasionally reorders wrongly. The old **−0.0072, 8–0, p = 0.008** for stage B
-over stage A was real, and it was real because stage A was handing it a shortlist
-built by alphabetical tiebreak: stage B's whole measured value was undoing a
-defect. Fixing the defect for $0 is strictly better than paying $216 to
-compensate for it.
+The design rule this document set for itself was that any arm which only looks
+good where the agent table works has not been shown to work. Applied honestly, it
+now cuts the other way: the full-cell population is the one where the table works,
+and there is nothing to show there. The result lives in the two populations below.
+
+**Stage B is not worth buying either way.** At $216 for 840 comparisons it is
+−0.0008 against stage A alone on 2 non-ties out of 28 (p = 0.5, MDE 0.0019). The
+old **+0.0026 "stage B costs points"** was an artefact of Copeland counting wins:
+a shortlisted run the comparator was never shown scored zero wins and therefore
+sorted *below* a run that lost every comparison it had, and 38.7 % of shortlisted
+runs are in that state. Scoring `(wins − losses) / comparisons decided` — 0 both
+for "never compared" and for "even record" — removes it. And the older
+**−0.0072, 8–0, p = 0.008** in stage B's favour was real for the mirror-image
+reason: stage A was handing it a shortlist ordered by alphabetical tiebreak, so
+the comparator's whole measured value was undoing a defect that now costs $0 to
+fix. Both of stage B's headline numbers, in both directions, were about the
+scaffolding around it.
+
+### 76 sets cut from 28 cells are not 76 independent observations
+
+Before either sub-set population is read, the sample size has to be fixed. The
+within-family sets are cut out of the *same* 28 cells — five sets from one cell
+share its benchmark, its base model and most of its runs — and an arm's advantage
+on a sub-set correlates **+0.54 to +0.79** with its advantage on the parent cell.
+Treating them as 76 draws overstates n by a factor of ~2.7 in the standard error
+and by more than that in a sign test, which counts each sub-set separately.
+
+Every paired test below therefore **clusters on the 28 cells**: the per-set
+differences are averaged within a cell first, and the bootstrap resamples cells,
+not sets. `n` drops from 76 to 28 within family and from 84 to 28 within scaffold.
+The set-level number is still printed in parentheses by `choice_rank_report.py`
+so the two can be compared, and one arm changes verdict between them (below).
 
 ### Where the table has no information, the picture inverts
 
 Restrict each set to one agent family, which is what the 5-fold split holds out.
-76 sets, median size 5, median spread 0.129:
+76 sets in 28 cells, median size 5, median spread 0.129:
 
-| arm | regret@3 | 95 % CI | sets solved | vs random |
-|---|---:|---|---:|---|
-| agent-family lookup table *(job-id order — see below)* | 0.0546 | [0.0257, 0.0935] | 53.9 % | 40–31, p = 0.34 |
-| random three | 0.0271 | [0.0179, 0.0404] | 67.6 % | — |
-| 21 bucketed features, fitted | 0.0197 | [0.0115, 0.0291] | 71.1 % | 49–22, p = 0.002 |
-| self-report | 0.0092 | [0.0040, 0.0155] | 78.9 % | 59–12, p = 1e-8 |
-| **stage A** | **0.0029** | [0.0005, 0.0061] | **92.1 %** | **65–6, p = 1e-13** |
+| arm | regret@3 | 95 % CI | sets solved | vs random, clustered | vs random, by set |
+|---|---:|---|---:|---|---|
+| agent-family lookup table *(job-id order — see below)* | 0.0546 | [0.0257, 0.0935] | 53.9 % | 10–18, p = 0.19 | 40–31, p = 0.34 |
+| random three | 0.0271 | [0.0179, 0.0404] | 67.6 % | — | — |
+| 21 bucketed features, fitted | 0.0197 | [0.0115, 0.0291] | 71.1 % | 14–14, **p = 1** | 49–22, p = 0.002 |
+| self-report | 0.0092 | [0.0040, 0.0155] | 78.9 % | 22–6, p = 0.004 | 59–12, p = 1e-8 |
+| **stage A** | **0.0029** | [0.0005, 0.0061] | **92.1 %** | **25–3, p = 3e-05** | 65–6, p = 1e-13 |
 
 **The table's 0.0546 is an artefact and this document previously leaned on it.**
 Inside one family the table's score is constant, so it is not ranking at all —
@@ -725,25 +798,68 @@ Inside one family the table's score is constant, so it is not ranking at all —
 table scores **0.0247**, and the shipped 0.0546 is worse than **all 200 draws**.
 Reversed — newest first — it is 0.0102. Saying the table "lands worse than
 random" was a rhetorical point built on an arbitrary ordering; the correct
-statement is that inside a family the table carries **no information**, lands on
-random's 0.0271, and stage A at 0.0029 is what beats it (−0.0517, 34–5,
-p = 2.4e-06). Every other arm in this report now carries the same column, and
-two of them tie nowhere at all.
+statement is that inside a family the table carries **no information** and lands
+on random's 0.0271. Stage A beats it at **23–2 of 25 cells, p = 1.9e-05**, and
+that survives the tie-break control — under 200 random tie-breaks the clustered
+sign test still clears 0.05 in **94 %** of draws, at a mean effect of −0.0294.
+The −0.0517 this document previously quoted was the set-level mean; clustered, the
+mean effect is −0.0796 with a bootstrap of [−0.164, −0.024].
 
-Stage A over self-report is −0.0063, **15–6, p = 0.078** — still not significant,
-because with five candidates and three picks there is very little left to win.
-And the within-family half of the sort-key gain is the weak half: the joint
+**The fitted-features arm does not survive the clustering.** At 76 sets it beat
+random 49–22, p = 0.002. Averaged into its 28 parent cells it is **14–14, p = 1**,
+and the bootstrap [−0.0525, +0.0069] crosses zero. Its apparent win was 28 cells'
+worth of signal counted 76 times. Stage A and self-report both survive; the
+features arm is the one row that changes verdict, and it is the row a
+metadata-only baseline would have been built on.
+
+Stage A over self-report is **13–5, p = 0.096** clustered (15–6, p = 0.078 by set)
+— still not significant, and now also below its own MDE of 0.0077, because with
+five candidates and three picks there is very little left to win. The
+within-family half of the sort-key gain is likewise the weak half: the joint
 bootstrap that resamples cells *and* reshuffles tie blocks puts it at −0.0023
 [−0.0054, +0.0005], P(no gain) = 0.048, against a solid −0.0156 [−0.0299,
 −0.0047], P(no gain) = 0.003 on full cells. The claim the sum supports is "it
 does not cost anything within a family and it clearly helps on full cells", not
 "it helps equally on both".
 
+A note on reading the MDE column: within family, `stage A − random` is flagged
+`<MDE` (effect 0.0347, MDE 0.0404) while the clustered sign test returns
+p = 3e-05 at 25–3. That is not a contradiction. The MDE prices a *t*-test on cell
+means, and the cell means here are heavy-tailed — a couple of cells carry a large
+difference and the rest carry a small one in the same direction. The sign test
+reads the consistency and ignores the magnitude, so it is the load-bearing test
+on this population and the mean effect is the fragile number.
+
 **Stage A + B is still not measured on this population.** Stage B only compared
 each *cell's* top six, and those six almost never fall inside one family — pair
-coverage of the within-family shortlists is **1.0 %**, against 37.6 % on full
-cells. The two rows are now identical to four decimal places with **0 non-ties**:
-that is an absence of data, not a tie.
+coverage of the within-family shortlists is **1.0 %**, and **359 of 369**
+shortlisted runs (97.3 %) have no cached comparison at all, against 37.6 % / 38.7 %
+on full cells. The two rows are identical to four decimal places with **0
+non-ties**: that is an absence of data, not a tie.
+
+### A third population, where the table is neither useless nor sufficient
+
+Within-family sets are small (median 5) and full cells are where the table wins,
+so both extremes are easy to dismiss. The population in between is the set of runs
+sharing a **scaffold** — 84 sets in the same 28 cells, median size 13, median
+spread 0.338. The agent-family table is *not* constant here (0 % of sets), so it
+is genuinely ranking, and there are enough candidates for a ranker to be wrong.
+
+| arm | regret@3 | 95 % CI | sets solved | vs table, clustered |
+|---|---:|---|---:|---|
+| random three | 0.0768 | [0.0633, 0.0912] | 29.8 % | 2–26, p = 3e-06 |
+| self-report | 0.0407 | [0.0257, 0.0583] | 51.2 % | 8–19, p = 0.052 |
+| 21 bucketed features, fitted | 0.0234 | [0.0151, 0.0330] | 57.1 % | 8–17, p = 0.11 |
+| agent-family lookup table | 0.0142 | [0.0077, 0.0218] | 73.8 % | — |
+| **stage A** | 0.0069 | [0.0030, 0.0122] | 76.2 % | 13–6, p = 0.17 |
+| **stage A + B** | **0.0061** | [0.0027, 0.0113] | **78.6 %** | 13–5, p = 0.096 |
+
+Stage A halves the table's regret (0.0069 against 0.0142) and the sign test does
+not reject at 28 clusters — 13–6, p = 0.17, effect −0.0073 against an MDE of
+0.0085. This is the cleanest statement the corpus supports on a population where
+the table has real information: **the trajectory reader is at worst as good as the
+table and probably better, but 28 cells cannot tell those apart.** Reported as a
+positive result it would be exactly the overclaim the full-cell headline was.
 
 ### The leak control
 
@@ -752,12 +868,12 @@ Answering it by conditioning on "no run printed a score" is useless — exactly
 **1 of 76** within-family sets qualifies. The usable control is to run the score
 regex on the identical string stage A was handed:
 
-| arm | full cell | within family |
-|---|---:|---:|
-| self-report, raw text | 0.1019 | 0.0092 |
-| self-report, on the redacted text | 0.0627 | **0.0519** |
-| stage A, on the redacted text | 0.0081 | **0.0029** |
-| random | 0.1307 | 0.0271 |
+| arm | full cell | within family | within scaffold |
+|---|---:|---:|---:|
+| self-report, raw text | 0.1019 | 0.0092 | 0.0407 |
+| self-report, on the redacted text | 0.0627 | **0.0519** | 0.0509 |
+| stage A, on the redacted text | 0.0081 | **0.0029** | **0.0069** |
+| random | 0.1307 | 0.0271 | 0.0768 |
 
 Redaction takes quotable scores from 1,003 of 1,175 runs down to 289. On that
 text the regex is worse than random within a family (0.0519 vs 0.0271) while
@@ -765,22 +881,77 @@ stage A, reading the same characters, is at 0.0029. Whatever stage A is doing, i
 is not transcribing a printed score. What this control does *not* rule out is
 that the within-family headline is separable from model-free surface features of
 the redacted string — length, section counts, how much of the log survived
-redaction. That is open.
+redaction. That is open, and the next section shows one such feature is not zero.
+
+### What the digest still carries: the run id
+
+`traj_read._digest_of` renders the trajectory with `RC.render(row["run"], …)`, so
+the first thing stage A reads is the run id — and a PTB run id ends in the job
+number, which is issued in time order. That is not a redaction bug in the score
+sense; it is metadata that happens to correlate with the label, because the corpus
+got better over the months it was collected.
+
+How much is it worth? Rank each set by job number, newest first, and pick three:
+
+| arm | full cell | within family |
+|---|---:|---:|
+| random | 0.1307 | 0.0274 |
+| oldest three | 0.3187 | 0.0546 |
+| **newest three** | **0.0461** | **0.0102** |
+| stage A | 0.0081 | 0.0029 |
+
+Newest-first recovers **69.0 %** of stage A's whole gain over random on full cells
+(cluster-bootstrap 95 % CI [44 %, 92 %]) and **70.5 %** within a family
+([28 %, 98 %]). Oldest-first is far *worse* than random in both, which is what
+rules out this being an artefact of how ties are broken: the ordering carries
+signed information about the label.
+
+**This does not show that stage A is reading the job number.** Stage A is still
+well ahead of newest-first on both populations, the intervals are wide, and a
+model given a trajectory has many reasons to score a later run higher that have
+nothing to do with parsing the id. What it does show is that a feature requiring
+no model at all reproduces most of the headroom this section is claiming for one,
+which is enough to make "the model is reading the trajectory" unestablished rather
+than established.
+
+The experiment that settles it is small and expensive: strip the identifying line
+from `RC.render`, re-run stage A, compare. It is **1,175 calls, ≈ $302**, and it
+has to be run on **all 28 cells** — running it on the cells where the job-id arm
+looks strongest would be selecting the sample on the statistic under test. Until
+that is done, the within-family and ambiguous-family results should be read as
+"something in the digest predicts the winner", not as "the model understood the
+trajectory".
 
 ### What this settles and what it does not
 
-A model reading trajectories picks a cell's winner into its top three **67.9 %**
-of the time and, within an agent family, **92.1 %** of the time. On full cells it
-is now ahead of the agent-family lookup table by 0.0167 at p = 0.039 over 12
-non-ties — a real result and a narrow one, on 28 cells. Within a family, where
-the table has nothing to say, it is 0.0029 against random's 0.0271.
+A model reading trajectories picks a set's winner into its top three **67.9 %** of
+the time on a whole cell, **76.2 %** within a scaffold, and **92.1 %** within an
+agent family.
 
-Three things this does not show. It is one $125 stage-A pass, not a trained
-predictor. The $216 comparator is now dead weight and the pipeline should ship as
-stage A alone. And none of it touches the underlying confound — every recipe in
-this corpus was written *and* executed by the same agent, so "the recipe predicts
-the score" and "the agent predicts both" remain observationally identical here.
-Only the crossed rollout in §"The confound no split can fix" separates them.
+**It does not beat the agent-family lookup table on a whole cell.** That claim
+appeared in earlier versions of this document at 0.0167, p = 0.039, and it was an
+artefact of a baseline that averaged raw accuracies across cells with wildly
+different score scales. Corrected, the contrast is +0.0011 at p = 0.508 on an
+effect the population could not have resolved either way. What is left is:
+
+- **within an agent family**, where the table has nothing to say, stage A is
+  0.0029 against random's 0.0271 and beats the table 23–2, p = 1.9e-05, robust to
+  the tie-break control;
+- **on the 24 cells where the winner's family also produced a below-median run**
+  — the cells where "just look up the family" is genuinely ambiguous — stage A is
+  0.0135 / 75.0 % solved against the table's 0.0265 / 54.2 %;
+- **within a scaffold**, 0.0069 against the table's 0.0142, directionally the same
+  and not significant at 28 clusters.
+
+Four things this does not show. It is one $125 stage-A pass, not a trained
+predictor. The $216 comparator buys nothing measurable and the pipeline should
+ship as stage A alone. The fitted-features baseline, once the sub-sets are
+clustered, is not distinguishable from random within a family — so "a metadata
+model does the job" is not supported either, in either direction. And none of it
+touches the underlying confound — every recipe in this corpus was written *and*
+executed by the same agent, so "the recipe predicts the score" and "the agent
+predicts both" remain observationally identical here. Only the crossed rollout
+separates them, and it is now run: see §"What the crossing measured".
 ## Crossing the confound: a deterministic recipe executor
 
 `rollout/agents/hv_recipe/solve.sh` is the executor half of the crossing in §"The
@@ -802,12 +973,13 @@ invisibly.
 The six recipes span the cell, 0.733 down to 0.042. The two ends are the point:
 **the 0.733 run and the 0.042 run have essentially the same recipe on paper.** So
 the 0.69 gap lives somewhere the extraction never looked, and the null here — that
-under a fixed executor the spread collapses — is a live outcome rather than a
-strawman. Two seeds per recipe, because a single-seed contrast in this cell would
-be uninterpretable against seed noise, plus an untrained control (`hv_noop`) so a
+under a fixed executor the spread collapses — was a live outcome rather than a
+strawman. It is very nearly what happened: see §"What the crossing measured". Two
+seeds per recipe, because a single-seed contrast in this cell would be
+uninterpretable against seed noise, plus an untrained control (`hv_noop`) so a
 collapsed spread can be told apart from a trainer that trains nothing.
 
-Submitted as two 7-cell packs on two exclusive a3 nodes (jobs 84279, 84280),
+Submitted as two 7-cell packs on two exclusive a3 nodes (jobs 87585 / 87586),
 seeds alternating within a node and swapping between them, node B's order rotated
 so no recipe lands on the same card index twice.
 
@@ -835,6 +1007,63 @@ produced *my own hypothesis' null*:
 A target-format assertion ships alongside them: MetaMathQA bodies carry gsm8k's
 own `#### 752` line, which teaches a second answer format that the grader then
 reads instead of the intended one.
+
+### What the crossing measured
+
+Both packs completed (jobs 87585 / 87586, exit 0, 14 cells, two exclusive a3
+nodes). The untrained control lands at **0.3332**, against the 0.3321 the corpus
+records for this base model — the trainer is training and the grader is grading.
+
+| recipe | corpus accuracy | rollout, seed 0 | seed 1 | mean |
+|---|---:|---:|---:|---:|
+| r733 | 0.733 | 0.7271 | 0.7225 | 0.7248 |
+| r699 | 0.699 | 0.6801 | 0.6672 | 0.6736 |
+| r600 | 0.600 | 0.7506 | 0.7369 | **0.7437** |
+| r544 | 0.544 | 0.6755 | 0.6755 | 0.6755 |
+| r401 | 0.401 | 0.7513 | 0.7384 | **0.7449** |
+| r042 | 0.042 | 0.7104 | 0.7051 | 0.7077 |
+| *base, untrained* | — | 0.3343 | 0.3321 | 0.3332 |
+
+**The recipe is worth about a tenth of what the corpus attributes to it, and the
+ordering does not survive at all.** The six runs span 0.691 in the corpus and
+**0.0713** under a fixed executor — **10.3 %** reproduced. Measured as a standard
+deviation across the six rather than a range, 0.0291 against 0.2329, **12.5 %**.
+And the two best rollouts are the corpus's **third and fifth** recipes: Spearman
+between the corpus order and the rollout order is **−0.200**, exact permutation
+p = 0.71 two-sided, p = 0.67 for the directional "the corpus order predicts the
+rollout order". The recipe the corpus scores at 0.042 lands at 0.708 here, above
+four of the five recipes that beat it in the corpus.
+
+This is not seed noise. The two seeds of a recipe differ by 0.0082 on average
+(per-run sd **0.0069**), so the 0.0713 spread is **10×** the noise floor — the
+recipes really do differ, by about seven accuracy points. They just differ in a
+different order, and by a tenth as much.
+
+Two things follow, and they cut in opposite directions for this document.
+
+The first is the point the crossing was built to make: **~90 % of a corpus score
+is the executing agent, not the recipe it wrote.** That is the confound stated as
+a measured quantity rather than a caveat, and it explains why the agent-family
+lookup table is such a strong baseline — the table is reading the thing that
+actually varies.
+
+The second is a threat to the predictor's interpretation. Stage A is trained on,
+and evaluated against, corpus accuracies that are ~90 % agent. So "the trajectory
+reader predicts the score" is substantially "the trajectory reader identifies the
+agent", which is the same reading the job-id arm above suggests from a completely
+different direction. Two independent lines now point at it.
+
+Two limits on this result, both real. **This 6-set cannot rank rankers**: with six
+candidates and three picks, the oracle scores 0.0000, taking them in corpus order
+scores 0.0011, and picking three at random scores 0.0052 — every arm is inside the
+0.0069 seed sd, so nothing about *choice-set ranking* can be concluded from these
+runs, only about how much of the corpus spread is recipe. And **"recipe" here is
+the extraction schema's recipe** — sources, subsets, caps, epochs, batch size. The
+corpus rows also carry learning rate, scheduler, precision, sequence length, PEFT
+and RL flags, which the executor holds fixed. A fairer statement than "the recipe
+is worth 10 %" is: *the part of the recipe this project can extract from a
+trajectory is worth 10 %.* Whether the unextracted part carries the rest, or the
+agent does, this crossing does not separate.
 
 ### The other half is blocked, not descoped
 
