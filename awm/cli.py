@@ -341,7 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ep = sub.add_parser("ptb", help="validate, launch, and audit committed PTB batches")
     eps = ep.add_subparsers(dest="cmd", required=True)
-    default_manifest = Path("experiments/posttrainbench/gsm8k-healthbench-opus5-4x4x2-batch1.yaml")
+    default_manifest = Path("experiments/posttrainbench/gsm8k-aime2025-opus5-4x4x2-batch1.yaml")
     for command_name in ("check", "dry-run", "submit"):
         command = eps.add_parser(command_name)
         command.add_argument("manifest", nargs="?", type=Path, default=default_manifest)

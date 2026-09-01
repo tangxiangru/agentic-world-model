@@ -26,7 +26,7 @@ APPROVED_BASE_MODELS = (
     "HuggingFaceTB/SmolLM3-3B-Base",
     "google/gemma-3-4b-pt",
 )
-APPROVED_TASKS = ("gsm8k", "healthbench")
+APPROVED_TASKS = ("gsm8k", "aime2025")
 APPROVED_AGENT_SETUPS = (
     ("claude_vertex_max", "claude-opus-5[1m]", "max", 1_000_000),
     ("claude_vertex_xhigh", "claude-opus-5[1m]", "xhigh", 1_000_000),
@@ -323,10 +323,6 @@ def local_issues(
             f"src/eval/tasks/{task}/test_data.json",
             f"src/eval/tasks/{task}/info.json",
         ]
-        if task == "healthbench":
-            required_assets.append(
-                "src/eval/tasks/healthbench/evaluation_code/data/healthbench.jsonl"
-            )
         for relative in required_assets:
             if not (PTB_ROOT / relative).is_file():
                 issues.append(f"missing PTB task asset: {relative}")
@@ -335,10 +331,6 @@ def local_issues(
             if not (PTB_ROOT / "agents" / cell["agent"] / name).is_file():
                 issues.append(f"missing agent asset: agents/{cell['agent']}/{name}")
     env = read_ptb_env()
-    if "healthbench" in selected_tasks and not (
-        env.get("OPENAI_API_KEY") or env.get("OPENROUTER_API_KEY")
-    ):
-        issues.append("healthbench evaluation requires OPENAI_API_KEY or OPENROUTER_API_KEY")
     containers = Path(env.get("POST_TRAIN_BENCH_CONTAINERS_DIR", PTB_ROOT / "containers"))
     hf_home = Path(env.get("HF_HOME", ""))
     selected_base_models = {cell["base_model"] for cell in selected_cells}
