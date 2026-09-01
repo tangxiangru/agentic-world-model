@@ -82,6 +82,58 @@ _CALLS_TRAINER = re.compile(
 )
 
 
+#: Where a script writes, when its caller does not say. An agent that wrote the
+#: trainer usually fixed the destination inside it — as an argparse default, a
+#: module constant, or a literal passed to ``save_pretrained`` — and then invoked
+#: it bare. Five annotators reported the same consequence independently: with no
+#: artifact to pair against, the span ran to the end of the run, in one case
+#: charging 19.3h of training to a 7.5h budget.
+_DEST = (
+    re.compile(r"""--out(?:put)?(?:[-_]dir)?['\"]?\s*,[^)]*?default\s*=\s*['\"]([\w./-]+)['\"]"""),
+    re.compile(r"""(?:OUTPUT_DIR|OUT_DIR|SAVE_DIR|FINAL_DIR|output_dir|final_dir|out_dir)\s*=\s*['\"]([\w./-]+)['\"]"""),
+    re.compile(r"""save_pretrained\(\s*['\"]([\w./-]+)['\"]"""),
+)
+
+
+def destinations(events: list[dict[str, Any]]) -> dict[str, str]:
+    """``script path -> the output directory its own source fixes``."""
+    out: dict[str, str] = {}
+
+    def record(path: str, body: str) -> None:
+        if not path or "trainer" not in _roles(body) and not _CALLS_TRAINER.search(body):
+            return
+        for pat in _DEST:
+            m = pat.search(body)
+            if m:
+                dest = m.group(1).rstrip("/")
+                for key in (path, path.rstrip("/").split("/")[-1]):
+                    out.setdefault(key, dest)
+                return
+
+    for e in events:
+        if e.get("type") != "tool_use":
+            continue
+        args = e.get("args") or {}
+        if e.get("tool") == "Write":
+            path = args.get("file_path") or ""
+            if path.endswith((".py", ".sh")):
+                record(path, args.get("content") or "")
+            continue
+        command = _unwrap(args.get("command") or "")
+        for m in _HEREDOC_DEF.finditer(command):
+            record(m.group("path"), m.group("body"))
+    return out
+
+
+def destination_for(command: str, dests: dict[str, str]) -> str | None:
+    """The destination of whichever known script this command runs."""
+    command = _unwrap(command)
+    for path, dest in dests.items():
+        if _invocation(command, path):
+            return dest
+    return None
+
+
 def learn(events: list[dict[str, Any]], rounds: int = 3) -> dict[str, set[str]]:
     """``script path -> {"trainer", "evaluator"}``, from this run's own writes.
 
@@ -189,4 +241,4 @@ def summary(known: dict[str, set[str]]) -> str:
     return json.dumps(by_role, ensure_ascii=False)
 
 
-__all__ = ["invoked", "invoked_purely", "learn", "summary"]
+__all__ = ["destination_for", "destinations", "invoked", "invoked_purely", "learn", "summary"]

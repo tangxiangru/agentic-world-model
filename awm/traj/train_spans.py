@@ -166,6 +166,33 @@ _DISCARD_VERB = r"\brm\s+-[rf]{1,2}\s+[^;&|\n]*?"
 #: script rather than the artifact, so an out_dir-keyed rule never sees it. One
 #: run launched a training and killed it nine seconds later to free the GPU; the
 #: run-end fallback had scored that as 6.29 hours.
+#: Where the artifact goes when the command line does not say. A training script
+#: with its ``--output-dir`` defaulted in code leaves no destination on the
+#: command line, and the out_dir-keyed rules then have nothing to pair against,
+#: so the span runs to the end of the run. But the trainer announces the
+#: destination when it finishes, and that announcement reaches the trajectory:
+#: 1,090 such lines across 154 of the 234 in-scope runs. One run's 1.85h SFT was
+#: being scored as 6.31h for exactly this reason.
+_SAVED_TO = re.compile(
+    r"(?:Saved|Saving|saved|Wrote|wrote)\s+(?:final\s+)?(?:model\s+)?(?:to|->)\s+['\"]?([\w./-]+)"
+)
+
+#: When the script announces nothing either, the destination still surfaces as
+#: the constant the agent wrote into the trainer. One run kept every output path
+#: in ``OUTPUT_DIR = "/home/ben/task/sft_run3"``; all five of its trainings fell
+#: through to the run-end bound and its occupancy read 98% against a measured
+#: 88%.
+_OUT_CONST = re.compile(
+    r"(?:OUTPUT_DIR|OUT_DIR|SAVE_DIR|output_dir)\s*=\s*['\"]([\w./-]+)['\"]"
+)
+
+#: The log the launch redirects into. When the destination is hidden in the
+#: script, this is still on the command line and the agent polls it while the
+#: training runs — so it identifies the training even when the artifact cannot,
+#: and it is the more reliable of the two fallbacks because it comes from this
+#: launch rather than from anywhere in the run.
+_LOG_TARGET = re.compile(r">>?\s*([\w./-]+\.log)\b")
+
 _KILL = re.compile(r"\b(?:pkill|killall)\b[^;&|]*?(train[\w./-]*\.py|torchrun|accelerate)")
 
 _TRAIN_RUNTIME = re.compile(r"train_runtime['\"]?\s*[:=]\s*([0-9.]+)")
@@ -241,17 +268,24 @@ def _kind(command: str, out_dir: str | None) -> str:
 
 def _mentions(command: str, out_dir: str) -> bool:
     """Does this command name that artifact (or a checkpoint inside it)?"""
-    return out_dir in command
+    return bool(re.search(_target(out_dir), command))
 
 
 def _target(out_dir: str) -> str:
     """Match the artifact itself or a checkpoint path inside it.
 
+    Matched on the basename with an optional directory prefix, because the two
+    spellings rarely agree: a script fixes its destination as
+    ``/home/ben/task/work/sft_run1`` and the evaluation that consumes it writes
+    ``work/sft_run1``. Demanding the recorded spelling left five runs' spans
+    unpaired and charged them to the end of the run.
+
     Bounded on both sides. Without a left boundary ``sft_full`` matched inside
     ``runs/grader_sft_full.json``, so deleting a stale result file read as
     discarding the checkpoint that run went on to submit.
     """
-    return r"(?<![\w./-])" + re.escape(out_dir) + r"(?:/\S*)?"
+    leaf = re.escape(out_dir.rstrip("/").split("/")[-1])
+    return r"(?<![\w./-])(?:[\w./-]*/)?" + leaf + r"(?:/\S*)?"
 
 
 def _consumes(command: str, out_dir: str) -> bool:
@@ -266,8 +300,46 @@ def _discards(command: str, out_dir: str) -> bool:
     checkpoints to free disk while the run they belong to is still the one being
     submitted — so the artifact path must not continue into a subpath.
     """
-    whole = r"(?<![\w./-])" + re.escape(out_dir) + r"(?![\w./-])"
+    leaf = re.escape(out_dir.rstrip("/").split("/")[-1])
+    whole = r"(?<![\w./-])(?:[\w./-]*/)?" + leaf + r"(?![\w./-])"
     return bool(re.search(_DISCARD_VERB + whole, command))
+
+
+def ordered_after(events: list[dict[str, Any]], event: dict[str, Any]) -> list[dict[str, Any]]:
+    """Results that arrive after this event, in stream order."""
+    start = event.get("i") or 0
+    return [
+        e for e in events
+        if e.get("type") == "tool_result" and (e.get("i") or 0) > start
+    ]
+
+
+def _announced_dir(
+    later_uses: list[dict[str, Any]],
+    results: dict[str, dict[str, Any]],
+    later_results: list[dict[str, Any]],
+) -> str | None:
+    """The destination the trainer printed, when the command line omitted it."""
+    for r in later_results[:400]:
+        m = _SAVED_TO.search(r.get("text") or "")
+        if m:
+            return m.group(1).rstrip("/")
+    return None
+
+
+def _constant_dir(events: list[dict[str, Any]], before_i: int) -> str | None:
+    """The output path the agent hard-coded into the trainer it wrote."""
+    best: str | None = None
+    for e in events:
+        if e.get("type") != "tool_use" or (e.get("i") or 0) >= before_i:
+            continue
+        args = e.get("args") or {}
+        for text in (args.get("content"), args.get("new_string"), args.get("command")):
+            if not isinstance(text, str):
+                continue
+            for m in _OUT_CONST.finditer(text):
+                best = m.group(1).rstrip("/")
+    return best
 
 
 def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
@@ -298,6 +370,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
     """Every training this run launched, with the wall clock it occupied."""
     events = sorted(events, key=lambda e: (e.get("agent_id") or "", e.get("i") or 0))
     known = scripts.learn(events)
+    dests = scripts.destinations(events)
     results = _result_index(events)
     uses = [e for e in events if e.get("type") == "tool_use"]
     last_ts = next((e.get("ts") for e in reversed(events) if e.get("ts")), None)
@@ -305,8 +378,24 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
     launches: list[tuple[int, dict[str, Any], str, str | None]] = []
     for pos, e in enumerate(uses):
         cmd = _command(e)
-        if _is_launch(cmd, known):
-            launches.append((pos, e, cmd, _out_dir(cmd)))
+        if not _is_launch(cmd, known):
+            continue
+        out = _out_dir(cmd)
+        if out is None:
+            # Ordered by how specific the evidence is to *this* launch. The
+            # script's own fixed destination is best: it comes from the file
+            # being run. Then the log this command redirects into, which the
+            # agent polls while it waits. Only then anything found elsewhere in
+            # the run, which could belong to a different training.
+            out = scripts.destination_for(cmd, dests)
+        if out is None:
+            m = _LOG_TARGET.search(strip_heredocs(cmd))
+            out = m.group(1) if m else None
+        if out is None:
+            out = _announced_dir(uses[pos + 1 :], results, ordered_after(events, e))
+        if out is None:
+            out = _constant_dir(events, e.get("i") or 0)
+        launches.append((pos, e, cmd, out))
 
     rows: list[dict[str, Any]] = []
     for pos, event, cmd, out_dir in launches:
