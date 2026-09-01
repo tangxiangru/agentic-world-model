@@ -91,7 +91,11 @@ _LAUNCH = re.compile(
 #: ``pgrep -f "python train_sft.py --model x"`` and ``ps aux | grep`` quote a
 #: whole command line to *watch* it. The quoted text satisfies every launch
 #: pattern, so process inspection has to be excluded before matching.
-_INSPECTS_PROCESS = re.compile(r"\b(?:pgrep|pkill|ps)\b|\bgrep\b[^|;&]*python")
+#: ``ps -eo cmd | rg 'python train_sft.py.*ckpt'`` watches a training; the
+#: quoted pattern satisfies every launch form. The pipe puts ``ps`` on the left
+#: and the search on the right, so the whole segment counts as inspection —
+#: and ripgrep is as common as grep in these traces.
+_INSPECTS_PROCESS = re.compile(r"\b(?:pgrep|pkill|ps|rg|grep|awk)\b")
 
 #: A command that *writes* a script naming a trainer or an evaluator is not
 #: running one. Agents build wrappers with ``cat > run_eval.sh <<'EOF' … EOF``,

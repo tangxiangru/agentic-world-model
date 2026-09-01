@@ -216,7 +216,7 @@ _HELP_ONLY = re.compile(r"evaluate\.py\s+(?:[\w./-]+\s+)*--help\b")
 #: to *watch* a running evaluation. The quoted text satisfies every launch
 #: pattern, so one evaluation was counted twice and the phantom row was handed
 #: a score belonging to a different model 96 events later.
-_INSPECTS_PROCESS = re.compile(r"\b(?:pgrep|pkill|ps)\b|\bgrep\b[^|;&]*python")
+_INSPECTS_PROCESS = re.compile(r"\b(?:pgrep|pkill|ps|rg|grep|awk)\b")
 
 
 def segments(command: str) -> list[str]:
