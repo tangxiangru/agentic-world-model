@@ -30,6 +30,27 @@ The permanent Slurm template must contain `AccountingStorageTRES=gres/gpu`; all 
 2026-09-01 pre-fix GCS backup is
 `gs://slurm-slurm2834bd/slurm2-files/backups/config.yaml.pre-ptb-gres-20260901T015552Z`.
 
+## Live GPU monitoring
+
+The run-specific evidence and per-cell tables live in
+[`doc/analysis/posttrainbench/2026-09-01-batch1-gpu-utilization.md`](../analysis/posttrainbench/2026-09-01-batch1-gpu-utilization.md).
+
+`system_monitor.log` samples once per minute. During an active job it lives under the job-local
+workspace and is copied to the result directory only during collection. Distinguish:
+
+- full idle: no GPU process and zero model memory;
+- model-resident gap: model memory is present but sampled utilization is zero;
+- compute: sampled utilization is nonzero.
+
+Do not act on a single zero-utilization sample. After the first 30 minutes, full idle for five
+minutes is a warning and ten minutes is an investigation trigger. A monitor should include the
+job ID, child PID existence, last log modification time, GPU memory, and the latest trace command.
+
+Background work must retain and `wait` on its child PID. Avoid fixed long sleeps and raw
+`pgrep -f` loops: the pattern can match the watcher itself, while a failed child can leave the
+agent sleeping on an idle GPU. Monitoring and cancellation remain receipt/job-ID-scoped; never
+cancel by username, partition, or node alone.
+
 ## Two pilots
 
 ```bash
