@@ -49,7 +49,9 @@ gangda-slurm-queue show 89589 --json
 
 `show` resolves one registered Slurm ID through its source receipt and cell. For PTB it prints the
 task, base model, agent profile, effort, context window, replicate, receipt, manifest, spec, and
-frozen commits. `scontrol show job JOB_ID -o` remains the lower-level scheduler view.
+frozen commits. When a result directory exists, it also prints validation status, accuracy, and
+judge flags. `scontrol show job JOB_ID -o` remains the lower-level scheduler view. Scientific
+result analysis is documented in [`ptb_result_analysis.md`](ptb_result_analysis.md).
 
 ## Machine-readable state
 

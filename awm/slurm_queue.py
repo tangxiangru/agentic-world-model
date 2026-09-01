@@ -538,6 +538,7 @@ def explain_job(snapshot: dict[str, Any], job_id: str) -> dict[str, Any]:
                 "job": job,
                 "cell": {},
                 "frozen_source": {},
+                "result": {},
             }
             receipt_path = Path(str(source.get("path", "")))
             if receipt_path.is_file():
@@ -555,6 +556,20 @@ def explain_job(snapshot: dict[str, Any], job_id: str) -> dict[str, Any]:
                     ),
                     {},
                 )
+            from awm import ptb_experiments, ptb_results
+
+            result_dir = ptb_experiments.result_for_job(str(job_id))
+            if result_dir:
+                metrics = ptb_results._read_json(result_dir / "metrics.json")
+                issues = ptb_experiments.audit_result(result_dir)
+                explanation["result"] = {
+                    "path": str(result_dir),
+                    "complete": not issues,
+                    "issues": issues,
+                    "accuracy": metrics.get("accuracy"),
+                    "stderr": metrics.get("stderr"),
+                    "judge_flags": ptb_results.judge_flags(result_dir),
+                }
             return explanation
     raise QueueError(f"job is not registered in gangda: {job_id}")
 
@@ -564,6 +579,7 @@ def render_job_explanation(explanation: dict[str, Any]) -> str:
     source = explanation["source"]
     cell = explanation["cell"]
     frozen = explanation["frozen_source"]
+    result = explanation["result"]
     lines = [
         f"JOB {job['job_id']}",
         (
@@ -591,6 +607,14 @@ def render_job_explanation(explanation: dict[str, Any]) -> str:
     for key in ("top_commit", "ptb_commit"):
         if frozen.get(key):
             lines.append(f"  {key}={frozen[key]}")
+    if result:
+        lines.append(f"  result={result['path']}")
+        lines.append(f"  result_complete={str(result['complete']).lower()}")
+        if result.get("accuracy") is not None:
+            lines.append(f"  accuracy={result['accuracy']}")
+        lines.append(f"  judge_flags={','.join(result['judge_flags']) or 'clean'}")
+        if result.get("issues"):
+            lines.append(f"  result_issues={'; '.join(result['issues'])}")
     if job.get("work_dir"):
         lines.append(f"  work_dir={job['work_dir']}")
     if job.get("stdout"):

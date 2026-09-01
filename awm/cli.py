@@ -238,6 +238,25 @@ def _ptb(args: argparse.Namespace) -> int:
 
     try:
         manifest = ptb.load_manifest(args.manifest)
+        if args.cmd == "results":
+            import json
+
+            from awm import ptb_results
+
+            report = ptb_results.build_report(manifest)
+            if args.json:
+                print(json.dumps(report, indent=2, sort_keys=True))
+            else:
+                print(
+                    ptb_results.render_report(
+                        report,
+                        include_incomplete=args.all,
+                        task=args.task,
+                        cell_ids=set(args.cell) if args.cell else None,
+                    ),
+                    end="",
+                )
+            return 0
         if args.cmd == "check":
             issues = ptb.local_issues(manifest, require_context=not args.before_context_gate)
             if not args.local_only:
@@ -556,6 +575,15 @@ def build_parser() -> argparse.ArgumentParser:
     context_smoke.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
     context_smoke.add_argument("--cell", action="append", required=True)
     context_smoke.set_defaults(func=_ptb)
+    results = eps.add_parser(
+        "results", help="discover and validate scientific results from frozen provenance"
+    )
+    results.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
+    results.add_argument("--all", action="store_true", help="also show incomplete latest attempts")
+    results.add_argument("--json", action="store_true")
+    results.add_argument("--task", choices=["gsm8k", "aime2025"])
+    results.add_argument("--cell", action="append")
+    results.set_defaults(func=_ptb)
     retry = eps.add_parser("retry", help="atomically retry explicit failed formal cells")
     retry.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
     retry.add_argument("--cell", action="append", required=True)

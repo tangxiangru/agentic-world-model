@@ -21,6 +21,12 @@
   - `gangda-slurm-queue history` shows terminal receipts/jobs and must not drive capacity claims.
   - `gangda-slurm-queue show JOB_ID` resolves a job through receipt, cell, manifest, and spec.
   The complete usage contract is `doc/reference/gangda_slurm_queue.md`.
+- Do not equate Slurm terminal state with a scientifically complete PTB result. Use
+  `uv run awm ptb results MANIFEST` to discover results by frozen provenance and require the PTB
+  validator to pass. Use `--all` for incomplete attempts and `--json` for derived analysis. Resolve
+  individual jobs with `gangda-slurm-queue show JOB_ID`, then follow receipt -> cell -> manifest ->
+  spec -> result directory. Preserve these paths in reports. The full workflow is
+  `doc/reference/ptb_result_analysis.md`.
 - Reserve `slurm2-a3nodesetondem-[0-3]` exclusively for the receipt-backed PTB batches. AWM full
   studies must use partition `ptb-a3`, reservation `robtang-wm-a3-ondem`, requested nodes
   `slurm2-a3nodesetondem-[4-12]`, and an explicit exclusion for `[0-3]`. Let Slurm pack one-GPU
