@@ -202,6 +202,12 @@ def _command(event: dict[str, Any]) -> str:
 #: that never touched a model.
 _HELP_ONLY = re.compile(r"evaluate\.py\s+(?:[\w./-]+\s+)*--help\b")
 
+#: ``pgrep -f 'python evaluate.py --model-path X'`` quotes a whole command line
+#: to *watch* a running evaluation. The quoted text satisfies every launch
+#: pattern, so one evaluation was counted twice and the phantom row was handed
+#: a score belonging to a different model 96 events later.
+_INSPECTS_PROCESS = re.compile(r"\b(?:pgrep|pkill|ps)\b|\bgrep\b[^|;&]*python")
+
 
 def segments(command: str) -> list[str]:
     # Join backslash continuations first: a flag on the wrapped line belongs to
@@ -213,6 +219,11 @@ def segments(command: str) -> list[str]:
 
 def _form(command: str, known: dict[str, set[str]] | None = None) -> str | None:
     outside = strip_heredocs(command)
+    # A watcher names the launch it is watching; drop those segments first.
+    kept = [seg for seg in segments(outside) if not _INSPECTS_PROCESS.search(seg)]
+    if not kept:
+        return None
+    outside = " ; ".join(kept)
     if _HELP_ONLY.search(outside):
         return None
     if _LAUNCH_PY.search(outside):
