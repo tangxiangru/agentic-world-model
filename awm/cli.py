@@ -142,6 +142,33 @@ def _spans(args: argparse.Namespace) -> int:
     return 0
 
 
+def _eval_events(args: argparse.Namespace) -> int:
+    from awm.traj import eval_events, index
+
+    try:
+        bench = dict(zip(index.load()["run_id"], index.load()["benchmark"]))
+    except Exception:
+        bench = {}
+    df = eval_events.build(benchmarks=bench)
+    path = eval_events.save(df, args.out)
+    print(f"{len(df)} evaluations over {df['run_id'].nunique()} runs -> {path}")
+    got = df["got_signal"].fillna(False)
+    print(f"  {int(got.sum())} returned a score, {int((~got).sum())} returned nothing usable")
+    return 0
+
+
+def _config_writes(args: argparse.Namespace) -> int:
+    from awm.traj import config_writes
+
+    df = config_writes.build()
+    path = config_writes.save(df, args.out)
+    print(f"{len(df)} config accesses over {df['run_id'].nunique()} runs -> {path}")
+    w = df[df["access"] == "write"]
+    have = w["content_available"].fillna(False)
+    print(f"  {len(w)} writes, {int(have.sum())} with content the trace actually carries")
+    return 0
+
+
 def _index(args: argparse.Namespace) -> int:
     from awm.traj import index
 
@@ -298,6 +325,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     i = traj.add_parser("index", help="rebuild the run index")
     i.set_defaults(func=_index)
+
+    ee = traj.add_parser("evals", help="extract evaluations and whether a score came back")
+    ee.add_argument("--out", type=Path,
+                    default=Path("data/traj/derived/ptb_eval_events_v1.parquet"))
+    ee.set_defaults(func=_eval_events)
+
+    cw = traj.add_parser("configs", help="locate generation_config.json accesses")
+    cw.add_argument("--out", type=Path,
+                    default=Path("data/traj/derived/ptb_config_writes_v1.parquet"))
+    cw.set_defaults(func=_config_writes)
 
     sn = traj.add_parser("spans", help="extract how long each training occupied the box")
     sn.add_argument(

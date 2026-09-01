@@ -1,0 +1,366 @@
+"""Every evaluation an agent launched, and whether a number ever came back.
+
+The second question is the one that matters. Counting evaluation calls
+overstates what an agent knew, in both directions: a backgrounded evaluation
+polled five times counts five, and an evaluation whose output was truncated
+before the accuracy line counts one despite telling the agent nothing. One run
+in the corpus piped both of its evaluations through ``| head -100``, which cut
+them off above the accuracy print — it finished the task having never seen a
+single score, and never knew. A verifier that returns no signal is not a
+verifier, so ``got_signal`` is a first-class column rather than something a
+consumer infers from the call.
+
+Pairing has the same shape as ``train_spans``: launches are mostly backgrounded
+(``nohup … &``, or the harness moving a long command off the foreground), so the
+launching event's own result carries a PID or a task id, never a score. The
+accuracy arrives later, through one of four channels the corpus actually uses:
+
+*   the agent cats the ``--json-output-file`` it asked for
+*   the agent greps ``Accuracy:`` out of the run's log
+*   the launch ran in the foreground and its own result holds the output
+*   the harness returns a backgrounded task, keyed by the task id it printed
+
+So a launch is joined to the first later result that both contains a score and
+refers to that launch — by its output file, its log, or its task id. A result
+that merely contains a score is not evidence for *this* evaluation.
+
+``python evaluate.py`` must be an invocation, not a mention: agents read
+``evaluate.py`` with ``sed``, grep for it in ``ps aux``, and search
+``inspect_ai`` source for its behaviour, none of which run anything. As in
+``train_spans``, requiring the script to sit in python's argument position
+separates the two. Codex wraps everything in ``/bin/bash -lc '…'``, which is
+unwrapped before matching.
+
+**``got_signal`` is a lower bound, and how tight a bound differs by family.**
+False means no score could be *traced* to this launch, which is not the same as
+the agent having learned nothing. Measured over the 180 in-scope runs, 70% of
+Claude Code evaluations link to a score against 53% of codex ones, and the gap
+is a retrieval-pattern difference rather than a difference in what the agents
+knew: codex habitually reads its scores through analysis scripts it wrote
+itself, pointed at inspect_ai's timestamped log directory
+(``analyze_eval.py logs/2026-07-17T01-32-28+02-00_gpqa-main_<hash>.json``),
+and that filename cannot be predicted from the launching command. Checked
+against the alternative explanation: **none** of the unlinked results are
+truncated by the trace, and they average 26 kB of vLLM server log, so the score
+genuinely is not in the launch's own output.
+
+Three channels are followed — the requested output file, a log named on the
+command line, and the evaluated checkpoint's own name — and a fourth, the
+harness's background task id, when the launch was moved off the foreground.
+Beyond those, whether an evaluation informed the agent is a judgment-layer
+question, and for codex it usually is.
+
+``run_eval.sh`` is an agent-written wrapper whose positional signature differs
+per run (``run_eval.sh <model> <tag> <limit> <temp>`` in one, ``run_eval.sh
+<model> <limit> <out>`` in another). It is recorded as an evaluation, but its
+``limit`` is left unknown rather than guessed from position — 180 calls against
+2,536 direct ones, so guessing would buy little and cost the column's meaning.
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Iterator
+
+import pandas as pd
+
+from awm import paths
+
+DTYPES: dict[str, str] = {
+    "run_id": "string",
+    "i": "Int64",
+    "ts": "string",
+    "form": "string",
+    "model_path": "string",
+    "limit": "Int64",
+    "max_connections": "Int64",
+    "json_output_file": "string",
+    "mode": "string",
+    "tier": "Int64",
+    "got_signal": "boolean",
+    "signal_i": "Int64",
+    "signal_ts": "string",
+    "signal_via": "string",
+    "accuracy": "Float64",
+    "wait_s": "Float64",
+    "command": "string",
+}
+
+COLUMNS: tuple[str, ...] = tuple(DTYPES)
+
+#: Codex issues every command as ``/bin/bash -lc '<real command>'``.
+_BASH_LC = re.compile(r"^\s*/bin/bash\s+-lc\s+(['\"])(?P<inner>.*)\1\s*$", re.S)
+
+#: The script must be python's argument, not merely named. ``sed -n '1,260p'
+#: evaluate.py``, ``ps aux | grep evaluate.py`` and greps through inspect_ai's
+#: source all name it without running it.
+_LAUNCH_PY = re.compile(r"\bpython3?\s+(?:-[\w-]+\s+)*[\w./-]*evaluate\.py\b")
+_LAUNCH_SH = re.compile(r"(?:^|[;&|]\s*|\bbash\s+|\bsh\s+)[\w./-]*run_eval[\w.-]*\.sh\b")
+
+_MODEL_PATH = re.compile(r"--model[-_]path[= ]\s*['\"]?([^\s'\"]+)")
+_LIMIT = re.compile(r"--limit[= ]\s*(-?\d+)")
+_MAXCONN = re.compile(r"--max[-_]connections[= ]\s*(\d+)")
+_JSON_OUT = re.compile(r"--json[-_]output[-_]file[= ]\s*['\"]?([^\s'\"]+)")
+
+_BACKGROUND = re.compile(r"\bnohup\b|[^&>]&\s*(?:$|\n|;|echo\b)")
+
+#: Both spellings the corpus produces: ``"accuracy": 0.7266`` from the json the
+#: harness writes, and ``Accuracy: 0.2339 (±0.0402)`` from the log line.
+_ACCURACY = re.compile(r'"?accuracy"?\s*[:=]\s*([0-9.]+)', re.I)
+
+#: The harness prints these when it moves a command off the foreground, and
+#: echoes the same id back on the retrieval that finally carries the output.
+_BG_HANDLE = re.compile(r"background \(ID: (\w+)\)|background with ID: (\w+)")
+_TASK_ID = re.compile(r"<task_id>(\w+)</task_id>")
+
+#: Full test-set sizes, so ``--limit 1319`` on GSM8K reads as a full evaluation
+#: rather than a subsample. Absent benchmarks fall back to "any positive limit
+#: is a subsample", which is the safe direction: it never calls a partial
+#: evaluation complete.
+_FULL_SIZE = {
+    "gsm8k": 1319,
+    "humaneval": 164,
+    "aime2025": 30,
+    "gpqamain": 448,
+    "arenahardwriting": 250,
+}
+
+
+def _parse_ts(ts: Any) -> datetime | None:
+    if ts is None or ts is pd.NA or not isinstance(ts, str) or not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _seconds(a: Any, b: Any) -> float | None:
+    ta, tb = _parse_ts(a), _parse_ts(b)
+    return None if ta is None or tb is None else (tb - ta).total_seconds()
+
+
+def unwrap(command: str) -> str:
+    """Strip codex's ``/bin/bash -lc '…'`` so one matcher serves both harnesses."""
+    m = _BASH_LC.match(command)
+    return m.group("inner") if m else command
+
+
+def _command(event: dict[str, Any]) -> str:
+    if event.get("type") != "tool_use":
+        return ""
+    return unwrap((event.get("args") or {}).get("command") or "")
+
+
+#: ``python evaluate.py --help`` reads the interface. That is a first-tier static
+#: check, not an evaluation, and counting it as one inflates the tally with calls
+#: that never touched a model.
+_HELP_ONLY = re.compile(r"evaluate\.py\s+(?:[\w./-]+\s+)*--help\b")
+
+
+def _form(command: str) -> str | None:
+    if _HELP_ONLY.search(command):
+        return None
+    if _LAUNCH_PY.search(command):
+        return "evaluate.py"
+    if _LAUNCH_SH.search(command):
+        return "run_eval.sh"
+    return None
+
+
+def _int(pattern: re.Pattern[str], command: str) -> int | None:
+    m = pattern.search(command)
+    return int(m.group(1)) if m else None
+
+
+def _str(pattern: re.Pattern[str], command: str) -> str | None:
+    m = pattern.search(command)
+    return m.group(1) if m else None
+
+
+def tier_for(limit: int | None, benchmark: str | None) -> int | None:
+    """Third tier for a subsample, fourth for the whole test set."""
+    if limit is None:
+        return None
+    if limit < 0:
+        return 4
+    full = _FULL_SIZE.get(benchmark or "")
+    if full is not None and limit >= full:
+        return 4
+    return 3
+
+
+def _accuracy_in(text: str | None) -> float | None:
+    if not text:
+        return None
+    for raw in _ACCURACY.findall(text):
+        try:
+            v = float(raw)
+        except ValueError:
+            continue
+        if 0.0 <= v <= 1.0:
+            return v
+    return None
+
+
+def _handles(text: str | None) -> set[str]:
+    if not text:
+        return set()
+    return {g for m in _BG_HANDLE.findall(text) for g in m if g}
+
+
+def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
+    with gzip.open(path, "rt") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+
+def _result_index(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for e in events:
+        if e.get("type") == "tool_result" and e.get("parent_tool_use"):
+            out.setdefault(e["parent_tool_use"], e)
+    return out
+
+
+def events_for_run(
+    run_id: str, events: list[dict[str, Any]], benchmark: str | None = None
+) -> list[dict[str, Any]]:
+    """Every evaluation this run launched, joined to the score it produced."""
+    events = sorted(events, key=lambda e: (e.get("agent_id") or "", e.get("i") or 0))
+    results = _result_index(events)
+    uses = [e for e in events if e.get("type") == "tool_use"]
+    ordered = [e for e in events if e.get("type") in ("tool_use", "tool_result")]
+
+    rows: list[dict[str, Any]] = []
+    for pos, event in enumerate(uses):
+        command = _command(event)
+        form = _form(command)
+        if form is None:
+            continue
+
+        own = results.get(event.get("tool_use_id") or "")
+        own_text = (own or {}).get("text") or ""
+        limit = _int(_LIMIT, command)
+        json_out = _str(_JSON_OUT, command)
+        background = bool(_BACKGROUND.search(command)) or bool(_handles(own_text))
+
+        artifacts = {a for a in (json_out,) if a}
+        artifacts |= set(re.findall(r"[\w./-]+\.log\b", command))
+        # The evaluated checkpoint's own name: agents that read a score out of an
+        # inspect_ai log rather than the file they asked for still tend to name
+        # the candidate they were judging.
+        model_path = _str(_MODEL_PATH, command)
+        if model_path:
+            leaf = model_path.rstrip("/").split("/")[-1]
+            if len(leaf) >= 4:
+                artifacts.add(leaf)
+        handles = _handles(own_text)
+
+        got, s_i, s_ts, via, acc = False, None, None, None, None
+        direct = _accuracy_in(own_text)
+        if direct is not None and not background:
+            got, s_i, s_ts, via, acc = True, own.get("i"), own.get("ts"), "returned", direct
+        else:
+            start_i = event.get("i") or 0
+            for later in ordered:
+                if (later.get("i") or 0) <= start_i or later.get("type") != "tool_result":
+                    continue
+                text = later.get("text") or ""
+                value = _accuracy_in(text)
+                if value is None:
+                    continue
+                parent_use = next(
+                    (u for u in uses if u.get("tool_use_id") == later.get("parent_tool_use")),
+                    None,
+                )
+                parent_cmd = _command(parent_use) if parent_use else ""
+                task_ids = set(_TASK_ID.findall(text))
+                if handles and task_ids & handles:
+                    channel = "task_id"
+                elif any(a in parent_cmd or a in text for a in artifacts):
+                    channel = "artifact"
+                else:
+                    continue
+                got, s_i, s_ts, via, acc = True, later.get("i"), later.get("ts"), channel, value
+                break
+
+        rows.append(
+            {
+                "run_id": run_id,
+                "i": event.get("i"),
+                "ts": event.get("ts"),
+                "form": form,
+                "model_path": model_path,
+                "limit": limit,
+                "max_connections": _int(_MAXCONN, command),
+                "json_output_file": json_out,
+                "mode": "background" if background else "foreground",
+                "tier": tier_for(limit, benchmark),
+                "got_signal": got,
+                "signal_i": s_i,
+                "signal_ts": s_ts,
+                "signal_via": via,
+                "accuracy": acc,
+                "wait_s": _seconds(event.get("ts"), s_ts) if got else None,
+                "command": command[:400],
+            }
+        )
+    return rows
+
+
+def frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    return pd.DataFrame(rows, columns=list(COLUMNS)).astype(DTYPES)
+
+
+def empty() -> pd.DataFrame:
+    return frame([])
+
+
+def build(events_dir: Path | None = None, benchmarks: dict[str, str] | None = None) -> pd.DataFrame:
+    """Evaluation events for every converted run under ``events_dir``."""
+    root = Path(events_dir) if events_dir is not None else paths.events_dir("posttrainbench")
+    rows: list[dict[str, Any]] = []
+    if root.is_dir():
+        for stream in sorted(root.glob("*.jsonl.gz")):
+            run_id = stream.name[: -len(".jsonl.gz")]
+            rows.extend(
+                events_for_run(
+                    run_id, list(_iter_events(stream)), (benchmarks or {}).get(run_id)
+                )
+            )
+    df = frame(rows)
+    return df.sort_values(["run_id", "i"], kind="stable").reset_index(drop=True)
+
+
+def save(df: pd.DataFrame, path: Path) -> Path:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    df.to_parquet(tmp, index=False)
+    tmp.replace(p)
+    return p
+
+
+def load(path: Path) -> pd.DataFrame:
+    return pd.read_parquet(path).astype(DTYPES)
+
+
+__all__ = [
+    "COLUMNS",
+    "DTYPES",
+    "build",
+    "empty",
+    "events_for_run",
+    "frame",
+    "load",
+    "save",
+    "tier_for",
+    "unwrap",
+]
