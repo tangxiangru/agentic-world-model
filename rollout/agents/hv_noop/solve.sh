@@ -17,8 +17,15 @@ python <<'PY'
 import os, re, shutil, sys
 from huggingface_hub import snapshot_download
 prompt = os.environ.get("PROMPT", "")
-m = re.search(r"`([^`]+/[^`]+)`", prompt)
-model_id = m.group(1) if m else "Qwen/Qwen3-1.7B-Base"
+# get_prompt.py escapes every backtick as \` , so a plain `([^`]+/[^`]+)` capture
+# takes the backslash and yields 'Qwen/Qwen3-1.7B-Base\', which snapshot_download
+# rejects with HFValidationError. Tolerate the escape, and refuse to guess: the
+# control shipping a different base model than the recipe arms trained from would
+# silently make the floor incomparable. Same fix as hv_recipe/solve.sh.
+m = re.search(r"\\?`([^`\\]+/[^`\\]+)\\?`", prompt)
+model_id = m.group(1).strip() if m else ""
+if not re.fullmatch(r"[\w.\-]+/[\w.\-]+", model_id):
+    raise SystemExit(f"[hv_noop] FATAL: no valid base model id in $PROMPT (got {model_id!r})")
 print("model_id from prompt:", model_id)
 src = snapshot_download(model_id, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model"])
 dst = os.path.join(os.getcwd(), "final_model")

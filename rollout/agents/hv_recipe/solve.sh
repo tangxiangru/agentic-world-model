@@ -205,14 +205,36 @@ MAX_EXAMPLES_SEEN = 20_000   # epochs x rows. Capped on examples SEEN, not on
 FEWSHOT = 10                 # inspect_evals/gsm8k default -- match the grader
 OUT = "/home/ben/task/final_model"
 
-cfg = os.environ.get("AGENT_CONFIG", "r699.s0")
+# The ARM is AGENT_CONFIG, so a default here is not a convenience -- it is the one
+# failure that voids the whole experiment quietly. If run_task.sh ever stopped
+# forwarding --env AGENT_CONFIG, every cell would fall through to the same recipe
+# and the pack would finish green with 6 identical arms and a spread of zero,
+# which reads as "recipe does not matter". Refuse instead.
+cfg = os.environ.get("AGENT_CONFIG", "").strip()
 rid, _, sd = cfg.partition(".")
-seed = int(sd[1:]) if sd.startswith("s") and sd[1:].isdigit() else 0
-recipe = json.load(open("/home/ben/task/recipes.json"))[rid]
+_RECIPES = json.load(open("/home/ben/task/recipes.json"))
+if rid not in _RECIPES:
+    raise SystemExit(f"[hv] FATAL: AGENT_CONFIG={cfg!r} -> recipe {rid!r} not in "
+                     f"{sorted(_RECIPES)}; refusing to fall back to a default arm")
+if not (sd.startswith("s") and sd[1:].isdigit()):
+    raise SystemExit(f"[hv] FATAL: AGENT_CONFIG={cfg!r} has no s<N> seed suffix")
+seed = int(sd[1:])
+recipe = _RECIPES[rid]
 print(f"[hv] recipe={rid} seed={seed} spec={json.dumps(recipe)}", flush=True)
 
-m = re.search(r"`([^`]+/[^`]+)`", os.environ.get("PROMPT", ""))
-MODEL = m.group(1) if m else "Qwen/Qwen3-1.7B-Base"
+# $PROMPT is the only channel that reaches this agent: run_task.sh injects
+# MODEL_TO_TRAIN only inside AGENT_CONTEXT_ENV, which is gated on the job having
+# an agents/<name>/payload dir, and neither hv agent has one. So the model id has
+# to be read out of the rendered prompt -- and get_prompt.py escapes every
+# backtick as \` , so the obvious `([^`]+/[^`]+)` capture takes the backslash
+# with it and yields 'Qwen/Qwen3-1.7B-Base\', which from_pretrained rejects with
+# HFValidationError on every cell. Tolerate the escape, and refuse to guess: a
+# silent fallback to a hardcoded default would train the wrong model without
+# saying so, and the run would look successful.
+_m = re.search(r"\\?`([^`\\]+/[^`\\]+)\\?`", os.environ.get("PROMPT", ""))
+MODEL = _m.group(1).strip() if _m else ""
+if not re.fullmatch(r"[\w.\-]+/[\w.\-]+", MODEL):
+    raise SystemExit(f"[hv] FATAL: no valid base model id in $PROMPT (got {MODEL!r})")
 print(f"[hv] base model = {MODEL}", flush=True)
 
 import numpy as np
