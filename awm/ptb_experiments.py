@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
 import re
 import subprocess
 import sys
@@ -509,6 +510,28 @@ def site_issues() -> list[str]:
     issues: list[str] = []
     if env.get("POST_TRAIN_BENCH_SLURM_GPU_MODE") != "gres":
         issues.append("site must use POST_TRAIN_BENCH_SLURM_GPU_MODE=gres")
+    submit_as_root = env.get("POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT", "0")
+    if submit_as_root not in ("0", "1"):
+        issues.append("POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT must be 0 or 1")
+    elif submit_as_root == "1":
+        run_as_user = env.get("POST_TRAIN_BENCH_SLURM_RUN_AS_USER", "")
+        current_user = pwd.getpwuid(os.getuid()).pw_name
+        if not run_as_user:
+            issues.append(
+                "root Slurm submission requires POST_TRAIN_BENCH_SLURM_RUN_AS_USER"
+            )
+        elif run_as_user != current_user or run_as_user == "root":
+            issues.append(
+                "root Slurm submission must drop back to the invoking non-root user"
+            )
+        sudo = subprocess.run(
+            ["sudo", "-n", "true"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if sudo.returncode:
+            issues.append("root Slurm submission requires non-interactive sudo")
     try:
         part = subprocess.check_output(
             ["scontrol", "show", "partition", partition, "-o"], text=True, stderr=subprocess.STDOUT
@@ -531,6 +554,13 @@ def site_issues() -> list[str]:
         if not cfg or "gres/gpu=8" not in cfg.group(1):
             issues.append(f"{node} does not advertise consumable gres/gpu=8 in CfgTRES")
     return issues
+
+
+def _release_command(ptb_env: dict[str, str], job_ids: str) -> list[str]:
+    command = ["scontrol", "release", job_ids]
+    if ptb_env.get("POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT") == "1":
+        command.insert(0, "sudo")
+    return command
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -762,7 +792,7 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
         job_ids = ",".join(job["job_id"] for job in receipt["jobs"])
         release = subprocess.run(
-            ["scontrol", "release", job_ids], text=True, capture_output=True, check=False
+            _release_command(ptb_env, job_ids), text=True, capture_output=True, check=False
         )
         if release.returncode:
             receipt["state"] = "release_failed"

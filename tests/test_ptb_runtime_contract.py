@@ -52,6 +52,15 @@ def test_gres_container_uses_logical_cuda_selector_and_records_physical_ids():
     assert 'POST_TRAIN_BENCH_VISIBLE_GPUS="${SLURM_JOB_GPUS' not in script
 
 
+def test_root_owned_allocation_drops_privileges_before_task_setup():
+    script = SINGLE_TASK.read_text(encoding="utf-8")
+    privilege_drop = script.index('exec /usr/sbin/runuser --user "$RUN_AS_USER"')
+    argument_check = script.index('if [ "$#" -ne 7 ]')
+
+    assert 'if [ "$(id -u)" = "0" ]; then' in script
+    assert privilege_drop < argument_check
+
+
 def test_final_eval_caches_live_on_job_local_storage():
     script = RUN_TASK.read_text(encoding="utf-8")
     run_evaluation = shell_function(script, "run_evaluation", "run_evaluation_with_retry")

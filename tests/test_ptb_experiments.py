@@ -244,7 +244,7 @@ def test_base_model_snapshot_accepts_monolithic_safetensors(tmp_path: Path) -> N
 def test_result_audit_requires_full_official_flow(tmp_path: Path) -> None:
     issues = ptb.audit_result(tmp_path)
     assert "missing or empty: metrics.json" in issues
-    assert "missing or empty: judgement_general.json" in issues
+    assert "missing or empty: judgement_general.json or its _rerun variant" in issues
 
 
 def test_receipt_validation(tmp_path: Path) -> None:
@@ -326,3 +326,10 @@ def test_formal_submit_holds_all_jobs_before_one_release(
     assert len(receipt["jobs"]) == 32
     assert receipt["jobs"][0]["job_name"] == ("gangda_trial_0828.ptb.test.g01.formal.r1")
     assert set(receipt["context_validation"]) == set(cell_ids)
+
+
+def test_root_owned_allocations_are_released_through_sudo() -> None:
+    assert ptb._release_command(
+        {"POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "1"}, "10,11"
+    ) == ["sudo", "scontrol", "release", "10,11"]
+    assert ptb._release_command({}, "10,11") == ["scontrol", "release", "10,11"]
