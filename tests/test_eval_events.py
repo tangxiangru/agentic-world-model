@@ -267,9 +267,20 @@ class TestLoopedEvaluations:
             "python evaluate.py --model-path ckpt/a", '{"accuracy": 0.80}'
         ) == 1
 
-    def test_a_silent_loop_falls_back_to_one(self) -> None:
-        """Not the truth -- a floor, like every other row in this table."""
-        assert eval_events.call_count("for s in 1 2; do python evaluate.py; done", "") == 1
+    def test_a_silent_loop_is_counted_from_its_list(self) -> None:
+        """Two items, two evaluations, whether or not either printed a score.
+
+        Counting printed scores instead made claude-code look like a 1%
+        undercount when one of its runs was 41% low: readings that come back
+        through a background task file leave this event's result empty.
+        """
+        assert eval_events.call_count("for s in 1 2; do python evaluate.py; done", "") == 2
+
+    def test_a_substituted_list_cannot_be_counted(self) -> None:
+        """``for f in $(ls ckpt/*)`` — a floor of one, and it says so."""
+        assert eval_events.call_count(
+            "for f in $(ls ckpt/*); do python evaluate.py --model-path $f; done", ""
+        ) == 1
 
 
 class TestEvaluatorVariant:

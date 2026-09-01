@@ -360,17 +360,30 @@ def tier_for(limit: int | None, benchmark: str | None, form: str | None = None) 
 #: **So evaluation counts must not be compared across the two families.**
 _LOOP = re.compile(r"\bfor\s+\w+\s+in\b|\bwhile\s+read\b")
 
+#: The list a ``for`` iterates over. Counting the loop's own items rather than
+#: the scores it printed matters: when the readings come back through a
+#: background task file instead of this event's result, counting printed scores
+#: sees one call. That is what made claude-code look like a 1% undercount when
+#: an annotator's run was 41% low; counted from the list it is 9%, against
+#: codex's 17%. The asymmetry is real and was nine times smaller than reported.
+_FOR_LIST = re.compile(r"\bfor\s+\w+\s+in\s+([^\n;]+?)\s*;?\s*do\b")
+
 
 def call_count(command: str, own_text: str | None) -> int:
     """How many evaluations this one event ran.
 
-    A loop body runs once per score it printed; when the loop printed none, one
-    is the floor rather than the truth, and the row is a lower bound like every
-    other row.
+    From the loop's own item list where there is one, falling back to the
+    scores printed. Both are lower bounds — a list built by command
+    substitution cannot be counted from the text.
     """
     if not _LOOP.search(command):
         return 1
-    return max(1, len(_ACCURACY.findall(own_text or "")))
+    counted = 1
+    for match in _FOR_LIST.finditer(command):
+        items = [w for w in match.group(1).split() if w and not w.startswith("$(")]
+        if 1 < len(items) <= 40:
+            counted = max(counted, len(items))
+    return max(counted, len(_ACCURACY.findall(own_text or "")), 1)
 
 
 def _own_slice(text: str | None, command: str) -> str | None:
@@ -483,7 +496,7 @@ def events_for_run(
         if _LAUNCH_IMPORT.search(whole) and not _INSPECTS_PROCESS.search(whole):
             rows.extend(_one(
                 run_id, event, pos, whole, "evaluate.py", uses, ordered, results,
-                benchmark, known, sources,
+                benchmark, known, sources, whole,
             ))
             continue
         # A command may launch several evaluations (``run_eval.sh a … ;
@@ -495,7 +508,8 @@ def events_for_run(
         for command in (launching or []):
             form = _form(command, known)
             rows.extend(_one(
-                run_id, event, pos, command, form, uses, ordered, results, benchmark, known, sources
+                run_id, event, pos, command, form, uses, ordered, results, benchmark, known,
+                sources, whole,
             ))
     return rows
 
@@ -512,6 +526,7 @@ def _one(
     benchmark: str | None,
     known: dict[str, set[str]],
     sources: dict[str, str] | None = None,
+    whole: str | None = None,
 ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         own = results.get(_key(event))
@@ -637,7 +652,9 @@ def _one(
                 "json_output_file": json_out,
                 "mode": "background" if background else "foreground",
                 "tier": tier_for(limit, benchmark, form),
-                "n_calls": call_count(command, own_text),
+                # The loop header and the evaluate.py call usually land in
+                # different segments, so the count needs the whole command.
+                "n_calls": call_count(whole or command, own_text),
                 # How many accuracies the event the score came from carried.
                 # Above one, the attribution is a choice: the rule takes the
                 # first, and three annotators found cases where a neighbour's
