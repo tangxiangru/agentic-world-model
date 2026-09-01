@@ -114,9 +114,12 @@ def validate_manifest(data: dict[str, Any]) -> None:
     for key, value in expected.items():
         if contract.get(key) != value:
             raise ExperimentError(f"contract.{key} must be {value!r}")
-    expected_run_index = 2 if len(tasks) == 2 else 1
-    if contract.get("run_index") != expected_run_index:
-        raise ExperimentError(f"contract.run_index must be {expected_run_index}")
+    run_index = contract.get("run_index")
+    if len(tasks) == 1:
+        if run_index != 1:
+            raise ExperimentError("contract.run_index must be 1 for the original single-task batch")
+    elif not isinstance(run_index, int) or run_index < 2:
+        raise ExperimentError("contract.run_index must be at least 2 for a dual-task retry")
     if contract.get("agent_auth") != {
         "provider": "vertex",
         "project": "sercan-v1",

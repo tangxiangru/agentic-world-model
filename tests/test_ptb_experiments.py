@@ -97,6 +97,8 @@ def test_dual_task_manifest_is_one_atomic_thirty_two_cell_matrix() -> None:
     launches = ptb.build_launches(data)
 
     assert data["contract"]["tasks"] == ["gsm8k", "aime2025"]
+    assert data["batch_id"].endswith("batch1-v3")
+    assert data["contract"]["run_index"] == 3
     assert [launch.cell_id for launch in launches] == [
         *(f"g{index:02d}" for index in range(1, 17)),
         *(f"a{index:02d}" for index in range(1, 17)),

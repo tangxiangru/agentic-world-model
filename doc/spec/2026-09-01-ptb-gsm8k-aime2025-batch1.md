@@ -18,10 +18,12 @@ submitted held under one receipt and released together. The site launcher restri
 `slurm2-a3nodesetondem-[0-3]`, exactly 32 H100s. Per node, eight cells require 128 CPU, 1 TiB RAM,
 and at most 3.2 TiB local scratch, within the verified node capacities.
 
-The active retry identity is `gsm8k-aime2025-opus5-4x4x2-batch1-v2`, run index 2. Run index 1 is
+The active retry identity is `gsm8k-aime2025-opus5-4x4x2-batch1-v3`, run index 3. Run index 1 is
 retained as a failed pilot receipt: its frozen PTB archive omitted the gitignored GSM8K
-`test_data.json`. Version 2 explicitly tracks both task decontamination assets and the local gate
-rejects untracked required assets.
+`test_data.json`. Version 2 tracked both assets but exposed two runtime faults: physical GRES ids
+were passed into the cgroup's logical GPU namespace, and final-eval compiler caches filled the
+contained home. Version 3 uses logical CUDA ids and binds all final-eval caches to job-local SSD.
+The local gate rejects untracked required assets.
 
 ## Gates and pilots
 

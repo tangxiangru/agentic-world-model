@@ -12,6 +12,7 @@ from pathlib import Path
 RUN_TASK = (
     Path(__file__).resolve().parents[1] / "third_party" / "PostTrainBench" / "src" / "run_task.sh"
 )
+SINGLE_TASK = RUN_TASK.parent / "commit_utils" / "slurm" / "single_task.sbatch"
 
 
 def shell_function(script: str, name: str, next_name: str) -> str:
@@ -37,3 +38,22 @@ def test_result_directory_is_bound_into_final_eval_container():
     assert '--bind "${EVAL_DIR}:${EVAL_DIR}"' in run_evaluation
     assert '--model-path "$EVAL_DIR/final_model"' in run_evaluation
     assert '--json-output-file "${EVAL_DIR}/metrics.json"' in run_evaluation
+
+
+def test_gres_container_uses_logical_cuda_selector_and_records_physical_ids():
+    script = SINGLE_TASK.read_text(encoding="utf-8")
+
+    assert 'POST_TRAIN_BENCH_ALLOCATED_GPUS="${SLURM_JOB_GPUS:-}"' in script
+    assert 'POST_TRAIN_BENCH_VISIBLE_GPUS="${CUDA_VISIBLE_DEVICES}"' in script
+    assert 'POST_TRAIN_BENCH_VISIBLE_GPUS="${SLURM_JOB_GPUS' not in script
+
+
+def test_final_eval_caches_live_on_job_local_storage():
+    script = RUN_TASK.read_text(encoding="utf-8")
+    run_evaluation = shell_function(script, "run_evaluation", "run_evaluation_with_retry")
+
+    assert 'local eval_home="${JOB_TMP}/eval-home"' in run_evaluation
+    assert '--home "${eval_home}:${HOME}"' in run_evaluation
+    assert '--env "VLLM_CACHE_ROOT=${HOME}/.cache/vllm"' in run_evaluation
+    assert '--env "TORCHINDUCTOR_CACHE_DIR=${HOME}/.cache/torchinductor"' in run_evaluation
+    assert '--env "TRITON_CACHE_DIR=${HOME}/.cache/triton"' in run_evaluation
