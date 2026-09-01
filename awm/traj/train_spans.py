@@ -547,6 +547,47 @@ def _capped(sec: float | None, command: str) -> tuple[float | None, bool]:
     return float(cap), True
 
 
+def _self_reported(
+    rows: list[dict[str, Any]], events: list[dict[str, Any]]
+) -> None:
+    """Raise any span recorded shorter than the runtime it reported itself.
+
+    A training cannot have occupied less wall clock than the Trainer says it
+    ran for, and 141 spans (9%) were recorded below their own figure — 152
+    hours in total, the largest systematic error in this table. The cause is
+    pairing: a driver script names the output directory the moment it starts,
+    so "the artifact was consumed" fires seconds after launch and one run's
+    three trainings read 0.04h against a self-reported 2h.
+
+    Each report is attributed to **the last span started before it** that owns
+    that artifact, never to all of them: six retries writing ``ckpt_sft_v1``
+    would otherwise each claim the one success's runtime.
+    """
+    reports = [
+        (e.get("ts"), e.get("text") or "")
+        for e in events
+        if e.get("type") == "tool_result" and "train_runtime" in (e.get("text") or "")
+    ]
+    for ts_report, text in reports:
+        value = _train_runtime_in(text)
+        if not value or not ts_report:
+            continue
+        owner = None
+        for row in rows:
+            out = row.get("out_dir")
+            if not out or row.get("kind") != "real":
+                continue
+            leaf = out.rstrip("/").split("/")[-1]
+            if len(leaf) < 4 or leaf not in text:
+                continue
+            start = row.get("ts_start")
+            if start and start <= ts_report and (owner is None or start >= owner["ts_start"]):
+                owner = row
+        if owner is not None and (owner.get("sec") or 0) < value:
+            owner["sec"] = float(value)
+            owner["end_reason"] = "self_reported"
+
+
 def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Every training this run launched, with the wall clock it occupied."""
     events = sorted(events, key=lambda e: (e.get("agent_id") or "", e.get("i") or 0))
@@ -668,6 +709,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
                 "command": cmd[:400],
             }
         )
+    _self_reported(rows, events)
     return rows
 
 

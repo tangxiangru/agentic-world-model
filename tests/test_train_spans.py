@@ -535,3 +535,46 @@ class TestLogFileIsNotAnArtifact:
         ]
         assert train_spans.spans_for_run("r", events)[0]["kind"] == "smoke"
 
+
+class TestSelfReportedRuntime:
+    """A training cannot have taken less wall clock than it says it ran for."""
+
+    def _events(self, second_launch: bool):
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
+             "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "nohup bash driver.sh > /dev/null &"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:00:01Z", "text": ""},
+            # The driver names the output the moment it starts, so pairing
+            # fires within seconds of the launch.
+            {"run_id": "r", "i": 3, "type": "tool_use", "tool": "Bash", "tool_use_id": "t2",
+             "ts": "2026-01-01T00:02:00Z",
+             "args": {"command": "python evaluate.py --model-path ckpt/run_b"}},
+            {"run_id": "r", "i": 9, "type": "tool_result", "parent_tool_use": "t9",
+             "ts": "2026-01-01T02:10:00Z",
+             "text": "ckpt/run_b done {'train_runtime': 7380.0, 'epoch': 1.0}"},
+        ]
+        launch = {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
+                  "ts": "2026-01-01T00:00:00Z",
+                  "args": {"command": "nohup python train.py --out ckpt/run_b &"}}
+        events[0] = launch
+        if second_launch:
+            events.insert(3, {"run_id": "r", "i": 4, "type": "tool_use", "tool": "Bash",
+                              "tool_use_id": "t4", "ts": "2026-01-01T00:30:00Z",
+                              "args": {"command": "nohup python train.py --out ckpt/run_b &"}})
+        return events
+
+    def test_a_span_below_its_own_report_is_raised(self) -> None:
+        rows = train_spans.spans_for_run("r", self._events(False))
+        assert rows[0]["sec"] == 7380.0
+        assert rows[0]["end_reason"] == "self_reported"
+
+    def test_only_the_last_launch_before_the_report_claims_it(self) -> None:
+        """Six retries writing the same directory must not each claim the one
+        success's runtime."""
+        rows = train_spans.spans_for_run("r", self._events(True))
+        claimed = [r for r in rows if r["end_reason"] == "self_reported"]
+        assert len(claimed) == 1
+        assert claimed[0]["i"] == 4
+
