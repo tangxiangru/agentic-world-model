@@ -60,3 +60,26 @@ class TestRepair:
                    "args": {"command": "x"}}]
         out, n = repair.repair("fam__absent", events, root=tmp_path)
         assert (out, n) == (events, 0)
+
+    def test_lost_launches_are_enumerated(self, tmp_path) -> None:
+        """Raw item.started lines minus the lines any event already claims.
+
+        Locating them is mechanical; only reading them needs judgement. And
+        repairing without reinstating is worse than not repairing: a displaced
+        args.command is sometimes the stream's only record of a real
+        evaluation, so putting the true command back deletes it.
+        """
+        root = _raw(tmp_path)
+        events = [{"type": "tool_use", "i": 3, "source_ref": {"line": 1},
+                   "args": {"command": "bash timer.sh"}}]
+        out = repair.lost("fam__tail", events, root=root)
+        assert [e["args"]["command"] for e in out] == ["find templates -type f"]
+        assert out[0]["origin"] == "reinstated"
+        assert out[0]["ts"] == "2026-04-25T18:25:14Z"
+        assert out[0]["i"] > 3, "must sort after the event it follows"
+
+    def test_nothing_lost_when_every_line_is_claimed(self, tmp_path) -> None:
+        events = [{"type": "tool_use", "i": 1, "source_ref": {"line": 1}, "args": {}},
+                  {"type": "tool_use", "i": 2, "source_ref": {"line": 2}, "args": {}}]
+        assert repair.lost("fam__tail", events, root=_raw(tmp_path)) == []
+

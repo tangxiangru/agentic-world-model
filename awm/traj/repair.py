@@ -91,4 +91,63 @@ def repair(
     return events, repaired
 
 
-__all__ = ["commands_by_line", "raw_path", "repair"]
+def lost(
+    run_id: str, events: list[dict[str, Any]], root: Path | None = None
+) -> list[dict[str, Any]]:
+    """The command launches that never reached the event stream, as events.
+
+    A set difference: every ``item.started`` line in the raw file, minus every
+    line some event's ``source_ref`` already claims. An annotator pointed out
+    that this is mechanical — locating them needs no judgement, only reading
+    them does — and that repairing without it makes things worse. A displaced
+    ``args.command`` is sometimes the stream's *only* record of a real
+    evaluation; putting the true command back then deletes that evaluation from
+    every table. Reinstating the lost launches is what makes the repair whole.
+
+    The synthetic events carry the raw timestamp and an ``i`` interpolated after
+    the nearest earlier claimed line, so they sort into place. They are marked
+    ``origin: "reinstated"`` — they have no ``tool_result``, and any duration
+    read off them is a launch time only.
+    """
+    path = raw_path(run_id, root)
+    if path is None:
+        return []
+    truth = commands_by_line(path)
+    stamps = _timestamps_by_line(path)
+    claimed = {
+        (e.get("source_ref") or {}).get("line") for e in events if e.get("source_ref")
+    }
+    anchor = {
+        (e.get("source_ref") or {}).get("line"): (e.get("i"), e.get("turn"))
+        for e in events if e.get("source_ref")
+    }
+    out: list[dict[str, Any]] = []
+    for line, command in sorted(truth.items()):
+        if line in claimed:
+            continue
+        earlier = [ln for ln in anchor if ln is not None and ln < line]
+        base_i, turn = anchor[max(earlier)] if earlier else (0, None)
+        out.append({
+            "run_id": run_id,
+            "i": (base_i or 0) + 0.5,
+            "ts": stamps.get(line),
+            "turn": turn,
+            "type": "tool_use",
+            "tool": "command_execution",
+            "origin": "reinstated",
+            "source_ref": {"file": path.name, "line": line},
+            "args": {"command": command},
+        })
+    return out
+
+
+def _timestamps_by_line(path: Path) -> dict[int, str]:
+    out: dict[int, str] = {}
+    for number, text in enumerate(path.read_text(errors="ignore").splitlines(), start=1):
+        m = re.match(r"^\[([^\]]+)\]", text)
+        if m:
+            out[number] = m.group(1)
+    return out
+
+
+__all__ = ["commands_by_line", "lost", "raw_path", "repair"]
