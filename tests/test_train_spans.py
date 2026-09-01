@@ -394,3 +394,21 @@ class TestTimeoutCeiling:
         assert rows[0]["sec"] == 3600
         assert rows[0]["end_reason"] == "consumed"
 
+
+class TestOutDirOfTheLaunch:
+    def test_a_packer_before_the_trainer_does_not_donate_its_out(self) -> None:
+        """``pack.py --out data/packC2 && train_sft.py --out ckpt/sftB``.
+
+        Taking the first --out registered a data directory as the training's
+        artifact, so nothing ever consumed it and the span ran to the end of
+        the run.
+        """
+        assert train_spans._out_dir(
+            "python scripts/pack.py --out data/packC2 --budget 46e6"
+            " && nohup python scripts/train_sft.py --data data/packC2"
+            " --out ckpt/sftB --lr 1e-5 &"
+        ) == "ckpt/sftB"
+
+    def test_a_lone_launch_is_unchanged(self) -> None:
+        assert train_spans._out_dir("python train_sft.py --out ckpt/v1") == "ckpt/v1"
+

@@ -317,7 +317,20 @@ def effective_batch(command: str) -> int | None:
     return bs * ga if bs and ga else None
 
 
-def _out_dir(command: str) -> str | None:
+def _out_dir(command: str, known: dict[str, set[str]] | None = None) -> str | None:
+    """The output directory of the *launch*, not of whatever ran before it.
+
+    ``python pack.py --out data/packC2 && python train_sft.py --out ckpt/sftB``
+    has two, and taking the first registered a data directory as the training's
+    artifact — so nothing ever consumed it, and the span ran to the end of the
+    run. Search the segment that carries the launch; fall back to the whole
+    command when no segment can be singled out.
+    """
+    for seg in _launch_segments(command):
+        if _is_launch(seg, known):
+            m = _OUT_DIR.search(seg)
+            if m:
+                return m.group(1).rstrip("/")
     m = _OUT_DIR.search(command)
     return m.group(1).rstrip("/") if m else None
 
@@ -474,7 +487,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
         cmd = _command(e)
         if not _is_launch(cmd, known):
             continue
-        out = _out_dir(cmd)
+        out = _out_dir(cmd, known)
         if out is None:
             # Ordered by how specific the evidence is to *this* launch. The
             # script's own fixed destination is best: it comes from the file
@@ -526,7 +539,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
             last_seen: str | None = None
             for later in uses[pos + 1 :]:
                 later_cmd = _command(later)
-                if out_dir and _is_launch(later_cmd, known) and _out_dir(later_cmd) == out_dir:
+                if out_dir and _is_launch(later_cmd, known) and _out_dir(later_cmd, known) == out_dir:
                     ts_end, end_reason = later.get("ts"), "superseded"
                     break
                 if _KILL.search(later_cmd):

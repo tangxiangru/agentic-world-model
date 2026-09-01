@@ -155,3 +155,22 @@ class TestProseMention:
         assert len(rows) == 1
         assert rows[0]["path"] is None, "a degenerate suffix must not pose as a path"
 
+
+class TestProseInSource:
+    def test_a_docstring_naming_the_scorer_does_not_make_a_scorer(self) -> None:
+        # A data builder whose docstring says it writes evaluate.py's format was
+        # classified an evaluator on that line alone, and its launch then
+        # collected a neighbouring evaluation's score.
+        from awm.traj import scripts
+        events = [{"run_id": "r", "i": 1, "type": "tool_use", "tool": "Write", "args": {
+            "file_path": "build_data.py",
+            "content": '"""Build SFT data in the exact format used by evaluate.py."""\n'
+                       "import json\nrows = [json.loads(x) for x in open('gsm8k.jsonl')]\n"}}]
+        assert "evaluator" not in scripts.learn(events).get("build_data.py", set())
+
+    def test_a_real_call_still_classifies(self) -> None:
+        from awm.traj import scripts
+        events = [{"run_id": "r", "i": 1, "type": "tool_use", "tool": "Write", "args": {
+            "file_path": "ev.sh", "content": "python evaluate.py --model-path $1 --limit 150\n"}}]
+        assert "evaluator" in scripts.learn(events)["ev.sh"]
+

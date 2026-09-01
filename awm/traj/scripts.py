@@ -71,7 +71,21 @@ def _unwrap(command: str) -> str:
     return m.group("inner") if m else command
 
 
+#: Docstrings and comments describe a file; they do not make it one. A data
+#: builder opening with ``"""Build SFT data in the exact format used by
+#: evaluate.py."""`` was classified an evaluator, and its launch then collected
+#: a neighbouring evaluation's score.
+_DOCSTRING = re.compile(r'("""|\'\'\')(?:.|\n)*?\1')
+_COMMENT = re.compile(r"(?m)(?<!['\"])#[^\n]*")
+
+
+def _code_only(body: str) -> str:
+    """The body with its prose removed, so a mention cannot pose as a call."""
+    return _COMMENT.sub(" ", _DOCSTRING.sub(" ", body))
+
+
 def _roles(body: str) -> set[str]:
+    body = _code_only(body)
     roles: set[str] = set()
     if any(p.search(body) for p in _TRAINER_BODY):
         # ``.train()`` alone is too weak; require a training library nearby.
