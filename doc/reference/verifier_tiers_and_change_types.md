@@ -205,9 +205,17 @@ vllm==0.11.0   transformers==4.57.3   peft==0.18.1   trl==0.27.2
 
 | 机制 | 证据来源 | 状态 |
 |---|---|---|
-| vLLM 只读 `temperature`,忽略 `do_sample` | 多条轨迹里 agent 读 `vllm/config/model.py` 的 `get_diff_sampling_param` 后的记述,加上"改 temperature 后分数跳变"的行为证据 | **外部佐证** |
+| vLLM 读 `generation_config.json` 的一组采样字段,`do_sample` **不在**其中 | 三条 run **逐字打印了 pin 住版本(vllm 0.11.0)的 `get_diff_sampling_param` 源码**,`available_params` 含 `temperature / top_k / top_p / min_p / repetition_penalty / max_new_tokens`,不含 `do_sample` | **观察(源码原文,非转述)** |
 | `save_pretrained` **只写与库默认不同的字段** | 三条 run 的**原始 config 全文**(非转述),覆盖两个方向 | **观察,机制已定,n=3** |
 | LoRA 默认不训 `lm_head` / `embed_tokens` | peft 的默认行为,加上"加 `modules_to_save` 后分数从 4% 跳到 32%"的行为证据 | **外部佐证** |
+
+**第一条比原来写的宽,而且多出一个后果。** 文档此前写的是「只认 `temperature`」——那是不完整的。同一份源码原文里 `available_params` 还含 `repetition_penalty` 与 `max_new_tokens`,两者都有受控的行为证据:一条 run 用逐字节相同的权重(`cp -r`)、逐字相同的评测命令,只设 `repetition_penalty=1.05`,截断从 23 降到 18、自然终止从 7 升到 12;另一条打印出源码里的这一行——
+
+```
+diff_sampling_param["max_tokens"] = diff_sampling_param.pop("max_new_tokens")
+```
+
+**也就是说 `generation_config.json` 里的 `max_new_tokens` 会盖过 `evaluate.py` 显式传的 `max_tokens`。** 这把「整份重写顺手删掉 `max_new_tokens`」从一条无害的记账差异变成了一个真实杠杆:那条 run 的同一份 grpo1 权重,无上限时 0/30,加了 4096 上限并设 temperature 0 之后 3/30,**是它全程唯一有效的提分动作**。
 
 **第二条已经从「单点转述」升级。** 三名标注者报了表面矛盾的结果:两条 run 里 base 的 `do_sample` 在自训 checkpoint 中消失,第三条(gemma-3-4b-pt)里它连同 `top_k: 64` / `top_p: 0.95` 完整保留。两边的**原始 JSON 都在轨迹里**,不是记述。
 
@@ -217,6 +225,8 @@ vllm==0.11.0   transformers==4.57.3   peft==0.18.1   trl==0.27.2
 - base 写着 `do_sample: true` + `top_k` + `top_p` → 都非默认 → **原样保留**(gemma 那条)。
 
 第三名标注者还给出了同一条 run 内的双向对照:agent 把 `do_sample` 设成 `false` 存出后字段不见了,改设成 `true` 再存,字段又出现。**所以「丢字段」不是 bug,是差分序列化;判断某个 checkpoint 会不会丢,看的是那个值是否等于库默认。**
+
+**但反过来推不成立。** 一名标注者给了反例:某条 run 里 `temperature: 0.0`(非默认值)照样消失了,原因不是 `save_pretrained`——是 agent 自己给合并脚本加的「保存前归一化」把它一并抹掉了。所以这条规则只约束 `save_pretrained` 本身的行为;**看到字段消失不能反推它等于库默认**,还要先确认这一步走的是 `save_pretrained` 而不是 agent 自写的落盘路径。
 
 **其余两条解释力很强、行为证据一致,但都不是本仓库能独立验证的事实。** 引用时必须带上这个限定——§3 里 C1 和 C4 复述这些机制的地方同样受此约束。要把它们升级为受控事实,需要在 pin 住的容器版本里直接跑最小复现(§6 缺口 5)。
 
