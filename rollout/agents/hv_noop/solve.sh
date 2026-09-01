@@ -69,12 +69,21 @@ try:
         json.dump(_gc, _f, indent=2)
     print(f"[hv_noop] decode pinned: {_gc}")
 except Exception as _e:
-    #: Loud, not fatal: a crash here costs the control cell outright, while an unpinned
-    #: control is still a number -- one that must not be compared to the recipe arms.
-    print(f"[hv_noop] WARNING: could NOT pin decode ({_e!r}). This cell's decode does "
-          f"NOT match the hv_recipe arms; do not read it as a floor.")
+    #: Fatal, not a warning. This used to print and continue, on the reasoning that an
+    #: unpinned control is still a number -- but nothing downstream re-reads
+    #: generation_config.json, so that number reaches the board indistinguishable from a
+    #: pinned one, and it is sampled at 1.0 while every hv_recipe arm is greedy. "Was
+    #: this arm trained" and "did this cell get the harness's decode" then become the
+    #: same column, which is the exact confound the pin exists to remove. A missing
+    #: control is a hole you can see; a mis-decoded one is a floor you cannot.
+    raise SystemExit(f"[hv_noop] FATAL: could not pin decode ({_e!r}); refusing to ship "
+                     f"a control whose decode does not match the hv_recipe arms")
 
 print(sorted(os.listdir(dst)))
 PY
-ls -la final_model
-echo "hv_noop agent done"
+NOOP_RC=$?
+ls -la final_model || true
+echo "hv_noop agent done rc=${NOOP_RC}"
+# Propagate: without this the heredoc could raise, final_model/ be absent or
+# unpinned, and run_task.sh still record `exit_code: 0 / status: exited normally`.
+exit "${NOOP_RC}"

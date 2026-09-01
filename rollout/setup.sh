@@ -17,13 +17,32 @@ SRC=/rmeng_data/robtang/PostTrainBench
 DST=${HV_PTB_DIR:-/rmeng_data/robtang/ptb-hvrecipe}
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# PIN used to default to the SOURCE checkout's current HEAD, which quietly re-pins
+# this one on every re-run -- and setup.sh is the natural way to reinstall an agent,
+# so the reinstall moved the apparatus. SRC is another session's live working repo
+# (three commits on 2026-08-31 alone; on 2026-08-30 three separate commits each
+# rewrote src/run_task.sh), so "the SHA I audited" and "the SHA I ran" would drift
+# apart with nothing in the log saying so.
+#
+# Now: a fresh clone takes SRC's HEAD, an existing checkout keeps the SHA it is on,
+# and moving an existing checkout takes an explicit HV_PTB_SHA. Reinstalling an
+# agent no longer touches the pin.
+#
+# Never run this while cells are live either way: the checkout below rewrites
+# tracked-file inodes, and bash reads a running script incrementally.
 if [ ! -d "$DST/.git" ]; then
     echo "cloning $SRC -> $DST"
     git clone --quiet "$SRC" "$DST"
+    PIN="${HV_PTB_SHA:-$(git -C "$SRC" rev-parse HEAD)}"
+else
+    PIN="${HV_PTB_SHA:-$(git -C "$DST" rev-parse HEAD)}"
 fi
-PIN="${HV_PTB_SHA:-$(git -C "$SRC" rev-parse HEAD)}"
-git -C "$DST" fetch --quiet origin
-git -C "$DST" checkout --quiet --detach "$PIN"
+CURRENT="$(git -C "$DST" rev-parse HEAD)"
+if [ "$PIN" != "$CURRENT" ]; then
+    echo "re-pinning $CURRENT -> $PIN"
+    git -C "$DST" fetch --quiet origin
+    git -C "$DST" checkout --quiet --detach "$PIN"
+fi
 echo "pinned to $(git -C "$DST" rev-parse HEAD)"
 
 for a in hv_recipe hv_noop; do

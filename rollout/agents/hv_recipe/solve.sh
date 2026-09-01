@@ -246,29 +246,55 @@ set_seed(seed)
 random.seed(seed)
 np.random.seed(seed)
 
-# --- the grader's prompt, read from the grader where possible ----------------
-# inspect_evals/gsm8k builds a fewshot system message from the train split and
-# asks for a terminal `ANSWER: $ANSWER` line. Import it rather than guess; the
-# literal below is the documented fallback and is printed either way so the
-# rendered example is auditable in solve_out.txt.
-USER_TMPL = ("Solve the following math problem step by step. The last line of "
-             "your response should be of the form \"ANSWER: $ANSWER\" (without "
-             "quotes) where $ANSWER is the answer to the problem.\n\n{question}"
-             "\n\nRemember to put your answer on its own line after \"ANSWER:\".")
+# --- the grader's prompt, read from the grader itself ------------------------
+# inspect_evals/gsm8k wraps every test question in MATH_PROMPT_TEMPLATE and
+# prepends a 10-shot system message. Train on a different wrapper and every arm
+# is answering a question it was never shown, which depresses the whole board and
+# compresses exactly the between-recipe spread this experiment is trying to read.
+#
+# The import used to scan `dir(inspect_evals.gsm8k)` -- the PACKAGE -- but the
+# constant lives in the `inspect_evals.gsm8k.gsm8k` MODULE and the package does
+# not re-export it, so the scan found nothing and the fallback fired every time,
+# silently. Verified in opus_5.sif: the package imports fine and the scan returns
+# []. Import the module by name instead, and make the miss loud.
+#
+# The two differ in their closing instruction and in the trailing "Reasoning:"
+# line, so the old fallback was NOT the grader's prompt. Measured cost of
+# adopting the real one, over all 7473 gsm8k train rows with the eval's chat
+# template: p50 1905 -> 1944 tokens, max 2208 -> 2247, still 0.00% over MAX_LEN.
+_MM = None
 try:
-    import inspect_evals.gsm8k as _g
-    for _n in dir(_g):
-        _v = getattr(_g, _n)
-        if isinstance(_v, str) and "ANSWER" in _v and "{" in _v:
-            USER_TMPL = _v
-            print(f"[hv] took the user template from inspect_evals.gsm8k.{_n}")
-            break
-    else:
-        print("[hv] inspect_evals.gsm8k imported but no template string found; "
-              "using the documented fallback")
-except Exception as e:
-    print(f"[hv] inspect_evals not importable ({type(e).__name__}); "
-          f"using the documented fallback")
+    from inspect_evals.gsm8k.gsm8k import MATH_PROMPT_TEMPLATE as _MM
+except Exception as e:                                    # noqa: BLE001
+    print(f"[hv] WARNING: inspect_evals.gsm8k.gsm8k not importable "
+          f"({type(e).__name__}: {e}); falling back to the pinned literal")
+
+# The pinned literal is the grader's template verbatim as of inspect_evals in
+# opus_5.sif, with the placeholder renamed. It exists so a cell still runs if the
+# import breaks -- and the comparison below turns a silent divergence into a log
+# line rather than a mystery in the scores.
+_PINNED = ('Solve the following math problem step by step. The last line of your '
+           'response should be of the form "ANSWER: $ANSWER" (without quotes) '
+           'where $ANSWER is the answer to the problem.\n\n{question}\n\n'
+           'Remember to put your answer on its own line at the end in the form '
+           '"ANSWER: $ANSWER" (without quotes) where $ANSWER is the answer to '
+           'the problem, and you do not need to use a \\boxed command.\n\n'
+           'Reasoning:')
+if _MM:
+    USER_TMPL = _MM.replace("{prompt}", "{question}")
+    print(f"[hv] user template from inspect_evals.gsm8k.gsm8k.MATH_PROMPT_TEMPLATE"
+          f" (matches pinned literal: {USER_TMPL == _PINNED})", flush=True)
+else:
+    USER_TMPL = _PINNED
+
+# render() calls USER_TMPL.format(question=...), so any other brace in the
+# grader's template would raise mid-run, and a template with no {question} would
+# hand every row the same prompt. Both are cheap to rule out here.
+_braces = re.findall(r"\{[^}]*\}", USER_TMPL)
+if _braces != ["{question}"]:
+    raise SystemExit(f"[hv] FATAL: user template has unexpected placeholders "
+                     f"{_braces}; refusing to train on a prompt render() cannot fill")
+print(f"[hv] user template ({len(USER_TMPL)} chars):\n{USER_TMPL}", flush=True)
 
 CALC = re.compile(r"<<[^>]*>>")
 
@@ -484,7 +510,14 @@ print("[hv] saved", OUT, sorted(os.listdir(OUT)), flush=True)
 TRAINER
 
 python /home/ben/task/hv_train.py
-echo "hv_recipe trainer exit $?"
+TRAINER_RC=$?
+echo "hv_recipe trainer exit ${TRAINER_RC}"
 ls -la /home/ben/task/final_model || true
 echo "hv_recipe done"
-exit 0
+# Propagate it. run_task.sh reports this as `exit_code` / `status:` in SOLVE
+# DIAGNOSTICS and branches on nothing, so an honest nonzero costs nothing --
+# while the bare `exit 0` that used to be here recorded "exited normally" beside
+# `final_model_files: 0` for a trainer that had raised. That is the same
+# dishonest zero run_task.sh's own pipefail fix exists to remove, reintroduced
+# one layer down.
+exit "${TRAINER_RC}"

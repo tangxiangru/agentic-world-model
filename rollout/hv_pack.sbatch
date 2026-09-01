@@ -9,7 +9,13 @@
 #SBATCH --exclusive
 #SBATCH --gres=gpu:8
 #SBATCH --mem=0
-#SBATCH --time=05:00:00
+# 5h was too tight to be safe. run_task.sh caps the agent at NUM_HOURS*60+5 = 185
+# min, the scoring ladder after it has been measured at up to 59 min, and the last
+# cell does not start until gpu*STAGGER = 5 min in -- 4h10 of committed work
+# against a 5h wall, with model download and container setup unaccounted. A pack
+# that dies at the wall loses every cell AFTER the training that earned it, which
+# is the most expensive way to fail. 6h30 leaves the ladder 3h25.
+#SBATCH --time=06:30:00
 #SBATCH --output=/rmeng_data/robtang/ptb-hvrecipe/slurm_logs/%x-%j.out
 #SBATCH --error=/rmeng_data/robtang/ptb-hvrecipe/slurm_logs/%x-%j.err
 set -uo pipefail
@@ -64,11 +70,18 @@ echo "hf_home=${HF_HOME:-<unset>} hub_cache_overrides=cleared"
 echo "isolate_gpus=${POST_TRAIN_BENCH_ISOLATE_GPUS:-<unset>} eval_gpu_reap=${POST_TRAIN_BENCH_EVAL_GPU_REAP:-<unset>}"
 echo "results_dir=${POST_TRAIN_BENCH_RESULTS_DIR}"
 
-# Echo the launch SHA and the agent's own hash with the run. A recipe table is
+# Echo the launch SHA and the agents' own hashes with the run. A recipe table is
 # the payload of this experiment; a delta quoted against an unrecorded solve.sh
-# is not a delta.
+# is not a delta. repo_sha covers neither agent -- both live untracked in this
+# checkout, installed by rollout/setup.sh from the agentic-world-model repo -- so
+# the hashes are the only record of what actually ran.
+#
+# hv_noop used to be omitted, and it is the file that pins the CONTROL's decode.
+# An unrecorded control is not a floor: every recipe delta is quoted against it.
 echo "repo_sha=$(git rev-parse HEAD)"
-echo "solve_sh_sha256=$(sha256sum agents/hv_recipe/solve.sh | cut -d' ' -f1)"
+for a in hv_recipe hv_noop; do
+    echo "solve_sh_sha256[$a]=$(sha256sum "agents/$a/solve.sh" | cut -d' ' -f1)"
+done
 
 SCRATCH="${POST_TRAIN_BENCH_TMP_ROOT:-/tmp}"
 mkdir -p "$SCRATCH" || { echo "FATAL: cannot create $SCRATCH on $(hostname)" >&2; exit 1; }
