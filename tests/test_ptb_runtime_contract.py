@@ -80,5 +80,7 @@ def test_recovery_judges_serialize_official_auth_and_load_site_apptainer():
     assert 'exec 9>"$JUDGE_LOCK_FILE"' in script
     assert "flock -x 9" in script
     assert "flock -u 9" in script
+    assert 'JUDGE_SCRATCH_ROOT="${POST_TRAIN_BENCH_SCRATCH_DIR:-${TMPDIR:-/tmp}}"' in script
+    assert 'mktemp -d -p "$JUDGE_SCRATCH_ROOT" judge-recovery.XXXXXX' in script
     assert 'python3 "$JUDGES_DIR/get_judge_prompt.py"' in judge_lib
     assert 'python3 "$JUDGES_REPO_ROOT/src/trace_parsing/parse_trace.py"' in judge_lib
