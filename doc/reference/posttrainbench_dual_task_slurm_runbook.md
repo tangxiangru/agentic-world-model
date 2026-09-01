@@ -2,7 +2,15 @@
 
 This runbook operates `gsm8k-aime2025-opus5-4x4x2-batch1-v3` from branch `gangda_trial_0828`. The
 only permitted nodes are `slurm2-a3nodesetondem-[0-3]`, via partition `ptb-a3` and reservation
-`robtang-a3`.
+`robtang-ptb-a3`.
+
+## Asynchronous queue saturation
+
+Do not leave GPUs idle merely to wait for the last job in a preceding batch. Once the next batch
+is independently specified, validated, and its decision no longer depends on the straggler,
+commit and submit all next-batch jobs immediately. Slurm starts what fits and leaves the rest
+pending to backfill. Preserve real dependencies, record why any unfinished cell is non-blocking,
+and never free capacity by cancelling jobs outside the active experiment receipt.
 
 ## Local and infrastructure gates
 
