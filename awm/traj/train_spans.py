@@ -523,12 +523,26 @@ def _crashed_at(
     return None
 
 
-def _result_index(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """``tool_use_id`` -> the ``tool_result`` answering it."""
-    out: dict[str, dict[str, Any]] = {}
+def _key(event: dict[str, Any], parent: bool = False) -> tuple[Any, Any]:
+    """A tool call's identity: its id is only unique within its turn."""
+    ident = event.get("parent_tool_use") if parent else event.get("tool_use_id")
+    return (event.get("turn"), ident)
+
+
+def _result_index(events: list[dict[str, Any]]) -> dict[tuple[Any, Any], dict[str, Any]]:
+    """``(turn, tool_use_id)`` -> the ``tool_result`` answering it.
+
+    ``tool_use_id`` alone is not unique. codex restarts item numbering at
+    ``item_1`` in each turn, so a reprompt run has two ``item_12`` events and a
+    result pairs to whichever the dict kept -- 49 collisions across 8 of the 12
+    reprompt runs, none anywhere else. One run had a training and a full
+    evaluation both filed nine hours early, and a 10-question probe's 0.4
+    standing in for the full set's 0.1333. Keying on the turn as well fixes it.
+    """
+    out: dict[tuple[Any, Any], dict[str, Any]] = {}
     for e in events:
         if e.get("type") == "tool_result" and e.get("parent_tool_use"):
-            out.setdefault(e["parent_tool_use"], e)
+            out.setdefault(_key(e, parent=True), e)
     return out
 
 
@@ -622,7 +636,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
     rows: list[dict[str, Any]] = []
     for pos, event, cmd, out_dir in launches:  # noqa: B007
         ts_start = event.get("ts")
-        own_result = results.get(event.get("tool_use_id") or "")
+        own_result = results.get(_key(event))
         background = _is_background(cmd) or bool(
             _MOVED_TO_BACKGROUND.search((own_result or {}).get("text") or "")
         )
@@ -635,7 +649,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
             continue
 
         if not background:
-            result = results.get(event.get("tool_use_id") or "")
+            result = results.get(_key(event))
             ts_end = result.get("ts") if result else None
             if ts_end:
                 end_reason = "returned"
@@ -677,7 +691,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
                     break
                 if out_dir and _mentions(later_cmd, out_dir):
                     last_seen = later.get("ts") or last_seen
-                    r = results.get(later.get("tool_use_id") or "")
+                    r = results.get(_key(later))
                     if r is not None:
                         window_texts.append(r.get("text") or "")
             else:

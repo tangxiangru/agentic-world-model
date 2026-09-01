@@ -383,11 +383,26 @@ def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
                 yield json.loads(line)
 
 
-def _result_index(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
+def _key(event: dict[str, Any], parent: bool = False) -> tuple[Any, Any]:
+    """A tool call's identity: its id is only unique within its turn."""
+    ident = event.get("parent_tool_use") if parent else event.get("tool_use_id")
+    return (event.get("turn"), ident)
+
+
+def _result_index(events: list[dict[str, Any]]) -> dict[tuple[Any, Any], dict[str, Any]]:
+    """``(turn, tool_use_id)`` -> the ``tool_result`` answering it.
+
+    ``tool_use_id`` alone is not unique. codex restarts item numbering at
+    ``item_1`` in each turn, so a reprompt run has two ``item_12`` events and a
+    result pairs to whichever the dict kept -- 49 collisions across 8 of the 12
+    reprompt runs, none anywhere else. One run had a training and a full
+    evaluation both filed nine hours early, and a 10-question probe's 0.4
+    standing in for the full set's 0.1333.
+    """
+    out: dict[tuple[Any, Any], dict[str, Any]] = {}
     for e in events:
         if e.get("type") == "tool_result" and e.get("parent_tool_use"):
-            out.setdefault(e["parent_tool_use"], e)
+            out.setdefault(_key(e, parent=True), e)
     return out
 
 
@@ -457,7 +472,7 @@ def _one(
     known: dict[str, set[str]],
 ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        own = results.get(event.get("tool_use_id") or "")
+        own = results.get(_key(event))
         own_text = (own or {}).get("text") or ""
         # ``usage: evaluate.py [-h] …`` — argparse rejected the arguments and no
         # evaluation happened. Three of one run's launches failed this way and

@@ -235,7 +235,7 @@ def _refused(events: list[dict[str, Any]]) -> set[str]:
     actually happened, and overstates how many writes carry parseable content.
     """
     return {
-        e["parent_tool_use"] for e in events
+        (e.get("turn"), e["parent_tool_use"]) for e in events
         if e.get("type") == "tool_result" and e.get("is_error") and e.get("parent_tool_use")
     }
 
@@ -246,7 +246,7 @@ def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, 
     known = scripts.learn(events)
     refused = _refused(events)
     for e in sorted(events, key=lambda x: (x.get("agent_id") or "", x.get("i") or 0)):
-        if e.get("type") != "tool_use" or e.get("tool_use_id") in refused:
+        if e.get("type") != "tool_use" or (e.get("turn"), e.get("tool_use_id")) in refused:
             continue
         tool = e.get("tool") or ""
         args = e.get("args") or {}
