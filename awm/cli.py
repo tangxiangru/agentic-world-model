@@ -125,6 +125,23 @@ def _run(args: argparse.Namespace) -> int:
     return subprocess.run(cmd, env=env).returncode
 
 
+def _spans(args: argparse.Namespace) -> int:
+    from awm.traj import train_spans
+
+    df = train_spans.build()
+    path = train_spans.save(df, args.out)
+    print(f"{len(df)} spans over {df['run_id'].nunique()} runs -> {path}")
+    timed = df[df["sec"].notna()]
+    print(f"  {len(timed)} timed, {len(df) - len(timed)} untimed (source carries no clock)")
+    for kind, g in timed.groupby("kind"):
+        print(f"  {kind}: {len(g)}, median {g['sec'].median() / 60:.1f} min")
+    occ = train_spans.occupancy_by_run(df)
+    if len(occ):
+        over = (occ["sum_s"] > occ["occupied_s"]).sum()
+        print(f"  {over} runs launched overlapping trainings (union, not sum, is the share)")
+    return 0
+
+
 def _index(args: argparse.Namespace) -> int:
     from awm.traj import index
 
@@ -281,6 +298,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     i = traj.add_parser("index", help="rebuild the run index")
     i.set_defaults(func=_index)
+
+    sn = traj.add_parser("spans", help="extract how long each training occupied the box")
+    sn.add_argument(
+        "--out",
+        type=Path,
+        default=Path("data/traj/derived/cc_train_spans_v1.parquet"),
+    )
+    sn.set_defaults(func=_spans)
 
     r = sub.add_parser(
         "run",
