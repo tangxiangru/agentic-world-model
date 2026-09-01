@@ -1,7 +1,8 @@
-"""World-model agent runtime: the protocol between a scientist and an advising agent.
+"""The world-model agent's toolbelt.
 
-See doc/spec/2026-08-30-world-model-agent.md. The scientist issues cards,
-yields the GPU, and answers pings; the runtime here validates, freezes,
-evaluates, seals, and keeps the ledger; the agent (``awm.wm.agents``) decides
-what to say.
+Two Claude Code sessions share a sandbox: a research scientist and a world-model
+agent (WMA). The WMA lives in ``wma/`` (its CLAUDE.md and skills); this package
+is what it calls from the shell: draft a card from the scientist's words, search
+past experiments, produce the default evaluation plan, parse the scientist's
+eval outputs, and log every consult. See doc/spec/2026-08-30-world-model-agent.md.
 """

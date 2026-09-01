@@ -1167,7 +1167,7 @@ def test_full_cursor_acceptance(full_runs: dict[str, RunDir]):
 #: its own. Anchoring matters: the bare phrase "Tool call" also appears inside
 #: tool OUTPUT (overwhelmingly on bfcl, whose task text is about tool calling),
 #: and counting that made the cross-check disagree with a correct conversion.
-_RENDERED_CALL = re.compile(r"^\s*Tool call — (\S+) \(([^)]+)\)\s*$", re.M)
+_RENDERED_CALL = re.compile(r"^\s*Tool call — (\S+) \(([^)]+)\)\s*$", re.MULTILINE)
 
 
 @pytest.mark.needs_data

@@ -1209,17 +1209,14 @@ def test_build_prior_runs_index_only_validates_manifest_hashes_and_revision(tmp_
 
 def test_build_prompts_renders_ptb_placeholders() -> None:
     bp = _load(REPO / "rollout" / "build_prompts.py")
-    instruction = (REPO / "input" / "instruction.md").read_text()
-    wm = bp.wm_prompt(instruction, fulltraj=False)
-    for leftover in ("{dir}", "{submission}", "{time_limit}", "{gpu}"):
-        assert leftover not in wm
-    assert "/home/ben/task/final_model" in wm and "{num_hours} hours" in wm
-    assert "{setup_other}{decontamination_tool}" in wm and "{model}" in wm and "{benchmark}" in wm
-    assert "larger of 10\nminutes or 10%" in wm
-    assert "60 minutes in a 10-hour production cell" in wm
-    assert "when fewer than 60 minutes remain" not in wm
+    ptb = "Train `{model}` on {benchmark} for {num_hours} hours.\n## Rules\n1. Keep going.\n"
+    wm = bp.wm_prompt(ptb, fulltraj=False)
+    assert "{model}" in wm and "{benchmark}" in wm and "{num_hours} hours" in wm
+    assert "## Pinned base checkpoint" in wm
+    assert "## The world-model agent" in wm
+    assert "SendMessage" in wm
     assert "## Prior runs" not in wm
-    wm_ft = bp.wm_prompt(instruction, fulltraj=True)
+    wm_ft = bp.wm_prompt(ptb, fulltraj=True)
     assert wm_ft.index("## Prior runs") < wm_ft.index("## The world-model agent")
     prior = bp.PRIOR_RUNS_SECTION
     for guaranteed in ("`solve_out.txt`", "`metrics.json`", "`time_taken.txt`"):
@@ -1236,8 +1233,10 @@ def test_build_prompts_renders_ptb_placeholders() -> None:
     assert prior not in (REPO / "rollout" / "prompts" / "prompt_wm.txt").read_text()
     smoke = (REPO / "rollout" / "prompts" / "prompt_wm_fulltraj_smoke.txt").read_text()
     production = (REPO / "rollout" / "prompts" / "prompt_wm_fulltraj.txt").read_text()
-    for deadline in ("By minute 10", "By minute 35", "By minute 50"):
-        assert deadline in smoke and deadline not in production
+    assert "## One-hour peer-session smoke protocol" in smoke
+    assert "## One-hour peer-session smoke protocol" not in production
+    assert "message the world-model agent" in smoke
+    assert "tell the world-model agent what you shipped" in smoke
     assert "one optimizer step" in smoke
     assert "/home/ben/pinned-base/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d" in smoke
     assert "unsloth/*" in smoke
@@ -2189,21 +2188,16 @@ def test_claude_agents_propagate_failure_and_require_submission() -> None:
     assert "WMA_VALIDATOR_ARGS" not in wm_solve
 
 
-def test_wm_agent_separates_llm_raw_from_llm_cards_and_pins_models() -> None:
+def test_wm_agent_separates_peer_raw_from_peer_cards_and_pins_models() -> None:
     solve = (REPO / "rollout" / "agents" / "claude_wm" / "solve.sh").read_text()
-    assert '[ "${RO:-}" = "ro" ]' in solve
-    assert "--memory-readonly --split-side test" in solve
-    assert "C2 requires arm=llm" in solve
+    assert "--memory-readonly" in solve and "--split-side test" in solve
+    assert "C2 requires arm=traj" in solve
     assert "C2 must not receive historical card memory" in solve
-    assert "MEM=/home/ben/wm-empty-memory" in solve
-    assert "--wma-corpus-kind raw --wma-corpus-root /home/ben/prior_runs" in solve
-    assert "C3 requires arm=llm" in solve
+    assert "--prior-runs /home/ben/prior_runs" in solve
+    assert "C3 requires arm=retrieval" in solve
     assert "C3 requires seeded card memory" in solve
-    assert "--wma-corpus-kind cards" in solve
+    assert "--memory-root /home/ben/wm-memory" in solve
     assert '--wma-model "${AWM_WMA_MODEL}"' in solve
-    assert "--wma-max-budget-usd 6.0" in solve
-    assert "--wma-validation-attempts 5" in solve
-    assert "private empty memory" not in solve
     assert "AWM_REPO_REF" not in solve and "--branch" not in solve
     assert "AWM_REPO_COMMIT" in solve
     assert "^[0-9a-fA-F]{40}$" in solve
@@ -2211,8 +2205,9 @@ def test_wm_agent_separates_llm_raw_from_llm_cards_and_pins_models() -> None:
     assert 'AWM_SHA="$(tr -d \'[:space:]\' < "${AWM_SRC}/AWM_COMMIT")"' in solve
     assert "git fetch" not in solve and "git clone" not in solve
     assert '[ "${AWM_SHA}" = "${AWM_REPO_COMMIT,,}" ]' in solve
-    assert '"agent_(degraded|failed)"' in solve
-    assert "censoring this labelled cell" in solve
+    assert "ListAgents,SendMessage" in solve
+    assert "wma-session.jsonl" in solve
+    assert "--study-input-key wma_model" in solve
     assert "validate_wma_session.py" in solve
 
 
@@ -2229,9 +2224,9 @@ def test_pack_uses_explicit_conditions_and_no_site_slurm_config() -> None:
     assert "vertex_auth=attached-service-account" in pack
     assert "PRIOR_RUNS_FOR" not in pack
     assert 'c1:<model>:<prior-scope>:<rep>' in pack
-    assert 'c2:<model>:llm:<prior-scope>:<rep>' in pack
-    assert 'c3:<model>:llm:<memory-sides>:<rep>' in pack
-    assert 'config="${scientist}:${arm}:${declared_sides}:ro"' in pack
+    assert 'c2:<model>:traj:<prior-scope>:<rep>' in pack
+    assert 'c3:<model>:retrieval:<memory-sides>:<rep>' in pack
+    assert 'config="${scientist}:${arm}:${declared_sides}"' in pack
     assert '${PRIOR_RUNS}:/home/ben/prior_runs:ro' in pack
     assert '${WM_MEMORY}:/home/ben/wm-memory:ro' in pack
     assert 'export AWM_STUDY_CONDITION="${condition}"' in pack
@@ -2266,7 +2261,8 @@ def test_pack_uses_explicit_conditions_and_no_site_slurm_config() -> None:
     assert "3 scientist models × 3 information conditions × 2 prior scopes" in readme
     assert "× 2\nexplicit repetitions" in readme
     assert "**36 cells**" in readme
-    assert "no host-selected top-k" in readme
+    assert "serves the single\n`consult` verb" in readme
+    assert "C3 searches the complete reconstructed-card memory" in readme
     assert "not an operating-system security" in readme
 
 
@@ -2548,7 +2544,7 @@ def test_pack_fails_closed_for_missing_condition_mounts(tmp_path: Path) -> None:
     c1 = _pack_preflight(tmp_path, "c1:claude-opus-4-6:train:1")
     assert c1.returncode == 2 and "C1/C2 requires PRIOR_RUNS" in c1.stderr
 
-    c3 = _pack_preflight(tmp_path, "c3:claude-opus-4-8:llm:train:1")
+    c3 = _pack_preflight(tmp_path, "c3:claude-opus-4-8:retrieval:train:1")
     assert c3.returncode == 2 and "requires seeded WM_MEMORY" in c3.stderr
 
 
@@ -2556,7 +2552,7 @@ def test_pack_requires_two_explicit_unique_repetitions(tmp_path: Path) -> None:
     missing = _pack_preflight(tmp_path, "c1:claude-opus-4-6:train")
     assert missing.returncode == 2 and "<1|2>" in missing.stderr
 
-    out_of_range = _pack_preflight(tmp_path, "c3:claude-opus-5:llm:train:3")
+    out_of_range = _pack_preflight(tmp_path, "c3:claude-opus-5:retrieval:train:3")
     assert out_of_range.returncode == 2 and "<1|2>" in out_of_range.stderr
 
     duplicate = _pack_preflight(
@@ -2610,6 +2606,20 @@ def test_study_matrix_emits_and_validates_exact_36_cells() -> None:
     assert {record["base_model"] for record in records} == {"google/gemma-3-4b-pt"}
     assert {record["num_hours"] for record in records} == {10}
     assert {record["study_mode"] for record in records} == {"production"}
+    assert {record["prior_rollout_count"] for record in records} == {143, 193}
+    assert {record["includes_gemma_trajectories"] for record in records} == {
+        False,
+        True,
+    }
+    assert {
+        record["condition"]: record["wma_arm"] for record in records
+    } == {"c1": None, "c2": "traj", "c3": "retrieval"}
+    assert all(":traj:" in record["spec"] for record in records if record["condition"] == "c2")
+    assert all(
+        ":retrieval:" in record["spec"]
+        for record in records
+        if record["condition"] == "c3"
+    )
 
     valid = subprocess.run(
         [sys.executable, str(script), "--validate", *specs],
@@ -2721,12 +2731,12 @@ def test_pack_rejects_mutable_ref_and_side_mismatch(tmp_path: Path) -> None:
         "AWM_CARD_CORPUS_MANIFEST_SHA256": "0" * 64,
         "AWM_WMA_MODEL": "provider-wma-exact",
     }
-    mutable = _pack_preflight(tmp_path, "c3:claude-opus-5:llm:train:1", extra=base)
+    mutable = _pack_preflight(tmp_path, "c3:claude-opus-5:retrieval:train:1", extra=base)
     assert mutable.returncode == 2 and "full 40-hex" in mutable.stderr
 
     both = _pack_preflight(
         tmp_path,
-        "c3:claude-opus-5:llm:train,test:1",
+        "c3:claude-opus-5:retrieval:train,test:1",
         extra={
             "WM_MEMORY": str(memory.parent),
             "AWM_CARD_CORPUS_MANIFEST_SHA256": "0" * 64,
@@ -2742,7 +2752,7 @@ def test_pack_rejects_mutable_ref_and_side_mismatch(tmp_path: Path) -> None:
     )
     raw_scope = _pack_preflight(
         tmp_path,
-        "c2:claude-opus-4-6:llm:train:1",
+        "c2:claude-opus-4-6:traj:train:1",
         extra={
             "PRIOR_RUNS": str(prior),
             "WM_MEMORY": str(memory.parent),

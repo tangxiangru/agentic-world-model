@@ -259,6 +259,12 @@ def main(argv: list[str] | None = None) -> int:
     model.add_argument("stream", type=Path)
     model.add_argument("--requested-alias", required=True)
     model.add_argument("--expected-model-id", required=True)
+    model.add_argument(
+        "--study-input-key",
+        choices=("scientist_model", "wma_model"),
+        default="scientist_model",
+        help="attribution key used when recording a model attestation",
+    )
     for command in (cli, model):
         command.add_argument("--record", required=True, type=Path)
         command.add_argument("--study-input", required=True, type=Path)
@@ -271,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.version_file, args.package_version, args.expected_version_output
             )
         else:
-            key = "scientist_model"
+            key = args.study_input_key
             attestation = attest_model(
                 args.stream, args.requested_alias, args.expected_model_id
             )

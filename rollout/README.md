@@ -13,8 +13,8 @@ conditions:
 | | prior information | WMA | prompt | agent |
 |---|---|---|---|---|
 | **C1** | raw files of the prior runs, read-only at `/home/ben/prior_runs` and directly readable by the scientist | none | `prompt_fulltraj` | `claude_fulltraj_noawm` |
-| **C2** | the same complete raw corpus, directly readable by the scientist and searchable by the WMA | autonomous `llm` arm over raw trajectories | `prompt_wm_fulltraj` | `claude_wm` |
-| **C3** | full reconstructed-card corpus searchable by the WMA; no raw trajectories | autonomous `llm` arm over cards | `prompt_wm` | `claude_wm` |
+| **C2** | the same complete raw corpus, directly readable by the scientist and readable by the WMA | peer Claude Code WMA with the `traj` arm | `prompt_wm_fulltraj` | `claude_wm` |
+| **C3** | full reconstructed-card corpus searchable by the WMA; no raw trajectories | peer Claude Code WMA with the `retrieval` arm | `prompt_wm` | `claude_wm` |
 
 Crossing 3 scientist models × 3 information conditions × 2 prior scopes × 2
 explicit repetitions gives **36 cells**. Every launcher spec ends in `:1` or
@@ -32,17 +32,17 @@ train+test has 2,030 cards from all 193 runs (450 cards from all 50 Gemma
 runs). The seeded side manifests record the expected, card-bearing, and missing
 run inventories explicitly; both current scopes have zero missing runs.
 
-For C2 and C3, the WMA itself chooses what to inspect across the complete
-declared corpus. There is no host-selected top-k. Scratch-local
-indexes or helper tools are allowed, but they must not mutate the read-only
-source corpus and must remain attributable to the WMA call.
+For C2 and C3, a second, fixed-model Claude Code session serves the single
+`consult` verb for the whole run. It drafts and updates the experiment card,
+grounds its verdict and evaluation advice in the declared corpus, and logs each
+consult under `task/wm/`. The scientist owns training, evaluation, the GPU, and
+every decision. C2's WMA chooses what to inspect in the complete raw corpus;
+C3 searches the complete reconstructed-card memory for the selected scope.
 
-Model-written scratch tools run in nested user, mount, PID, and network
-namespaces. The jail recursively clones system and corpus mount trees (including
-Apptainer's injected NVIDIA child mounts), marks every read-only tree recursively
-read-only, and verifies every descendant in `/proc/self/mountinfo` before it
-drops all capabilities and enters the chroot. A failed isolation or mount-tree
-check prevents the WMA session from starting.
+The WMA runs in its own cwd with its own `CLAUDE.md` and `consult` skill. Its
+Claude invocation has a narrow read/communication/tool allowlist, while the
+historical corpus mounts remain recursively read-only at the PTB boundary.
+This is a protocol boundary inside one sandbox, not a separate Unix identity.
 
 ### One-time setup (host)
 
@@ -147,9 +147,8 @@ replaced before `scientist-stream.jsonl` or PTB's `solve_out.txt` is written.
 The redactor securely creates the private retained file and forwards identical
 bytes itself, retrying pipe backpressure even if a shared descriptor is changed
 to nonblocking mode; the study agents do not use an external `tee` process.
-The runtime also omits Claude/Vertex credentials from its trainer-resume
-environment, removes per-call Claude configuration, and scans every text
-artifact under the task before accepting a cell. Any late match is atomically
+The scientist and WMA streams use the same redactor, and the harness scans every
+text artifact under the task before accepting a cell. Any late match is atomically
 redacted and the cell is quarantined rather than released. This protects
 stored/published trajectories; it is not a substitute for the model-only cache
 boundary.
@@ -273,10 +272,10 @@ done
 ```
 
 The requested release gate is exactly one train-scope C2 smoke, for example
-`c2:claude-opus-4-6:llm:train:1`, submitted with the explicit untracked
+`c2:claude-opus-4-6:traj:train:1`, submitted with the explicit untracked
 `AWM_STUDY_SMOKE=1 PTB_NUM_HOURS=1` environment. It exercises the one-GPU
 OS-visibility boundary, Vertex/CLI authentication, raw-corpus validation, the
-autonomous WMA, requested-versus-reported model identity, harness provenance,
+peer WMA consult, requested-versus-reported model identity, harness provenance,
 submission handling, and deterministic GSM8K evaluation in one cell. Smoke
 mode accepts only that one-hour duration; normal production accepts only 10
 hours. The result ID and `study-input.json` are labelled `smoke`, so it cannot
@@ -285,18 +284,15 @@ successful WMA-session postcondition, nonempty `final_model`, finite accuracy,
 and honest zero `solve_exit_code.txt` before releasing the production matrix.
 A C3 smoke is optional additional validation of the card-only protocol; it is
 not part of this initial one-GPU release gate.
-The production WMA prompt reserves the larger of ten minutes or ten percent of
-the cell for finalization: ten minutes in a one-hour cell and sixty minutes in a
-ten-hour production run. Smoke mode selects a separate attested prompt which
-requires one minimal card by minute 10, a one-step final checkpoint and WMA
-observation by minute 35, and explicit selection/adoption by minute 50.
+Smoke mode selects a separate attested prompt requiring a plan consult before
+one-step training and a final shipped-outcome message to the WMA.
 
 The condition prefix is mandatory. C1 fails if the raw mount is absent. C2
 requires that same raw mount, exposes it directly to the scientist, and gives
-the autonomous WMA the complete indexed raw root; it rejects historical-card
+the `traj` WMA the complete indexed raw root; it rejects historical-card
 memory. C3 requires seeded card memory and rejects any raw-runs mount. The pack
-appends `:ro` to every WMA `AGENT_CONFIG`, mounts historical inputs read-only,
-and the agent independently rejects any non-read-only held-out configuration.
+mounts every historical input read-only and records the exact arm and side
+scope in `wm/config.json`.
 
 C3's separation is a study protocol, not an operating-system security
 boundary: the card corpus is a read-only mount in the same Apptainer sandbox,
@@ -318,9 +314,9 @@ The usual PTB result directory per cell (`solve_out.txt`,
 `solve_exit_code.txt`, `metrics.json`) plus the preserved scientist stream and
 CLI/model attestation files under `task/`. Optional subscription judgements are
 intentionally absent. For `claude_wm` cells, the result also contains
-`task/wm/`: `events.jsonl`, every card with its contract, observations, pings,
-replies, and seal, and `awm_sha.txt` naming the runtime that ran. `task/` is
-copied whole, so nothing there is size-capped.
+`task/wm/`: `config.json`, `consults.jsonl`, every persisted card/consult
+response, the redacted WMA session stream, and `awm_sha.txt` naming the harness
+that ran. `task/` is copied whole, so nothing there is size-capped.
 
 Every condition also writes `task/study-input.json`. For C1/C2 it records the
 expected-and-observed raw `corpus-manifest.json` SHA-256, exact side scope,
@@ -331,13 +327,10 @@ combined digest of the selected side manifests and their exact card/run counts
 after checking every card hash and rejecting an extra side/file. Every cell also
 records the exact PTB and harness commits, derived PTB-surface manifest digest,
 exact Claude CLI version, requested scientist alias, and all stream-reported
-provider model IDs. C2/C3 add `wma-session-attestation.json`; production
-inclusion requires at least one successful audited `wma_call` on a card which
-was sealed, adopted, and closed by `finalize` with decision `adopt`, with no
-`agent_failed` or `agent_degraded` event. The release smoke additionally
-requires one correlated propose/brief/reply/train/yield/observe/select/adopt
-lifecycle and rejects a substitute base ID or path. Missing/invalid finite
-`accuracy`, a timeout, or any
+provider model IDs. C2/C3 add separate WMA model and session attestations;
+production inclusion requires a normal WMA exit, a complete redacted stream,
+at least one contract-valid logged consult, and a shipped outcome attached to
+a consulted card. Missing/invalid finite `accuracy`, a timeout, or any
 scientist/WMA/attestation failure leaves diagnostic artifacts but returns a
 nonzero cell status.
 
@@ -349,17 +342,17 @@ nonzero cell status.
 | `patches/apply_extra_binds.py` | adds `POST_TRAIN_BENCH_EXTRA_BINDS` to `run_task.sh` (idempotent) |
 | `patches/apply_scratch_root.py` | moves each writable PTB home to an explicit private scratch root, checks block/inode headroom, and cleans only its exact `mktemp` directory |
 | `attest_ptb_surface.py` | setup-time manifest and launch-time verification of the derived private PTB runner/prompts/agents |
-| `attest_claude_runtime.py` | exact npm CLI installation and requested-versus-reported scientist model attestation |
+| `attest_claude_runtime.py` | exact npm CLI installation and requested-versus-reported scientist and WMA model attestations |
 | `validate_study_corpus.py` | standalone in-sandbox verifier/attestor packaged into C1/C2/C3 |
 | `validate_base_model_cache.py` | exact model-only cache allowlist and full-hash smoke attester |
 | `validate_c1_final_model.py` | structural/declarative C1/C2/C3 final-model compatibility attester; does not claim causal training provenance |
-| `validate_wma_session.py` | fail-closed C2/C3 successful-call/seal/adopt/finalize postcondition |
+| `validate_wma_session.py` | fail-closed C2/C3 peer-session, consult-ledger, card, and shipped-outcome postcondition |
 | `redact_claude_stream.py` | credential scrubber and durable backpressure-safe dual sink for the retained/live Claude JSONL trajectory |
 | `sanitize_result_tree.py` | final recursive text-artifact scrubber/attester; any redaction quarantines the cell |
 | `study_matrix.py` | emits or validates the exact 36 unique launcher specs |
 | `pin_ptb_source.sh` | creates the per-cell source snapshot and returns its root; cells execute relative dependencies only from that snapshot |
 | `build_prompts.py` | writes the C1/C2/C3 production prompts plus separate C2/C3 lifecycle-smoke prompts; review copies under `prompts/` |
 | `agents/claude_fulltraj_noawm/` | C1: Vertex Claude with a required read-only raw-runs mount |
-| `agents/claude_wm/` | C2/C3: verifies the minimal runtime payload archived from exact `AWM_REPO_COMMIT`, initializes the declared read-only WMA arm, then runs Vertex Claude |
+| `agents/claude_wm/` | C2/C3: verifies the minimal payload, starts the fixed-model WMA peer, then runs and attests the scientist peer |
 | `wm_pack.sbatch` | exactly one explicit `c1|c2|c3:<config>` cell per OS-isolated one-GPU invocation; fail-closed provenance, prompt, and mounts |
 | `../tools/build_prior_runs.py` | the prior-runs directory + `INDEX.md` |

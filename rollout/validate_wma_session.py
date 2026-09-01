@@ -73,6 +73,156 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def read_jsonl_objects(path: Path, label: str) -> list[dict[str, Any]]:
+    if not regular(path) or path.stat().st_size == 0:
+        raise ValidationError(f"{label} is missing, empty, or linked: {path}")
+    rows: list[dict[str, Any]] = []
+    try:
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValidationError(f"{label} row {number} is not an object")
+            rows.append(row)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValidationError(f"invalid {label} {path}: {exc}") from exc
+    if not rows:
+        raise ValidationError(f"{label} contains no rows: {path}")
+    return rows
+
+
+def _read_exit_code(path: Path, label: str) -> int:
+    if not regular(path):
+        raise ValidationError(f"{label} exit record is missing or linked: {path}")
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError) as exc:
+        raise ValidationError(f"invalid {label} exit record {path}: {exc}") from exc
+
+
+def validate_peer_session(
+    session: Path,
+    *,
+    expected_arm: str,
+    expected_wma_model: str,
+    expected_memory_sides: str,
+    study: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate the upstream two-Claude-session `consult` protocol.
+
+    A labelled C2/C3 cell is released only if the peer started with the exact
+    evidence arm, completed normally, logged at least one validated consult,
+    received the shipped outcome, and was independently model-attested.
+    """
+
+    session = session.resolve()
+    wm = session / "wm"
+    cfg = read_object(wm / "config.json")
+    if cfg.get("schema_version") != "awm-wm-config-v2":
+        raise ValidationError("peer WMA config must use awm-wm-config-v2")
+    if cfg.get("session_dir") != str(session):
+        raise ValidationError("peer WMA config session_dir does not name this task")
+    if cfg.get("arm") != expected_arm:
+        raise ValidationError(
+            f"peer WMA arm {cfg.get('arm')!r} does not match {expected_arm!r}"
+        )
+    if cfg.get("wma_model") != expected_wma_model:
+        raise ValidationError("peer WMA config does not pin the expected model")
+    expected_sides = expected_memory_sides.split(",")
+    if cfg.get("memory_sides") != expected_sides:
+        raise ValidationError(
+            f"peer WMA memory sides {cfg.get('memory_sides')!r} do not match {expected_sides!r}"
+        )
+    if cfg.get("base_model") != "google/gemma-3-4b-pt":
+        raise ValidationError("peer WMA config does not name the pinned Gemma base")
+    if "SendMessage" not in str(cfg.get("consult_api")):
+        raise ValidationError("peer WMA config does not identify the SendMessage consult API")
+
+    condition = study.get("condition")
+    if condition == "c2":
+        if expected_arm != "traj" or cfg.get("memory_root") is not None:
+            raise ValidationError("C2 must expose raw trajectories only through arm=traj")
+        if cfg.get("prior_runs_root") != "/home/ben/prior_runs":
+            raise ValidationError("C2 peer does not point at the attested prior-run mount")
+    elif condition == "c3":
+        if expected_arm != "retrieval" or cfg.get("prior_runs_root") is not None:
+            raise ValidationError("C3 must expose experiment cards only through arm=retrieval")
+        if cfg.get("memory_root") != "/home/ben/wm-memory":
+            raise ValidationError("C3 peer does not point at the attested card-memory mount")
+    else:
+        raise ValidationError(f"peer WMA validator requires C2 or C3, got {condition!r}")
+
+    if _read_exit_code(wm / "wma-exit-code.txt", "WMA") != 0:
+        raise ValidationError("WMA peer did not complete normally")
+    if _read_exit_code(wm / "wma-capture-exit-code.txt", "WMA capture") != 0:
+        raise ValidationError("WMA peer stream was not captured completely")
+    stream = wm / "wma-session.jsonl"
+    stream_rows = read_jsonl_objects(stream, "WMA stream")
+    if not any(row.get("type") == "result" for row in stream_rows):
+        raise ValidationError("WMA stream has no terminal result event")
+
+    model_attestation = study.get("wma_model")
+    if not isinstance(model_attestation, dict):
+        raise ValidationError("study input has no independent WMA model attestation")
+    if model_attestation.get("expected_model_id") != expected_wma_model:
+        raise ValidationError("WMA model attestation names a different model")
+    if model_attestation.get("reported_model_ids") != [expected_wma_model]:
+        raise ValidationError("WMA model telemetry does not match the pinned model")
+    if model_attestation.get("reported_providers") != ["vertex"]:
+        raise ValidationError("WMA model telemetry is not Vertex-only")
+
+    ledger_path = wm / "consults.jsonl"
+    rows = read_jsonl_objects(ledger_path, "WMA consult ledger")
+    sequences = [row.get("seq") for row in rows]
+    if sequences != list(range(1, len(rows) + 1)):
+        raise ValidationError("WMA consult ledger sequence is not contiguous from 1")
+    consults = [row for row in rows if row.get("event") != "outcome"]
+    outcomes = [row for row in rows if row.get("event") == "outcome"]
+    if not consults:
+        raise ValidationError("labelled WMA cell has no validated consult")
+    if not outcomes:
+        raise ValidationError("scientist did not tell the WMA what it shipped")
+    for row in consults:
+        if row.get("arm") != expected_arm or row.get("model") != expected_wma_model:
+            raise ValidationError("consult ledger arm/model attribution changed within the cell")
+        if not isinstance(row.get("verdict"), str) or not isinstance(
+            row.get("suggestion"), str
+        ):
+            raise ValidationError("consult ledger row lacks a verdict or suggestion")
+        value = row.get("path")
+        if not isinstance(value, str):
+            raise ValidationError("consult ledger row has no persisted response path")
+        response_path = Path(value)
+        if not inside(response_path, wm / "cards") or not regular(response_path):
+            raise ValidationError(f"consult response escapes task/wm/cards: {response_path}")
+        read_object(response_path)
+        card_id = row.get("card_id")
+        if not isinstance(card_id, str):
+            raise ValidationError("consult ledger row has no card_id")
+        card = read_object(wm / "cards" / card_id / "card.json")
+        if card.get("card_id") != card_id:
+            raise ValidationError(f"persisted card identity mismatch for {card_id}")
+    consult_cards = {row.get("card_id") for row in consults}
+    if not any(row.get("card_id") in consult_cards for row in outcomes):
+        raise ValidationError("shipped outcome is not attached to a consulted card")
+
+    submission = session / "final_model"
+    if not submission.is_dir() or submission.is_symlink() or not any(submission.iterdir()):
+        raise ValidationError("peer-WMA cell has no non-empty real final_model")
+    return {
+        "protocol": "peer-consult-v1",
+        "arm": expected_arm,
+        "wma_model": expected_wma_model,
+        "memory_sides": expected_sides,
+        "consult_count": len(consults),
+        "outcome_count": len(outcomes),
+        "card_ids": sorted(str(card_id) for card_id in consult_cards),
+        "consults_sha256": sha256_file(ledger_path),
+        "wma_stream_sha256": sha256_file(stream),
+    }
+
+
 def _next_event(
     rows: list[dict[str, Any]],
     card_id: str,
@@ -755,18 +905,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("session", type=Path)
     parser.add_argument("--record", required=True, type=Path)
     parser.add_argument("--study-input", required=True, type=Path)
+    parser.add_argument("--expected-arm", choices=("traj", "retrieval"))
+    parser.add_argument("--expected-wma-model")
+    parser.add_argument("--expected-memory-sides", default="train")
     parser.add_argument("--expected-base-model")
     parser.add_argument("--expected-base-checkpoint", type=Path)
     args = parser.parse_args(argv)
     try:
         study = read_object(args.study_input)
-        smoke = study.get("study_mode") == "smoke"
-        evidence = validate(
-            args.session,
-            require_smoke_lifecycle=smoke,
-            expected_base_model=args.expected_base_model,
-            expected_base_checkpoint=args.expected_base_checkpoint,
-        )
+        if regular(args.session.resolve() / "wm" / "config.json"):
+            if not args.expected_arm or not args.expected_wma_model:
+                raise ValidationError(
+                    "peer validation requires --expected-arm and --expected-wma-model"
+                )
+            evidence = validate_peer_session(
+                args.session,
+                expected_arm=args.expected_arm,
+                expected_wma_model=args.expected_wma_model,
+                expected_memory_sides=args.expected_memory_sides,
+                study=study,
+            )
+        else:
+            smoke = study.get("study_mode") == "smoke"
+            evidence = validate(
+                args.session,
+                require_smoke_lifecycle=smoke,
+                expected_base_model=args.expected_base_model,
+                expected_base_checkpoint=args.expected_base_checkpoint,
+            )
         if "wma_session" in study:
             raise ValidationError("study input already contains wma_session")
         study["wma_session"] = evidence

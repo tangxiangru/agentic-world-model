@@ -55,6 +55,10 @@ git -C "${AWM_SOURCE_DIR}" cat-file -e "${AWM_REPO_COMMIT}^{commit}" 2>/dev/null
 AWM_LIVE_ROOT="$(cd "${HERE}/.." && pwd)"
 STUDY_BOOTSTRAP_FILES=(
     input/instruction.md
+    input/wma_section.md
+    wma/CLAUDE.md
+    wma/card.template.yaml
+    wma/.claude/skills/consult/SKILL.md
     rollout/setup.sh
     rollout/wm_pack.sbatch
     rollout/study_matrix.py
@@ -202,7 +206,7 @@ PAYLOAD_ROOT="$DST/agents/claude_wm/payload"
 PAYLOAD_STAGE="$(mktemp -d "$DST/agents/claude_wm/.payload-stage.XXXXXX")"
 mkdir -p "$PAYLOAD_STAGE/awm-src"
 git -C "$AWM_SOURCE_DIR" archive --format=tar "$AWM_REPO_COMMIT" \
-    awm input .claude rollout/validate_study_corpus.py rollout/validate_base_model_cache.py rollout/validate_c1_final_model.py rollout/attest_claude_runtime.py rollout/validate_wma_session.py rollout/redact_claude_stream.py rollout/sanitize_result_tree.py \
+    awm input wma rollout/validate_study_corpus.py rollout/validate_base_model_cache.py rollout/validate_c1_final_model.py rollout/attest_claude_runtime.py rollout/validate_wma_session.py rollout/redact_claude_stream.py rollout/sanitize_result_tree.py \
     | tar -x -C "$PAYLOAD_STAGE/awm-src"
 printf '%s\n' "${AWM_REPO_COMMIT,,}" > "$PAYLOAD_STAGE/awm-src/AWM_COMMIT"
 mv "$PAYLOAD_STAGE/awm-src/rollout/validate_study_corpus.py" \

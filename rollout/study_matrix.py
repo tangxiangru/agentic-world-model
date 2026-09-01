@@ -16,6 +16,7 @@ SCIENTIST_MODELS = (
     "claude-opus-5",
 )
 CONDITIONS = ("c1", "c2", "c3")
+ARMS = {"c1": None, "c2": "traj", "c3": "retrieval"}
 SCOPES = ("train", "train,test")
 REPETITIONS = (1, 2)
 BENCHMARK = "gsm8k"
@@ -33,8 +34,8 @@ class Cell:
     @property
     def spec(self) -> str:
         fields = [self.condition, self.scientist_model]
-        if self.condition != "c1":
-            fields.append("llm")
+        if ARMS[self.condition] is not None:
+            fields.append(ARMS[self.condition])
         fields.extend((self.scope, str(self.repetition)))
         return ":".join(fields)
 
@@ -44,6 +45,14 @@ class Cell:
             "benchmark": BENCHMARK,
             "base_model": BASE_MODEL,
             "num_hours": NUM_HOURS,
+            "wma_arm": ARMS[self.condition],
+            "prior_rollout_count": 193 if self.scope == "train,test" else 143,
+            "includes_gemma_trajectories": self.scope == "train,test",
+            "setting": {
+                "c1": "raw_trajectories_no_wma",
+                "c2": "raw_trajectories_with_traj_wma",
+                "c3": "experiment_cards_with_retrieval_wma",
+            }[self.condition],
             "study_mode": "production",
             "spec": self.spec,
         }

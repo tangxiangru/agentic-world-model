@@ -13,8 +13,8 @@ set -euo pipefail
 # the agent, prompt, mounts, and held-out/read-only WMA config from it:
 #
 #   c1:<model>:<prior-scope>:<rep>          raw files, no WMA
-#   c2:<model>:llm:<prior-scope>:<rep>      raw files + autonomous WMA
-#   c3:<model>:llm:<memory-sides>:<rep>     cards through autonomous WMA only
+#   c2:<model>:traj:<prior-scope>:<rep>     raw files + peer WMA over trajectories
+#   c3:<model>:retrieval:<memory-sides>:<rep> cards through peer WMA only
 #
 # ``rep`` is 1 or 2 and is part of the PTB result identifier.  This makes the
 # full 3 x 3 x 2 x 2 design explicit and prevents an accidental overwrite or
@@ -156,7 +156,11 @@ for spec in "${SPECS[@]}"; do
             [ "${declared_sides}" = train,test ] && need_test_prior=1
             ;;
         c2|c3)
-            expected_arm=llm
+            if [ "${condition}" = c2 ]; then
+                expected_arm=traj
+            else
+                expected_arm=retrieval
+            fi
             arm="${field3}"
             declared_sides="${field4}"
             repetition="${field5}"
@@ -168,7 +172,7 @@ for spec in "${SPECS[@]}"; do
                 exit 2
             }
             agent=claude_wm
-            config="${scientist}:${arm}:${declared_sides}:ro"
+            config="${scientist}:${arm}:${declared_sides}"
             if [ "${condition}" = c2 ]; then
                 if [ "${STUDY_MODE}" = smoke ]; then
                     prompt=prompt_wm_fulltraj_smoke

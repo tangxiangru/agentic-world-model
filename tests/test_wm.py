@@ -1,13 +1,4 @@
-"""End-to-end conformance of the world-model runtime with a fake trainer and fake graders.
-
-No GPU, no model: ``evaluate.py`` and the custom scorer read a ``score.txt``
-inside each checkpoint directory. The loop exercised:
-
-propose -> brief -> accept -> freeze (parent scored) -> checkpoints at the
-standing fractions -> yields -> observations -> notices -> final -> decision
-(timeout: select best) -> seal -> finalize adopt -> {submission} symlink ->
-memory rows -> a second session in the retrieval arm sees the precedent.
-"""
+"""The world-model agent's toolbelt: the consult contract, the ledger, drafting, search, CLI."""
 
 from __future__ import annotations
 
@@ -15,361 +6,186 @@ import json
 import os
 import subprocess
 import sys
-import textwrap
-import threading
 from pathlib import Path
 
 import pytest
 import yaml
 
-from awm.wm.runtime import Session, _safe_resume_environment
-from awm.wm.schema import HOOK_CONTINUE, HOOK_YIELD, WMError
+from awm.wm import consult, intake
+from awm.wm.memory import Memory
+from awm.wm.schema import WMError
 
 REPO = Path(__file__).resolve().parent.parent
 
-FAKE_EVALUATE = textwrap.dedent('''
-    import argparse, json, pathlib
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model-path"); ap.add_argument("--limit", type=int); ap.add_argument("--json-output-file")
-    a = ap.parse_args()
-    score_file = pathlib.Path(a.model_path) / "score.txt"
-    acc = float(score_file.read_text()) if score_file.is_file() else 0.30
-    pathlib.Path(a.json_output_file).write_text(json.dumps({"accuracy": acc, "stderr": 0.02, "n": a.limit}))
-''')
+PLAN = """We want to fix multi-step arithmetic: the base model sets problems up correctly and slips on the numbers.
+We expect SFT on worked solutions to raise dev accuracy over the base model.
 
-FAKE_SCORER = textwrap.dedent('''
-    import json, pathlib, sys
-    ckpt, items, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
-    acc = float((ckpt / "score.txt").read_text()) if (ckpt / "score.txt").is_file() else 0.30
-    rows = [json.loads(l) for l in items.read_text().splitlines() if l.strip()]
-    k = round(acc * len(rows))
-    out.mkdir(parents=True, exist_ok=True)
-    with (out / "items.jsonl").open("w") as fh:
-        for i, r in enumerate(rows):
-            fh.write(json.dumps({"id": r["id"], "correct": i < k}) + "\\n")
-    (out / "metrics.json").write_text(json.dumps({"value": k / len(rows), "n": len(rows)}))
-''')
+```bash
+python train.py --model_name_or_path google/gemma-3-4b-pt --train_file data/train.jsonl --output_dir runs/exp01 --max_steps 1000
+```
+
+Evaluate with `python evaluate.py --limit 150` at each checkpoint.
+"""
 
 
-def test_resume_environment_excludes_scientist_and_provider_credentials() -> None:
-    environment = {
-        "PATH": "/usr/bin",
-        "HF_HOME": "/home/ben/hf_cache",
-        "CUDA_VISIBLE_DEVICES": "0",
-        "CLAUDE_CODE_MESSAGING_TOKEN": "job-scoped-secret",
-        "ANTHROPIC_VERTEX_PROJECT_ID": "project",
-        "MY_HF_TOKEN": "placeholder-secret",
-        "INNOCENT_NAME": "hf_abcdefghijklmnopqrstuvwxyz",
-    }
-    assert _safe_resume_environment(environment) == {
-        "PATH": "/usr/bin",
-        "HF_HOME": "/home/ben/hf_cache",
-        "CUDA_VISIBLE_DEVICES": "0",
+def good_response(card: dict, *, stage: str = "plan", label: str = "CANNOT_DECIDE", conf: float = 0.5,
+                  based_on: list | None = None, reasons: list | None = None) -> dict:
+    return {
+        "schema_version": consult.RESPONSE_SCHEMA, "stage": stage, "card": {**card, "gaps": card.get("gaps", [])},
+        "verdict": {"label": label, "confidence": conf,
+                    "prediction": {"metric": "accuracy", "horizon": "final", "delta_mean": 0.06, "delta_sd": 0.04, "basis": "2 runs"},
+                    "based_on": based_on or []},
+        "eval_plan": consult.default_eval_plan(1000, n=150, parent_value=0.30),
+        "suggestion": {"label": "KEEP_RUNNING", "reason": "the first evaluation at step 250 will separate the cases"},
+        "reasons": reasons or [],
     }
 
 
-def make_session(tmp_path: Path, *, parent_score: float, arm: str = "null", memory_root: Path | None = None) -> tuple[Session, Path]:
-    sd = tmp_path / "session"
-    sd.mkdir(parents=True)
-    (sd / "evaluate.py").write_text(FAKE_EVALUATE)
-    scorer = sd / "score_fake.py"
-    scorer.write_text(FAKE_SCORER)
-    parent = sd / "parent"
-    parent.mkdir()
-    (parent / "config.json").write_text(json.dumps({"model_type": "fake", "architectures": ["Fake"]}))
-    (parent / "score.txt").write_text(str(parent_score))
-    (sd / "data").mkdir()
+def session(tmp_path: Path) -> tuple[Path, Path, dict]:
+    sd = tmp_path / "task"; (sd / "data").mkdir(parents=True); (sd / "wm" / "tmp").mkdir(parents=True)
     (sd / "data" / "train.jsonl").write_text("\n".join(json.dumps({"q": i}) for i in range(10)) + "\n")
-    (sd / "evals").mkdir()
-    (sd / "evals" / "dev.jsonl").write_text(json.dumps({"id": "d1", "correct": False}) + "\n")
-    watch = [{"id": f"w{i}", "question": f"q{i}", "gold": str(i)} for i in range(1, 5)]
-    (sd / "evals" / "watch.jsonl").write_text("\n".join(json.dumps(w) for w in watch) + "\n")
-    (sd / "runs").mkdir()
-    mem = memory_root or (tmp_path / "wm-memory")
-    session = Session.init(
-        sd, arm=arm, memory_root=str(mem), submission=str(sd / "submission"),
-        official_argv=[sys.executable, "evaluate.py", "--model-path", "{checkpoint}", "--limit", "{n}",
-                       "--json-output-file", "{out}/metrics.json"],
-        custom_argv=[sys.executable, str(scorer), "{checkpoint}", "{items}", "{out}"],
-        spawn_worker=False, auto_relaunch=False,
-        timeouts_s={"brief": 60, "yield_request": 1, "decision": 1}, poll_s=0.05,
-    )
-    return session, sd
+    (sd / "train.py").write_text("print('train')\n")
+    prior = tmp_path / "prior_runs"; (prior / "cfg" / "run_a").mkdir(parents=True)
+    (prior / "INDEX.md").write_text("| 0.70 | google/gemma-3-4b-pt | cfg | run_a |\n")
+    (prior / "cfg" / "run_a" / "metrics.json").write_text('{"accuracy": 0.70}')
+    cfg = {"schema_version": "awm-wm-config-v2", "session_id": "t-1", "session_dir": str(sd), "arm": "traj",
+           "prior_runs_root": str(prior), "memory_root": str(tmp_path / "mem"), "memory_sides": ["train"],
+           "memory_readonly": False, "split_side": "train", "wma_model": "claude-opus-4-8", "base_model": "google/gemma-3-4b-pt"}
+    (sd / "wm" / "config.json").write_text(json.dumps(cfg))
+    return sd, prior, cfg
 
 
-def write_card(sd: Path, card_id: str = "exp-01") -> Path:
-    card = {
-        "schema_version": "awm-experiment-card-v1", "card_id": card_id, "created_at": "2026-08-31T00:00:00Z", "elapsed_h": 0.5,
-        "problem": {
-            "statement": "The base model drops intermediate arithmetic on multi-step word problems.",
-            "evidence": [{"path": str(sd / "evals" / "dev.jsonl"), "locator": "d1", "observation": "1 of 1 fails"}],
-            "affected_share": 0.4,
-            "failure_examples": [
-                {"id": f"w{i}", "source": str(sd / "evals" / "watch.jsonl"), "question": f"q{i}", "gold": str(i),
-                 "model_output": "wrong", "failure": "arithmetic slip"} for i in (1, 2, 3)
-            ],
-            "watch_set": {"path": str(sd / "evals" / "watch.jsonl"), "n": 4, "selection": "all dev failures"},
-        },
-        "hypothesis": {
-            "claim": "SFT on 10 worked solutions will reduce arithmetic slips on the watch set.",
-            "mechanism": "explicit intermediate steps in the target",
-            "expected_effect": {"metric": "accuracy", "direction": "higher", "against": "base_model", "magnitude": None},
-            "falsified_if": "watch fixed < 2 and dev delta <= 0 after training",
-        },
-        "setup": {
-            "parent_checkpoint": {"path": str(sd / "parent"), "origin": "base_model", "hash": None},
-            "base_model": "fake/base-1b",
-            "data": [{"path": str(sd / "data" / "train.jsonl"), "source": "local", "n_examples": 10, "built_by": None,
-                      "build_command": [], "selection": "all", "contamination_check": "passed", "mixture_weight": 1.0}],
-            "method": {"family": "sft", "framework": "fake", "peft": "none",
-                       "hyperparams": {"lr": 1e-5, "epochs": 1, "seed": 0}, "target_format": "text"},
-            "command": {"argv": ["python", "train.py"], "cwd": str(sd), "script": str(sd / "train.py"), "env": {},
-                        "log": str(sd / "logs" / "train.log")},
-            "resume_argv": ["python", "train.py", "--resume_from_checkpoint", "{checkpoint}"],
-            "output_dir": str(sd / "runs" / card_id),
-            "progress": {"unit": "optimizer_step", "total": 1000},
-            "budget": {"gpu": "fake", "planned_h": 0.1},
-        },
-        "evaluation": {
-            "protocol": {"command": ["python", "evaluate.py", "--limit", "150"], "dev_set": "official --limit 150",
-                         "n": 150, "seed": 0},
-            "comparator": {"ref": "base_model", "value": None, "path": None},
-        },
-    }
-    path = sd / "memory" / "cards" / f"{card_id}.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(card, sort_keys=False))
-    return path
+def test_draft_card_reads_the_plan_and_lists_gaps(tmp_path: Path) -> None:
+    sd, _, _ = session(tmp_path)
+    card, questions = intake.draft_card("exp-01", PLAN, {}, sd, base_model="google/gemma-3-4b-pt")
+    assert card["problem"]["statement"].startswith("We want to fix multi-step arithmetic")
+    assert "expect SFT" in card["hypothesis"]["claim"]
+    assert card["setup"]["output_dir"] == str(sd / "runs" / "exp01")
+    assert card["setup"]["progress"]["total"] == 1000 and card["evaluation"]["protocol"]["n"] == 150
+    assert card["setup"]["data"][0]["n_examples"] == 10
+    assert card["setup"]["parent_checkpoint"]["path"] == "google/gemma-3-4b-pt"
+    assert [q["field"] for q in questions] == ["setup.resume_argv"]
+    # a vague plan leaves most fields as gaps, none guessed
+    card2, q2 = intake.draft_card("exp-02", "Train something better.", {}, sd)
+    assert len(q2) >= 6 and card2["setup"].get("output_dir") is None
 
 
-def make_ckpt(sd: Path, card_id: str, step: int, score: float) -> Path:
-    ckpt = sd / "runs" / card_id / f"checkpoint-{step}"
-    ckpt.mkdir(parents=True, exist_ok=True)
-    (ckpt / "config.json").write_text(json.dumps({"model_type": "fake"}))
-    (ckpt / "score.txt").write_text(str(score))
-    return ckpt
+def test_response_contract_and_thresholds(tmp_path: Path) -> None:
+    sd, prior, _ = session(tmp_path)
+    card, _ = intake.draft_card("exp-01", PLAN, {}, sd)
+    assert consult.validate_response(good_response(card)) == []
+    # SURE_* needs confidence >= threshold and citations
+    r = good_response(card, label="SURE_WILL_WORK", conf=0.6)
+    probs = consult.validate_response(r)
+    assert any("confidence >=" in p for p in probs) and any("must cite" in p for p in probs)
+    r = good_response(card, label="SURE_WILL_WORK", conf=0.9,
+                      based_on=[{"path": str(prior / "cfg/run_a/metrics.json"), "locator": "accuracy", "observation": "0.70"}])
+    assert consult.validate_response(r) == []
+    # bad shapes are named
+    r = good_response(card); r["suggestion"] = {"label": "ADJUST", "reason": "x"}
+    assert any("ADJUST needs" in p for p in consult.validate_response(r))
+    r = good_response(card); r["stage"] = "later"
+    assert any("stage" in p for p in consult.validate_response(r))
+    r = good_response(card); r["verdict"]["prediction"]["delta_sd"] = -1
+    assert any("delta_sd" in p for p in consult.validate_response(r))
 
 
-def test_concurrent_propose_is_locked_without_corrupting_first_call(
-    tmp_path: Path, monkeypatch
-) -> None:
-    session, sd = make_session(tmp_path, parent_score=0.30)
-    card_path = write_card(sd)
-    entered = threading.Event()
-    release = threading.Event()
-    original_brief = session._brief
-    outcome: list[dict] = []
-    errors: list[BaseException] = []
-
-    def blocking_brief(card, grounding, state):
-        entered.set()
-        if not release.wait(timeout=5):
-            raise TimeoutError("test did not release first proposal")
-        return original_brief(card, grounding, state)
-
-    monkeypatch.setattr(session, "_brief", blocking_brief)
-
-    def first_proposal() -> None:
-        try:
-            outcome.append(session.propose(card_path))
-        except (WMError, TimeoutError) as exc:
-            errors.append(exc)
-
-    thread = threading.Thread(target=first_proposal)
-    thread.start()
-    assert entered.wait(timeout=5)
-    try:
-        with pytest.raises(WMError, match="already has a propose call in progress"):
-            session.propose(card_path)
-        assert (session.card_dir("exp-01") / "card.yaml").is_file()
-    finally:
-        release.set()
-        thread.join(timeout=10)
-
-    assert not thread.is_alive()
-    assert not errors
-    assert outcome and outcome[0]["kind"] == "brief"
-    events = [json.loads(line) for line in (session.wm / "events.jsonl").read_text().splitlines()]
-    assert not [row for row in events if row["event"] == "agent_failed"]
+def test_lint_downgrades_uncited_sure_verdicts(tmp_path: Path) -> None:
+    sd, prior, _ = session(tmp_path)
+    card, _ = intake.draft_card("exp-01", PLAN, {}, sd)
+    r = good_response(card, label="SURE_WONT_WORK", conf=0.9,
+                      based_on=[{"path": "/etc/passwd", "locator": "1", "observation": "outside roots"},
+                                {"path": str(prior / "missing.json"), "locator": "x", "observation": "does not exist"}],
+                      reasons=[{"claim": "ok", "path": str(prior / "INDEX.md"), "locator": "1"},
+                               {"claim": "bad", "path": "/nowhere"}])
+    linted, dropped = consult.lint_citations(r, [sd, prior])
+    assert len(dropped) == 3
+    assert linted["verdict"]["label"] == "CANNOT_DECIDE" and linted["verdict"]["confidence"] < consult.SURE_THRESHOLD
+    assert [x["claim"] for x in linted["reasons"]] == ["ok"]
 
 
-def test_full_loop_select_best_and_adopt(tmp_path: Path) -> None:
-    s, sd = make_session(tmp_path, parent_score=0.30)
-    card_path = write_card(sd)
-
-    brief = s.propose(card_path)
-    assert brief["kind"] == "brief" and brief["reply_required"]
-    assert s.status("exp-01")["status"] == "draft"
-    assert [p["ping_id"] for p in s.pending_replies()] == ["p-1"]
-    with pytest.raises(WMError):  # cannot re-propose while the brief is unanswered
-        s.propose(card_path)
-
-    out = s.reply("exp-01/p-1", "accept")
-    assert out["status"] == "frozen"
-    assert out["parent"]["dev150"] == pytest.approx(0.30)
-    assert out["parent"]["watch"] == pytest.approx(0.25)  # round(0.3*4)=1 of 4
-    contract = s.contract("exp-01")
-    assert contract["standing_yields"]["evaluators"] == ["dev150", "watch"]
-    assert (s.card_dir("exp-01") / "evaluators" / "watch" / "items.jsonl").is_file()
-
-    # an early save that hits no fraction continues
-    assert s.checkpoint("exp-01", make_ckpt(sd, "exp-01", 100, 0.31), step=100) == HOOK_CONTINUE
-    assert s.status("exp-01")["status"] == "running"
-
-    scores = {250: 0.34, 500: 0.40, 750: 0.42, 1000: 0.41}
-    for step, score in scores.items():
-        code = s.checkpoint("exp-01", make_ckpt(sd, "exp-01", step, score), step=step, final=(step == 1000))
-        assert code == HOOK_YIELD
-        # a second hook call while the yield is pending does not stack
-        assert s.checkpoint("exp-01", make_ckpt(sd, "exp-01", step, score), step=step) == HOOK_CONTINUE
-        out = s.run_worker("exp-01")
-        if step < 1000:
-            assert out["resume"] == "manual"
-            assert s.mailbox("exp-01").pings()[-1]["kind"] == "notice"
-        else:
-            # completion decision, no reply -> timeout selects the best observation
-            assert out["status"] == "awaiting_review"
-            assert out["sealed"] == "obs-3"  # step 750, 0.42
-
-    st = s.status("exp-01")
-    assert st["status"] == "awaiting_review"
-    assert [o["obs_id"] for o in st["observations"]] == ["obs-1", "obs-2", "obs-3", "obs-4"]
-    obs3 = json.loads((s.card_dir("exp-01") / "observations" / "obs-3" / "observation.json").read_text())
-    assert obs3["evaluators"]["dev150"]["delta_vs_parent"] == pytest.approx(0.12)
-    assert obs3["watch"]["fixed"] == 1 and obs3["watch"]["regressions"] == 0
-    decision = [p for p in s.mailbox("exp-01").pings() if p["kind"] == "decision"]
-    assert len(decision) == 1 and decision[0]["raised_by"] == "completion"
-    reply = s.mailbox("exp-01").reply(decision[0]["ping_id"])
-    assert reply["by"] == "timeout" and reply["choice"] == "select:obs-3"
-    seal = json.loads((s.card_dir("exp-01") / "seal.json").read_text())
-    assert seal["checkpoint"]["path"].endswith("checkpoint-750")
-    assert seal["decision_ping"] == decision[0]["ping_id"]
-
-    # sections 5-6 go into the same card file; sections 1-4 must be unchanged
-    completed = yaml.safe_load(card_path.read_text())
-    completed["result"] = {"execution": "completed", "wall_h": 0.1, "output_checkpoint": seal["checkpoint"]["path"],
-                           "measurements": [{"metric": "accuracy", "value": 0.42, "n": 150,
-                                             "path": str(s.card_dir("exp-01") / "observations" / "obs-3" / "dev150" / "normalized.json"),
-                                             "delta_vs_comparator": 0.12}]}
-    completed["conclusion"] = {"verdict": "supported", "decision": "adopt", "summary": "dev150 +0.12 vs parent; watch fixed 1."}
-    tampered = dict(completed)
-    tampered["hypothesis"] = {**completed["hypothesis"], "claim": "rewritten after the fact"}
-    tpath = sd / "memory" / "cards" / "tampered.yaml"
-    tpath.write_text(yaml.safe_dump(tampered))
-    with pytest.raises(WMError, match="sections 1-4 differ"):
-        s.finalize("exp-01", tpath)
-    card_path.write_text(yaml.safe_dump(completed, sort_keys=False))
-    out = s.finalize("exp-01", card_path)
-    assert out["status"] == "closed" and out["decision"] == "adopt"
-    sub = Path(s.config["submission"])
-    assert sub.is_symlink() and sub.resolve() == Path(seal["checkpoint"]["path"]).resolve()
-    assert s.memory.stats()["cards"] == 1 and s.memory.stats()["observations"] == 4
-    assert s.pending_replies() == []
-
-    # a second session in the retrieval arm sees the precedent
-    s2, sd2 = make_session(tmp_path / "two", parent_score=0.30, arm="retrieval", memory_root=tmp_path / "wm-memory")
-    brief2 = s2.propose(write_card(sd2, "exp-01"))
-    assert "1 precedents in memory" in brief2["summary"]
-    assert any(e["locator"] == "exp-01" for e in brief2["evidence"])
+def test_default_eval_plan() -> None:
+    plan = consult.default_eval_plan(1200, n=100, parent_value=0.31)
+    assert [p["step"] for p in plan["points"]] == [300, 600, 900]
+    assert plan["protocol"]["n"] == 100 and plan["comparator"]["value"] == 0.31
+    assert consult.default_eval_plan(None)["points"] == []
 
 
-def test_regress_rule_fires_and_defaults_to_abort(tmp_path: Path) -> None:
-    s, sd = make_session(tmp_path, parent_score=0.50)
-    s.propose(write_card(sd))
-    s.reply("exp-01/p-1", "accept")
-    for step, score in {250: 0.44, 500: 0.43}.items():
-        assert s.checkpoint("exp-01", make_ckpt(sd, "exp-01", step, score), step=step) == HOOK_YIELD
-        out = s.run_worker("exp-01")
-    assert out["status"] == "awaiting_review" and out.get("aborted") is True
-    decision = next(p for p in s.mailbox("exp-01").pings() if p["kind"] == "decision")
-    assert decision["raised_by"] == "rule:regress"
-    assert decision["timeout_action"]["action"] == "abort"
-    # a later hook call from a straggling trainer is told to abort
-    assert s.checkpoint("exp-01", make_ckpt(sd, "exp-01", 600, 0.43), step=600) == 4
+def test_log_consult_and_outcome(tmp_path: Path) -> None:
+    sd, prior, _cfg = session(tmp_path)
+    card, _ = intake.draft_card("exp-01", PLAN, {}, sd)
+    wm = sd / "wm"
+    roots = [sd, prior]
+    e1 = consult.log_consult(wm, good_response(card), request="planning SFT", roots=roots, arm="traj", model="claude-opus-4-8")
+    assert e1["card_id"] == "exp-01" and e1["consult_n"] == 1 and e1["verdict"] == "CANNOT_DECIDE"
+    assert (wm / "cards" / "exp-01" / "consult-01.json").is_file() and (wm / "cards" / "exp-01" / "card.json").is_file()
+    r2 = good_response(card, stage="running", label="SURE_WILL_WORK", conf=0.8,
+                       based_on=[{"path": str(prior / "cfg/run_a/metrics.json"), "locator": "accuracy", "observation": "0.70"}])
+    r2["card"]["results"] = [{"step": 250, "metric": "accuracy", "value": 0.34, "n": 150}]
+    e2 = consult.log_consult(wm, r2, request="step 250: 0.34", roots=roots, arm="traj", model="claude-opus-4-8")
+    assert e2["consult_n"] == 2 and e2["n_based_on"] == 1 and e2["stage"] == "running"
+    with pytest.raises(WMError, match="contract"):
+        consult.log_consult(wm, {"schema_version": "x"}, request="", roots=roots, arm="traj", model=None)
+    out = consult.record_outcome(wm, "exp-01", final_value=0.42, shipped=str(sd / "runs/exp01/checkpoint-750"))
+    assert out["predictions_made"] == 2 and out["last_prediction"]["delta_mean"] == 0.06
+    card_json = json.loads((wm / "cards" / "exp-01" / "card.json").read_text())
+    assert card_json["outcome"]["final_value"] == 0.42
+    rows = consult.ConsultLedger(wm / "consults.jsonl").rows()
+    assert [r.get("event", "consult") for r in rows] == ["consult", "consult", "outcome"]
 
 
-def test_withdraw_closes_without_running(tmp_path: Path) -> None:
-    s, sd = make_session(tmp_path, parent_score=0.30)
-    s.propose(write_card(sd))
-    out = s.reply("exp-01/p-1", "withdraw", why="not worth the GPU")
-    assert out["status"] == "closed" and out["decision"] == "abandon_line"
-    result = yaml.safe_load((s.card_dir("exp-01") / "card.yaml").read_text())
-    assert result["result"]["execution"] == "not_run" and result["conclusion"]["decision"] == "abandon_line"
-    assert s.memory.stats()["cards"] == 1
-
-
-def test_grounding_rejects_bad_cards(tmp_path: Path) -> None:
-    s, sd = make_session(tmp_path, parent_score=0.30)
-    path = write_card(sd)
-    card = yaml.safe_load(path.read_text())
-    card["problem"]["watch_set"]["n"] = 7
-    path.write_text(yaml.safe_dump(card))
-    with pytest.raises(WMError, match="watch_set.count"):
-        s.propose(path)
-    card["problem"]["watch_set"]["n"] = 4
-    card["setup"]["output_dir"] = "/tmp/elsewhere"
-    path.write_text(yaml.safe_dump(card))
-    with pytest.raises(WMError, match="output_dir"):
-        s.propose(path)
-
-
-def test_replies_are_idempotent_and_immutable(tmp_path: Path) -> None:
-    s, sd = make_session(tmp_path, parent_score=0.30)
-    s.propose(write_card(sd))
-    with pytest.raises(WMError, match="override requires"):
-        s.reply("exp-01/p-1", "override")
-    s.reply("exp-01/p-1", "accept")
-    s.reply("exp-01/p-1", "accept")  # same choice: no-op
-    with pytest.raises(WMError, match="immutable"):
-        s.reply("exp-01/p-1", "withdraw", why="changed my mind")
-
-
-def test_cli_and_stop_hook(tmp_path: Path) -> None:
-    _s, sd = make_session(tmp_path, parent_score=0.30)
-    env = {**os.environ, "AWM_SESSION_DIR": str(sd), "PYTHONPATH": str(REPO)}
-    proc = subprocess.run([sys.executable, "-m", "awm.cli", "wm", "propose", str(write_card(sd))],
-                          capture_output=True, text=True, env=env, check=False)
-    assert proc.returncode == 0, proc.stderr
-    assert "BRIEF" in proc.stdout and "awm wm reply p-1" in proc.stdout
-    hook = subprocess.run([sys.executable, str(REPO / ".claude/hooks/wm_pending_reply.py")],
-                          input=json.dumps({"cwd": str(sd)}), capture_output=True, text=True, env=env, check=False)
-    decision = json.loads(hook.stdout)
-    assert decision.get("decision") == "block" and "exp-01/p-1" in decision["reason"]
-    pending = subprocess.run([sys.executable, "-m", "awm.cli", "wm", "pending"], capture_output=True, text=True,
-                             env=env, check=False)
-    assert pending.returncode == 1
-    proc = subprocess.run([sys.executable, "-m", "awm.cli", "wm", "reply", "exp-01/p-1", "--choose", "accept"],
-                          capture_output=True, text=True, env=env, check=False)
-    assert proc.returncode == 0, proc.stderr
-    hook = subprocess.run([sys.executable, str(REPO / ".claude/hooks/wm_pending_reply.py")],
-                          input=json.dumps({"cwd": str(sd)}), capture_output=True, text=True, env=env, check=False)
-    assert json.loads(hook.stdout) == {}
-    ckpt = make_ckpt(sd, "exp-01", 250, 0.35)
-    proc = subprocess.run([sys.executable, "-m", "awm.cli", "wm", "checkpoint", "exp-01", str(ckpt), "--step", "250"],
-                          capture_output=True, text=True, env=env, check=False)
-    assert proc.returncode == HOOK_YIELD and "YIELD" in proc.stdout
-
-
-def test_adopt_copy_mode_and_memory_sides(tmp_path: Path) -> None:
-    s, sd = make_session(tmp_path, parent_score=0.30)
-    s.config["submission_mode"] = "copy"
-    ckpt = make_ckpt(sd, "exp-01", 750, 0.42)
-    (sd / "submission").mkdir()  # a stale directory from an earlier adopt
-    (sd / "submission" / "old.txt").write_text("stale")
-    s._adopt({"card_id": "exp-01", "seal": {"checkpoint": str(ckpt), "obs_id": "obs-3"}})
-    sub = sd / "submission"
-    assert sub.is_dir() and not sub.is_symlink()
-    assert (sub / "config.json").is_file() and not (sub / "old.txt").exists()
-    assert json.loads((s.wm / "incumbent.json").read_text())["obs_id"] == "obs-3"
-
-    # memory sides: a test-side row is invisible by default, visible when asked for
-    from awm.wm.memory import Memory
-    mem_root = tmp_path / "mem2"
-    writer = Memory(mem_root, session="x", arm="null", split_side="test")
-    card = yaml.safe_load(write_card(sd).read_text())
-    writer._append("cards", {"card_id": "exp-09", "base_model": "fake/base-1b", "method_family": "sft",
+def test_memory_precedents_respect_visible_sides(tmp_path: Path) -> None:
+    sd, _, _ = session(tmp_path)
+    card, _ = intake.draft_card("exp-01", PLAN, {}, sd, base_model="google/gemma-3-4b-pt")
+    root = tmp_path / "mem"
+    writer = Memory(root, session="x", arm="null", split_side="test")
+    writer._append("cards", {"card_id": "exp-09", "base_model": "google/gemma-3-4b-pt", "method_family": "sft",
                              "data_sources": ["local"], "problem": card["problem"]["statement"],
                              "claim": card["hypothesis"]["claim"], "best_selection_value": 0.5, "parent_value": 0.3})
-    assert Memory(mem_root, session="y", arm="retrieval").precedents(card) == []
-    both = Memory(mem_root, session="y", arm="retrieval", visible_sides=("train", "test")).precedents(card)
+    assert Memory(root, session="y", arm="retrieval").precedents(card) == []
+    both = Memory(root, session="y", arm="retrieval", visible_sides=("train", "test")).precedents(card)
     assert [p["card_id"] for p in both] == ["exp-09"] and both[0]["delta_best_vs_parent"] == pytest.approx(0.2)
+
+
+def test_cli_toolbelt_end_to_end(tmp_path: Path) -> None:
+    sd = tmp_path / "task"; (sd / "data").mkdir(parents=True)
+    (sd / "data" / "train.jsonl").write_text('{"q": 1}\n{"q": 2}\n')
+    prior = tmp_path / "prior_runs"; (prior / "cfg" / "run_a").mkdir(parents=True)
+    (prior / "INDEX.md").write_text("x\n"); (prior / "cfg/run_a/metrics.json").write_text('{"accuracy": 0.7}')
+    env = {**os.environ, "AWM_SESSION_DIR": str(sd), "PYTHONPATH": str(REPO)}
+
+    def wm(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, "-m", "awm.cli", "wm", *args], capture_output=True, text=True, env=env, check=False)
+
+    r = wm("init", "--arm", "traj", "--prior-runs", str(prior), "--memory-root", str(tmp_path / "mem"),
+           "--wma-model", "claude-opus-4-8", "--base-model", "google/gemma-3-4b-pt")
+    assert r.returncode == 0, r.stderr
+    cfg = json.loads((sd / "wm" / "config.json").read_text())
+    assert cfg["arm"] == "traj" and cfg["prior_runs_root"] == str(prior)
+
+    r = wm("draft-card", "--text", PLAN)
+    assert r.returncode == 0, r.stderr
+    card = yaml.safe_load(r.stdout)
+    assert card["card_id"] == "exp-01" and card["gaps"] and card["setup"]["progress"]["total"] == 1000
+
+    r = wm("eval-plan", "--steps", "1000", "--parent", "0.30")
+    assert json.loads(r.stdout)["points"][0]["step"] == 250
+
+    (sd / "eval_step250.json").write_text(json.dumps({"accuracy": 0.34, "stderr": 0.039}))
+    r = wm("read-eval", str(sd / "eval_step250.json"))
+    assert json.loads(r.stdout)["value"] == 0.34
+    assert wm("read-eval", "/etc/hosts").returncode != 0
+
+    resp = good_response(card, label="SURE_WILL_WORK", conf=0.8,
+                         based_on=[{"path": str(prior / "cfg/run_a/metrics.json"), "locator": "accuracy", "observation": "0.70"}])
+    (sd / "wm" / "tmp" / "response.json").write_text(json.dumps(resp))
+    (sd / "wm" / "tmp" / "request.txt").write_text(PLAN)
+    r = wm("log", "--response", str(sd / "wm/tmp/response.json"), "--request", str(sd / "wm/tmp/request.txt"))
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["verdict"] == "SURE_WILL_WORK"
+    r = wm("outcome", "--card", "exp-01", "--final", "0.71", "--shipped", "runs/exp01/checkpoint-750")
+    assert r.returncode == 0, r.stderr
+    st = json.loads(wm("status").stdout)
+    assert st["cards"]["exp-01"] == {"consults": 2, "last_verdict": "SURE_WILL_WORK", "last_suggestion": "KEEP_RUNNING", "outcome": 0.71}
+    # search on a traj arm has no memory to search and says so
+    assert json.loads(wm("search", "--text", PLAN).stdout)["precedents"] == []
