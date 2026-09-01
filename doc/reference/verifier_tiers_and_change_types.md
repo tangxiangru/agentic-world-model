@@ -175,10 +175,19 @@ vllm==0.11.0   transformers==4.57.3   peft==0.18.1   trl==0.27.2
 | 机制 | 证据来源 | 状态 |
 |---|---|---|
 | vLLM 只读 `temperature`,忽略 `do_sample` | 多条轨迹里 agent 读 `vllm/config/model.py` 的 `get_diff_sampling_param` 后的记述,加上"改 temperature 后分数跳变"的行为证据 | **外部佐证** |
-| `save_pretrained` 丢弃继承的 `do_sample` | 单条轨迹的记述(agent 逐字节比对了 base 与自训 checkpoint 的 config) | **外部佐证,单点** |
+| `save_pretrained` **只写与库默认不同的字段** | 三条 run 的**原始 config 全文**(非转述),覆盖两个方向 | **观察,机制已定,n=3** |
 | LoRA 默认不训 `lm_head` / `embed_tokens` | peft 的默认行为,加上"加 `modules_to_save` 后分数从 4% 跳到 32%"的行为证据 | **外部佐证** |
 
-**它们解释力很强、行为证据一致,但都不是本仓库能独立验证的事实。** 引用时必须带上这个限定——§3 里 C1 和 C4 复述这些机制的地方同样受此约束。要把它们升级为受控事实,需要在 pin 住的容器版本里直接跑最小复现(§6 缺口 5)。
+**第二条已经从「单点转述」升级。** 三名标注者报了表面矛盾的结果:两条 run 里 base 的 `do_sample` 在自训 checkpoint 中消失,第三条(gemma-3-4b-pt)里它连同 `top_k: 64` / `top_p: 0.95` 完整保留。两边的**原始 JSON 都在轨迹里**,不是记述。
+
+矛盾是假的,一个机制同时解释两边:**`GenerationConfig.save_pretrained` 走 `to_diff_dict()`,只序列化与库默认不同的值。** transformers 的 `do_sample` 默认是 `False`——
+
+- base 写着 `do_sample: false` → 等于默认 → **被省略**(消失的那两条);
+- base 写着 `do_sample: true` + `top_k` + `top_p` → 都非默认 → **原样保留**(gemma 那条)。
+
+第三名标注者还给出了同一条 run 内的双向对照:agent 把 `do_sample` 设成 `false` 存出后字段不见了,改设成 `true` 再存,字段又出现。**所以「丢字段」不是 bug,是差分序列化;判断某个 checkpoint 会不会丢,看的是那个值是否等于库默认。**
+
+**其余两条解释力很强、行为证据一致,但都不是本仓库能独立验证的事实。** 引用时必须带上这个限定——§3 里 C1 和 C4 复述这些机制的地方同样受此约束。要把它们升级为受控事实,需要在 pin 住的容器版本里直接跑最小复现(§6 缺口 5)。
 
 ---
 
