@@ -3,6 +3,12 @@
 Status: **proposal**, 2026-08-30. Nothing here is committed to `splits/` yet.
 Every number below is reproducible with `tools/splitdx/` (see the last section).
 
+Reconciled against the project pitch on 2026-09-01: where this record contradicts
+`doc/iclr-27-idea.md`, the contradiction is written up in that document's
+2026-09-01 changelog entry, and each affected claim there carries a footnote
+pointing at it. Six premises did not survive; §3's architecture, §4's tower and
+§1's positioning are untested here, not refuted.
+
 ## Why the shipped split has to change
 
 `splits/posttrainbench/gsm8k-gemma-holdout-v1` holds out the *base model*: 50 test
@@ -806,7 +812,7 @@ Five cells of 28 carry all the remaining full-cell regret:
 The other 23 are solved exactly. The largest miss in the corpus is one AIME
 question. Beyond this the constraint is not the ranker but the design: the 28
 cells are 7 benchmarks × 4 models fully crossed, there is no 29th to add, and the
-787 further trajectories on disk fall inside those same 28 — they would deepen the
+515 further trajectories on disk fall inside those same 28 — they would deepen the
 sets without adding a cluster, and the clustered tests count clusters. At nc = 28
 the MDE is ~0.008–0.010, and the within-scaffold contrast (−0.0095, 13-5,
 p = 0.0963, 78 % tie-break robustness) sits just under its own. Even a perfect
@@ -977,9 +983,15 @@ the overclaim the full-cell headline was.
 
 It is also as close as this corpus gets. The oracle over stage A's top 6 here is
 0.0017, so even a perfect comparator reaches −0.0125 against an MDE of ~0.010 —
-clearing 0.05, but only just, and with a ranker that does not exist. The 787
+clearing 0.05, but only just, and with a ranker that does not exist. The 515
 unextracted trajectories on disk all fall inside these same 28 cells, so they
 deepen the sets without adding a cluster and the clustered test counts clusters.
+(Measured 2026-09-01: `index.parquet` holds 1,745 rows but only 1,690 distinct
+run keys; all 1,175 scored runs are present on disk, and 515 converted runs are
+unscored — 166 contamination-flagged, 316 carrying a score, 165 both scored and
+unflagged, 199 with no score at all. Their 28 `task_id`s are exactly the 28
+cells already in play, none outside. The earlier figure of 787 was never
+derived and is withdrawn.)
 **The next real gain is a second corpus, not a better method on this one.**
 
 ### The leak control

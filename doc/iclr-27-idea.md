@@ -94,18 +94,28 @@ $$p\big(\Delta \mid \text{context},\ \text{hypothesis},\ [\text{optional cheap o
 
 - **Pointwise, not pairwise.** One executed run yields one label directly; no pairing required.
   A pairwise preference is recoverable by subtracting two predictions, so this strictly dominates
-  RPM's form.
+  RPM's form.[^pointwise-0901]
 - **Cardinal with uncertainty, not ordinal.** Ordinal answers "which of these N", at a moment
   when N candidates already exist. Cardinal answers *whether to run anything*, *how much budget a
   branch deserves*, and *when to stop* — which is what a scheduler needs and what UCB
   approximates from history alone.
 - **Δ, not the absolute score.** Absolute score is dominated by "how hard is this task" and "how
   strong is this base model"; a model that learns per-task means alone gets a flattering R².
-  Predicting the change conditioned on context removes that free win.
+  Predicting the change conditioned on context removes that free win.[^delta-factors]
 - **Encoder, not regressor, for the LLM part.** Let the LLM embed each open-world artefact (a
   freshly discovered HuggingFace dataset, a code diff, a plan) and let a light structured head
   produce the numbers. RPM found LLMs unreliable at emitting metrics; the fix is to stop asking
   them to emit metrics, not to give up on cardinality.
+
+[^pointwise-0901]: Capacity, yes; accuracy, no. Measured 2026-09-01 on the same 7,753 ordered
+comparisons: a pairwise comparator calls the winner 79.0% of the time, a pointwise scorer 76.8%,
+and stacking the pairwise stage on the pointwise one moves full-cell top-3 regret from 0.0081 to
+0.0038. See the 2026-09-01 changelog entry, item 5.
+
+[^delta-factors]: The second factor named here is the wrong one. Measured 2026-09-01 over the
+1,175 scoreable runs: one-way R² is 0.5007 for the benchmark and **0.0114** for the trained base
+model, while the factor this bullet never names — which agent produced the run — is 0.1767. See
+the 2026-09-01 changelog entry, item 1.
 
 ### Three departures, each a separate ablation
 
@@ -263,9 +273,9 @@ Right choice, and for a better reason than "DataMaster gained most there": **bot
 verifiable.** GSM8K is exact-match on a numeric answer, HumanEval runs unit tests. That means
 synthetic data can be filtered automatically *and* the predictor's training labels are clean —
 ArenaHard-Writing's LLM judge would inject noise straight into the training signal. Headroom is
-ample: GSM8K 49.43 → 86.95, HumanEval 43.29 → 60.36.
+ample: GSM8K 49.43 → 86.95, HumanEval 43.29 → 60.36.[^headroom-0901]
 
-**They are also the two highest-contamination tasks in the suite.** GSM8K test items leak into
+**They are also the two highest-contamination tasks in the suite.**[^contam-rank] GSM8K test items leak into
 public math instruction sets and HumanEval into code instruction sets routinely, and DataMaster
 audited leakage for GPQA only. Two consequences:
 
@@ -274,8 +284,24 @@ audited leakage for GPQA only. Two consequences:
   permit it. This is not a risk, it is a certainty: the label is the score, and leaked data does
   raise the score. The annotation pipeline needs an independent overlap check (n-gram +
   embedding) and leaked configurations must become **explicit negative labels**, not merely be
-  dropped. Teaching the model to recognise the hack is a result in its own right, and connects
+  dropped.[^neg-labels] Teaching the model to recognise the hack is a result in its own right, and connects
   directly to the reward-hacking taxonomy PostTrainBench already documents.
+
+[^headroom-0901]: Both ceilings are already exceeded inside the corpus. Best run per cell,
+measured 2026-09-01: GSM8K 0.912 (Qwen3-4B-Base), HumanEval 0.854 (Qwen3-4B-Base) — against the
+86.95 and 60.36 quoted here. The scales match: inverting the catalogue's `stderr` as
+`p(1−p)/s²` returns integral item counts of 1318 / 163 / 447 / 29 for GSM8K / HumanEval /
+GPQA-main / AIME-2025, i.e. the published suite sizes, so these are the same percentages.
+"Headroom is ample" is a statement about DataMaster's own agent, not about the task.
+
+[^contam-rank]: Inverted. By the corpus's own contamination judge, measured 2026-09-01: BFCL
+37.5%, HealthBench 19.8%, HumanEval 11.2%, GPQA-main 8.1%, ArenaHard-Writing 5.2%, AIME-2025
+0.9%, **GSM8K 0.5% — the lowest of the seven.** The verifiability argument for this pair is
+untouched; the contamination argument is not. See the 2026-09-01 changelog entry, item 2.
+
+[^neg-labels]: The apparatus does the thing this sentence forbids. `battery.scoreable()` drops
+all 161 flagged runs, and in 5 of 28 cells the drop removes a run better than the best kept run.
+See the 2026-09-01 changelog entry, item 3.
 
 ## 6. What to measure first, cheapest first
 
@@ -297,14 +323,25 @@ Nothing below needs the model to exist.
 6. **Learnability probe**: fit the baseline ladder — per-task mean Δ; constant-zero; GBDT on
    structured config features — on the 1,842 PostTrainBench trajectories.[^ptb-count] If the GBDT already
    matches an LLM encoder, the story is "post-training outcomes are highly predictable", which is
-   still publishable but is a different paper. Establish this before building anything large.
+   still publishable but is a different paper. Establish this before building anything large.[^ladder-0901]
 
 **Metric warning for step 6**: most proposed changes have Δ ≈ 0, so a constant-zero predictor
 wins on MSE while being useless. Report **top-k regret** (pick k by predicted value, execute,
 measure how far the best result falls short of the oracle) as the primary metric, and report
 **calibration** (regression slope, reliability curve) separately — a model that inflates every Δ
 threefold has a perfect Spearman and ruins every budget decision. This failure mode does not
-exist for an ordinal judge and is the price of going cardinal.
+exist for an ordinal judge and is the price of going cardinal.[^calib-0901]
+
+[^ladder-0901]: Two of the three rungs carry no ranking information under the primary metric, and
+the baseline that actually binds is not on the ladder: a parameter-free per-agent-family mean
+lookup, at 0.0070 full-cell regret. The decision rule stated here — GBDT vs LLM encoder — can
+therefore never fire as written. See the 2026-09-01 changelog entry, item 6.
+
+[^calib-0901]: Measured absent, at least for the frozen prompted scorer now on the board:
+regressing actual on predicted accuracy over 1,174 runs gives slope **1.0113** (intercept
+−0.0287, R² 0.8547, MAE 0.0620, mean bias +0.0247); within a cell, slope 1.0082. Nothing inflates
+threefold. The warning is still the right one to carry into a trained cardinal model — it just
+has not fired yet.
 
 ## 7. Open questions
 
@@ -327,6 +364,91 @@ exist for an ordinal judge and is the price of going cardinal.
   3.33). A scalar target cannot express that; a multi-task curve target can.
 
 ## 8. Changelog
+
+- **2026-09-01** — **First measurement pass reaches this document: two claims are wrong, one
+  requirement is violated, and the baseline that binds is not on the ladder.** Apparatus:
+  `tools/choice_rank_report.py` over the pinned PostTrainBench catalogue; board in
+  `tools/choice_rank_report.out`; full record in `doc/split-redesign.md`. Metric is §6's own —
+  top-k regret at k = 3 — over 188 choice sets on 28 cells (28 full cells, 76 within agent
+  family, 84 within scaffold), clustered on the 28 cells.
+
+  **Scope, stated first because it kills most apparent conflicts.** The board measures *frozen,
+  prompted* LLM rankers reading trajectories offline. §3's trained cardinal predictor does not
+  exist, and §6 opens with "Nothing below needs the model to exist." So nothing here falsifies
+  §3's architecture, §4's tower, or §1's positioning. What it does test is the set of empirical
+  premises this document offers in support of them, and six of those do not survive.
+
+  1. **§3, "Δ, not the absolute score" — the second factor it names is the wrong one.** One-way
+     R² over the 1,175 scoreable runs: benchmark **0.5007**, trained base model **0.0114**. The
+     task half is right; the base-model half is 44× smaller than the sentence implies. The factor
+     the bullet never names — which *agent* produced the run — is **0.1767**, 15× the base model.
+     Jointly, (benchmark, trained_model) reaches 0.5443 over 28 groups and (benchmark,
+     agent_model) 0.8030 over 170, so discount the second for degrees of freedom; the one-way
+     comparison is the honest one. The consequence is not cosmetic. A cell-referenced Δ cancels
+     exactly the two factors §3 names and leaves the dominant one standing, which is why a
+     **parameter-free per-agent-family mean lookup** reaches regret **0.0070** with 78.6% of
+     full-cell sets solved exactly, and why no arm on the board beats it by more than its own
+     MDE. §3's rationale should name the executing agent, and "hold the agent out" belongs in the
+     ablation list as a fourth departure.
+  2. **§5.2, "the two highest-contamination tasks in the suite" — inverted.** Flag rate by the
+     corpus's own contamination judge: BFCL 81/216 = **37.5%**, HealthBench 41/207 = 19.8%,
+     HumanEval 24/215 = 11.2%, GPQA-main 17/210 = 8.1%, ArenaHard-Writing 11/213 = 5.2%,
+     AIME-2025 2/219 = 0.9%, **GSM8K 1/216 = 0.5%, the lowest of the seven.** HumanEval is third,
+     GSM8K is last. The verifiability argument for the pair stands untouched and is the better
+     argument anyway; "a win here without a decontamination audit is not a result" is a claim
+     about the wrong two benchmarks. If contamination is the reason to choose a benchmark, it
+     points at BFCL.
+  3. **§5.2's negative-label requirement is violated by the apparatus, and not marginally.**
+     §5.2 requires leaked configurations become explicit negative labels, "not merely be
+     dropped". `tools/splitdx/battery.scoreable()` drops them: 1,509 catalogue rows → 1,336 with
+     an accuracy → **1,175** after removing 160 contamination-flagged runs and 1 disallowed-model
+     run. 22 of 28 cells lose runs. In **5 of 28 cells the dropped set contains a run better than
+     the best kept run**, and in all four BFCL cells the censored winner is a perfect **1.0000**
+     against a kept best of 0.95–0.98; BFCL loses 15–24 runs per cell, up to 45% of the cell.
+     So the discrimination §5.2 calls "a result in its own right" is precisely the one the board
+     has never been asked to make — every leaked winner is removed before the choice set exists.
+     What this does *not* show is that those cells are free zeros: the four BFCL cells report
+     regret 0.0000 for every arm on the kept population, whose top is a dense 0.94–0.98 cluster,
+     so the zeros are earned on the population that exists. The population is what is missing its
+     hardest candidates, by construction.
+  4. **Population: the ladder mandates the 1,745, everything is fitted on 1,175.** The 2026-08-28
+     entry ends "Every number this document fits a model on should be the 1,745." Nothing does.
+     Measured 2026-09-01: `index.parquet` holds 1,745 rows over **1,690 distinct run keys**; all
+     1,175 scored runs are present on disk; **515** converted runs are on disk and unscored — 166
+     contamination-flagged, 316 carrying a score, 165 both scored and unflagged, 199 with no
+     score at all. Their 28 `task_id`s are exactly the 28 cells already in play, none outside, so
+     the missing 515 would deepen the sets without adding a cluster and cannot move a test whose
+     n is 28. The mandate is still unmet, and the honest phrasing everywhere downstream is
+     "fitted on the catalogue's scoreable subset", not "fitted on the corpus".
+  5. **§3's "strictly dominates" is a claim about capacity, and is false as a claim about
+     accuracy.** A preference is indeed recoverable by subtracting two predictions. Empirically,
+     on the same 7,753 ordered comparisons, the pairwise comparator calls the winner **79.0%** of
+     the time against the pointwise scorer's **76.8%**, and stacking pairwise on top of pointwise
+     takes full-cell regret from 0.0081 to **0.0038**. Split by the true gap between the two
+     candidates: under 0.02, 59.1% vs 56.6%; 0.02–0.05, 71.2 vs 70.8; 0.05–0.15, 85.2 vs 80.7;
+     over 0.15, 95.7 vs 94.6 — the pairwise advantage lives outside the narrow band, which is
+     exactly where a shortlist's top sits. Narrow the sentence to the label, not the accuracy.
+  6. **§6's metric warning aims at the wrong failure, and the ladder misses the binding
+     baseline.** Under top-k regret *within a cell* a constant-zero predictor does not "win on
+     MSE while being useless" — it carries no ranking information at all and cannot be scored, so
+     rungs 1 and 2 of item 6 (per-task mean Δ; constant-zero) are vacuous on the primary metric
+     rather than merely weak on it. The baseline that binds is on neither rung: the per-agent-
+     family lookup at 0.0070 / 78.6%, against 0.1307 random, 0.1126 self-report, 0.0242 for a
+     21-feature model, 0.0081 for the trajectory-reading scorer and 0.0038 with a comparator on
+     top. Item 6's decision rule — "if the GBDT already matches an LLM encoder … a different
+     paper" — can never fire as written, because the thing to beat is neither of the two it
+     names. Separately, the calibration failure it warns about is measured absent for the scorer
+     now on the board: slope **1.0113** pooled, 1.0082 within a cell.
+  7. **§4's per-level false-negative rate and §6 items 1–4 are blocked, not merely unstarted.**
+     Items 1 and 2 size a task set — ZINC, QM9, the three time-series tasks — this project no
+     longer covers. Item 3 and item 4 need RPM's per-node validation and test logs, which are not
+     in the release and cannot be reconstructed from it. They should be labelled *blocked on an
+     input we do not have*, so that "not yet run" stops reading as a schedule.
+
+  What is **not** touched: §1's positioning, §2's blind-spot argument, §4's tower and its three
+  objections, §7's open questions. None has been measured, and the absence of a result here is
+  not a result. Prose in §3, §5.2 and §6 left intact per this document's append-only rule; each
+  affected claim now carries a footnote pointing here.
 
 - **2026-08-28** — **The corpus is 1,745, not 1,842.** §2.3 and §6 item 6 both size the
   PostTrainBench outcome corpus at 1,842; that is the count of run *directories* in the release,
