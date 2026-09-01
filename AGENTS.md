@@ -10,3 +10,7 @@
   as allocations become available.
 - Never reclaim capacity by cancelling jobs outside the exact receipt/job IDs authorized for the
   current experiment.
+- Use `/rmeng_data/robtang/slurm-queue/registry.json` as the cross-CLI ownership authority for the
+  four H100 nodes. A shared Unix user, `root`, reservation membership, or node placement is never
+  sufficient ownership evidence. Query with `/rmeng_data/robtang/bin/awm-slurm-queue`; treat
+  `OWNERSHIP FAIL` as an immediate investigation condition.

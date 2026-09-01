@@ -297,10 +297,101 @@ def _ptb(args: argparse.Namespace) -> int:
     raise AssertionError(args.cmd)
 
 
+def _slurm_queue(args: argparse.Namespace) -> int:
+    import json
+    import time
+
+    from awm import slurm_queue
+
+    try:
+        registry = args.registry.resolve() if args.registry else None
+        if args.cmd == "queue":
+            while True:
+                snapshot = slurm_queue.collect_snapshot(registry)
+                if args.json:
+                    print(json.dumps(snapshot, indent=2, sort_keys=True))
+                else:
+                    if args.watch:
+                        print("\033[2J\033[H", end="")
+                    print(
+                        slurm_queue.render_snapshot(snapshot, include_jobs=not args.summary),
+                        end="",
+                    )
+                if not args.watch:
+                    return 0 if snapshot["ownership_ok"] else 1
+                time.sleep(args.watch)
+        if args.cmd == "register-receipt":
+            path = slurm_queue.register_receipt(
+                args.receipt, label=args.label, registry_path=registry
+            )
+            print(path)
+            return 0
+        if args.cmd == "register-job":
+            path = slurm_queue.register_job(
+                args.job_id,
+                label=args.label,
+                source_id=args.source_id,
+                registry_path=registry,
+            )
+            print(path)
+            return 0
+        if args.cmd == "monitor-start":
+            pid = slurm_queue.start_monitor(args.interval, registry)
+            print(f"queue monitor pid={pid} root={slurm_queue.queue_root()}")
+            return 0
+        if args.cmd == "monitor-status":
+            running, pid = slurm_queue.monitor_status()
+            print(f"{'RUNNING' if running else 'STOPPED'} pid={pid or '-'}")
+            error = slurm_queue.queue_root() / "monitor.error"
+            if error.is_file() and error.stat().st_size:
+                print(error.read_text(encoding="utf-8"), end="", file=sys.stderr)
+            return 0 if running else 1
+    except slurm_queue.QueueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    raise AssertionError(args.cmd)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="awm", description=__doc__)
     p.add_argument("--data-root", type=Path, help="override AWM_DATA_ROOT for this call")
     sub = p.add_subparsers(dest="group", required=True)
+
+    slurm = sub.add_parser(
+        "slurm", help="query a receipt-backed shared Slurm ownership registry"
+    ).add_subparsers(dest="cmd", required=True)
+    queue = slurm.add_parser("queue", help="show owned running, pending, and terminal jobs")
+    queue.add_argument("--registry", type=Path)
+    queue.add_argument("--json", action="store_true")
+    queue.add_argument("--summary", action="store_true")
+    queue.add_argument("--watch", type=int, metavar="SECONDS", default=0)
+    queue.set_defaults(func=_slurm_queue)
+    register_receipt = slurm.add_parser(
+        "register-receipt", help="add every job in a PTB receipt to the ownership registry"
+    )
+    register_receipt.add_argument("receipt", type=Path)
+    register_receipt.add_argument("--label")
+    register_receipt.add_argument("--registry", type=Path)
+    register_receipt.set_defaults(func=_slurm_queue)
+    register_job = slurm.add_parser(
+        "register-job", help="add one exceptional job after verifying its live Slurm identity"
+    )
+    register_job.add_argument("job_id")
+    register_job.add_argument("--label", required=True)
+    register_job.add_argument("--source-id")
+    register_job.add_argument("--registry", type=Path)
+    register_job.set_defaults(func=_slurm_queue)
+    monitor_start = slurm.add_parser(
+        "monitor-start", help="start the persistent shared snapshot writer"
+    )
+    monitor_start.add_argument("--interval", type=int, default=15)
+    monitor_start.add_argument("--registry", type=Path)
+    monitor_start.set_defaults(func=_slurm_queue)
+    monitor_status_parser = slurm.add_parser(
+        "monitor-status", help="show whether the snapshot writer is alive"
+    )
+    monitor_status_parser.add_argument("--registry", type=Path)
+    monitor_status_parser.set_defaults(func=_slurm_queue)
 
     traj = sub.add_parser("traj", help="fetch and convert trajectories").add_subparsers(
         dest="cmd", required=True

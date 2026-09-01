@@ -790,6 +790,26 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
     if not pilot:
         receipt["state"] = "held"
         output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        ownership_registry = ptb_env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
+        if ownership_registry:
+            try:
+                from awm import slurm_queue
+
+                slurm_queue.register_receipt(
+                    output,
+                    registry_path=Path(ownership_registry),
+                )
+            except (OSError, slurm_queue.QueueError) as exc:
+                receipt["state"] = "ownership_registration_failed"
+                receipt["failure"] = {
+                    "reason": "all formal jobs remain held because ownership registration failed",
+                    "error": str(exc),
+                }
+                output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+                raise ExperimentError(
+                    "formal jobs were submitted but remain held because ownership registration "
+                    f"failed: {exc} (receipt: {output})"
+                ) from exc
         job_ids = ",".join(job["job_id"] for job in receipt["jobs"])
         release = subprocess.run(
             _release_command(ptb_env, job_ids), text=True, capture_output=True, check=False

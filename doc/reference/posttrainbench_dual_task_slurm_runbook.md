@@ -12,6 +12,41 @@ commit and submit all next-batch jobs immediately. Slurm starts what fits and le
 pending to backfill. Preserve real dependencies, record why any unfinished cell is non-blocking,
 and never free capacity by cancelling jobs outside the active experiment receipt.
 
+## Shared ownership queue
+
+The cross-CLI source of truth is `/rmeng_data/robtang/slurm-queue/registry.json`. It records exact
+job IDs and expected job names from formal receipts; an exceptional recovery job must be
+registered explicitly. Unix `UserId=root` is never ownership evidence.
+
+```bash
+# Live query from this checkout
+uv run awm slurm queue
+
+# Stable command from any directory or CLI
+/rmeng_data/robtang/bin/awm-slurm-queue
+
+# Continuously refresh the terminal
+/rmeng_data/robtang/bin/awm-slurm-queue --watch 5
+
+# Start/check the persistent 15-second snapshot writer
+uv run awm slurm monitor-start --interval 15
+uv run awm slurm monitor-status
+
+# Machine-readable/shared snapshots, refreshed every 15 seconds
+cat /rmeng_data/robtang/slurm-queue/current.txt
+jq . /rmeng_data/robtang/slurm-queue/current.json
+```
+
+`OWNERSHIP OK` means every active job assigned to the four owned nodes has an exact registry
+match. `OWNERSHIP FAIL` lists unregistered jobs or job-name mismatches. Future formal PTB
+submissions register their held receipt before atomic release when
+`POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY` is configured; registration failure leaves the jobs
+held instead of creating an untracked workload.
+
+For a non-receipt recovery job, register the live ID once with
+`uv run awm slurm register-job JOB_ID --label LABEL`. Registration reads and freezes the live
+Slurm name; later name mismatches fail ownership. Receipt-based registration remains preferred.
+
 ## Local and infrastructure gates
 
 ```bash

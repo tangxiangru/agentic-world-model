@@ -292,7 +292,12 @@ def test_formal_submit_holds_all_jobs_before_one_release(
         },
     )
     monkeypatch.setattr(ptb, "dry_run", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(ptb, "read_ptb_env", dict)
+    ownership_registry = tmp_path / "slurm-ownership.json"
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {"POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(ownership_registry)},
+    )
     monkeypatch.setattr(ptb.paths, "data_root", lambda: tmp_path)
     monkeypatch.setattr(ptb, "build_launches", lambda *_args, **_kwargs: fake_launches)
 
@@ -326,10 +331,15 @@ def test_formal_submit_holds_all_jobs_before_one_release(
     assert len(receipt["jobs"]) == 32
     assert receipt["jobs"][0]["job_name"] == ("gangda_trial_0828.ptb.test.g01.formal.r1")
     assert set(receipt["context_validation"]) == set(cell_ids)
+    registered = json.loads(ownership_registry.read_text(encoding="utf-8"))
+    assert len(registered["sources"][0]["jobs"]) == 32
 
 
 def test_root_owned_allocations_are_released_through_sudo() -> None:
-    assert ptb._release_command(
-        {"POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "1"}, "10,11"
-    ) == ["sudo", "scontrol", "release", "10,11"]
+    assert ptb._release_command({"POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "1"}, "10,11") == [
+        "sudo",
+        "scontrol",
+        "release",
+        "10,11",
+    ]
     assert ptb._release_command({}, "10,11") == ["scontrol", "release", "10,11"]
