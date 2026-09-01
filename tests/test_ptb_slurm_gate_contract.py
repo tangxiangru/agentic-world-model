@@ -13,6 +13,7 @@ RUN_GATES = (
     / "run_gates.sh"
 )
 GATE_WORKER = RUN_GATES.with_name("gate_worker.sbatch")
+GPU_REAP = GATE_WORKER.parents[2] / "utils" / "gpu_reap.sh"
 
 
 def gate_case(script: str, name: str, next_name: str) -> str:
@@ -41,11 +42,27 @@ def test_g1_checks_the_complete_allocation_shape():
     assert "/gres\\/gpu=1(,|$)/" in g1
 
 
+def test_gate_uuid_query_uses_cgroup_visible_logical_gpu():
+    worker = GATE_WORKER.read_text(encoding="utf-8")
+
+    assert "nvidia-smi --query-gpu=uuid" in worker
+    assert 'nvidia-smi -i "$ALLOCATED"' not in worker
+    assert '[ "${#VISIBLE_UUIDS[@]}" -eq 1 ]' in worker
+
+
+def test_gpu_reap_uses_the_devices_cgroup_as_its_gres_scope():
+    script = GPU_REAP.read_text(encoding="utf-8")
+
+    assert 'if [ "${POST_TRAIN_BENCH_SLURM_GPU_MODE:-}" != "gres" ]; then' in script
+    assert 'device_args=(-i "$gpu_selector")' in script
+    assert 'nvidia-smi "${device_args[@]}" --query-compute-apps=pid' in script
+
+
 def test_failed_gate_cancels_only_jobs_recorded_by_this_invocation():
     script = RUN_GATES.read_text(encoding="utf-8")
 
     assert "SUBMITTED_JOB_IDS=()" in script
-    assert 'trap cleanup_submitted_jobs EXIT' in script
+    assert "trap cleanup_submitted_jobs EXIT" in script
     assert 'scancel "${SUBMITTED_JOB_IDS[@]}"' in script
     for variable in ("first", "second", "job", "ninth", "survivor", "reaper"):
         assert f'SUBMITTED_JOB_IDS+=("${variable}")' in script
@@ -56,9 +73,7 @@ def test_g3_reuses_its_gpu_after_reaping_without_harming_the_survivor():
     worker = GATE_WORKER.read_text(encoding="utf-8")
     g3 = gate_case(runner, "g3", "*")
 
-    assert 'reaper-survivor-proof.txt' in g3
-    assert 'reaper-eval-smoke.txt' in g3
-    assert worker.index("ptb_reap_allocated_gpu_processes") < worker.index(
-        'reaper-eval-smoke.txt'
-    )
+    assert "reaper-survivor-proof.txt" in g3
+    assert "reaper-eval-smoke.txt" in g3
+    assert worker.index("ptb_reap_allocated_gpu_processes") < worker.index("reaper-eval-smoke.txt")
     assert "torch.cuda.synchronize()" in worker

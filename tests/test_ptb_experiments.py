@@ -8,6 +8,9 @@ from awm import paths
 from awm import ptb_experiments as ptb
 
 MANIFEST = paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-opus5-4x4-batch1.yaml"
+DUAL_MANIFEST = (
+    paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-healthbench-opus5-4x4x2-batch1.yaml"
+)
 
 
 def test_manifest_is_exact_approved_matrix() -> None:
@@ -23,6 +26,9 @@ def test_manifest_is_exact_approved_matrix() -> None:
         launch.environment["POST_TRAIN_BENCH_REQUIRE_COMPLETE"] == "1" for launch in launches
     )
     assert all(launch.environment["POST_TRAIN_BENCH_SKIP_CLI_UPDATE"] == "1" for launch in launches)
+    assert all(
+        launch.environment["HF_HOME"] == str(paths.REPO_ROOT / "data/ptb/hf") for launch in launches
+    )
     assert all(
         launch.command[launch.command.index("--run-branch") + 1] == "gangda_trial_0828"
         for launch in launches
@@ -84,6 +90,52 @@ def test_manifest_is_exact_approved_matrix() -> None:
     )
     held = ptb.build_launches(data, hold=True)
     assert all("--hold" in launch.command for launch in held)
+
+
+def test_dual_task_manifest_is_one_atomic_thirty_two_cell_matrix() -> None:
+    data = ptb.load_manifest(DUAL_MANIFEST)
+    launches = ptb.build_launches(data)
+
+    assert data["contract"]["tasks"] == ["gsm8k", "healthbench"]
+    assert [launch.cell_id for launch in launches] == [
+        *(f"g{index:02d}" for index in range(1, 17)),
+        *(f"h{index:02d}" for index in range(1, 17)),
+    ]
+    tasks = [launch.command[launch.command.index("--eval") + 1] for launch in launches]
+    assert tasks == ["gsm8k"] * 16 + ["healthbench"] * 16
+    assert all("--hold" in launch.command for launch in ptb.build_launches(data, hold=True))
+
+
+def test_dual_task_pilot_covers_both_evaluation_paths() -> None:
+    launches = ptb.build_launches(ptb.load_manifest(DUAL_MANIFEST), pilot=True)
+
+    assert [launch.cell_id for launch in launches] == ["g06", "h06"]
+    assert [launch.command[launch.command.index("--eval") + 1] for launch in launches] == [
+        "gsm8k",
+        "healthbench",
+    ]
+    assert all(launch.command[launch.command.index("--hours") + 1] == "1" for launch in launches)
+    assert all("--hold" not in launch.command for launch in launches)
+
+
+def test_healthbench_decontamination_asset_covers_the_evaluation_subset() -> None:
+    task = ptb.PTB_ROOT / "src/eval/tasks/healthbench"
+    test_rows = json.loads((task / "test_data.json").read_text(encoding="utf-8"))
+    evaluation_rows = [
+        json.loads(line)
+        for line in (task / "evaluation_code/data/healthbench.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+
+    test_questions = {row["question"] for row in test_rows}
+    evaluation_questions = {
+        json.dumps(row["prompt"], ensure_ascii=False) for row in evaluation_rows
+    }
+    assert len(test_rows) == 5000
+    assert len(evaluation_rows) == 245
+    assert evaluation_questions <= test_questions
 
 
 def test_pilot_is_b06_shape_and_one_hour() -> None:
@@ -155,23 +207,27 @@ def test_receipt_validation(tmp_path: Path) -> None:
 def test_formal_submit_holds_all_jobs_before_one_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    data = ptb.load_manifest(MANIFEST)
+    data = ptb.load_manifest(DUAL_MANIFEST)
+    cell_ids = [
+        *(f"g{index:02d}" for index in range(1, 17)),
+        *(f"h{index:02d}" for index in range(1, 17)),
+    ]
     fake_launches = [
         ptb.Launch(
-            cell_id=f"b{index:02d}",
+            cell_id=cell_id,
             command=(
                 "fake-submit",
-                f"b{index:02d}",
+                cell_id,
                 "--job-name",
-                f"gangda_trial_0828.ptb.test.b{index:02d}.formal.r1",
+                f"gangda_trial_0828.ptb.test.{cell_id}.formal.r1",
                 "--hold",
             ),
             environment={
-                "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": f"/evidence/b{index}.json",
+                "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": f"/evidence/{cell_id}.json",
                 "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256": f"{index:064x}",
             },
         )
-        for index in range(1, 17)
+        for index, cell_id in enumerate(cell_ids, start=1)
     ]
     monkeypatch.setattr(ptb, "local_issues", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(ptb, "site_issues", list)
@@ -208,16 +264,16 @@ def test_formal_submit_holds_all_jobs_before_one_release(
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
 
     submitted = [command for command in commands if command[0] == "fake-submit"]
-    assert len(submitted) == 16
+    assert len(submitted) == 32
     assert all("--hold" in command for command in submitted)
     assert commands[-1] == (
         "scontrol",
         "release",
-        ",".join(str(job_id) for job_id in range(9001, 9017)),
+        ",".join(str(job_id) for job_id in range(9001, 9033)),
     )
     assert receipt["state"] == "submitted"
     assert receipt["ownership"] == data["ownership"]
     assert receipt["source"]["top_branch"] == "gangda_trial_0828"
-    assert len(receipt["jobs"]) == 16
-    assert receipt["jobs"][0]["job_name"] == ("gangda_trial_0828.ptb.test.b01.formal.r1")
-    assert set(receipt["context_validation"]) == {f"b{index:02d}" for index in range(1, 17)}
+    assert len(receipt["jobs"]) == 32
+    assert receipt["jobs"][0]["job_name"] == ("gangda_trial_0828.ptb.test.g01.formal.r1")
+    assert set(receipt["context_validation"]) == set(cell_ids)

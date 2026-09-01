@@ -26,6 +26,7 @@ APPROVED_BASE_MODELS = (
     "HuggingFaceTB/SmolLM3-3B-Base",
     "google/gemma-3-4b-pt",
 )
+APPROVED_TASKS = ("gsm8k", "healthbench")
 APPROVED_AGENT_SETUPS = (
     ("claude_vertex_max", "claude-opus-5[1m]", "max", 1_000_000),
     ("claude_vertex_xhigh", "claude-opus-5[1m]", "xhigh", 1_000_000),
@@ -74,8 +75,17 @@ def validate_manifest(data: dict[str, Any]) -> None:
     if not spec.startswith("doc/spec/") or not (paths.REPO_ROOT / spec).is_file():
         raise ExperimentError("ownership.spec must name an existing committed spec under doc/spec")
     contract = data.get("contract") or {}
+    if "tasks" in contract:
+        tasks = tuple(contract.get("tasks") or ())
+        if contract.get("task") is not None or tasks != APPROVED_TASKS:
+            raise ExperimentError(
+                f"contract.tasks must be {list(APPROVED_TASKS)!r} and contract.task must be absent"
+            )
+    else:
+        tasks = (contract.get("task"),)
+        if tasks != ("gsm8k",):
+            raise ExperimentError("contract.task must be 'gsm8k' for a single-task batch")
     expected = {
-        "task": "gsm8k",
         "agent_budget_hours": 10,
         "gpus": 1,
         "cpus": 16,
@@ -122,13 +132,15 @@ def validate_manifest(data: dict[str, Any]) -> None:
         raise ExperimentError("contract must pin the official judge container SHA-256")
 
     cells = data.get("cells")
-    if not isinstance(cells, list) or len(cells) != 16:
-        raise ExperimentError("the formal batch must contain exactly sixteen cells")
+    expected_cell_count = len(tasks) * len(APPROVED_AGENT_SETUPS) * len(APPROVED_BASE_MODELS)
+    if not isinstance(cells, list) or len(cells) != expected_cell_count:
+        raise ExperimentError(f"the formal batch must contain exactly {expected_cell_count} cells")
     ids = [str(cell.get("id")) for cell in cells]
-    if len(set(ids)) != 16:
+    if len(set(ids)) != expected_cell_count:
         raise ExperimentError("cell ids must be unique")
     actual = {
         (
+            _cell_task(contract, cell),
             cell.get("agent"),
             cell.get("agent_model"),
             cell.get("effort"),
@@ -138,17 +150,25 @@ def validate_manifest(data: dict[str, Any]) -> None:
         for cell in cells
     }
     expected_matrix = {
-        (agent, model, effort, context_tokens, base)
+        (task, agent, model, effort, context_tokens, base)
+        for task in tasks
         for agent, model, effort, context_tokens in APPROVED_AGENT_SETUPS
         for base in APPROVED_BASE_MODELS
     }
     if actual != expected_matrix:
-        raise ExperimentError("cells do not match the approved 4x4 setup/base-model matrix")
+        raise ExperimentError("cells do not match the approved task x 4x4 setup/base-model matrix")
     pilot = data.get("pilot") or {}
-    if pilot.get("cell") not in ids or pilot.get("agent_budget_hours") != 1:
-        raise ExperimentError("pilot must select one formal cell shape with a 1h budget")
+    pilot_cells = _pilot_cell_ids(data)
+    if (
+        not pilot_cells
+        or any(cell_id not in ids for cell_id in pilot_cells)
+        or len(set(pilot_cells)) != len(tasks)
+        or {_cell_task(contract, _cell(data, cell_id)) for cell_id in pilot_cells} != set(tasks)
+        or pilot.get("agent_budget_hours") != 1
+    ):
+        raise ExperimentError("pilot must select one 1h formal cell from each task")
     records = data.get("context_validation") or {}
-    for _, model, effort, _, _ in actual:
+    for _, _, model, effort, _, _ in actual:
         profile = f"{model}:{effort}"
         if profile not in records:
             raise ExperimentError(f"missing context-validation path for {profile}")
@@ -159,6 +179,24 @@ def _cell(data: dict[str, Any], cell_id: str) -> dict[str, Any]:
         return next(cell for cell in data["cells"] if cell["id"] == cell_id)
     except StopIteration as exc:
         raise ExperimentError(f"unknown cell: {cell_id}") from exc
+
+
+def _cell_task(contract: dict[str, Any], cell: dict[str, Any]) -> str:
+    task = cell.get("task", contract.get("task"))
+    if not isinstance(task, str) or not task:
+        raise ExperimentError(f"cell {cell.get('id', '<unknown>')} must identify a task")
+    return task
+
+
+def _pilot_cell_ids(data: dict[str, Any]) -> list[str]:
+    pilot = data.get("pilot") or {}
+    if "cells" in pilot:
+        cells = pilot.get("cells")
+        if not isinstance(cells, list) or not all(isinstance(cell, str) for cell in cells):
+            raise ExperimentError("pilot.cells must be a list of cell ids")
+        return list(cells)
+    cell = pilot.get("cell")
+    return [cell] if isinstance(cell, str) else []
 
 
 def _slug(value: str) -> str:
@@ -192,7 +230,11 @@ def build_launches(
     purpose: str | None = None,
 ) -> list[Launch]:
     contract = data["contract"]
-    selected = [_cell(data, data["pilot"]["cell"])] if pilot else list(data["cells"])
+    selected = (
+        [_cell(data, cell_id) for cell_id in _pilot_cell_ids(data)]
+        if pilot
+        else list(data["cells"])
+    )
     if cell_ids:
         selected = [_cell(data, cell_id) for cell_id in cell_ids]
     hours = data["pilot"]["agent_budget_hours"] if pilot else contract["agent_budget_hours"]
@@ -204,7 +246,7 @@ def build_launches(
             "bash",
             str(SUBMIT),
             "--eval",
-            contract["task"],
+            _cell_task(contract, cell),
             "--agent",
             cell["agent"],
             "--model",
@@ -229,6 +271,10 @@ def build_launches(
         context_profile = f"{cell['agent_model']}:{cell['effort']}"
         record = (paths.REPO_ROOT / data["context_validation"][context_profile]).resolve()
         environment = {
+            # The submit shell can carry an unrelated ambient HF_HOME.  Pin the
+            # experiment's canonical shared cache from PTB's .env so
+            # set_env_vars.sh cannot preserve the wrong inherited value.
+            "HF_HOME": read_ptb_env().get("HF_HOME", ""),
             "POST_TRAIN_BENCH_BASE_MODEL_REVISION": contract["base_models"][cell["base_model"]][
                 "revision"
             ],
@@ -270,18 +316,29 @@ def local_issues(
     selected_cells = (
         [_cell(data, cell_id) for cell_id in cell_ids] if cell_ids else list(data["cells"])
     )
-    for relative in (
-        "src/eval/tasks/gsm8k/evaluate.py",
-        "src/eval/tasks/gsm8k/test_data.json",
-        "src/eval/tasks/gsm8k/info.json",
-    ):
-        if not (PTB_ROOT / relative).is_file():
-            issues.append(f"missing PTB task asset: {relative}")
+    selected_tasks = {_cell_task(contract, cell) for cell in selected_cells}
+    for task in selected_tasks:
+        required_assets = [
+            f"src/eval/tasks/{task}/evaluate.py",
+            f"src/eval/tasks/{task}/test_data.json",
+            f"src/eval/tasks/{task}/info.json",
+        ]
+        if task == "healthbench":
+            required_assets.append(
+                "src/eval/tasks/healthbench/evaluation_code/data/healthbench.jsonl"
+            )
+        for relative in required_assets:
+            if not (PTB_ROOT / relative).is_file():
+                issues.append(f"missing PTB task asset: {relative}")
     for cell in selected_cells:
         for name in ("solve.sh", "api_keys.json", "profile.env"):
             if not (PTB_ROOT / "agents" / cell["agent"] / name).is_file():
                 issues.append(f"missing agent asset: agents/{cell['agent']}/{name}")
     env = read_ptb_env()
+    if "healthbench" in selected_tasks and not (
+        env.get("OPENAI_API_KEY") or env.get("OPENROUTER_API_KEY")
+    ):
+        issues.append("healthbench evaluation requires OPENAI_API_KEY or OPENROUTER_API_KEY")
     containers = Path(env.get("POST_TRAIN_BENCH_CONTAINERS_DIR", PTB_ROOT / "containers"))
     hf_home = Path(env.get("HF_HOME", ""))
     selected_base_models = {cell["base_model"] for cell in selected_cells}
@@ -537,7 +594,7 @@ def submit_context_smokes(data: dict[str, Any], cell_ids: list[str]) -> list[dic
 def submit(data: dict[str, Any], *, pilot: bool = False) -> Path:
     snapshot = source_snapshot()
     assert_source_ownership(data, snapshot)
-    selected_cell_ids = [data["pilot"]["cell"]] if pilot else None
+    selected_cell_ids = _pilot_cell_ids(data) if pilot else None
     issues = local_issues(data, cell_ids=selected_cell_ids) + site_issues()
     if issues:
         raise ExperimentError("submission gates failed:\n- " + "\n- ".join(issues))

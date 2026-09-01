@@ -10,11 +10,7 @@ from pathlib import Path
 
 
 RUN_TASK = (
-    Path(__file__).resolve().parents[1]
-    / "third_party"
-    / "PostTrainBench"
-    / "src"
-    / "run_task.sh"
+    Path(__file__).resolve().parents[1] / "third_party" / "PostTrainBench" / "src" / "run_task.sh"
 )
 
 
