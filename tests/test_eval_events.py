@@ -252,3 +252,22 @@ class TestEvaluationThatNeverRan:
         rows = eval_events.events_for_run("r", self._events("", False))
         assert rows[0]["accuracy"] == pytest.approx(0.83)
 
+
+class TestLoopedEvaluations:
+    """One event, several evaluations -- a codex habit that biases counts."""
+
+    def test_a_loop_counts_once_per_score_it_printed(self) -> None:
+        assert eval_events.call_count(
+            "for s in 100 200 300; do python evaluate.py --model-path ckpt/$s; done",
+            '{"accuracy": 0.80}\n{"accuracy": 0.81}\n{"accuracy": 0.79}\n',
+        ) == 3
+
+    def test_a_plain_call_counts_once(self) -> None:
+        assert eval_events.call_count(
+            "python evaluate.py --model-path ckpt/a", '{"accuracy": 0.80}'
+        ) == 1
+
+    def test_a_silent_loop_falls_back_to_one(self) -> None:
+        """Not the truth -- a floor, like every other row in this table."""
+        assert eval_events.call_count("for s in 1 2; do python evaluate.py; done", "") == 1
+

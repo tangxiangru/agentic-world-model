@@ -82,6 +82,7 @@ DTYPES: dict[str, str] = {
     "json_output_file": "string",
     "mode": "string",
     "tier": "Int64",
+    "n_calls": "Int64",
     "got_signal": "boolean",
     "signal_i": "Int64",
     "signal_ts": "string",
@@ -283,6 +284,26 @@ def tier_for(limit: int | None, benchmark: str | None, form: str | None = None) 
     if full is not None and limit >= full:
         return 4
     return 3
+
+
+#: ``for step in 100 200 300; do python evaluate.py …; done`` — one event, three
+#: evaluations. Two annotators reported the undercount independently. Across the
+#: corpus it is 10%, but it is not spread evenly: 16% for codex, 1% for
+#: claude-code, because packing evaluations into a shell loop is a codex habit.
+#: **So evaluation counts must not be compared across the two families.**
+_LOOP = re.compile(r"\bfor\s+\w+\s+in\b|\bwhile\s+read\b")
+
+
+def call_count(command: str, own_text: str | None) -> int:
+    """How many evaluations this one event ran.
+
+    A loop body runs once per score it printed; when the loop printed none, one
+    is the floor rather than the truth, and the row is a lower bound like every
+    other row.
+    """
+    if not _LOOP.search(command):
+        return 1
+    return max(1, len(_ACCURACY.findall(own_text or "")))
 
 
 def _own_slice(text: str | None, command: str) -> str | None:
@@ -497,6 +518,7 @@ def _one(
                 "json_output_file": json_out,
                 "mode": "background" if background else "foreground",
                 "tier": tier_for(limit, benchmark, form),
+                "n_calls": call_count(command, own_text),
                 "got_signal": got,
                 "signal_i": s_i,
                 "signal_ts": s_ts,
