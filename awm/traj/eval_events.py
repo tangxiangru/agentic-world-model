@@ -380,10 +380,28 @@ def _result_index(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return out
 
 
+#: The run id carries the benchmark: ``…_10h_run2__aime2025_Qwen_Qwen3-1.7B…``.
+_IN_RUN_ID = re.compile(r"__(" + "|".join(sorted(_FULL_SIZE, key=len, reverse=True)) + r"|bfcl|healthbench|aime2026)_")
+
+
+def benchmark_of(run_id: str) -> str | None:
+    """The benchmark this run was scored on, read off its id."""
+    m = _IN_RUN_ID.search(run_id or "")
+    return m.group(1) if m else None
+
+
 def events_for_run(
     run_id: str, events: list[dict[str, Any]], benchmark: str | None = None
 ) -> list[dict[str, Any]]:
-    """Every evaluation this run launched, joined to the score it produced."""
+    """Every evaluation this run launched, joined to the score it produced.
+
+    The benchmark decides the tier — ``--limit 30`` is a subsample of GSM8K and
+    the *whole* of AIME 2025 — so when the caller does not supply it, read it
+    off the run id rather than tiering blind. Every brief in one batch was
+    generated without it, and an annotator found all twelve of a run's full
+    evaluations filed as third-tier subsamples.
+    """
+    benchmark = benchmark or benchmark_of(run_id)
     events = sorted(events, key=lambda e: (e.get("agent_id") or "", e.get("i") or 0))
     known = scripts.learn(events)
     results = _result_index(events)

@@ -295,3 +295,28 @@ class TestPassAtOneSpelling:
         assert eval_events._accuracy_in('{"pass1": 0.2, "trunc_rate": 0.13}') == 0.2
         assert eval_events._accuracy_in("pass@1: 0.747") == 0.747
 
+
+class TestBenchmarkFromRunId:
+    """``--limit 30`` is a third of GSM8K and the whole of AIME 2025."""
+
+    def test_it_is_read_off_the_id(self) -> None:
+        assert eval_events.benchmark_of(
+            "claude_non_api_claude-opus-5_10h_run2__aime2025_Qwen_Qwen3-1.7B-Base_17418447"
+        ) == "aime2025"
+        assert eval_events.benchmark_of(
+            "codex_non_api_max_gpt-5.6-sol_10h_run1__humaneval_Qwen_Qwen3-4B-Base_17398716"
+        ) == "humaneval"
+
+    def test_tiering_uses_it_without_the_caller_saying(self) -> None:
+        """A whole batch of briefs was generated without passing the benchmark,
+        and an annotator found all twelve of a run's full evaluations filed as
+        third-tier subsamples."""
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
+             "args": {"command": "python evaluate.py --model-path ckpt/a --limit 30"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "text": '{"accuracy": 0.1}'},
+        ]
+        rows = eval_events.events_for_run("x_10h_run1__aime2025_Qwen_Qwen3-4B-Base_1", events)
+        assert rows[0]["tier"] == 4
+
