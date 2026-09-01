@@ -526,18 +526,28 @@ def occupied_seconds(spans: pd.DataFrame) -> float:
 
 
 def occupancy_by_run(spans: pd.DataFrame, kind: str | None = "real") -> pd.DataFrame:
-    """Per run: occupied training seconds, launches, and the naive sum."""
+    """Per run: occupied training seconds, launches, the naive sum, and the span.
+
+    ``span_s`` — first event to last — is the honest denominator for a budget
+    share. The index's ``duration_s`` is what the harness recorded, and for a
+    run whose session died early that is the *budget*, not the elapsed time: 5%
+    of the corpus has the two differing by more than 1.5x and three runs by more
+    than 3x, the worst claiming 10.08 hours against 1.79 of events. Dividing by
+    the budget on those runs understates training occupancy several-fold.
+    """
     df = spans if kind is None else spans[spans["kind"] == kind]
-    rows = [
-        {
+    rows = []
+    for run_id, g in df.groupby("run_id", sort=True):
+        starts = [t for t in (_parse_ts(x) for x in g["ts_start"]) if t is not None]
+        ends = [t for t in (_parse_ts(x) for x in g["ts_end"]) if t is not None]
+        rows.append({
             "run_id": run_id,
             "n_launches": len(g),
             "occupied_s": occupied_seconds(g),
             "sum_s": float(g["sec"].sum(skipna=True)),
-        }
-        for run_id, g in df.groupby("run_id", sort=True)
-    ]
-    return pd.DataFrame(rows, columns=["run_id", "n_launches", "occupied_s", "sum_s"])
+            "span_s": (max(ends) - min(starts)).total_seconds() if starts and ends else None,
+        })
+    return pd.DataFrame(rows, columns=["run_id", "n_launches", "occupied_s", "sum_s", "span_s"])
 
 
 def frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
