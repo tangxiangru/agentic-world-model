@@ -730,7 +730,7 @@ inside that distribution.
 | arm | regret@3 | 95 % CI | cells solved | regret@1 | tie-break |
 |---|---:|---|---:|---:|---|
 | random three | 0.1307 | [0.0903, 0.1756] | 11.4 % | 0.2640 | — |
-| self-report (largest printed number) | 0.1019 | [0.0516, 0.1629] | 21.4 % | 0.1663 | 0.0991, p64 |
+| self-report (largest printed number) | 0.1126 | [0.0608, 0.1719] | 17.9 % | 0.1748 | 0.1047, p90 |
 | 21 bucketed features, fitted | 0.0242 | [0.0134, 0.0359] | 50.0 % | 0.0678 | no ties |
 | **stage A alone** | 0.0081 | [0.0027, 0.0148] | 67.9 % | **0.0200** | 0.0077, p68 |
 | stage A + B | 0.0072 | [0.0019, 0.0144] | 75.0 % | 0.0230 | no ties |
@@ -848,7 +848,7 @@ is genuinely ranking, and there are enough candidates for a ranker to be wrong.
 | arm | regret@3 | 95 % CI | sets solved | vs table, clustered |
 |---|---:|---|---:|---|
 | random three | 0.0768 | [0.0633, 0.0912] | 29.8 % | 2–26, p = 3e-06 |
-| self-report | 0.0407 | [0.0257, 0.0583] | 51.2 % | 8–19, p = 0.052 |
+| self-report | 0.0396 | [0.0246, 0.0570] | 53.6 % | 8–19, p = 0.052 |
 | 21 bucketed features, fitted | 0.0234 | [0.0151, 0.0330] | 57.1 % | 8–17, p = 0.11 |
 | agent-family lookup table | 0.0142 | [0.0077, 0.0218] | 73.8 % | — |
 | **stage A** | 0.0069 | [0.0030, 0.0122] | 76.2 % | 13–6, p = 0.17 |
@@ -870,12 +870,29 @@ regex on the identical string stage A was handed:
 
 | arm | full cell | within family | within scaffold |
 |---|---:|---:|---:|
-| self-report, raw text | 0.1019 | 0.0092 | 0.0407 |
-| self-report, on the redacted text | 0.0627 | **0.0519** | 0.0509 |
+| self-report, raw text | 0.1126 | 0.0092 | 0.0396 |
+| self-report, on the redacted text | 0.0622 | **0.0519** | 0.0509 |
 | stage A, on the redacted text | 0.0081 | **0.0029** | **0.0069** |
 | random | 0.1307 | 0.0271 | 0.0768 |
 
-Redaction takes quotable scores from 1,003 of 1,175 runs down to 289. On that
+One correction to the self-report arm itself, which moved its numbers here and in
+both tables above. The parser inferred percent-versus-fraction from the
+*magnitude* — divide by 100 if the number is above 1 — so every percentage below
+1 % was read at fraction scale: `pass@1 0.83%` became 0.83, `win rate (stderr:
+±0.64%)` became 0.64, and a bare `1%` became a **perfect 1.000**. That is 56
+matches across the corpus, 20 of the 1,175 run maxima, and **16 of the 42 runs
+that appeared to report a perfect score**. The failure is one-sided — every one
+of the 16 was inflated. The scale now comes from which pattern matched, and the
+fraction pattern carries a `(?!\s*%)` so `0.83%` cannot also match it and win the
+`max()`.
+
+The fix makes the self-report arm **worse**, from 0.1019 to 0.1126 on full cells
+(17.9 % solved, down from 21.4 %), which is worth stating plainly: it widens the
+gap this document reports in stage A's favour on that population. `redact()`
+blanks the matched digits without ever reading their value, so the redaction
+control is unchanged by it.
+
+Redaction takes quotable scores from 1,003 of 1,175 runs down to 290. On that
 text the regex is worse than random within a family (0.0519 vs 0.0271) while
 stage A, reading the same characters, is at 0.0029. Whatever stage A is doing, it
 is not transcribing a printed score. What this control does *not* rule out is

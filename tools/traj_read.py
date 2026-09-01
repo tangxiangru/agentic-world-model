@@ -76,20 +76,32 @@ MIN_GAP = 0.05
 
 _EVAL = (r"(?:accuracy|acc|score|eval|pass@?1|correct|exact.?match|solved"
          r"|em|f1|reward|win.?rate|bench)")
-SCORE_PAT = [
-    re.compile(rf"({_EVAL}\D{{0,24}}?)(\d{{1,3}}(?:\.\d+)?)(\s*%)", re.I),
-    re.compile(rf"({_EVAL}\D{{0,24}}?)(0?\.\d{{2,4}})()\b", re.I),
-    re.compile(rf"()(\d{{1,3}}(?:\.\d+)?)(\s*%\D{{0,24}}?{_EVAL})", re.I),
+#: (pattern, is_percent). The scale has to come from the PATTERN, not from the
+#: magnitude of what it matched. Dividing by 100 only when `v > 1` reads every
+#: sub-1 percentage at fraction scale, and those exist: `pass@1 0.83%` became
+#: 0.83, `win rate (stderr: +/-0.64%)` became 0.64, and a bare `1%` became a
+#: PERFECT 1.000. Across the corpus that is 56 matches at the wrong scale, 20 of
+#: the 1,175 run maxima, and 16 of the 42 runs that appeared to report a perfect
+#: score. All 16 were inflated, never deflated, because the failure is one-sided.
+SCORE_PAT_SCALED = [
+    (re.compile(rf"({_EVAL}\D{{0,24}}?)(\d{{1,3}}(?:\.\d+)?)(\s*%)", re.I), True),
+    # the `(?!\s*%)` matters: without it `pass@1 0.83%` matches BOTH patterns and
+    # contributes 0.0083 and 0.83, and `max()` takes the wrong one.
+    (re.compile(rf"({_EVAL}\D{{0,24}}?)(0?\.\d{{2,4}})()\b(?!\s*%)", re.I), False),
+    (re.compile(rf"()(\d{{1,3}}(?:\.\d+)?)(\s*%\D{{0,24}}?{_EVAL})", re.I), True),
 ]
+#: `redact` only blanks group 2 and never reads its value, so it is unaffected by
+#: the scale and keeps using the bare patterns. The leak control is unchanged.
+SCORE_PAT = [p for p, _ in SCORE_PAT_SCALED]
 
 
 def self_scores(text: str) -> list[float]:
     """Every score-shaped number sitting next to a word meaning 'we evaluated'."""
     out = []
-    for p in SCORE_PAT:
+    for p, pct in SCORE_PAT_SCALED:
         for m in p.finditer(text):
             v = float(m.group(2))
-            if v > 1:
+            if pct:
                 v /= 100.0
             if 0 <= v <= 1:
                 out.append(v)
