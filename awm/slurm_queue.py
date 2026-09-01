@@ -329,6 +329,9 @@ def render_snapshot(snapshot: dict[str, Any], *, include_jobs: bool = True) -> s
         f"OWNERSHIP {verdict}  owner={snapshot['owner']}",
         f"GPUS {snapshot['gpus_allocated']}/{snapshot['gpus_total']} allocated",
     ]
+    guard = snapshot.get("guard") or {}
+    if guard.get("enabled"):
+        lines.insert(2, f"GUARD ON  unknown_grace={guard['grace_seconds']}s")
     for node in snapshot["nodes"]:
         lines.append(
             f"  {node['node']}: {node['gpus_allocated']}/{node['gpus_total']} state={node['state']}"
@@ -372,7 +375,51 @@ def write_snapshot(snapshot: dict[str, Any], root: Path | None = None) -> None:
     _atomic_write(root / "current.txt", render_snapshot(snapshot))
 
 
-def monitor_loop(interval: int, registry_path: Path | None = None) -> None:
+def _enforcement_due(
+    snapshot: dict[str, Any], seen: dict[str, float], *, now: float, grace: int
+) -> tuple[dict[str, float], list[str]]:
+    unknown_ids = {str(job["job_id"]) for job in snapshot["unknown_jobs"]}
+    unknown_ids.update(str(item["job_id"]) for item in snapshot["name_mismatches"])
+    current_seen = {job_id: seen.get(job_id, now) for job_id in unknown_ids}
+    due = sorted(job_id for job_id, first_seen in current_seen.items() if now - first_seen >= grace)
+    return current_seen, due
+
+
+def _enforce_unknown(snapshot: dict[str, Any], root: Path, grace: int) -> list[str]:
+    seen_path = root / "unknown-seen.json"
+    try:
+        seen = json.loads(seen_path.read_text(encoding="utf-8")) if seen_path.is_file() else {}
+    except (OSError, ValueError):
+        seen = {}
+    if not isinstance(seen, dict):
+        seen = {}
+    now = time.time()
+    current_seen, due = _enforcement_due(snapshot, seen, now=now, grace=grace)
+    _atomic_write(seen_path, json.dumps(current_seen, indent=2, sort_keys=True) + "\n")
+    if not due:
+        return []
+    result = subprocess.run(
+        ["sudo", "-n", "scancel", *due],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise QueueError(
+            result.stderr.strip() or f"ownership guard could not cancel: {', '.join(due)}"
+        )
+    with (root / "enforcement.log").open("a", encoding="utf-8") as stream:
+        stream.write(
+            f"{datetime.now(timezone.utc).isoformat()} cancelled unknown jobs: {','.join(due)}\n"
+        )
+    return due
+
+
+def monitor_loop(
+    interval: int,
+    registry_path: Path | None = None,
+    enforce_unknown_after: int | None = None,
+) -> None:
     root = queue_root()
     root.mkdir(parents=True, exist_ok=True)
     lock_path = root / "monitor.lock"
@@ -384,7 +431,14 @@ def monitor_loop(interval: int, registry_path: Path | None = None) -> None:
         _atomic_write(root / "monitor.pid", f"{os.getpid()}\n")
         while True:
             try:
-                write_snapshot(collect_snapshot(registry_path), root)
+                snapshot = collect_snapshot(registry_path)
+                snapshot["guard"] = {
+                    "enabled": enforce_unknown_after is not None,
+                    "grace_seconds": enforce_unknown_after,
+                }
+                write_snapshot(snapshot, root)
+                if enforce_unknown_after is not None:
+                    _enforce_unknown(snapshot, root, enforce_unknown_after)
                 _atomic_write(root / "monitor.error", "")
             except (OSError, QueueError, KeyError, TypeError, ValueError) as exc:
                 # Keep the shared monitor alive across transient Slurm and filesystem errors.
@@ -403,9 +457,15 @@ def _pid_is_alive(pid: int) -> bool:
     return True
 
 
-def start_monitor(interval: int, registry_path: Path | None = None) -> int:
+def start_monitor(
+    interval: int,
+    registry_path: Path | None = None,
+    enforce_unknown_after: int | None = None,
+) -> int:
     if interval < 1:
         raise QueueError("monitor interval must be positive")
+    if enforce_unknown_after is not None and enforce_unknown_after < 0:
+        raise QueueError("ownership enforcement grace must not be negative")
     root = queue_root()
     root.mkdir(parents=True, exist_ok=True)
     pid_path = root / "monitor.pid"
@@ -419,6 +479,8 @@ def start_monitor(interval: int, registry_path: Path | None = None) -> int:
     command = [sys.executable, "-m", "awm.slurm_queue", "monitor-loop", "--interval", str(interval)]
     if registry_path:
         command.extend(["--registry", str(registry_path.resolve())])
+    if enforce_unknown_after is not None:
+        command.extend(["--enforce-unknown-after", str(enforce_unknown_after)])
     with (root / "monitor.log").open("a", encoding="utf-8") as log:
         process = subprocess.Popen(
             command,
@@ -454,9 +516,10 @@ def module_main(argv: list[str] | None = None) -> int:
     monitor = sub.add_parser("monitor-loop")
     monitor.add_argument("--interval", type=int, default=15)
     monitor.add_argument("--registry", type=Path)
+    monitor.add_argument("--enforce-unknown-after", type=int)
     args = parser.parse_args(argv)
     if args.command == "monitor-loop":
-        monitor_loop(args.interval, args.registry)
+        monitor_loop(args.interval, args.registry, args.enforce_unknown_after)
         return 0
     raise AssertionError(args.command)
 

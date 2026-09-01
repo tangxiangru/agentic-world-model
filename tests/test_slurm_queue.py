@@ -95,3 +95,18 @@ def test_snapshot_accepts_only_exact_registered_names(tmp_path: Path, monkeypatc
     assert snapshot["name_mismatches"] == [
         {"job_id": "101", "expected": "expected", "actual": "wrong"}
     ]
+
+
+def test_unknown_jobs_become_enforceable_only_after_grace() -> None:
+    snapshot = {
+        "unknown_jobs": [{"job_id": "999"}],
+        "name_mismatches": [{"job_id": "101"}],
+    }
+
+    seen, due = slurm_queue._enforcement_due(snapshot, {}, now=100.0, grace=60)
+    assert seen == {"101": 100.0, "999": 100.0}
+    assert due == []
+
+    seen, due = slurm_queue._enforcement_due(snapshot, seen, now=161.0, grace=60)
+    assert seen == {"101": 100.0, "999": 100.0}
+    assert due == ["101", "999"]

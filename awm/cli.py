@@ -336,7 +336,7 @@ def _slurm_queue(args: argparse.Namespace) -> int:
             print(path)
             return 0
         if args.cmd == "monitor-start":
-            pid = slurm_queue.start_monitor(args.interval, registry)
+            pid = slurm_queue.start_monitor(args.interval, registry, args.enforce_unknown_after)
             print(f"queue monitor pid={pid} root={slurm_queue.queue_root()}")
             return 0
         if args.cmd == "monitor-status":
@@ -385,6 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
         "monitor-start", help="start the persistent shared snapshot writer"
     )
     monitor_start.add_argument("--interval", type=int, default=15)
+    monitor_start.add_argument("--enforce-unknown-after", type=int)
     monitor_start.add_argument("--registry", type=Path)
     monitor_start.set_defaults(func=_slurm_queue)
     monitor_status_parser = slurm.add_parser(

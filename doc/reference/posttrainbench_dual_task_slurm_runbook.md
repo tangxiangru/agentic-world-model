@@ -47,7 +47,9 @@ For a non-receipt recovery job, register the live ID once with
 `uv run awm slurm register-job JOB_ID --label LABEL`. Registration reads and freezes the live
 Slurm name; later name mismatches fail ownership. Receipt-based registration remains preferred.
 On the shared submit host, `awm-slurm-queue-monitor.service` runs this writer under systemd with
-automatic restart; the checked-in unit is `deploy/systemd/awm-slurm-queue-monitor.service`.
+automatic restart. It gives an unknown job 60 seconds to be explicitly registered, then cancels
+it; every enforcement is appended to `enforcement.log`. The checked-in unit is
+`deploy/systemd/awm-slurm-queue-monitor.service`.
 
 ## Local and infrastructure gates
 
