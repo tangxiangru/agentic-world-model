@@ -507,3 +507,31 @@ class TestBackgroundCrash:
         rows = train_spans.spans_for_run("r", events)
         assert rows[0]["end_reason"] == "consumed"
 
+
+class TestLogFileIsNotAnArtifact:
+    def test_a_tmp_log_does_not_make_a_training_a_smoke_test(self) -> None:
+        """``nohup python train.py > /tmp/train_v1.log &`` — with no output
+        directory on the command line, the artifact falls back to the redirect
+        target and ``^/tmp/`` fired. Twelve real trainings, sixteen hours,
+        were filed as smoke."""
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
+             "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "nohup python train.py > /tmp/train_v1.log 2>&1 &"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:00:01Z", "text": ""},
+            {"run_id": "r", "i": 3, "type": "tool_use", "tool": "Bash", "tool_use_id": "t2",
+             "ts": "2026-01-01T03:00:00Z", "args": {"command": "tail -3 /tmp/train_v1.log"}},
+        ]
+        assert train_spans.spans_for_run("r", events)[0]["kind"] == "real"
+
+    def test_a_real_tmp_output_dir_is_still_smoke(self) -> None:
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
+             "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "python train.py --out /tmp/probe"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:01:00Z", "text": "done"},
+        ]
+        assert train_spans.spans_for_run("r", events)[0]["kind"] == "smoke"
+

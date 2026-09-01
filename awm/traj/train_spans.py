@@ -391,7 +391,14 @@ def _is_background(command: str) -> bool:
 
 
 def _kind(command: str, out_dir: str | None) -> str:
-    if out_dir and _SMOKE_DIR.search(out_dir):
+    """Smoke or real, from what the launch says it is — never from a log file.
+
+    When nothing better is available the artifact falls back to the redirect
+    target, and ``> /tmp/train_v1.log`` then made ``^/tmp/`` fire: twelve real
+    trainings, sixteen hours of them, were filed as smoke tests. A log is where
+    the output went, not what the run produced, and it decides nothing.
+    """
+    if out_dir and not out_dir.endswith(".log") and _SMOKE_DIR.search(out_dir):
         return "smoke"
     m = _SMOKE_SAMPLES.search(command)
     if m and int(m.group(1)) <= _SMOKE_MAX_SAMPLES:
