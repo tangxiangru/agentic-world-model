@@ -431,6 +431,14 @@ def _one(
                 task_ids = set(_TASK_ID.findall(text))
                 if handles and task_ids & handles:
                     channel = "task_id"
+                elif task_ids and any(
+                    a and a in text for a in artifacts
+                ):
+                    # A TaskOutput retrieval that names this launch's artifact.
+                    # The harness returns background work this way 3,222 times
+                    # across the corpus, and the launch does not always print a
+                    # handle to match on, so the artifact is the link.
+                    channel = "task_id"
                 elif any(a in parent_cmd or a in text for a in artifacts):
                     channel = "artifact"
                 else:
