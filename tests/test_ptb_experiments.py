@@ -1,5 +1,6 @@
 import json
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -10,9 +11,6 @@ from awm import ptb_experiments as ptb
 MANIFEST = paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-opus5-4x4-batch1.yaml"
 DUAL_MANIFEST = (
     paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-aime2025-opus5-4x4x2-batch1.yaml"
-)
-REPLICATION_MANIFEST = (
-    paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-aime2025-opus5-4x4x2-batch2.yaml"
 )
 
 
@@ -111,20 +109,41 @@ def test_dual_task_manifest_is_one_atomic_thirty_two_cell_matrix() -> None:
     assert all("--hold" in launch.command for launch in ptb.build_launches(data, hold=True))
 
 
-def test_replication_manifest_is_an_independent_copy_of_the_batch1_matrix() -> None:
-    original = ptb.load_manifest(DUAL_MANIFEST)
-    replication = ptb.load_manifest(REPLICATION_MANIFEST)
+def _selected_replication_manifest() -> dict:
+    data = deepcopy(ptb.load_manifest(DUAL_MANIFEST))
+    selected = data["cells"][:8] + data["cells"][16:24]
+    cells = []
+    for cell in selected:
+        for replicate in (1, 2):
+            copy = cell | {"id": f"{cell['id']}r{replicate}", "replicate": replicate}
+            cells.append(copy)
+    data["cells"] = cells
+    data["contract"]["replication"] = {
+        "settings": 16,
+        "repeats": 2,
+        "settings_per_task": 8,
+    }
+    data["pilot"]["cells"] = ["g06r1", "a06r1"]
+    return data
 
-    assert replication["batch_id"] == "gsm8k-aime2025-opus5-4x4x2-batch2-r4"
-    assert replication["contract"]["run_index"] == 4
-    assert replication["ownership"]["spec"].endswith("batch2-replication.md")
-    assert replication["cells"] == original["cells"]
-    assert replication["contract"] == original["contract"] | {"run_index": 4}
 
-    launches = ptb.build_launches(replication, hold=True)
+def test_selected_replication_requires_sixteen_settings_with_two_repeats() -> None:
+    data = _selected_replication_manifest()
+
+    ptb.validate_manifest(data)
+    launches = ptb.build_launches(data, hold=True)
+
     assert len(launches) == 32
+    assert len({launch.cell_id for launch in launches}) == 32
     assert all("--hold" in launch.command for launch in launches)
-    assert all(any("batch2-r4" in argument for argument in launch.command) for launch in launches)
+
+
+def test_selected_replication_rejects_an_unbalanced_repeat() -> None:
+    data = _selected_replication_manifest()
+    data["cells"][-1] = data["cells"][0] | {"id": "extra", "replicate": 2}
+
+    with pytest.raises(ptb.ExperimentError, match="repeated exactly twice"):
+        ptb.validate_manifest(data)
 
 
 def test_dual_task_pilot_covers_both_evaluation_paths() -> None:

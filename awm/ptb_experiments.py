@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -156,7 +157,7 @@ def validate_manifest(data: dict[str, Any]) -> None:
     ids = [str(cell.get("id")) for cell in cells]
     if len(set(ids)) != expected_cell_count:
         raise ExperimentError("cell ids must be unique")
-    actual = {
+    actual_settings = [
         (
             _cell_task(contract, cell),
             cell.get("agent"),
@@ -166,15 +167,44 @@ def validate_manifest(data: dict[str, Any]) -> None:
             cell.get("base_model"),
         )
         for cell in cells
-    }
+    ]
     expected_matrix = {
         (task, agent, model, effort, context_tokens, base)
         for task in tasks
         for agent, model, effort, context_tokens in APPROVED_AGENT_SETUPS
         for base in APPROVED_BASE_MODELS
     }
-    if actual != expected_matrix:
-        raise ExperimentError("cells do not match the approved task x 4x4 setup/base-model matrix")
+    replication = contract.get("replication")
+    if replication is None:
+        if set(actual_settings) != expected_matrix:
+            raise ExperimentError(
+                "cells do not match the approved task x 4x4 setup/base-model matrix"
+            )
+    else:
+        expected_replication = {"settings": 16, "repeats": 2, "settings_per_task": 8}
+        if replication != expected_replication:
+            raise ExperimentError(f"contract.replication must be {expected_replication!r}")
+        counts = Counter(actual_settings)
+        if any(setting not in expected_matrix for setting in counts):
+            raise ExperimentError("replication cells must come from the approved full matrix")
+        if len(counts) != 16 or set(counts.values()) != {2}:
+            raise ExperimentError(
+                "replication batch must contain 16 unique settings repeated exactly twice"
+            )
+        settings_by_task = Counter(setting[0] for setting in counts)
+        if settings_by_task != Counter({task: 8 for task in tasks}):
+            raise ExperimentError("replication batch must select exactly 8 settings per task")
+        for cell in cells:
+            if cell.get("replicate") not in (1, 2):
+                raise ExperimentError("every replication cell must declare replicate 1 or 2")
+        for setting in counts:
+            replicates = {
+                cell["replicate"]
+                for cell, cell_setting in zip(cells, actual_settings, strict=True)
+                if cell_setting == setting
+            }
+            if replicates != {1, 2}:
+                raise ExperimentError("each selected setting must contain replicates 1 and 2")
     pilot = data.get("pilot") or {}
     pilot_cells = _pilot_cell_ids(data)
     if (
@@ -186,7 +216,7 @@ def validate_manifest(data: dict[str, Any]) -> None:
     ):
         raise ExperimentError("pilot must select one 1h formal cell from each task")
     records = data.get("context_validation") or {}
-    for _, _, model, effort, _, _ in actual:
+    for _, _, model, effort, _, _ in actual_settings:
         profile = f"{model}:{effort}"
         if profile not in records:
             raise ExperimentError(f"missing context-validation path for {profile}")
