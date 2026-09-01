@@ -92,9 +92,14 @@ def _paths_in(text: str) -> list[str]:
 #: writes the file as a side effect, so the path never appears on the command
 #: line. Missing it left the decisive C1 change of two runs — setting
 #: ``temperature: 0.0`` — absent from the table entirely.
+#: ``prepare`` is deliberately absent. ``prepare_data.py`` /
+#: ``prepare_metamath.py`` / ``prepare_fewshot_data.py`` build training corpora
+#: and write only ``*.jsonl``; including the verb scored four such calls per run
+#: as configuration writes, and in one run that false positive disguised the
+#: fact that the run never touched a generation config at all.
 _FINALIZER = re.compile(
     r"\bpython3?\s+(?:-[\w-]+\s+)*(?:[\w./-]*/)?"
-    r"(?:finalize|finalise|package|prep|prepare|export|publish)[\w-]*\.py\b"
+    r"(?:finalize|finalise|package|export|publish|patch_model|make_final)[\w-]*\.py\b"
 )
 
 

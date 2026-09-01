@@ -151,6 +151,22 @@ _FULL_SIZE = {
     "arenahardwriting": 250,
 }
 
+#: ``--limit``'s default, read from each task's own ``evaluate.py``. It is *not*
+#: the full set for most benchmarks, and it differs per benchmark: an omitted
+#: flag means 150 questions on GSM8K and HumanEval, 50 on GPQA, 32 on the two
+#: LLM-judged ones, and the whole set only on AIME and BFCL. Treating the absent
+#: flag as "full" everywhere filed subsample runs as fourth-tier evaluations.
+_LIMIT_DEFAULT = {
+    "aime2025": None,
+    "aime2026": None,
+    "bfcl": None,
+    "gpqamain": 50,
+    "gsm8k": 150,
+    "humaneval": 150,
+    "arenahardwriting": 32,
+    "healthbench": 32,
+}
+
 
 def _parse_ts(ts: Any) -> datetime | None:
     if ts is None or ts is pd.NA or not isinstance(ts, str) or not ts:
@@ -225,7 +241,12 @@ def tier_for(limit: int | None, benchmark: str | None, form: str | None = None) 
     Reading the absent flag as "unknown" left every one of them untiered.
     """
     if limit is None:
-        return 4 if form == "evaluate.py" else None
+        if form != "evaluate.py" or benchmark not in _LIMIT_DEFAULT:
+            return None
+        default = _LIMIT_DEFAULT[benchmark]
+        if default is None:
+            return 4
+        limit = default
     if limit < 0:
         return 4
     full = _FULL_SIZE.get(benchmark or "")
@@ -336,6 +357,9 @@ def _one(
             # these runs; leaving it unparsed left every full evaluation untiered.
             m = _LAUNCH_SH.search(command) or re.search(r"\b(?:bash|sh)\s+\S+", command)
             tail = command[m.end():] if m else ""
+            # Strip redirections first: ``2>&1`` offered a literal 2 and three
+            # full evaluations were filed as 2-sample subsamples.
+            tail = re.sub(r"\d*>[&]?\d*", " ", tail)
             nums = [int(x) for x in re.findall(r"(?<![\w.-])(-?\d{1,6})(?![\w.-])", tail)]
             limit = next((n for n in nums if n == -1 or 1 <= n <= 100000), None)
         json_out = _str(_JSON_OUT, command)
@@ -371,9 +395,23 @@ def _one(
             got, s_i, s_ts, via, acc = True, own.get("i"), own.get("ts"), "returned", direct
         else:
             start_i = event.get("i") or 0
+            # A launch that crashed and was relaunched writing the *same* output
+            # file must not receive the relaunch's score. Three runs had a score
+            # back-filled onto a launch that evaluated nothing, and one had six
+            # of twelve rows carry a neighbour's number.
+            superseded_at = None
+            for later_use in uses[pos + 1 :]:
+                lc = _command(later_use)
+                if _form(lc, known) is None:
+                    continue
+                if json_out and _str(_JSON_OUT, lc) == json_out:
+                    superseded_at = later_use.get("i")
+                    break
             for later in ordered:
                 if (later.get("i") or 0) <= start_i or later.get("type") != "tool_result":
                     continue
+                if superseded_at is not None and (later.get("i") or 0) > superseded_at:
+                    break
                 text = later.get("text") or ""
                 value = _accuracy_in(text)
                 if value is None:

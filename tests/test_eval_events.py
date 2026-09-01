@@ -82,6 +82,24 @@ class TestTier:
         assert eval_events.tier_for(limit, benchmark) == expected
 
 
+class TestLimitDefaults:
+    """An omitted --limit is a per-benchmark default, read from evaluate.py."""
+
+    @pytest.mark.parametrize(
+        "benchmark,expected",
+        [("aime2025", 4), ("bfcl", 4), ("gsm8k", 3), ("humaneval", 3),
+         ("gpqamain", 3), ("healthbench", 3)],
+        ids=["aime-full", "bfcl-full", "gsm8k-150", "humaneval-150",
+             "gpqa-50", "healthbench-32"],
+    )
+    def test_absent_limit_uses_the_task_default(self, benchmark, expected) -> None:
+        assert eval_events.tier_for(None, benchmark, "evaluate.py") == expected
+
+    def test_a_wrapper_without_a_limit_stays_unknown(self) -> None:
+        """Only evaluate.py has a documented default; a wrapper's is unknown."""
+        assert eval_events.tier_for(None, "gsm8k", "run_eval.sh") is None
+
+
 class TestGotSignal:
     def test_foreground_result_carrying_the_score(self) -> None:
         r = rows([

@@ -111,6 +111,11 @@ _OUT_DIR = re.compile(r"--out(?:put)?(?:[-_]dir)?[= ]\s*['\"]?([^\s'\"]+)")
 #: the exclusion of ``>`` and ``&`` immediately before the ampersand.
 _BACKGROUND = re.compile(r"\bnohup\b|[^&>]&\s*(?:$|\n|;|echo\b)")
 
+#: The harness moves a foreground command off the foreground when it outruns the
+#: bash timeout, and says so in the result. Reading only the command text scored
+#: a 44-minute SFT as ``foreground / 0.00h / returned``.
+_MOVED_TO_BACKGROUND = re.compile(r"background \(ID: \w+\)|background with ID: \w+")
+
 #: Deliberately reduced runs, by what the command asks for.
 #:
 #: Not ``--max-steps``: that is how a real GRPO run is configured, and treating
@@ -121,7 +126,12 @@ _SMOKE_SAMPLES = re.compile(r"--max[-_]samples[= ]\s*(\d+)")
 #: The marker may sit anywhere in the basename: one run named its throwaways
 #: ``work/sft_smoke`` and ``sft_smoke2``, and anchoring the pattern to the start
 #: scored every one of them as a real training.
-_SMOKE_DIR = re.compile(r"(?:^|/)[\w-]*(?:smoke|sanity|debug|dryrun|tiny)[\w-]*/?$", re.I)
+_SMOKE_DIR = re.compile(
+    r"(?:^|/)[\w-]*(?:smoke|sanity|debug|dryrun|tiny|scratch)[\w-]*/?$"
+    r"|(?:^|/)(?:test|tst)[\w-]*/?$"
+    r"|^/tmp/",
+    re.I,
+)
 
 #: Rows this small are a pipeline check, not a recipe. It bounds the *requested
 #: workload*, never the observed duration — classifying by how long a span turned
@@ -145,7 +155,10 @@ _CONSUME_VERBS = (
 )
 
 #: Deleting the artifact ends the span too, but it is an abandonment, not a use.
-_DISCARD_VERB = r"\brm\s+-[rf]{1,2}\s+[^;&|]*?"
+#: Newlines end a shell statement too: without excluding them a first-line
+#: ``rm -rf …/checkpoint-*`` reached a third-line ``--model …`` and read a
+#: consumption as a discard.
+_DISCARD_VERB = r"\brm\s+-[rf]{1,2}\s+[^;&|\n]*?"
 
 #: ``pkill -f "train_sft.py"`` ends every training then running, and names the
 #: script rather than the artifact, so an out_dir-keyed rule never sees it. One
@@ -213,6 +226,11 @@ def _kind(command: str, out_dir: str | None) -> str:
         return "smoke"
     m = _SMOKE_SAMPLES.search(command)
     if m and int(m.group(1)) <= _SMOKE_MAX_SAMPLES:
+        return "smoke"
+    # ``--max-steps 2`` over twenty rows is a pipeline check whatever it is
+    # called. A handful of steps cannot train anything.
+    m = re.search(r"--max[-_]steps[= ]\s*(\d+)", command)
+    if m and int(m.group(1)) <= 20:
         return "smoke"
     return "real"
 
@@ -284,7 +302,10 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
     rows: list[dict[str, Any]] = []
     for pos, event, cmd, out_dir in launches:
         ts_start = event.get("ts")
-        background = _is_background(cmd)
+        own_result = results.get(event.get("tool_use_id") or "")
+        background = _is_background(cmd) or bool(
+            _MOVED_TO_BACKGROUND.search((own_result or {}).get("text") or "")
+        )
 
         if not background:
             result = results.get(event.get("tool_use_id") or "")
@@ -312,11 +333,14 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
                 if _KILL.search(later_cmd):
                     ts_end, end_reason = later.get("ts"), "killed"
                     break
-                if out_dir and _discards(later_cmd, out_dir):
-                    ts_end, end_reason = later.get("ts"), "discarded"
-                    break
+                # Use beats deletion when one command does both: agents clear
+                # spent checkpoints and then hand the directory to the next
+                # stage in the same breath.
                 if out_dir and _consumes(later_cmd, out_dir):
                     ts_end, end_reason = later.get("ts"), "consumed"
+                    break
+                if out_dir and _discards(later_cmd, out_dir):
+                    ts_end, end_reason = later.get("ts"), "discarded"
                     break
                 if out_dir and _mentions(later_cmd, out_dir):
                     last_seen = later.get("ts") or last_seen
