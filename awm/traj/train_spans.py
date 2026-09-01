@@ -231,7 +231,9 @@ def _launch_segments(command: str) -> list[str]:
 
 #: A trainer invoked with ``--skip-train`` builds or checks data and never takes
 #: an optimiser step. One run had four of its eight recorded trainings be these.
-_NO_TRAIN = re.compile(r"--skip[-_]train\b|--dry[-_]run\b|--no[-_]train\b")
+#: ``--help`` prints the interface and exits. Reading a trainer's flags is a
+#: first-tier static check, not a training.
+_NO_TRAIN = re.compile(r"--skip[-_]train\b|--dry[-_]run\b|--no[-_]train\b|(?:^|\s)--help\b")
 
 
 def _is_launch(command: str, known: dict[str, set[str]] | None = None) -> bool:

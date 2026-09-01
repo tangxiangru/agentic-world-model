@@ -40,6 +40,7 @@ from typing import Any, Iterator
 import pandas as pd
 
 from awm import paths
+from awm.traj import scripts
 
 DTYPES: dict[str, str] = {
     "run_id": "string",
@@ -135,6 +136,7 @@ def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
 def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Every access to a ``generation_config.json`` this run made."""
     rows: list[dict[str, Any]] = []
+    known = scripts.learn(events)
     for e in sorted(events, key=lambda x: (x.get("agent_id") or "", x.get("i") or 0)):
         if e.get("type") != "tool_use":
             continue
@@ -145,10 +147,20 @@ def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, 
         runs_finalizer = tool in ("Bash", "command_execution") and bool(
             finalizer_call(unwrap(args.get("command") or ""))
         )
-        if not names_file and not runs_finalizer:
+        writes_config = tool in ("Bash", "command_execution") and scripts.invoked(
+            unwrap(args.get("command") or ""), known, "config_writer"
+        )
+        if not names_file and not runs_finalizer and not writes_config:
             continue
 
         base = {"run_id": run_id, "i": e.get("i"), "ts": e.get("ts"), "tool": tool}
+
+        if writes_config and not names_file:
+            rows.append({**base, "path": None, "access": "write",
+                         "form": "own_writer", "content_available": False,
+                         "content": None,
+                         "command": unwrap(args.get("command") or "")[:400]})
+            continue
 
         if tool == "Write":
             path = args.get("file_path") or ""

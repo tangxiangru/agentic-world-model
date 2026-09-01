@@ -46,6 +46,16 @@ _EVAL_BODY = (
     re.compile(r"\binspect_eval\b|\bfrom\s+inspect_ai\b"),
 )
 
+#: Writing a decoding config makes a file a config writer. Agents package this
+#: as a helper — ``set_gen_config.py sft_run1 0.0`` — and then the filename
+#: never appears on any command line again. Six real writes in one run were
+#: invisible for that reason, while a memory note that merely mentioned the
+#: filename was recorded as a write.
+_CONFIG_BODY = (
+    re.compile(r"generation_config\.json"),
+    re.compile(r"\bGenerationConfig\b.*?\bsave_pretrained\b", re.S),
+)
+
 #: Where a script gets defined: the Write tool, or a heredoc redirect.
 _HEREDOC_DEF = re.compile(
     r"cat\s*>\s*['\"]?(?P<path>[\w./-]+\.(?:py|sh))['\"]?\s*<<-?\s*['\"]?(?P<tag>\w+)['\"]?"
@@ -71,6 +81,8 @@ def _roles(body: str) -> set[str]:
             roles.add("trainer")
     if any(p.search(body) for p in _EVAL_BODY):
         roles.add("evaluator")
+    if any(p.search(body) for p in _CONFIG_BODY):
+        roles.add("config_writer")
     return roles
 
 

@@ -100,6 +100,14 @@ _BASH_LC = re.compile(r"^\s*/bin/bash\s+-lc\s+(['\"])(?P<inner>.*)\1\s*$", re.S)
 #: evaluate.py``, ``ps aux | grep evaluate.py`` and greps through inspect_ai's
 #: source all name it without running it.
 _LAUNCH_PY = re.compile(r"\bpython3?\s+(?:-[\w-]+\s+)*[\w./-]*evaluate\.py\b")
+
+#: ``python -c "import evaluate; evaluate.DEFAULT_EPOCHS=3; sys.argv=[…];
+#: evaluate.main()"`` runs the official scorer without ever naming its file on a
+#: command line. One run drove nine full evaluations this way -- including the
+#: ones that chose what it submitted -- and none were recorded.
+#: Judged on the whole command, never per segment: the import and the call sit
+#: either side of a ``;`` that segmentation would split apart.
+_LAUNCH_IMPORT = re.compile(r"\bimport\s+(?:[\w,\s]*\b)?evaluate\b.*?\bevaluate\.main\s*\(", re.S)
 _LAUNCH_SH = re.compile(r"(?:^|[;&|]\s*|\bbash\s+|\bsh\s+)[\w./-]*run_eval[\w.-]*\.sh\b")
 
 #: A command that *writes* a script naming a trainer or an evaluator is not
@@ -123,8 +131,10 @@ def strip_heredocs(command: str) -> str:
 #: event kept only the first score. Six commands per run in one trace.
 _SEGMENT = re.compile(r"&&|\|\||[;&|]|\n|\bdo\b|\bdone\b|\bthen\b|\bfi\b")
 
-_MODEL_PATH = re.compile(r"--model[-_]path[= ]\s*['\"]?([^\s'\"]+)")
-_LIMIT = re.compile(r"--limit[= ]\s*(-?\d+)")
+_MODEL_PATH = re.compile(r"--model[-_]path['\"]?[=, ]\s*['\"]?([^\s'\",]+)")
+#: ``--limit 448`` on a command line, or ``'--limit','448'`` inside a sys.argv
+#: list built in a ``python -c`` one-liner.
+_LIMIT = re.compile(r"--limit['\"]?[=, ]\s*['\"]?(-?\d+)")
 _MAXCONN = re.compile(r"--max[-_]connections[= ]\s*(\d+)")
 _JSON_OUT = re.compile(r"--json[-_]output[-_]file[= ]\s*['\"]?([^\s'\"]+)")
 
@@ -226,7 +236,7 @@ def _form(command: str, known: dict[str, set[str]] | None = None) -> str | None:
     outside = " ; ".join(kept)
     if _HELP_ONLY.search(outside):
         return None
-    if _LAUNCH_PY.search(outside):
+    if _LAUNCH_PY.search(outside) or _LAUNCH_IMPORT.search(outside):
         return "evaluate.py"
     if _LAUNCH_SH.search(outside):
         return "run_eval.sh"
@@ -339,6 +349,14 @@ def events_for_run(
     rows: list[dict[str, Any]] = []
     for pos, event in enumerate(uses):
         whole = re.sub(r"\\\s*\n\s*", " ", _command(event))
+        # A one-liner that imports the scorer and calls main() is one launch
+        # spanning several segments; treat the command as a single unit.
+        if _LAUNCH_IMPORT.search(whole) and not _INSPECTS_PROCESS.search(whole):
+            rows.extend(_one(
+                run_id, event, pos, whole, "evaluate.py", uses, ordered, results,
+                benchmark, known,
+            ))
+            continue
         # A command may launch several evaluations (``run_eval.sh a … ;
         # run_eval.sh b …``); each is its own verification event, and reporting
         # one dropped the highest subsample reading of an entire run.
