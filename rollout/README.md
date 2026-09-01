@@ -24,14 +24,20 @@ peer WMA process. There is no study-specific credential scanner, stream
 redactor, result-tree sanitizer, model/cache attester, final-model validator,
 or release gate in the execution path.
 
-The private PTB checkout has two small mechanical patches:
+The private PTB checkout has four small mechanical bridges for the two study
+agents:
 
 - `POST_TRAIN_BENCH_EXTRA_BINDS` mounts the selected prior corpus or card
   memory read-only.
+- Only names listed in an agent's `env_passthrough.txt` are forwarded through
+  PTB's `--cleanenv`; these are the Vertex routing names and the WMA model
+  selection, not credential values.
+- The packaged WMA source is copied into `/home/ben/agent` for C2/C3. C1 has no
+  payload.
 - The generated prompt is copied to `task/instruction.md` for the two study
   agents because long multiline prompt values can be truncated by Apptainer.
 
-Neither patch interprets credentials or model artifacts. PTB's own trace
+None of these bridges interprets credentials or model artifacts. PTB's own trace
 parsing and any sanitization it normally performs remain unchanged.
 
 ## Prepare a private checkout

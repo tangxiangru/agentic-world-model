@@ -1,8 +1,8 @@
 #!/bin/bash
 # Create a private PostTrainBench checkout for the WMA study. The checkout is
 # upstream PTB plus two agents, three prompt templates, one read-only-bind hook,
-# and one prompt-file bridge. No study-specific release or credential gate is
-# installed.
+# one explicit environment allowlist, and one prompt-file bridge. No
+# study-specific release or credential gate is installed.
 set -euo pipefail
 
 : "${PTB_SOURCE_DIR:?set PTB_SOURCE_DIR to the PostTrainBench checkout}"
@@ -45,7 +45,7 @@ for agent in claude_fulltraj_noawm claude_wm; do
     install -m 0644 "${HERE}/agents/${agent}/env_passthrough.txt" "${DST}/agents/${agent}/env_passthrough.txt"
 done
 
-# Only C2/C3 receive the WMA code. PTB's existing payload mechanism copies this
+# Only C2/C3 receive the WMA code. The narrow payload hook below copies this
 # directory to /home/ben/agent inside those cells.
 PAYLOAD="${DST}/agents/claude_wm/payload/awm-src"
 install -d "${PAYLOAD}"
@@ -57,6 +57,8 @@ git -C "${AWM_SOURCE_DIR}" archive --format=tar "${AWM_REPO_COMMIT}" awm input w
 printf '%s\n' "${AWM_REPO_COMMIT}" > "${PAYLOAD}/AWM_COMMIT"
 
 python3 "${HERE}/patches/apply_extra_binds.py" "${DST}/src/run_task.sh"
+python3 "${HERE}/patches/apply_env_passthrough.py" "${DST}/src/run_task.sh"
+python3 "${HERE}/patches/apply_agent_payload.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_prompt_file.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/build_prompts.py" --no-review "${DST}"
 
