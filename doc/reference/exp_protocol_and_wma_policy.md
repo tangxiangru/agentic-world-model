@@ -99,7 +99,7 @@ scientist 做实验时必须遵守的工程纪律、实验记录的标准,以及
 ## 六、研发顺序
 
 0. 本文档。
-1. **exp_protocol**:skill、card schema、薄工具。本地做 smoke test 调通代码,实验在 H100 服务器上跑。
+1. **exp_protocol**:skill、card schema、薄工具。本地做 smoke test 调通代码,实验在 H100 服务器上跑。 实现:`awm/exp_protocol/`、`skills/exp_protocol/`;card v2 的字段说明见 `doc/spec/2026-09-01-exp-protocol-card-v2.md`。
 2. **exp_protocol_meta**:给迭代 agent 的 skill(`skills/exp_protocol_meta/`)——在 H100 上并行跑规程的多个变体,提取指标,分析,修改规程,并记录每次修改的依据。scientist 不读这份 skill。
 3. **WMA policy**:在 1、2 稳定后再定义细节。
 

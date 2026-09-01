@@ -36,3 +36,17 @@ def test_stop_hook_is_stdlib_only_and_blocks_once() -> None:
     src = (preflight.skill_dir() / "hooks" / "stop_open_cards.py").read_text()
     assert "import yaml" not in src and "from awm" not in src
     assert "stop_hook_active" in src
+
+
+def test_repo_symlinks_resolve_to_the_skills() -> None:
+    from awm import paths
+    for name in ("exp_protocol", "exp_protocol_meta"):
+        link = paths.REPO_ROOT / ".claude" / "skills" / name
+        assert link.is_symlink(), link
+        assert (link / "SKILL.md").is_file(), link
+
+
+def test_agents_md_points_codex_at_skills() -> None:
+    from awm import paths
+    text = (paths.REPO_ROOT / "AGENTS.md").read_text()
+    assert "skills/exp_protocol/SKILL.md" in text and "skills/exp_protocol_meta/SKILL.md" in text
