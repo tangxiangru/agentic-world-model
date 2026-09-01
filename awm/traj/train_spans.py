@@ -250,6 +250,17 @@ _NO_TRAIN = re.compile(
 #: Keeps no weights: a probe, not a candidate.
 _KEEPS_NOTHING = re.compile(r"--no[-_]final[-_]save\b")
 
+#: A background launch is normally answered the instant the shell backgrounds
+#: it, so an error on that result means the shell died *before* the launch. The
+#: form that produces it: ``pkill -f "train.py --data v2"; nohup python train.py
+#: --data v2 &`` — the pattern matches the shell's own command line, the shell
+#: is signalled, and the launch after the semicolon never runs. Two of one run's
+#: eight recorded launches were these, and because their spans ended within
+#: seconds they were then read as crashes. The rule is deliberately confined to
+#: background launches: a foreground trainer that ran and raised also answers
+#: with an error, and that one *is* a training.
+_SHELL_DIED = re.compile(r"\bExit code (?!0\b)\d+|\bkilled by signal\b", re.I)
+
 
 def _is_launch(command: str, known: dict[str, set[str]] | None = None) -> bool:
     outside = strip_heredocs(command)
@@ -425,6 +436,13 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
         background = _is_background(cmd) or bool(
             _MOVED_TO_BACKGROUND.search((own_result or {}).get("text") or "")
         )
+        if (
+            background
+            and own_result is not None
+            and own_result.get("is_error")
+            and _SHELL_DIED.search(own_result.get("text") or "")
+        ):
+            continue
 
         if not background:
             result = results.get(event.get("tool_use_id") or "")

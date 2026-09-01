@@ -272,3 +272,52 @@ class TestChampionRun:
         smoke = [r for r in rows if r["kind"] == "smoke"]
         assert {r["out_dir"] for r in smoke} == {"ckpt/smoke"}
         assert all(r["mode"] == "foreground" for r in smoke)
+
+
+class TestLaunchThatNeverRan:
+    """``pkill …; nohup python train.py &`` where the shell dies at the pkill.
+
+    The agent's own pattern matches the shell's command line, so ``pkill`` kills
+    the shell before it reaches the launch. The command text says a training
+    started; the exit code says the shell was signalled. Two of one run's eight
+    recorded launches were these, and the spans they invented were then read as
+    crashes because they ended within seconds.
+    """
+
+    def _events(self, result_text: str):
+        return [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash",
+             "tool_use_id": "t1", "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": 'pkill -f "train.py --data v2" 2>/dev/null; sleep 5\n'
+                                 "nohup python train.py --data v2 --out ckpt/v2 &"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:00:05Z", "is_error": True, "text": result_text},
+            {"run_id": "r", "i": 3, "type": "tool_use", "tool": "Bash",
+             "tool_use_id": "t2", "ts": "2026-01-01T02:00:00Z",
+             "args": {"command": "nvidia-smi"}},
+        ]
+
+    def test_a_signalled_shell_launched_nothing(self) -> None:
+        rows = train_spans.spans_for_run("r", self._events("Exit code 144"))
+        assert rows == [], "the launch never ran; recording it invents a span"
+
+    def test_a_background_launch_that_did_start_survives(self) -> None:
+        events = self._events("Exit code 144")
+        events[1]["is_error"] = False
+        events[1]["text"] = ""
+        assert len(train_spans.spans_for_run("r", events)) == 1
+
+    def test_a_foreground_crash_is_still_a_launch(self) -> None:
+        """A trainer that ran and raised is a training. Only the shell dying
+        before the launch is not, so the rule must not reach the foreground."""
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash",
+             "tool_use_id": "t1", "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "python train.py --out ckpt/v1"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:03:00Z", "is_error": True,
+             "text": "torch.OutOfMemoryError: CUDA out of memory"},
+        ]
+        rows = train_spans.spans_for_run("r", events)
+        assert len(rows) == 1 and rows[0]["end_reason"] == "returned"
+

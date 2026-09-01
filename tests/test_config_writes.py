@@ -104,3 +104,54 @@ class TestFrame:
         df = config_writes.empty()
         assert list(df.columns) == list(config_writes.COLUMNS)
         assert df.empty
+
+
+class TestRejectedWrite:
+    def test_a_write_the_harness_refused_did_not_happen(self) -> None:
+        """``File has not been read yet`` — the tool call was declined.
+
+        Two annotators reported this independently on different runs. Counting
+        it puts a config state in the record five seconds before the write that
+        actually landed, and inflates the count of parseable writes.
+        """
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Write", "tool_use_id": "t1",
+             "args": {"file_path": "sft_v1/generation_config.json",
+                      "content": '{"temperature": 0.0}'}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "is_error": True,
+             "text": "<tool_use_error>File has not been read yet.</tool_use_error>"},
+        ]
+        assert config_writes.writes_for_run("r", events) == []
+
+    def test_a_write_that_landed_is_kept(self) -> None:
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Write", "tool_use_id": "t1",
+             "args": {"file_path": "sft_v1/generation_config.json",
+                      "content": '{"temperature": 0.0}'}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "text": "File created successfully."},
+        ]
+        assert len(config_writes.writes_for_run("r", events)) == 1
+
+
+class TestProseMention:
+    def test_a_filename_inside_a_note_is_not_an_access(self) -> None:
+        events = [{"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "args": {
+            "command": 'echo "- force temperature=0.0 in generation_config.json for +17pt"'
+                       " >> ~/.claude/memory/MEMORY.md"}}]
+        assert config_writes.writes_for_run("r", events) == []
+
+    def test_a_runtime_built_path_is_an_access_with_no_path(self) -> None:
+        """``sys.argv[1] + '/generation_config.json'`` leaves only the suffix.
+
+        That suffix is not a path and must not be recorded as one, but the
+        access is real: recording nothing loses a config write.
+        """
+        events = [{"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "args": {
+            "command": "python -c \"import json,sys\np=sys.argv[1]+'/generation_config.json'\n"
+                       "d=json.load(open(p)); d['temperature']=0.0; json.dump(d,open(p,'w'))\" out"}}]
+        rows = config_writes.writes_for_run("r", events)
+        assert len(rows) == 1
+        assert rows[0]["path"] is None, "a degenerate suffix must not pose as a path"
+

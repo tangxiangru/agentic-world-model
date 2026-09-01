@@ -81,8 +81,17 @@ def unwrap(command: str) -> str:
 
 
 def _paths_in(text: str) -> list[str]:
+    """Every generation-config path named, degenerate ones dropped.
+
+    A path built at runtime — ``sys.argv[1] + '/generation_config.json'`` —
+    leaves only the suffix in the source, which is not a path and must not be
+    recorded as one. The access is still real, so the caller keeps the row with
+    no path rather than dropping it.
+    """
     seen: list[str] = []
     for p in _GEN_CONFIG.findall(text):
+        if p.lstrip("/") == "generation_config.json" and p.startswith("/"):
+            continue
         if p not in seen:
             seen.append(p)
     return seen
@@ -110,6 +119,34 @@ def finalizer_call(command: str) -> str | None:
     return m.group(0) if m else None
 
 
+#: The filename inside prose an agent is writing elsewhere. ``echo "… force
+#: temperature=0.0 in generation_config.json for +17pt" >> MEMORY.md`` touches no
+#: model directory; matching the mention invented a config access and invited the
+#: annotator to describe a change that never happened.
+_PROSE_WRITE = re.compile(
+    r"\b(?:echo|printf)\b(?P<body>[^|;&]*?)>>?\s*(?P<target>\S+)"
+)
+
+
+def mentions_only_in_prose(command: str) -> bool:
+    """True when the filename appears only in text being written somewhere else.
+
+    Every occurrence has to sit inside such a body for this to hold: a command
+    that both notes the filename and touches a real config is still an access.
+    """
+    spans = [
+        m.span("body") for m in _PROSE_WRITE.finditer(command)
+        if "generation_config.json" in m.group("body")
+        and "generation_config.json" not in m.group("target")
+    ]
+    if not spans:
+        return False
+    return all(
+        any(lo <= m.start() < hi for lo, hi in spans)
+        for m in re.finditer(r"generation_config\.json", command)
+    )
+
+
 def _classify_shell(command: str) -> tuple[str, str]:
     """``(access, form)`` for a shell command that names a generation config."""
     if _HEREDOC.search(command):
@@ -133,12 +170,27 @@ def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
                 yield json.loads(line)
 
 
+def _refused(events: list[dict[str, Any]]) -> set[str]:
+    """``tool_use_id`` of every call the harness declined.
+
+    A ``Write`` answered with ``File has not been read yet`` did not land. Two
+    annotators reported this independently, on different runs: counting the
+    refused call puts a config state in the record seconds before the write that
+    actually happened, and overstates how many writes carry parseable content.
+    """
+    return {
+        e["parent_tool_use"] for e in events
+        if e.get("type") == "tool_result" and e.get("is_error") and e.get("parent_tool_use")
+    }
+
+
 def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Every access to a ``generation_config.json`` this run made."""
     rows: list[dict[str, Any]] = []
     known = scripts.learn(events)
+    refused = _refused(events)
     for e in sorted(events, key=lambda x: (x.get("agent_id") or "", x.get("i") or 0)):
-        if e.get("type") != "tool_use":
+        if e.get("type") != "tool_use" or e.get("tool_use_id") in refused:
             continue
         tool = e.get("tool") or ""
         args = e.get("args") or {}
@@ -197,7 +249,7 @@ def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, 
             continue
 
         command = unwrap(args.get("command") or "")
-        if not command:
+        if not command or mentions_only_in_prose(command):
             continue
         if "generation_config.json" not in command:
             if finalizer_call(command):
@@ -207,14 +259,17 @@ def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, 
             continue
         access, form = _classify_shell(command)
         heredoc = _HEREDOC.search(command)
-        for p in _paths_in(command):
+        named = _paths_in(command) or [None]
+        for p in named:
             rows.append({
                 **base,
                 "path": p,
                 "access": access,
                 "form": form,
-                "content_available": bool(heredoc) and heredoc.group("path") == p,
-                "content": heredoc.group("body").strip() if heredoc and heredoc.group("path") == p
+                "content_available": bool(heredoc) and p is not None
+                and heredoc.group("path") == p,
+                "content": heredoc.group("body").strip()
+                if heredoc and p is not None and heredoc.group("path") == p
                 else None,
                 "command": command[:400],
             })
