@@ -143,6 +143,18 @@ def brief(run_id: str, tables: dict[str, pd.DataFrame], meta: dict[str, Any]) ->
         limits.append(
             f"- **{n_unclear} 次训练启动后再没被提及**,结束时刻取的是 run 结尾,是上界。"
         )
+    n_ckpt = (
+        int(spans["command"].fillna("").str.contains("save.?steps|save_strategy", regex=True).sum())
+        if len(spans)
+        else 0
+    )
+    if n_ckpt:
+        limits.append(
+            f"- **{n_ckpt} 次训练开了中途存档(`save_steps`)。** 这类训练的结束时刻**机械层判不了**:"
+            "评测 `…/checkpoint-N` 既可能是训练跑完后挑步数(该记结束),也可能是训练还在跑时先看一眼"
+            "(不该记结束)。两种误判在语料里各有实例,方向相反。请在流里找 `train_runtime`、"
+            "`saved to`、或 `pgrep` 归零来定真实结束时刻。"
+        )
     n_open = int(spans["end_reason"].isin(["consumed", "last_seen"]).sum()) if len(spans) else 0
     if n_open:
         limits.append(
