@@ -68,6 +68,11 @@ def test_recovery_eval_is_allocation_scoped_and_uses_unique_scratch():
 
     assert 'RANDOM_UUID="${SLURM_JOB_ID:-$(uuidgen)}"' in script
     assert 'RECOVERY_SCRATCH_ROOT="${POST_TRAIN_BENCH_SCRATCH_DIR:-${TMPDIR:-/tmp}}"' in script
+    assert '--home "${eval_home}:${HOME}"' in script
+    assert '--bind "${JOB_TMP}:/tmp"' in script
+    assert '--env "TORCHINDUCTOR_CACHE_DIR=${HOME}/.cache/torchinductor"' in script
+    assert '--env "TRITON_CACHE_DIR=${HOME}/.cache/triton"' in script
+    assert 'if [ ! -s "${EVAL_DIR}/metrics.json" ]; then' in script
     assert "--query-compute-apps=pid" not in script
     assert "xargs -r kill" not in script
 
