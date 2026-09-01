@@ -8,11 +8,13 @@ must be visible inside its contained Apptainer sandbox.
 import re
 from pathlib import Path
 
-
 RUN_TASK = (
     Path(__file__).resolve().parents[1] / "third_party" / "PostTrainBench" / "src" / "run_task.sh"
 )
 SINGLE_TASK = RUN_TASK.parent / "commit_utils" / "slurm" / "single_task.sbatch"
+RECOVERY_EVAL = (
+    RUN_TASK.parents[1] / "dev_utils" / "test_evaluation" / "run_only_evaluation.sh"
+)
 
 
 def shell_function(script: str, name: str, next_name: str) -> str:
@@ -57,3 +59,12 @@ def test_final_eval_caches_live_on_job_local_storage():
     assert '--env "VLLM_CACHE_ROOT=${HOME}/.cache/vllm"' in run_evaluation
     assert '--env "TORCHINDUCTOR_CACHE_DIR=${HOME}/.cache/torchinductor"' in run_evaluation
     assert '--env "TRITON_CACHE_DIR=${HOME}/.cache/triton"' in run_evaluation
+
+
+def test_recovery_eval_is_allocation_scoped_and_uses_unique_scratch():
+    script = RECOVERY_EVAL.read_text(encoding="utf-8")
+
+    assert 'RANDOM_UUID="${SLURM_JOB_ID:-$(uuidgen)}"' in script
+    assert 'RECOVERY_SCRATCH_ROOT="${POST_TRAIN_BENCH_SCRATCH_DIR:-${TMPDIR:-/tmp}}"' in script
+    assert "--query-compute-apps=pid" not in script
+    assert "xargs -r kill" not in script
