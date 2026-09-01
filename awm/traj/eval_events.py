@@ -275,6 +275,20 @@ def _form(command: str, known: dict[str, set[str]] | None = None) -> str | None:
     return None
 
 
+def _names(text: str, artifact: str) -> bool:
+    """Does this text name that artifact, rather than merely contain its letters?
+
+    ``eval_run6_full.json`` sitting inside ``eval_run6_p09k20_full.json`` is a
+    different file. Unbounded matching handed two evaluations a neighbour's
+    0.033 when they had both actually read 0.000.
+    """
+    if not text or not artifact:
+        return False
+    # A directory prefix is fine — ``runs/eval_run6_full.json`` is that file.
+    # What must not match is the name continuing into a longer one.
+    return bool(re.search(r"(?<![\w.-])" + re.escape(artifact) + r"(?![\w-])", text))
+
+
 def _passes_limit(command: str, sources: dict[str, str] | None) -> bool:
     """Does the wrapper this command runs pass ``--limit`` at all?
 
@@ -603,7 +617,7 @@ def _one(
                     # across the corpus, and the launch does not always print a
                     # handle to match on, so the artifact is the link.
                     channel = "task_id"
-                elif any(a in parent_cmd or a in text for a in artifacts):
+                elif any(_names(parent_cmd, a) or _names(text, a) for a in artifacts):
                     channel = "artifact"
                 else:
                     continue

@@ -345,3 +345,20 @@ class TestQuotedPipesAreNotSeparators:
             "python evaluate.py --model-path ckpt/a | tee log.txt"
         ) == "evaluate.py"
 
+
+class TestArtifactNamesAreBounded:
+    def test_a_longer_filename_is_a_different_file(self) -> None:
+        """`eval_run6_full.json` inside `eval_run6_p09k20_full.json` is not it.
+
+        Unbounded matching handed two evaluations a neighbour's 0.033 when both
+        had read 0.000.
+        """
+        assert not eval_events._names(
+            "wrote eval_run6_p09k20_full.json", "eval_run6_full.json"
+        )
+
+    def test_the_artifact_itself_still_matches(self) -> None:
+        assert eval_events._names("cat runs/eval_run6_full.json", "eval_run6_full.json")
+        assert eval_events._names("eval_run6_full.json: {\"accuracy\": 0.0}",
+                                  "eval_run6_full.json")
+
