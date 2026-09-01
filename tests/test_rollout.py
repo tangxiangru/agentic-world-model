@@ -2235,7 +2235,7 @@ def test_pack_uses_explicit_conditions_and_no_site_slurm_config() -> None:
     assert 'export AWM_STUDY_CONDITION="${condition}"' in pack
     assert 'export AWM_STUDY_REPETITION="${repetition}"' in pack
     assert 'export AWM_EXPECTED_SCIENTIST_MODEL_ID="${EXPECTED_SCIENTIST_MODELS[$gpu]}"' in pack
-    assert "AWM_SCIENTIST_MODEL_ID_4_6" in pack
+    assert "AWM_SCIENTIST_MODEL_ID_4_6" not in pack
     assert "AWM_SCIENTIST_MODEL_ID_4_8" in pack
     assert "AWM_SCIENTIST_MODEL_ID_5_0" in pack
     assert "GPU safety requires exactly one cell per one-GPU invocation" in pack
@@ -2261,9 +2261,9 @@ def test_pack_uses_explicit_conditions_and_no_site_slurm_config() -> None:
     assert "prior_runs:ro" in c2_binds and "wm-memory" not in c2_binds
     assert "wm-memory:ro" in c3_binds and "prior_runs" not in c3_binds
     readme = (REPO / "rollout" / "README.md").read_text()
-    assert "3 scientist models × 3 information conditions × 2 prior scopes" in readme
+    assert "2 scientist models × 3 information conditions × 2 prior scopes" in readme
     assert "× 2\nexplicit repetitions" in readme
-    assert "**36 cells**" in readme
+    assert "**24 cells**" in readme
     assert "serves the single\n`consult` verb" in readme
     assert "C3 searches the complete reconstructed-card memory" in readme
     assert "not an operating-system security" in readme
@@ -2526,7 +2526,6 @@ def _pack_preflight(tmp_path: Path, *specs: str, extra: dict[str, str] | None = 
         "HV_PTB_DIR": str(tmp_path / "ptb"),
         "CLAUDE_CODE_USE_VERTEX": "1",
         "ANTHROPIC_VERTEX_PROJECT_ID": "project",
-        "AWM_SCIENTIST_MODEL_ID_4_6": "provider-opus-4-6",
         "AWM_SCIENTIST_MODEL_ID_4_8": "provider-opus-4-8",
         "AWM_SCIENTIST_MODEL_ID_5_0": "provider-opus-5-0",
         "AWM_CLAUDE_CLI_VERSION": "2.1.251",
@@ -2544,15 +2543,21 @@ def _pack_preflight(tmp_path: Path, *specs: str, extra: dict[str, str] | None = 
 
 
 def test_pack_fails_closed_for_missing_condition_mounts(tmp_path: Path) -> None:
-    c1 = _pack_preflight(tmp_path, "c1:claude-opus-4-6:train:1")
+    c1 = _pack_preflight(tmp_path, "c1:claude-opus-4-8:train:1")
     assert c1.returncode == 2 and "C1/C2 requires PRIOR_RUNS" in c1.stderr
 
     c3 = _pack_preflight(tmp_path, "c3:claude-opus-4-8:retrieval:train:1")
     assert c3.returncode == 2 and "requires seeded WM_MEMORY" in c3.stderr
 
 
+def test_pack_rejects_removed_opus_4_6_scientist(tmp_path: Path) -> None:
+    result = _pack_preflight(tmp_path, "c1:claude-opus-4-6:train:1")
+    assert result.returncode == 2
+    assert "unsupported scientist model" in result.stderr
+
+
 def test_pack_requires_two_explicit_unique_repetitions(tmp_path: Path) -> None:
-    missing = _pack_preflight(tmp_path, "c1:claude-opus-4-6:train")
+    missing = _pack_preflight(tmp_path, "c1:claude-opus-4-8:train")
     assert missing.returncode == 2 and "<1|2>" in missing.stderr
 
     out_of_range = _pack_preflight(tmp_path, "c3:claude-opus-5:retrieval:train:3")
@@ -2560,19 +2565,19 @@ def test_pack_requires_two_explicit_unique_repetitions(tmp_path: Path) -> None:
 
     duplicate = _pack_preflight(
         tmp_path,
-        "c1:claude-opus-4-6:train:1",
-        "c1:claude-opus-4-6:train:1",
+        "c1:claude-opus-4-8:train:1",
+        "c1:claude-opus-4-8:train:1",
     )
     assert duplicate.returncode == 2 and "exactly one cell" in duplicate.stderr
 
     two_reps = _pack_preflight(
         tmp_path,
-        "c1:claude-opus-4-6:train:1",
-        "c1:claude-opus-4-6:train:2",
+        "c1:claude-opus-4-8:train:1",
+        "c1:claude-opus-4-8:train:2",
     )
     assert two_reps.returncode == 2 and "exactly one cell" in two_reps.stderr
 
-    models = ("claude-opus-4-6", "claude-opus-4-8", "claude-opus-5")
+    models = ("claude-opus-4-8", "claude-opus-5")
     conditions = ("c1", "c2", "c3")
     scopes = ("train", "train,test")
     repetitions = (1, 2)
@@ -2583,12 +2588,12 @@ def test_pack_requires_two_explicit_unique_repetitions(tmp_path: Path) -> None:
         for scope in scopes
         for repetition in repetitions
     }
-    assert len(matrix) == 36
+    assert len(matrix) == 24
     pack = (REPO / "rollout" / "wm_pack.sbatch").read_text()
     assert 'CELL_IDS+=("${RUN_ID}_${STUDY_MODE}_${safe_spec}")' in pack
 
 
-def test_study_matrix_emits_and_validates_exact_36_cells() -> None:
+def test_study_matrix_emits_and_validates_exact_24_cells() -> None:
     script = REPO / "rollout" / "study_matrix.py"
     emitted = subprocess.run(
         [sys.executable, str(script)], text=True, capture_output=True, check=True
@@ -2596,10 +2601,9 @@ def test_study_matrix_emits_and_validates_exact_36_cells() -> None:
     records = json.loads(emitted.stdout)
     specs = [record["spec"] for record in records]
 
-    assert len(records) == len(set(specs)) == 36
+    assert len(records) == len(set(specs)) == 24
     assert {record["condition"] for record in records} == {"c1", "c2", "c3"}
     assert {record["scientist_model"] for record in records} == {
-        "claude-opus-4-6",
         "claude-opus-4-8",
         "claude-opus-5",
     }
@@ -2631,7 +2635,7 @@ def test_study_matrix_emits_and_validates_exact_36_cells() -> None:
         check=False,
     )
     assert valid.returncode == 0
-    assert json.loads(valid.stdout) == {"cell_count": 36, "valid": True}
+    assert json.loads(valid.stdout) == {"cell_count": 24, "valid": True}
 
     invalid = subprocess.run(
         [sys.executable, str(script), "--validate", *specs[:-1], specs[0]],
@@ -2650,7 +2654,7 @@ def test_pack_direct_mode_requires_explicit_gpu_slot_not_slurm(tmp_path: Path) -
     (prior / "index.jsonl").write_text(json.dumps({"side": "train"}) + "\n")
     result = _pack_preflight(
         tmp_path,
-        "c1:claude-opus-4-6:train:1",
+        "c1:claude-opus-4-8:train:1",
         extra={
             "PRIOR_RUNS": str(prior),
             "AWM_PRIOR_CORPUS_MANIFEST_SHA256": "0" * 64,
@@ -2667,7 +2671,7 @@ def test_pack_requires_one_declared_gpu_slot(tmp_path: Path) -> None:
     (prior / "index.jsonl").write_text(json.dumps({"side": "train"}) + "\n")
     result = _pack_preflight(
         tmp_path,
-        "c1:claude-opus-4-6:train:1",
+        "c1:claude-opus-4-8:train:1",
         extra={
             "PRIOR_RUNS": str(prior),
             "AWM_PRIOR_CORPUS_MANIFEST_SHA256": "0" * 64,
@@ -2691,7 +2695,7 @@ def test_pack_fixes_every_wma_to_verified_opus_5_vertex_identity(
     }
     wrong = _pack_preflight(
         tmp_path,
-        "c2:claude-opus-4-6:traj:train:1",
+        "c2:claude-opus-4-8:traj:train:1",
         extra={**common, "AWM_WMA_MODEL": "provider-opus-4-8"},
     )
     assert wrong.returncode == 2
@@ -2701,7 +2705,7 @@ def test_pack_fixes_every_wma_to_verified_opus_5_vertex_identity(
 
     opus_5 = _pack_preflight(
         tmp_path,
-        "c2:claude-opus-4-6:traj:train:1",
+        "c2:claude-opus-4-8:traj:train:1",
         extra={**common, "AWM_WMA_MODEL": "provider-opus-5-0"},
     )
     assert opus_5.returncode == 2
@@ -2711,7 +2715,7 @@ def test_pack_fixes_every_wma_to_verified_opus_5_vertex_identity(
 def test_pack_smoke_mode_is_explicit_one_hour_and_nonproduction(tmp_path: Path) -> None:
     production_short = _pack_preflight(
         tmp_path,
-        "c1:claude-opus-4-6:train:1",
+        "c1:claude-opus-4-8:train:1",
         extra={"PTB_NUM_HOURS": "1"},
     )
     assert production_short.returncode == 2
@@ -2719,7 +2723,7 @@ def test_pack_smoke_mode_is_explicit_one_hour_and_nonproduction(tmp_path: Path) 
 
     smoke_wrong = _pack_preflight(
         tmp_path,
-        "c1:claude-opus-4-6:train:1",
+        "c1:claude-opus-4-8:train:1",
         extra={"AWM_STUDY_SMOKE": "1", "PTB_NUM_HOURS": "0.25"},
     )
     assert smoke_wrong.returncode == 2
@@ -2727,7 +2731,7 @@ def test_pack_smoke_mode_is_explicit_one_hour_and_nonproduction(tmp_path: Path) 
 
     smoke = _pack_preflight(
         tmp_path,
-        "c1:claude-opus-4-6:train:1",
+        "c1:claude-opus-4-8:train:1",
         extra={"AWM_STUDY_SMOKE": "1", "PTB_NUM_HOURS": "1"},
     )
     assert smoke.returncode == 2
@@ -2748,7 +2752,7 @@ def test_pack_smoke_mode_is_explicit_one_hour_and_nonproduction(tmp_path: Path) 
 def test_pack_rejects_relabeled_task_or_base_model(
     tmp_path: Path, extra: dict[str, str], message: str
 ) -> None:
-    result = _pack_preflight(tmp_path, "c1:claude-opus-4-6:train:1", extra=extra)
+    result = _pack_preflight(tmp_path, "c1:claude-opus-4-8:train:1", extra=extra)
     assert result.returncode == 2 and message in result.stderr
 
 
@@ -2785,7 +2789,7 @@ def test_pack_rejects_mutable_ref_and_side_mismatch(tmp_path: Path) -> None:
     )
     raw_scope = _pack_preflight(
         tmp_path,
-        "c2:claude-opus-4-6:traj:train:1",
+        "c2:claude-opus-4-8:traj:train:1",
         extra={
             "PRIOR_RUNS": str(prior),
             "WM_MEMORY": str(memory.parent),

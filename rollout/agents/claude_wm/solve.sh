@@ -7,8 +7,8 @@
 # `consult` verb and records its cards and consult ledger under /home/ben/task/wm/.
 #
 # AGENT_CONFIG = <scientist model>:<arm>:<scope>
-#   claude-opus-4-6:traj:train            C2, 143 raw prior trajectories
-#   claude-opus-4-6:retrieval:train,test  C3, cards from all 193 trajectories
+#   claude-opus-4-8:traj:train            C2, 143 raw prior trajectories
+#   claude-opus-4-8:retrieval:train,test  C3, cards from all 193 trajectories
 #
 # C2 must not receive /home/ben/wm-memory. C3 expects it as a read-only bind and
 # must not receive /home/ben/prior_runs. Both fail if their declared input is

@@ -6,9 +6,8 @@ comments in those files). This README is about the second one.
 
 ## The scientist × information study
 
-Three Claude Opus scientists (`claude-opus-4-6`, `claude-opus-4-8`,
-`claude-opus-5`) post-train one base model for gsm8k under three information
-conditions:
+Two Claude Opus scientists (`claude-opus-4-8` and `claude-opus-5`) post-train
+one base model for gsm8k under three information conditions:
 
 | | prior information | WMA | prompt | agent |
 |---|---|---|---|---|
@@ -16,11 +15,11 @@ conditions:
 | **C2** | the same complete raw corpus, directly readable by the scientist and readable by the WMA | peer Claude Code WMA with the `traj` arm | `prompt_wm_fulltraj` | `claude_wm` |
 | **C3** | full reconstructed-card corpus searchable by the WMA; no raw trajectories | peer Claude Code WMA with the `retrieval` arm | `prompt_wm` | `claude_wm` |
 
-Crossing 3 scientist models × 3 information conditions × 2 prior scopes × 2
-explicit repetitions gives **36 cells**. Every launcher spec ends in `:1` or
+Crossing 2 scientist models × 3 information conditions × 2 prior scopes × 2
+explicit repetitions gives **24 cells**. Every launcher spec ends in `:1` or
 `:2`; the repetition is embedded in the PTB result identifier and duplicate
 condition/model/scope/repetition keys in one pack are rejected.
-`python rollout/study_matrix.py` emits the authoritative 36-cell design as
+`python rollout/study_matrix.py` emits the authoritative 24-cell design as
 JSON; `--format specs` emits one launcher spec per line, and `--validate`
 rejects a supplied matrix with any duplicate, missing, or unexpected cell.
 
@@ -167,7 +166,7 @@ obtains each declared value from the submitting environment without `eval`,
 and passes it as one argument through the clean sandbox without logging the
 value. At minimum export
 `CLAUDE_CODE_USE_VERTEX=1` and `ANTHROPIC_VERTEX_PROJECT_ID`, plus the regional
-routing variables for the three scientist models. Set `AWM_WMA_MODEL` to the
+routing variables for the two scientist models. Set `AWM_WMA_MODEL` to the
 same exact stream-reported ID as `AWM_SCIENTIST_MODEL_ID_5_0`. The harness
 rejects every C2/C3 cell if those values differ, invokes the WMA with the
 `claude-opus-5` alias, and independently attests its reported model. The WMA
@@ -182,7 +181,6 @@ Before launching, define the exact scientist alias-to-provider-ID mapping and
 pin the Claude Code package in the untracked submit environment:
 
 ```bash
-export AWM_SCIENTIST_MODEL_ID_4_6=<exact-ID-reported-for-claude-opus-4-6>
 export AWM_SCIENTIST_MODEL_ID_4_8=<exact-ID-reported-for-claude-opus-4-8>
 export AWM_SCIENTIST_MODEL_ID_5_0=<exact-ID-reported-for-claude-opus-5>
 export AWM_CLAUDE_CLI_VERSION=<exact-npm-semver>
@@ -204,7 +202,7 @@ npm install -g --prefix "$PROBE_PREFIX" --no-fund --no-audit \
   "@anthropic-ai/claude-code@${AWM_CLAUDE_CLI_VERSION:?}"
 "$PROBE_PREFIX/bin/claude" --version
 printf 'Reply only OK.' | "$PROBE_PREFIX/bin/claude" --print --verbose \
-  --model claude-opus-4-6 --output-format stream-json > /tmp/claude-model-probe.jsonl
+  --model claude-opus-4-8 --output-format stream-json > /tmp/claude-model-probe.jsonl
 ```
 
 Each cell installs that exact npm version inside its isolated home and rejects
@@ -225,8 +223,11 @@ and deliberately accepts exactly one spec. Submit each spec through an
 untracked site wrapper which requests a one-GPU device cgroup, then invokes
 `wm_pack.sbatch` inside that allocation with exactly one identifier in
 `PTB_GPU_SLOTS` (or an allocation-provided one-entry `CUDA_VISIBLE_DEVICES`).
-Thirty-six simultaneous cells therefore mean 36 independent one-GPU jobs, not
-36 child processes in one multi-GPU `apptainer --nv` allocation.
+Twenty-four simultaneous cells therefore mean 24 one-GPU invocations. They may
+be independent jobs on a consumable-GPU partition or isolated `srun` job steps
+inside three eight-H100 allocations; every invocation must still receive a
+true one-GPU device cgroup rather than an unrestricted multi-GPU
+`apptainer --nv` environment.
 
 The wrapper must select the matching `PRIOR_RUNS`, `WM_MEMORY`, and manifest
 digests from the spec's `train` versus `train,test` scope, and may set the local
@@ -255,7 +256,7 @@ export AWM_CARD_CORPUS_MANIFEST_SHA256=<combined-manifest-sha256-for-wm-memory-1
 
 # This command is run *inside one true one-GPU allocation*.
 PTB_GPU_SLOTS="${ALLOCATED_GPU:?}" PTB_RUN_ID=wm-study \
-  bash rollout/wm_pack.sbatch c1:claude-opus-4-6:train:1
+  bash rollout/wm_pack.sbatch c1:claude-opus-4-8:train:1
 ```
 
 Validate the complete design before submitting it. A site wrapper can consume
@@ -271,14 +272,14 @@ done
 ```
 
 The requested release gate is exactly one train-scope C2 smoke, for example
-`c2:claude-opus-4-6:traj:train:1`, submitted with the explicit untracked
+`c2:claude-opus-4-8:traj:train:1`, submitted with the explicit untracked
 `AWM_STUDY_SMOKE=1 PTB_NUM_HOURS=1` environment. It exercises the one-GPU
 OS-visibility boundary, Vertex/CLI authentication, raw-corpus validation, the
 peer WMA consult, requested-versus-reported model identity, harness provenance,
 submission handling, and deterministic GSM8K evaluation in one cell. Smoke
 mode accepts only that one-hour duration; normal production accepts only 10
 hours. The result ID and `study-input.json` are labelled `smoke`, so it cannot
-collide with or be mistaken for any of the 36 production cells. Require a
+collide with or be mistaken for any of the 24 production cells. Require a
 successful WMA-session postcondition, nonempty `final_model`, finite accuracy,
 and honest zero `solve_exit_code.txt` before releasing the production matrix.
 A C3 smoke is optional additional validation of the card-only protocol; it is
@@ -348,7 +349,7 @@ nonzero cell status.
 | `validate_wma_session.py` | fail-closed C2/C3 peer-session, consult-ledger, card, and shipped-outcome postcondition |
 | `redact_claude_stream.py` | credential scrubber and durable backpressure-safe dual sink for the retained/live Claude JSONL trajectory |
 | `sanitize_result_tree.py` | final recursive text-artifact scrubber/attester; any redaction quarantines the cell |
-| `study_matrix.py` | emits or validates the exact 36 unique launcher specs |
+| `study_matrix.py` | emits or validates the exact 24 unique launcher specs |
 | `pin_ptb_source.sh` | creates the per-cell source snapshot and returns its root; cells execute relative dependencies only from that snapshot |
 | `build_prompts.py` | writes the C1/C2/C3 production prompts plus separate C2/C3 lifecycle-smoke prompts; review copies under `prompts/` |
 | `agents/claude_fulltraj_noawm/` | C1: Vertex Claude with a required read-only raw-runs mount |

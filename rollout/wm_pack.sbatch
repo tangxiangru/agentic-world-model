@@ -3,7 +3,7 @@ set -euo pipefail
 
 # The scientist x information study: exactly one cell in one OS-isolated GPU
 # allocation per invocation.  A site-specific untracked scheduler wrapper
-# should submit the 36 matrix entries as 36 independent one-GPU jobs.
+# should submit the 24 matrix entries as one-GPU jobs or isolated job steps.
 # Scheduler resources, partition/reservation, logs, module setup, and all host
 # paths belong in the site's untracked submit wrapper or local environment.
 # This file can be submitted as a batch script or run directly inside an
@@ -17,7 +17,7 @@ set -euo pipefail
 #   c3:<model>:retrieval:<memory-sides>:<rep> cards through peer WMA only
 #
 # ``rep`` is 1 or 2 and is part of the PTB result identifier.  This makes the
-# full 3 x 3 x 2 x 2 design explicit and prevents an accidental overwrite or
+# full 2 x 3 x 2 x 2 design explicit and prevents an accidental overwrite or
 # relabelled duplicate from masquerading as a second repetition.
 #
 # Environment (host side, read here and by run_task.sh):
@@ -28,8 +28,8 @@ set -euo pipefail
 #   AWM_REPO_COMMIT  exact 40-hex harness/runtime commit for every cell (required)
 #   AWM_WMA_MODEL    exact stream-reported Opus 5 Vertex model ID for every WMA cell;
 #                    it must equal AWM_SCIENTIST_MODEL_ID_5_0
-#   AWM_SCIENTIST_MODEL_ID_4_6, AWM_SCIENTIST_MODEL_ID_4_8,
-#   AWM_SCIENTIST_MODEL_ID_5_0 exact stream-reported provider IDs for aliases
+#   AWM_SCIENTIST_MODEL_ID_4_8, AWM_SCIENTIST_MODEL_ID_5_0
+#                    exact stream-reported provider IDs for scientist aliases
 #   AWM_CLAUDE_CLI_VERSION exact npm package version installed in every cell
 #   AWM_EXPECTED_CLAUDE_CLI_VERSION_OUTPUT exact expected `claude --version`
 #   AWM_PRIOR_CORPUS_MANIFEST_SHA256 expected corpus-manifest.json digest for C1/C2
@@ -48,7 +48,7 @@ set -euo pipefail
 #
 # Example after a site wrapper has provided a one-GPU cgroup/allocation:
 #
-#   PTB_GPU_SLOTS=0 bash rollout/wm_pack.sbatch c1:claude-opus-4-6:train:1
+#   PTB_GPU_SLOTS=0 bash rollout/wm_pack.sbatch c1:claude-opus-4-8:train:1
 SPECS=("$@")
 N="${#SPECS[@]}"
 [ "$N" -eq 1 ] || {
@@ -69,7 +69,6 @@ WM_MEMORY="${WM_MEMORY:-}"
 VERTEX_ADC_FILE="${VERTEX_ADC_FILE:-}"
 AWM_REPO_COMMIT="${AWM_REPO_COMMIT:-}"
 AWM_WMA_MODEL="${AWM_WMA_MODEL:-}"
-AWM_SCIENTIST_MODEL_ID_4_6="${AWM_SCIENTIST_MODEL_ID_4_6:-}"
 AWM_SCIENTIST_MODEL_ID_4_8="${AWM_SCIENTIST_MODEL_ID_4_8:-}"
 AWM_SCIENTIST_MODEL_ID_5_0="${AWM_SCIENTIST_MODEL_ID_5_0:-}"
 AWM_CLAUDE_CLI_VERSION="${AWM_CLAUDE_CLI_VERSION:-}"
@@ -81,9 +80,9 @@ RUN_ID="${PTB_RUN_ID:-${SLURM_JOB_ID:-local-$$}}"
     echo "FATAL: PTB_RUN_ID must contain only letters, digits, dot, underscore, or dash" >&2
     exit 2
 }
-[ "${TASK}" = gsm8k ] || { echo "FATAL: this 36-cell study requires PTB_TASK=gsm8k" >&2; exit 2; }
+[ "${TASK}" = gsm8k ] || { echo "FATAL: this 24-cell study requires PTB_TASK=gsm8k" >&2; exit 2; }
 [ "${MODEL_TO_TRAIN}" = google/gemma-3-4b-pt ] || {
-    echo "FATAL: this 36-cell study requires PTB_MODEL=google/gemma-3-4b-pt" >&2
+    echo "FATAL: this 24-cell study requires PTB_MODEL=google/gemma-3-4b-pt" >&2
     exit 2
 }
 case "${STUDY_SMOKE}" in
@@ -130,7 +129,6 @@ study_sides=""
 for spec in "${SPECS[@]}"; do
     IFS=: read -r condition scientist field3 field4 field5 extra <<< "${spec}"
     case "${scientist}" in
-        claude-opus-4-6) expected_scientist_model="${AWM_SCIENTIST_MODEL_ID_4_6}" ;;
         claude-opus-4-8) expected_scientist_model="${AWM_SCIENTIST_MODEL_ID_4_8}" ;;
         claude-opus-5) expected_scientist_model="${AWM_SCIENTIST_MODEL_ID_5_0}" ;;
         *) echo "FATAL: unsupported scientist model in ${spec}" >&2; exit 2;;

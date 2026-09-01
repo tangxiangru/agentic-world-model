@@ -11,7 +11,6 @@ from dataclasses import asdict, dataclass
 
 
 SCIENTIST_MODELS = (
-    "claude-opus-4-6",
     "claude-opus-4-8",
     "claude-opus-5",
 )
@@ -19,6 +18,9 @@ CONDITIONS = ("c1", "c2", "c3")
 ARMS = {"c1": None, "c2": "traj", "c3": "retrieval"}
 SCOPES = ("train", "train,test")
 REPETITIONS = (1, 2)
+EXPECTED_CELL_COUNT = (
+    len(SCIENTIST_MODELS) * len(CONDITIONS) * len(SCOPES) * len(REPETITIONS)
+)
 BENCHMARK = "gsm8k"
 BASE_MODEL = "google/gemma-3-4b-pt"
 NUM_HOURS = 10
@@ -66,8 +68,13 @@ def study_matrix() -> tuple[Cell, ...]:
         for condition in CONDITIONS
         for model in SCIENTIST_MODELS
     )
-    if len(cells) != 36 or len({cell.spec for cell in cells}) != len(cells):
-        raise RuntimeError("internal error: study matrix is not 36 unique cells")
+    if (
+        len(cells) != EXPECTED_CELL_COUNT
+        or len({cell.spec for cell in cells}) != len(cells)
+    ):
+        raise RuntimeError(
+            f"internal error: study matrix is not {EXPECTED_CELL_COUNT} unique cells"
+        )
     return cells
 
 
@@ -100,7 +107,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--validate",
         action="store_true",
-        help="validate that the positional specs are exactly the 36-cell matrix",
+        help=(
+            "validate that the positional specs are exactly the "
+            f"{EXPECTED_CELL_COUNT}-cell matrix"
+        ),
     )
     parser.add_argument("spec", nargs="*", help="cell specs used with --validate")
     args = parser.parse_args(argv)
