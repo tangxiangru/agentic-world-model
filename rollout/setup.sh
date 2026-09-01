@@ -33,6 +33,37 @@ for a in hv_recipe hv_noop; do
 done
 mkdir -p "$DST/slurm_logs"
 
+# `git clone` carries tracked files only, and the held-out test sets are ignored
+# by design (.gitignore: `**/test_data.json`) so an agent cannot reach them
+# through the repo. run_task.sh line 195 nevertheless hard-requires the one for
+# the task being run -- it hands the agent the same n-gram checker and test-set
+# copy the contamination judge gets. A clone therefore produces a checkout that
+# looks complete and dies four minutes into every cell:
+#
+#   ERROR: src/eval/tasks/gsm8k/test_data.json not found -- required for the
+#          agent's decontamination tooling
+#
+# That is how jobs 84279 and 84280 lost all 14 cells on 2026-08-31. Copy them
+# from the source checkout rather than re-downloading, so this checkout scores
+# against byte-identical test data to every other run in the corpus -- a
+# re-download that differed by one item would make the numbers incomparable
+# without saying so.
+copied=0
+for td in "$SRC"/src/eval/tasks/*/test_data.json; do
+    [ -e "$td" ] || continue
+    task="$(basename "$(dirname "$td")")"
+    install -m 0600 "$td" "$DST/src/eval/tasks/$task/test_data.json"
+    copied=$((copied + 1))
+done
+[ "$copied" -gt 0 ] || { echo "FATAL: no test_data.json under $SRC/src/eval/tasks -- run src/judges/test_data_download/download_test_data.py there first" >&2; exit 1; }
+echo "test data   : $copied task(s) copied from $SRC"
+
+# Fail here rather than four minutes into a GPU cell. The gate below is the same
+# condition run_task.sh checks, evaluated for the task this rollout actually runs.
+TASK_CHECK="${PTB_TASK:-gsm8k}"
+[ -f "$DST/src/eval/tasks/$TASK_CHECK/test_data.json" ] \
+    || { echo "FATAL: $DST/src/eval/tasks/$TASK_CHECK/test_data.json missing after copy" >&2; exit 1; }
+
 # Own results dir; everything else copied from the shared checkout's .env so the
 # container name and caches match what the corpus runs used.
 RESULTS=/rmeng_data/robtang/ptb-hvrecipe-results
