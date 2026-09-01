@@ -51,6 +51,12 @@ automatic restart. It gives an unknown job 60 seconds to be explicitly registere
 it; every enforcement is appended to `enforcement.log`. The checked-in unit is
 `deploy/systemd/awm-slurm-queue-monitor.service`.
 
+The four PTB nodes `[0-3]` are a hard exclusion for separate AWM full studies. Those studies use
+`ptb-a3` plus reservation `robtang-wm-a3-ondem` on `slurm2-a3nodesetondem-[4-12]`; the launcher
+submits one-GPU GRES jobs held, registers its receipt, and then releases the batch. Do not route
+them through partition `a3`, whose `OverSubscribe=EXCLUSIVE` policy converts a one-GPU request
+into a whole-node eight-GPU allocation.
+
 ## Local and infrastructure gates
 
 ```bash

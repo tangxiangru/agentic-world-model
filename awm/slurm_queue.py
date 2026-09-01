@@ -104,10 +104,12 @@ def register_receipt(
             }
         )
     batch_id = str(receipt.get("batch_id", receipt_path.parent.name))
+    receipt_kind = str(receipt.get("kind", ""))
+    default_label = f"{batch_id} [{receipt_kind}]" if receipt_kind else batch_id
     source = {
         "id": f"receipt:{receipt_path}",
         "kind": "receipt",
-        "label": label or batch_id,
+        "label": label or default_label,
         "path": str(receipt_path),
         "batch_id": batch_id,
         "jobs": normalized_jobs,
@@ -337,11 +339,24 @@ def render_snapshot(snapshot: dict[str, Any], *, include_jobs: bool = True) -> s
             f"  {node['node']}: {node['gpus_allocated']}/{node['gpus_total']} state={node['state']}"
         )
     lines.append("SOURCES")
+    detail_states = {
+        "RUNNING",
+        "PENDING",
+        "CONFIGURING",
+        "COMPLETING",
+        "SUSPENDED",
+        "FAILED",
+        "OUT_OF_MEMORY",
+        "TIMEOUT",
+        "NODE_FAIL",
+    }
     for source in snapshot["sources"]:
         counts = " ".join(f"{state}={count}" for state, count in source["counts"].items())
         lines.append(f"  {source['label']}: {counts or 'no jobs'}")
         if include_jobs:
             for job in source["jobs"]:
+                if job.get("state") not in detail_states:
+                    continue
                 cell = f" cell={job['cell_id']}" if job.get("cell_id") else ""
                 node = job.get("nodes") or "-"
                 reason = (
