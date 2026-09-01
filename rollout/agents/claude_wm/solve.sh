@@ -203,7 +203,7 @@ fi
 INIT_ARGS=(--arm "${ARM}" --submission /home/ben/task/final_model --submission-mode copy
            --memory-root "${MEM}" --memory-sides "${SIDES}"
            --wma-model "${AWM_WMA_MODEL}" --wma-max-budget-usd 6.0
-           --wma-validation-attempts 3
+           --wma-validation-attempts 5
            "${CORPUS_ARGS[@]}")
 INIT_ARGS+=(--memory-readonly --split-side test)
 awm wm --dir /home/ben/task init "${INIT_ARGS[@]}" || { echo "ERROR: awm wm init failed" >&2; exit 1; }

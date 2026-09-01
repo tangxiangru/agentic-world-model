@@ -760,8 +760,11 @@ For staged input.json, use its JSON path, which may begin `card.`, for example
 Separate multiple structured paths with semicolons. Every name, number, and factual detail in a
 citation observation must be present in those
 exact fields or lines; cite an additional field instead of mentioning an unsupported sibling value.
-Likewise, every numeric value and versioned model, run, experiment, or path identifier in a claim
-or objection must appear in the union of that item's cited exact fields/lines (or their cited path).
+Likewise, every numeric value and every benchmark, dataset, model, run, experiment, or path
+identifier in a claim or objection must appear in the union of that item's cited exact
+fields/lines (or their cited path). Names supplied only by the current task context, including its
+benchmark and base model, are not historical evidence: either cite an exact field/line containing
+the name or omit it from the grounded prose.
 Do not invent scores, outcomes, causal claims, or citations."""
 
 
@@ -888,6 +891,18 @@ def _validation_repair_guidance(
                     "the exact material selected by its cited locator or locators. For each "
                     "unsupported number, add an exact locator that contains it or remove the "
                     "number, then recheck every citation id and grounded statement."
+                ),
+            )
+        if "checkable identifiers absent" in error:
+            return (
+                "citation_grounding",
+                (
+                    "Every benchmark, dataset, model, run, experiment, and path identifier in "
+                    "a claim or objection must literally occur in the exact material selected by "
+                    "that item's cited locators (or in the cited path itself). Task context is not "
+                    "historical evidence. For each unsupported identifier, add the exact field or "
+                    "line containing it, or remove it from the grounded prose. Recheck all such "
+                    "identifiers before returning StructuredOutput."
                 ),
             )
         return (

@@ -2202,7 +2202,7 @@ def test_wm_agent_separates_llm_raw_from_llm_cards_and_pins_models() -> None:
     assert "--wma-corpus-kind cards" in solve
     assert '--wma-model "${AWM_WMA_MODEL}"' in solve
     assert "--wma-max-budget-usd 6.0" in solve
-    assert "--wma-validation-attempts 3" in solve
+    assert "--wma-validation-attempts 5" in solve
     assert "private empty memory" not in solve
     assert "AWM_REPO_REF" not in solve and "--branch" not in solve
     assert "AWM_REPO_COMMIT" in solve

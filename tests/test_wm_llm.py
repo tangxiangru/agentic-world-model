@@ -1228,6 +1228,24 @@ def test_claim_and_objection_prose_cannot_add_uncited_values() -> None:
         _validate_grounding_references(invented_identifier, material)
 
 
+def test_identifier_grounding_prompt_and_repair_cover_task_context_names() -> None:
+    system = llm_module._system_prompt("cards", [Path("/historical/cards")])
+    assert "benchmark, dataset, model, run, experiment, or path" in system
+    assert "current task context" in system
+    assert "benchmark and base model" in system
+
+    code, guidance = _validation_repair_guidance(
+        "WMA claims[0] adds checkable identifiers absent from its cited locators: "
+        "['gsm8k', 'google/gemma-3-4b-pt']",
+        "cards",
+        validation_stage="grounding",
+    )
+    assert code == "citation_grounding"
+    assert "benchmark, dataset, model, run, experiment, and path" in guidance
+    assert "Task context is not historical evidence" in guidance
+    assert "add the exact field or line containing it, or remove it" in guidance
+
+
 def test_actual_model_and_server_audit_must_match(tmp_path: Path) -> None:
     with pytest.raises(WMError, match="does not exactly match"):
         _validate_reported_models(
