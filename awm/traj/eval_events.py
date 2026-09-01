@@ -275,6 +275,32 @@ def _form(command: str, known: dict[str, set[str]] | None = None) -> str | None:
     return None
 
 
+def _passes_limit(command: str, sources: dict[str, str] | None) -> bool:
+    """Does the wrapper this command runs pass ``--limit`` at all?
+
+    A positional number is a sample size only if the script it is fed to turns
+    one into ``--limit``. ``eval_all.sh <ckpt> 12`` puts 12 into
+    ``--max-connections`` and never passes ``--limit`` at all, so no positional
+    in it is a sample size.
+
+    This settles only the wrappers that never pass the flag. A wrapper that
+    passes it *conditionally* — ``run_eval.sh`` builds ``--limit $LIMIT`` behind
+    an ``if`` — still has its positionals read in whatever order the extractor
+    guesses, and one run's four full 100-question evaluations read as
+    subsamples of twelve for that reason. Resolving those needs the wrapper's
+    argument order, which this does not attempt.
+
+    Unknown wrappers keep the old behaviour: a guess is better than nothing
+    when the body was never written to the trace.
+    """
+    if not sources:
+        return True
+    for path, body in sources.items():
+        if scripts.invocation(command, path):
+            return "--limit" in body
+    return True
+
+
 def _int(pattern: re.Pattern[str], command: str) -> int | None:
     m = pattern.search(command)
     return int(m.group(1)) if m else None
@@ -430,6 +456,7 @@ def events_for_run(
     benchmark = benchmark or benchmark_of(run_id)
     events = sorted(events, key=lambda e: (e.get("agent_id") or "", e.get("i") or 0))
     known = scripts.learn(events)
+    sources = scripts.bodies(events)
     results = _result_index(events)
     uses = [e for e in events if e.get("type") == "tool_use"]
     ordered = [e for e in events if e.get("type") in ("tool_use", "tool_result")]
@@ -442,7 +469,7 @@ def events_for_run(
         if _LAUNCH_IMPORT.search(whole) and not _INSPECTS_PROCESS.search(whole):
             rows.extend(_one(
                 run_id, event, pos, whole, "evaluate.py", uses, ordered, results,
-                benchmark, known,
+                benchmark, known, sources,
             ))
             continue
         # A command may launch several evaluations (``run_eval.sh a … ;
@@ -454,7 +481,7 @@ def events_for_run(
         for command in (launching or []):
             form = _form(command, known)
             rows.extend(_one(
-                run_id, event, pos, command, form, uses, ordered, results, benchmark, known
+                run_id, event, pos, command, form, uses, ordered, results, benchmark, known, sources
             ))
     return rows
 
@@ -470,6 +497,7 @@ def _one(
     results: dict[str, dict[str, Any]],
     benchmark: str | None,
     known: dict[str, set[str]],
+    sources: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         own = results.get(_key(event))
@@ -479,7 +507,9 @@ def _one(
         # each was handed the score of a later, successful rerun.
         refused = bool(own is not None and own.get("is_error"))
         limit = _int(_LIMIT, command)
-        if limit is None and form in ("run_eval.sh", "own_wrapper"):
+        if limit is None and form in ("run_eval.sh", "own_wrapper") and _passes_limit(
+            command, sources
+        ):
             # The wrapper takes its sample size positionally. ``-1`` is the full
             # test set and is the only form the fourth tier ever appears in for
             # these runs; leaving it unparsed left every full evaluation untiered.

@@ -278,6 +278,36 @@ def learn(events: list[dict[str, Any]], rounds: int = 3) -> dict[str, set[str]]:
     return out
 
 
+def bodies(events: list[dict[str, Any]]) -> dict[str, str]:
+    """``script path -> its source``, for questions :func:`learn` does not answer.
+
+    Whether a wrapper turns a positional into ``--limit``, for instance:
+    ``run_eval.sh <ckpt> <tag> 12`` feeds 12 to ``--max-connections``, and
+    reading it as a sample size filed four full 100-question evaluations as
+    third-tier subsamples of twelve.
+    """
+    out: dict[str, str] = {}
+    for e in events:
+        if e.get("type") != "tool_use":
+            continue
+        args = e.get("args") or {}
+        if e.get("tool") == "Write":
+            path = args.get("file_path") or ""
+            if path.endswith((".py", ".sh")):
+                for key in (path, path.rstrip("/").split("/")[-1]):
+                    out[key] = out.get(key, "") + "\n" + (args.get("content") or "")
+            continue
+        for m in _HEREDOC_DEF.finditer(_unwrap(args.get("command") or "")):
+            for key in (m.group("path"), m.group("path").rstrip("/").split("/")[-1]):
+                out[key] = out.get(key, "") + "\n" + m.group("body")
+    return out
+
+
+def invocation(command: str, path: str) -> bool:
+    """Public form of :func:`_invocation`."""
+    return _invocation(_unwrap(command), path)
+
+
 def _invocation(command: str, path: str) -> bool:
     """Is ``path`` being *run* here, rather than edited or read?
 
@@ -343,6 +373,8 @@ def summary(known: dict[str, set[str]]) -> str:
 
 
 __all__ = [
+    "bodies",
+    "invocation",
     "split_outside_quotes",
     "destination_for",
     "destinations",
