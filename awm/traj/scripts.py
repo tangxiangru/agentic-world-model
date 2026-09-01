@@ -206,18 +206,29 @@ def learn(events: list[dict[str, Any]], rounds: int = 3) -> dict[str, set[str]]:
             record(m.group("path"), m.group("body"))
 
     # A body that calls a conventionally named trainer, or any script already
-    # known to be one, makes this file a trainer as well.
+    # known to be one, makes this file a trainer as well. The same holds one
+    # role over: an agent's ``post_run3.py`` that calls its own ``run_eval.py``
+    # is an evaluator, and without this one run's fourth-tier count read 40%
+    # low. Whether such a script's launch *counts* as an evaluation is a
+    # separate question, settled by :func:`invoked_without_training`.
     for _ in range(rounds):
         grew = False
         for path, body in bodies.items():
-            if "trainer" in out.get(path, set()):
-                continue
-            calls = _CALLS_TRAINER.search(body) or any(
-                "trainer" in roles and _invocation(body, other)
-                for other, roles in out.items()
-            )
-            if calls:
+            known_roles = out.get(path, set())
+            if "trainer" not in known_roles and (
+                _CALLS_TRAINER.search(body)
+                or any(
+                    "trainer" in roles and _invocation(body, other)
+                    for other, roles in out.items()
+                )
+            ):
                 out.setdefault(path, set()).add("trainer")
+                grew = True
+            if "evaluator" not in known_roles and any(
+                "evaluator" in roles and other != path and _invocation(body, other)
+                for other, roles in out.items()
+            ):
+                out.setdefault(path, set()).add("evaluator")
                 grew = True
         if not grew:
             break
