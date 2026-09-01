@@ -430,3 +430,33 @@ class TestBenchIsASmokeName:
         ]
         assert train_spans.spans_for_run("r", events)[0]["kind"] == "smoke"
 
+
+class TestKillReachesOnlyWhatItNames:
+    def _events(self, kill_command: str):
+        return [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash", "tool_use_id": "t1",
+             "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "nohup python train.py --data sft_v1 --out ckpt/v1 &"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:00:01Z", "text": ""},
+            {"run_id": "r", "i": 3, "type": "tool_use", "tool": "Bash", "tool_use_id": "t2",
+             "ts": "2026-01-01T02:00:00Z", "args": {"command": kill_command}},
+        ]
+
+    def test_a_pattern_naming_another_run_does_not_end_this_span(self) -> None:
+        """One run's ckpt_v1 was recorded at 1.81h and "killed" when it had
+        finished normally 0.85h in; the pkill it was pinned to named a
+        different training's data file."""
+        rows = train_spans.spans_for_run("r", self._events(
+            'pkill -f "train.py --data sft_v2b"'))
+        assert rows[0]["end_reason"] != "killed"
+
+    def test_a_bare_script_name_kills_everything(self) -> None:
+        rows = train_spans.spans_for_run("r", self._events("pkill -f train.py"))
+        assert rows[0]["end_reason"] == "killed"
+
+    def test_a_quoted_pattern_naming_this_run_ends_it(self) -> None:
+        rows = train_spans.spans_for_run("r", self._events(
+            'pkill -f "train.py --data sft_v1"'))
+        assert rows[0]["end_reason"] == "killed"
+

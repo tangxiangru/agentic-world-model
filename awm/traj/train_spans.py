@@ -154,6 +154,10 @@ _SMOKE_MAX_SAMPLES = 5000
 #: previous stage finished.
 _CONSUME_VERBS = (
     r"finalize\.py\s+",
+    # ``finalize.py --src ckpt_v2`` — the flag an agent's own packaging script
+    # takes. Missing it pushed two spans onto the next training's ``--init``,
+    # overstating them 2.9x and 2.4x.
+    r"--src[= ]\s*",
     r"run_eval\.sh\s+",
     r"--model[= ]\s*",
     r"--model-path[= ]\s*",
@@ -199,6 +203,23 @@ _OUT_CONST = re.compile(
 _LOG_TARGET = re.compile(r">>?\s*([\w./-]+\.log)\b")
 
 _KILL = re.compile(r"\b(?:pkill|killall)\b[^;&|]*?(train[\w./-]*\.py|torchrun|accelerate)")
+
+#: What ``pkill -f`` was actually told to match. ``pkill -f train.py`` kills
+#: every training; ``pkill -f "train.py --data sft_v2b"`` kills exactly one, and
+#: reading it as the end of a *different* span put one run's ckpt_v1 at 1.81h
+#: and "killed" when it had finished normally at 0.85h an hour earlier.
+_KILL_PATTERN = re.compile(r"\b(?:pkill|killall)\b\s+(?:-[\w-]+\s+)*(['\"])(?P<pat>[^'\"]+)\1")
+
+
+def _kills(kill_command: str, launch_command: str) -> bool:
+    """Does this kill reach the process that launch started?"""
+    m = _KILL_PATTERN.search(kill_command)
+    if not m:
+        return True  # an unquoted pattern is the bare script name: kills all
+    pattern = m.group("pat").strip()
+    # Everything after the script name narrows the match to one launch.
+    tail = re.sub(r"^[\w./-]*(?:train[\w./-]*\.py|torchrun|accelerate)\s*", "", pattern)
+    return not tail or tail in launch_command
 
 _TRAIN_RUNTIME = re.compile(r"train_runtime['\"]?\s*[:=]\s*([0-9.]+)")
 
@@ -542,7 +563,7 @@ def spans_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, A
                 if out_dir and _is_launch(later_cmd, known) and _out_dir(later_cmd, known) == out_dir:
                     ts_end, end_reason = later.get("ts"), "superseded"
                     break
-                if _KILL.search(later_cmd):
+                if _KILL.search(later_cmd) and _kills(later_cmd, cmd):
                     ts_end, end_reason = later.get("ts"), "killed"
                     break
                 # Use beats deletion when one command does both: agents clear
