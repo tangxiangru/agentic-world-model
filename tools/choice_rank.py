@@ -257,13 +257,41 @@ def rank_score(rs, a_scores):
 
 # --- stage B: round-robin the shortlist ----------------------------------------
 
+def choice_sets(rows, min_n=4):
+    """Every choice set the report scores, as `(parent_cell, rows)`.
+
+    The full cell, plus each within-family and within-scaffold sub-set with at
+    least `min_n` runs. Stage B used to shortlist the CELL only, which is wrong
+    for the same reason a deployed system would not do it: you know which choice
+    set you are in before you rank it, and the top 6 of a within-family sub-set
+    is mostly not the top 6 of its cell. Scoring a sub-population off the cell's
+    pairs gave the comparator 1.0 % pair coverage within family and 13.3 %
+    within scaffold, i.e. `stage A+B` on those rows was stage A with noise.
+
+    The parent cell is returned, not the sub-set key, because that is what
+    `score_b.jsonl` is keyed on -- so a pair needed by two populations is
+    fetched once and shared.
+    """
+    out = [(c, rs) for c, rs in cells(rows).items()]
+    for col in ("fam", "trace_format"):
+        g = collections.defaultdict(list)
+        for r in rows:
+            g[(r["benchmark"], r["trained_model"], r[col])].append(r)
+        out += [(k[:2], sorted(v, key=lambda r: r["run"]))
+                for k, v in sorted(g.items()) if len(v) >= min_n]
+    return out
+
+
 def stage_b(rows, a_scores, topk=6, workers=48):
-    """Only the top `topk` of each cell, both orders, Copeland.
+    """Only the top `topk` of each choice set, both orders, Copeland.
 
     A full round-robin over a 40-run cell is 1560 ordered comparisons; over 28
     cells that is 43,680 calls. Shortlisting first is not a shortcut bolted on
     for cost, it is the algorithm -- an O(n) scorer that narrows to K and an
     O(K^2) comparator that decides is what anyone would actually deploy.
+
+    "Choice set" here is `choice_sets`, not `cells`: the sub-populations are
+    scored, so they have to be shortlisted and compared too.
     """
     path = OUT / "score_b.jsonl"
     done = {}
@@ -275,20 +303,22 @@ def stage_b(rows, a_scores, topk=6, workers=48):
                 continue
             done[(d["cell"], d["x"], d["y"])] = d.get("winner")
 
-    short = {}
-    for cell, rs in cells(rows).items():
+    short = []
+    for cell, rs in choice_sets(rows):
         rs = [r for r in rs if isinstance(a_scores.get(r["run"], {})
                                           .get("quality"), (int, float))]
-        short[cell] = rank_key(rs, a_scores)[:topk]
+        short.append((cell, rank_key(rs, a_scores)[:topk]))
 
-    jobs = []
-    for cell, rs in short.items():
+    jobs, want = [], set()
+    for cell, rs in short:
         for x, y in itertools.permutations(rs, 2):
             key = (f"{cell[0]}|{cell[1]}", x["run"], y["run"])
-            if key not in done:
+            if key not in done and key not in want:
+                want.add(key)
                 jobs.append((cell, x, y))
     print(f"  stage B: {len(done)} cached, {len(jobs)} comparisons to make "
-          f"({sum(len(v) for v in short.values())} runs shortlisted)")
+          f"({len(short)} choice sets, "
+          f"{len({r['run'] for _, v in short for r in v})} runs shortlisted)")
 
     if jobs:
         need = {r["run"]: r for cell, x, y in jobs for r in (x, y)}
