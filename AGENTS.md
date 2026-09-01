@@ -19,5 +19,5 @@
   studies must use partition `ptb-a3`, reservation `robtang-wm-a3-ondem`, requested nodes
   `slurm2-a3nodesetondem-[4-12]`, and an explicit exclusion for `[0-3]`. Let Slurm pack one-GPU
   jobs by GRES; never use the `a3` partition's whole-node `OverSubscribe=EXCLUSIVE` behavior for
-  these studies. Register every full-study receipt in the shared ownership registry before
-  releasing its held jobs.
+  these studies. AWM full is an external queue and must not be registered in the `gangda`
+  ownership registry; its own receipts remain under `wm-study-runtime`.

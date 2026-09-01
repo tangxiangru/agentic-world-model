@@ -120,6 +120,24 @@ def register_receipt(
     return _update_registry(source, registry_path)
 
 
+def unregister_receipt(receipt_path: Path, *, registry_path: Path | None = None) -> Path:
+    receipt_path = receipt_path.resolve()
+    registry_path = (registry_path or default_registry_path()).resolve()
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    source_id = f"receipt:{receipt_path}"
+    lock_path = registry_path.with_suffix(registry_path.suffix + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = load_registry(registry_path)
+        sources = [source for source in data["sources"] if source.get("id") != source_id]
+        if len(sources) == len(data["sources"]):
+            raise QueueError(f"receipt is not registered: {receipt_path}")
+        data["sources"] = sources
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _atomic_write(registry_path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+    return registry_path
+
+
 def _job_record(job_id: str) -> dict[str, str]:
     if not job_id.isdigit():
         raise QueueError(f"invalid Slurm job id: {job_id}")

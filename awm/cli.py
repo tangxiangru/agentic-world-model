@@ -326,6 +326,13 @@ def _slurm_queue(args: argparse.Namespace) -> int:
             )
             print(path)
             return 0
+        if args.cmd == "unregister-receipt":
+            path = slurm_queue.unregister_receipt(
+                args.receipt,
+                registry_path=registry,
+            )
+            print(path)
+            return 0
         if args.cmd == "register-job":
             path = slurm_queue.register_job(
                 args.job_id,
@@ -373,6 +380,12 @@ def build_parser() -> argparse.ArgumentParser:
     register_receipt.add_argument("--label")
     register_receipt.add_argument("--registry", type=Path)
     register_receipt.set_defaults(func=_slurm_queue)
+    unregister_receipt = slurm.add_parser(
+        "unregister-receipt", help="remove one receipt from the ownership registry"
+    )
+    unregister_receipt.add_argument("receipt", type=Path)
+    unregister_receipt.add_argument("--registry", type=Path)
+    unregister_receipt.set_defaults(func=_slurm_queue)
     register_job = slurm.add_parser(
         "register-job", help="add one exceptional job after verifying its live Slurm identity"
     )

@@ -29,6 +29,9 @@ def test_register_receipt_freezes_job_ids_and_names(tmp_path: Path) -> None:
         {"cell_id": "a2", "job_id": "102", "job_name": "branch.batch.a2"},
     ]
 
+    assert slurm_queue.unregister_receipt(receipt, registry_path=registry) == registry
+    assert json.loads(registry.read_text(encoding="utf-8"))["sources"] == []
+
 
 def test_snapshot_flags_unregistered_jobs_on_owned_nodes(tmp_path: Path, monkeypatch) -> None:
     registry = tmp_path / "registry.json"
