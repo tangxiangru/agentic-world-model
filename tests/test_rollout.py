@@ -2198,6 +2198,9 @@ def test_wm_agent_separates_peer_raw_from_peer_cards_and_pins_models() -> None:
     assert "C3 requires seeded card memory" in solve
     assert "--memory-root /home/ben/wm-memory" in solve
     assert '--wma-model "${AWM_WMA_MODEL}"' in solve
+    assert "readonly WMA_REQUESTED_ALIAS=claude-opus-5" in solve
+    assert 'claude --print --verbose --model "${WMA_REQUESTED_ALIAS}"' in solve
+    assert '--requested-alias "${WMA_REQUESTED_ALIAS}"' in solve
     assert "AWM_REPO_REF" not in solve and "--branch" not in solve
     assert "AWM_REPO_COMMIT" in solve
     assert "^[0-9a-fA-F]{40}$" in solve
@@ -2673,6 +2676,36 @@ def test_pack_requires_one_declared_gpu_slot(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "exactly one declared GPU slot" in result.stderr
+
+
+def test_pack_fixes_every_wma_to_verified_opus_5_vertex_identity(
+    tmp_path: Path,
+) -> None:
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    (prior / "INDEX.md").write_text("# prior\n")
+    (prior / "index.jsonl").write_text(json.dumps({"side": "train"}) + "\n")
+    common = {
+        "PRIOR_RUNS": str(prior),
+        "AWM_PRIOR_CORPUS_MANIFEST_SHA256": "0" * 64,
+    }
+    wrong = _pack_preflight(
+        tmp_path,
+        "c2:claude-opus-4-6:traj:train:1",
+        extra={**common, "AWM_WMA_MODEL": "provider-opus-4-8"},
+    )
+    assert wrong.returncode == 2
+    assert "every WMA must use the verified Claude Code Opus 5 Vertex identity" in (
+        wrong.stderr
+    )
+
+    opus_5 = _pack_preflight(
+        tmp_path,
+        "c2:claude-opus-4-6:traj:train:1",
+        extra={**common, "AWM_WMA_MODEL": "provider-opus-5-0"},
+    )
+    assert opus_5.returncode == 2
+    assert "set PTB_GPU_SLOTS or launch with CUDA_VISIBLE_DEVICES set" in opus_5.stderr
 
 
 def test_pack_smoke_mode_is_explicit_one_hour_and_nonproduction(tmp_path: Path) -> None:

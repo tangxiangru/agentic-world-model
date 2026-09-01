@@ -3,8 +3,8 @@
 #
 # Two Claude Code sessions share the PTB sandbox and communicate with
 # ListAgents/SendMessage.  The scientist owns training, evaluation, the GPU,
-# and every decision.  The fixed-model WMA serves only the `consult` verb and
-# records its cards and consult ledger under /home/ben/task/wm/.
+# and every decision.  The fixed Claude Code Opus 5 WMA serves only the
+# `consult` verb and records its cards and consult ledger under /home/ben/task/wm/.
 #
 # AGENT_CONFIG = <scientist model>:<arm>:<scope>
 #   claude-opus-4-6:traj:train            C2, 143 raw prior trajectories
@@ -35,6 +35,7 @@ set -uo pipefail
     exit 2
 }
 readonly STUDY_PROMPT_SHA256 STUDY_PROMPT_BYTES
+readonly WMA_REQUESTED_ALIAS=claude-opus-5
 [[ "${AWM_REPO_COMMIT}" =~ ^[0-9a-fA-F]{40}$ ]] || {
     echo "ERROR: AWM_REPO_COMMIT must be a full 40-hex commit, got ${AWM_REPO_COMMIT}" >&2
     exit 2
@@ -44,7 +45,7 @@ echo "claude_wm starting: AGENT_CONFIG=${AGENT_CONFIG}"
 IFS=: read -r MODEL ARM SIDES EXTRA <<< "${AGENT_CONFIG}"
 ARM="${ARM:-null}"; SIDES="${SIDES:-train}"
 [ -z "${EXTRA:-}" ] || { echo "ERROR: unexpected AGENT_CONFIG field" >&2; exit 2; }
-echo "scientist=${MODEL} wma=${AWM_WMA_MODEL} arm=${ARM} scope=${SIDES}"
+echo "scientist=${MODEL} wma_alias=${WMA_REQUESTED_ALIAS} wma_expected=${AWM_WMA_MODEL} arm=${ARM} scope=${SIDES}"
 
 # Vertex cells must never inherit a direct Anthropic/subscription credential,
 # including one injected through APPTAINERENV_/SINGULARITYENV_ by the host.
@@ -225,7 +226,7 @@ mkfifo -m 0600 "${WMA_FIFO}" || { echo "ERROR: cannot create WMA stream pipe" >&
 (
     cd /home/ben/wma || exit 2
     exec env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT AWM_SESSION_DIR=/home/ben/task \
-        claude --print --verbose --model "${AWM_WMA_MODEL}" \
+        claude --print --verbose --model "${WMA_REQUESTED_ALIAS}" \
         --output-format stream-json \
         --allowedTools "Read,Grep,Glob,ListAgents,SendMessage,Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(find:*),Bash(cat:*),Bash(sleep:*),Bash(awm:*),Bash(python3 -m awm.cli:*),Bash(mkdir:*)" \
         --dangerously-skip-permissions \
@@ -350,7 +351,7 @@ python3 "${RUNTIME_ATTESTER}" model "${SCIENTIST_STREAM}" \
     --record /home/ben/task/scientist-model-attestation.json \
     --study-input /home/ben/task/study-input.json || exit 2
 python3 "${RUNTIME_ATTESTER}" model "${WMA_STREAM}" \
-    --requested-alias "${AWM_WMA_MODEL}" \
+    --requested-alias "${WMA_REQUESTED_ALIAS}" \
     --expected-model-id "${AWM_WMA_MODEL}" \
     --study-input-key wma_model \
     --record /home/ben/task/wma-model-attestation.json \

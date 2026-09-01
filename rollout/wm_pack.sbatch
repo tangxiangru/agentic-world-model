@@ -26,7 +26,8 @@ set -euo pipefail
 #   PRIOR_RUNS   host dir from tools/build_prior_runs.py -> bound read-only at /home/ben/prior_runs
 #   WM_MEMORY    C3 seeded card memory                  -> bound read-only at /home/ben/wm-memory
 #   AWM_REPO_COMMIT  exact 40-hex harness/runtime commit for every cell (required)
-#   AWM_WMA_MODEL    one fixed, explicit Vertex Claude model for every WMA cell
+#   AWM_WMA_MODEL    exact stream-reported Opus 5 Vertex model ID for every WMA cell;
+#                    it must equal AWM_SCIENTIST_MODEL_ID_5_0
 #   AWM_SCIENTIST_MODEL_ID_4_6, AWM_SCIENTIST_MODEL_ID_4_8,
 #   AWM_SCIENTIST_MODEL_ID_5_0 exact stream-reported provider IDs for aliases
 #   AWM_CLAUDE_CLI_VERSION exact npm package version installed in every cell
@@ -293,6 +294,15 @@ if [ "${need_wma}" = 1 ]; then
             exit 2
             ;;
     esac
+    [ -n "${AWM_SCIENTIST_MODEL_ID_5_0}" ] && \
+        [[ "${AWM_SCIENTIST_MODEL_ID_5_0}" != *[[:space:]]* ]] || {
+        echo "FATAL: C2/C3 requires the exact stream-reported Opus 5 identity in AWM_SCIENTIST_MODEL_ID_5_0" >&2
+        exit 2
+    }
+    [ "${AWM_WMA_MODEL}" = "${AWM_SCIENTIST_MODEL_ID_5_0}" ] || {
+        echo "FATAL: every WMA must use the verified Claude Code Opus 5 Vertex identity" >&2
+        exit 2
+    }
 fi
 # Respect a scheduler-provided visibility list, or an explicit list from an
 # untracked local wrapper. Never guess host GPU indices: doing so can escape the

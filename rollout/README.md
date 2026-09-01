@@ -32,7 +32,7 @@ train+test has 2,030 cards from all 193 runs (450 cards from all 50 Gemma
 runs). The seeded side manifests record the expected, card-bearing, and missing
 run inventories explicitly; both current scopes have zero missing runs.
 
-For C2 and C3, a second, fixed-model Claude Code session serves the single
+For C2 and C3, a second, fixed Claude Code Opus 5 session serves the single
 `consult` verb for the whole run. It drafts and updates the experiment card,
 grounds its verdict and evaluation advice in the declared corpus, and logs each
 consult under `task/wm/`. The scientist owns training, evaluation, the GPU, and
@@ -167,11 +167,10 @@ obtains each declared value from the submitting environment without `eval`,
 and passes it as one argument through the clean sandbox without logging the
 value. At minimum export
 `CLAUDE_CODE_USE_VERTEX=1` and `ANTHROPIC_VERTEX_PROJECT_ID`, plus the regional
-routing variables for the three scientist models. Also set `AWM_WMA_MODEL` to
-one explicit, versioned Vertex Claude model and hold it fixed across every C2
-and C3 cell; it is a study parameter, so the harness deliberately has no hidden
-default. `AWM_WMA_MODEL` must be the exact canonical model ID which Claude
-reports, not a generic `opus`, `sonnet`, `haiku`, or `default` alias. The WMA
+routing variables for the three scientist models. Set `AWM_WMA_MODEL` to the
+same exact stream-reported ID as `AWM_SCIENTIST_MODEL_ID_5_0`. The harness
+rejects every C2/C3 cell if those values differ, invokes the WMA with the
+`claude-opus-5` alias, and independently attests its reported model. The WMA
 uses the same configured Vertex provider and ambient ADC as
 the scientist, although its model is selected separately. No credential or
 OAuth token belongs in Git. On the configured H100 nodes, Claude obtains Vertex
@@ -195,7 +194,7 @@ active, install the chosen CLI version under a temporary prefix, record its
 exact `--version` line, and make one tiny stream-JSON probe per alias. Inspect
 the init `model`, every assistant `message.model`, and the result
 `modelUsage` keys; all reported IDs must agree, and that single value is the
-mapping above (and, separately, the value used for `AWM_WMA_MODEL`). Keep the
+mapping above. Use the verified Opus 5 value for `AWM_WMA_MODEL`. Keep the
 probe output and mapping outside Git because routing is site/account metadata.
 For example:
 
@@ -249,7 +248,7 @@ export HV_PTB_DIR=/data/ptb-wm-study
 export PTB_MODEL=google/gemma-3-4b-pt PTB_NUM_HOURS=10
 export POST_TRAIN_BENCH_TMP_ROOT=/data/private-ptb-scratch
 # Use the same AWM_REPO_COMMIT packaged by setup.sh.
-export AWM_WMA_MODEL=<explicit-versioned-Vertex-Claude-model>
+export AWM_WMA_MODEL="${AWM_SCIENTIST_MODEL_ID_5_0:?set the verified Opus 5 identity}"
 export PRIOR_RUNS=/data/prior_runs_143 WM_MEMORY=/data/wm-memory-143
 export AWM_PRIOR_CORPUS_MANIFEST_SHA256=<sha256-of-prior_runs_143/corpus-manifest.json>
 export AWM_CARD_CORPUS_MANIFEST_SHA256=<combined-manifest-sha256-for-wm-memory-143>
