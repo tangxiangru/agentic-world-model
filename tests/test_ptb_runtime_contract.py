@@ -16,6 +16,7 @@ RECOVERY_EVAL = (
     RUN_TASK.parents[1] / "dev_utils" / "test_evaluation" / "run_only_evaluation.sh"
 )
 RECOVERY_JUDGES = RUN_TASK.parent / "judges" / "run_judges.sh"
+JUDGE_LIB = RUN_TASK.parent / "judges" / "judge_lib.sh"
 
 
 def shell_function(script: str, name: str, next_name: str) -> str:
@@ -73,8 +74,11 @@ def test_recovery_eval_is_allocation_scoped_and_uses_unique_scratch():
 
 def test_recovery_judges_serialize_official_auth_and_load_site_apptainer():
     script = RECOVERY_JUDGES.read_text(encoding="utf-8")
+    judge_lib = JUDGE_LIB.read_text(encoding="utf-8")
 
     assert 'export PATH="$(dirname "$POST_TRAIN_BENCH_APPTAINER_BIN"):${PATH}"' in script
     assert 'exec 9>"$JUDGE_LOCK_FILE"' in script
     assert "flock -x 9" in script
     assert "flock -u 9" in script
+    assert 'python3 "$JUDGES_DIR/get_judge_prompt.py"' in judge_lib
+    assert 'python3 "$JUDGES_REPO_ROOT/src/trace_parsing/parse_trace.py"' in judge_lib
