@@ -54,7 +54,9 @@ def test_gres_container_uses_logical_cuda_selector_and_records_physical_ids():
 
 def test_root_owned_allocation_drops_privileges_before_task_setup():
     script = SINGLE_TASK.read_text(encoding="utf-8")
-    privilege_drop = script.index('exec /usr/sbin/runuser --user "$RUN_AS_USER"')
+    privilege_drop = script.index(
+        'exec /usr/sbin/runuser --user "$RUN_AS_USER" -- /bin/bash "$ENTRYPOINT"'
+    )
     argument_check = script.index('if [ "$#" -ne 7 ]')
 
     assert 'if [ "$(id -u)" = "0" ]; then' in script
