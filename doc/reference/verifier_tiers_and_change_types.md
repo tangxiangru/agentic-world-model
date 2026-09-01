@@ -298,6 +298,8 @@ diff_sampling_param["max_tokens"] = diff_sampling_param.pop("max_new_tokens")
 
 **还有第三态,比「不在」更贵:显式写成 `null`。** 一条 run 的 `generation_config.json` 里 `temperature` / `top_k` / `top_p` 三项都是 JSON null,vLLM 拿不到值就回落到自己的默认(采样)。把这三项改写成真值后,**逐字节相同的权重、逐字相同的评测调用,150 题上 0.460 → 0.613(+15.3 点)**——是那条 run 全程最大的杠杆。所以核查一份提交配置时,「字段在不在」不够,还要看它**是不是 null**。
 
+**这些字段还有第四种互相作用,方向是反的:写进去之后就存不出来了。** transformers 的保存期校验拒收 `do_sample=False` 与 `temperature=0.0` 并存,于是 agent 为提分写进 checkpoint 的那组贪婪配置,会在**下一次以该 checkpoint 续训时**让 `save_pretrained` 抛 ValueError。两名标注者各自记到它打死过一次跑到第 150 步的 GRPO、一次已跑完的全参训练和一次 bf16 转换。**所以 C1 的开销不总是「分钟级」——它可以等于一整段训练。**
+
 **丢字段还有第三条路,与前两条都无关:Trainer 自己在存盘前对齐。** 一条 run 的 base 是 `eos_token_id: [1, 106]`,而每次训练 Trainer 都打印 `model config and generation config were aligned accordingly … Updated tokens: {'eos_token_id': 1}` —— **在存盘之前就把它压成了标量**。所以核查一份 checkpoint 的 config 时,`save_pretrained` 的差分序列化、agent 自写的落盘路径、Trainer 的对齐,三条都要考虑。
 
 **但反过来推不成立。** 一名标注者给了反例:某条 run 里 `temperature: 0.0`(非默认值)照样消失了,原因不是 `save_pretrained`——是 agent 自己给合并脚本加的「保存前归一化」把它一并抹掉了。所以这条规则只约束 `save_pretrained` 本身的行为;**看到字段消失不能反推它等于库默认**,还要先确认这一步走的是 `save_pretrained` 而不是 agent 自写的落盘路径。
@@ -351,7 +353,7 @@ diff_sampling_param["max_tokens"] = diff_sampling_param.pop("max_new_tokens")
 | humaneval n=150(同权重) | `--max-connections` 16 vs 1 | 0 ~ 2.0 点 | 贪婪 |
 | gpqa 同权重 | n=128 / 256 / 448 | 29.7% / 24.2% / 22.3% | 采样 |
 
-**效应范围是 0 到 91 点,而且它有四个完全不同的机制,不能混着引用。**
+**效应范围是「没有读数」到 91 点,五个完全不同的机制,不能混着引用。**
 
 **机制一:采样漂移。** 并发改变请求的批次组织,采样解码下这会移动分数,贪婪下基本免疫——有一条 run 把并发从 16 降到 2、`--max-tokens` 从 800 提到 4000,读数**逐位相同,连 stderr 都一样**。这一支的确「看解码模式」。
 
@@ -363,7 +365,9 @@ diff_sampling_param["max_tokens"] = diff_sampling_param.pop("max_new_tokens")
 
 **机制四:生成预算被切在答案之前。** 请求既没被拒收也没有采样漂移,只是**在写出 `ANSWER:` 那一行之前被截断**,于是判 0。一条 run 的同一份权重在 8k 预算下读 0/10(官方汇总的输出 token 均值 8,095,顶满 8,192),提回 `evaluate.py` 的官方默认 16000 后 3 题里对 2 题、全量 0.067。agent 已经在打字「before discarding it」,差一步就把唯一有效的候选族扔掉——**而这个 0 是它自己先前一次 C12 降档造成的**。自检:看输出长度是不是顶着上限。
 
-**此前这里写的是「分界是解码模式」,那句话是错的**,58 点与 91 点这两条贪婪反例都推翻了它。正确的说法是:**贪婪只挡得住机制一。** 引用任何 C12 数字都要先说清是哪一支;机制二的自检是看有没有垃圾前缀及其起始请求序号,机制三是看有没有输出,机制四是看输出长度是不是顶着上限。
+**机制五:评测器整个死掉,连 0 分都没有。** 一条 run 的全量评测在 `--max-connections` 8 与 16 下**必死**(vLLM `EngineDeadError`,CUDA illegal memory access),降到 2 才跑完并读到 0.8817。所以 **C12 的效应下界不是 0 点,是「没有读数」** —— 这一支不会污染任何统计表,它只是让候选拿不到分,而拿不到分的候选在提交决策里等同于差。
+
+**此前这里写的是「分界是解码模式」,那句话是错的**,58 点与 91 点这两条贪婪反例都推翻了它。正确的说法是:**贪婪只挡得住机制一。** 引用任何 C12 数字都要先说清是哪一支;机制二的自检是看有没有垃圾前缀及其起始请求序号,机制三是看有没有输出,机制四是看输出长度是不是顶着上限,机制五则根本不用自检——它自己会报 `EngineDeadError`。
 
 **还有一种偏差来自「默认值即官方口径」这个信念本身。** 一条 run 的 agent 认定评分方会用 `evaluate.py` 的默认 `--limit 50`,据此在 50 题上的 0.32 vs 0.30 留下了 GRPO1、放弃了在 448 题上更好的 GRPO2(0.295 vs 0.275)。官方最终分是 **121/448**——评分方跑的是全集。**它的默认不是它的口径**,而这个误信直接翻转了提交决策。
 
