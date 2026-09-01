@@ -20,12 +20,13 @@
 
 | 字段 | n | 一致率 | κ | 判定 |
 |---|---|---|---|---|
-| `tested_variable` | 87 | 0.805 | **0.724** | findings_only |
-| `category` | 148 | 0.757 | **0.706** | findings_only |
-| `judges_changes` | — | — | Jaccard 0.717 | — |
+| `tested_variable` | 87 | 0.851 | **0.791** | findings_only |
+| `category` | 144 | 0.743 | **0.691** | findings_only |
+| `judges_changes` | — | — | Jaccard 0.691 | — |
 
-**两个字段都在 findings_only 档(0.6 ≤ κ < 0.8)。** 门槛 κ ≥ 0.8 是在看到数字之前定的,没有事后放宽。
-剔除冒烟行后 κ 几乎不动——schema 缺口不是主因;分歧集中在「数据改动强制的超参改动该记 C3 还是 both」。
+**两个字段都在 findings_only 档(0.6 ≤ κ < 0.8),而且 κ 本身不稳**:其中一条 run 的 B 侧标注被重跑替换过一次,`tested_variable` 的 κ 就从 0.724 变成 0.791——换掉八分之一的样本动了 0.07。**n=8 条 run 支撑不起一个门槛判定。**
+
+门槛 κ ≥ 0.8 是在看到数字之前定的,没有事后放宽。剔除冒烟行后 κ 几乎不动——schema 缺口不是主因;分歧集中在「数据改动强制的超参改动该记 C3 还是 both」。
 
 ## 缺口 2 的分布(findings 档)
 

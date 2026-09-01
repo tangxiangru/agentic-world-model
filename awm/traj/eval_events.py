@@ -118,7 +118,10 @@ def strip_heredocs(command: str) -> str:
 #: string for ``--limit`` took a trainer's ``--limit 25000`` as the evaluation's
 #: sample size and scored a 60-question run as a full test set, so flags are read
 #: from the launching segment alone.
-_SEGMENT = re.compile(r"&&|\|\||[;&|]|\n")
+#: ``do`` / ``done`` / ``then`` split too: a ``for m in a b; do evaluate.py $m;
+#: done`` is one tool call evaluating several models, and treating it as one
+#: event kept only the first score. Six commands per run in one trace.
+_SEGMENT = re.compile(r"&&|\|\||[;&|]|\n|\bdo\b|\bdone\b|\bthen\b|\bfi\b")
 
 _MODEL_PATH = re.compile(r"--model[-_]path[= ]\s*['\"]?([^\s'\"]+)")
 _LIMIT = re.compile(r"--limit[= ]\s*(-?\d+)")
