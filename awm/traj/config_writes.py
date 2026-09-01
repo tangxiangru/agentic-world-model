@@ -203,6 +203,28 @@ _OBJECT_WRITE = re.compile(
     r"|do_sample|repetition_penalty|max_new_tokens)\s*="
 )
 
+#: Constructing one and writing it out names no file either. Matched as two
+#: conditions rather than one adjacency, because the argument list carries its
+#: own parentheses — ``GenerationConfig(…, pad_token_id=tok.pad_token_id,
+#: eos_token_id=[tok.convert_tokens_to_ids("<eos>")]).save_pretrained(out)``.
+_CONSTRUCTS = re.compile(r"\bGenerationConfig\s*\(")
+_SERIALISES = re.compile(r"\.\s*(?:save_pretrained|to_json_file)\s*\(")
+
+
+def _flatten(value: Any) -> str:
+    """Every argument value, joined — not the JSON rendering of them.
+
+    ``json.dumps`` turns a newline into a literal backslash-n, so the text
+    reads ``…save_pretrained(out)nGenerationConfig(…`` and a ``\\b`` anchor
+    fails where a real line break would have satisfied it. The pointer verifier
+    hit the same thing with escaped quotes; matching the values avoids both.
+    """
+    if isinstance(value, dict):
+        return "\n".join(_flatten(v) for v in value.values())
+    if isinstance(value, list):
+        return "\n".join(_flatten(v) for v in value)
+    return str(value)
+
 
 def _refused(events: list[dict[str, Any]]) -> set[str]:
     """``tool_use_id`` of every call the harness declined.
@@ -228,7 +250,7 @@ def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, 
             continue
         tool = e.get("tool") or ""
         args = e.get("args") or {}
-        blob = json.dumps(args, ensure_ascii=False)
+        blob = _flatten(args)
         names_file = "generation_config.json" in blob
         runs_finalizer = tool in ("Bash", "command_execution") and bool(
             finalizer_call(unwrap(args.get("command") or ""))
@@ -236,7 +258,9 @@ def writes_for_run(run_id: str, events: list[dict[str, Any]]) -> list[dict[str, 
         writes_config = tool in ("Bash", "command_execution") and scripts.invoked(
             unwrap(args.get("command") or ""), known, "config_writer"
         )
-        edits_object = bool(_OBJECT_WRITE.search(blob))
+        edits_object = bool(_OBJECT_WRITE.search(blob)) or bool(
+            _CONSTRUCTS.search(blob) and _SERIALISES.search(blob)
+        )
         if not names_file and not runs_finalizer and not writes_config and not edits_object:
             continue
 

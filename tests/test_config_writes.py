@@ -241,3 +241,25 @@ class TestTransitiveEvaluator:
         assert "evaluator" in known["post_run3.sh"]
         assert scripts.invoked_without_training("bash post_run3.sh", known, "evaluator")
 
+
+class TestJsonRenderingBreaksAnchors:
+    def test_a_construction_after_a_newline_is_found(self) -> None:
+        """json.dumps turns a newline into a literal backslash-n, so the text
+        reads `…save_pretrained(out)nGenerationConfig(…` and the \\b anchor
+        fails where a real line break would have satisfied it. One run's only
+        C1 change was invisible for exactly this reason.
+        """
+        events = [{"run_id": "r", "i": 1, "type": "tool_use", "tool": "command_execution",
+                   "args": {"command": "python - <<'PY'\n"
+                                       "tok.save_pretrained(out)\n"
+                                       "GenerationConfig(do_sample=False, temperature=None,"
+                                       " pad_token_id=tok.pad_token_id).save_pretrained(out)\nPY"}}]
+        rows = config_writes.writes_for_run("r", events)
+        assert len(rows) == 1
+        assert rows[0]["form"] == "object_attr"
+
+    def test_importing_the_class_is_not_a_write(self) -> None:
+        events = [{"run_id": "r", "i": 1, "type": "tool_use", "tool": "command_execution",
+                   "args": {"command": "python -c 'from transformers import GenerationConfig'"}}]
+        assert config_writes.writes_for_run("r", events) == []
+

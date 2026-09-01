@@ -255,6 +255,8 @@ diff_sampling_param["max_tokens"] = diff_sampling_param.pop("max_new_tokens")
 
 **还有第三态,比「不在」更贵:显式写成 `null`。** 一条 run 的 `generation_config.json` 里 `temperature` / `top_k` / `top_p` 三项都是 JSON null,vLLM 拿不到值就回落到自己的默认(采样)。把这三项改写成真值后,**逐字节相同的权重、逐字相同的评测调用,150 题上 0.460 → 0.613(+15.3 点)**——是那条 run 全程最大的杠杆。所以核查一份提交配置时,「字段在不在」不够,还要看它**是不是 null**。
 
+**丢字段还有第三条路,与前两条都无关:Trainer 自己在存盘前对齐。** 一条 run 的 base 是 `eos_token_id: [1, 106]`,而每次训练 Trainer 都打印 `model config and generation config were aligned accordingly … Updated tokens: {'eos_token_id': 1}` —— **在存盘之前就把它压成了标量**。所以核查一份 checkpoint 的 config 时,`save_pretrained` 的差分序列化、agent 自写的落盘路径、Trainer 的对齐,三条都要考虑。
+
 **但反过来推不成立。** 一名标注者给了反例:某条 run 里 `temperature: 0.0`(非默认值)照样消失了,原因不是 `save_pretrained`——是 agent 自己给合并脚本加的「保存前归一化」把它一并抹掉了。所以这条规则只约束 `save_pretrained` 本身的行为;**看到字段消失不能反推它等于库默认**,还要先确认这一步走的是 `save_pretrained` 而不是 agent 自写的落盘路径。
 
 **其余两条解释力很强、行为证据一致,但都不是本仓库能独立验证的事实。** 引用时必须带上这个限定——§3 里 C1 和 C4 复述这些机制的地方同样受此约束。要把它们升级为受控事实,需要在 pin 住的容器版本里直接跑最小复现(§6 缺口 5)。
