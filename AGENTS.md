@@ -11,7 +11,8 @@
 - Never reclaim capacity by cancelling jobs outside the exact receipt/job IDs authorized for the
   current experiment.
 - Use `/rmeng_data/robtang/slurm-queue/registry.json` as the cross-CLI ownership authority for the
-  four H100 nodes. A shared Unix user, `root`, reservation membership, or node placement is never
+  four H100 nodes. The shared queue name is `gangda`. A shared Unix user, `root`, reservation
+  membership, or node placement is never
   sufficient ownership evidence. Query with `/rmeng_data/robtang/bin/awm-slurm-queue`; treat
   `OWNERSHIP FAIL` as an immediate investigation condition.
 - Reserve `slurm2-a3nodesetondem-[0-3]` exclusively for the receipt-backed PTB batches. AWM full

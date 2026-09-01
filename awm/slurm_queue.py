@@ -33,6 +33,7 @@ def default_registry_path() -> Path:
 def _default_registry() -> dict[str, Any]:
     return {
         "schema_version": 1,
+        "queue_name": "gangda",
         "owner": "robtang_google_com",
         "scope": {
             "partition": "ptb-a3",
@@ -71,6 +72,7 @@ def _update_registry(source: dict[str, Any], path: Path | None = None) -> Path:
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         data = load_registry(path)
+        data.setdefault("queue_name", "gangda")
         sources = [item for item in data["sources"] if item.get("id") != source["id"]]
         sources.append(source)
         data["sources"] = sorted(sources, key=lambda item: str(item.get("id")))
@@ -311,6 +313,7 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
         "schema_version": 1,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "registry": str(registry_path),
+        "queue_name": registry.get("queue_name", "gangda"),
         "owner": registry.get("owner", ""),
         "scope": scope,
         "ownership_ok": not unknown and not name_mismatches,
@@ -328,6 +331,7 @@ def render_snapshot(snapshot: dict[str, Any], *, include_jobs: bool = True) -> s
     verdict = "OK" if snapshot["ownership_ok"] else "FAIL"
     lines = [
         f"updated={snapshot['updated_at']}",
+        f"QUEUE {snapshot.get('queue_name', 'gangda')}",
         f"OWNERSHIP {verdict}  owner={snapshot['owner']}",
         f"GPUS {snapshot['gpus_allocated']}/{snapshot['gpus_total']} allocated",
     ]

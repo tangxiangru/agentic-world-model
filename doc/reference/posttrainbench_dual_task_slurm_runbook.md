@@ -24,6 +24,7 @@ uv run awm slurm queue
 
 # Stable command from any directory or CLI
 /rmeng_data/robtang/bin/awm-slurm-queue
+/rmeng_data/robtang/bin/gangda-slurm-queue
 
 # Continuously refresh the terminal
 /rmeng_data/robtang/bin/awm-slurm-queue --watch 5

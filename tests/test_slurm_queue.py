@@ -60,9 +60,12 @@ def test_snapshot_flags_unregistered_jobs_on_owned_nodes(tmp_path: Path, monkeyp
     snapshot = slurm_queue.collect_snapshot(registry)
 
     assert snapshot["ownership_ok"] is False
+    assert snapshot["queue_name"] == "gangda"
     assert [job["job_id"] for job in snapshot["unknown_jobs"]] == ["999"]
     assert snapshot["sources"][0]["counts"] == {"RUNNING": 1}
-    assert "OWNERSHIP FAIL" in slurm_queue.render_snapshot(snapshot)
+    rendered = slurm_queue.render_snapshot(snapshot)
+    assert "QUEUE gangda" in rendered
+    assert "OWNERSHIP FAIL" in rendered
 
 
 def test_snapshot_accepts_only_exact_registered_names(tmp_path: Path, monkeypatch) -> None:
