@@ -60,12 +60,29 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text.replace("\\|", "|").replace("⏎", " ")).strip()
 
 
+def _flatten(value: Any, into: list[str]) -> None:
+    """Every string an argument structure holds, at any depth."""
+    if isinstance(value, str):
+        into.append(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            _flatten(v, into)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _flatten(v, into)
+
+
 def event_text(event: dict[str, Any]) -> str:
-    """Everything of an event a fragment could legitimately have been quoted from."""
+    """Everything of an event a fragment could legitimately have been quoted from.
+
+    Argument *values*, never their JSON rendering. Serialising the args escapes
+    every inner quote, so a fragment quoted verbatim from the command —
+    ``pkill -f "train_sft.py"`` — would be searched against
+    ``pkill -f \\"train_sft.py\\"`` and rejected as fabricated. That failure
+    discarded valid judgements in three of four anchor runs.
+    """
     parts = [event.get("text") or "", event.get("summary") or ""]
-    args = event.get("args")
-    if isinstance(args, dict):
-        parts.append(json.dumps(args, ensure_ascii=False))
+    _flatten(event.get("args"), parts)
     return _norm(" ".join(parts))
 
 
