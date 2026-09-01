@@ -412,3 +412,21 @@ class TestOutDirOfTheLaunch:
     def test_a_lone_launch_is_unchanged(self) -> None:
         assert train_spans._out_dir("python train_sft.py --out ckpt/v1") == "ckpt/v1"
 
+
+class TestBenchIsASmokeName:
+    def test_the_documented_name_is_honoured(self) -> None:
+        """§2 lists smoke/sanity/bench; the code had the first two.
+
+        25 spans wrote to ckpt/bench or runs/bench and were filed as real
+        trainings. Every one of them is between 0.01 and 0.25 hours -- the
+        throughput-probe profile, exactly what the name says.
+        """
+        events = [
+            {"run_id": "r", "i": 1, "type": "tool_use", "tool": "Bash",
+             "tool_use_id": "t1", "ts": "2026-01-01T00:00:00Z",
+             "args": {"command": "python train.py --out ckpt/bench --max-steps 6"}},
+            {"run_id": "r", "i": 2, "type": "tool_result", "parent_tool_use": "t1",
+             "ts": "2026-01-01T00:01:00Z", "text": "done"},
+        ]
+        assert train_spans.spans_for_run("r", events)[0]["kind"] == "smoke"
+

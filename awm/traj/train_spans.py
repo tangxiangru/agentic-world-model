@@ -134,7 +134,7 @@ _SMOKE_SAMPLES = re.compile(r"--max[-_]samples[= ]\s*(\d+)")
 #: ``work/sft_smoke`` and ``sft_smoke2``, and anchoring the pattern to the start
 #: scored every one of them as a real training.
 _SMOKE_DIR = re.compile(
-    r"(?:^|/)[\w-]*(?:smoke|sanity|debug|dryrun|tiny|scratch)[\w-]*/?$"
+    r"(?:^|/)[\w-]*(?:smoke|sanity|bench|debug|dryrun|tiny|scratch)[\w-]*/?$"
     r"|(?:^|/)(?:test|tst)[\w-]*/?$"
     r"|^/tmp/",
     re.I,
