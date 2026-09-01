@@ -191,6 +191,64 @@ def stage_a(rows, workers=48, budget=T.DIGEST_BUDGET):
     return done
 
 
+# --- the stage-A ranking key ---------------------------------------------------
+
+def rank_key(rs, a_scores):
+    """Order a set by stage A, best first.
+
+    The scorer returns two usable numbers per run and this used to read only one
+    of them. `quality` is a 0-100 integer the prompt explicitly asks to spread,
+    and it does spread -- across the middle. At the top it saturates: 79.3 % of
+    full-cell runs share a quality value with a set-mate, and the rank-6 cut
+    falls inside a tie block in 24 of 28 cells, median block size 5 for 3 places.
+    Those places were then handed out by `r["run"]`, i.e. alphabetically by job
+    id, which is an arbitrary order that decided the metric. `predicted_accuracy`
+    is a float from the SAME call, already in score_a.jsonl, and it is finely
+    graded exactly where quality is flat -- Spearman against the truth is +0.406
+    for quality over each cell's top third against +0.842 for predicted_accuracy,
+    while over a whole cell the two are indistinguishable (+0.814 / +0.825).
+
+    Summing the two z-scores rather than replacing one with the other is what
+    makes this hold on both populations. Ranking on predicted_accuracy alone is
+    better still on full cells (0.0099) but WORSE within a family (0.0053 against
+    0.0047), and an arm that only works where the agent-family lookup table
+    already works is exactly what this metric exists to reject. The sum improves
+    both: full cell 0.0209 -> 0.0081, within family 0.0047 -> 0.0029.
+
+    The weight is 1.0 and is not fitted. Sweeping it, 2.0 also improves both
+    populations and 0.5 does not, so the choice is not knife-edge, but any tuned
+    value would be one more thing selected on 28 cells.
+
+    z-scoring is WITHIN the set, so this never compares runs across cells.
+    """
+    rs = list(rs)
+    if not rs:
+        return rs
+    score = rank_score(rs, a_scores)
+    return [r for _, r in sorted(zip(-score, rs), key=lambda t: (t[0], t[1]["run"]))]
+
+
+def rank_score(rs, a_scores):
+    """The number `rank_key` sorts on, higher is better. Exposed separately so a
+    caller can ask what the ordering would have been under a different tie-break
+    -- `rank_key` settles ties by job id, which is arbitrary, and an arm whose
+    score is flat has to be reported as such rather than as a result."""
+    def _z(vals):
+        v = np.asarray(vals, dtype=float)
+        s = v.std()
+        return (v - v.mean()) / (s if s else 1.0)
+
+    def _num(r, field):
+        v = a_scores.get(r["run"], {}).get(field)
+        return float(v) if isinstance(v, (int, float)) else -1.0
+
+    rs = list(rs)
+    if not rs:
+        return np.zeros(0)
+    return _z([_num(r, "quality") for r in rs]) + \
+        _z([_num(r, "predicted_accuracy") for r in rs])
+
+
 # --- stage B: round-robin the shortlist ----------------------------------------
 
 def stage_b(rows, a_scores, topk=6, workers=48):
@@ -215,8 +273,7 @@ def stage_b(rows, a_scores, topk=6, workers=48):
     for cell, rs in cells(rows).items():
         rs = [r for r in rs if isinstance(a_scores.get(r["run"], {})
                                           .get("quality"), (int, float))]
-        rs.sort(key=lambda r: (-a_scores[r["run"]]["quality"], r["run"]))
-        short[cell] = rs[:topk]
+        short[cell] = rank_key(rs, a_scores)[:topk]
 
     jobs = []
     for cell, rs in short.items():
@@ -265,9 +322,8 @@ def stage_b(rows, a_scores, topk=6, workers=48):
     return done, short
 
 
-def copeland(cell, shortlist, b_pairs, a_scores):
-    """Wins over ordered pairs; a run compared both ways counts both. Ties fall
-    back to the stage-A score, which is the only information Copeland lacks."""
+def copeland_wins(cell, shortlist, b_pairs):
+    """Wins over ordered pairs; a run compared both ways counts both."""
     key = f"{cell[0]}|{cell[1]}"
     wins = collections.Counter()
     for x, y in itertools.permutations(shortlist, 2):
@@ -276,10 +332,20 @@ def copeland(cell, shortlist, b_pairs, a_scores):
             wins[x["run"]] += 1
         elif w == "B":
             wins[y["run"]] += 1
-    return sorted(shortlist,
-                  key=lambda r: (-wins[r["run"]],
-                                 -a_scores.get(r["run"], {}).get("quality", 0),
-                                 r["run"]))
+    return wins
+
+
+def copeland(cell, shortlist, b_pairs, a_scores):
+    """Copeland over the shortlist. Ties fall back to the stage-A score, which is
+    the only information Copeland lacks."""
+    wins = copeland_wins(cell, shortlist, b_pairs)
+    # Copeland ties fall back to stage A's own order, which must be the SAME key
+    # the shortlist was built with. It used to fall back to bare `quality`, so on
+    # any cell where the comparator ties -- and with 1.0 % pair coverage within a
+    # family it ties on nearly all of them -- the arbitrary alphabetical order
+    # this fallback exists to avoid came straight back in through the fallback.
+    fallback = {r["run"]: i for i, r in enumerate(rank_key(shortlist, a_scores))}
+    return sorted(shortlist, key=lambda r: (-wins[r["run"]], fallback[r["run"]]))
 
 
 def main() -> int:
