@@ -6,14 +6,21 @@ can also print credential files that happen to be present in a shared cache.
 The model has already seen a tool result before it is emitted on stdout, so this
 filter only changes the retained/published trajectory.  It accepts JSONL stream
 events, recursively redacts sensitive fields and strings, and passes malformed
-diagnostic lines through the same string scrubber.
+diagnostic lines through the same string scrubber.  With ``--capture`` it also
+creates a private durable copy while forwarding identical bytes to stdout; its
+writer tolerates a shared PTB pipe being switched to nonblocking mode.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import re
+import select
+import stat
 import sys
+from pathlib import Path
 from typing import Any, TextIO
 
 REDACTED = "<redacted>"
@@ -126,8 +133,118 @@ def filter_stream(source: TextIO, destination: TextIO) -> None:
         destination.flush()
 
 
-def main() -> int:
-    filter_stream(sys.stdin, sys.stdout)
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte, tolerating a shared pipe being flipped nonblocking.
+
+    Claude/Node may change ``O_NONBLOCK`` on an inherited stderr descriptor.
+    The outer PTB wrapper merges that descriptor with this process's stdout,
+    so the flag can change while the stream is running.  Retrying EAGAIN is
+    therefore part of the durable trajectory contract, not an optimization.
+    """
+
+    remaining = memoryview(data)
+    while remaining:
+        try:
+            written = os.write(fd, remaining)
+        except InterruptedError:
+            continue
+        except BlockingIOError:
+            while True:
+                try:
+                    _readable, writable, _exceptional = select.select([], [fd], [fd])
+                except InterruptedError:
+                    continue
+                if writable:
+                    break
+                raise OSError("trajectory output closed while waiting for backpressure")
+            continue
+        if written <= 0:
+            raise OSError("trajectory output accepted zero bytes")
+        remaining = remaining[written:]
+
+
+class _CaptureWriter:
+    """Text sink that writes identical UTF-8 bytes to a file and stdout."""
+
+    def __init__(self, path: Path):
+        if not path.is_absolute() or not path.name:
+            raise ValueError("--capture must name an absolute file path")
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY
+        if hasattr(os, "O_CLOEXEC"):
+            directory_flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+        parent_fd = os.open(path.parent, directory_flags)
+        try:
+            file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_CLOEXEC"):
+                file_flags |= os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                file_flags |= os.O_NOFOLLOW
+            self._fd = os.open(path.name, file_flags, 0o600, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+        os.fchmod(self._fd, 0o600)
+        metadata = os.fstat(self._fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_nlink != 1
+        ):
+            os.close(self._fd)
+            raise OSError("capture is not a private, singly-linked regular file")
+        self._closed = False
+
+    def write(self, value: str) -> int:
+        data = value.encode("utf-8")
+        _write_all(self._fd, data)
+        _write_all(sys.stdout.fileno(), data)
+        return len(value)
+
+    def flush(self) -> None:
+        # Both destinations use unbuffered os.write calls. Durability is
+        # established once at EOF so a long session does not fsync every event.
+        return None
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            os.fsync(self._fd)
+        finally:
+            os.close(self._fd)
+            self._closed = True
+
+    def __enter__(self) -> "_CaptureWriter":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--capture",
+        type=Path,
+        help="atomically create this private file and mirror the redacted stream to stdout",
+    )
+    args = parser.parse_args(argv)
+    if args.capture is None:
+        filter_stream(sys.stdin, sys.stdout)
+    else:
+        # stdout is the same outer PTB pipe open-file description inherited by
+        # the parent agent shell. Claude/Node can set O_NONBLOCK on that shared
+        # description through stderr. Handle it while forwarding, then always
+        # restore normal blocking shell semantics after Claude reaches EOF (or
+        # capture setup/filtering fails), so later attestations are not lost to
+        # EAGAIN.
+        try:
+            with _CaptureWriter(args.capture) as destination:
+                filter_stream(sys.stdin, destination)
+        finally:
+            os.set_blocking(sys.stdout.fileno(), True)
     return 0
 
 

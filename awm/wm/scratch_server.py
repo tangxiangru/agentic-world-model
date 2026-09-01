@@ -56,6 +56,14 @@ MAX_READ_BYTES = 1_536
 # A complete read is intended for compact structured cards. Bound source bytes
 # before allocation; the encoded result is independently capped below this.
 MAX_COMPLETE_READ_BYTES = 14 * 1_024
+# Exact line reads bridge human-readable text locators to auditable byte
+# coverage.  The scan and line bounds match the independent citation resolver;
+# selected material is tighter because it must fit in one non-spilling MCP
+# response after JSON encoding.
+MAX_LINE_READ_LINES = 500
+MAX_LINE_READ_SCAN_BYTES = 64 * 1024 * 1024
+MAX_LINE_READ_LINE_BYTES = 4 * 1024 * 1024
+MAX_LINE_READ_MATERIAL_BYTES = MAX_TOOL_RESULT_BYTES
 MAX_PATH_BYTES = 512
 MAX_GLOB_BYTES = 1_024
 MAX_PATTERN_BYTES = 1_024
@@ -151,6 +159,27 @@ TOOLS: tuple[dict[str, Any], ...] = (
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_READ_BYTES},
             },
             "required": ["path", "limit"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "read_corpus_lines",
+        "description": (
+            "Read one caller-chosen exact inclusive line range from a text corpus file and return "
+            "its reconciled raw byte interval. Use this for citations with locators such as "
+            "'lines 12-18'. Both start_line and end_line are required; at most 500 lines and 64 "
+            "MiB of source are scanned, and the exact result must fit the fixed MCP response cap. "
+            "Root defaults to 0 only when one root exists."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {"type": "integer", "minimum": 0},
+                "path": {"type": "string"},
+                "start_line": {"type": "integer", "minimum": 1},
+                "end_line": {"type": "integer", "minimum": 1},
+            },
+            "required": ["path", "start_line", "end_line"],
             "additionalProperties": False,
         },
     },
@@ -322,6 +351,8 @@ def call_tool(
                 result = _search_corpus(arguments, roots)
             elif name == "read_corpus":
                 result = _read_corpus(arguments, roots)
+            elif name == "read_corpus_lines":
+                result = _read_corpus_lines(arguments, roots)
             elif name == "read_corpus_complete":
                 result = _read_corpus_complete(arguments, roots)
             elif name == "write_file":
@@ -652,6 +683,109 @@ def _read_corpus(arguments: dict[str, Any], roots: list[Path]) -> dict[str, Any]
             "next_offset": offset + len(data) if more else None,
             "content": data.decode(errors="replace"),
         }
+    )
+
+
+def _read_corpus_lines(arguments: dict[str, Any], roots: list[Path]) -> dict[str, Any]:
+    """Return an exact inclusive line range and its raw byte coverage interval."""
+    allowed = {"root", "path", "start_line", "end_line"}
+    unexpected = set(arguments) - allowed
+    if unexpected:
+        raise ValueError(
+            "read_corpus_lines accepts only root, path, start_line, and end_line"
+        )
+    if "start_line" not in arguments or "end_line" not in arguments:
+        raise ValueError("start_line and end_line are required for an exact line range")
+    index, root = _root_at(roots, arguments.get("root"))
+    path = _relative_file(root, arguments.get("path"))
+    start_line = _bounded_int(
+        arguments.get("start_line"),
+        default=1,
+        minimum=1,
+        maximum=(1 << 63) - 1,
+        name="start_line",
+    )
+    end_line = _bounded_int(
+        arguments.get("end_line"),
+        default=1,
+        minimum=1,
+        maximum=(1 << 63) - 1,
+        name="end_line",
+    )
+    line_count = end_line - start_line + 1
+    if line_count < 1 or line_count > MAX_LINE_READ_LINES:
+        raise ValueError(
+            f"line range must be ordered and contain at most {MAX_LINE_READ_LINES} lines"
+        )
+
+    selected: list[bytes] = []
+    selected_bytes = 0
+    line_number = 0
+    start_offset: int | None = None
+    end_offset = 0
+    with path.open("rb") as source:
+        before = os.fstat(source.fileno())
+        if before.st_size > MAX_LINE_READ_SCAN_BYTES:
+            raise ValueError(
+                f"line read source exceeds {MAX_LINE_READ_SCAN_BYTES} scan bytes"
+            )
+        while line_number < end_line:
+            line_start = source.tell()
+            line = source.readline(MAX_LINE_READ_LINE_BYTES + 1)
+            if not line:
+                break
+            if len(line) > MAX_LINE_READ_LINE_BYTES:
+                raise ValueError(
+                    f"line read encountered a line over {MAX_LINE_READ_LINE_BYTES} bytes"
+                )
+            line_number += 1
+            if line_number == start_line:
+                start_offset = line_start
+            if start_line <= line_number <= end_line:
+                selected_bytes += len(line)
+                if selected_bytes > MAX_LINE_READ_MATERIAL_BYTES:
+                    raise ValueError(
+                        "exact line range exceeds the bounded MCP line-result material cap"
+                    )
+                selected.append(line)
+            end_offset = source.tell()
+        after = os.fstat(source.fileno())
+    if _stat_identity(before) != _stat_identity(after):
+        raise ValueError("corpus file changed during exact line read")
+    if line_number == 0:
+        raise ValueError("exact line read targets an empty corpus file")
+    if line_number < end_line or start_offset is None:
+        raise ValueError(
+            f"exact line range ends after EOF (read through line {line_number})"
+        )
+
+    data = b"".join(selected)
+    payload = {
+        "root": index,
+        "path": path.relative_to(root).as_posix(),
+        "start_line": start_line,
+        "end_line": end_line,
+        "line_count": line_count,
+        "offset": start_offset,
+        "end_offset": end_offset,
+        "bytes": len(data),
+        "scanned_bytes": end_offset,
+        "content": data.decode(errors="replace"),
+    }
+    if not _fits_json_result(payload):
+        raise ValueError(
+            "exact line range cannot fit the fixed MCP response budget; choose a smaller range"
+        )
+    return _json_result(payload)
+
+
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
     )
 
 

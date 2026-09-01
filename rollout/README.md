@@ -144,6 +144,9 @@ Each study solve also filters the retained Claude JSONL stream through the
 commit-pinned `redact_claude_stream.py`: token-bearing environment assignments,
 common access-key forms, authorization headers, and sensitive JSON fields are
 replaced before `scientist-stream.jsonl` or PTB's `solve_out.txt` is written.
+The redactor securely creates the private retained file and forwards identical
+bytes itself, retrying pipe backpressure even if a shared descriptor is changed
+to nonblocking mode; the study agents do not use an external `tee` process.
 The runtime also omits Claude/Vertex credentials from its trainer-resume
 environment, removes per-call Claude configuration, and scans every text
 artifact under the task before accepting a cell. Any late match is atomically
@@ -229,7 +232,13 @@ Thirty-six simultaneous cells therefore mean 36 independent one-GPU jobs, not
 
 The wrapper must select the matching `PRIOR_RUNS`, `WM_MEMORY`, and manifest
 digests from the spec's `train` versus `train,test` scope, and may set the local
-`PTB_RUN_ID`/`PTB_LOG_DIR`. Keep a machine-readable submit ledger outside Git
+`PTB_RUN_ID`/`PTB_LOG_DIR`. It must also set `POST_TRAIN_BENCH_TMP_ROOT` to a
+real, owner-only mode-0700 directory on storage with at least 96 GiB and 100,000
+free inodes per starting cell (or stricter local thresholds). The derived PTB
+runner places the complete writable home below a unique `mktemp` directory and
+removes only that exact owned directory on shell exit. `SIGKILL` or a node
+failure can still leave a stale owned directory for the local launcher to reap.
+Keep a machine-readable submit ledger outside Git
 with at least spec, scheduler job ID, claimed device/allocation, input-manifest
 digests, harness/PTB commits, and final PTB result path. Reconcile it against
 the exact output of `study_matrix.py`; do not silently resubmit into an existing
@@ -239,6 +248,7 @@ refuses overwrite.
 ```bash
 export HV_PTB_DIR=/data/ptb-wm-study
 export PTB_MODEL=google/gemma-3-4b-pt PTB_NUM_HOURS=10
+export POST_TRAIN_BENCH_TMP_ROOT=/data/private-ptb-scratch
 # Use the same AWM_REPO_COMMIT packaged by setup.sh.
 export AWM_WMA_MODEL=<explicit-versioned-Vertex-Claude-model>
 export PRIOR_RUNS=/data/prior_runs_143 WM_MEMORY=/data/wm-memory-143
@@ -337,13 +347,14 @@ nonzero cell status.
 |---|---|
 | `patches/apply_study_runner.py` | adds safe env/payload forwarding, GPU isolation and scoped cleanup, and honest solve status to the private pinned runner (idempotent, fail-closed) |
 | `patches/apply_extra_binds.py` | adds `POST_TRAIN_BENCH_EXTRA_BINDS` to `run_task.sh` (idempotent) |
+| `patches/apply_scratch_root.py` | moves each writable PTB home to an explicit private scratch root, checks block/inode headroom, and cleans only its exact `mktemp` directory |
 | `attest_ptb_surface.py` | setup-time manifest and launch-time verification of the derived private PTB runner/prompts/agents |
 | `attest_claude_runtime.py` | exact npm CLI installation and requested-versus-reported scientist model attestation |
 | `validate_study_corpus.py` | standalone in-sandbox verifier/attestor packaged into C1/C2/C3 |
 | `validate_base_model_cache.py` | exact model-only cache allowlist and full-hash smoke attester |
 | `validate_c1_final_model.py` | structural/declarative C1/C2/C3 final-model compatibility attester; does not claim causal training provenance |
 | `validate_wma_session.py` | fail-closed C2/C3 successful-call/seal/adopt/finalize postcondition |
-| `redact_claude_stream.py` | credential scrubber on the retained Claude JSONL/PTY trajectory stream |
+| `redact_claude_stream.py` | credential scrubber and durable backpressure-safe dual sink for the retained/live Claude JSONL trajectory |
 | `sanitize_result_tree.py` | final recursive text-artifact scrubber/attester; any redaction quarantines the cell |
 | `study_matrix.py` | emits or validates the exact 36 unique launcher specs |
 | `pin_ptb_source.sh` | creates the per-cell source snapshot and returns its root; cells execute relative dependencies only from that snapshot |

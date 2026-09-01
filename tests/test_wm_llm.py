@@ -20,7 +20,6 @@ from awm.wm.agents.llm import (
     LLMAgent,
     _extract_tool_events,
     _response_schema,
-    _validation_repair_guidance,
     _validate_citations,
     _validate_grounding_references,
     _validate_raw_corpus,
@@ -28,6 +27,7 @@ from awm.wm.agents.llm import (
     _validate_reported_tools,
     _validate_server_tool_audit,
     _validate_tool_trace,
+    _validation_repair_guidance,
     _vertex_subprocess_env,
 )
 from awm.wm.memory import Memory
@@ -535,6 +535,114 @@ def test_bounded_validation_retry_repairs_complete_card_read(tmp_path: Path, mon
 
 
 @pytest.mark.parametrize(
+    ("expected_stage", "first_claim", "first_observation"),
+    [
+        (
+            "citations",
+            "Prior measurement is 0.4.",
+            "Prior measurement is 0.4, not 0.5.",
+        ),
+        (
+            "grounding",
+            "Prior measurement is 0.4, not 0.5.",
+            "Prior measurement is 0.4.",
+        ),
+    ],
+)
+def test_bounded_validation_retry_targets_unsupported_numbers_by_stage(
+    tmp_path: Path,
+    monkeypatch,
+    expected_stage: str,
+    first_claim: str,
+    first_observation: str,
+) -> None:
+    _source, root = _seed(tmp_path)
+    session = tmp_path / f"number-retry-{expected_stage}"
+    card_dir = session / "wm" / "cards" / "exp-01"
+    card_dir.mkdir(parents=True)
+    card = _current_card(session)
+    (card_dir / "card.yaml").write_text(yaml.safe_dump(card))
+    cited = root / "corpus" / "train" / "r-train000" / "exp-01.yaml"
+    prompts: list[str] = []
+
+    def fake_runner(**kwargs) -> int:
+        prompts.append(kwargs["prompt"])
+        first_attempt = len(prompts) == 1
+        response = {
+            "claims": [
+                {
+                    "text": first_claim if first_attempt else "Prior measurement is 0.4.",
+                    "citation_ids": ["C1"],
+                }
+            ],
+            "citations": [
+                {
+                    "id": "C1",
+                    "path": str(cited),
+                    "locator": "result.measurements[0].value",
+                    "observation": (
+                        first_observation
+                        if first_attempt
+                        else "Prior measurement is 0.4."
+                    ),
+                }
+            ],
+            "objections": [],
+        }
+        rows = [
+            _init_row(),
+            *_complete_read_tool_rows(root / "corpus" / "train", cited),
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "modelUsage": {"claude-opus-5": {"provider": "vertex"}},
+                "structured_output": response,
+            },
+        ]
+        kwargs["stdout_path"].write_text(
+            "\n".join(json.dumps(row) for row in rows) + "\n"
+        )
+        kwargs["stderr_path"].write_text("")
+        return 0
+
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "vertex-project")
+    memory = Memory(
+        root,
+        session=f"number-retry-{expected_stage}",
+        arm="llm",
+        readonly=True,
+        visible_sides=("train",),
+    )
+    brief = LLMAgent(session_dir=session, process_runner=fake_runner).on_proposal(
+        card,
+        [{"check": "example", "passed": True, "detail": "ok"}],
+        memory,
+        {
+            "wma_model": "claude-opus-5",
+            "wma_provider": "vertex",
+            "wma_validation_attempts": 2,
+            "wma_max_budget_usd": 4.0,
+        },
+    )
+
+    assert len(prompts) == 2
+    assert "Repair category: citation_grounding" in prompts[1]
+    assert "add an exact locator that contains it or remove the number" in prompts[1]
+    audits = sorted((card_dir / "wma-calls").glob("*/audit.json"))
+    failed_audit = json.loads(audits[0].read_text())
+    assert failed_audit["status"] == "validation_error"
+    assert failed_audit["validation_stage"] == expected_stage
+    assert "adds numbers absent" in failed_audit["error"]
+    successful_request = json.loads(
+        (Path(brief.audit["path"]).parent / "request.json").read_text()
+    )
+    assert successful_request["validation_attempt"] == 2
+    assert successful_request["repair_code"] == "citation_grounding"
+
+
+@pytest.mark.parametrize(
     "failure,match",
     [
         ("nonzero", "Claude exited"),
@@ -860,7 +968,7 @@ def test_failed_or_unread_historical_citation_fails_closed(
         visible_sides=("train", "test"),
     )
     agent = LLMAgent(session_dir=session, process_runner=fake_runner)
-    match = "successfully Read" if failed_read else "without a successful read_corpus"
+    match = "successfully Read" if failed_read else "without a successful corpus read"
     with pytest.raises(WMError, match=match):
         agent.on_proposal(
             card,
@@ -1453,6 +1561,256 @@ def test_complete_card_read_is_exact_bounded_and_trace_validated(tmp_path: Path)
             tmp_path / "current-card",
             {hostile.resolve(): paged_reads[hostile.resolve()][:-1]},
         )
+
+
+def test_exact_line_read_is_audited_byte_covering_and_citation_covering(
+    tmp_path: Path,
+) -> None:
+    corpus = tmp_path / "raw-corpus"
+    run = corpus / "agent-train" / "gsm8k-run"
+    run.mkdir(parents=True)
+    trace = run / "solve_out.txt"
+    lines = [
+        f"event {index:03d} π exact historical evidence {'x' * 48}\n"
+        for index in range(1, 91)
+    ]
+    trace.write_text("".join(lines))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    audit = tmp_path / "line-tools.jsonl"
+    relative = trace.relative_to(corpus).as_posix()
+    primary_arguments = {
+        "root": 0,
+        "path": relative,
+        "start_line": 1,
+        "end_line": 55,
+    }
+    primary_result = call_tool(
+        "read_corpus_lines",
+        primary_arguments,
+        scratch=scratch,
+        roots=[corpus],
+        audit_path=audit,
+    )
+    assert primary_result["isError"] is False
+    primary_payload = json.loads(primary_result["content"][0]["text"])
+    primary_end = sum(len(line.encode()) for line in lines[:55])
+    assert primary_payload == {
+        "root": 0,
+        "path": relative,
+        "start_line": 1,
+        "end_line": 55,
+        "line_count": 55,
+        "offset": 0,
+        "end_offset": primary_end,
+        "bytes": primary_end,
+        "scanned_bytes": primary_end,
+        "content": "".join(lines[:55]),
+    }
+    assert primary_payload["bytes"] >= 4096
+    assert len(
+        json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": primary_result}, sort_keys=True
+        ).encode()
+    ) <= scratch_server.MAX_MCP_RESPONSE_BYTES
+
+    citation_arguments = {
+        "root": 0,
+        "path": relative,
+        "start_line": 60,
+        "end_line": 61,
+    }
+    citation_result = call_tool(
+        "read_corpus_lines",
+        citation_arguments,
+        scratch=scratch,
+        roots=[corpus],
+        audit_path=audit,
+    )
+    assert citation_result["isError"] is False
+    citation_payload = json.loads(citation_result["content"][0]["text"])
+    line_60_start = sum(len(line.encode()) for line in lines[:59])
+    line_61_end = sum(len(line.encode()) for line in lines[:61])
+    assert citation_payload["offset"] == line_60_start
+    assert citation_payload["end_offset"] == line_61_end
+    assert citation_payload["bytes"] == line_61_end - line_60_start
+    assert citation_payload["content"] == "".join(lines[59:61])
+
+    events = [
+        {
+            "event": "tool_use",
+            "id": "primary-lines",
+            "name": "mcp__awm_scratch__read_corpus_lines",
+            "input": primary_arguments,
+        },
+        {
+            "event": "tool_result",
+            "tool_use_id": "primary-lines",
+            "is_error": False,
+            "content_text": primary_result["content"][0]["text"],
+        },
+        {
+            "event": "tool_use",
+            "id": "citation-lines",
+            "name": "mcp__awm_scratch__read_corpus_lines",
+            "input": citation_arguments,
+        },
+        {
+            "event": "tool_result",
+            "tool_use_id": "citation-lines",
+            "is_error": False,
+            "content_text": citation_result["content"][0]["text"],
+        },
+    ]
+    _validate_server_tool_audit(audit, events)
+    successful_reads = _validate_tool_trace(events, "raw", [corpus.resolve()], scratch)
+    assert successful_reads == {
+        trace.resolve(): [(0, primary_end), (line_60_start, line_61_end)]
+    }
+
+    response = {
+        "claims": [{"text": "Historical evidence was recorded.", "citation_ids": ["C1"]}],
+        "citations": [
+            {
+                "id": "C1",
+                "path": str(trace),
+                "locator": "lines 60-61",
+                "observation": "exact historical evidence was recorded",
+            }
+        ],
+        "objections": [],
+    }
+    with pytest.raises(WMError, match="not covered"):
+        _validate_citations(
+            response,
+            "raw",
+            [corpus.resolve()],
+            tmp_path / "current-card",
+            {trace.resolve(): [(0, primary_end)]},
+        )
+    evidence, _material = _validate_citations(
+        response,
+        "raw",
+        [corpus.resolve()],
+        tmp_path / "current-card",
+        successful_reads,
+    )
+    assert evidence[0]["locator"] == "lines 60-61"
+
+    short_arguments = {**primary_arguments, "end_line": 20}
+    short_result = call_tool(
+        "read_corpus_lines",
+        short_arguments,
+        scratch=scratch,
+        roots=[corpus],
+    )
+    short_events = [
+        {
+            "event": "tool_use",
+            "id": "short-lines",
+            "name": "mcp__awm_scratch__read_corpus_lines",
+            "input": short_arguments,
+        },
+        {
+            "event": "tool_result",
+            "tool_use_id": "short-lines",
+            "is_error": False,
+            "content_text": short_result["content"][0]["text"],
+        },
+    ]
+    with pytest.raises(WMError, match="solve_out.txt trajectory"):
+        _validate_tool_trace(
+            [*short_events, *events[2:]], "raw", [corpus.resolve()], scratch
+        )
+
+    forged = json.loads(citation_result["content"][0]["text"])
+    forged["offset"] += 1
+    forged_events = json.loads(json.dumps(events))
+    forged_events[3]["content_text"] = json.dumps(forged, sort_keys=True)
+    with pytest.raises(WMError, match="does not match the requested file lines"):
+        _validate_tool_trace(forged_events, "raw", [corpus.resolve()], scratch)
+
+    malformed_trace = json.loads(json.dumps(events))
+    malformed_trace[2]["input"]["start_line"] = True
+    with pytest.raises(WMError, match="range must contain"):
+        _validate_tool_trace(malformed_trace, "raw", [corpus.resolve()], scratch)
+
+
+def test_exact_line_read_rejects_malformed_ranges_and_all_resource_caps(
+    tmp_path: Path,
+) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    trace = corpus / "trace.txt"
+    trace.write_text("".join(f"line {index}\n" for index in range(1, 601)))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    malformed = [
+        {"path": "trace.txt", "start_line": 1},
+        {"path": "trace.txt", "start_line": True, "end_line": 1},
+        {"path": "trace.txt", "start_line": 2, "end_line": 1},
+        {"path": "trace.txt", "start_line": 1, "end_line": 501},
+        {"path": "trace.txt", "start_line": 600, "end_line": 601},
+        {"path": "trace.txt", "start_line": 1, "end_line": 1, "offset": 0},
+    ]
+    for arguments in malformed:
+        result = call_tool(
+            "read_corpus_lines",
+            arguments,
+            scratch=scratch,
+            roots=[corpus],
+        )
+        assert result["isError"] is True
+        assert len(
+            json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}, sort_keys=True).encode()
+        ) <= scratch_server.MAX_MCP_RESPONSE_BYTES
+
+    material_cap = corpus / "material-cap.txt"
+    material_cap.write_bytes(b"x" * (scratch_server.MAX_LINE_READ_MATERIAL_BYTES + 1) + b"\n")
+    material_result = call_tool(
+        "read_corpus_lines",
+        {"path": material_cap.name, "start_line": 1, "end_line": 1},
+        scratch=scratch,
+        roots=[corpus],
+    )
+    assert material_result["isError"] is True
+    assert "material cap" in material_result["content"][0]["text"]
+
+    response_cap = corpus / "response-cap.txt"
+    response_cap.write_text(('\\"' * 5_000) + "\n")
+    response_result = call_tool(
+        "read_corpus_lines",
+        {"path": response_cap.name, "start_line": 1, "end_line": 1},
+        scratch=scratch,
+        roots=[corpus],
+    )
+    assert response_result["isError"] is True
+    assert "response budget" in response_result["content"][0]["text"]
+
+    line_cap = corpus / "line-cap.txt"
+    line_cap.write_bytes(b"x" * (scratch_server.MAX_LINE_READ_LINE_BYTES + 1))
+    line_result = call_tool(
+        "read_corpus_lines",
+        {"path": line_cap.name, "start_line": 1, "end_line": 1},
+        scratch=scratch,
+        roots=[corpus],
+    )
+    assert line_result["isError"] is True
+    assert "line over" in line_result["content"][0]["text"]
+
+    scan_cap = corpus / "scan-cap.txt"
+    with scan_cap.open("wb") as file:
+        file.seek(scratch_server.MAX_LINE_READ_SCAN_BYTES)
+        file.write(b"x")
+    scan_result = call_tool(
+        "read_corpus_lines",
+        {"path": scan_cap.name, "start_line": 1, "end_line": 1},
+        scratch=scratch,
+        roots=[corpus],
+    )
+    assert scan_result["isError"] is True
+    assert "scan bytes" in scan_result["content"][0]["text"]
 
 
 def test_historical_text_locator_streams_with_line_and_byte_caps(tmp_path: Path) -> None:

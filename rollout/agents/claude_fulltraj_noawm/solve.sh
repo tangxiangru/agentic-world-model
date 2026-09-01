@@ -131,16 +131,16 @@ verify_study_prompt || {
 }
 cat "${STUDY_PROMPT_FILE}" | claude --print --verbose --model "$MODEL" \
     --output-format stream-json --thinking-display summarized \
-    --dangerously-skip-permissions | python3 "${STREAM_REDACTOR}" | tee "${SCIENTIST_STREAM}"
+    --dangerously-skip-permissions | \
+    python3 "${STREAM_REDACTOR}" --capture "${SCIENTIST_STREAM}"
 pipeline_status=("${PIPESTATUS[@]}")
 prompt_rc="${pipeline_status[0]}"
 claude_rc="${pipeline_status[1]}"
 redactor_rc="${pipeline_status[2]}"
-tee_rc="${pipeline_status[3]}"
 printf '%s\n' "${claude_rc}" > /home/ben/task/claude-exit-code.txt
-echo "claude exit ${claude_rc} (prompt=${prompt_rc} redactor=${redactor_rc} tee=${tee_rc})"
+echo "claude exit ${claude_rc} (prompt=${prompt_rc} redactor_capture=${redactor_rc})"
 [ "${claude_rc}" -eq 0 ] || exit "${claude_rc}"
-[ "${prompt_rc}" -eq 0 ] && [ "${redactor_rc}" -eq 0 ] && [ "${tee_rc}" -eq 0 ] || {
+[ "${prompt_rc}" -eq 0 ] && [ "${redactor_rc}" -eq 0 ] || {
     echo "ERROR: failed to preserve the complete Claude stream" >&2
     exit 1
 }

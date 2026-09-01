@@ -1260,6 +1260,195 @@ def test_extra_binds_patch_is_idempotent(tmp_path: Path) -> None:
     assert patcher.apply(once) == once
 
 
+def test_scratch_root_patch_is_idempotent_and_removes_broad_cleanup(
+    tmp_path: Path,
+) -> None:
+    patcher = _load(REPO / "rollout" / "patches" / "apply_scratch_root.py")
+    original = _pinned_ptb_run_task()
+    once = patcher.apply(original)
+    assert once != original
+    assert patcher.apply(once) == once
+    assert 'POST_TRAIN_BENCH_TMP_ROOT:?set POST_TRAIN_BENCH_TMP_ROOT' in once
+    assert 'mktemp -d "${AWM_SCRATCH_ROOT}/posttrain_container_' in once
+    assert 'posttrain_container_${EVALUATION_TASK}' not in once
+    assert "trap awm_exit_with_scratch_cleanup EXIT" in once
+    assert "rm -rf /tmp/posttrain_container" not in once
+    candidate = tmp_path / "run_task.sh"
+    candidate.write_text(once)
+    subprocess.run(["bash", "-n", str(candidate)], check=True)
+
+
+def test_scratch_root_block_creates_and_cleans_only_private_cell_dir(
+    tmp_path: Path,
+) -> None:
+    patcher = _load(REPO / "rollout" / "patches" / "apply_scratch_root.py")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    sentinel = scratch / "keep"
+    sentinel.write_text("safe")
+    similarly_named_sibling = scratch / "posttrain_container_other-cell"
+    similarly_named_sibling.mkdir()
+    harness = (
+        "set -euo pipefail\n"
+        "EVALUATION_TASK=gsm8k\n"
+        "RESULT_PREFIX_SAFE=google_gemma-3-4b-pt\n"
+        "RANDOM_UUID=unit-test\n"
+        + patcher.SETUP_BLOCK
+        + "test -d \"${TMP_SUBDIR}\"\n"
+        + "printf '%s\\n' \"${TMP_SUBDIR}\"\n"
+    )
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=harness,
+        env={
+            "PATH": os.environ["PATH"],
+            "POST_TRAIN_BENCH_TMP_ROOT": str(scratch),
+            "POST_TRAIN_BENCH_MIN_SCRATCH_FREE_BYTES": "1",
+            "POST_TRAIN_BENCH_MIN_SCRATCH_FREE_INODES": "1",
+        },
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    created = Path(result.stdout.strip())
+    assert created.parent == scratch
+    assert not created.exists()
+    assert sentinel.read_text() == "safe"
+    assert similarly_named_sibling.is_dir()
+
+
+def test_scratch_root_cleanup_failure_is_fatal_without_errexit(tmp_path: Path) -> None:
+    patcher = _load(REPO / "rollout" / "patches" / "apply_scratch_root.py")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_rm = fake_bin / "rm"
+    fake_rm.write_text("#!/bin/bash\nexit 1\n")
+    fake_rm.chmod(0o700)
+    # The pinned PTB runner intentionally does not set `set -e`; the cleanup
+    # function itself must therefore preserve and report an rm failure.
+    harness = (
+        "EVALUATION_TASK=gsm8k\n"
+        "RESULT_PREFIX_SAFE=model\n"
+        "RANDOM_UUID=test\n"
+        + patcher.SETUP_BLOCK
+        + "printf 'body-complete\\n'\n"
+    )
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=harness,
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "POST_TRAIN_BENCH_TMP_ROOT": str(scratch),
+            "POST_TRAIN_BENCH_MIN_SCRATCH_FREE_BYTES": "1",
+            "POST_TRAIN_BENCH_MIN_SCRATCH_FREE_INODES": "1",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "could not remove owned cell scratch directory" in result.stderr
+    assert len(list(scratch.glob("posttrain_container_*"))) == 1
+
+
+def test_scratch_root_cleanup_preserves_existing_failure(tmp_path: Path) -> None:
+    patcher = _load(REPO / "rollout" / "patches" / "apply_scratch_root.py")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    harness = (
+        "EVALUATION_TASK=gsm8k\n"
+        "RESULT_PREFIX_SAFE=model\n"
+        "RANDOM_UUID=test\n"
+        + patcher.SETUP_BLOCK
+        + "exit 17\n"
+    )
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=harness,
+        env={
+            "PATH": os.environ["PATH"],
+            "POST_TRAIN_BENCH_TMP_ROOT": str(scratch),
+            "POST_TRAIN_BENCH_MIN_SCRATCH_FREE_BYTES": "1",
+            "POST_TRAIN_BENCH_MIN_SCRATCH_FREE_INODES": "1",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 17
+    assert list(scratch.iterdir()) == []
+
+
+def test_scratch_root_block_rejects_insufficient_headroom(tmp_path: Path) -> None:
+    patcher = _load(REPO / "rollout" / "patches" / "apply_scratch_root.py")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    harness = (
+        "set -euo pipefail\n"
+        "EVALUATION_TASK=gsm8k\nRESULT_PREFIX_SAFE=model\nRANDOM_UUID=test\n"
+        + patcher.SETUP_BLOCK
+    )
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=harness,
+        env={
+            "PATH": os.environ["PATH"],
+            "POST_TRAIN_BENCH_TMP_ROOT": str(scratch),
+            "POST_TRAIN_BENCH_MIN_SCRATCH_FREE_BYTES": str(2**63 - 1),
+            "POST_TRAIN_BENCH_MIN_SCRATCH_FREE_INODES": "1",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "lacks required free blocks/inodes" in result.stderr
+    assert list(scratch.iterdir()) == []
+
+
+def test_scratch_root_block_rejects_exposed_or_aliased_root(tmp_path: Path) -> None:
+    patcher = _load(REPO / "rollout" / "patches" / "apply_scratch_root.py")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o755)
+    scratch.chmod(0o755)
+    harness = (
+        "set -euo pipefail\n"
+        "EVALUATION_TASK=gsm8k\nRESULT_PREFIX_SAFE=model\nRANDOM_UUID=test\n"
+        + patcher.SETUP_BLOCK
+    )
+    common_env = {
+        "PATH": os.environ["PATH"],
+        "POST_TRAIN_BENCH_MIN_SCRATCH_FREE_BYTES": "1",
+        "POST_TRAIN_BENCH_MIN_SCRATCH_FREE_INODES": "1",
+    }
+    exposed = subprocess.run(
+        ["bash", "-s"],
+        input=harness,
+        env={**common_env, "POST_TRAIN_BENCH_TMP_ROOT": str(scratch)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert exposed.returncode == 2
+    assert "owned by this uid and mode 0700" in exposed.stderr
+
+    scratch.chmod(0o700)
+    alias = tmp_path / "alias"
+    alias.symlink_to(scratch, target_is_directory=True)
+    linked = subprocess.run(
+        ["bash", "-s"],
+        input=harness,
+        env={**common_env, "POST_TRAIN_BENCH_TMP_ROOT": str(alias)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert linked.returncode == 2
+    assert "must be a real directory" in linked.stderr
+
+
 def _pinned_ptb_run_task() -> str:
     configured = os.environ.get("PTB_SOURCE_DIR")
     ptb = Path(configured) if configured else REPO / "third_party" / "PostTrainBench"
@@ -1277,13 +1466,15 @@ def _pinned_ptb_run_task() -> str:
 def test_study_runner_patch_applies_to_pinned_head_and_is_idempotent(tmp_path: Path) -> None:
     patcher = _load(REPO / "rollout" / "patches" / "apply_study_runner.py")
     extra = _load(REPO / "rollout" / "patches" / "apply_extra_binds.py")
+    scratch = _load(REPO / "rollout" / "patches" / "apply_scratch_root.py")
     original = _pinned_ptb_run_task()
     once = patcher.apply(original)
     assert once != original
     assert patcher.apply(once) == once
 
-    combined = extra.apply(once)
+    combined = scratch.apply(extra.apply(once))
     assert extra.apply(combined) == combined
+    assert scratch.apply(combined) == combined
     candidate = tmp_path / "run_task.sh"
     candidate.write_text(combined)
     subprocess.run(["bash", "-n", str(candidate)], check=True)
@@ -1305,6 +1496,9 @@ def test_study_runner_patch_applies_to_pinned_head_and_is_idempotent(tmp_path: P
     assert 'POST_TRAIN_BENCH_VISIBLE_GPUS' in combined
     assert 'POST_TRAIN_BENCH_ISOLATE_GPUS' in combined
     assert 'POST_TRAIN_BENCH_EVAL_GPU_REAP' in combined
+    assert 'POST_TRAIN_BENCH_TMP_ROOT' in combined
+    assert 'trap awm_exit_with_scratch_cleanup EXIT' in combined
+    assert 'rm -rf /tmp/posttrain_container' not in combined
     assert 'POST_TRAIN_BENCH_CELL_TOKEN' in combined
     assert "OS-visible GPU isolation probe" in combined
     assert "env -u CUDA_VISIBLE_DEVICES -u NVIDIA_VISIBLE_DEVICES" in combined
@@ -1491,7 +1685,7 @@ def test_study_agent_streams_prompt_file_byte_exactly_to_claude(tmp_path: Path) 
         + "\nverify_study_prompt\n"
         + pipeline
         + "\npipeline_status=(\"${PIPESTATUS[@]}\")\n"
-        + "[ \"${pipeline_status[*]}\" = \"0 0 0 0\" ]\n"
+        + "[ \"${pipeline_status[*]}\" = \"0 0 0\" ]\n"
     )
     result = subprocess.run(
         ["bash", "-s"],
@@ -1513,6 +1707,7 @@ def test_study_agent_streams_prompt_file_byte_exactly_to_claude(tmp_path: Path) 
     assert result.returncode == 0, result.stderr
     assert capture.read_bytes() == prompt
     assert stream.read_bytes() == prompt
+    assert result.stdout.encode() == prompt
 
 
 def test_claude_stream_redactor_scrubs_credentials_but_keeps_telemetry() -> None:
@@ -1865,6 +2060,7 @@ def test_claude_agents_use_vertex_passthrough_without_oauth() -> None:
     probe = "pinned PTB runner lacks agents/<agent>/env_passthrough.txt support"
     assert patch_call in setup and setup.index(patch_call) < setup.index(probe)
     assert 'python3 "$HERE/patches/apply_extra_binds.py"' in setup
+    assert 'python3 "$HERE/patches/apply_scratch_root.py"' in setup
     assert 'env_passthrough.txt" "$DST/agents/$a/env_passthrough.txt"' in setup
     assert "pinned PTB runner lacks agents/<agent>/env_passthrough.txt support" in setup
     assert "pinned PTB prompt loader cannot select the study prompts" in setup
@@ -1875,6 +2071,8 @@ def test_claude_agents_use_vertex_passthrough_without_oauth() -> None:
         "POST_TRAIN_BENCH_VISIBLE_GPUS",
         "POST_TRAIN_BENCH_ISOLATE_GPUS",
         "POST_TRAIN_BENCH_EVAL_GPU_REAP",
+        "POST_TRAIN_BENCH_TMP_ROOT",
+        "awm_cleanup_owned_scratch",
     ):
         assert capability in setup
     assert 'archive --format=tar "$AWM_REPO_COMMIT"' in setup
@@ -1943,7 +2141,10 @@ def test_claude_agents_propagate_failure_and_require_submission() -> None:
         assert "validate_study_corpus.py" in solve
         assert "redact_claude_stream.py" in solve
         assert 'python3 "${STREAM_REDACTOR}"' in solve
+        assert '--capture "${SCIENTIST_STREAM}"' in solve
+        assert '| tee "${SCIENTIST_STREAM}"' not in solve
         assert "redactor_rc" in solve
+        assert "tee_rc" not in solve
         assert "sanitize_result_tree.py" in solve
         assert 'python3 "${RESULT_SANITIZER}" /home/ben/task' in solve
         assert "quarantining this cell" in solve
@@ -2080,6 +2281,12 @@ def test_setup_requires_local_paths_and_has_no_machine_defaults() -> None:
     pack = (REPO / "rollout" / "wm_pack.sbatch").read_text()
     assert "export POST_TRAIN_BENCH_SKIP_CLI_UPDATE=1" in pack
     assert "export POST_TRAIN_BENCH_JUDGE_AUTH_MODE=skip" in pack
+    assert '${POST_TRAIN_BENCH_TMP_ROOT:?' in pack
+    assert 'POST_TRAIN_BENCH_TMP_ROOT:-/tmp' not in pack
+    assert 'POST_TRAIN_BENCH_TMP_ROOT must be unaliased, owned by this uid' in pack
+    assert pack.index('POST_TRAIN_BENCH_TMP_ROOT must be unaliased') < pack.index(
+        'pin_src_locally.sh "$REPO_ROOT"'
+    )
 
 
 def test_setup_rejects_source_as_destination_before_mutation(tmp_path: Path) -> None:

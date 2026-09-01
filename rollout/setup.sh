@@ -63,6 +63,7 @@ STUDY_BOOTSTRAP_FILES=(
     rollout/attest_ptb_surface.py
     rollout/patches/apply_study_runner.py
     rollout/patches/apply_extra_binds.py
+    rollout/patches/apply_scratch_root.py
 )
 for a in hv_recipe hv_noop claude_fulltraj_noawm claude_wm; do
     STUDY_BOOTSTRAP_FILES+=(
@@ -146,9 +147,10 @@ install -D -m 0600 "$STUDY_TEST_DATA_SRC" "$DST/$STUDY_TEST_DATA_REL"
 
 # Add the study contract to the private pinned checkout before probing it.  The
 # patchers are idempotent and fail if the upstream runner no longer has the
-# exact expected shape; neither one touches PTB_SOURCE_DIR.
+# exact expected shape; none touches PTB_SOURCE_DIR.
 python3 "$HERE/patches/apply_study_runner.py" "$DST/src/run_task.sh"
 python3 "$HERE/patches/apply_extra_binds.py" "$DST/src/run_task.sh"
+python3 "$HERE/patches/apply_scratch_root.py" "$DST/src/run_task.sh"
 install -m 0755 "$HERE/pin_ptb_source.sh" "$DST/src/commit_utils/pin_src_locally.sh"
 install -m 0755 "$HERE/attest_ptb_surface.py" "$DST/src/commit_utils/attest_study_surface.py"
 
@@ -171,7 +173,7 @@ grep -q 'POST_TRAIN_BENCH_JUDGE_AUTH_MODE' "$DST/src/run_task.sh" || {
     echo "FATAL: private PTB checkout lacks the portable source pin helper" >&2
     exit 2
 }
-for capability in 'agents/${AGENT}/payload' instruction.sha256 PROMPT_ENV_ARGS PROMPT_BIND_ARGS 'prompt generation failed' SOLVE_RC solve_exit_code.txt POST_TRAIN_BENCH_VISIBLE_GPUS POST_TRAIN_BENCH_ISOLATE_GPUS POST_TRAIN_BENCH_EVAL_GPU_REAP 'OS-visible GPU isolation probe' POST_TRAIN_BENCH_EXTRA_BINDS; do
+for capability in 'agents/${AGENT}/payload' instruction.sha256 PROMPT_ENV_ARGS PROMPT_BIND_ARGS 'prompt generation failed' SOLVE_RC solve_exit_code.txt POST_TRAIN_BENCH_VISIBLE_GPUS POST_TRAIN_BENCH_ISOLATE_GPUS POST_TRAIN_BENCH_EVAL_GPU_REAP 'OS-visible GPU isolation probe' POST_TRAIN_BENCH_EXTRA_BINDS POST_TRAIN_BENCH_TMP_ROOT AWM_MIN_SCRATCH_FREE_BYTES awm_cleanup_owned_scratch; do
     grep -Fq "$capability" "$DST/src/run_task.sh" || {
         echo "FATAL: pinned PTB runner lacks required study capability: $capability" >&2
         exit 2

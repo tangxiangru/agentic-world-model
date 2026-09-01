@@ -36,6 +36,10 @@ set -euo pipefail
 #   PTB_GPU_SLOTS comma-separated GPU identifiers, unless inherited through CUDA_VISIBLE_DEVICES
 #   PTB_RUN_ID    filesystem-safe run identifier (defaults to Slurm job id or local-<pid>)
 #   PTB_LOG_DIR   per-cell log directory (defaults inside the private checkout)
+#   POST_TRAIN_BENCH_TMP_ROOT private mode-0700 scratch root with at least the
+#                  runner's block/inode headroom; every writable PTB home lives
+#                  below a unique directory here and is cleaned on shell exit
+#                  (the local launcher must reap leftovers after SIGKILL/node loss)
 #   AWM_STUDY_SMOKE=1 with explicit PTB_NUM_HOURS=1 runs a labelled smoke;
 #                  production rejects every duration other than 10 hours
 #   Vertex authentication comes only from the node's attached service account
@@ -383,6 +387,7 @@ python3 "${BASE_CACHE_VALIDATOR}" "${HF_HOME:-}" || exit 2
 MODEL_CACHE="${HF_HOME}/hub/models--google--gemma-3-4b-pt"
 echo "base_model_revision=${BASE_MODEL_REVISION} cache=exact-model-only"
 grep -q "POST_TRAIN_BENCH_EXTRA_BINDS" src/run_task.sh || { echo "FATAL: run_task.sh lacks the extra-binds patch -- run rollout/setup.sh" >&2; exit 1; }
+grep -q "POST_TRAIN_BENCH_TMP_ROOT" src/run_task.sh || { echo "FATAL: run_task.sh lacks the scratch-root patch -- run rollout/setup.sh" >&2; exit 1; }
 [ "${POST_TRAIN_BENCH_ISOLATE_GPUS:-}" = 1 ] || {
     echo "FATAL: private PTB .env must set POST_TRAIN_BENCH_ISOLATE_GPUS=1" >&2
     exit 2
@@ -421,7 +426,23 @@ for a in claude_fulltraj_noawm claude_wm; do
     echo "solve_sh_sha256[$a]=$(sha256sum agents/$a/solve.sh | cut -d' ' -f1)"
 done
 
-SCRATCH="${POST_TRAIN_BENCH_TMP_ROOT:-/tmp}"
+: "${POST_TRAIN_BENCH_TMP_ROOT:?set POST_TRAIN_BENCH_TMP_ROOT to private capacity-checked scratch}"
+SCRATCH="${POST_TRAIN_BENCH_TMP_ROOT}"
+case "${SCRATCH}" in
+    /*) ;;
+    *) echo "FATAL: POST_TRAIN_BENCH_TMP_ROOT must be absolute" >&2; exit 2 ;;
+esac
+[ -d "${SCRATCH}" ] && [ ! -L "${SCRATCH}" ] || {
+    echo "FATAL: POST_TRAIN_BENCH_TMP_ROOT must be a real directory" >&2
+    exit 2
+}
+SCRATCH_REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${SCRATCH}")" || exit 2
+[ "${SCRATCH_REAL}" = "${SCRATCH}" ] && \
+    [ "$(stat -c '%u' "${SCRATCH}")" = "$(id -u)" ] && \
+    [ "$(stat -c '%a' "${SCRATCH}")" = 700 ] || {
+    echo "FATAL: POST_TRAIN_BENCH_TMP_ROOT must be unaliased, owned by this uid, and mode 0700" >&2
+    exit 2
+}
 PINNED_REPO="$(bash src/commit_utils/pin_src_locally.sh "$REPO_ROOT" "${SCRATCH}/wm-src-${CELL_IDS[0]}")"
 [ -d "${PINNED_REPO}" ] && [ ! -L "${PINNED_REPO}" ] && \
     [ -x "${PINNED_REPO}/src/run_task.sh" ] || {
