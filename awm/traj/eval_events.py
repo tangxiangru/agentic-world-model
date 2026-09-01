@@ -201,6 +201,10 @@ _HELP_ONLY = re.compile(r"evaluate\.py\s+(?:[\w./-]+\s+)*--help\b")
 
 
 def segments(command: str) -> list[str]:
+    # Join backslash continuations first: a flag on the wrapped line belongs to
+    # the same invocation, and splitting on the newline dropped a `--limit 40`
+    # onto its own segment, filing a 40-question run as a full evaluation.
+    command = re.sub(r"\\\s*\n\s*", " ", command)
     return [s for s in _SEGMENT.split(command) if s.strip()]
 
 
@@ -320,7 +324,7 @@ def events_for_run(
 
     rows: list[dict[str, Any]] = []
     for pos, event in enumerate(uses):
-        whole = _command(event)
+        whole = re.sub(r"\\\s*\n\s*", " ", _command(event))
         # A command may launch several evaluations (``run_eval.sh a … ;
         # run_eval.sh b …``); each is its own verification event, and reporting
         # one dropped the highest subsample reading of an entire run.

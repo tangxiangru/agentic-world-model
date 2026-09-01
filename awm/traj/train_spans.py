@@ -200,8 +200,15 @@ def _launch_segments(command: str) -> list[str]:
     return [seg for seg in re.split(r"&&|\|\||[;&|]|\n", command) if seg.strip()]
 
 
+#: A trainer invoked with ``--skip-train`` builds or checks data and never takes
+#: an optimiser step. One run had four of its eight recorded trainings be these.
+_NO_TRAIN = re.compile(r"--skip[-_]train\b|--dry[-_]run\b|--no[-_]train\b")
+
+
 def _is_launch(command: str, known: dict[str, set[str]] | None = None) -> bool:
     outside = strip_heredocs(command)
+    if _NO_TRAIN.search(outside):
+        return False
     segments = [s for s in _launch_segments(outside) if not _INSPECTS_PROCESS.search(s)]
     outside = " ; ".join(segments)
     if _LAUNCH.search(outside):
@@ -241,8 +248,13 @@ def _mentions(command: str, out_dir: str) -> bool:
 
 
 def _target(out_dir: str) -> str:
-    """Match the artifact itself or a checkpoint path inside it."""
-    return re.escape(out_dir) + r"(?:/\S*)?"
+    """Match the artifact itself or a checkpoint path inside it.
+
+    Bounded on both sides. Without a left boundary ``sft_full`` matched inside
+    ``runs/grader_sft_full.json``, so deleting a stale result file read as
+    discarding the checkpoint that run went on to submit.
+    """
+    return r"(?<![\w./-])" + re.escape(out_dir) + r"(?:/\S*)?"
 
 
 def _consumes(command: str, out_dir: str) -> bool:
@@ -257,7 +269,7 @@ def _discards(command: str, out_dir: str) -> bool:
     checkpoints to free disk while the run they belong to is still the one being
     submitted — so the artifact path must not continue into a subpath.
     """
-    whole = re.escape(out_dir) + r"(?![\w/-])"
+    whole = r"(?<![\w./-])" + re.escape(out_dir) + r"(?![\w./-])"
     return bool(re.search(_DISCARD_VERB + whole, command))
 
 

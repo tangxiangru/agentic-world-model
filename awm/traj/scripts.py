@@ -74,20 +74,39 @@ def _roles(body: str) -> set[str]:
     return roles
 
 
-def learn(events: list[dict[str, Any]]) -> dict[str, set[str]]:
+#: A trainer named the conventional way. A shell wrapper calling one is a
+#: trainer too, transitively, even though its own body holds no trl import.
+_CALLS_TRAINER = re.compile(
+    r"\bpython3?\s+(?:-[\w-]+\s+)*(?:[\w./-]*/)?train[\w-]*\.py"
+    r"|\btorchrun\b|\baccelerate\s+launch\b"
+)
+
+
+def learn(events: list[dict[str, Any]], rounds: int = 3) -> dict[str, set[str]]:
     """``script path -> {"trainer", "evaluator"}``, from this run's own writes.
 
     Both the full path and the bare basename are registered, because an agent
     writes ``work/ev.sh`` and later runs ``bash work/ev.sh`` or ``./ev.sh``.
+
+    Roles propagate through wrappers. One run drove every training through
+    ``nohup bash pipeline.sh`` — a shell file that trains, finalises and
+    evaluates in sequence — and because a shell wrapper's own body holds no
+    ``trl`` import, seven of that run's eight trainings went unrecorded and its
+    training occupancy read as 2.9% instead of over 80%. So a script whose body
+    *invokes* a trainer is itself a trainer, and the resolution repeats so a
+    wrapper around a wrapper still resolves.
     """
     out: dict[str, set[str]] = {}
+    bodies: dict[str, str] = {}
 
     def record(path: str, body: str) -> None:
-        roles = _roles(body)
-        if not roles or not path:
+        if not path:
             return
         for key in (path, path.rstrip("/").split("/")[-1]):
-            out.setdefault(key, set()).update(roles)
+            bodies[key] = bodies.get(key, "") + "\n" + body
+            roles = _roles(body)
+            if roles:
+                out.setdefault(key, set()).update(roles)
 
     for e in events:
         if e.get("type") != "tool_use":
@@ -101,6 +120,23 @@ def learn(events: list[dict[str, Any]]) -> dict[str, set[str]]:
         command = _unwrap(args.get("command") or "")
         for m in _HEREDOC_DEF.finditer(command):
             record(m.group("path"), m.group("body"))
+
+    # A body that calls a conventionally named trainer, or any script already
+    # known to be one, makes this file a trainer as well.
+    for _ in range(rounds):
+        grew = False
+        for path, body in bodies.items():
+            if "trainer" in out.get(path, set()):
+                continue
+            calls = _CALLS_TRAINER.search(body) or any(
+                "trainer" in roles and _invocation(body, other)
+                for other, roles in out.items()
+            )
+            if calls:
+                out.setdefault(path, set()).add("trainer")
+                grew = True
+        if not grew:
+            break
     return out
 
 
