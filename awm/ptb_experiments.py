@@ -606,10 +606,17 @@ def submit_context_smokes(data: dict[str, Any], cell_ids: list[str]) -> list[dic
     return jobs
 
 
-def submit(data: dict[str, Any], *, pilot: bool = False) -> Path:
+def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | None = None) -> Path:
+    if pilot and cell_ids:
+        raise ExperimentError("pilot and explicit retry cells are mutually exclusive")
     snapshot = source_snapshot()
     assert_source_ownership(data, snapshot)
-    selected_cell_ids = _pilot_cell_ids(data) if pilot else None
+    selected_cell_ids = _pilot_cell_ids(data) if pilot else cell_ids
+    if selected_cell_ids:
+        if len(set(selected_cell_ids)) != len(selected_cell_ids):
+            raise ExperimentError("retry cell ids must be unique")
+        for cell_id in selected_cell_ids:
+            _cell(data, cell_id)
     issues = local_issues(data, cell_ids=selected_cell_ids) + site_issues()
     if issues:
         raise ExperimentError("submission gates failed:\n- " + "\n- ".join(issues))
@@ -617,16 +624,30 @@ def submit(data: dict[str, Any], *, pilot: bool = False) -> Path:
         raise ExperimentError("formal source freeze requires clean top-level and PTB worktrees")
     dry_run(data, pilot=pilot)
     submitted_at = datetime.now(timezone.utc).isoformat()
-    kind = "pilot" if pilot else "formal"
     out_dir = paths.ensure(paths.data_root() / "ptb" / "batches" / data["batch_id"])
+    if pilot:
+        kind = "pilot"
+        run_purpose = None
+    elif selected_cell_ids:
+        previous_retries = sorted(out_dir.glob("formal-retry*-*.json"))
+        retry_index = len(previous_retries) + 1
+        kind = f"formal-retry{retry_index}"
+        run_purpose = kind
+    else:
+        kind = "formal"
+        run_purpose = None
     previous = sorted(out_dir.glob(f"{kind}-*.json"))
     if previous:
-        raise ExperimentError(
-            f"refusing duplicate {kind} submission; existing receipt: {previous[-1]}"
-        )
+        raise ExperimentError(f"refusing duplicate {kind} submission: {previous[-1]}")
     output = out_dir / f"{kind}-{submitted_at.replace(':', '')}.json"
     ptb_env = read_ptb_env()
-    launches = build_launches(data, pilot=pilot, hold=not pilot)
+    launches = build_launches(
+        data,
+        pilot=pilot,
+        cell_ids=selected_cell_ids if not pilot else None,
+        hold=not pilot,
+        purpose=run_purpose,
+    )
     if any(
         "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256" not in launch.environment
         for launch in launches
@@ -642,7 +663,7 @@ def submit(data: dict[str, Any], *, pilot: bool = False) -> Path:
         "submitted_at": submitted_at,
         "source": snapshot,
         "contract": data["contract"],
-        "cells": data["cells"],
+        "cells": [_cell(data, launch.cell_id) for launch in launches],
         "context_validation": {
             launch.cell_id: {
                 "path": launch.environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD"],

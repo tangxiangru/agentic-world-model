@@ -120,6 +120,21 @@ def test_dual_task_pilot_covers_both_evaluation_paths() -> None:
     assert all("--hold" not in launch.command for launch in launches)
 
 
+def test_explicit_retry_builds_only_selected_held_cells() -> None:
+    launches = ptb.build_launches(
+        ptb.load_manifest(DUAL_MANIFEST),
+        cell_ids=["g01", "a01"],
+        hold=True,
+        purpose="formal-retry1",
+    )
+
+    assert [launch.cell_id for launch in launches] == ["g01", "a01"]
+    assert all("--hold" in launch.command for launch in launches)
+    assert all(
+        any("formal-retry1" in argument for argument in launch.command) for launch in launches
+    )
+
+
 def test_aime2025_decontamination_asset_is_the_complete_numeric_test_set() -> None:
     task = ptb.PTB_ROOT / "src/eval/tasks/aime2025"
     test_rows = json.loads((task / "test_data.json").read_text(encoding="utf-8"))

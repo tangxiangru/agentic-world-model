@@ -254,6 +254,10 @@ def _ptb(args: argparse.Namespace) -> int:
             receipt = ptb.submit(manifest, pilot=args.pilot)
             print(receipt)
             return 0
+        if args.cmd == "retry":
+            receipt = ptb.submit(manifest, cell_ids=args.cell)
+            print(receipt)
+            return 0
         if args.cmd == "context-smoke":
             for job in ptb.submit_context_smokes(manifest, args.cell):
                 print(f"{job['cell_id']}: Slurm job {job['job_id']}")
@@ -327,13 +331,15 @@ def build_parser() -> argparse.ArgumentParser:
     i.set_defaults(func=_index)
 
     ee = traj.add_parser("evals", help="extract evaluations and whether a score came back")
-    ee.add_argument("--out", type=Path,
-                    default=Path("data/traj/derived/ptb_eval_events_v1.parquet"))
+    ee.add_argument(
+        "--out", type=Path, default=Path("data/traj/derived/ptb_eval_events_v1.parquet")
+    )
     ee.set_defaults(func=_eval_events)
 
     cw = traj.add_parser("configs", help="locate generation_config.json accesses")
-    cw.add_argument("--out", type=Path,
-                    default=Path("data/traj/derived/ptb_config_writes_v1.parquet"))
+    cw.add_argument(
+        "--out", type=Path, default=Path("data/traj/derived/ptb_config_writes_v1.parquet")
+    )
     cw.set_defaults(func=_config_writes)
 
     sn = traj.add_parser("spans", help="extract how long each training occupied the box")
@@ -398,6 +404,10 @@ def build_parser() -> argparse.ArgumentParser:
     context_smoke.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
     context_smoke.add_argument("--cell", action="append", required=True)
     context_smoke.set_defaults(func=_ptb)
+    retry = eps.add_parser("retry", help="atomically retry explicit failed formal cells")
+    retry.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
+    retry.add_argument("--cell", action="append", required=True)
+    retry.set_defaults(func=_ptb)
     audit = eps.add_parser("audit")
     audit.add_argument("result_dir", type=Path)
     audit.add_argument("--manifest", type=Path, default=default_manifest)
