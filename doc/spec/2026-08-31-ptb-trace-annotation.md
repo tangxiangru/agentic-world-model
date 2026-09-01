@@ -12,7 +12,7 @@
 
 这项工作交付三个相互依赖的结果:
 
-1. **一份可计算的标注表**,覆盖 107 条轨迹的每一次训练、每一次验证、每一次改动,每个字段都带回原始事件的指针。
+1. **一份可计算的标注表**,覆盖 180 条轨迹的每一次训练、每一次验证、每一次改动,每个字段都带回原始事件的指针。
 2. **§6 缺口的关闭**,首先是缺口 2(把训练时间拆给 C3 / C4),其次是把主表里"半受控 / n=1"的格子换成有 n 的数字。
 3. **world model 的特征与标签**。标注 schema 按 `doc/reference/...` §5 的五个建模选择倒推设计,所以关闭缺口的同一次标注,直接产出建模要用的状态、动作与转移记录。
 
@@ -26,26 +26,55 @@
 
 | harness | 模型 | 条数 |
 |---|---|---|
-| claude-code | claude-opus-4-8 | 33 |
-| claude-code | claude-fable-5 | 20 |
-| claude-code | claude-opus-4-7 | 11 |
-| claude-code | claude-opus-5 | 8 |
-| codex | gpt-5.6-sol | 24 |
-| codex | gpt-5.5 | 11 |
-| | **合计** | **107** |
+| claude-code | claude-opus-4-8 | 49 |
+| claude-code | claude-fable-5 | 28 |
+| claude-code | claude-opus-5 | 26 |
+| claude-code | claude-opus-4-7 | 23 |
+| codex | gpt-5.6-sol | 32 |
+| codex | gpt-5.5 | 22 |
+| | **合计** | **180** |
 
-benchmark 分布:gsm8k 61、bfcl 14、aime2025 12、humaneval 12、gpqamain 8。
+### 2.2 base model 与 benchmark 范围
 
-**为什么排除其余**。两条理由恰好指向同一批 run:
+**base model 四个**——它们是 PTB 让 agent 去 post-train 的对象,不是 agent 自己:`HuggingFaceTB_SmolLM3-3B-Base`、`Qwen_Qwen3-1.7B-Base`、`Qwen_Qwen3-4B-Base`、`google_gemma-3-4b-pt`。
 
-- **老模型的错误形态与当前模型不同**,为兼容它们而设计的分类会污染结论。被排除的 `claude-opus-4-6`、`gpt-5.3-codex`、`gpt-5.2` 都属此列。
-- **它们没有时间戳**。`claude-opus-4-6`(23 条,`old_container` 批)与 `gpt-5.3-codex`(24 条)的事件流**完全不带 `ts`**——上游未发布时钟,而 `awm/traj/schema.py` 明令禁止合成时间戳。任何时间相关的标注对它们都不成立。
+**人群分两层,不要混用。**
 
-保留的 107 条**时间戳覆盖率 100%**。这不是巧合:旧批次用的是旧 harness 版本。
+**均衡核心(124 条)**——gsm8k 与 healthbench,四个 base model 近乎等量:
 
-`claude-opus-5` 的 8 条不在最初的选型讨论里,此处纳入是因为现有 §3/§4 的全部结论都出自它——冠军 run、C1 的两组对照、C3 的消融、C5 的 checkpoint 序列。把它纳入,新流程就能去复核已经手工核实过的结论,这是最便宜的正确性检验。
+| base model | gsm8k | healthbench | 合计 |
+|---|---|---|---|
+| `HuggingFaceTB_SmolLM3-3B-Base` | 15 | 16 | 31 |
+| `Qwen_Qwen3-1.7B-Base` | 15 | 16 | 31 |
+| `Qwen_Qwen3-4B-Base` | 15 | 15 | 30 |
+| `google_gemma-3-4b-pt` | 16 | 16 | 32 |
+| **合计** | **61** | **63** | **124** |
 
-### 2.2 两个族必须分开统计
+**机会性附加(56 条)**——另外五个 benchmark,**明显偏向 Qwen3-4B-Base**(22 条 vs 其余 11–12 条),因为早前的跨 benchmark 深读只补下载了这一个 base model:
+
+| base model | aime2025 | arenahard | bfcl | gpqamain | humaneval | 合计 |
+|---|---|---|---|---|---|---|
+| `Qwen_Qwen3-4B-Base` | 5 | 2 | 6 | 4 | 5 | **22** |
+| 其余三个各 | 3 | 0 | 3–4 | 2 | 3 | 11–12 |
+| **合计** | 14 | 2 | 16 | 10 | 14 | **56** |
+
+**这个两层结构是统计纪律,不是记账方式:**
+
+- **任何 base model 之间的比较,只能在均衡核心上做。** 在附加层上比 base model 会把"哪个 base 被多下载了"读成"哪个 base 更难",这正是 §4.3 方差归属那类结论翻车的方式。
+- 附加层用于**覆盖面描述**与 benchmark 间对比(同一 benchmark 内部,base 分布是平的)。
+- `arenahardwriting` 只有 2 条,**仅登记不参与任何统计**。
+
+合计 **180 条**(claude-code 126 / codex 54)。
+
+**healthbench 是本 spec 新增拉取的**。原因如下。
+
+**为什么原本不在**:`awm/traj/fetch.py` 的默认 fetch 只取 `PTB_CORE_BENCHMARKS`(aime2025 / gsm8k / gpqamain / humaneval / bfcl),两个 LLM 评判的 benchmark(healthbench、arenahardwriting)要显式 `--observe` 才拉。所以本地一条 healthbench trace 都没转换过。
+
+**为什么必须补**:实验目标 split `splits/posttrainbench/healthbench-gemma-holdout-v1.yaml` 正是 healthbench。**split 是计分契约,只需要 catalogue 里的分数与 judge 判定,一条 trace 都不依赖**;标注需要 trace。两种数据需求不重叠——所以那份 split 当初 `apply_rule` 0 issue 通过,而它的 150 条 run 本地只有 2 条有 `solve_out.txt`。不补的话,我们会标注五个 benchmark,然后在一个从未看过的第六个上跑实验。
+
+已补:本 spec 六个模型 × healthbench = 64 条,pin 到与 split 相同的 revision `39d3fcd794df51c062c8bd3b7f8523ba707aaeb3`,0.1 GB,16 个 experiment 各 4 条。其中 1 条(`codex_non_api_xhigh_gpt-5.5_10h_run2__healthbench_Qwen_Qwen3-4B-Base_17391825`)**事件流不带时间戳,已剔除**,故 healthbench 计 63 条。
+
+### 2.3 两个族必须分开统计
 
 | | claude-code | codex |
 |---|---|---|
@@ -54,11 +83,15 @@ benchmark 分布:gsm8k 61、bfcl 14、aime2025 12、humaneval 12、gpqamain 8。
 
 **不得把两族合并成一个总体报数。** 行为形态差一倍以上,合并出来的中位数不描述任何真实的 agent。所有聚合统计按族分列;跨族对比是结论之一,不是统计口径。
 
-### 2.3 规模
+### 2.4 规模
 
-- 107 条 run,114,324 个事件,24,778 次工具调用
-- **1,003 次真实训练启动**(其中 762 次结束有据)+ 133 次冒烟
-- 每条 run 中位 7 次训练、210 次工具调用
+180 条 run 合计:
+
+- **233,277 个事件,47,294 次工具调用**
+- **1,456 次真实训练启动**(其中 1,085 次结束有据)+ 180 次冒烟
+- 每条 run 中位 7 次训练
+
+`trainings` 表因此是 **1,456 行**,这是缺口 2 要标注的单元数。
 
 ## 3. 机械层与判断层的分界
 
@@ -106,7 +139,7 @@ benchmark 分布:gsm8k 61、bfcl 14、aime2025 12、humaneval 12、gpqamain 8。
 
 ### 4.2 `trainings` — 每次训练在验什么(缺口 2)
 
-以 `train_spans` 的每一行为单位,1,003 行。
+以 `train_spans` 的每一行为单位,**1,456 行**。
 
 | 字段 | 类型 | 来源 |
 |---|---|---|
@@ -171,7 +204,7 @@ benchmark 分布:gsm8k 61、bfcl 14、aime2025 12、humaneval 12、gpqamain 8。
 
 ## 6. 分类学的演化通道
 
-C1–C7 是从一批具体轨迹归纳出来的,**它一定不完整**。107 条跨两个模型族的轨迹里出现分类装不下的改动,是预期而非异常。
+C1–C7 是从一批具体轨迹归纳出来的,**它一定不完整**。180 条跨两个模型族的轨迹里出现分类装不下的改动,是预期而非异常。
 
 因此 agent **被明确授权**提出三类修正,但都进入待审队列,不自动合入:
 
@@ -187,10 +220,35 @@ C1–C7 是从一批具体轨迹归纳出来的,**它一定不完整**。107 条
 
 ## 7. 执行形状
 
-- **一条 run 一个 agent**,输入是该 run 的事件流 + 机械层已填好的骨架,输出是 §4 三张表里属于这条 run 的行。107 个。
-- **双标注 22 个**,与第一遍同输入、不同 agent 实例、不共享上下文。
-- **审阅 pass 1 个**,读 §6 的待审队列并给出合入建议。
-- 合计约 **130 个 agent**。两族分别跑,提示词共用同一份 schema 定义,不为某一族定制。
+### 7.1 分批,每批都是决策点
+
+**不要一次性把全部 agent 打出去。** 三批,前一批不过就停:
+
+| 批次 | 规模 | 目的 | 不过就停 |
+|---|---|---|---|
+| **批 0** | 4 条锚点 run | 验流程能否复现 §5.3 那四个手工核实的事实 | 复现不了先修流程,不往下走 |
+| **批 1** | 20 条试点,**含全部 22 条双标注** | 测 κ 与 `unclear` 比例;检验 schema 是否够用 | κ < 0.6 就改 schema 重来,而不是烧完剩下的 |
+| **批 2** | 其余 | 全量 | |
+
+最坏情况的损失是批 0 + 批 1 ≈ 46 次调用,而不是全部 203 次。
+
+### 7.2 调用总数与并发是两回事
+
+- **一条 run 一个 agent**,输入是该 run 的事件流 + 机械层已填好的骨架,输出是 §4 三张表里属于这条 run 的行
+- 双标注的 22 条与第一遍**同输入、不同 agent 实例、不共享上下文**
+- 审阅 pass 1 个,读 §6 的待审队列给出合入建议
+
+| | 数量 |
+|---|---|
+| 主标注 | 180 |
+| 双标注 | 22 |
+| 审阅 | 1 |
+| **调用总数** | **约 203** |
+| **建议并发** | **8–16** |
+
+**调用总数不是并发数。** 并发取 8–16 是为了中途可叫停、便于观察前几条的输出质量;把它调高只影响墙钟,不改变成本或结论。
+
+两族分别跑,提示词共用同一份 schema 定义,**不为某一族定制**——两族的差异是要测的结论,不能先写进提示词里。
 
 ## 8. 产物
 
@@ -201,7 +259,7 @@ C1–C7 是从一批具体轨迹归纳出来的,**它一定不完整**。107 条
 | `doc/spec/2026-08-31-ptb-trace-annotation-findings.md` | **每条 run 的完整分析**,格式见下 | 跟随本 spec |
 | `doc/reference/verifier_tiers_and_change_types.md` | §4 全部统计更新;§1–§3 按 §6 审阅结果修订 | reference 更新 |
 
-findings 文件是**详情记录,不是 reference**:reference 说方法论和结论,findings 说这 107 条轨迹各自发生了什么。两者的关系是"结论 ↔ 原始记录",任何人应当能从 findings 里的某一条追回 reference 里的某个数字。
+findings 文件是**详情记录,不是 reference**:reference 说方法论和结论,findings 说这 180 条轨迹各自发生了什么。两者的关系是"结论 ↔ 原始记录",任何人应当能从 findings 里的某一条追回 reference 里的某个数字。
 
 每条 run 一节,固定六个小节,顺序不变:
 
