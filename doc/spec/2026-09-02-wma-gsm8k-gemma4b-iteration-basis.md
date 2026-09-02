@@ -367,5 +367,12 @@ sidecar 的冒烟由第一波的 8 个 wma cell 承担。Fable 以 commit 落实
    带走 `wma_sidecar.log` 与 gzip 的 transcripts,`status.json` 记 `sidecar_log` 与
    `transcripts`。scientist 的 task 树在 job 结束前是节点本地的,快照里没有它;cards 与
    verdict 仍只在收割后可读。不改 verdict schema、scorer 或样本契约。
+12. **已做**(首个在线 inflight window):`review.py` 的 post-hoc guard 把
+   `result.execution: not_run` 视为合法的 pre-launch sentinel，而不是已经观察到的结果；
+   `completed` / `failed` / `killed` 或已有 `conclusion.decision` 仍拒绝。首波 jobs
+   `90558`、`90560`、`90561` 的 scientist 都在 lock 前后预填 `not_run`，旧 runtime
+   因而错误回答 `already has a result`，另外五张留空的同类卡正常产出 verdict。该修复
+   只改 measurement/runtime，不改 prompt、schema、scorer、skill 或历史语料，并有
+   `test_review_accepts_the_not_run_prelaunch_sentinel` 回归测试。
 
 完成这些门只表示可以发射 round-01,不表示 candidate 可以晋升。

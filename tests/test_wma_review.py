@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from exp_protocol_cards import closed_card, plan_card
 
 from awm.exp_protocol import schema as cards
 from awm.wma import backends, review, schema
-from exp_protocol_cards import closed_card, plan_card
 
 
 @pytest.fixture
@@ -53,6 +53,18 @@ def test_review_refuses_a_card_that_already_has_a_result(tmp_path, skill) -> Non
         review.review(s, "exp-01", backends.HeuristicBackend(), mode="offline", skill_dir=skill)
     v = review.review(s, "exp-01", backends.HeuristicBackend(), mode="offline", skill_dir=skill, force=True)
     assert v["card_id"] == "exp-01"
+
+
+def test_review_accepts_the_not_run_prelaunch_sentinel(tmp_path, skill) -> None:
+    card = plan_card()
+    card["result"] = {"execution": "not_run"}
+    s = session_with(tmp_path, card)
+
+    verdict = review.review(
+        s, "exp-01", backends.HeuristicBackend(), mode="online", skill_dir=skill
+    )
+
+    assert verdict["card_id"] == "exp-01"
 
 
 def test_review_migrates_a_v1_card_in_memory_without_touching_the_file(tmp_path, skill) -> None:

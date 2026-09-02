@@ -121,7 +121,13 @@ def review(session_dir: Path, card_id: str, backend: Backend, *, mode: str = "of
     if allowed_roots:
         brief.extra["allowed_roots"] = [Path(root) for root in allowed_roots]
     card = migrate_v1(load_card(brief.card_path))
-    if not force and (get(card, "result.execution") or get(card, "conclusion.decision")):
+    # ``not_run`` is the schema's legal pre-launch sentinel. Some scientists
+    # fill it while writing sections 0-4, before the WMA request; treating any
+    # non-empty execution string as an outcome rejected those cards as post-hoc.
+    execution = get(card, "result.execution")
+    if not force and (
+        execution not in (None, "", "not_run") or get(card, "conclusion.decision")
+    ):
         raise ReviewError(f"{card_id} already has a result; a verdict now would be post-hoc (use force to override)")
     if expose_skill:
         prepare_session(brief.session_dir, skill_dir)
