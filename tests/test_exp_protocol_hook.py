@@ -6,8 +6,9 @@ import json
 import subprocess
 import sys
 
-from awm.exp_protocol import lock, preflight, schema
 from exp_protocol_cards import closed_card, plan_card
+
+from awm.exp_protocol import lock, preflight, schema
 
 HOOK = preflight.skill_dir() / "hooks" / "stop_open_cards.py"
 
