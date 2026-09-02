@@ -1,0 +1,107 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T15:00:00Z'
+situation:
+  elapsed_h: 1.85
+  remaining_h: 8.15
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.622, protocol_n: 500}
+  trigger: "evaluate.py never sets a temperature, so vLLM falls back to the model directory's generation_config.json for its request defaults -- and exp-02 inherited the base model's file, which says do_sample=true, top_k=64, top_p=0.95. The graded number is therefore one random sample per item."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample, top_k, top_p"}
+    - {path: /home/ben/task/evaluate.py, locator: "L74-L86", observation: "inspect_eval() is called with max_tokens and max_connections only; no temperature"}
+  alternatives_rejected:
+    - {option: "Leave sampling on and rely on the SFT model being confident", reason: "free variance on a single-sample graded benchmark; nothing is gained by sampling when only one attempt is scored"}
+    - {option: "Self-consistency / majority vote over k samples", reason: "the grader scores one completion per item; there is no place to aggregate votes without editing evaluate.py, which rule 5 forbids"}
+    - {option: "Test this at n=150 like exp-01/exp-02", reason: "a decode change is worth a few points; +-0.040 stderr at n=150 cannot see it. n=500 halves the stderr to +-0.022 and costs ~2 minutes"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "exp-02's graded accuracy is a coin flip drawn at temperature 1.0 with top_p 0.95 / top_k 64. On a benchmark scored from a single completion, any sampling that is not the argmax path throws away accuracy and adds run-to-run variance that makes later cards harder to compare."
+  evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "whole file", observation: "copied byte-for-byte from the base snapshot: do_sample true, top_k 64, top_p 0.95"}
+    - {path: /home/ben/task/analysis/exp-02_dev500.json, locator: "summary", observation: "0.622 at n=500 under sampling; 187 of 189 errors are clean stops, i.e. wrong content rather than wrong format"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Replacing generation_config.json in the model directory with a greedy one (temperature 0, top_p 1, top_k -1) will raise dev-500 accuracy relative to the identical weights served with the base sampling defaults."
+  mechanism: "vLLM reads the model directory's generation_config.json for request defaults; with temperature 0 it decodes the argmax path. For an SFT model whose per-token distribution is already peaked on the right chain, the argmax path is at least as good as a random draw from it, and the effect compounds over a ~130-token answer."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points"
+  falsified_if: "dev-500 accuracy under greedy decoding is at or below exp-02's 0.622"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/exp-01_devset_manifest.jsonl
+      source: local
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "No training data: this card changes only the decode configuration; the weights are symlinks to exp-02/final. The manifest is carried over from exp-01 to record the dev slice; mixture_weight 0.0, never a training input."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 via inspect-ai
+    peft: none
+    hyperparams: {temperature: 0.0, top_p: 1.0, top_k: -1, do_sample: false, max_tokens: 4000, seed: null}
+    target_format: "unchanged from exp-02: chain of thought then 'ANSWER: <int>' then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03-greedy, --limit, '500', --max-connections, '16', --max-tokens, '4000', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --max-tokens, '4000', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, unshuffled)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.622
+    path: /home/ben/task/eval/exp-02_dev500.json
+  diagnostic:
+    what: "share of completions that stop cleanly (stop_reason=stop) under greedy decoding -- greedy can also induce repetition loops, which would show up here"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.05
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 1242}
+  training_summary: {final_loss: null, steps: null, notes: "no training; the weight files are symlinks to ckpts/exp-02/final and only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.692, n: 500, path: /home/ben/task/eval/exp-03_greedy_dev500.json, delta_vs_comparator: 0.07}
+  diagnostic_result:
+    value: 0.98
+    path: /home/ben/task/analysis/exp-03_greedy_dev500.json
+    notes: "clean-stop rate 0.980 greedy vs 0.996 sampled: greedy costs 7 extra non-terminating items (repetition loops), and buys 35 correct answers. Errors that stop cleanly fall 187 -> 145."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Same weights, dev-500 0.622 -> 0.692 (+7.0, stderr 0.021 each). The base model's sampling defaults were costing seven points; greedy decoding also makes every later comparison deterministic."
+  decision: adopt
+  next_step: "Every later checkpoint ships the greedy generation_config.json (train_sft.py --greedy). Next: exp-04, more GSM8K-derived SFT data on top of exp-02, since 145 of 154 remaining errors are clean stops with wrong content."

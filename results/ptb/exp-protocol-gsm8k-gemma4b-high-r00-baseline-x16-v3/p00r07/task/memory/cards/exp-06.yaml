@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-02T19:22:00Z'
+situation:
+  elapsed_h: 6.15
+  remaining_h: 3.85
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.736, protocol_n: 500}
+  trigger: "exp-05 ran the intervention below and died at its first checkpoint save with no weights written; the hypothesis is still unmeasured, and the bug that killed it is fixed. Original trigger, unchanged: exp-04 got +4.4 points from one extra epoch on 80k fresh GSM8K-derived pairs and the gain has not visibly decayed; 129 of 132 remaining dev-500 errors still stop cleanly with wrong content, and ~120k unused pairs remain in the shards already on disk."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.measurements[0], result.diagnostic_result"}
+    - {path: /home/ben/task/analysis/exp-04_dev500.json, locator: "summary.wrong_but_stopped=129"}
+  alternatives_rejected:
+    - {option: "Switch now to rejection-sampling fine-tuning on the model's own correct solutions", reason: "the SFT targets are Llama-3.1-405B solutions; self-samples from a 0.736 4B model are lower quality, so RFT's value here is distribution matching, not content. Spend the remaining external data first while it is still paying +4 points per epoch, then RFT (exp-06) from the stronger checkpoint"}
+    - {option: "Raise the learning rate back to 1e-5 for this stage", reason: "5e-6 produced the +4.4 without touching the clean-stop rate (0.980 -> 0.994); no evidence the run is lr-limited"}
+    - {option: "Two epochs over sft_v3 instead of one", reason: "fresh pairs are still available, and one pass over new data beats two passes over the same data at equal cost"}
+    - {option: "Shrink to ~60k rows to buy back the 1.2 h exp-05 lost", reason: "3.85 h remain; 100k rows is 1.63 h of training plus 0.1 h of eval and leaves ~1.8 h of margin, and exp-04 is already installed in final_model so a shortfall costs nothing"}
+  pitfalls_hit:
+    - {what: "exp-05 died 800/1563 steps in: a parent checkpoint trained by this script carries the greedy generation_config adopted in exp-03 (do_sample false + temperature 0.0 + top_k -1), and transformers validates generation configs strictly inside save_pretrained, so the first checkpoint save raised ValueError and killed the run. exp-02 and exp-04 were immune only because their parents carried the base model's sampling config", cost_h: 1.2, fix: "train_sft.py now sets model.generation_config = GenerationConfig.from_pretrained(SNAPSHOT) right after loading the parent, and writes the greedy JSON only after trainer.save_model returns; verified by a 2-step smoke run with --save-steps 1 that wrote checkpoint-1, checkpoint-2 and final/ with the greedy config intact"}
+    - {what: "launched the sft_v3 build in the background one line before the `cat` that created its --exclude-pairs file; it happened to win the race, but the run was rebuilt from scratch to be sure the exclusion was complete", cost_h: 0.1, fix: "verified after the fact: 0 of 100000 pairs overlap sft_v1+sft_v2"}
+    - {what: "an O(n^2) verification snippet from the sft_v2 build was still running in the background and held a wait-loop for 20 minutes", cost_h: 0.33, fix: "killed it; verification snippets now precompute the lookup set outside the comprehension"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_v4.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, ckpts/smoke2, --limit, '400', --max-steps, '2', --bs, '4', --grad-accum, '1', --save-steps, '1', --greedy], outcome: "2 steps, checkpoint-1 + checkpoint-2 + final/ all written; final/generation_config.json is the greedy one. The exp-05 crash does not reproduce."}
+    - {command: [python, scripts/finalize.py, --src, /home/ben/task/ckpts/exp-04/final, --dst, /home/ben/task/final_model], outcome: "exp-04 (0.736) installed as a working submission before this retry starts: 8.6 GB of real files, config/tokenizer load, grading prompt renders to 2162 tokens, eos includes 106"}
+problem:
+  statement: "The incumbent answers 0.736 of dev-500 correctly; 129 of its 132 errors are well-formed single-answer completions that are simply wrong. It has been supervised on 159k targets, which is small next to the 863k GSM8K-derived solutions available in the OpenMathInstruct-2 shards on disk."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_dev500.json, locator: "summary", observation: "accuracy 0.736, stopped_rate 0.994, multi_marker_rate 0.0, wrong_but_stopped 129"}
+    - {path: /home/ben/task/logs/build_v3.log, locator: "line 2", observation: "863423 gsm8k-derived integer-answer rows available; 159473 used so far"}
+  affected_share: 0.977
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "One more epoch from exp-04/final on 100000 fresh GSM8K-derived (problem, solution) pairs at lr 5e-6 will raise dev-500 accuracy above exp-04's 0.736."
+  mechanism: "Same mechanism as exp-04, which is the point of repeating it: more distinct problems (51663, of which many are new) and more alternative solution paths per problem reduce reasoning errors. Repeating an intervention that has not saturated is the cheapest way to find where it does."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +4 points; smaller than exp-04's +4.4 if the lever is decaying"
+  falsified_if: "dev-500 accuracy is at or below exp-04's 0.736, or the clean-stop rate falls below 0.95"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "nvidia/OpenMathInstruct-2 (shards 0-11 of 32, rev 469216e3f46f4dacf476b382e192485ea51a143e)"
+      n_examples: 100000
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, /home/ben/task/data/sft_v3.jsonl, --n-omi2, '100000', --max-per-problem, '8', --gold-repeat, '0', --exclude-pairs, /home/ben/task/data/sft_v12_pairs.jsonl, --seed, '2']
+      selection: "problem_source in {gsm8k, augmented_gsm8k} (GSM8K TRAIN split derived only), integer expected_answer, at most 8 solutions per problem, every (problem, solution) pair used in sft_v1 or sft_v2 excluded (verified: 0 of 100000 overlap). 100000 rows over 51663 distinct problems. Same cleaning and same one-marker rule as sft_v1."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (custom MaskedCETrainer), torch 2.8.0"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 16, grad_accum: 4, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged: prompt via templates/gemma3.jinja (10-shot system prefix on 8% of rows), completion = chain of thought, 'ANSWER: <int>', <end_of_turn>. Loss on completion tokens only."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_v3.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/ckpts/exp-06, --lr, '5e-6', --epochs, '1', --bs, '16', --grad-accum, '4', --max-seq-len, '3072', --fewshot-frac, '0.08', --warmup, '0.03', --seed, '0', --save-steps, '500', --greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 500
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --max-tokens, '4000', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, unshuffled)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.736
+    path: /home/ben/task/eval/exp-04_dev500.json
+  diagnostic:
+    what: "clean-stop rate (stop_reason=stop); a third continued stage must not start eroding termination"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.64
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 1563}
+  training_summary:
+    final_loss: null
+    steps: 1563
+    notes: "train_loss 0.265 (exp-04's epoch: 0.271). 5919 s wall, 16.9 samples/s. The generation-config fix held: checkpoint-500/1000/1500/1563 all saved without error. Intermediate checkpoints deleted (setup.checkpoints.keep=last)."
+  measurements:
+    - {metric: accuracy, value: 0.724, n: 500, path: /home/ben/task/eval/exp-06_dev500.json, delta_vs_comparator: -0.012}
+  diagnostic_result:
+    value: 0.982
+    path: /home/ben/task/analysis/exp-06_dev500.json
+    notes: "clean-stop rate 0.994 (exp-04) -> 0.982; non-terminating items 3 -> 8. Clean-stop errors 129 -> 130. Nothing improved."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-500 0.736 -> 0.724 (-1.2, stderr 0.020 each): a third epoch on 100k fresh OpenMathInstruct-2 pairs did not help and slightly eroded termination. The 'more external GSM8K-derived data' lever, worth +46 then +4.4, has saturated at ~160k targets for this 4B model."
+  decision: reject
+  next_step: "final_model keeps exp-04 (0.736). exp-06's weights are not wasted: exp-04 and exp-06 lie on one continued-training trajectory and differ by noise, so exp-07 tests a uniform weight average of the two, which is the cheapest remaining lever with ~1.8 h left."
