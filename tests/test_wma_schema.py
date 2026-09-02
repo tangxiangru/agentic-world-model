@@ -197,6 +197,42 @@ def test_a_baseline_packaging_card_is_unscorable_at_l3_and_carries_its_family_an
     assert schema.score(v, schema.truth_from_card(card))["L3"] == "miss"
 
 
+def test_a_self_measurement_card_scores_l1_on_its_reading_and_nothing_at_l2_or_l3() -> None:
+    """The run's first card measures the base model it will later be compared against. Online
+    (2026-09-02) such cards had no checkpoint and a delta of 0.0 by construction, so the scorer
+    charged the WMA with L1 misses and L2 misses that were about the card's shape, not its foresight."""
+    card = closed_card()
+    card["setup"]["method"]["family"] = "other"
+    card["setup"]["parent_checkpoint"] = {"path": "google/gemma-3-4b-pt", "origin": "base_model", "hash": "cc0"}
+    card["setup"]["data"] = [{"path": "/eval/test.parquet", "n_examples": 150}]   # the eval input, listed
+    card["evaluation"]["comparator"] = {"ref": "base_model", "value": None, "path": None}
+    card["result"]["output_checkpoint"] = None
+    card["result"]["measurements"] = [{"metric": "accuracy", "value": 0.0533, "n": 150,
+                                       "path": "/eval/base_dev150.json", "delta_vs_comparator": 0.0}]
+    card["conclusion"]["decision"] = "iterate"
+    t = schema.truth_from_card(card)
+    assert t["self_measurement"] is True and t["baseline_packaging"] is False
+    assert schema.truth_levels(t)["L1"] is True
+    v = verdict()
+    v["levels"]["L1_valid"]["answer"] = "yes"
+    v["levels"]["L2_effect"]["interval"] = [0.10, 0.50]      # an absolute guess written into the delta slot
+    v["levels"]["L3_worth_now"]["answer"] = "yes"
+    s = schema.score(v, t)
+    assert (s["L1"], s["L2"], s["L3"]) == ("hit", "unscorable", "unscorable")
+    # the same base model measured against an earlier reading of it is a real comparison
+    card["evaluation"]["comparator"] = {"ref": "base_model", "value": None, "path": "/eval/base_stock_dev150.json"}
+    card["setup"]["method"]["family"] = "decode-config"
+    card["result"]["measurements"][0]["delta_vs_comparator"] = -0.02
+    t2 = schema.truth_from_card(card)
+    assert t2["self_measurement"] is False
+    assert schema.truth_levels(t2)["L1"] is False              # no checkpoint, and it is not a self-measurement
+    assert schema.score(v, t2)["L2"] == "below"
+    # a training card from the base is never a self-measurement
+    card["setup"]["method"]["family"] = "sft"
+    card["evaluation"]["comparator"] = {"ref": "base_model", "value": None, "path": None}
+    assert schema.truth_from_card(card)["self_measurement"] is False
+
+
 def test_skill_sha_covers_every_file_of_the_skill(tmp_path) -> None:
     d = tmp_path / "wma"
     d.mkdir()

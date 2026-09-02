@@ -375,4 +375,14 @@ sidecar 的冒烟由第一波的 8 个 wma cell 承担。Fable 以 commit 落实
    只改 measurement/runtime，不改 prompt、schema、scorer、skill 或历史语料，并有
    `test_review_accepts_the_not_run_prelaunch_sentinel` 回归测试。
 
+13. **已做**(2026-09-02,首波 26 份在线 verdict 的读时审计):**自测量卡**——
+   `evaluation.comparator.ref == base_model` 且 comparator 没有 `value` / `path`(这张卡就是
+   comparator 的第一次读数)、parent 是 base_model、family 为 `other` / `decode-config`——
+   L1 只看有没有读数(不训练就没有 checkpoint 可要求),L2 与 L3 unscorable(对自己的
+   delta 恒为 0,决定说的是下一步)。此前 scorer 给这类卡记了两次假的 L1 miss
+   (r02/r08 exp-01,无 checkpoint)和两次假的 L2 miss(绝对值写进 delta 槽);首波按
+   committed transcript 重算:L1 12/15 → 14/15,L2 9/15(含 4 张假分)→ 7/12(4 above,
+   1 below),与 operator 手工排除后的表一致。带 comparator path 的 decode-config 卡
+   (r07 exp-01,greedy vs stock)仍照常打分。只改读时 scorer,不改 verdict、skill、样本。
+
 完成这些门只表示可以发射 round-01,不表示 candidate 可以晋升。

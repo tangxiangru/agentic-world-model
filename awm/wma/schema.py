@@ -102,6 +102,22 @@ def is_baseline_packaging(card: dict[str, Any]) -> bool:
             and not (get(card, "setup.data") or []))
 
 
+def is_self_measurement(card: dict[str, Any]) -> bool:
+    """A card whose comparator is the base model and that carries no earlier reading of it: the card
+    *is* the first measurement of its own comparator (the run's exp-01, typically). Its delta is 0.0 by
+    construction, so L2 says nothing; it trains nothing, so "valid" means only that it produced a
+    reading; its decision is about what comes next, not about this card. Seen 2026-09-02 online:
+    four such cards scored two spurious L1 misses (no checkpoint) and two spurious L2 misses."""
+    comparator = get(card, "evaluation.comparator") or {}
+    if not isinstance(comparator, dict) or comparator.get("ref") != "base_model":
+        return False
+    if _num(comparator.get("value")) or comparator.get("path"):
+        return False            # the comparator was measured before this card: a real delta
+    return get(card, "setup.parent_checkpoint.origin") == "base_model" and (
+        get(card, "setup.method.family") in ("other", "decode-config")
+    )
+
+
 def reject_verdict(path: Path, reason: str, **measured: Any) -> Path:
     """Move an unusable verdict file aside so the card counts as unreviewed, keeping the text and what it cost.
 
@@ -242,6 +258,7 @@ def truth_from_card(card: dict[str, Any]) -> dict[str, Any]:
         "family": get(card, "setup.method.family"),
         "n": ms[0].get("n") if ms and _num(ms[0].get("n")) else None,
         "baseline_packaging": is_baseline_packaging(card),
+        "self_measurement": is_self_measurement(card),
     }
 
 
@@ -254,7 +271,12 @@ def truth_levels(truth: dict[str, Any]) -> dict[str, bool | None]:
         return {"L0": None, "L1": None}
     # L1 is a property of the proposal only once it ran to completion: a killed run is the scientist's
     # clock decision and a failed one is already L0's miss.
-    valid = (bool(truth.get("output_checkpoint")) and bool(truth.get("measurements"))) if execution == "completed" else None
+    if execution == "completed":
+        # a self-measurement trains nothing: its only deliverable is the reading itself
+        valid = bool(truth.get("measurements")) and (
+            bool(truth.get("output_checkpoint")) or bool(truth.get("self_measurement")))
+    else:
+        valid = None
     return {"L0": execution in RAN, "L1": valid}
 
 
@@ -274,8 +296,8 @@ def score(verdict: dict[str, Any], truth: dict[str, Any]) -> dict[str, str]:
 
     iv = lv["L2_effect"].get("interval")
     delta = truth.get("delta")
-    if iv is None or delta is None:
-        out["L2"] = "unscorable"
+    if iv is None or delta is None or truth.get("self_measurement"):
+        out["L2"] = "unscorable"    # a delta of a reading against itself measures nothing
     elif delta < iv[0]:
         out["L2"] = "below"
     elif delta > iv[1]:
@@ -285,7 +307,8 @@ def score(verdict: dict[str, Any], truth: dict[str, Any]) -> dict[str, str]:
 
     ans3 = lv["L3_worth_now"].get("answer")
     worth = WORTH.get(truth.get("decision"))
-    if worth is None or ans3 not in L3_ANSWERS or truth.get("baseline_packaging"):
+    if (worth is None or ans3 not in L3_ANSWERS or truth.get("baseline_packaging")
+            or truth.get("self_measurement")):
         out["L3"] = "unscorable"
     else:
         said_worth = ans3 == "yes"          # defer counts as "not now"
