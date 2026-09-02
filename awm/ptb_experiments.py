@@ -46,7 +46,23 @@ APPROVED_AGENT_SETUPS = (
 #: Where an `_awm` scaffold expects the checkout inside the sandbox.
 AWM_MOUNT = "/home/ben/awm"
 #: Trees a scientist must never see; no `awm.paths` entry may ship or contain them.
-AWM_FORBIDDEN_TREES = ("skills/exp_protocol_meta", "doc")
+#: Listing a parent (`awm`, `skills`) is rejected too, so a study ships subtrees by name.
+AWM_FORBIDDEN_TREES = (
+    "skills/exp_protocol_meta",
+    "skills/wma",
+    "skills/wma_meta",
+    "awm/wma",
+    "doc",
+)
+#: What a cell of the experiment-protocol line ships: the CLI, the protocol, nothing else.
+EXP_PROTOCOL_SHIP = (
+    "awm/__init__.py",
+    "awm/cli.py",
+    "awm/paths.py",
+    "awm/sandbox.py",
+    "awm/exp_protocol",
+    "skills/exp_protocol",
+)
 
 
 class ExperimentError(ValueError):

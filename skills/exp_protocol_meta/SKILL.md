@@ -35,11 +35,14 @@ itself are a separate, human decision.
    confirm a change generalises before it becomes the baseline.
 5. **Launch.** A scientist cell uses the `claude_vertex_max_awm` scaffold and
    declares, in its manifest cell, an `awm` block: the variant's commit
-   (`sha`), `paths: [awm, skills/exp_protocol]`, and
-   `setup: "--exp-protocol --tool claude"`. The launcher ships exactly those
-   paths of that commit into the sandbox, read-only, and the scaffold runs
-   `awm sandbox setup` before the prompt; the meta skill and the docs can
-   never be shipped. Use the committed batch launcher (`awm ptb`, manifests
+   (`sha`), `paths` = the six entries of `EXP_PROTOCOL_SHIP` in
+   `awm/ptb_experiments.py` (the CLI, `awm/exp_protocol`, `skills/exp_protocol`
+   and nothing else), and `setup: "--exp-protocol --tool claude"`. The
+   launcher ships exactly those paths of that commit into the sandbox,
+   read-only, and the scaffold runs `awm sandbox setup` before the prompt.
+   The meta skill, the docs, and anything of the world-model agent
+   (`awm/wma`, `skills/wma*`) can never be shipped: the launcher refuses
+   them by name, and refuses `awm` or `skills` wholesale. Use the committed batch launcher (`awm ptb`, manifests
    under `experiments/posttrainbench/`) and the queue file the operator
    reconciles (`doc/reference/ptb_operator_runbook.md`); do not hand-craft
    sbatch files or run `sbatch` yourself.

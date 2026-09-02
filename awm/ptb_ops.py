@@ -506,7 +506,7 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
 
 # --------------------------------------------------------------------- CLI
 
-def _reconcile(args) -> int:
+def reconcile_cli(args) -> int:
     repo_root = paths.REPO_ROOT
     try:
         entries = load_queue(repo_root / args.queue, repo_root)
@@ -526,7 +526,7 @@ def _reconcile(args) -> int:
     return 0
 
 
-def _harvest(args) -> int:
+def harvest_cli(args) -> int:
     out = paths.REPO_ROOT / RESULTS_ROOT / args.batch / args.cell if args.out is None else Path(args.out)
     status = harvest_job(Path(args.result_dir) if args.result_dir else None, out, batch=args.batch,
                          cell=args.cell, job_id=args.job, job_name=args.job_name, state=args.state,
@@ -536,7 +536,7 @@ def _harvest(args) -> int:
     return 0 if status["complete"] else 1
 
 
-def _cancel(args) -> int:
+def cancel_cli(args) -> int:
     try:
         record = cancel_job(Path(args.receipt), args.cell, args.reason)
     except (OpsError, ptb.ExperimentError) as exc:
@@ -544,24 +544,3 @@ def _cancel(args) -> int:
         return 1
     print(f"cancelled {args.cell} job {record['job_id']} ({record['state_before']}); recorded in {args.receipt}")
     return 0
-
-
-def register(eps) -> None:
-    rc = eps.add_parser("reconcile", help="what the queue says should happen now; --apply does it")
-    rc.add_argument("--queue", type=Path, default=QUEUE_PATH)
-    rc.add_argument("--apply", action="store_true")
-    rc.set_defaults(func=_reconcile)
-    hv = eps.add_parser("harvest", help="bundle one cell's result under results/ptb/")
-    hv.add_argument("result_dir", nargs="?", default=None)
-    hv.add_argument("--batch", required=True)
-    hv.add_argument("--cell", required=True)
-    hv.add_argument("--job", required=True)
-    hv.add_argument("--job-name")
-    hv.add_argument("--state")
-    hv.add_argument("--out")
-    hv.set_defaults(func=_harvest)
-    cn = eps.add_parser("cancel", help="scancel one PENDING job named in a tracked receipt")
-    cn.add_argument("--receipt", type=Path, required=True)
-    cn.add_argument("--cell", required=True)
-    cn.add_argument("--reason", required=True)
-    cn.set_defaults(func=_cancel)
