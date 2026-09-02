@@ -435,6 +435,25 @@ def test_harvesting_a_later_attempt_keeps_the_earlier_bundle(tmp_path: Path, mon
     assert (out.parent / "p01r1.j555" / "status.json").is_file()
 
 
+def test_plan_recognizes_an_archived_earlier_attempt(
+    repo, tmp_path: Path
+) -> None:
+    root, states = repo
+    _receipt(tmp_path / "vol", "ep-r01", "pilot", [("p01r1", "555")])
+    _receipt(tmp_path / "vol", "ep-r01", "formal", [("p01r1", "556")])
+    states.update({"555": "COMPLETED", "556": "COMPLETED"})
+    archived = root / "results/ptb/ep-r01/p01r1.j555"
+    current = root / "results/ptb/ep-r01/p01r1"
+    archived.mkdir(parents=True)
+    current.mkdir(parents=True)
+    (archived / "status.json").write_text(json.dumps({"job_id": "555", "complete": True}))
+    (current / "status.json").write_text(json.dumps({"job_id": "556", "complete": True}))
+
+    actions = ops.plan([ENTRY], root)
+
+    assert [action.kind for action in actions] == ["copy_receipt", "copy_receipt"]
+
+
 def test_collect_reads_a_bundle(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
     result = _fake_result(tmp_path)

@@ -138,15 +138,23 @@ def tracked_receipts(batch: str, repo_root: Path) -> list[Path]:
     return sorted((repo_root / RESULTS_ROOT / batch).glob("*.json"))
 
 
-def _bundle_status(repo_root: Path, batch: str, cell: str) -> dict[str, Any] | None:
-    status = repo_root / RESULTS_ROOT / batch / cell / STATUS
-    if not status.is_file():
-        return None
-    try:
-        data = json.loads(status.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+def _bundle_status(
+    repo_root: Path, batch: str, cell: str, job_id: str | None = None
+) -> dict[str, Any] | None:
+    batch_dir = repo_root / RESULTS_ROOT / batch
+    candidates = [batch_dir / cell / STATUS, *sorted(batch_dir.glob(f"{cell}.j*/{STATUS}"))]
+    for status in candidates:
+        if not status.is_file():
+            continue
+        try:
+            data = json.loads(status.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if job_id is None or str(data.get("job_id")) == str(job_id):
+            return data
+    return None
 
 
 def _status_eligible(status: dict[str, Any]) -> bool:
@@ -213,8 +221,10 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
             for job in receipt["jobs"]:
                 state = states[job["job_id"]]
                 if state in TERMINAL_STATES:
-                    status = _bundle_status(repo_root, batch, job["cell_id"])
-                    if status is None or status.get("job_id") != job["job_id"]:
+                    status = _bundle_status(
+                        repo_root, batch, job["cell_id"], job["job_id"]
+                    )
+                    if status is None:
                         actions.append(Action("harvest", batch, state, cell=job["cell_id"],
                                               job_id=job["job_id"], receipt=name,
                                               job_name=job.get("job_name"), state=state))
@@ -279,7 +289,10 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
                 actions.append(Action("wait", batch, f"pilot is {states[unfinished[0]['job_id']]}",
                                       cell=unfinished[0]["cell_id"], job_id=unfinished[0]["job_id"]))
                 continue
-            statuses = [(j, _bundle_status(repo_root, batch, j["cell_id"])) for j in pilot["jobs"]]
+            statuses = [
+                (j, _bundle_status(repo_root, batch, j["cell_id"], j["job_id"]))
+                for j in pilot["jobs"]
+            ]
             if any(s is None or s.get("job_id") != j["job_id"] for j, s in statuses):
                 actions.append(Action("wait", batch, "pilot finished; its harvest comes first"))
                 continue
