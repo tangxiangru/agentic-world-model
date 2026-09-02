@@ -150,20 +150,32 @@ AIME2025 只回答“GSM8K 上看到的 protocol 改善是否泛化”。candida
 
 异步循环是硬要求：
 
-1. planner 对独立、已验证、可安全运行的 manifest 立即 commit/push，并更新
+1. exp-protocol subqueue 的利用率目标是有可运行工作时 `RUNNING=16`。调度库存
+   `RUNNING + PENDING` 不低于 16；当独立、已验证的工作足够时，额外保持最多一整波
+   `PENDING≈16`。不得为了字面 pending 数量提前编造依赖未完成结果的实验。
+2. planner 对独立、已验证、可安全运行的 manifest 立即 commit/push，并更新
    `experiments/posttrainbench/queue.yaml`；不等待不相关的长尾 job。
-2. operator 每 10–15 分钟运行
+3. operator 每 10–15 分钟运行
    `pull --rebase → reconcile → reconcile --apply → commit results → push`。
-3. `pilot: first` 只阻挡依赖该 pilot 的正式 cells；其他已独立验证的 batch 可以先排队
+4. `pilot: first` 只阻挡依赖该 pilot 的正式 cells；其他已独立验证的 batch 可以先排队
    backfill 空闲 GPU。
-4. receipt 是 job 所有权的唯一依据。operator 只取消 receipt 中列出的 PENDING job，
+5. receipt 是 job 所有权的唯一依据。operator 只取消 receipt 中列出的 PENDING job，
    永不自动取消 RUNNING job。
-5. 失败 cell 照常收割并记录，不由 operator 重试；planner 以新 queue entry 明确决定
+6. 失败 cell 照常收割并记录，不由 operator 重试；planner 以新 queue entry 明确决定
    是否做等配置 retry。
-6. iteration agent 在结果陆续回来时立即验证和阅读，但只有每 variant 至少 2 个有效
+7. iteration agent 在结果陆续回来时立即验证和阅读，但只有每 variant 至少 2 个有效
    repeats 才能做比较结论。
-7. 若第 3 个或更晚的 straggler 对一个已有两个有效 repeats 的稳健决定不再必要，可冻结
+8. 若第 3 个或更晚的 straggler 对一个已有两个有效 repeats 的稳健决定不再必要，可冻结
    决定并在 round record 写明排除理由；不得选择性排除不利结果。
+
+Fable 5.1 通过长期 PR 批量参与 manifest 设计与结果审核，契约见
+`doc/reference/exp_protocol_fable_collaboration_prompt.md`。一个 analysis window 在形成
+完整 comparison block，或自上次分析后累计至少 8 个新有效 cells 时触发；无新证据时
+不产生仅用于报平安的 PR comment。
+
+`exp_protocol_meta` 不在单轮中修改。每完成 3 个 GSM8K rounds，iteration agent 与
+Fable 单独写一次跨轮 meta retrospective；只有至少两个 rounds 重复出现的循环问题才
+能形成独立的 meta 修改，不能与 protocol candidate 混在同一 commit。
 
 任何 `OWNERSHIP FAIL` 立即停止新提交并报告。Slurm `COMPLETED` 不等于科学完成。
 
