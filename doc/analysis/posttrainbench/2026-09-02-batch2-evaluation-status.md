@@ -1,23 +1,23 @@
 # PTB Batch 2 evaluation status
 
-Updated 2026-09-02 13:19 UTC. Batch:
+Updated 2026-09-02 14:02 UTC. Batch:
 `gsm8k-aime2025-opus5-selected16x2-batch2-v5`.
 
 ## Bottom line
 
 - Intended cells: 32 (16 GSM8K, 16 AIME2025; two repeats of eight selected settings).
 - Cells with a final model, trace, monitor, full-evaluation log, and `metrics.json`: **32/32**.
-- Validator-complete cells: **0/32**.
-- Clean/flagged complete cells: **0/0**; no canonical judge verdict exists yet, so judge validity
-  cannot be assigned.
+- Validator-complete cells: **32/32**.
+- Clean/flagged complete cells: **30/2**. `g05r2` and `g13r2` are complete but carry the canonical
+  `general_anomaly` flag; all other cells are judge-clean.
 - Active Batch 2 Slurm jobs: none.
-- Every current result is missing the four canonical verdicts:
-  `judgement_gpt5_4`, `judgement_api`, `judgement_ptb_lookup`, and `judgement_general` (canonical
-  names retained after the official runtime changed to Claude Opus 5 high).
+- Every result now contains all four canonical verdicts: `judgement_gpt5_4`, `judgement_api`,
+  `judgement_ptb_lookup`, and `judgement_general` (canonical names retained after the official
+  runtime changed to Claude Opus 5 high).
 
-The scores below are real full-evaluation metrics from frozen result directories, but remain
-**provisional and excluded from scientific aggregation** until the validator accepts the judge
-evidence.
+The scores below are validator-accepted full-evaluation metrics from frozen result directories.
+Any aggregation that requires a clean-only cohort must exclude or separately report `g05r2` and
+`g13r2`; the paired tables keep them visible and marked by this documented boundary.
 
 ## Provenance
 
@@ -29,10 +29,18 @@ evidence.
 - `g13r1` retry receipt:
   `data/ptb/batches/gsm8k-aime2025-opus5-selected16x2-batch2-v5/formal-retry2-2026-09-02T025456.128841+0000.json`.
   It freezes top commit `cf140104` and PTB commit `a3d62de`.
-- Claude judge-recovery receipt:
-  `data/ptb/batches/gsm8k-aime2025-opus5-selected16x2-batch2-v5/official-judge-recovery-2026-09-02T113947.477939+0000.json`.
-  It freezes top commit `0cc93ee`, PTB commit `ff351aa`, model
-  `claude-opus-5[1m]`, effort `high`, Vertex auth, and the `opus_5.sif` digest.
+- Successful recovery canary receipt:
+  `data/ptb/batches/gsm8k-aime2025-opus5-selected16x2-batch2-v5/official-judge-recovery-2026-09-02T132948.255039+0000.json`
+  (job `90520`, `g01r1`).
+- Successful retry1 recovery receipt:
+  `data/ptb/batches/gsm8k-aime2025-opus5-selected16x2-batch2-v5/official-judge-recovery-2026-09-02T133720.364398+0000.json`
+  (jobs `90523–90552`, the other 30 retry1 results).
+- Successful retry2 recovery receipt:
+  `data/ptb/batches/gsm8k-aime2025-opus5-selected16x2-batch2-v5/official-judge-recovery-2026-09-02T133735.511086+0000.json`
+  (job `90553`, `g13r1`).
+
+All three freeze top commit `e8a8599`, PTB commit `2af3ccd`, model
+`claude-opus-5[1m]`, effort `high`, Vertex auth, and the `opus_5.sif` digest.
 
 The authoritative discovery command is:
 
@@ -42,10 +50,10 @@ uv run awm ptb results \
   --all --json
 ```
 
-At this snapshot it reports `total=32`, `complete=0`, `clean_complete=0`, and all 32 cell ids in
-`incomplete_cells`, while all 32 latest attempts carry a numeric accuracy.
+At this snapshot it reports `total=32`, `complete=32`, `clean_complete=30`,
+`flagged_complete=2`, and an empty `incomplete_cells` list.
 
-## GSM8K provisional score pairs
+## GSM8K validator-complete score pairs
 
 Scores are full official-test accuracy. `Spread` is the absolute difference between the two
 independent repeats, in percentage points.
@@ -61,13 +69,13 @@ independent repeats, in percentage points.
 | max / 200K (`g13`) | Qwen3-1.7B | 0.8544 | 0.8234 | **0.8389** | 3.11 |
 | max / 200K (`g15`) | SmolLM3-3B | 0.8294 | 0.8029 | **0.8161** | 2.65 |
 
-Across the 16 provisional GSM8K results, the unweighted mean is 0.8620 and the observed range is
+Across the 16 validator-complete GSM8K results, the unweighted mean is 0.8620 and the observed range is
 0.7657–0.9158. The best pair mean is high/1M with Qwen3-4B (0.9090), and it is also the most stable
 pair (0.15-point spread). The highest single cell is xhigh/1M with Qwen3-4B, `g06r1` at 0.9158,
 but its repeat is 2.88 points lower. The xhigh/1M Qwen3-1.7B pair has a 6.97-point spread; this is
 direct evidence that a single run is inadequate for that setting.
 
-## AIME2025 provisional score pairs
+## AIME2025 validator-complete score pairs
 
 AIME has only 30 questions; counts are primary and percentages are included in parentheses.
 
@@ -82,7 +90,7 @@ AIME has only 30 questions; counts are primary and percentages are included in p
 | max / 200K (`a14`) | Qwen3-4B | 4/30 | 6/30 | **5.0/30 (16.67%)** |
 | max / 200K (`a15`) | SmolLM3-3B | 3/30 | 4/30 | **3.5/30 (11.67%)** |
 
-Across all 16 provisional AIME results the mean is 4.94/30 (16.46%), with a cell range of 3–7
+Across all 16 AIME results the mean is 4.94/30 (16.46%), with a cell range of 3–7
 correct. Max/1M and high/1M on Qwen3-4B tie for the best pair mean at 6.5/30. The observed
 one-to-three-question repeat differences are large relative to the 30-question denominator and
 do not support a fine-grained effort ordering.
@@ -98,12 +106,12 @@ Against the corresponding single Batch 1 cells, Batch 2 pair means move in both 
   by only zero to 1.5 questions for most settings; that is within the coarse resolution and
   run-to-run variation visible here.
 
-These comparisons are descriptive. Batch 1 used one run per setting, Batch 2 has only two, and
-Batch 2 lacks canonical validity verdicts.
+These comparisons are descriptive. Batch 1 used one run per setting and Batch 2 has only two;
+the two flagged GSM8K cells must remain explicit in any clean-only comparison.
 
-## Why the validator is still at zero
+## Recovery outcome
 
-The recovery history has three distinct infrastructure failures:
+The recovery history exposed three distinct infrastructure failures before the successful repair:
 
 1. Retry1 jobs `89589–89620` produced metrics for 31 cells but used the old official Codex judge
    path. Revoked ChatGPT OAuth caused all four judges to produce no verdict. `g13r1` additionally
@@ -114,7 +122,7 @@ The recovery history has three distinct infrastructure failures:
    allocation did not receive the run-as identity. The second (`90428–90458`) fixed that and all
    31 jobs entered the real Claude Opus 5 high judge.
 
-For the second recovery:
+For the second failed recovery:
 
 - 31/31 result directories contain `judge_output_gpt5_4_rerun.json`, its parsed text, and metadata.
 - All 31 metadata records agree on `profile=official`, `backend=claude`, `auth_mode=vertex`,
@@ -137,25 +145,21 @@ path ignores the separately configured site env file. The parser exits before
 judges never run. This is why successful Claude reasoning appears in the raw trace while formal
 coverage remains zero.
 
-## Recovery boundary
+The repair made `sanitize_trace.py` honor the explicit site env path, added a frozen-archive
+regression test, and pinned PTB commit `2af3ccd`. Job `90520` first proved one complete four-judge
+canary. Jobs `90523–90552` then repaired the remaining retry1 cells, and `90553` repaired retry2
+`g13r1`; all 31 completed successfully. No training or evaluation was repeated.
 
-All 32 current results are now judge-only recoverable:
-
-- 31 candidates come from the retry1 receipt.
-- `g13r1` comes from the retry2 receipt.
-
-They should not be retrained or reevaluated. The next recovery must first make trace sanitization
-consume an explicit readable site env path (with a regression test against a frozen archive), then
-submit receipt-backed judge-only jobs for the 31 retry1 results and the one retry2 result. A result
-becomes analyzable only after all four canonical `_rerun` verdicts exist and the formal validator
-passes. Any true judge flag must then be separated from infrastructure failure before score
-aggregation.
+The recovery boundary is therefore closed: all four canonical `_rerun` verdicts exist for every
+cell and the formal validator accepts 32/32. The only remaining interpretation boundary is the
+real `general_anomaly` verdict on `g05r2` and `g13r2`, which must not be conflated with the repaired
+infrastructure failure.
 
 ## Interpretation limits
 
-- No Batch 2 number is currently a validator-accepted PTB result.
-- Raw judge writes are diagnostic evidence only and must not be renamed or manually promoted into
-  canonical verdicts.
+- All 32 Batch 2 numbers are validator-accepted PTB results; 30 are clean and 2 are flagged.
+- The canonical files were produced by receipt-backed judge recovery. Earlier raw judge writes
+  remain diagnostic evidence only and were not renamed or manually promoted.
 - Two repeats reveal instability but are insufficient for precise variance estimates.
 - AIME changes in units of 1/30 = 3.33 points; always report counts.
 - Do not average GSM8K and AIME or infer a monotone effort effect from this selected subset.
