@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import pwd
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,7 +38,15 @@ APPROVED_AGENT_SETUPS = (
     ("claude_vertex_xhigh", "claude-opus-5[1m]", "xhigh", 1_000_000),
     ("claude_vertex_high", "claude-opus-5[1m]", "high", 1_000_000),
     ("claude_vertex_max_200k", "claude-opus-5", "max", 200_000),
+    # claude_vertex_max plus a read-only checkout of this repository at AWM_MOUNT and
+    # `awm sandbox setup` before the prompt; the cell's `awm` block says what it ships.
+    ("claude_vertex_max_awm", "claude-opus-5[1m]", "max", 1_000_000),
 )
+
+#: Where an `_awm` scaffold expects the checkout inside the sandbox.
+AWM_MOUNT = "/home/ben/awm"
+#: Trees a scientist must never see; no `awm.paths` entry may ship or contain them.
+AWM_FORBIDDEN_TREES = ("skills/exp_protocol_meta", "doc")
 
 
 class ExperimentError(ValueError):
@@ -46,6 +58,8 @@ class Launch:
     cell_id: str
     command: tuple[str, ...]
     environment: dict[str, str]
+    #: {sha, paths, dir, digest} of the checkout an `_awm` cell ships; None otherwise.
+    checkout: dict[str, Any] | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -77,6 +91,177 @@ def load_manifest(filename: Path) -> dict[str, Any]:
     validate_manifest(data)
     data["_path"] = str(filename)
     return data
+
+
+def _check_awm_path(cell_id: str, path: str) -> None:
+    parts = path.split("/")
+    if not path or path.startswith("/") or any(part in ("", ".", "..") for part in parts):
+        raise ExperimentError(
+            f"cell {cell_id}: awm.paths entry {path!r} must be a relative path inside the repository"
+        )
+    for tree in AWM_FORBIDDEN_TREES:
+        if path == tree or tree.startswith(path + "/") or path.startswith(tree + "/"):
+            raise ExperimentError(
+                f"cell {cell_id}: awm.paths entry {path!r} would ship {tree}, "
+                "which a scientist must not see"
+            )
+
+
+def _validate_awm_block(cell_id: str, agent: Any, block: Any) -> None:
+    """An `_awm` scaffold needs to be told what to ship; any other scaffold would ignore it."""
+    wants = str(agent).endswith("_awm")
+    if block is None:
+        if wants:
+            raise ExperimentError(
+                f"cell {cell_id} uses the {agent} scaffold and must declare an awm block "
+                "(sha, paths, setup)"
+            )
+        return
+    if not wants:
+        raise ExperimentError(
+            f"cell {cell_id} declares an awm block but the {agent} scaffold would ignore it"
+        )
+    if not isinstance(block, dict):
+        raise ExperimentError(f"cell {cell_id}: awm must be a mapping with sha, paths, setup")
+    sha = str(block.get("sha", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ExperimentError(
+            f"cell {cell_id}: awm.sha must be a full commit id (40 hex characters), not {sha!r}"
+        )
+    shipped = block.get("paths")
+    if (
+        not isinstance(shipped, list)
+        or not shipped
+        or not all(isinstance(path, str) for path in shipped)
+    ):
+        raise ExperimentError(
+            f"cell {cell_id}: awm.paths must be a non-empty list of repository paths"
+        )
+    for path in shipped:
+        _check_awm_path(cell_id, path)
+    setup = block.get("setup")
+    if not isinstance(setup, str) or not setup.strip() or "\n" in setup:
+        raise ExperimentError(
+            f"cell {cell_id}: awm.setup must be one line of arguments for `awm sandbox setup`"
+        )
+
+
+def _git_has_commit(sha: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=paths.REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _awm_issues(cell_id: str, block: dict[str, Any]) -> list[str]:
+    """What `check` can say about a cell's checkout before anything is materialised."""
+    sha = str(block.get("sha", ""))
+    if not _git_has_commit(sha):
+        return [f"cell {cell_id}: awm commit {sha} is not in this repository (git fetch origin first)"]
+    issues = []
+    for path in block.get("paths") or []:
+        listed = subprocess.run(
+            ["git", "ls-tree", "--name-only", sha, "--", path],
+            cwd=paths.REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if not listed:
+            issues.append(f"cell {cell_id}: awm path {path!r} does not exist at commit {sha[:12]}")
+    return issues
+
+
+def _tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for file in sorted(p for p in root.rglob("*") if p.is_file()):
+        digest.update(str(file.relative_to(root)).encode())
+        digest.update(b"\0")
+        digest.update(_sha256(file).encode())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
+    """``git archive`` the given paths of ``sha`` onto the data volume, once per (sha, paths).
+
+    The directory is what the scaffold sees at AWM_MOUNT, read-only. A marker
+    file records the commit, the paths and a content digest; a directory whose
+    marker matches is reused, so dry-run, submit and a retry all bind the same
+    bytes. The forbidden trees are checked again on the extracted files.
+    """
+    for path in shipped:
+        _check_awm_path("<checkout>", path)
+    root = paths.data_root() / "ptb" / "awm-checkouts"
+    key = hashlib.sha256("\n".join(shipped).encode()).hexdigest()[:12]
+    target = root / f"{sha}-{key}"
+    marker_name = ".awm-checkout.json"
+
+    def _existing() -> dict[str, Any] | None:
+        marker = target / marker_name
+        if not marker.is_file():
+            return None
+        try:
+            info = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if info.get("sha") == sha and info.get("paths") == list(shipped) and info.get("complete"):
+            return {"sha": sha, "paths": list(shipped), "dir": str(target), "digest": info["digest"]}
+        return None
+
+    if (found := _existing()) is not None:
+        return found
+    if target.exists():
+        shutil.rmtree(target)  # a stale or half-written directory
+    if not _git_has_commit(sha):
+        raise ExperimentError(f"awm commit {sha} is not in this repository; git fetch origin first")
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", sha, "--", *shipped],
+        cwd=paths.REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if archive.returncode:
+        raise ExperimentError(
+            f"git archive {sha[:12]} failed: {archive.stderr.decode(errors='replace').strip()}"
+        )
+    root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{sha[:12]}-", dir=root))
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(staging, filter="data")
+            else:  # Python < 3.12
+                tar.extractall(staging)
+        for tree in AWM_FORBIDDEN_TREES:
+            if (staging / tree).exists():
+                raise ExperimentError(f"archive of {sha[:12]} contains {tree}; refusing to ship it")
+        digest = _tree_digest(staging)
+        marker = {
+            "sha": sha,
+            "paths": list(shipped),
+            "digest": digest,
+            "complete": True,
+            "materialized_at": datetime.now(timezone.utc).isoformat(),
+        }
+        (staging / marker_name).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
+        try:
+            os.rename(staging, target)
+        except OSError:
+            if (found := _existing()) is not None:  # someone else won the race with the same bytes
+                shutil.rmtree(staging, ignore_errors=True)
+                return found
+            raise
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return {"sha": sha, "paths": list(shipped), "dir": str(target), "digest": digest}
 
 
 def _batch_tasks(contract: dict[str, Any]) -> tuple[str, ...]:
@@ -241,6 +426,7 @@ def validate_manifest(data: dict[str, Any]) -> None:
             raise ExperimentError(
                 f"cell {cell_id} uses base model {base!r}, which contract.base_models does not pin"
             )
+        _validate_awm_block(cell_id, cell.get("agent"), cell.get("awm"))
         settings.append((task, *setup, base))
     replication = contract.get("replication")
     if replication is not None:
@@ -389,7 +575,15 @@ def build_launches(
         }
         if record.is_file():
             environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"] = _sha256(record)
-        launches.append(Launch(cell["id"], command, environment))
+        checkout = None
+        if cell.get("awm"):
+            checkout = materialize_awm_checkout(cell["awm"]["sha"], cell["awm"]["paths"])
+            # Read on the host by run_task.sh: one read-only bind for the agent sandbox.
+            environment["POST_TRAIN_BENCH_EXTRA_BINDS"] = f"{checkout['dir']}:{AWM_MOUNT}:ro"
+            # Forwarded into the sandbox by the scaffold's env_passthrough.txt.
+            environment["AWM_SANDBOX_SETUP"] = cell["awm"]["setup"]
+            environment["AWM_CHECKOUT_SHA"] = cell["awm"]["sha"]
+        launches.append(Launch(cell["id"], command, environment, checkout))
     if len({launch.cell_id for launch in launches}) != len(launches):
         raise ExperimentError("launch result ids are not unique")
     return launches
@@ -419,6 +613,8 @@ def local_issues(
             elif not _is_git_tracked(PTB_ROOT, relative):
                 issues.append(f"untracked PTB task asset cannot enter frozen source: {relative}")
     for cell in selected_cells:
+        if cell.get("awm"):
+            issues.extend(_awm_issues(str(cell["id"]), cell["awm"]))
         for name in ("solve.sh", "api_keys.json", "profile.env"):
             relative = f"agents/{cell['agent']}/{name}"
             if not (PTB_ROOT / relative).is_file():
@@ -771,6 +967,9 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
                 "sha256": launch.environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"],
             }
             for launch in launches
+        },
+        "awm_checkouts": {
+            launch.cell_id: launch.checkout for launch in launches if launch.checkout
         },
         "site": {
             key: ptb_env.get(key, "")

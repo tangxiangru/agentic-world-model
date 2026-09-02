@@ -275,6 +275,11 @@ def test_formal_submit_holds_all_jobs_before_one_release(
                 "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": f"/evidence/{cell_id}.json",
                 "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256": f"{index:064x}",
             },
+            checkout=(
+                {"sha": "3" * 40, "paths": ["awm"], "dir": "/vol/x", "digest": "4" * 64}
+                if cell_id == "g01"
+                else None
+            ),
         )
         for index, cell_id in enumerate(cell_ids, start=1)
     ]
@@ -331,6 +336,9 @@ def test_formal_submit_holds_all_jobs_before_one_release(
     assert len(receipt["jobs"]) == 32
     assert receipt["jobs"][0]["job_name"] == ("gangda_trial_0828.ptb.test.g01.formal.r1")
     assert set(receipt["context_validation"]) == set(cell_ids)
+    assert receipt["awm_checkouts"] == {
+        "g01": {"sha": "3" * 40, "paths": ["awm"], "dir": "/vol/x", "digest": "4" * 64}
+    }
     registered = json.loads(ownership_registry.read_text(encoding="utf-8"))
     assert len(registered["sources"][0]["jobs"]) == 32
 
@@ -470,3 +478,118 @@ def test_run_index_is_any_positive_integer() -> None:
     data["contract"]["run_index"] = 0
     with pytest.raises(ptb.ExperimentError, match="positive integer"):
         ptb.validate_manifest(data)
+
+
+# ---- cells that ship a checkout of this repository (2026-09-02) ---------------
+# An `_awm` scaffold mounts a read-only checkout at /home/ben/awm and runs
+# `awm sandbox setup` before the prompt. The cell says which commit, which
+# paths, and which setup arguments; the launcher materialises the archive on
+# the data volume and hands the scaffold the bind and the two variables.
+
+
+def _awm_manifest() -> dict:
+    data = _two_repeats_manifest()
+    sha = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD")
+    for cell in data["cells"]:
+        cell["agent"] = "claude_vertex_max_awm"
+        cell["awm"] = {
+            "sha": sha,
+            "paths": ["awm", "skills/exp_protocol"],
+            "setup": "--exp-protocol --tool claude",
+        }
+    return data
+
+
+def test_an_awm_cell_ships_its_checkout_read_only(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path)
+    data = _awm_manifest()
+    ptb.validate_manifest(data)
+    launches = ptb.build_launches(data, hold=True)
+    sha = data["cells"][0]["awm"]["sha"]
+    first = launches[0]
+    checkout = Path(first.environment["POST_TRAIN_BENCH_EXTRA_BINDS"].split(":")[0])
+    assert first.environment["POST_TRAIN_BENCH_EXTRA_BINDS"] == f"{checkout}:/home/ben/awm:ro"
+    assert first.environment["AWM_SANDBOX_SETUP"] == "--exp-protocol --tool claude"
+    assert first.environment["AWM_CHECKOUT_SHA"] == sha
+    assert checkout.is_relative_to(tmp_path / "ptb" / "awm-checkouts")
+    assert (checkout / "awm" / "cli.py").is_file()
+    assert (checkout / "skills" / "exp_protocol" / "SKILL.md").is_file()
+    assert not (checkout / "skills" / "exp_protocol_meta").exists()
+    assert not (checkout / "doc").exists()
+    assert first.checkout == {
+        "sha": sha,
+        "paths": ["awm", "skills/exp_protocol"],
+        "dir": str(checkout),
+        "digest": first.checkout["digest"],
+    }
+    assert len(first.checkout["digest"]) == 64
+    # the second cell, same sha and paths, reuses the same materialised directory
+    assert launches[1].checkout["dir"] == str(checkout)
+    marker = json.loads((checkout / ".awm-checkout.json").read_text())
+    assert marker["sha"] == sha and marker["digest"] == first.checkout["digest"]
+
+
+def test_a_plain_cell_gets_no_checkout_variables(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path)
+    launches = ptb.build_launches(_two_repeats_manifest())
+    assert "POST_TRAIN_BENCH_EXTRA_BINDS" not in launches[0].environment
+    assert launches[0].checkout is None
+
+
+def test_an_awm_cell_needs_its_block_and_a_plain_cell_must_not_have_one() -> None:
+    data = _awm_manifest()
+    del data["cells"][0]["awm"]
+    with pytest.raises(ptb.ExperimentError, match="must declare an awm block"):
+        ptb.validate_manifest(data)
+    data = _awm_manifest()
+    data["cells"][0]["agent"] = "claude_vertex_max"
+    with pytest.raises(ptb.ExperimentError, match="would ignore it"):
+        ptb.validate_manifest(data)
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [["skills"], ["doc"], ["."], ["../awm"], ["/awm"], ["skills/exp_protocol_meta"], [], ["awm", ""]],
+)
+def test_awm_paths_may_not_reach_the_meta_skill_or_the_docs(paths: list[str]) -> None:
+    data = _awm_manifest()
+    data["cells"][0]["awm"]["paths"] = paths
+    with pytest.raises(ptb.ExperimentError, match="awm.paths"):
+        ptb.validate_manifest(data)
+
+
+def test_awm_sha_and_setup_are_checked() -> None:
+    data = _awm_manifest()
+    data["cells"][0]["awm"]["sha"] = "1db6a9e"
+    with pytest.raises(ptb.ExperimentError, match="full commit"):
+        ptb.validate_manifest(data)
+    data = _awm_manifest()
+    data["cells"][0]["awm"]["setup"] = ""
+    with pytest.raises(ptb.ExperimentError, match="awm.setup"):
+        ptb.validate_manifest(data)
+
+
+def test_awm_issues_name_a_missing_commit_or_path() -> None:
+    sha = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD")
+    good = {"sha": sha, "paths": ["awm", "skills/exp_protocol"], "setup": "--exp-protocol"}
+    assert ptb._awm_issues("p01r1", good) == []
+    missing_commit = good | {"sha": "f" * 40}
+    assert any("not in this repository" in issue for issue in ptb._awm_issues("p01r1", missing_commit))
+    missing_path = good | {"paths": ["awm", "skills/no_such_skill"]}
+    assert any("skills/no_such_skill" in issue for issue in ptb._awm_issues("p01r1", missing_path))
+
+
+def test_materialising_a_checkout_is_idempotent_and_refuses_the_meta_skill(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path)
+    sha = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD")
+    first = ptb.materialize_awm_checkout(sha, ["awm", "skills/exp_protocol"])
+    stamp = (Path(first["dir"]) / ".awm-checkout.json").stat().st_mtime_ns
+    second = ptb.materialize_awm_checkout(sha, ["awm", "skills/exp_protocol"])
+    assert second == first
+    assert (Path(first["dir"]) / ".awm-checkout.json").stat().st_mtime_ns == stamp
+    with pytest.raises(ptb.ExperimentError, match="exp_protocol_meta"):
+        ptb.materialize_awm_checkout(sha, ["skills"])
+    with pytest.raises(ptb.ExperimentError, match="not in this repository"):
+        ptb.materialize_awm_checkout("f" * 40, ["awm"])
