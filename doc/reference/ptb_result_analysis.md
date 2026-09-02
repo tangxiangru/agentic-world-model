@@ -28,6 +28,12 @@ the site owner decides the placement difference is immaterial. Its `status.json`
 `complete: true`, sets `eligible: false` and `quarantined: true`, and records the placement fact in
 `quarantine_reasons`; validator defects remain in `issues` and make `complete: false`.
 
+The report prints two accuracy summaries per manifest (one manifest is one protocol variant):
+`primary` uses eligible strict-site completions; `placement-sensitivity` adds only complete results
+whose sole quarantine reason is frozen-node placement. Both show `n`, mean, and range. Never use
+the sensitivity number as the promotion result: if the primary and sensitivity conclusions differ,
+the round is inconclusive and needs strict-site repeats.
+
 ## Resolve one job or cell
 
 ```bash

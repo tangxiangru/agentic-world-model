@@ -80,11 +80,14 @@ def test_report_discovers_results_by_provenance_and_keeps_flags(
     assert report["clean_complete"] == 0
     assert report["flagged_complete"] == 1
     assert report["quarantined_complete"] == 0
+    assert report["accuracy_primary"] == {"n": 1, "mean": 0.75, "min": 0.75, "max": 0.75}
+    assert report["accuracy_placement_sensitivity"] == report["accuracy_primary"]
     assert report["incomplete_cells"] == ["a01"]
     assert report["rows"][0]["completed_attempt"]["judge_flags"] == ["general_anomaly"]
     rendered = ptb_results.render_report(report, include_incomplete=True)
     assert "g01 COMPLETE" in rendered
     assert "a01 INCOMPLETE" in rendered
+    assert "ACCURACY primary n=1 mean=0.7500 range=0.7500..0.7500" in rendered
     assert "result=" in rendered
 
 
@@ -136,6 +139,10 @@ def test_report_keeps_a_complete_spillover_score_but_quarantines_it(
     assert report["eligible_complete"] == 0
     assert report["clean_complete"] == 0
     assert report["quarantined_complete"] == 1
+    assert report["accuracy_primary"] == {"n": 0, "mean": None, "min": None, "max": None}
+    assert report["accuracy_placement_sensitivity"] == {
+        "n": 1, "mean": 0.75, "min": 0.75, "max": 0.75
+    }
     attempt = report["rows"][0]["completed_attempt"]
     assert attempt["accuracy"] == 0.75 and attempt["complete"] is True
     assert attempt["eligible"] is False and attempt["quarantined"] is True
@@ -144,6 +151,8 @@ def test_report_keeps_a_complete_spillover_score_but_quarantines_it(
     assert "g01 QUARANTINED" in rendered
     assert "score=0.7500" in rendered
     assert "quarantine=runtime Slurm node" in rendered
+    assert "ACCURACY primary n=0 mean=- range=-" in rendered
+    assert "ACCURACY placement-sensitivity n=1 mean=0.7500" in rendered
 
 
 def test_slurm_nodelist_expansion_is_offline_and_range_aware() -> None:

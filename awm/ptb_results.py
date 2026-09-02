@@ -44,6 +44,25 @@ def judge_flags(result_dir: Path) -> list[str]:
     return [key for key in JUDGE_FLAGS if any(verdict.get(key) is True for verdict in verdicts)]
 
 
+def _accuracy_summary(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    values = [float(attempt["accuracy"]) for attempt in attempts
+              if isinstance(attempt.get("accuracy"), (int, float))]
+    return {
+        "n": len(values),
+        "mean": sum(values) / len(values) if values else None,
+        "min": min(values) if values else None,
+        "max": max(values) if values else None,
+    }
+
+
+def _placement_only_quarantine(attempt: dict[str, Any]) -> bool:
+    reasons = attempt.get("quarantine_reasons") or []
+    return bool(reasons) and all(
+        "Slurm node" in str(reason) or "frozen site nodelist" in str(reason)
+        for reason in reasons
+    )
+
+
 def _results_root() -> Path:
     env = ptb.read_ptb_env()
     return Path(env.get("POST_TRAIN_BENCH_RESULTS_DIR", ptb.PTB_ROOT / "results")).resolve()
@@ -210,6 +229,15 @@ def build_report(manifest: dict[str, Any]) -> dict[str, Any]:
         for row in eligible_rows
         if row["completed_attempt"] and row["completed_attempt"]["judge_flags"]
     ]
+    primary_attempts = [
+        row["completed_attempt"] for row in eligible_rows if row["completed_attempt"]
+    ]
+    sensitivity_attempts = primary_attempts + [
+        row["completed_attempt"]
+        for row in quarantined_rows
+        if row["completed_attempt"]
+        and _placement_only_quarantine(row["completed_attempt"])
+    ]
     return {
         "schema_version": 1,
         "batch_id": manifest.get("batch_id", ""),
@@ -221,6 +249,8 @@ def build_report(manifest: dict[str, Any]) -> dict[str, Any]:
         "clean_complete": len(eligible_rows) - len(flagged_rows),
         "flagged_complete": len(flagged_rows),
         "quarantined_complete": len(quarantined_rows),
+        "accuracy_primary": _accuracy_summary(primary_attempts),
+        "accuracy_placement_sensitivity": _accuracy_summary(sensitivity_attempts),
         "incomplete_cells": [row["cell_id"] for row in rows if not row["complete"]],
         "rows": rows,
     }
@@ -240,6 +270,15 @@ def _score_text(row: dict[str, Any]) -> str:
     return f"{float(accuracy):.4f}"
 
 
+def _summary_text(label: str, summary: dict[str, Any]) -> str:
+    if not summary["n"]:
+        return f"ACCURACY {label} n=0 mean=- range=-"
+    return (
+        f"ACCURACY {label} n={summary['n']} mean={summary['mean']:.4f} "
+        f"range={summary['min']:.4f}..{summary['max']:.4f}"
+    )
+
+
 def render_report(
     report: dict[str, Any],
     *,
@@ -256,6 +295,8 @@ def render_report(
         ),
         f"manifest={report['manifest']}",
         f"spec={report['spec']}",
+        _summary_text("primary", report["accuracy_primary"]),
+        _summary_text("placement-sensitivity", report["accuracy_placement_sensitivity"]),
     ]
     if report["incomplete_cells"]:
         lines.append(f"incomplete={','.join(report['incomplete_cells'])}")
