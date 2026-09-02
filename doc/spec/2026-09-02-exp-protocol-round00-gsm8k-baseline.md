@@ -51,6 +51,15 @@ manifest 显式声明并由 `awm ptb check` 核验 protocol tree，checkout 的�
 tree 也会被重建。根据保持 16 GPU 有独立工作排队的指令，这份已验证 v3 直接提交 formal，
 不再重复 wiring pilot。
 
+### 预声明 precision extension
+
+在所有 Round 00 formal jobs 尚无 terminal result、尚未观察任何 formal 分数时，额外冻结
+`exp-protocol-gsm8k-gemma4b-high-r00-baseline-b-x8-v1`：`run_index: 2`、manifest 内
+`replicate: 1..8`，汇总时是 baseline 的全局第 17–24 个观测。它与 null-control 的第三个
+x8 batch 成对，只用于提高方差/规程执行率估计精度并维持至少 16 个 pending backfill。
+原 v3 的前 16 个是不可替换的 core set；extension 不能因 core cell 失败或分数不利而替换
+它。报告同时给出 core-16 与 all-24，逐项列出 validator 排除，不做分数选择。
+
 formal 16 cells 一旦 gate 打开便作为同一 immutable manifest 异步提交。后续分析不等待
 无关队列；但不得在本批结果出现前预造依赖 Round 00 结论的 candidate。
 
@@ -66,6 +75,8 @@ formal 16 cells 一旦 gate 打开便作为同一 immutable manifest 异步提�
 当 8 个有效 formal cells 到达时，可向 Fable 发一个 interim analysis window，但不得据此
 改 baseline。Round 00 的主要分布报告等待全部 16 cells，或至少 12 个有效 cells 且其余
 仅为尚未完成/明确基础设施失败。任何排除都按 receipt 顺序列出，不能按分数选择。
+precision extension 不推迟 core-16 的 primary analysis；其结果到达后追加 all-24 sensitivity
+analysis。
 
 最终记录写到 `doc/exp_protocol_iterations/2026-09-02-round-00.md`，至少包含：
 

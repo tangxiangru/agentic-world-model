@@ -43,6 +43,14 @@ candidate 对 baseline 的比较都在"装了规程"这个前提内进行；如�
 （8 对照 + 8 baseline）结束后，剩余 8 个 baseline 与这 8 个对照一起填满第二波，对照与 baseline
 各达 16 个。它不依赖任何结果；分析时两批对照合并，前提是 receipt 指向同一 PTB commit。
 
+## 第三批：配对 precision extension
+
+在所有 Round 00 formal jobs 尚无 terminal result、尚未观察任何 formal 分数时，冻结
+`exp-protocol-gsm8k-gemma4b-high-r00-nullctl-c-x8-v1`：`run_index: 3`、manifest 内
+`replicate: 1..8`，汇总时是零点的全局第 17–24 个观测。它与 baseline-b-x8 成对，执行
+合同保持一致且仍不安装 protocol。前两批 16 个 control 是不可替换的 core set；第三批
+不能替换其中失败或低分的 cell。报告同时展示 core-16 与 all-24。
+
 ## 分析
 
 对照与 baseline 用同一套指标：accuracy 的 mean / range / stderr。规程指标
