@@ -88,9 +88,23 @@ iteration agent 对 baseline 至少人工读 3 张 cards；若所有 cells 合�
 
 ## 四、常规 GSM8K 迭代轮
 
-每轮比较 2 或 3 个 protocol variants，其中一个总是当前 baseline。默认设计是
-baseline 对一个 candidate，各 2 个正式 repeats；证据不清时追加第 3 个，而不是用
-单次最高分做决定。
+每轮比较若干 protocol variants，其中一个总是当前 baseline。**自 Round 02 起按用户
+2026-09-02 21:45 UTC 的指令采用两段式（见 §七 用户指令第 5 条）**：
+
+- **筛选段：每个 candidate 4 个正式 cell。** 每个 candidate 相对 baseline 只改一个
+  protocol 事项，并在 spec 里预先写明它要改变的那个指标（例如"因会话结束丢失训练的
+  cell 数"、"某个 pitfall 的 `cost_h`"、"lock 先于 launch 的比例"）。筛选段看两件事：
+  目标指标动没动；accuracy 有没有大跌（n=4 只能分辨 0.06 以上的差距，只作护栏）。
+  稀有事件（会话死亡等）在 4 个 cell 里不出现不说明什么，要看机制证据（hook 是否
+  触发、触发后 scientist 是否等完训练）。
+- **确认段：只给赢家补到 8 个。** 要宣称一个改动对分数有 0.03–0.05 的效应，或把它
+  送进 §五 的候选池，必须先补齐第二个 4-cell block（新的 immutable manifest，
+  `run_index` 递增）。输家不补跑，按 §七 从 queue 撤下尚未开始的 cells。
+- **一轮可并行多个 candidate**（16 卡一波最多 4 个 candidate × 4 cells），每个
+  candidate 仍只改一处，可追溯性不变；round record 逐 candidate 记录。
+- **baseline 每波掺 2 个 cell**，用于监测 PTB commit、API 行为随时间的漂移；它们并入
+  baseline 池，不单独成臂。
+- Round 00 两臂各 16 个与 Round 01 的 8 + 8 个 strict 补跑已登记，维持不变。
 
 每轮执行：
 
@@ -101,7 +115,8 @@ baseline 对一个 candidate，各 2 个正式 repeats；证据不清时追加�
 5. `awm ptb results MANIFEST` 只接受 validator 完整且 judge-clean 的 cells。
 6. `awm exp_protocol collect results/ptb/<batch>/*/task --csv` 汇总指标。
 7. 每 variant 人工读至少 3 张 cards。
-8. 先写 round record，再做下一次单一改动；record 与改动放在同一 commit。
+8. 先写 round record，再做下一次改动；每个 candidate 的 record 与它的改动放在同一
+   commit。
 
 可改范围只有：
 
@@ -118,7 +133,8 @@ baseline 对一个 candidate，各 2 个正式 repeats；证据不清时追加�
 “高分”按 variant 的预注册重复判断，不按单个 lucky cell 判断。candidate 进入
 held-out 候选池必须同时满足：
 
-1. 至少 2 个 validator-complete、judge-clean 的 GSM8K repeats；
+1. 筛选段与确认段合计至少 8 个 validator-complete、judge-clean 的 GSM8K repeats
+   （Round 02 起；此前的 variant 按其登记的 repeats 计）；
 2. candidate accuracy mean 高于当前 baseline mean；
 3. 任一 repeat 不得比 baseline mean 低超过 0.03；
 4. `n_locked_open`、`n_unreadable` 不增加，`fields_filled` 不下降；
@@ -126,8 +142,9 @@ held-out 候选池必须同时满足：
    消失、或 preflight/lock/close 执行率提高；
 6. 改动及其理由已经写进对应 round record。
 
-如果两组 accuracy range 重叠且结论依赖分数，先给 baseline 和 candidate 各追加一个
-repeat。追加前写入 manifest；不得看完第三次结果后只保留有利的那一格。
+如果两组 accuracy range 重叠且结论依赖分数，先给 candidate 追加一个 4-cell block
+（baseline 池已足够大时不必对称追加）。追加前写入 manifest；不得看完结果后只保留
+有利的那一格。
 
 候选池按 GSM8K mean accuracy 排序，protocol KPI 作为并列判据。每个 promotion
 window 默认积累 2 个合格 candidate variants；只把排名最高的最多 2 个送入 AIME2025。
@@ -206,6 +223,11 @@ Fable 单独写一次跨轮 meta retrospective；只有至少两个 rounds 重�
    operator 保留到自然结束）。
 4. 本指令由分支负责 agent（Fable）以 commit 落实；`queue.yaml` 的改动直接提交到
    `gangda_exp_protocol_evolve`，不再开新 PR。
+5. **（2026-09-02 21:45 UTC 追加）每个 candidate 先跑 4 个 cell。** 用户认为每个候选
+   固定 8 个不利于发现；Fable 提出两段式（4 个筛选、赢家补到 8 个、一轮并行多个
+   单一改动的 candidate、baseline 每波掺 2 个），用户批准"先每个候选 4 个 cell"。
+   §四、§五据此修订，自 Round 02 起生效；已登记的 Round 00/01 cells 不变。held
+   pending 下限 8 个 = 两个 candidate 的筛选 block。
 
 ## 八、结果与 provenance
 

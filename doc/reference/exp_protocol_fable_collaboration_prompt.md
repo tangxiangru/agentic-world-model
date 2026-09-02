@@ -42,7 +42,7 @@ Monitor PR #20 for new commits, result bundles, planner summaries, and questions
 Do not post a comment merely to say that nothing changed.
 
 Start an analysis window when either:
-1. a complete comparison block exists (at least two valid repeats per variant), or
+1. a complete comparison block exists (from Round 02: a candidate's 4-cell screening block, or its 8-cell confirmation; before that, at least two valid repeats per variant), or
 2. at least eight new validator-complete cells have landed since your last analysis.
 
 For every analysis window:
@@ -83,13 +83,14 @@ Verdict
 - supported | contradicted | inconclusive
 - whether the candidate is eligible for the AIME held-out pool
 
-Single recommended change
-- one change only, with exact evidence
+Recommended changes
+- one change per candidate variant, with exact evidence; several single-change
+  candidates may run in one round (user directive 2026-09-02 21:45 UTC)
 - allowed surface: skills/exp_protocol/SKILL.md, pitfalls.yaml,
   awm/exp_protocol/preflight.py + tests, or an optional card field
 
 Next batch
-- task, invariant settings, baseline SHA, candidate SHA, repeat count
+- task, invariant settings, baseline SHA, candidate SHA, repeat count (4 per candidate to screen, a second 4-cell block to confirm a winner; 2 baseline cells per wave)
 - required checks and stop conditions
 
 Blockers
