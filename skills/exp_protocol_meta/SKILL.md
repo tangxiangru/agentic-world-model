@@ -34,12 +34,17 @@ itself are a separate, human decision.
 4. **Held-out task.** One task is never used for iteration; it is run only to
    confirm a change generalises before it becomes the baseline.
 5. **Launch.** Each scientist cell in this line uses the `claude_vertex_high_awm`
-   scaffold and declares, in its manifest cell, an `awm` block: the variant's commit
-   (`sha`), `paths` = the six entries of `EXP_PROTOCOL_SHIP` in
-   `awm/ptb_experiments.py` (the CLI, `awm/exp_protocol`, `skills/exp_protocol`
-   and nothing else), and `setup: "--exp-protocol --tool claude"`. The
-   launcher ships exactly those paths of that commit into the sandbox,
-   read-only, and the scaffold runs `awm sandbox setup` before the prompt.
+   scaffold and declares, in its manifest cell, an `awm` block: the commit to
+   ship (`sha`; it must carry `awm/sandbox.py`, so it is the branch head, not
+   the commit that last touched the skill), `protocol_tree` =
+   `git rev-parse <sha>:skills/exp_protocol` (the variant's identity: two
+   commits with the same tree are the same variant, and `awm ptb check`
+   refuses a cell whose tree is not the one declared), `paths` = the six
+   entries of `EXP_PROTOCOL_SHIP` in `awm/ptb_experiments.py` (the CLI,
+   `awm/exp_protocol`, `skills/exp_protocol` and nothing else), and
+   `setup: "--exp-protocol --tool claude"`. The launcher ships exactly those
+   paths of that commit into the sandbox, read-only, and the scaffold runs
+   `awm sandbox setup` before the prompt.
    The meta skill, the docs, and anything of the world-model agent
    (`awm/wma`, `skills/wma*`) can never be shipped: the launcher refuses
    them by name, and refuses `awm` or `skills` wholesale. Use the committed batch launcher (`awm ptb`, manifests

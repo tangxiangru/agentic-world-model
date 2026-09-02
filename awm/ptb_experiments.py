@@ -47,6 +47,8 @@ APPROVED_AGENT_SETUPS = (
 
 #: Where an `_awm` scaffold expects the checkout inside the sandbox.
 AWM_MOUNT = "/home/ben/awm"
+#: The tree whose id names a protocol variant (`awm.protocol_tree` in a manifest cell).
+PROTOCOL_TREE_PATH = "skills/exp_protocol"
 #: Trees a scientist must never see; no `awm.paths` entry may ship or contain them.
 #: Listing a parent (`awm`, `skills`) is rejected too, so a study ships subtrees by name.
 AWM_FORBIDDEN_TREES = (
@@ -162,6 +164,12 @@ def _validate_awm_block(cell_id: str, agent: Any, block: Any) -> None:
         raise ExperimentError(
             f"cell {cell_id}: awm.setup must be one line of arguments for `awm sandbox setup`"
         )
+    tree = block.get("protocol_tree")
+    if tree is not None and not re.fullmatch(r"[0-9a-f]{40}", str(tree)):
+        raise ExperimentError(
+            f"cell {cell_id}: awm.protocol_tree must be the full git tree id of "
+            f"skills/exp_protocol at awm.sha (git rev-parse <sha>:skills/exp_protocol), not {tree!r}"
+        )
 
 
 def _git_has_commit(sha: str) -> bool:
@@ -193,7 +201,36 @@ def _awm_issues(cell_id: str, block: dict[str, Any]) -> list[str]:
         ).stdout.strip()
         if not listed:
             issues.append(f"cell {cell_id}: awm path {path!r} does not exist at commit {sha[:12]}")
+    declared = block.get("protocol_tree")
+    if declared:
+        actual = protocol_tree_at(sha)
+        if actual != declared:
+            issues.append(
+                f"cell {cell_id}: skills/exp_protocol at commit {sha[:12]} is tree "
+                f"{(actual or 'absent')[:12]}, not the declared protocol_tree {str(declared)[:12]}"
+            )
     return issues
+
+
+def protocol_tree_at(sha: str) -> str | None:
+    """The git tree id of ``skills/exp_protocol`` at ``sha``: the protocol variant's identity.
+
+    A manifest names the commit it ships (which must carry the CLI and the
+    setup step) and, separately, the protocol tree it means to test; two
+    commits with the same tree are the same variant, and a commit whose tree
+    differs from the declared one is a different variant, whatever its
+    message says.
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{sha}:{PROTOCOL_TREE_PATH}"],
+        cwd=paths.REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def _tree_digest(root: Path) -> str:
@@ -230,7 +267,13 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
         except (OSError, ValueError):
             return None
         if info.get("sha") == sha and info.get("paths") == list(shipped) and info.get("complete"):
-            return {"sha": sha, "paths": list(shipped), "dir": str(target), "digest": info["digest"]}
+            return {
+                "sha": sha,
+                "paths": list(shipped),
+                "dir": str(target),
+                "digest": info["digest"],
+                "protocol_tree": info.get("protocol_tree"),
+            }
         return None
 
     if (found := _existing()) is not None:
@@ -261,10 +304,12 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
             if (staging / tree).exists():
                 raise ExperimentError(f"archive of {sha[:12]} contains {tree}; refusing to ship it")
         digest = _tree_digest(staging)
+        protocol_tree = protocol_tree_at(sha) if (staging / PROTOCOL_TREE_PATH).is_dir() else None
         marker = {
             "sha": sha,
             "paths": list(shipped),
             "digest": digest,
+            "protocol_tree": protocol_tree,
             "complete": True,
             "materialized_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -279,7 +324,13 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    return {"sha": sha, "paths": list(shipped), "dir": str(target), "digest": digest}
+    return {
+        "sha": sha,
+        "paths": list(shipped),
+        "dir": str(target),
+        "digest": digest,
+        "protocol_tree": protocol_tree,
+    }
 
 
 def _batch_tasks(contract: dict[str, Any]) -> tuple[str, ...]:

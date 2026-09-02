@@ -715,6 +715,7 @@ def test_an_awm_cell_ships_its_checkout_read_only(tmp_path: Path, monkeypatch) -
         "paths": list(ptb.EXP_PROTOCOL_SHIP),
         "dir": str(checkout),
         "digest": first.checkout["digest"],
+        "protocol_tree": ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD:skills/exp_protocol"),
     }
     assert len(first.checkout["digest"]) == 64
     # the second cell, same sha and paths, reuses the same materialised directory
@@ -790,3 +791,40 @@ def test_materialising_a_checkout_is_idempotent_and_refuses_the_meta_skill(
         ptb.materialize_awm_checkout(sha, ["awm"])
     with pytest.raises(ptb.ExperimentError, match="not in this repository"):
         ptb.materialize_awm_checkout("f" * 40, ["awm/cli.py"])
+
+
+# ---- the protocol tree (2026-09-02) ---------------------------------------------
+# The iteration line names a variant by the tree of skills/exp_protocol, not by
+# a commit: the commit a cell ships must carry the setup step, which the commit
+# that last touched the skill may predate, and a later commit is the same
+# variant only while that tree is unchanged.
+
+
+def test_awm_protocol_tree_names_the_variant_the_cell_ships(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path)
+    sha = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD")
+    tree = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD:skills/exp_protocol")
+    assert ptb.protocol_tree_at(sha) == tree
+    assert ptb.protocol_tree_at("f" * 40) is None
+    good = {
+        "sha": sha,
+        "paths": list(ptb.EXP_PROTOCOL_SHIP),
+        "setup": "--exp-protocol",
+        "protocol_tree": tree,
+    }
+    assert ptb._awm_issues("p01r1", good) == []
+    other = good | {"protocol_tree": "e" * 40}
+    assert any("protocol_tree" in issue for issue in ptb._awm_issues("p01r1", other))
+    data = _awm_manifest()
+    data["cells"][0]["awm"]["protocol_tree"] = tree[:7]
+    with pytest.raises(ptb.ExperimentError, match="protocol_tree"):
+        ptb.validate_manifest(data)
+    data["cells"][0]["awm"]["protocol_tree"] = tree
+    ptb.validate_manifest(data)
+    # the materialised checkout, and so the receipt, carry the tree they ship
+    checkout = ptb.materialize_awm_checkout(sha, list(ptb.EXP_PROTOCOL_SHIP))
+    assert checkout["protocol_tree"] == tree
+    marker = json.loads((Path(checkout["dir"]) / ".awm-checkout.json").read_text())
+    assert marker["protocol_tree"] == tree
+    assert ptb.materialize_awm_checkout(sha, list(ptb.EXP_PROTOCOL_SHIP))["protocol_tree"] == tree
+    assert ptb.materialize_awm_checkout(sha, ["awm/cli.py"])["protocol_tree"] is None
