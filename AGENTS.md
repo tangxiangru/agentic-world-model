@@ -1,5 +1,9 @@
 # Experiment operations memory
 
+- The active main development and integration branch is `gangda-dev`. Treat
+  `gangda_trial_0828` references in existing manifests, specs, receipts, and job names as frozen
+  historical provenance; use `gangda-dev` for new development integration and PR targets unless
+  the user explicitly names another branch.
 - Keep expensive accelerators fed asynchronously. Once a downstream batch is independently
   specified, validated, and safe to run, submit it to the scheduler immediately; do not wait for
   the final long-tail job merely to make the submission synchronous.
