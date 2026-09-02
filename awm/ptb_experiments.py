@@ -284,25 +284,45 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
             info = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        if (
-            info.get("sha") == sha
-            and info.get("paths") == list(shipped)
-            and info.get("complete")
-            and info.get("protocol_tree") == expected_protocol_tree
+        if not (
+            info.get("sha") == sha and info.get("paths") == list(shipped) and info.get("complete")
         ):
-            return {
-                "sha": sha,
-                "paths": list(shipped),
-                "dir": str(target),
-                "digest": info["digest"],
-                "protocol_tree": info.get("protocol_tree"),
-            }
-        return None
+            return None
+        if info.get("protocol_tree") != expected_protocol_tree:
+            # The bytes are fixed by (sha, paths); only the marker is behind (an older
+            # launcher wrote it without the tree). Upgrade the marker in place: a running
+            # cell may have this directory bind-mounted, and replacing it under that
+            # mount leaves the scientist with a stale file handle (pilot 90462, 2026-09-02).
+            info["protocol_tree"] = expected_protocol_tree
+            info["marker_upgraded_at"] = datetime.now(timezone.utc).isoformat()
+            marker.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+        return {
+            "sha": sha,
+            "paths": list(shipped),
+            "dir": str(target),
+            "digest": info["digest"],
+            "protocol_tree": info.get("protocol_tree"),
+        }
 
     if (found := _existing()) is not None:
         return found
     if target.exists():
-        shutil.rmtree(target)  # a stale or half-written directory
+        # Only a half-written directory is ever removed: one without a complete marker.
+        # A complete checkout is never deleted here, whatever its marker says, because a
+        # cell may be running on it; (sha, paths) name the directory, so a complete marker
+        # that disagrees with them is corruption to investigate, not to overwrite.
+        marker = target / marker_name
+        if marker.is_file():
+            try:
+                info = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                info = {}
+            if info.get("complete"):
+                raise ExperimentError(
+                    f"checkout {target} is complete but its marker names a different commit or "
+                    "paths; refusing to replace a directory a running cell may be using"
+                )
+        shutil.rmtree(target)  # half-written; never bound into a sandbox
     if not _git_has_commit(sha):
         raise ExperimentError(f"awm commit {sha} is not in this repository; git fetch origin first")
     archive = subprocess.run(

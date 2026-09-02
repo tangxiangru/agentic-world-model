@@ -844,18 +844,49 @@ def test_awm_protocol_tree_names_the_variant_the_cell_ships(tmp_path: Path, monk
     assert ptb.materialize_awm_checkout(sha, ["awm/cli.py"])["protocol_tree"] is None
 
 
-def test_a_stale_checkout_without_protocol_tree_is_rebuilt(tmp_path: Path, monkeypatch) -> None:
+def test_a_marker_behind_the_launcher_is_upgraded_in_place_never_rebuilt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Pilot 90462 (2026-09-02) lost `awm` mid-run to a stale NFS handle: the launcher
+    # replaced its bind-mounted checkout to add protocol_tree to the marker. The bytes are
+    # fixed by (sha, paths); only the marker moves.
     monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path)
     sha = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD")
     shipped = list(ptb.EXP_PROTOCOL_SHIP)
     first = ptb.materialize_awm_checkout(sha, shipped)
-    marker = Path(first["dir"]) / ".awm-checkout.json"
+    checkout = Path(first["dir"])
+    marker = checkout / ".awm-checkout.json"
     stale = json.loads(marker.read_text())
     stale.pop("protocol_tree")
     marker.write_text(json.dumps(stale) + "\n")
+    sentinel = checkout / "awm" / "cli.py"
+    inode_before = checkout.stat().st_ino
+    mtime_before = sentinel.stat().st_mtime_ns
 
-    rebuilt = ptb.materialize_awm_checkout(sha, shipped)
+    upgraded = ptb.materialize_awm_checkout(sha, shipped)
 
     expected = ptb.protocol_tree_at(sha)
-    assert rebuilt["protocol_tree"] == expected
-    assert json.loads(marker.read_text())["protocol_tree"] == expected
+    assert upgraded["protocol_tree"] == expected
+    assert upgraded["dir"] == str(checkout) and upgraded["digest"] == first["digest"]
+    assert checkout.stat().st_ino == inode_before  # the directory itself survived
+    assert sentinel.stat().st_mtime_ns == mtime_before  # and so did its files
+    info = json.loads(marker.read_text())
+    assert info["protocol_tree"] == expected and info["marker_upgraded_at"]
+
+
+def test_a_complete_checkout_is_never_deleted(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path)
+    sha = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD")
+    shipped = list(ptb.EXP_PROTOCOL_SHIP)
+    checkout = Path(ptb.materialize_awm_checkout(sha, shipped)["dir"])
+    marker = checkout / ".awm-checkout.json"
+    info = json.loads(marker.read_text())
+    info["sha"] = "0" * 40  # corrupt: a complete marker that disagrees with the directory name
+    marker.write_text(json.dumps(info) + "\n")
+    with pytest.raises(ptb.ExperimentError, match="refusing to replace"):
+        ptb.materialize_awm_checkout(sha, shipped)
+    assert (checkout / "awm" / "cli.py").is_file()
+    # a half-written directory (no complete marker) is still replaced
+    marker.unlink()
+    rebuilt = ptb.materialize_awm_checkout(sha, shipped)
+    assert Path(rebuilt["dir"]) == checkout and (checkout / ".awm-checkout.json").is_file()
