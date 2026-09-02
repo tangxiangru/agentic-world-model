@@ -13,3 +13,4 @@
 - 2026-09-02T12:53:14+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v1/p00r01 job=90462 COMPLETED acc=0.5512 complete clean
 - 2026-09-02T13:10:33+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-x8-v1/c00r01 job=90463 COMPLETED acc=0.4655 complete clean
 - 2026-09-02T13:23:49+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v2/p00r01 job=90464 COMPLETED acc=0.4647 complete general_anomaly
+- 2026-09-02T14:15:29+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r08 job=90482 FAILED incomplete (4 issue(s)) general_anomaly
