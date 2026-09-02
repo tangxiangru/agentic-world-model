@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T15:45:10Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 3.35
+  remaining_h: 6.65
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.7533, protocol_n: 150}
+  trigger: "All 37 remaining dev-150 failures are well-formed answers with wrong reasoning: the model sets the problem up incorrectly (e.g. averaging 30/4 = 7.5 when the gold is 60, or profit = revenue - cost with the wrong revenue). Format work is finished; the arithmetic chain is what is left."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150_diag.json, locator: "items[] with correct=false, n=37", observation: "148/150 terminate correctly; every failure is a content error, not a format error"}
+    - {path: /home/ben/task/logs/rft_sample_gsm8k.log, locator: "[rft] pass@1 0.721 pass@8 0.965", observation: "on gsm8k *train* the model already samples a correct solution for 96.5% of questions within 8 tries - there is a large pool of correct on-policy chains it does not reliably produce first"}
+  alternatives_rejected:
+    - {option: "DPO on correct/incorrect sampled pairs", reason: "the same sampling run supplies pairs, but DPO needs a reference-model pass and careful beta tuning; with ~6h left RFT is the lower-variance use of the same samples"}
+    - {option: "Train on RFT data alone (30k rows)", reason: "narrowing risk - the model would see only its own already-correct chains and could lose the OpenMathInstruct-2 solution diversity; 30k replay rows from sft_v1 are mixed in 1:1"}
+    - {option: "Scale up SFT data first (sft_v2, 135k fresh rows)", reason: "queued as exp-05; RFT runs first because its data is already generated and the run is ~3x shorter, so it settles the on-policy question before the long run"}
+  pitfalls_hit:
+    - {what: "First sft_v2 build returned only 42.5k rows: OpenMathInstruct-2 shards 6-13 re-use the same augmented_gsm8k problems as shards 0-5, so --exclude plus max_per_problem 2 rejected 94% of rows", cost_h: 0.15, fix: "rebuilt with max_per_problem 4 and no question-level exclusion (the solutions are different generations); 135k rows, 0 exact duplicates against sft_v1"}
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --out, data/rft_gsm8k_train.jsonl, --questions, data/rft_questions_gsm8k_train.jsonl, --k, '8', --keep-per-question, '4'], outcome: "pass@1 0.721, pass@8 0.965, 9350 rows kept in 19 min"}
+    - {command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --out, data/rft_omi2.jsonl, --questions, data/rft_questions_omi2.jsonl, --k, '4', --max-questions, '20000', --keep-per-question, '3'], outcome: "pass@1 0.759, pass@4 0.930, 20949 rows kept in 28 min"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/contam_input_rft.jsonl], outcome: "60299 documents scanned, 0 contaminated, 0 matches"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "The exp-02/exp-03 model produces well-formed solutions whose reasoning is wrong on 37 of 150 dev items. Its own sampling shows the knowledge is largely there - 96.5% of gsm8k train questions get a correct chain within 8 samples - but the first (greedy) chain is often not one of them."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150_diag.json, locator: "37 items with correct=false", observation: "all terminate, all carry exactly one ANSWER line; the number is simply wrong"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150_log.json, locator: "worker-bee item, gold 400, answered 560", observation: "sets up 4x/2 + x/2 = 700 and then reports 2x instead of the asked quantity - a setup error, not an arithmetic slip"}
+    - {path: /home/ben/task/logs/rft_sample_omi2.log, locator: "[rft] pass@1 0.759 pass@4 0.930", observation: "same gap on the OpenMathInstruct-2 question pool"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "greedy-fail-1", source: /home/ben/task/eval/exp-03_greedy_dev150_log.json, question: "(gsm8k test item, bees - text not copied, protocol rule 7)", gold: "400", model_output: "...the number of worker bees is 2*280 = 560 ... ANSWER: 560", failure: "answers a different quantity than the one asked"}
+    - {id: "greedy-fail-2", source: /home/ben/task/eval/exp-03_greedy_dev150_log.json, question: "(gsm8k test item, hospital profit)", gold: "10000", model_output: "...100000 - 30000 = 70000 ... ANSWER: 70000", failure: "wrong revenue term in the profit equation"}
+    - {id: "greedy-fail-3", source: /home/ben/task/eval/exp-03_greedy_dev150_log.json, question: "(gsm8k test item, square footage)", gold: "60", model_output: "(16 + 8 + 4 + 2)/4 = 30/4 = 7.5 ... ANSWER: 7.5", failure: "misread the units of the quantity being averaged"}
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Continuing training from exp-02 on 30,299 of the model's own answer-verified solutions, mixed 1:1 with 30,000 replayed sft_v1 rows, raises greedy dev-150 accuracy above exp-03's 0.7533."
+  mechanism: "Rejection sampling puts probability mass on chains this model actually produces and that reach the right answer, so the greedy path is pulled towards the correct modes it already samples at rate 0.72-0.76. Keeping more copies of low-pass-rate questions (cap 4 below 0.375, 2 below 0.75, 1 above) weights the update towards the frontier rather than the questions it already gets right every time."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+2 to +6 points"}
+  falsified_if: "greedy dev-150 accuracy is at or below 0.7533, or the completions get shorter and more templated while accuracy falls (mode collapse onto the RFT style)"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "synthetic:self (exp-02 samples) + derived:exp-02 replay from data/sft_v1.jsonl"
+      n_examples: 60299
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --k, '8', --questions, data/rft_questions_gsm8k_train.jsonl]
+      selection: "k=8 samples over all 7473 openai/gsm8k *train* questions and k=4 over 20000 OpenMathInstruct-2 augmented_gsm8k questions, at temperature 1.0 / top_p 0.95 / top_k 64. A sample is kept only if the grader's own rule (last numeric whitespace token, 5 significant digits) matches the gold answer, it contains exactly one 'ANSWER: ' and that is the last line. Deduplicated, shortest-first, capped per question by pass rate (>=0.75 keep 1, >=0.375 keep 2, else keep up to 4/3). 30000 random sft_v1 rows are mixed in as replay."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, token-budget batch sampler, flash_attention_2; vLLM 0.11.0 for the sampling stage. After training, ckpts/exp-04/final/generation_config.json is patched to do_sample=false / temperature=0 (the decoding default adopted in exp-03) before any evaluation, so the candidate and the exp-03 comparator are decoded the same way."
+    peft: "none (full fine-tune of the 3.88B text stack; SigLIP vision tower and projector stay frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 8192, grad_accum: 8, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "chain of thought, blank line, 'ANSWER: <n>', then <end_of_turn>; loss on the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_mix_v1.jsonl, --out, /home/ben/task/ckpts/exp-04, --model, /home/ben/task/ckpts/exp-02/final, --precision, mixed, --token-budget, '8192', --grad-accum, '8', --lr, '1e-5', --epochs, '1', --max-seq-len, '2816', --save-steps, '200']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 200
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7533
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "median completion length in characters (exp-03: 431) - a sharp drop would indicate collapse onto a templated RFT style"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.73
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 352}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-352, step: 352}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-200, step: 200}
+  training_summary: {final_loss: 0.2419, steps: 352, notes: "train_loss 0.2424 over 22.3M tokens; loss starts far below exp-02's because 30k of the 60k rows are the model's own samples"}
+  measurements:
+    - {metric: accuracy, value: 0.7467, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 383
+    path: /home/ben/task/analysis/exp-04_dev150_diag.json
+    notes: "median completion 431 -> 383 chars and 148/150 still terminate. The shortening is the predicted direction of RFT style collapse, but it is mild and did not come with a format regression."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Greedy dev-150 0.7533 -> 0.7467 (-0.7 points, well inside the 3.5-point stderr): RFT on 30k answer-verified self-samples did not move the benchmark. The model's greedy path was apparently already close to its own correct sampling modes, so re-weighting towards them bought nothing; the completions only got 11% shorter."
+  decision: reject
+  next_step: "Keep exp-02 weights + greedy decoding (exp-03) as the incumbent. exp-05: test whether the gain is data-limited instead of policy-limited, by continuing exp-02 on 135k fresh OpenMathInstruct-2 rows (sft_v2) that share no solution with sft_v1."

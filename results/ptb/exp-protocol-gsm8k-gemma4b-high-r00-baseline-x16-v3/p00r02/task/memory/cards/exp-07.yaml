@@ -1,0 +1,123 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-02T20:57:00Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 8.6
+  remaining_h: 1.4
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.7933, protocol_n: 150}
+  trigger: "exp-06 died 30 minutes in, at its first checkpoint save, on a GenerationConfig validation error inherited from the greedy parent. The third-slice hypothesis was never tested and 1.4h remain."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "result.failure", observation: "ValueError: do_sample False with temperature 0.0, raised from Trainer._save_checkpoint at step 250/659"}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-250, locator: "directory listing", observation: "config.json only, 2.5KB - no weights survived"}
+  alternatives_rejected:
+    - {option: "Stop here and ship exp-05", reason: "final_model already holds exp-05 and is verified, so the downside of one more run is bounded; there is enough slack to try and still finish the handover"}
+    - {option: "Rerun exp-06 unchanged at 95k rows", reason: "80 minutes of training does not fit in 1.4h alongside evaluation and final verification"}
+    - {option: "Model soup of exp-02/final and exp-05/final instead", reason: "cheaper, but exp-05 already showed +4 for a data slice and nothing in this session showed a soup would do better; the data lever is the one with evidence"}
+  pitfalls_hit:
+    - {what: "A greedy generation_config on the parent checkpoint (do_sample False + temperature 0.0) makes every transformers checkpoint save raise ValueError, killing a run mid-flight with no weights written", cost_h: 0.55, fix: "scripts/train_sft2.py resets do_sample/temperature to a valid combination before training and writes the greedy generation_config.json by hand after the final save; periodic saves are also disabled for this run"}
+  smoke_runs:
+    - {command: [python, scripts/verify_final.py], outcome: "final_model (exp-05 weights) loads on CPU, greedy config and <end_of_turn> stop token confirmed - see logs/verify_final_exp05.log"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "The third-slice data hypothesis from exp-06 is untested: the run produced no weights. 31 of 150 dev items still fail on problem setup, and more distinct worked solutions is the only intervention in this session with a measured positive effect."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_dev150_diag.json, locator: "31 items with correct=false", observation: "all well-formed; the failures are problem-setup errors"}
+    - {path: /home/ben/task/analysis/exp-05_flips.json, locator: "fixed=13, regressions=7", observation: "the previous slice produced a net +6 items"}
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "result.execution: failed", observation: "the retry is the same hypothesis, not a new one"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "exp-05 residual set", source: /home/ben/task/analysis/exp-05_dev150_diag.json, question: "(31 gsm8k test items - text not copied, protocol rule 7)", gold: "various", model_output: "well-formed 'ANSWER: n' lines with the wrong n", failure: "problem-setup errors"}
+    - {id: "greedy-fail-1", source: /home/ben/task/eval/exp-03_greedy_dev150_log.json, question: "(gsm8k test item, bees)", gold: "400", model_output: "...worker bees is 2*280 = 560 ... ANSWER: 560", failure: "answers a different quantity than the one asked"}
+    - {id: "greedy-fail-3", source: /home/ben/task/eval/exp-03_greedy_dev150_log.json, question: "(gsm8k test item, dog food bags)", gold: "5", model_output: "2 bags + 7 bags = 9 bags ... ANSWER: 9", failure: "double-counts a period of the timeline"}
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Continuing from exp-05 for one epoch over 48k rows of the third disjoint OpenMathInstruct-2 slice (sft_v3) at lr 1e-5 raises greedy dev-150 accuracy above exp-05's 0.7933."
+  mechanism: "Same as exp-05: more distinct worked solutions widen coverage of problem setups. The slice is a third of exp-05's size because that is what fits, so the effect should be correspondingly smaller."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-05, magnitude: "+0 to +2 points; a third of the data for a third of the effect"}
+  falsified_if: "greedy dev-150 accuracy is at or below 0.7933; in that case final_model keeps the exp-05 weights it already holds"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3_dedup.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, shards 14-21"
+      n_examples: 114000
+      built_by: /home/ben/task/scripts/build_data_v2.py
+      build_command: [python, scripts/build_data_v2.py, --out, data/sft_v3.jsonl, --shard-start, '14', --shard-end, '22', --n-aug-gsm8k, '90000', --n-gsm8k, '10000', --n-math, '14000', --max-per-problem, '4', --no-gold, --fewshot-frac, '0.10', --seed, '2']
+      selection: "same filters as sft_v1/sft_v2 over shards 14-21, up to 4 solutions per problem, deduplicated on (question, completion) against both earlier corpora - 0 collisions. The trainer reads the first 48000 rows of this shuffled file (--limit 48000), which is ~21M tokens or ~43 min at the measured 8.2k tokens/s."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, token-budget batch sampler, flash_attention_2. scripts/train_sft2.py is scripts/train_sft.py plus the generation-config fix that exp-06 needed: a valid do_sample/temperature pair during training, and the greedy generation_config.json written directly after the final save."
+    peft: "none (full fine-tune of the 3.88B text stack; SigLIP vision tower and projector stay frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 8192, grad_accum: 8, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "chain of thought, blank line, 'ANSWER: <n>', then <end_of_turn>; loss on the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft2.py, --data, data/sft_v3_dedup.jsonl, --out, /home/ben/task/ckpts/exp-07, --model, /home/ben/task/ckpts/exp-05/final, --precision, mixed, --token-budget, '8192', --grad-accum, '8', --lr, '1e-5', --epochs, '1', --max-seq-len, '2816', --limit, '48000', --save-steps, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft2.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.75}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7933
+    path: /home/ben/task/eval/exp-05_dev150.json
+  diagnostic:
+    what: "items fixed and items regressed against the exp-05 item list"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.67
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 334}
+  training_summary: {final_loss: 0.2738, steps: 334, notes: "train_loss 0.2748 over 20.9M tokens; the generation-config fix worked - the final save wrote weights and a greedy generation_config.json"}
+  measurements:
+    - {metric: accuracy, value: 0.76, n: 150, path: /home/ben/task/eval/exp-07_dev150.json, delta_vs_comparator: -0.0333}
+  diagnostic_result:
+    value: 8
+    path: /home/ben/task/analysis/exp-07_flips.json
+    notes: "8 of exp-05's 31 failures fixed but 13 previously correct items regressed, a net -5 items. Format is untouched (148/150 terminate, median 444 chars), so this is a genuine loss of accuracy, not a formatting artefact."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Greedy dev-150 0.7933 -> 0.7600 (-3.3 points; 8 items fixed, 13 regressed). A third of a data slice at the third consecutive continuation did not add coverage - it moved the model around at roughly zero net benefit, and the churn went the wrong way. The OpenMathInstruct-2 data lever is spent at this scale, or a 48k-row continuation is too small to anneal cleanly."
+  decision: reject
+  next_step: "Ship exp-05/final as final_model (already in place and verified). If this line were continued, the next test would be a single run from the base snapshot over sft_v1+sft_v2+sft_v3 rather than a chain of continuations, so the cosine schedule anneals once over all the data."
