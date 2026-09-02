@@ -8,6 +8,13 @@
 
 ## 二、按顺序做
 
+0. **先把主线 checkout 的分支名改过来**。主线 2026-09-02 由 `gangda_trial_0828` 改名为 `gangda-dev`,GitHub 上旧名已不存在;集群上的主线 checkout 还叫旧名,先改,否则它下次 push 会把旧名重新创建到远端:
+   ```bash
+   cd <主线 checkout>
+   git fetch --prune origin
+   git branch -m gangda_trial_0828 gangda-dev && git branch -u origin/gangda-dev gangda-dev
+   ```
+   batch1、batch2 的 manifest、receipt 与 job 名里保留旧名,不改;要重试那些旧批次时临时开一个叫 `gangda_trial_0828` 的本地分支即可。
 1. **建 worktree**,与主线 checkout 分开,放在数据盘上:
    ```bash
    cd <主线 checkout>            # 主线 `gangda-dev` 的那个目录,历史批次是以它的旧名 `gangda_trial_0828` 提交的
