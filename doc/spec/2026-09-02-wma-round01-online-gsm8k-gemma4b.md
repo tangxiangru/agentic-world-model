@@ -146,16 +146,16 @@ release 前逐 job 反查 Slurm `ReqNodeList`,展开后的节点集合必须与 
 为空、查询失败或集合不等时整批保持 HOLD 并写
 `routing_verification_failed`,不得运行。这是 receipt 意图之外的 scheduler-state gate。
 
-## 2026-09-02 20:3x UTC:ctl-c v2 的五个 PENDING cell 经路由门重排
+## 2026-09-02 20:3x UTC:ctl-c v2 的五个 PENDING cell 经路由门重试
 
 operator 发现 v2 里尚未启动的五个 ctl-c job(`c03r04..08`,90633–90637)在 Slurm 里
-已丢失 `ReqNodeList`,一旦调度就会落到子队列之外,于是在 PENDING 状态取消(`2b6bfeb`);
-其余 v2 job 已在 RUNNING,不动。这五个 cell 以 `wma-gsm8k-gemma4b-high-r01-ctl-c-x5-v2b`
-重排:同一公共 checkout(digest `63aef0f1a9da…`)、同一合同、`run_index: 3`、cell id
-不变(对照的全局观测 20–24),manifest 内 `replicate: 1..5`;经路由门提交。它们的
-wma-c-x8-v2 配对已经在跑,所以这一批只补齐对照的数量,时间上晚于配对——分析时与
-v2 的其余 cell 一起按 `wma_skill` 合并,并在 core-16 / all-32 / all-48 之外单列一个
-"配对同波"的敏感性口径。
+已丢失 `ReqNodeList`,一旦调度就会落到子队列之外,于是在 PENDING 状态取消(`2b6bfeb`),
+并用发射器的 **retry receipt**(`formal-retry1-…`,jobs 90786–90790)在同一 manifest 内
+重试这五个 cell,全部通过路由门、PENDING 且 `ReqNodeList=[2-3]`(`5f2189e`)。其余 v2
+job 已在 RUNNING,不动。我在同一时间写的替代 manifest `ctl-c-x5-v2b` 与之重复,在提交
+前撤回、未曾提交到 Slurm;重试与原 job 永不重复计数。这五个 cell 的 wma-c-x8-v2 配对已
+在跑,时间上晚于配对——分析时按 `wma_skill` 合并,并在 core-16 / all-32 / all-48 之外
+单列"配对同波"的敏感性口径。
 
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
