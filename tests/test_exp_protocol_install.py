@@ -87,3 +87,26 @@ def test_a_dangling_begin_marker_is_repaired(tmp_path) -> None:
     install.install(tmp_path, "both")
     text = (tmp_path / "AGENTS.md").read_text()
     assert text.count(install.BEGIN) == 1 and text.count(install.END) == 1 and "keep me" in text
+
+
+def test_the_copy_is_writable_even_from_a_read_only_source(tmp_path, monkeypatch) -> None:
+    # In the sandbox the skill comes from a read-only bind; the scientist's copy is theirs to edit.
+    import shutil
+    import stat
+
+    from awm import paths
+
+    source = tmp_path / "ro" / "exp_protocol"
+    shutil.copytree(paths.REPO_ROOT / "skills" / "exp_protocol", source)
+    for path in (source, *source.rglob("*")):
+        path.chmod(path.stat().st_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+    monkeypatch.setenv("AWM_EXP_PROTOCOL_DIR", str(source))
+    task = tmp_path / "task"
+    install.install(task, "claude")
+    skill = task / "skills" / "exp_protocol"
+    assert all(p.stat().st_mode & stat.S_IWUSR for p in (skill, *skill.rglob("*")) if not p.is_symlink())
+    (skill / "notes.md").write_text("mine\n")
+    install.install(task, "claude")  # the refresh must not choke on its own earlier copy
+    assert (skill / "notes.md").read_text() == "mine\n"
+    for path in (source, *source.rglob("*")):
+        path.chmod(path.stat().st_mode | stat.S_IWUSR)

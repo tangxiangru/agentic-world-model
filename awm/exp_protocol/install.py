@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 from pathlib import Path
 
 from .preflight import skill_dir
@@ -31,6 +32,18 @@ then launch; fill sections 5-6 and `awm exp_protocol close` afterwards. Read
 
 class InstallError(ValueError):
     pass
+
+
+def _make_writable(root: Path) -> None:
+    if not root.is_dir():
+        return
+    for path in (root, *root.rglob("*")):
+        if path.is_symlink():
+            continue
+        try:
+            path.chmod(path.stat().st_mode | stat.S_IWUSR)
+        except OSError:
+            pass
 
 
 def _pointer_block(path: Path) -> Path:
@@ -62,7 +75,10 @@ def install(target: Path, tool: str = "both") -> list[Path]:
     if dst.is_symlink():
         dst.unlink()  # a link to somewhere else is not the skill; the real files go here
     # Merge-copy: the skill's files are refreshed, anything the scientist added alongside them stays.
+    _make_writable(dst)  # a previous copy from a read-only source would refuse the refresh
     shutil.copytree(src, dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # The copy belongs to the scientist, whatever mode the source had (a read-only mount, say).
+    _make_writable(dst)
     written.append(dst)
 
     if tool in ("claude", "both"):
