@@ -82,6 +82,16 @@ changed, and name the mechanism in the note.
 | save-time validation | `top_k = -1` (a vLLM sentinel) written into a checkpoint makes the **next** `save_pretrained` raise: a finished GRPO, a full-parameter run and a bf16 conversion were each lost this way (≥ 11 hits, 35 min – 1.25 h each) | grep the config for sentinel values before a training that resumes from it |
 | right diagnosis, wrong field | editing `do_sample` instead of `temperature` (19 points) | the field the server reads is `temperature` |
 
+**A diagnosed format floor is not a capability estimate.** Apply this rule
+only to the first intervention after a pretrained/non-instruct checkpoint has
+been shown, under the card's actual chat template and end-anchored grader, to
+lose most answers through termination or answer-format failure. Anchor the L2
+lower end in that measured floor. Anchor the upper end in known capability of
+the *same checkpoint* under an aligned format when one exists; otherwise use
+the C2 headroom share from §3 against the card's observed headroom. Cite both
+anchors. Once termination is restored, later training cards use ordinary
+C3/C4 priors: never carry the format-restoration jump forward as capability.
+
 Other deductions with a price tag: session death (a run holding an 80 % model
 submitted 61 %); no regression guard on `final_model` (0.567 over 0.627); shell
 self-harm (40 min); LoRA trap (§3 C4).

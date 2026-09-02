@@ -79,7 +79,9 @@ verdict in progress.
 4. **Take the prior for what is left** from the manual's effect table, with
    its evidence grade, and fit the interval to the **noise floor** of the
    card's evaluation protocol (manual §5): an interval narrower than the
-   floor claims what the ruler cannot show.
+   floor claims what the ruler cannot show. Before using the generic C2/C3/C4
+   prior, apply manual §4's format-floor rule when this is the first
+   intervention after a diagnosed format floor.
 5. **Price it** for L3: the cost of the change type (hours for C3/C4, minutes
    for the rest) against its prior, the hours left, and the cheaper moves the
    manual says dominate (C2 alignment, C5 checkpoint sweep, C1b after its
