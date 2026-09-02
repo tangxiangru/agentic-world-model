@@ -45,10 +45,14 @@ class TestValidate:
         fields = {p.field for p in schema.validate_verdict(v).errors}
         assert {"levels.L0_runs.answer", "levels.L1_valid.confidence", "levels.L2_effect.interval"} <= fields
 
-    def test_basis_must_name_an_evidence_id(self) -> None:
+    def test_basis_must_name_an_evidence_or_probe_id(self) -> None:
         v = verdict()
         v["levels"]["L0_runs"]["basis"] = ["e9"]
         assert any(p.field == "levels.L0_runs.basis" for p in schema.validate_verdict(v).errors)
+
+        v["probes"] = [{"id": "p1", "kind": "static_check", "result": "ok", "changed": "L0"}]
+        v["levels"]["L0_runs"]["basis"] = ["e1", "p1"]
+        assert schema.validate_verdict(v).ok
 
     def test_round_trip_and_path(self, tmp_path) -> None:
         card = tmp_path / "memory" / "cards" / "exp-01.yaml"

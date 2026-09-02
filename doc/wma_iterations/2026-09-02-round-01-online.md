@@ -30,7 +30,7 @@ scientist: `claude-opus-5[1m]`, high, 1M context · 10 h · one H100 per cell.
 
 ## Results
 
-No cell is terminal or validator-complete as of 2026-09-02 18:48 UTC. Slurm
+No cell is terminal or validator-complete as of 2026-09-02 18:57 UTC. Slurm
 has 16 first-wave cells RUNNING and 32 fixed-runtime cells PENDING; therefore
 there is no PTB score comparison or final online ledger conclusion yet. The
 closed-card observations below are provisional training-side evidence exposed
@@ -40,11 +40,20 @@ to later, pre-launch WMA reviews; they are not terminal PTB results.
 
 - All eight WMA scientists invoked `exp_protocol` as their first tool action
   and all eight sidecars started with the frozen Opus 5 / high contract.
-- Seven cells have now produced 25 valid verdict transcripts: `w01r01` (5),
-  `w01r02` (3), `w01r03` (3), `w01r04` (4), `w01r05` (3), `w01r07` (4), and
+- Seven cells have now produced 26 review transcripts: `w01r01` (5),
+  `w01r02` (3), `w01r03` (3), `w01r04` (4), `w01r05` (3), `w01r07` (5), and
   `w01r08` (3). The first verdicts used 28–32 of 40 turns, 5.1–7.2 min of 15,
   and $1.46–$1.72 shadow cost. Isolation stayed within `/session`, train-side
   `/history`, private skill and scratch.
+- The old runtime accepted 21/26 payloads and moved five to `.rejected`:
+  `w01r01/exp-03`, `w01r02/exp-04`, `w01r04/exp-04`, `w01r07/exp-05`, and
+  `w01r08/exp-04`. All five cited a recorded `probes[].id` from at least one
+  level's `basis`, while the validator accepted only `evidence[].id`; two also
+  carry a leak flag and remain excluded from a clean ledger independently.
+  The schema relaxation in this checkpoint accepts evidence or probe ids and
+  leaves the prediction untouched. Replaying all 26 transcript payloads under
+  it validates 26/26. The provisional 12-card ledger below uses only verdicts
+  that the frozen runtime accepted, so its denominator does not change.
 - `w01r03`, `w01r05`, `w01r06` pre-filled `result.execution: not_run`; the old
   runtime rejected exp-01 as post-hoc. This is infrastructure evidence, not a
   WMA miss. It caused `bf87dfb` and the v2 buffer replacement. `w01r03` and
@@ -93,8 +102,17 @@ the provisional L2 coverage is:
 The same 12 cards give provisional L0 and L1 hit rates of 11/12. The sole
 shared miss is `w01r07/exp-02`: WMA predicted that the launch would not run or
 produce a valid candidate, but it completed, scored 0.6533, and was adopted.
-These rates must be recomputed by `awm wma ledger` after collection; the table
-is an inflight audit, not a substitute for the frozen truth files.
+An audit after Fable Window 04 confirms this is a real predictive miss, not a
+heeded warning. The protocol intentionally launched asynchronously at
+14:20:10 and requested review in the same command; the verdict landed at
+14:28:59. The locked launcher hash still matches, `train_sft.py` predates the
+lock and still sets `use_liger_kernel=True`, and no precondition could have
+changed the already-running launch. WMA correctly found that Liger was absent
+but incorrectly inferred a fatal ImportError; this Transformers path simply
+skipped the unavailable kernel and trained. The lock only hashes the launcher,
+not imported helper scripts, which is a separate measurement weakness to
+track. These rates must be recomputed by `awm wma ledger` after collection;
+the table is an inflight audit, not a substitute for the frozen truth files.
 
 The miss direction matters for candidate selection. Four of five L2 misses
 are real improvements above the predicted upper bound. Even the existing
@@ -102,14 +120,17 @@ are real improvements above the predicted upper bound. Even the existing
 to cap interval width at a multiple of the n=150 noise floor is therefore
 falsified for this round; it would worsen coverage rather than calibration.
 
-Seven WMA-arm base-checks are now visible in later cards or indices, ranging
-from 0.0333 to 0.0867. Four independently exposed control-arm base-checks are
-also at the floor: 0.0400, 0.0533, 0.0650, and 0.0733. This passes the first
-cross-arm falsification check for a termination-floor prior. It also shows
-that `<= 0.07` must not be a hard upper cutoff: the useful prior is a low-score
-band of roughly 0.03–0.09, centred near or below 0.07, coupled to the cap-hit /
-missing-answer diagnostic. The second check—whether fixed-runtime v2 verdicts
-already learn that band without a manual entry—remains open.
+All eight WMA-arm and all eight control-arm exp-01 cards were read directly
+from their live receipt-backed cells and recorded with complete-card SHA-256
+locators. Their 17 measurements (one card has stock and greedy arms) all fall
+in 0.0333–0.0867; 15 use n=150 and one control uses n=200. Every card names
+the same cap-hit / missing-termination / trailing-Q&A mechanism. This passes
+the first cross-arm falsification check for a termination-floor prior on the
+complete first wave, not just its visible half. It also shows that `<= 0.07`
+must not be a hard upper cutoff: the useful prior is a low-score band of
+roughly 0.03–0.09, centred near or below 0.07, coupled to the diagnostic. The
+second check—whether fixed-runtime v2 verdicts already learn that band without
+a manual entry—remains open.
 
 ## Decision
 
@@ -130,11 +151,17 @@ Measurement-only changes already made and separately attributable:
 
 - `bf87dfb`: accept `not_run` as pre-launch in the post-hoc guard.
 - `2b094c7`: replace only unstarted v1 buffer cells with paired v2 manifests.
+- Current checkpoint: allow a level's `basis` to cite its own recorded probe
+  ids as well as evidence ids; 53 focused schema/backend tests pass and all 26
+  inflight payloads validate. No scorer, prediction, skill file, or skill hash
+  changes.
 
 ## Evidence
 
 - Receipts and inflight snapshots under
   `results/ptb/wma-gsm8k-gemma4b-high-r01-*`.
+- Complete first-wave base-check provenance:
+  `doc/wma_iterations/evidence/2026-09-02-round-01-base-checks.md`.
 - PR 23 Fable windows:
   [Window 02](https://github.com/tangxiangru/agentic-world-model/pull/23#issuecomment-5510983693),
   [Window 03](https://github.com/tangxiangru/agentic-world-model/pull/23#issuecomment-5511204993).

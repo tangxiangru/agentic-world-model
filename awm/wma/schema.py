@@ -2,8 +2,8 @@
 
 A verdict is one JSON file beside the card, ``exp-NN.verdict.json``. Four
 levels, each with its own answer and confidence, each basis entry naming an
-evidence id. ``truth_from_card`` reads what actually happened out of a
-closed card; ``score`` holds each level to it. Nothing here calls a model.
+evidence or probe id. ``truth_from_card`` reads what actually happened out of
+a closed card; ``score`` holds each level to it. Nothing here calls a model.
 """
 
 from __future__ import annotations
@@ -171,7 +171,9 @@ def validate_verdict(v: dict[str, Any]) -> Report:
     if ct is not None and not (isinstance(ct, list) and all(isinstance(x, str) and CHANGE_TYPE_RE.match(x) for x in ct)):
         r.error("change_types", "must be a list of C1–C18 labels (C1a / C1b for the two decode branches)")
     evidence = v.get("evidence") or []
-    ids = {e.get("id") for e in evidence if isinstance(e, dict)}
+    probes = v.get("probes") or []
+    ids = ({e.get("id") for e in evidence if isinstance(e, dict)}
+           | {p.get("id") for p in probes if isinstance(p, dict)})
     for i, e in enumerate(evidence):
         if not isinstance(e, dict) or not e.get("id") or not e.get("path"):
             r.error(f"evidence[{i}]", "needs id and path")
@@ -186,9 +188,9 @@ def validate_verdict(v: dict[str, Any]) -> Report:
             r.error(f"{where}.confidence", "must be a number in [0, 1]")
         basis = lv.get("basis")
         if not isinstance(basis, list):
-            r.error(f"{where}.basis", "must be a list of evidence ids")
+            r.error(f"{where}.basis", "must be a list of evidence or probe ids")
         elif any(b not in ids for b in basis):
-            r.error(f"{where}.basis", "names an evidence id that is not in evidence[]")
+            r.error(f"{where}.basis", "names an id that is not in evidence[] or probes[]")
         if name == "L2_effect":
             iv = lv.get("interval")
             if iv is not None and not (isinstance(iv, list) and len(iv) == 2 and all(_num(x) for x in iv)
@@ -202,7 +204,7 @@ def validate_verdict(v: dict[str, Any]) -> Report:
         else:
             if lv.get("answer") not in YES_NO:
                 r.error(f"{where}.answer", f"must be one of {YES_NO}")
-    for i, p in enumerate(v.get("probes") or []):
+    for i, p in enumerate(probes):
         if not isinstance(p, dict) or p.get("kind") not in PROBE_KINDS:
             r.error(f"probes[{i}].kind", f"must be one of {PROBE_KINDS}")
         elif p.get("changed") not in CHANGED:
