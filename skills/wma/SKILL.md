@@ -133,12 +133,6 @@ verifier tier and the minutes it costs:
   200 steps on a 500-row subset first"; "LoRA with `modules_to_save` given
   1.5 h left").
 
-For a C3/C4 card whose plan keeps only one final checkpoint and therefore
-forfeits C5, set L3 to `defer`. Add a `[tier 3, N min]` precondition that names
-the `save_steps` cadence and the comparable evaluation to run on the saved
-checkpoints. Reconsider L3 only after that checkpoint-selection lever is in
-the plan.
-
 Not a new direction: "try DPO instead" on an SFT card is outside your role.
 
 ## Out of scope
