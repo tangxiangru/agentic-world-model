@@ -288,7 +288,7 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
             info.get("sha") == sha and info.get("paths") == list(shipped) and info.get("complete")
         ):
             return None
-        if info.get("protocol_tree") != expected_protocol_tree:
+        if "protocol_tree" not in info and expected_protocol_tree is not None:
             # The bytes are fixed by (sha, paths); only the marker is behind (an older
             # launcher wrote it without the tree). Upgrade the marker in place: a running
             # cell may have this directory bind-mounted, and replacing it under that
@@ -296,6 +296,12 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
             info["protocol_tree"] = expected_protocol_tree
             info["marker_upgraded_at"] = datetime.now(timezone.utc).isoformat()
             marker.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+        elif info.get("protocol_tree") != expected_protocol_tree:
+            raise ExperimentError(
+                f"checkout {target} is complete but its marker has protocol_tree "
+                f"{info.get('protocol_tree')!r}, expected {expected_protocol_tree!r}; "
+                "refusing to rewrite a corrupt marker for a directory a running cell may be using"
+            )
         return {
             "sha": sha,
             "paths": list(shipped),
@@ -315,8 +321,11 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
         if marker.is_file():
             try:
                 info = json.loads(marker.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                info = {}
+            except (OSError, ValueError) as exc:
+                raise ExperimentError(
+                    f"checkout {target} has an unreadable marker; refusing to replace a "
+                    "directory a running cell may be using"
+                ) from exc
             if info.get("complete"):
                 raise ExperimentError(
                     f"checkout {target} is complete but its marker names a different commit or "

@@ -886,6 +886,16 @@ def test_a_complete_checkout_is_never_deleted(tmp_path: Path, monkeypatch) -> No
     with pytest.raises(ptb.ExperimentError, match="refusing to replace"):
         ptb.materialize_awm_checkout(sha, shipped)
     assert (checkout / "awm" / "cli.py").is_file()
+    info["sha"] = sha
+    info["protocol_tree"] = "0" * 40
+    marker.write_text(json.dumps(info) + "\n")
+    with pytest.raises(ptb.ExperimentError, match="corrupt marker"):
+        ptb.materialize_awm_checkout(sha, shipped)
+    assert (checkout / "awm" / "cli.py").is_file()
+    marker.write_text("{not json\n")
+    with pytest.raises(ptb.ExperimentError, match="unreadable marker"):
+        ptb.materialize_awm_checkout(sha, shipped)
+    assert (checkout / "awm" / "cli.py").is_file()
     # a half-written directory (no complete marker) is still replaced
     marker.unlink()
     rebuilt = ptb.materialize_awm_checkout(sha, shipped)
