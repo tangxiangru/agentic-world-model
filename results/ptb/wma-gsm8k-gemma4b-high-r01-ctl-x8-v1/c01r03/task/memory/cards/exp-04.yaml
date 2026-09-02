@@ -1,0 +1,136 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T17:03:19Z'
+situation:
+  elapsed_h: 3.05
+  remaining_h: 6.95
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "exp-02's 1-epoch and 2-epoch checkpoints scored identically (0.6067, 91/150 each): a second pass over the 36.8k corpus bought nothing, so the corpus - not the optimisation budget - is what is binding. 70,047 distinct OpenMathInstruct-2 gsm8k problems are available locally and only 30k were used."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_ep1_dev150.json, locator: "accuracy 0.6067"}
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: "accuracy 0.6067"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "conclusion.next_step"}
+  alternatives_rejected:
+    - {option: "Two epochs on the new 76k corpus", reason: "2.95 h against 6.95 h remaining; exp-02 already showed the second epoch is worth ~0 on this data, and a 1-epoch cosine run decays the LR properly instead of leaving a mid-schedule checkpoint"}
+    - {option: "RFT-only continued training from exp-03", reason: "the rejection-sampling yield came in at 4,253 rows over 3,041 of 6,973 questions - far too thin to be a training run of its own, and continuing on self-data alone risks narrowing the model"}
+    - {option: "Download more OpenMathInstruct-2 shards", reason: "the two shards already on disk hold 70k distinct gsm8k problems, more than a 1-epoch budget can consume"}
+    - {option: "Add OpenMathInstruct-2's augmented_math rows", reason: "same reason as exp-02: contest algebra is off-distribution for grade-school word problems"}
+  pitfalls_hit:
+    - what: "cp -al hardlinks generation_config.json, so scripts/set_decode.py's in-place truncate silently rewrote the parent ckpts/exp-02/final as well"
+      cost_h: 0.05
+      fix: "broke the hardlinks for every json/model file in ckpts/exp-03-greedy and restored ckpts/exp-02/final/generation_config.json from the base snapshot; verified distinct inodes. Never hardlink a directory you intend to edit in place."
+    - what: "`pkill -f sample_model.py` matched the wrapper shell's own argv and killed the shell that had just spawned the sampler, orphaning a vLLM EngineCore that held 66 GB"
+      cost_h: 0.25
+      fix: "kill by pid; launch long jobs from scripts/run_rft_sampling.sh so no interactive command line contains the pattern"
+    - what: "RFT sampling at temperature 1.0 with zero-shot prompts: 28,496 of 41,838 samples hit the 512-token cap because the model failed to emit <end_of_turn> and rolled straight into a fabricated 'user' turn"
+      cost_h: 0.1
+      fix: "kept only samples with correct==True and finish=='stop'; yield fell to 4,253 rows / 43.6% question coverage. Under the graded setting (10-shot prompt, greedy) the same weights terminate on 148/150, so this is a high-temperature zero-shot artefact, not the graded behaviour."
+  smoke_runs:
+    - command: [bash, scripts/run_rft_sampling.sh]
+      outcome: "6,973 gsm8k train questions x 6 samples in 33 min; per-sample accuracy 0.333, pass@6 0.789, 8.4k output tok/s at max_num_seqs 1024 / max_model_len 1536"
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/decon_sft_v2.jsonl]
+      outcome: "76,223 documents scanned, 0 contaminated, 0 matches"
+problem:
+  statement: "The incumbent gets 42 of 150 graded items wrong, and they are now reasoning errors rather than formatting ones: every completion terminates and carries a well-formed ANSWER line. The 36.8k-problem corpus it was trained on is exhausted - a second epoch over it moved the score by exactly zero items."
+  evidence:
+    - path: /home/ben/task/eval/exp-03_greedy_dev150.json
+      locator: "accuracy 0.72"
+      observation: "108/150 correct, 42 wrong, with 148/150 terminating on <end_of_turn>"
+    - path: /home/ben/task/memory/cards/exp-02.yaml
+      locator: "result.measurements"
+      observation: "epoch 1 and epoch 2 both 0.6067 - identical, not merely close"
+    - path: /home/ben/task/data/rft_samples_gsm8k.jsonl
+      locator: "pass@6 0.789 vs per-sample 0.333"
+      observation: "the model can reach a correct chain on 79% of held-in training questions but picks one only a third of the time when sampled, i.e. the reasoning distribution is broad and under-sharpened"
+  affected_share: 0.28
+  failure_examples:
+    - {id: gsm8ktrain-holdout, source: /home/ben/task/data/rft_samples_gsm8k.jsonl, question: "(3,932 of 6,973 gsm8k train questions had no correct terminated sample in 6 draws)", gold: "(various)", model_output: "(either a wrong chain or a chain that never emits <end_of_turn>)", failure: "no correct terminated sample in 6 draws at temperature 1.0"}
+    - {id: rft-natalia, source: /home/ben/task/data/rft_samples_gsm8k.jsonl, question: "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May...", gold: "72", model_output: "In April Natalia sold 48 * (1/2) = 24 clips. So in April and May she sold 24 + 48 = 72 clips. ANSWER: 72 [then a fabricated 'user' turn until the token cap]", failure: "right answer, no stop token, sample discarded"}
+    - {id: exp03-wrong-42, source: /home/ben/task/eval/exp-03_greedy_dev150.json, question: "(the 42 graded items the incumbent gets wrong)", gold: "(various)", model_output: "(well-formed but wrong)", failure: "arithmetic or multi-step reasoning error, not formatting"}
+  watch_set: null
+hypothesis:
+  claim: "Training from base_model for one epoch on 76.2k problems - all 70k distinct OpenMathInstruct-2 gsm8k problems capped at 65k, plus gsm8k train, plus 4.3k rejection-sampled self-solutions - will raise accuracy on the official --limit 150 protocol against exp-03, at the same optimiser budget exp-02 used."
+  mechanism: "exp-02 spent 2300 steps on 36.8k problems and gained nothing from the second pass, which says the model had extracted what that corpus holds. This run spends the same 2382 steps on 2.1x as many distinct problems, so almost every gradient step sees a problem it has not seen before. The rejection-sampled rows additionally put a small amount of the model's own correct phrasing back into the mixture."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +7 pts"
+  falsified_if: "accuracy under the same greedy decode config is at or below exp-03's 0.72"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "openai/gsm8k TRAIN split + nvidia/OpenMathInstruct-2 (train_1M shards 0-1, problem_source in {gsm8k, augmented_gsm8k}) + synthetic:self (rejection-sampled from exp-03)"
+      n_examples: 76226
+      built_by: /home/ben/task/scripts/build_data_v2.py
+      build_command: [python, scripts/build_data_v2.py, --omi, '65000', --rft-max-per-q, '2', --fewshot-frac, '0.10']
+      selection: "6,973 gsm8k train (500-item holdout removed) + 65,000 OpenMathInstruct-2 problems deduped to one solution each with boxed answers unwrapped and numeric answers only + 4,253 self-samples kept only where the grader's own match_str scores them correct AND finish_reason=='stop' AND exactly one ANSWER marker, deduped per question by the sequence of numbers used, at most 2 per question; every target ends 'ANSWER: {n}' + <end_of_turn>; 10% of rows carry the grader's exact 10-shot prefix"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom ChunkedCETrainer"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 8, grad_accum: 4, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant content = '{reasoning}' + blank line + 'ANSWER: {n}', then the stop token; prompt tokens masked to -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/sft_v2.jsonl, --out, /home/ben/task/ckpts/exp-04, --epochs, '1', --lr, '1e-5', --bs, '8', --grad-accum, '4', --max-seq-len, '2816', --attn, flash_attention_2, --save-steps, '1200']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 1200
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.72
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "greedy accuracy on our own 500-item gsm8k TRAIN holdout (data/dev_gsm8k_trainholdout.jsonl), scored with the grader's own match_str; n=500 separates candidates that n=150 cannot"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.33
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2381}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1200, step: 1200}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2381, step: 2381}
+  training_summary: {final_loss: null, steps: 2381, notes: "train_loss 0.3093, 15.89 samples/s, 4796 s wall; 76183/76226 rows fit max_seq_len (0.06% dropped); scripts/set_decode.py --mode greedy applied to final before evaluating"}
+  measurements:
+    - {metric: accuracy, value: 0.7333, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 0.698
+    path: /home/ben/task/analysis/dev500_ckpts_exp-04_final.jsonl
+    notes: "dev-500 greedy: exp-04 0.698 vs exp-03 0.728 (analysis/dev500_ckpts_exp-03-greedy.jsonl), i.e. -3.0 pts on the set with 3.3x the resolution. The two measurements point opposite ways; pooling them, exp-03 is 472/650 = 0.726 and exp-04 is 459/650 = 0.706."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "One epoch over 76.2k distinct problems did not beat two epochs over 36.8k. n=150 says +1.3 (0.7333 vs 0.7200) but n=500 says -3.0 (0.698 vs 0.728), and pooled over both sets exp-04 is 2 pts behind. The corpus was not the binding constraint after all."
+  decision: reject
+  next_step: "The exp-02 epoch-1-vs-epoch-2 tie that motivated this card was measured at temperature 1.0, where sampling noise swamps a few items - it was never evidence that a second epoch is worthless under greedy decoding. exp-05 therefore gives exp-04 the second epoch it lacks, but on the 65.1k rows of sft_v3 that it has not seen, so the model gets both the optimiser budget of exp-02/03 and the data diversity of exp-04."

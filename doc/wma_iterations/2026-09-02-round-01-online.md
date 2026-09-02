@@ -161,44 +161,48 @@ single-policy change and evaluate the prior through first-format-fix SFT L2
 coverage, diagnostic use, and manual exp-01 absolute-estimate audit. Adding an
 absolute prediction slot in the same round would confound the policy change.
 
-## First terminal window (2026-09-02 22:1x UTC)
+## Terminal window 05A (2026-09-02 22:1x–22:5x UTC)
 
-Reconcile harvested five validator-complete, judge-clean cells through their
-frozen manifests:
+Two reconcile passes harvested twelve validator-complete, judge-clean cells
+through their frozen manifests:
 
 | arm | cells | n | accuracy mean | range | sampling stderr |
 |---|---|---:|---:|---:|---:|
-| WMA v0.2 | `w01r03`, `w01r05` | 2 | 0.7657 | 0.7339–0.7976 | 0.0318 |
-| no-WMA control | `c01r01`, `c01r02`, `c01r08` | 3 | 0.7599 | 0.7218–0.7885 | 0.0198 |
+| WMA v0.2 | `w01r02,r03,r04,r05,r06,r08` | 6 | 0.7584 | 0.7286–0.7976 | 0.0121 |
+| no-WMA control | `c01r01,r02,r03,r05,r07,r08` | 6 | 0.7483 | 0.6808–0.8158 | 0.0209 |
 
-The unpaired mean difference is +0.0058 for WMA. No replicate index is complete
-in both arms yet, so this is a provisional distribution only, not a treatment
-effect. Every harvested cell has an empty validator issue list and empty judge
-flags; result provenance remains under the corresponding
+The unpaired mean difference is +0.0101 for WMA. Four replicate indices are
+complete in both arms: r02 +0.0303, r03 +0.0205, r05 -0.0182 and r08 +0.0227.
+Their paired mean is +0.0138, sampling stderr 0.0109, range -0.0182–+0.0303,
+with 3/4 positive. This remains provisional because r01/r07 and r04/r06 are
+still unmatched and neither arm has reached 8/8. Every harvested cell has an
+empty validator issue list and empty judge flags; result provenance remains
+under the corresponding
 `results/ptb/wma-gsm8k-gemma4b-high-r01-{wma,ctl}-x8-v1/` cell directory.
 
-The terminal WMA ledger over the two harvested WMA cells is:
+The terminal WMA ledger over the six harvested WMA cells is:
 
 - skill `176f0a464986`, `claude-opus-5`, high, online;
-- 7 verdicts, 5 scored, 2 leak-suspected and excluded from scored levels;
-- L0 hit 1.00, L1 hit 1.00, L2 coverage 0.60 at `n_L2_scorable=5`;
-- mean L2 width 0.1186, width/noise 3.9524, L3 hit 0.80;
+- 14 verdicts, 12 scored, 2 leak-suspected and excluded from scored levels;
+- L0 hit 1.00, L1 hit 1.00, L2 coverage 0.778 at `n_L2_scorable=9`;
+- mean L2 width 0.1993, width/noise 6.6429, L3 hit 0.889;
 - `gpu_h_saved=0`, `gpu_h_wrongly_killed=0`;
-- cost $13.2224 total, $1.8889/verdict, mean 5.5262 wall minutes.
+- accepted-verdict cost $25.3068 total, $1.8076/verdict, mean 5.7534 wall
+  minutes; three rejected non-verdict outputs cost another $5.3372.
 
 Both leak flags are exp-04 verdicts whose retained transcript reports an
 outside-workspace shell probe. They stay excluded unless a separately justified
 measurement rescan proves the fence classification wrong. This partial window
-does not cross the pre-registered eight-clean-cells-per-arm boundary.
+still does not cross the pre-registered eight-clean-cells-per-arm boundary.
 
 ## Decision
 
 Inconclusive. Runtime/isolation/procedure are supported by the inflight corpus
-and five clean terminal cells. The provisional PTB difference is unpaired and
-too small relative to run spread; the terminal ledger remains only five scored
-verdicts. The evidence still rejects the interval-width cap and strengthens the
-termination-floor candidate, but does not meet the promotion boundary. Keep
-skill v0.2 unchanged.
+and twelve clean terminal cells. The provisional paired PTB difference is
+positive in 3/4 pairs but comparable to its uncertainty, and the terminal
+ledger remains below the complete first-wave boundary. The evidence still
+rejects the interval-width cap and strengthens the termination-floor candidate,
+but does not meet the promotion boundary. Keep skill v0.2 unchanged.
 
 The end-to-end conclusion requires at least eight validator-complete cells per
 arm. A skill candidate additionally requires closed-card ledger evidence and

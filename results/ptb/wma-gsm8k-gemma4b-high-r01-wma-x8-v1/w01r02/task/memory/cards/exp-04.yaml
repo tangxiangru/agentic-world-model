@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T16:26:30Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.5
+  remaining_h: 7.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.78667, protocol_n: 150}
+  trigger: "exp-02 saw 84127 rows (one solution per problem). Counting distinct problems in OpenMathInstruct-2 train_2M gives the same ~70k gsm8k-sourced problems as train_1M (drop_cap 173222), so the unique-problem pool is exhausted and solution multiplicity is the only data axis left. sft_v4 holds 3 solutions per problem, 230476 rows."
+  trigger_evidence:
+    - {path: /home/ben/task/data/sft_v4.jsonl, locator: "230476 rows, 94.5M tokens after tokenisation (train_sft.py --dry-run)"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.measurements", observation: "0.60667 sampled / 0.78667 greedy from 84127 rows x 2 epochs"}
+  alternatives_rejected:
+    - {option: "A third epoch on sft_v2", reason: "exp-02's training loss is already ~0.20 at the end of epoch 2; more passes over the same 70k problems fits the same solutions harder rather than showing new ones"}
+    - {option: "2 epochs on sft_v4 (5.3 h)", reason: "would consume 70% of the remaining budget and leave no room for an RFT round or for final verification"}
+    - {option: "RFT from exp-02 first", reason: "RFT reinforces solutions the model can already produce; scaling supervised solution diversity is the cheaper and better-evidenced lever, and RFT can still follow as exp-05 from whichever checkpoint wins here"}
+    - {option: "Continue training exp-02/final on the extra solutions instead of restarting from base", reason: "exp-02 has already made two passes over these problems; a fresh run keeps the epoch budget per problem honest and keeps the comparison to exp-03 clean"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_v4.jsonl, --dry-run], outcome: "230476 rows, 0 dropped over max_seq_len 3072, p50 325 / p99 2344 / max 2976, 94.5M tokens => ~2.6 h at exp-02's measured 35.9M tokens/h"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent solves 118 of 150 dev items. Its remaining errors are reasoning errors, not format errors - 150/150 completions terminate correctly and carry exactly one ANSWER line - so nothing more can be won from formatting. On probe300 it fails 80 of 300 items, i.e. it is missing solution strategies rather than output discipline."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_diagnostic.json, locator: "stop_reason, no_answer_marker", observation: "150/150 stop, 0 missing markers - the format channel is saturated"}
+    - {path: /home/ben/task/analysis/exp-02_probe300_fs10.json, locator: "summary.greedy_accuracy 0.7333", observation: "80 of 300 held-out train items still wrong under greedy decoding"}
+    - {path: /home/ben/task/data/sft_v4.jsonl, locator: "build_data.py stats: drop_cap 173222 at max-per-problem 3", observation: "the extra rows are additional distinct solutions to problems exp-02 already saw once"}
+  affected_share: 0.267
+  failure_examples:
+    - {id: probe-fail-set, source: /home/ben/task/analysis/exp-02_probe300_fs10.json, question: "(the 80 probe300 items with correct_first=false; probe300 is held-out gsm8k TRAIN)", gold: "n/a - aggregate", model_output: "n/a - aggregate", failure: "wrong arithmetic or wrong plan, with correct formatting"}
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "300 items held out of the gsm8k TRAIN split (seed 0), excluded from every training file; exp-03's incumbent scores 0.7333 on it under greedy 10-shot"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Training from base for one epoch on 230476 rows (3 distinct solutions per problem) changes dev-150 accuracy relative to exp-03's 0.78667, at roughly equal compute to exp-02's two epochs over 84127 rows."
+  mechanism: "Seeing three different correct derivations of the same problem teaches the mapping problem->answer rather than one memorised surface chain, which is the standard reason OpenMathInstruct-2's own scaling curve keeps rising with pairs per problem even when the problem set is fixed."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +5 points; a single epoch may also come out flat or slightly below, which is the informative outcome"
+  falsified_if: "dev-150 accuracy under greedy decoding is below 0.78667 - solution multiplicity at one epoch would then be worse than solution uniqueness at two, and exp-05 should spend its time on RFT rather than on more supervised data."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4.jsonl
+      source: "nvidia/OpenMathInstruct-2 (train_2M, rev 469216e3f46f4dacf476b382e192485ea51a143e) + openai/gsm8k train split"
+      n_examples: 230476
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --split, train_2M, --max-per-problem, "3", --gsm8k-repeat, "3", --out, data/sft_v4.jsonl]
+      selection: "same filters as sft_v2 (gsm8k/augmented_gsm8k sources only, integer answers, boxed unwrapped, calculator spans stripped, probe300 questions removed, every target re-graded with a byte-level copy of inspect's match(numeric=True)) but up to 3 solutions per distinct problem and the gsm8k human pool repeated 3x. 12% of rows carry a k-shot prefix, k in {1,2,3,4,10}."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 (fused linear CE), flash_attention_2"
+    peft: "none (full fine-tune; SigLIP vision tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 2.0e-5, epochs: 1, batch_size: 32, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: {N}<end_of_turn>; loss on the target only, prompt masked with -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/sft_v4.jsonl, --out, ckpts/exp-04, --bs, "32", --grad-accum, "2", --lr, "2e-5", --epochs, "1", --max-seq-len, "3072", --save-strategy, epoch, --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.7}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.78667
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "probe300 greedy 10-shot accuracy against exp-02's 0.7333, on the same held-out items, to tell a real gain from a 150-item coin flip"
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.64
+  output_checkpoint: /home/ben/task/ckpts/exp-04-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-3602, step: 3602}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 3602}
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 3602}
+  training_summary: {final_loss: 0.237, steps: 3602, notes: "one epoch, loss ~0.32 early to 0.237 at the end; grad_norm 1.5-2.8, no instability. Higher final loss than exp-02's 0.191, as expected from one pass instead of two."}
+  measurements:
+    - {metric: accuracy, value: 0.76667, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: -0.02}
+  diagnostic_result:
+    value: 0.78667
+    path: /home/ben/task/analysis/exp-04_probe300_fs10.json
+    notes: "probe300 greedy 10-shot 0.7867 vs exp-02's 0.7333: +5.3 points on 300 held-out items. Paired: 37 fixed, 21 regressions, 64 still failing (analysis/exp-04_probe_paired.json). The 300-item diagnostic and the 150-item protocol metric point in opposite directions."
+  watch_set_result:
+    fixed: 37
+    still_failing: 64
+    regressions: 21
+    path: /home/ben/task/analysis/exp-04_probe_paired.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "dev-150 0.7867 -> 0.7667 (-2.0, i.e. 3 items, against a per-arm stderr of 0.035) while probe300 goes 0.7333 -> 0.7867 (+5.3 on twice the items, 37 fixed against 21 regressed). Solution multiplicity did change what the model can solve - the paired probe proves that - but the two measurements disagree on the sign, so at n=150 neither checkpoint is established as better."
+  decision: iterate
+  next_step: "exp-05: uniformly average exp-02/final and exp-04/final. They are full fine-tunes of the same base whose paired probe errors are substantially disjoint (37 fixed / 21 regressed), which is the condition under which a weight average beats both parents. If the soup does not win, break the dev-150 tie by re-scoring the finalists at a larger --limit rather than by trusting a 3-item difference."

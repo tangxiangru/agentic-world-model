@@ -1,0 +1,96 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T15:15:00Z'
+situation:
+  elapsed_h: 1.3
+  remaining_h: 8.7
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp02/final
+    score: {metric: accuracy, value: null, protocol_n: 150}
+  trigger: "logs/smoke_eval.log line: 'Default sampling parameters have been overridden by the model's Hugging Face generation config' - evaluate.py never sets a temperature, so vLLM falls back to the checkpoint's own generation_config.json, which gemma-3-4b-pt ships as do_sample=true / top_k=64 / top_p=0.95. Every dev read so far, base and SFT, is a T=1.0 SAMPLE, not a greedy decode."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/smoke_eval.log, locator: "APIServer 'Default sampling parameters have been overridden by the model's Hugging Face generation config'"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py, locator: "L233-234", observation_note: "params['temperature'] is set only when config.temperature is not None; evaluate.py leaves it None"}
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json, locator: "do_sample/top_k/top_p"}
+  alternatives_rejected:
+    - {option: "pass --temperature to evaluate.py", reason: "evaluate.py has no such flag and rule 5 forbids editing it; the decode has to travel with the model artifact, which is also how the final grader will load it"}
+    - {option: "leave the shipped sampling config and spend the time on more training data", reason: "this costs 0 GPU-hours of training and 0.3 h of eval; a training run that buys the same points costs 1.5-3 h"}
+    - {option: "tune temperature on a grid (0.0/0.3/0.6)", reason: "each extra point on the grid is another 150-item eval; greedy vs the shipped default is the decision that actually has to be made, and a T>0 optimum for single-sample math scoring would be surprising"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The benchmark is scored on one sample per item, but the checkpoint tells vLLM to draw that sample at temperature 1.0 with top_k=64 / top_p=0.95. Sampling noise costs accuracy on every item where the greedy chain is right but a sampled chain diverges, and it also adds variance that makes small deltas between training cards unreadable."
+  evidence:
+    - {path: /home/ben/task/logs/smoke_eval.log, locator: "APIServer startup line", observation: "vLLM reports it has replaced its own defaults with the model's HF generation config"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py, locator: "L233-234", observation: "inspect only sends temperature when the task config sets one; evaluate.py does not"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Shipping a greedy generation_config.json (do_sample=false, temperature=0.0, no top_k/top_p) with the exp-02 checkpoint raises dev-150 accuracy relative to the same checkpoint scored with the sampling config gemma-3-4b-pt ships."
+  mechanism: "The scorer reads a single completion. At T=1.0 with top_k=64 every token is drawn from a broad tail, so any item whose argmax chain is correct can still be lost to one unlucky token in a 150-token arithmetic chain. Greedy decoding takes the argmax chain every time, which is the mode the SFT loss actually optimised."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: +2 to +8 pts}
+  falsified_if: "greedy dev-150 accuracy is at or below the sampling read on the same checkpoint"
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp02/final, origin: exp-02, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_no_training_data.md
+      source: local
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "no training data: this card changes only the decode configuration that ships with the checkpoint. n_examples records the 150 benchmark items scored."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 via inspect_ai
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "unchanged from exp-02"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, set_gen_config.py, /home/ben/task/ckpts/exp02/final, greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/set_gen_config.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp02
+  checkpoints: {every_steps: null, keep: all}
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6']
+    dev_set: official inspect_evals/gsm8k test --limit 150
+    n: 150
+    seed: 42
+  comparator: {ref: exp-02, value: null, path: /home/ben/task/eval/exp02_final_dev150.json}
+  diagnostic:
+    what: "mean completion length in characters, greedy vs sampled: a greedy decode that collapses into shorter chains would show here"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.17
+  output_checkpoint: /home/ben/task/ckpts/exp02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp02/final, step: 1762}
+  training_summary: {final_loss: null, steps: null, notes: "no training; only ckpts/exp02/final/generation_config.json changed (do_sample false, temperature 0.0, top_k/top_p removed, eos_token_id [1,106] untouched)"}
+  measurements:
+    - {metric: accuracy, value: 0.7933, n: 150, path: /home/ben/task/eval/exp02_final_greedy_dev150.json, delta_vs_comparator: 0.0466}
+  diagnostic_result:
+    value: 624.0
+    path: /home/ben/task/analysis/summary_exp02_final_greedy_dev150.json
+    notes: "mean completion 501 chars sampled -> 624 greedy; contract compliance 1.00 -> 0.98 and 3 of 150 greedy completions hit the 4000-token cap (0 under sampling), i.e. greedy occasionally enters a repeat loop. Net effect is still +4.7."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Same weights, same protocol, decode only: 0.7467 sampled -> 0.7933 greedy (+4.7 pts) on dev-150. The benchmark scores one completion per item, and the checkpoint had been telling vLLM to draw it at T=1.0 with top_k=64 because evaluate.py never sends a temperature and vLLM falls back to generation_config.json."
+  decision: adopt
+  next_step: "Every checkpoint from here ships the greedy generation_config; train_sft.py copies generation_config.json from its parent, so continuations inherit it. Watch the max_tokens count - the greedy repeat loop costs ~2% of items and would grow if later training lengthened outputs."

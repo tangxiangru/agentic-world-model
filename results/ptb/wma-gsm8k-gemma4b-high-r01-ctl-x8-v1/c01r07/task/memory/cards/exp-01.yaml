@@ -1,0 +1,201 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-02T14:02:26Z'
+situation:
+  elapsed_h: 0.05
+  remaining_h: 9.95
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: null
+      protocol_n: null
+  trigger: Batch start. Nothing has been measured yet; every later card needs a comparator
+    scored under the official protocol, and rule 2 of the protocol forbids comparing
+    against a number from a different --limit.
+  trigger_evidence:
+  - path: /home/ben/task/memory/index.md
+    locator: empty table, no cards
+  alternatives_rejected:
+  - option: Skip the baseline and compare the first SFT run against published gemma-3-4b-pt
+      GSM8K numbers
+    reason: Published numbers use a different harness/prompt; not a comparator under
+      evaluation.protocol.
+  - option: Baseline at --limit 500 for a tighter CI
+    reason: 10-shot prompts are ~1.8k tokens; 150 items is the harness default and
+      keeps every later comparison cheap and protocol-identical.
+  pitfalls_hit:
+  - what: First baseline launch used evaluate.py's defaults (--max-connections 2,
+      --gpu-memory-utilization 0.3). It completed 23 of 150 samples in ~10 min of
+      generation, i.e. ~65 min per eval, which would have cost ~3 h over the batch.
+      Killed at sample 23 and re-locked with a higher-concurrency protocol.
+    cost_h: 0.25
+    fix: --max-connections 32 --gpu-memory-utilization 0.8; concurrency and KV-cache
+      size do not change what is sampled, and the same flags are used for every
+      later card so the comparator stays protocol-identical.
+  - what: 'vLLM logs "Default sampling parameters have been overridden by the model''s
+      Hugging Face generation config". evaluate.py never sends a temperature, so
+      decoding follows generation_config.json (top_p 0.95, top_k 64, temperature 1.0
+      for the base snapshot). The eval is therefore stochastic, not greedy.'
+    cost_h: 0.0
+    fix: Recorded here so later cards know the base number carries sampling noise
+      and that a checkpoint's generation_config.json is part of the graded artifact.
+  smoke_runs:
+  - command: [python, prompt_spec.py]
+    outcome: 'render_prompt/render_target reproduce templates/gemma3.jinja byte-for-byte
+      (jinja2 round-trip MATCH, both with and without the 10-shot system message);
+      template sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4;
+      10-shot prompt = 2153 tokens.'
+  - command: [python, evaluate.py, --model-path, base, --limit, '150']
+    outcome: killed at 23/150; too slow under the default --max-connections 2
+problem:
+  statement: "The starting checkpoint google/gemma-3-4b-pt is a raw pretrained (non-instruction-tuned)
+    model. Its GSM8K accuracy under the harness 10-shot 'ANSWER: $ANSWER' protocol
+    is unknown, and so is its failure mode (wrong arithmetic vs. never emitting the
+    ANSWER line vs. never stopping)."
+  evidence:
+  - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+    locator: 'MATH_PROMPT_TEMPLATE and scorer=match(numeric=True); task default fewshot=10,
+      fewshot_seed=42'
+    observation: "The grader reads the last line 'ANSWER: N'; a base model has never
+      been trained to emit that marker or to stop."
+  - path: /home/ben/task/templates/gemma3.jinja
+    locator: whole file
+    observation: 'Grading template ends every model turn with <end_of_turn>; that
+      is the terminator any training target must use.'
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: Measuring google/gemma-3-4b-pt on the official protocol (evaluate.py --limit
+    150) will yield a baseline accuracy and a per-sample log from which the dominant
+    failure mode (format vs. arithmetic vs. truncation) can be read.
+  mechanism: The inspect log stores each sample's full completion, so the share of
+    samples that never emit an "ANSWER:" line, and the share that hit max_tokens,
+    are directly countable.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: The eval fails to run, or the log does not contain per-sample completions,
+    so no failure mode can be read off it.
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/eval/base_dev150.json
+    source: openai/gsm8k
+    n_examples: 150
+    built_by: /home/ben/task/evaluate.py
+    build_command:
+    - python
+    - evaluate.py
+    - --limit
+    - '150'
+    selection: 'no training data: this card trains nothing. The harness reads the
+      official gsm8k test split itself (first 150 items, fewshot exemplars drawn from
+      the train split with seed 42); this path is the metrics file it writes.'
+    contamination_check: not_run
+    mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect_ai + vllm 0.11.0
+    peft: none
+    hyperparams:
+      seed: 42
+    target_format: 'harness-rendered: 10-shot system message folded into the first
+      user turn by templates/gemma3.jinja; model must end with "ANSWER: N"'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - evaluate.py
+    - --model-path
+    - /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    - --limit
+    - '150'
+    - --max-connections
+    - '32'
+    - --gpu-memory-utilization
+    - '0.8'
+    - --json-output-file
+    - /home/ben/task/eval/base_dev150.json
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.4
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '150'
+    - --max-connections
+    - '32'
+    - --gpu-memory-utilization
+    - '0.8'
+    dev_set: official --limit 150 (inspect_evals/gsm8k test split, first 150, fewshot_seed=42)
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: share of the 150 completions that contain no "ANSWER:" line, and share that
+      hit the 4000-token cap
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: 'no training; eval only'}
+  measurements:
+  - metric: accuracy
+    value: 0.07333
+    n: 150
+    path: /home/ben/task/eval/base_dev150.json
+    delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.568
+    path: /home/ben/task/analysis/exp-01_base.json
+    notes: '139 failures. 79 of them (56.8%) hit the 4000-token cap: the base model
+      never stops, and at temperature 1.0 it degenerates (one sample is 4000 copies
+      of a single CJK glyph). 23 failures never emit an ANSWER line at all. Mean
+      completion ~19.5k chars. So the dominant failure is format/termination, not
+      arithmetic.'
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: 'Base gemma-3-4b-pt scores 0.073 +/- 0.021 on the official 150-item protocol.
+    The per-sample log is readable and shows the failure is overwhelmingly formatting
+    and termination: 57% of failures run to the 4000-token cap and 17% never emit
+    the ANSWER marker, while few-shot context is clearly being continued rather than
+    answered.'
+  decision: iterate
+  next_step: 'exp-02: completion-only SFT on GSM8K-style CoT whose targets end in
+    <end_of_turn> and carry exactly one "ANSWER: N" line, so the model learns to stop
+    and to place the number where match(numeric=True) reads it.'

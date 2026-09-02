@@ -1,0 +1,140 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-02T19:35:29Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.35
+  remaining_h: 2.65
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score: {metric: accuracy, value: 0.75739, protocol_n: 1319}
+  trigger: "exp-06 settled the ranking at n=1319 and left exp-04 at 0.7574 with 11/1319 run-away completions. Its errors are now reasoning errors on the benchmark, and the only untried lever inside the remaining 2.65 h is training on the model's own verified-correct solutions."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-06_exp-04-greedy_full1319.json, locator: "accuracy 0.75739"}
+    - {path: /home/ben/task/analysis/exp-06_diagnostic.json, locator: "exp-04-greedy.cap_hit 11", observation: "0.83% run-away; format is not the remaining bottleneck"}
+    - {path: /home/ben/task/logs/rft_gen.log, locator: "solve_rate 0.95275 over 28000 training problems at k=4, T=1.0"}
+  alternatives_rejected:
+    - {option: "A second epoch on sft_v4 from exp-04/final", reason: "2.6 h of training against 2.65 h remaining - it would finish with no time to evaluate or package, and an unevaluated checkpoint cannot ship"}
+    - {option: "Soup exp-04 with the exp-05 soup", reason: "exp-06 showed the soup already scores below exp-04 on the benchmark (0.7460 vs 0.7574); averaging it in again pulls toward the worse parent"}
+    - {option: "Pure RFT with no supervised mixture", reason: "29258 self-generated rows would be the entire signal for a checkpoint that is already converged; 25000 verbatim sft_v4 rows anchor it against drift"}
+    - {option: "Skip RFT and stop with exp-04", reason: "final_model already holds exp-04, so this run risks nothing that is currently banked - the artifact is only replaced if it wins at n=1319"}
+  pitfalls_hit:
+    - {what: "My grader simulation crashed at the end of a 45-minute generation pass: float('0.50.0016') raises where inspect's str_to_float regex-matches the leading float and returns 0.5. The whole GPU pass was discarded", cost_h: 0.75, fix: "mirror inspect's str_to_float (leading-float regex) in fmt._normalize_number, and dump raw generations to data/rft_v1.jsonl.raw.jsonl BEFORE post-processing so a post-processing bug can never cost a GPU pass again"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --model, ckpts/exp-04/final, --data, data/rft_v1.jsonl, --dry-run], outcome: "54258 rows, 0 over max_seq_len, p50 316 / p99 2336 / max 2881, 21.8M tokens => ~0.6 h"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/contam_rft.jsonl], outcome: "29258 self-generated documents scanned, 0 contaminated, 0 matches"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-04 gets 320 of 1319 benchmark items wrong, and they are reasoning failures, not formatting failures: only 11 completions run away and only 11 lack an ANSWER line. It was trained purely on another model's solutions (Llama-3.1-405B via OpenMathInstruct-2), so nothing in its training has ever reinforced the chains it can actually produce itself."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_diagnostic.json, locator: "exp-04-greedy", observation: "accuracy 0.7574, cap_hit 11, no_answer_marker 11 out of 1319"}
+    - {path: /home/ben/task/logs/rft_gen.log, locator: "solved 26677 of 28000", observation: "at k=4/T=1.0 the model reaches gold on 95.3% of training problems, so there is a large pool of its own verified-correct chains available"}
+    - {path: /home/ben/task/data/rft_v1.jsonl, locator: "29258 rft rows + 25000 sft_v4 rows", observation: "frontier-weighted: 2 kept solutions for problems solved <=2 of 4 times, 1 for the easier ones"}
+  affected_share: 0.243
+  failure_examples:
+    - {id: bench-320-wrong, source: /home/ben/task/analysis/exp-06_diagnostic.json, question: "(the 320 benchmark items exp-04 fails; they are test items, so protocol rule 7 forbids reproducing them here)", gold: "n/a - aggregate", model_output: "n/a - aggregate", failure: "wrong reasoning, correct format"}
+    - {id: rft-unsolved-1323, source: /home/ben/task/logs/rft_gen.log, question: "(the 1323 of 28000 training problems the model failed to solve in any of 4 samples)", gold: "n/a - aggregate", model_output: "n/a - aggregate", failure: "outside the model's reach even with sampling; RFT contributes nothing for these"}
+    - {id: rft-frontier, source: /home/ben/task/data/rft_v1.jsonl, question: "(problems solved 1-2 times of 4 - the frontier this run upweights to 2 kept chains)", gold: "n/a - aggregate", model_output: "n/a - aggregate", failure: "solvable but unreliable; the target of the intervention"}
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "kept for the termination/format diagnostic only. exp-06 showed probe300 ranks checkpoints in the wrong order because OpenMathInstruct-2's augmented problems are near-duplicates of its gsm8k-train questions, so it is not used to decide anything here."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing exp-04/final for one epoch at lr 7e-6 on 29258 of its own verified-correct chains plus 25000 verbatim sft_v4 rows changes full-benchmark accuracy relative to exp-04's 0.75739."
+  mechanism: "Rejection sampling reweights the model toward the reasoning paths it can actually generate and that reach gold, instead of toward another model's phrasing; the frontier weighting concentrates that reweighting on problems it solves only 1-2 times in 4, where the probability mass is closest to flipping."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+0 to +3 points. The 95.3% solve rate caps this: RFT mostly re-teaches what the model already does, so a flat result is a likely outcome and would be informative about the ceiling of self-distillation here."
+  falsified_if: "full-benchmark accuracy is at or below 0.75739 - self-generated chains on problems the model already solves 95% of the time would then add nothing over the supervised data it was trained on, and exp-04 ships unchanged."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: "synthetic:self (sampled from ckpts/exp-04-greedy) + nvidia/OpenMathInstruct-2 train_2M rows carried over verbatim from data/sft_v4.jsonl"
+      n_examples: 54258
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, ckpts/exp-04-greedy, --pool, data/sft_v4.jsonl, --n-problems, "28000", --k, "4", --keep-per-problem, "2", --temperature, "1.0", --top-p, "0.95", --max-tokens, "512", --mix-file, data/sft_v4.jsonl, --mix-n, "25000", --out, data/rft_v1.jsonl]
+      selection: "28000 distinct training problems (probe300 already excluded upstream), 4 samples each at T=1.0/top_p 0.95. A sample is kept only if it stopped on its own, contains 'ANSWER:' exactly once, and the byte-level copy of inspect's match(numeric=True) extracts gold from it. Exact duplicates removed; 2 chains kept for problems solved <=2 of 4, otherwise 1. 12% carry a k-shot prefix. Plus 25000 sft_v4 rows verbatim as a regularisation anchor."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 (fused linear CE), flash_attention_2"
+    peft: "none (full fine-tune; SigLIP vision tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 32, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: {N}<end_of_turn>; loss on the target only, prompt masked with -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, ckpts/exp-04/final, --data, data/rft_v1.jsonl, --out, ckpts/exp-07, --bs, "32", --grad-accum, "2", --lr, "7e-6", --epochs, "1", --max-seq-len, "3072", --save-strategy, epoch, --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.65}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "1319", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 1319 (full test split)"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.75739
+    path: /home/ben/task/eval/exp-06_exp-04-greedy_full1319.json
+  diagnostic:
+    what: "cap-hit rate and missing-ANSWER count at n=1319 against exp-04's 11/1319 - self-training on its own chains must not erode the termination behaviour that exp-02 established"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.62
+  output_checkpoint: /home/ben/task/ckpts/exp-07-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/checkpoint-848, step: 848}
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 848}
+    - {path: /home/ben/task/ckpts/exp-07-greedy, step: 848}
+  training_summary: {final_loss: 0.203, steps: 848, notes: "one epoch at lr 7e-6, grad_norm ~1.4, no instability. 21.8M tokens in 0.62 h."}
+  measurements:
+    - {metric: accuracy, value: 0.74754, n: 1319, path: /home/ben/task/eval/exp-07_full1319.json, delta_vs_comparator: -0.00985}
+  diagnostic_result:
+    value: 6.0
+    path: /home/ben/task/analysis/exp-07_diagnostic.json
+    notes: "cap-hits 6/1319 vs exp-04's 11 - self-training on its own terminated chains improved termination discipline further, and mean behaviour is unchanged otherwise. The mechanism did what it should; it just did not buy accuracy."
+  watch_set_result:
+    fixed: null
+    still_failing: null
+    regressions: null
+    path: /home/ben/task/analysis/exp-07_diagnostic.json
+    notes: "probe300 deliberately not run: exp-06 established it ranks these checkpoints wrongly."
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "Full-benchmark accuracy 0.7574 -> 0.7475 (-1.0, against a stderr of 0.012), so the falsification condition written before the run is met. The termination side of the mechanism did work - run-away completions fell from 11 to 6 - but with a 95.3% solve rate on the sampled problems, rejection sampling mostly re-taught chains the model already produced, and one more epoch over near-duplicate signal moved it slightly the wrong way."
+  decision: reject
+  next_step: "exp-04 stays the artifact. The remaining budget goes to exp-08 (average exp-04 with exp-07 - they are 848 steps apart, so this is a checkpoint average rather than a merge of independent runs) and then to verifying final_model end to end with evaluate.py."

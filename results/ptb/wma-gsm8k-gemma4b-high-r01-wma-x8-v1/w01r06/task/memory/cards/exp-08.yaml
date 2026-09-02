@@ -1,0 +1,117 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T01:15:00Z'
+situation:
+  elapsed_h: 7.2
+  remaining_h: 2.8
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04_greedy
+    score: {metric: accuracy, value: 0.7467, protocol_n: 150}
+  trigger: "Rejection sampling is the only intervention in this batch that moved the protocol number (exp-04, +2.7); extra 405B solutions (exp-05) and a weight soup (exp-06) both failed, and exp-07 ruled out the few-shot-context line. exp-04's round only ever trained on problems the weaker exp-02 policy could already solve - 34373 of 40223 - and never sampled the other 34883 problems at all."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion", observation: "the one supported training card since exp-02: +2.7 protocol, +2.8 probe"}
+    - {path: /home/ben/task/logs/rft_sample2.log, locator: "uncovered filter line", observation: "69256 candidate problems, 34373 already solved in round 1, leaving 34883 with no verified solution in the mixture"}
+    - {path: /home/ben/task/memory/cards/exp-07.yaml, locator: "conclusion.decision: abandon_line"}
+  alternatives_rejected:
+    - {option: "Resample the same problems round 1 already covered", reason: "those chains are already in rft_mix and exp-04 was trained on them; a second copy is repetition, not new signal"}
+    - {option: "Continue from exp-05 or the soup instead of exp-04", reason: "both measured no better than exp-04 (0.7467 and 0.700); starting from the incumbent keeps the comparison clean"}
+    - {option: "Stop and ship exp-04", reason: "still the fallback - final_model holds exp-04 and only changes if this card beats 0.7467 on the protocol. The remaining 2.8h fits sampling (already done), ~35 min of training and one eval with ~1h of reserve."}
+  pitfalls_hit:
+    - {what: "round-2 sample accuracy is 0.498 against round 1's 0.577 even though exp-04 is the stronger policy - expected, since this round deliberately samples only the problems round 1 left unsolved or never tried", cost_h: 0.0, fix: "not a defect; noted so the two numbers are not read as a regression"}
+  smoke_runs:
+    - command: [python, rft_sample.py, --model, ckpts/exp-04/final, --out, data/rft_v2.jsonl, --k, '4', --uncovered, data/rft_v1.jsonl, --n-problems, '22000']
+      outcome: "22000 problems, 29634 kept rows, 16507 problems with at least one verified solution (75%) - all of them problems that had none before"
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/rft2_check.jsonl]
+      outcome: "49634 documents scanned, 0 contaminated, 0 matches"
+problem:
+  statement: "exp-04's rejection-sampling mixture is biased toward easy problems by construction: it kept only chains the exp-02 policy produced correctly, so the 5850 problems it failed and the 34883 it never sampled contributed nothing. The model is therefore sharpened on what it could already do and left untouched on the harder tail, which is where the remaining 55 of 250 probe failures live."
+  evidence:
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "final json", observation: "round 1: problems_with_at_least_one 34373 of 40223 sampled, out of ~69k available"}
+    - {path: /home/ben/task/logs/rft_sample2.log, locator: "final json", observation: "the stronger exp-04 policy solves 16507 of 22000 of those uncovered problems at k=4, so most of that tail is reachable and simply absent from the training mixture"}
+    - {path: /home/ben/task/analysis/probe_exp04_greedy.json, locator: "samples[correct=false]", observation: "55 of 250 still wrong"}
+  affected_share: 0.22
+  watch_set:
+    path: /home/ben/task/data/dev250.jsonl
+    n: 250
+    selection: "250 items sampled with seed 1234 from the GSM8K train split, excluded from every training file in this batch"
+hypothesis:
+  claim: "Continuing from exp-04/final on 29634 verified solutions to 16507 problems that had no verified solution in exp-04's mixture, plus a 20k replay slice of rft_mix, raises greedy accuracy above exp-04's 0.7467."
+  mechanism: "Round 1 could only reinforce chains the exp-02 policy already found. These 16507 problems are ones it did not: they enter the mixture for the first time here, sampled from a policy 2.8 points stronger. That widens the set of problem types with a correct on-policy chain, rather than deepening the ones already covered - which is exactly what exp-05 showed does not help."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +3 points; smaller than round 1, which had 63k rows against 30k here"
+  falsified_if: "greedy accuracy at n=150 is at or below exp-04's 0.7467, or the dev250 greedy probe is at or below 0.780."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft2_mix.jsonl
+      source: "synthetic:self (29634 rows sampled from ckpts/exp-04/final) + derived:exp-04 (20000-row replay slice of data/rft_mix.jsonl); problems from openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 TRAIN split and nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e shards 0-5"
+      n_examples: 49634
+      built_by: /home/ben/task/build_rft_mix.py
+      build_command: [python, build_rft_mix.py, --rft, data/rft_v2.jsonl, --sft, data/rft_mix.jsonl, --replay, '20000', --out, data/rft2_mix.jsonl]
+      selection: "only problems absent from data/rft_v1.jsonl; k=4 at T=1.0/top_p 0.95/top_k 64; keep completions that stop on <end_of_turn>, contain 'answer:' exactly once, end with 'ANSWER: <int>', and whose last number equals gold under inspect's normalisation; max 2 per problem, near-duplicate bodies dropped; dev250 excluded; 8% of the new rows given a 1-3 shot system prefix"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, full-parameter, flash_attention_2"
+    peft: "none"
+    hyperparams: {lr: 6.0e-6, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged: chain of thought, blank line, 'ANSWER: <int>', then <end_of_turn>; rendered with templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4); loss on completion tokens only; overlong rows dropped, never truncated"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, /home/ben/task/data/rft2_mix.jsonl, --out, /home/ben/task/ckpts/exp-08, --epochs, '1', --lr, '6e-6', --bs, '16', --ga, '2', --max-seq-len, '1024']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/exp-08
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7467
+    path: /home/ben/task/eval/exp04_dev150.json
+  diagnostic:
+    what: "eval_probe.py --decode greedy --shots 10 on dev250 against exp-04's 0.780, with the fixed/regressed split"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.54
+  output_checkpoint: /home/ben/task/ckpts/exp-08_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08/final, step: 1545}
+    - {path: /home/ben/task/ckpts/exp-08_greedy, step: 1545}
+  training_summary: {final_loss: null, steps: 1545, notes: "train_loss 0.1996, 25.4 samples/s, 16.5M tokens over 49431 kept rows (203 of 49634 dropped for exceeding max_seq_len 1024, 0.41%)"}
+  measurements:
+    - {metric: accuracy, value: 0.7733, n: 150, path: /home/ben/task/eval/exp08_dev150.json, delta_vs_comparator: 0.0267}
+  diagnostic_result:
+    value: 0.756
+    path: /home/ben/task/analysis/probe_exp08_greedy.json
+    notes: "dev250 greedy 0.780 (exp-04) -> 0.756 (-2.4), 11 fixed against 17 regressed, while the protocol went 0.7467 -> 0.7733 (+2.7). The two sets disagree in sign. Pooled over all 400 scored items: exp-04 307/400 = 0.7675, exp-08 305/400 = 0.7625 - a two-item difference, i.e. a tie."
+  watch_set_result: {fixed: 11, still_failing: 61, regressions: 17, path: /home/ben/task/analysis/probe_exp08_greedy.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The pre-registered criterion required BOTH a protocol gain and a probe at or above 0.780; the protocol rose +2.7 to 0.7733 but the probe fell to 0.756, so the claim as written is contradicted. Widening on-policy coverage to 16507 previously-unsolved problems did not produce a gain that shows on both sets - pooled over 400 items the two checkpoints are two items apart."
+  decision: iterate
+  next_step: "exp-04 and exp-08 are tied within noise and each wins one 150-250 item set. Do not pick on the 150-item slice that exp-08 happens to win: exp-09 scores both under one wider protocol, evaluate.py --limit 400, and final_model takes the winner of that."

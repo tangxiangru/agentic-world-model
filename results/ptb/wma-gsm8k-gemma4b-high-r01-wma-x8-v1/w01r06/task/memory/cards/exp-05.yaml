@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T22:40:00Z'
+situation:
+  elapsed_h: 4.7
+  remaining_h: 5.3
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04_greedy
+    score: {metric: accuracy, value: 0.7467, protocol_n: 150}
+  trigger: "exp-04 gained +2.7 on the protocol and +2.8 on the probe, but 55 of 250 probe items are still wrong and 14 items that exp-02 got right regressed. The one source of unused high-quality supervision left is 405B-written solutions to problems sft_v2 already covers: sft_v2 capped at 2 solutions per problem and the dataset holds many more."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/probe_exp04_greedy.json, locator: "samples where correct=false (55 of 250)"}
+    - {path: /home/ben/task/logs/extra.log, locator: "final json", observation: "90000 previously-unused 405B solutions over 65984 of sft_v2's problems"}
+  alternatives_rejected:
+    - {option: "A second rejection-sampling round from exp-04", reason: "the first round cost 1.2h of sampling alone; with 5.3h left that plus training plus eval leaves no reserve for packaging and a final verification, and round-2 RFT gains are typically smaller than round-1"}
+    - {option: "Another epoch over data/rft_mix.jsonl", reason: "same targets the model just fit to loss 0.21; extra 405B solutions are different derivations of the same answers, which is new supervision rather than repetition"}
+    - {option: "Add MATH / augmented_math integer-answer rows", reason: "changes the problem distribution as well as the target volume; with one card left to spend, the on-distribution option is the better bet"}
+    - {option: "Train from exp-02/final on rft_mix + sft_extra in one longer run instead of continuing from exp-04", reason: "would discard exp-04's measured +2.7 and cost ~2.2h; continuing keeps a verified incumbent on disk at every point"}
+  pitfalls_hit:
+    - {what: "no new pitfalls in this card's preparation; the sft_extra build and its contamination check ran on CPU alongside exp-04's training with no contention", cost_h: 0.0, fix: null}
+  smoke_runs:
+    - command: [python, build_extra_solutions.py]
+      outcome: "90000 rows over 65984 problems, none sharing a (problem, solution-prefix) key with sft_v2"
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_v4_check.jsonl]
+      outcome: "110000 documents scanned, 0 contaminated, 0 matches"
+problem:
+  statement: "exp-04 leaves 55 of 250 probe items and ~25% of the protocol set wrong, and 14 items regressed relative to exp-02. Its training signal was the model's own samples, which by construction only cover chains the model could already produce; problems it never solves in 4 attempts contributed nothing. 5850 of the 40223 sampled problems produced no correct solution at all."
+  evidence:
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "final json", observation: "problems_with_at_least_one 34373 of 40223: 5850 problems gave the RFT stage no target"}
+    - {path: /home/ben/task/analysis/probe_exp04_greedy.json, locator: "samples[correct=false]", observation: "55 remaining failures, and 14 items correct under exp-02 are now wrong"}
+  affected_share: 0.22
+  watch_set:
+    path: /home/ben/task/data/dev250.jsonl
+    n: 250
+    selection: "250 items sampled with seed 1234 from the GSM8K train split, excluded from every training file in this batch by normalised question text"
+hypothesis:
+  claim: "Continuing from exp-04/final on 90k previously-unused 405B-written solutions to the same problems, plus a 20k replay slice of rft_mix, raises greedy accuracy above exp-04's 0.7467."
+  mechanism: "Every problem gets 3 more independent correct derivations written by a far stronger model, including the 5850 problems the RFT round could not cover at all. Multiple distinct correct chains per problem is a stronger signal than one repeated chain: it teaches the answer is reachable several ways rather than memorising one path. The rft_mix replay keeps exp-04's on-policy sharpening and the few-shot-prefixed rows in the mixture."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +4 points"
+  falsified_if: "greedy accuracy at n=150 is at or below exp-04's 0.7467, or the dev250 greedy probe is at or below 0.780."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e shards 0-11 (90000 solutions not used by sft_v2) + derived:exp-04 (20000-row replay slice of data/rft_mix.jsonl)"
+      n_examples: 110000
+      built_by: /home/ben/task/build_rft_mix.py
+      build_command: [python, build_rft_mix.py, --rft, data/sft_extra.jsonl, --sft, data/rft_mix.jsonl, --replay, '20000', --out, data/sft_v4.jsonl]
+      selection: "problem_source in {gsm8k, augmented_gsm8k}; integer answers; latex-free after \\boxed unwrapping; body must not already contain 'answer:'; problem must be in sft_v2 and the (problem, solution-prefix) pair must NOT be; max 3 extra solutions per problem; dev250 excluded; 8% of the extra rows given a 1-3 shot system prefix"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full-parameter, flash_attention_2"
+    peft: "none"
+    hyperparams: {lr: 6.0e-6, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged: chain of thought, blank line, 'ANSWER: <int>', then <end_of_turn>; rendered with templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4); loss on completion tokens only; overlong rows dropped, never truncated"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, /home/ben/task/data/sft_v4.jsonl, --out, /home/ben/task/ckpts/exp-05, --epochs, '1', --lr, '6e-6', --bs, '16', --ga, '2', --max-seq-len, '1024']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7467
+    path: /home/ben/task/eval/exp04_dev150.json
+  diagnostic:
+    what: "eval_probe.py --decode greedy on dev250 (n=250) against exp-04's 0.780, with the fixed/regressed split"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.24
+  output_checkpoint: /home/ben/task/ckpts/exp-05_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 3419}
+    - {path: /home/ben/task/ckpts/exp-05_greedy, step: 3419}
+  training_summary: {final_loss: 0.2408, steps: 3419, notes: "train_loss 0.2531, 24.5 samples/s, 38.5M tokens over 109379 kept rows (621 of 110000 dropped for exceeding max_seq_len 1024, 0.56%)"}
+  measurements:
+    - {metric: accuracy, value: 0.7467, n: 150, path: /home/ben/task/eval/exp05_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.756
+    path: /home/ben/task/analysis/probe_exp05_greedy.json
+    notes: "dev250 greedy 0.780 (exp-04) -> 0.756 (-2.4), while the protocol is unchanged to the item (0.7467 both). 15 probe items fixed against 21 regressed: a reshuffle with a slightly negative net, not a gain."
+  watch_set_result: {fixed: 15, still_failing: 61, regressions: 21, path: /home/ben/task/analysis/probe_exp05_greedy.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The protocol score did not move (0.7467 -> 0.7467) and the 250-item probe fell 0.780 -> 0.756, against a predicted +1 to +4. Extra 405B-written derivations of problems the model was already trained on do not act like new supervision: 21 probe items regressed for 15 fixed."
+  decision: reject
+  next_step: "Keep exp-04 as the incumbent and final_model. exp-06 tests whether the uniform weight average of exp-04 and exp-05 - two checkpoints that tie at 0.7467 with different error sets - beats either, which is the only lever that fits the remaining budget."
