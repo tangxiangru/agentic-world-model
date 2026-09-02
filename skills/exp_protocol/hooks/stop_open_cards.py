@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
-"""Claude Code Stop hook: block the end of a turn once if a locked card has no conclusion.
+"""Claude Code Stop hook: keep the session alive while a locked card has no conclusion.
+
+In PostTrainBench the scientist runs as one `claude --print` turn. When the
+turn ends the session ends, and Claude Code kills every background process it
+started — a training run included. Round 00, cell p00r08 (job 90482): exp-02
+locked, full SFT launched, and at step 207 of 4154 the scientist wrote "I'll
+report back when the run finishes" and ended the turn; the run died with it and
+9.4 of 10 hours went unused. So while a locked card has no conclusion, this hook
+blocks the end of the turn, says why, and says how to wait. It blocks at most
+MAX_BLOCKS times per session (a counter in memory/.stop_hook.json), so a
+scientist that cannot close a card — the CLI broke, say — is not held forever;
+a card can always be closed by hand by filling `result` and `conclusion`.
 
 Standard library only. The session dir is AWM_SESSION_DIR, else the hook's cwd.
-Optional; not installed by default. Does nothing for Codex.
+Installed by `awm sandbox setup --exp-protocol --stop-hook`. Does nothing for Codex.
 
 "Closed" means the card has a top-level ``conclusion:`` section whose own
 ``decision:`` key carries a real value — not null, not empty, not a template
@@ -20,6 +31,19 @@ import sys
 from pathlib import Path
 
 PLACEHOLDER = re.compile(r"[|<>]")
+MAX_BLOCKS = 12
+COUNTER = Path("memory") / ".stop_hook.json"
+REASON = (
+    "Locked cards without a conclusion: {cards}. Ending this turn ENDS THE SESSION: "
+    "there is no next turn, and every background process you started dies with it, "
+    "a training run included. If a run is still going, wait for it in the foreground "
+    "(`sleep 900; tail -n 3 <log>` repeated, or `while [ ! -f <out>/config.json ]; do "
+    "sleep 300; done`; give the Bash call a long timeout), then evaluate, fill sections "
+    "5-6 and run `awm exp_protocol close --dir <dir> <card>`. If the run is dead, record "
+    "it (result.execution: failed or killed) and close the card. If the CLI is broken, "
+    "fill result and conclusion in the YAML by hand; that closes it too. "
+    "(block {n} of {max})"
+)
 
 
 def _indent(line: str) -> int:
@@ -70,6 +94,21 @@ def open_locked_cards(session: Path) -> list[str]:
     return out
 
 
+def _blocks_so_far(session: Path) -> int:
+    try:
+        return int(json.loads((session / COUNTER).read_text()).get("blocks", 0))
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
+def _record_block(session: Path, n: int) -> None:
+    try:
+        (session / COUNTER).parent.mkdir(parents=True, exist_ok=True)
+        (session / COUNTER).write_text(json.dumps({"blocks": n}) + "\n")
+    except OSError:
+        pass  # the block still happens; only the bound is lost
+
+
 def main() -> int:
     try:
         hook_input = json.load(sys.stdin)
@@ -78,12 +117,14 @@ def main() -> int:
         return 0
     session = Path(os.environ.get("AWM_SESSION_DIR", hook_input.get("cwd", ".")))
     open_cards = open_locked_cards(session)
-    if open_cards and not hook_input.get("stop_hook_active", False):
+    # `stop_hook_active` says a previous block already made Claude continue once; this
+    # hook blocks again on purpose while a card is open, bounded by MAX_BLOCKS instead.
+    blocks = _blocks_so_far(session)
+    if open_cards and blocks < MAX_BLOCKS:
+        _record_block(session, blocks + 1)
         print(json.dumps({
             "decision": "block",
-            "reason": ("Locked cards without a conclusion: " + ", ".join(open_cards) +
-                       ". If the run finished, fill sections 5-6 and run "
-                       "`awm exp_protocol close --dir <dir> <card>`; if it is still running, say so."),
+            "reason": REASON.format(cards=", ".join(open_cards), n=blocks + 1, max=MAX_BLOCKS),
         }))
     else:
         print("{}")

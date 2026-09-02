@@ -111,6 +111,13 @@ that disagreement is the record the estimator learns from.
    last-ditch gamble for a validated method. Every smoke run, OOM, and wrong
    path you hit before this launch goes in `situation.pitfalls_hit` with the
    hours it cost.
+9. **Your turn is the session.** You run as one `claude --print` turn: when
+   your turn ends the session ends, and every background process you started
+   dies with it — a training run included. There is no next turn. Never end
+   the turn while a run is alive: wait for it in the foreground (`sleep 900;
+   tail -n 3 <log>`, repeated, with a long Bash timeout), evaluate, fill
+   sections 5–6, close. The Stop hook blocks the end of a turn while a locked
+   card is open, and tells you this again.
 
 ## Pitfalls
 
@@ -135,9 +142,11 @@ When you lose time to something not in the list, record it in the next card's
 The protocol should cost you under five minutes per card. If it is costing
 more, the card is doing too much: split it.
 
-## Optional: Claude Code Stop hook
+## The Stop hook
 
-`hooks/stop_open_cards.py` blocks the end of a turn once if a locked card has
-no conclusion, so a finished run is not left unclosed. Standard library only.
-Install by adding it to your task dir's `.claude/settings.json` under `Stop`;
-it is not installed by default and does nothing for Codex.
+`hooks/stop_open_cards.py` blocks the end of a turn while a locked card has no
+conclusion, up to twelve times, and each time says why (rule 9) and how to wait.
+It is installed into `.claude/settings.json` by `awm sandbox setup --exp-protocol
+--stop-hook`. Closing the card releases it; if the CLI is unavailable, filling
+`result` and `conclusion.decision` in the YAML by hand counts as closed.
+Standard library only; does nothing for Codex.

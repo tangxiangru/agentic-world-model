@@ -699,6 +699,8 @@ def build_launches(
         checkout = None
         if cell.get("awm"):
             checkout = materialize_awm_checkout(cell["awm"]["sha"], cell["awm"]["paths"])
+            # The receipt names the variant fully: the tree shipped and the setup it runs.
+            checkout = {**checkout, "setup": cell["awm"]["setup"]}
             # Read on the host by run_task.sh: one read-only bind for the agent sandbox.
             environment["POST_TRAIN_BENCH_EXTRA_BINDS"] = f"{checkout['dir']}:{AWM_MOUNT}:ro"
             # Forwarded into the sandbox by the scaffold's env_passthrough.txt.

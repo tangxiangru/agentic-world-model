@@ -32,10 +32,10 @@ def test_skill_md_has_frontmatter_and_names_every_command() -> None:
         assert f"awm exp_protocol {cmd}" in text, cmd
 
 
-def test_stop_hook_is_stdlib_only_and_blocks_once() -> None:
+def test_stop_hook_is_stdlib_only_and_bounded() -> None:
     src = (preflight.skill_dir() / "hooks" / "stop_open_cards.py").read_text()
     assert "import yaml" not in src and "from awm" not in src
-    assert "stop_hook_active" in src
+    assert "MAX_BLOCKS" in src and "ENDS THE SESSION" in src
 
 
 def test_repo_symlinks_resolve_to_the_skills() -> None:

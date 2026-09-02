@@ -719,6 +719,7 @@ def test_an_awm_cell_ships_its_checkout_read_only(tmp_path: Path, monkeypatch) -
         "dir": str(checkout),
         "digest": first.checkout["digest"],
         "protocol_tree": ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD:skills/exp_protocol"),
+        "setup": "--exp-protocol --tool claude",
     }
     assert len(first.checkout["digest"]) == 64
     # the second cell, same sha and paths, reuses the same materialised directory
