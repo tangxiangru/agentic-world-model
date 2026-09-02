@@ -144,3 +144,29 @@ def test_rebuild_does_not_clobber_existing_verdicts(corpus, tmp_path, skill) -> 
     before = vp.read_text()
     replay.build_samples(corpus, out, side="train")
     assert vp.read_text() == before
+
+
+def test_truth_gets_a_comparator_from_the_parent_card_when_the_corpus_has_none(corpus, tmp_path, skill) -> None:
+    """Round-00 finding: 41 % of L2 was unscorable. The parent card's measurement is the comparator the corpus implied."""
+    out = tmp_path / "replay"
+    samples = replay.build_samples(corpus, out, side="train")
+    s = next(x for x in samples if x.run_ref == "r-aaaa" and x.card_id == "exp-02")
+    t = yaml.safe_load(s.truth_path.read_text())
+    assert t["evaluation"]["comparator"]["value"] == 0.41 and t["evaluation"]["comparator"]["ref"] == "exp-01"
+    assert t["evaluation"]["comparator_source"] == "parent_card"
+    # the session's copy of the card is untouched: the agent sees exactly what the corpus had
+    k = yaml.safe_load((s.session_dir / "memory" / "cards" / "exp-02.yaml").read_text())
+    assert (k["evaluation"].get("comparator") or {}).get("value") is None
+    # a base_model parent has nothing to fall back to
+    s1 = next(x for x in samples if x.run_ref == "r-aaaa" and x.card_id == "exp-01")
+    assert "comparator_source" not in yaml.safe_load(s1.truth_path.read_text())["evaluation"]
+
+
+def test_reconcile_all_rescores_existing_verdicts_against_rewritten_truth(corpus, tmp_path, skill) -> None:
+    out = tmp_path / "replay"
+    replay.build_samples(corpus, out, side="train")
+    replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1))
+    counts = replay.reconcile_all(out)
+    assert counts == {"reconciled": 6, "missing": 0}
+    rows = {(r["path"].split("/")[-5], r["card_id"]): r for r in ledger.rows([out])}
+    assert rows[("r-aaaa", "exp-02")]["scored"]["L2"] != "unscorable"

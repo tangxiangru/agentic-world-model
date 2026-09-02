@@ -93,6 +93,10 @@ def _replay(args: argparse.Namespace) -> int:
     print(f"{len(samples)} samples under {out}")
     if args.build_only:
         return 0
+    if args.reconcile_only:
+        counts = replay.reconcile_all(out)
+        print(", ".join(f"{k}={v}" for k, v in counts.items()))
+        return 0
     counts = replay.run_replay(out, get_backend(args.backend, args.model), budget=budget, model=args.model,
                                limit=args.limit)
     print(", ".join(f"{k}={v}" for k, v in counts.items()))
@@ -136,4 +140,6 @@ def register(sub: argparse._SubParsersAction) -> None:
     rp.add_argument("--budget", help="cpu=,gpu=,wall= in minutes")
     rp.add_argument("--limit", type=int, help="review at most this many samples this invocation")
     rp.add_argument("--build-only", action="store_true", help="build the sessions, review nothing")
+    rp.add_argument("--reconcile-only", action="store_true",
+                    help="rebuild the truth cards and re-score every existing verdict; review nothing")
     rp.set_defaults(func=_replay)

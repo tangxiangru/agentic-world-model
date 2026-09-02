@@ -90,12 +90,44 @@ def _history_dir(out: Path, side_dir: Path, run_ref: str, all_runs: list[Path]) 
     return hist
 
 
+def _is_num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def truth_card(cards: list[dict[str, Any]], k: int) -> dict[str, Any]:
+    """Card k as the truth: the corpus card, plus the comparator the corpus implied but did not write.
+
+    Corpus cards mostly leave ``evaluation.comparator.value`` empty. When the
+    parent is an earlier card of the same run with a measurement of the same
+    metric, that measurement is the comparator — the scientist had it, and
+    L2 becomes scorable. Marked ``comparator_source: parent_card``. The
+    session's copy of the card is not changed: the agent sees the corpus.
+    """
+    card = json.loads(json.dumps(cards[k - 1]))  # deep copy
+    ev = card.setdefault("evaluation", {})
+    comp = ev.get("comparator") or {}
+    if _is_num(comp.get("value")):
+        return card
+    origin = ((card.get("setup") or {}).get("parent_checkpoint") or {}).get("origin")
+    parent = next((c for c in cards[: k - 1] if c.get("card_id") == origin), None)
+    if parent is None:
+        return card
+    ms = [m for m in ((parent.get("result") or {}).get("measurements") or []) if isinstance(m, dict)]
+    own = [m for m in ((card.get("result") or {}).get("measurements") or []) if isinstance(m, dict)]
+    metric = own[0].get("metric") if own else None
+    match = next((m for m in ms if _is_num(m.get("value")) and (metric is None or m.get("metric") == metric)), None)
+    if match is None:
+        return card
+    ev["comparator"] = {"ref": origin, "value": match["value"], "path": match.get("path")}
+    ev["comparator_source"] = "parent_card"
+    return card
+
+
 def _build_session(out: Path, run_ref: str, cards: list[dict[str, Any]], k: int, hist: Path) -> tuple[Path, Path]:
     card_id = cards[k - 1]["card_id"]
     session = out / run_ref / card_id
     truth = out / "_truth" / run_ref / f"{card_id}.yaml"
-    if not truth.is_file():
-        dump_card(truth, cards[k - 1])
+    dump_card(truth, truth_card(cards, k))  # truth is derived from the corpus; rewriting it is always safe
     if session.is_dir():
         return session, truth  # never rebuild: a verdict may already be there
     cdir = session / "memory" / "cards"
@@ -165,4 +197,17 @@ def run_replay(out: Path, backend: Backend, *, budget: Budget | None = None, mod
             counts["errors"] += 1
             with errors.open("a") as fh:
                 fh.write(json.dumps({"run_ref": s.run_ref, "card_id": s.card_id, "error": str(exc)}) + "\n")
+    return counts
+
+
+def reconcile_all(out: Path) -> dict[str, int]:
+    """Re-score every existing verdict against the (possibly rewritten) truth. Idempotent."""
+    counts = {"reconciled": 0, "missing": 0}
+    for s in read_samples(Path(out)):
+        card_path = s.session_dir / "memory" / "cards" / f"{s.card_id}.yaml"
+        if not schema.verdict_path(card_path).is_file():
+            counts["missing"] += 1
+            continue
+        reconcile(card_path, s.truth_path)
+        counts["reconciled"] += 1
     return counts
