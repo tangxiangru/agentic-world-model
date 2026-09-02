@@ -21,6 +21,10 @@ The default prints validated completed cells, including any result that is visib
 If a cell has several attempts, the report prefers the latest eligible completion for analysis
 while separately retaining the latest attempt.
 
+Coverage and accuracy summaries include only `run_purpose: formal` or `formal-retry*` attempts.
+Pilot and context-smoke results remain discoverable as attempts but never enter a formal manifest's
+coverage, primary, or sensitivity aggregates because their budget or purpose differs.
+
 Completion and eligibility are separate. A result can pass the canonical PTB validator and keep
 its score while being quarantined because runtime placement differs from the frozen receipt. Such
 a result is evidence, but it is excluded from `eligible`, `clean`, and `flagged` aggregates until

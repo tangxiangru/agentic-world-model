@@ -11,6 +11,7 @@ def _write_attempt(
     job_id: str,
     accuracy: float | None,
     anomaly: bool = False,
+    run_purpose: str = "formal",
 ) -> Path:
     result = root / f"agent_{cell_id}" / f"task_model_{job_id}"
     result.mkdir(parents=True)
@@ -18,7 +19,11 @@ def _write_attempt(
         json.dumps(
             {
                 "created_at": f"2026-09-01T00:00:{job_id[-2:]}+00:00",
-                "experiment": {"batch_id": "batch-v1", "cell_id": cell_id},
+                "experiment": {
+                    "batch_id": "batch-v1",
+                    "cell_id": cell_id,
+                    "run_purpose": run_purpose,
+                },
                 "slurm": {"job_id": job_id, "job_name": f"batch.{cell_id}", "node": "node0"},
                 "source": {"top_commit": "a" * 40, "ptb_commit": "b" * 40},
             }
@@ -159,3 +164,38 @@ def test_slurm_nodelist_expansion_is_offline_and_range_aware() -> None:
     assert ptb_results._expand_nodelist("node-[00-01],other3") == {
         "node-00", "node-01", "other3"
     }
+
+
+def test_a_completed_pilot_never_enters_formal_coverage_or_accuracy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    pilot = _write_attempt(
+        tmp_path, cell_id="g01", job_id="101", accuracy=0.99, run_purpose="pilot-1h"
+    )
+    monkeypatch.setattr(ptb_results, "_results_root", lambda: tmp_path)
+    monkeypatch.setattr(ptb_results, "_receipts_root", lambda: tmp_path / "no-receipts")
+    monkeypatch.setattr(ptb_results.ptb, "audit_result", lambda _result: [])
+    manifest = {
+        "_path": "/repo/manifest.yaml",
+        "batch_id": "batch-v1",
+        "ownership": {"spec": "doc/spec.md"},
+        "contract": {"task": "gsm8k"},
+        "cells": [
+            {
+                "id": "g01",
+                "base_model": "google/gemma-3-4b-pt",
+                "agent": "claude_vertex_high_awm",
+                "agent_model": "claude-opus-5[1m]",
+                "effort": "high",
+                "context_tokens": 1_000_000,
+                "replicate": 1,
+            }
+        ],
+    }
+
+    report = ptb_results.build_report(manifest)
+
+    assert report["complete"] == 0 and report["eligible_complete"] == 0
+    assert report["accuracy_primary"]["n"] == 0
+    assert report["rows"][0]["latest_attempt"]["result_dir"] == str(pilot)
+    assert report["rows"][0]["latest_attempt"]["comparable"] is False

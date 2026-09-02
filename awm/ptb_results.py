@@ -63,6 +63,14 @@ def _placement_only_quarantine(attempt: dict[str, Any]) -> bool:
     )
 
 
+def _comparable_run_purpose(value: str) -> bool:
+    """Formal manifest analysis never pools pilots or context smokes.
+
+    Empty is accepted for older provenance written before run_purpose existed.
+    """
+    return not value or value == "formal" or value.startswith("formal-retry")
+
+
 def _results_root() -> Path:
     env = ptb.read_ptb_env()
     return Path(env.get("POST_TRAIN_BENCH_RESULTS_DIR", ptb.PTB_ROOT / "results")).resolve()
@@ -151,6 +159,7 @@ def discover_attempts(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]
             accuracy = None
         issues = ptb.audit_result(result_dir)
         slurm = provenance.get("slurm") or {}
+        run_purpose = str(experiment.get("run_purpose", ""))
         job_id = str(slurm.get("job_id", ""))
         actual_node = str(slurm.get("node", ""))
         quarantine_reasons: list[str] = []
@@ -172,7 +181,8 @@ def discover_attempts(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]
                 "job_name": str(slurm.get("job_name", "")),
                 "node": actual_node,
                 "created_at": str(provenance.get("created_at", "")),
-                "run_purpose": str(experiment.get("run_purpose", "")),
+                "run_purpose": run_purpose,
+                "comparable": _comparable_run_purpose(run_purpose),
                 "result_dir": str(result_dir),
                 "complete": not issues,
                 "issues": issues,
@@ -197,7 +207,11 @@ def build_report(manifest: dict[str, Any]) -> dict[str, Any]:
     for cell in manifest["cells"]:
         cell_id = str(cell["id"])
         cell_attempts = attempts[cell_id]
-        complete_attempts = [attempt for attempt in cell_attempts if attempt["complete"]]
+        complete_attempts = [
+            attempt
+            for attempt in cell_attempts
+            if attempt["complete"] and attempt["comparable"]
+        ]
         eligible_attempts = [attempt for attempt in complete_attempts if attempt["eligible"]]
         latest = cell_attempts[-1] if cell_attempts else None
         completed = eligible_attempts[-1] if eligible_attempts else (
