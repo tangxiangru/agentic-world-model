@@ -9,9 +9,11 @@ session directory, under ``<out>/_truth/``. The leakage rules are this code:
 
 * the run's own later cards and the k-th card's result are never copied;
 * ``outcome`` (the run's official score) is stripped from every card of the
-  run in the session, and only ever read by reconcile;
+  run in the session, and only ever read by the ledger, from ``_truth``;
 * history contains only the other runs of the requested side — replaying
   ``train`` never touches ``test``.
+
+Verdicts are written once; scoring happens when the ledger reads them.
 """
 
 from __future__ import annotations
@@ -29,7 +31,6 @@ from awm.exp_protocol.schema import CardError, dump_card, load_card, migrate_v1
 
 from . import schema
 from .backends import Backend, BackendError, Budget
-from .reconcile import reconcile
 from .review import ReviewError, review
 
 CARD_RE = re.compile(r"^exp-(\d+)\.yaml$")
@@ -178,7 +179,7 @@ def read_samples(out: Path) -> list[Sample]:
 def run_replay(out: Path, backend: Backend, *, budget: Budget | None = None, model: str | None = None,
                limit: int | None = None) -> dict[str, int]:
     out = Path(out)
-    counts = {"reviewed": 0, "reconciled": 0, "skipped": 0, "errors": 0}
+    counts = {"reviewed": 0, "skipped": 0, "errors": 0}
     errors = out / "errors.jsonl"
     done = 0
     for s in read_samples(out):
@@ -194,23 +195,9 @@ def run_replay(out: Path, backend: Backend, *, budget: Budget | None = None, mod
             review(session, s.card_id, backend, mode="offline", budget=budget or Budget(), model=model,
                    history_dir=session / "history")
             counts["reviewed"] += 1
-            reconcile(card_path, s.truth_path)
-            counts["reconciled"] += 1
         except (ReviewError, BackendError, ValueError) as exc:
             counts["errors"] += 1
             with errors.open("a") as fh:
                 fh.write(json.dumps({"run_ref": s.run_ref, "card_id": s.card_id, "error": str(exc)}) + "\n")
     return counts
 
-
-def reconcile_all(out: Path) -> dict[str, int]:
-    """Re-score every existing verdict against the (possibly rewritten) truth. Idempotent."""
-    counts = {"reconciled": 0, "missing": 0}
-    for s in read_samples(Path(out)):
-        card_path = s.session_dir / "memory" / "cards" / f"{s.card_id}.yaml"
-        if not schema.verdict_path(card_path).is_file():
-            counts["missing"] += 1
-            continue
-        reconcile(card_path, s.truth_path)
-        counts["reconciled"] += 1
-    return counts

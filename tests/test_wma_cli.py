@@ -1,4 +1,4 @@
-"""awm wma end to end: a card is locked by the protocol, reviewed, closed, reconciled, counted."""
+"""awm wma end to end: a card is locked by the protocol, reviewed, closed by the protocol, counted."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def session(tmp_path, monkeypatch):
     return root
 
 
-def test_review_close_reconcile_ledger(session, capsys) -> None:
+def test_review_close_ledger(session, capsys) -> None:
     d = str(session)
     assert main(["wma", "review", "--dir", d, "exp-01", "--backend", "heuristic"]) == 0
     vp = schema.verdict_path(lineage.cards_dir(session) / "exp-01.yaml")
@@ -65,8 +65,7 @@ def test_review_close_reconcile_ledger(session, capsys) -> None:
     card["conclusion"] = {"verdict": "supported", "mechanism_verdict": "not_tested", "summary": "ok", "decision": "adopt"}
     cards.dump_card(p, card)
     assert main(["exp_protocol", "close", "--dir", d, "exp-01"]) == 0
-    assert main(["wma", "reconcile", "--dir", d, "exp-01"]) == 0
-    assert schema.load_verdict(vp)["scored"]["L2"] == "in_interval"
+    assert "scored" not in schema.load_verdict(vp)          # the verdict file is never touched after review
 
     assert main(["wma", "ledger", d]) == 0
     out = capsys.readouterr().out
@@ -75,10 +74,9 @@ def test_review_close_reconcile_ledger(session, capsys) -> None:
     assert capsys.readouterr().out.startswith("wma_skill,")
 
 
-def test_review_refuses_post_hoc_and_reports_usage_errors(session, capsys) -> None:
+def test_review_reports_usage_errors(session, capsys) -> None:
     d = str(session)
     assert main(["wma", "review", "--dir", d, "exp-99", "--backend", "heuristic"]) == 2
-    assert main(["wma", "reconcile", "--dir", d, "exp-01"]) == 1   # no verdict yet
     assert main(["wma", "review", "--dir", d, "exp-01", "--backend", "heuristic", "--budget", "wall=abc"]) == 2
 
 

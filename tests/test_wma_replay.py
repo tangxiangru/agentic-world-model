@@ -109,16 +109,17 @@ def test_run_replay_reviews_reconciles_and_is_resumable(corpus, tmp_path, skill)
     out = tmp_path / "replay"
     replay.build_samples(corpus, out, side="train")
     counts = replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1))
-    assert counts == {"reviewed": 6, "reconciled": 6, "skipped": 0, "errors": 0}
+    assert counts == {"reviewed": 6, "skipped": 0, "errors": 0}
     summary = ledger.summarize(ledger.rows([out]))
-    assert len(summary) == 1 and summary[0]["n"] == 6 and summary[0]["n_reconciled"] == 6
+    # six verdicts; five have an outcome — r-aaaa/exp-03 is an open historical card with none
+    assert len(summary) == 1 and summary[0]["n"] == 6 and summary[0]["n_reconciled"] == 5
     # the failed and killed cards scored L0/L1 against the truth kept outside
     rows = {(r["path"].split("/")[-5], r["card_id"]): r for r in ledger.rows([out])}
     assert rows[("r-bbbb", "exp-02")]["scored"]["L0"] == "miss"
     assert rows[("r-cccc", "exp-01")]["scored"] == {"L0": "hit", "L1": "miss", "L2": "unscorable", "L3": "hit"} or \
         rows[("r-cccc", "exp-01")]["scored"]["L1"] == "miss"
     again = replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1))
-    assert again == {"reviewed": 0, "reconciled": 0, "skipped": 6, "errors": 0}
+    assert again == {"reviewed": 0, "skipped": 6, "errors": 0}
 
 
 def test_backend_errors_are_recorded_not_fatal(corpus, tmp_path, skill) -> None:
@@ -162,14 +163,14 @@ def test_truth_gets_a_comparator_from_the_parent_card_when_the_corpus_has_none(c
     assert "comparator_source" not in yaml.safe_load(s1.truth_path.read_text())["evaluation"]
 
 
-def test_reconcile_all_rescores_existing_verdicts_against_rewritten_truth(corpus, tmp_path, skill) -> None:
+def test_rewritten_truth_is_picked_up_by_the_ledger_without_any_rescore_step(corpus, tmp_path, skill) -> None:
     out = tmp_path / "replay"
     replay.build_samples(corpus, out, side="train")
     replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1))
-    counts = replay.reconcile_all(out)
-    assert counts == {"reconciled": 6, "missing": 0}
     rows = {(r["path"].split("/")[-5], r["card_id"]): r for r in ledger.rows([out])}
-    assert rows[("r-aaaa", "exp-02")]["scored"]["L2"] != "unscorable"
+    assert rows[("r-aaaa", "exp-02")]["scored"]["L2"] != "unscorable"   # comparator came from the parent card
+    assert all(r["truth_path"].split("/")[-3] == "_truth" for r in rows.values() if r["truth_path"])
+    assert sum(1 for r in rows.values() if r["truth_path"]) == 5
 
 
 def test_an_interrupted_session_build_is_completed_on_the_next_build(corpus, tmp_path, skill) -> None:

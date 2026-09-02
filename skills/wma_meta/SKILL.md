@@ -76,7 +76,8 @@ separate decision recorded in `doc/spec/`.
 ## From offline to online
 
 The online loop is the same with two differences: rollouts come from real
-scientist cells on H100 (the verdict is produced at `lock`, reconciled at
-`close`), and dynamic probes are allowed. Do not go online until the offline
+scientist cells on H100 (the verdict is produced at `lock`; once the scientist
+closes the card, the ledger scores it — nothing is written back), and dynamic
+probes are allowed. Do not go online until the offline
 ledger beats the heuristic floor on L0, L1 and L3 and the held-out side
 agrees — the thresholds are in `doc/spec/2026-09-01-wma-v1-design.md` §4.4.

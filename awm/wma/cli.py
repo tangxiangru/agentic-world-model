@@ -1,4 +1,4 @@
-"""``awm wma``: review a card, reconcile a verdict, read the ledger, replay the corpus.
+"""``awm wma``: review a card, read the ledger, replay the corpus.
 
 ``register`` needs only argparse; the package's modules are imported inside
 the handlers, like the other ``awm`` command groups.
@@ -59,22 +59,6 @@ def _review(args: argparse.Namespace) -> int:
     return 0
 
 
-def _reconcile(args: argparse.Namespace) -> int:
-    from .reconcile import ReconcileError, reconcile
-
-    card = Path(args.dir) / "memory" / "cards" / f"{args.card_id}.yaml"
-    if not card.is_file():
-        print(f"no such card: {card}")
-        return 2
-    try:
-        v = reconcile(card, Path(args.truth) if args.truth else None)
-    except ReconcileError as exc:
-        print(f"not reconciled: {exc}")
-        return 1
-    print(f"reconciled {args.card_id}: " + ", ".join(f"{k}={val}" for k, val in v["scored"].items()))
-    return 0
-
-
 def _ledger(args: argparse.Namespace) -> int:
     from . import ledger
 
@@ -97,10 +81,6 @@ def _replay(args: argparse.Namespace) -> int:
     print(f"{len(samples)} samples under {out}")
     if args.build_only:
         return 0
-    if args.reconcile_only:
-        counts = replay.reconcile_all(out)
-        print(", ".join(f"{k}={v}" for k, v in counts.items()))
-        return 0
     counts = replay.run_replay(out, get_backend(args.backend, args.model), budget=budget, model=args.model,
                                limit=args.limit)
     print(", ".join(f"{k}={v}" for k, v in counts.items()))
@@ -108,7 +88,7 @@ def _replay(args: argparse.Namespace) -> int:
 
 
 def register(sub: argparse._SubParsersAction) -> None:
-    wp = sub.add_parser("wma", help="the world-model agent: review a card, reconcile, ledger, replay")
+    wp = sub.add_parser("wma", help="the world-model agent: review a card, ledger, replay")
     cmds = wp.add_subparsers(dest="cmd", required=True)
 
     r = cmds.add_parser("review", help="ask a backend for a verdict on one card (writes exp-NN.verdict.json)")
@@ -121,12 +101,6 @@ def register(sub: argparse._SubParsersAction) -> None:
     r.add_argument("--history", help="read-only directory of other runs' cards")
     r.add_argument("--force", action="store_true", help="allow a verdict on a card that already has a result")
     r.set_defaults(func=_review)
-
-    c = cmds.add_parser("reconcile", help="hold a verdict to the outcome (from the card, or --truth)")
-    c.add_argument("--dir", required=True)
-    c.add_argument("card_id")
-    c.add_argument("--truth", help="a card file holding the real result, kept outside the session")
-    c.set_defaults(func=_reconcile)
 
     lg = cmds.add_parser("ledger", help="summarise every verdict under the given directories")
     lg.add_argument("dirs", nargs="+")
@@ -144,6 +118,4 @@ def register(sub: argparse._SubParsersAction) -> None:
     rp.add_argument("--budget", help="cpu=,gpu=,wall= in minutes")
     rp.add_argument("--limit", type=int, help="review at most this many samples this invocation")
     rp.add_argument("--build-only", action="store_true", help="build the sessions, review nothing")
-    rp.add_argument("--reconcile-only", action="store_true",
-                    help="rebuild the truth cards and re-score every existing verdict; review nothing")
     rp.set_defaults(func=_replay)

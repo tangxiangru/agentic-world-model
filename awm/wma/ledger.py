@@ -1,5 +1,13 @@
 """The ledger: all verdict files under some directories, and what they say about each skill.
 
+A verdict is written once and never changed. The outcome lives in the card
+— exp_protocol's audit record — and scoring is a pure function of the two,
+computed here at read time. The truth for a verdict is the card beside it;
+in an offline replay, where the card in the session must stay open, it is
+the truth card the replayer kept outside the session, found by layout:
+``<out>/<run>/<card>/memory/cards/<card>.verdict.json`` →
+``<out>/_truth/<run>/<card>.yaml``.
+
 One row per verdict; one summary line per (skill, backend, mode). Rates
 exclude unscorable levels. Coverage of the effect interval is reported
 next to the mean interval width, so it cannot be bought by widening.
@@ -13,7 +21,33 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from awm.exp_protocol.schema import CardError, load_card, migrate_v1
+
 from . import schema
+
+
+def truth_for(verdict_path: Path) -> tuple[Path | None, dict[str, Any]]:
+    """Where this verdict's outcome is, and what it says. (None, empty truth) when there is none yet."""
+    verdict_path = Path(verdict_path)
+    card = verdict_path.with_name(verdict_path.name.replace(".verdict.json", ".yaml"))
+    candidates = [card]
+    # replay layout: .../<out>/<run>/<card>/memory/cards/<card>.verdict.json
+    try:
+        session = verdict_path.parents[2]
+        run_dir = session.parent
+        candidates.append(run_dir.parent / "_truth" / run_dir.name / f"{session.name}.yaml")
+    except IndexError:
+        pass
+    for c in candidates:
+        if not c.is_file():
+            continue
+        try:
+            t = schema.truth_from_card(migrate_v1(load_card(c)))
+        except CardError:
+            continue
+        if t["execution"] is not None or t["decision"] is not None:
+            return c, t
+    return None, schema.truth_from_card({})
 
 SUMMARY_COLUMNS = ("wma_skill", "backend", "mode", "n", "n_reconciled", "L0_hit", "L1_hit", "L2_coverage",
                    "L2_width_mean", "L3_hit", "gpu_h_saved", "gpu_h_wrongly_killed", "cost_cpu_min_mean",
@@ -30,13 +64,16 @@ def rows(dirs: list[Path]) -> list[dict[str, Any]]:
                 continue
             lv = v.get("levels") or {}
             iv = (lv.get("L2_effect") or {}).get("interval")
+            truth_path, truth = truth_for(p)
+            scored = schema.score(v, truth) if truth_path else {}
             out.append({
                 "path": str(p), "card_id": v.get("card_id"), "wma_skill": v.get("wma_skill") or "",
                 "backend": v.get("backend") or "", "mode": v.get("mode") or "",
                 "L3_answer": (lv.get("L3_worth_now") or {}).get("answer"),
                 "L2_width": (iv[1] - iv[0]) if isinstance(iv, list) and len(iv) == 2 else None,
-                "reconciled": "scored" in v, "scored": v.get("scored") or {},
-                "actual": v.get("actual") or {},
+                "reconciled": truth_path is not None, "truth_path": str(truth_path) if truth_path else "",
+                "scored": scored,
+                "actual": {k: truth.get(k) for k in ("execution", "decision", "wall_h", "delta")},
                 "cost": v.get("cost") or {},
             })
     return out
