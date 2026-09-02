@@ -232,7 +232,8 @@ are one previewed cutover leaving at least 24 safe PENDING jobs; the operator
 must not apply the proposed intermediate state of 13. If an inventory job starts
 first, it finishes naturally and is analysed in its actual cohort. The staged
 x4 replacement reuses the old x8 batches' r01..04 cell ids, so it stays
-unsubmitted until cutover; any old cell that starts is reused, never duplicated.
+`want: staged` until cutover; this state cannot submit and fails closed if a
+receipt appears. Any old cell that starts is reused, never duplicated.
 
 ## Evidence
 

@@ -93,6 +93,18 @@ def test_queue_is_validated(repo) -> None:
     assert ops.load_queue(_queue(root), root) == []
 
 
+def test_staged_entry_never_submits_and_existing_receipt_blocks(repo, tmp_path: Path) -> None:
+    root, states = repo
+    staged = {**ENTRY, "want": "staged", "why": "activate only in the atomic cutover"}
+    assert ops.plan([staged], root) == []
+
+    _receipt(tmp_path / "vol", "ep-r01", "formal", [("p01r1", "99")])
+    states["99"] = "PENDING"
+    actions = ops.plan([staged], root)
+    assert [action.kind for action in actions] == ["copy_receipt", "blocked"]
+    assert "staged entry already has a receipt" in actions[-1].detail
+
+
 def test_receipt_kind_survives_the_timestamp_in_the_name() -> None:
     assert ops._receipt_kind("pilot-2026-09-02T000000.123456+0000.json") == "pilot"
     assert ops._receipt_kind("formal-2026-09-02T000000.123456+0000.json") == "formal"

@@ -175,7 +175,9 @@ setting,而不是同一 setting 的更多重复。落实:
   runtime 修复的在线接受率 cohort;v2 的 26 份 transcript 在新 validator 下已 26/26
   重放通过。中间版本的 2+2 pair(`wma/ctl-x2-v3`,commit `afcb86a`)在 operator 提交前
   就被本节替换,从未进过 Slurm。因为 `x4-v3` 的 r01..04 是暂存旧 x8 inventory 的
-  子集,替代 pair 在切换前保持 `want: cancelled` 且无 receipt,不能与旧 batch 同时提交。
+  子集,替代 pair 在切换前保持 `want: staged` 且无 receipt,不能与旧 batch 同时提交。
+  `staged` 在 reconcile 中不产生 Slurm action;若意外发现 receipt 则 fail-closed `blocked`,
+  必须由 operator 明确选择 `submitted` 或 `cancelled` 后才能继续。
   若旧 r01..04 先启动,它们直接成为该 cohort,不再提交同 cell 的 x4 duplicate。
 - 43 个 RUNNING cell(首波 16 + v2 27)不动;5 个 ctl-c 重试 cell(90786–90790)不动。
   不能先落到“撤回后 5 + 8 = 13”的中间状态:13 虽在检查瞬间高于 8,但一波启动后会

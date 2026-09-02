@@ -3,8 +3,9 @@
 Two agents share one branch. The planner edits manifests under
 ``experiments/posttrainbench/`` and the queue file, ``queue.yaml``, which is
 the desired state: one entry per manifest, ``want: submitted`` or
-``want: cancelled``. The operator, on the cluster, runs
-``awm ptb reconcile --apply`` every few minutes and commits what it wrote
+``want: cancelled``; ``want: staged`` records a committed manifest that must
+not reach Slurm yet. The operator, on the cluster, runs
+``awm ptb reconcile --apply`` on the configured cadence and commits what it wrote
 under ``results/ptb/``: a copy of every receipt, one bundle per finished
 cell, and one line per action in ``ops-log.md``. Neither writes the other's
 paths, so the branch never needs a merge.
@@ -111,8 +112,8 @@ def load_queue(path: Path, repo_root: Path) -> list[dict[str, Any]]:
         if manifest in seen:
             raise OpsError(f"{where}: manifest {manifest} is listed twice")
         seen.add(manifest)
-        if entry.get("want") not in ("submitted", "cancelled"):
-            raise OpsError(f"{where}: want must be submitted or cancelled")
+        if entry.get("want") not in ("submitted", "cancelled", "staged"):
+            raise OpsError(f"{where}: want must be submitted, cancelled, or staged")
         if entry.get("pilot") not in (None, "first"):
             raise OpsError(f"{where}: pilot must be absent or 'first'")
         why = entry.get("why")
@@ -214,6 +215,12 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
                     actions.append(Action("peek", batch, state, cell=job["cell_id"],
                                           job_id=job["job_id"], receipt=name,
                                           job_name=job.get("job_name"), state=state))
+        if entry["want"] == "staged":
+            if receipts:
+                actions.append(Action(
+                    "blocked", batch,
+                    "staged entry already has a receipt; choose submitted or cancelled explicitly"))
+            continue
         if entry["want"] == "cancelled":
             for name, receipt in receipts:
                 done = {c["job_id"] for c in receipt.get("cancellations") or []}
