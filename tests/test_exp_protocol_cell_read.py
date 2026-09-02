@@ -10,6 +10,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOL = REPO / "tools" / "exp_protocol_cell_read.py"
 BUNDLE = REPO / "results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r05"
+RELOCKED_BUNDLE = REPO / "results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r07"
 
 
 def _load():
@@ -54,3 +55,16 @@ def test_reads_a_real_bundle():
     assert "overrides total=1 relocks=1" in out
     assert "max 504" in out  # dev-500 inspect logs at ~44 KB per sample
     assert "time_taken=06:17:15" in out
+
+
+@pytest.mark.skipif(not RELOCKED_BUNDLE.exists(), reason="the p00r07 bundle is not checked out")
+def test_a_close_time_relock_does_not_turn_the_original_launch_into_a_violation():
+    out = subprocess.run(
+        [sys.executable, str(TOOL), str(RELOCKED_BUNDLE)],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert "exp-05:" in out
+    assert "launch 17:12:36Z AFTER lock 17:12:32Z" in out
+    assert "lock_before_launch=5/5" in out

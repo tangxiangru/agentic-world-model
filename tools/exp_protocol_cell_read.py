@@ -137,33 +137,40 @@ def main(bundle):
         ph = sum(float(x.get("cost_h") or 0) for x in pits if isinstance(x, dict))
         pit_h += ph
         lock = cards_dir / f"{cid}.lock.json"
-        locked_at = None
+        lock_times = []
         ov = {}
         if lock.exists():
             L = json.load(open(lock))
-            locked_at = L.get("locked_at")
+            if L.get("locked_at"):
+                lock_times.append(ts(L["locked_at"]))
             ov = dict(L.get("overrides") or {})
             for h in L.get("relocked_from") or []:
                 ov.update(h.get("overrides") or {})
                 n_relock += 1
+                if h.get("locked_at"):
+                    lock_times.append(ts(h["locked_at"]))
             n_overrides += len(ov)
         lbl = ""
-        if fam in TRAIN_FAMILIES and locked_at:
+        if fam in TRAIN_FAMILIES and lock_times:
             argv = (setup.get("command") or {}).get("argv") or []
             key = next((Path(a).name for a in argv if isinstance(a, str) and a.endswith(".py")), None)
             out_dir = str(setup.get("output_dir") or "")
             out_key = Path(out_dir).name if out_dir else None
-            lt = ts(locked_at)
             hit = None
             for i, t, cmd in cmds:
-                if key and key in cmd and (not out_key or out_key in cmd) and "--dry-run" not in cmd and "--help" not in cmd and "pgrep" not in cmd[:40] and "tail -" not in cmd[:40]:
+                invokes_key = key and re.search(
+                    rf"\b(?:python(?:3)?|torchrun)\b(?:\s+-\w+)*\s+\S*{re.escape(key)}\b",
+                    cmd,
+                )
+                if invokes_key and (not out_key or out_key in cmd) and "--dry-run" not in cmd and "--help" not in cmd and "pgrep" not in cmd[:40] and "tail -" not in cmd[:40]:
                     if t is not None:
-                        hit = (t, cmd)
-                        if t >= lt:
-                            break
+                        prior_locks = [lock_time for lock_time in lock_times if lock_time <= t]
+                        effective_lock = max(prior_locks) if prior_locks else min(lock_times)
+                        hit = (t, cmd, effective_lock)
+                        break
             if hit:
-                ok = hit[0] >= lt
-                lbl = f"launch {hit[0]:%H:%M:%S}Z {'AFTER' if ok else 'BEFORE'} lock {lt:%H:%M:%S}Z"
+                ok = hit[0] >= hit[2]
+                lbl = f"launch {hit[0]:%H:%M:%S}Z {'AFTER' if ok else 'BEFORE'} lock {hit[2]:%H:%M:%S}Z"
                 lbl_results.append(ok)
             else:
                 lbl = f"launch not found (key={key}, out={out_key})"
