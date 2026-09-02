@@ -1446,6 +1446,9 @@ def submit_official_judge_recovery(receipt: dict[str, Any]) -> Path:
         "POST_TRAIN_BENCH_REPO_ROOT": str(PTB_ROOT),
         "POST_TRAIN_BENCH_ENV_FILE": str(PTB_ROOT / ".env"),
         "POST_TRAIN_BENCH_SLURM_ENTRYPOINT": str(entrypoint),
+        "POST_TRAIN_BENCH_SLURM_RUN_AS_USER": env.get(
+            "POST_TRAIN_BENCH_SLURM_RUN_AS_USER", ""
+        ),
         "POST_TRAIN_BENCH_FROZEN_TOP_BRANCH": branch,
         "POST_TRAIN_BENCH_FROZEN_TOP_COMMIT": snapshot["top_commit"],
         "POST_TRAIN_BENCH_FROZEN_PTB_COMMIT": snapshot["ptb_commit"],

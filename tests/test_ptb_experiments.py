@@ -342,15 +342,20 @@ def test_official_judge_recovery_registers_held_jobs_before_release(
             "POST_TRAIN_BENCH_SLURM_NODELIST": "node-[2-3]",
             "POST_TRAIN_BENCH_SLURM_SUBQUEUE": "gangda_wma_evolve",
             "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(tmp_path / "registry.json"),
+            "POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "1",
+            "POST_TRAIN_BENCH_SLURM_RUN_AS_USER": "scientist",
             "POST_TRAIN_BENCH_CONTAINERS_DIR": str(container.parent),
         },
     )
     events: list[str] = []
     calls: list[list[str]] = []
 
-    def fake_run(command, **_kwargs):
+    submitted_env: dict[str, str] = {}
+
+    def fake_run(command, **kwargs):
         calls.append(list(command))
-        if command[0] == "sbatch":
+        if "sbatch" in command:
+            submitted_env.update(kwargs["env"])
             events.append("submit-held")
             return subprocess.CompletedProcess(command, 0, "123\n", "")
         events.append("release")
@@ -373,9 +378,11 @@ def test_official_judge_recovery_registers_held_jobs_before_release(
     output = ptb.submit_official_judge_recovery(receipt)
 
     assert events == ["submit-held", "register", "release"]
+    assert calls[0][:3] == ["sudo", "--preserve-env", "sbatch"]
     assert "--hold" in calls[0]
     assert not any(argument.startswith("--gres") for argument in calls[0])
-    assert calls[1] == ["scontrol", "release", "123"]
+    assert calls[1] == ["sudo", "scontrol", "release", "123"]
+    assert submitted_env["POST_TRAIN_BENCH_SLURM_RUN_AS_USER"] == "scientist"
     saved = json.loads(output.read_text(encoding="utf-8"))
     assert saved["state"] == "submitted"
     assert saved["contract"]["model"] == "claude-opus-5[1m]"
