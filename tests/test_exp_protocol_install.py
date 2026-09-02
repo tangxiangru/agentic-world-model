@@ -24,6 +24,7 @@ def test_both_tools_get_the_skill_the_symlink_and_the_agents_block(tmp_path) -> 
 def test_codex_only_writes_no_claude_symlink(tmp_path) -> None:
     install.install(tmp_path, "codex")
     assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / "CLAUDE.md").exists()
     assert (tmp_path / "AGENTS.md").is_file()
 
 
@@ -31,6 +32,18 @@ def test_claude_only_writes_no_agents_md(tmp_path) -> None:
     install.install(tmp_path, "claude")
     assert not (tmp_path / "AGENTS.md").exists()
     assert (tmp_path / ".claude" / "skills" / "exp_protocol").is_symlink()
+    # the pointer block, not just the skill: --setting-sources "" would hide the skill,
+    # and even with it loaded the tool may not open it on its own
+    text = (tmp_path / "CLAUDE.md").read_text()
+    assert install.BEGIN in text and "skills/exp_protocol/SKILL.md" in text
+
+
+def test_a_claude_md_the_task_already_has_is_kept(tmp_path) -> None:
+    (tmp_path / "CLAUDE.md").write_text("# Task notes\n\nkeep me\n")
+    install.install(tmp_path, "claude")
+    install.install(tmp_path, "claude")
+    text = (tmp_path / "CLAUDE.md").read_text()
+    assert text.count(install.BEGIN) == 1 and "keep me" in text
 
 
 def test_install_is_idempotent_and_keeps_existing_agents_text(tmp_path) -> None:
