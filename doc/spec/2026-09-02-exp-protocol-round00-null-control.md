@@ -35,6 +35,13 @@ candidate 对 baseline 的比较都在"装了规程"这个前提内进行；如�
 是原生 PTB 任务加一个空的 setup 记录。receipt 中该 checkout 的 `protocol_tree` 为
 `null`，这就是"无规程"变体的标识。
 
+## 第二批（2026-09-02 12:40 UTC 追加）
+
+`exp-protocol-gsm8k-gemma4b-high-r00-nullctl-b-x8`：合同逐字段相同的第二个 immutable batch，
+cells `c01r01..c01r08`，即零点的第 9–16 个重复。它排在 v3 baseline 之后作为待排缓冲：第一波
+（8 对照 + 8 baseline）结束后，剩余 8 个 baseline 与这 8 个对照一起填满第二波，对照与 baseline
+各达 16 个。它不依赖任何结果；分析时两批对照合并，前提是 receipt 指向同一 PTB commit。
+
 ## 分析
 
 对照与 baseline 用同一套指标：accuracy 的 mean / range / stderr。规程指标
