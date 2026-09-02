@@ -79,7 +79,77 @@ def load_manifest(filename: Path) -> dict[str, Any]:
     return data
 
 
+def _batch_tasks(contract: dict[str, Any]) -> tuple[str, ...]:
+    if "tasks" in contract:
+        if contract.get("task") is not None:
+            raise ExperimentError("contract.task must be absent when contract.tasks is given")
+        tasks = tuple(contract.get("tasks") or ())
+    else:
+        tasks = (contract.get("task"),)
+    if (
+        not tasks
+        or len(set(tasks)) != len(tasks)
+        or any(task not in APPROVED_TASKS for task in tasks)
+    ):
+        raise ExperimentError(
+            f"the batch's tasks must be a non-empty subset of {list(APPROVED_TASKS)!r}"
+        )
+    return tasks
+
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _validate_replication(
+    replication: Any, cells: list[dict[str, Any]], settings: list[tuple[Any, ...]]
+) -> None:
+    """``contract.replication`` describes the batch's own shape; the cells must match it."""
+    if not isinstance(replication, dict):
+        raise ExperimentError("contract.replication must be a mapping")
+    n_settings = replication.get("settings")
+    repeats = replication.get("repeats")
+    if not _positive_int(n_settings) or not _positive_int(repeats):
+        raise ExperimentError(
+            "contract.replication must give positive integer settings and repeats"
+        )
+    counts = Counter(settings)
+    if len(counts) != n_settings or set(counts.values()) != {repeats}:
+        raise ExperimentError(
+            f"replication batch must contain {n_settings} unique settings "
+            f"repeated exactly {repeats} times"
+        )
+    per_task = replication.get("settings_per_task")
+    if per_task is not None:
+        by_task = Counter(setting[0] for setting in counts)
+        if any(count != per_task for count in by_task.values()):
+            raise ExperimentError(
+                f"replication batch must select exactly {per_task} settings per task"
+            )
+    expected_replicates = set(range(1, repeats + 1))
+    for setting in counts:
+        replicates = [
+            cell.get("replicate")
+            for cell, cell_setting in zip(cells, settings, strict=True)
+            if cell_setting == setting
+        ]
+        if set(replicates) != expected_replicates or len(replicates) != repeats:
+            raise ExperimentError(
+                f"each replicated setting must carry replicates 1..{repeats}, once each"
+            )
+
+
 def validate_manifest(data: dict[str, Any]) -> None:
+    """A batch is any non-empty set of cells drawn from the approved setting space.
+
+    Each cell is checked on its own: an approved task, an approved agent setup,
+    a base model the contract pins. The launcher does not insist on a shape for
+    the whole. The full 4x4 matrix of the first batch and the 16x2 replication of
+    the second were decisions about those batches; a protocol-iteration round of
+    two repeats of one setting goes through the same launcher, receipts, and
+    registry. The contract constants (budget, containers, provider route, CLI
+    version, judge profile) stay frozen so results remain comparable.
+    """
     if data.get("schema_version") != 1:
         raise ExperimentError("schema_version must be 1")
     ownership = data.get("ownership") or {}
@@ -90,16 +160,7 @@ def validate_manifest(data: dict[str, Any]) -> None:
     if not spec.startswith("doc/spec/") or not (paths.REPO_ROOT / spec).is_file():
         raise ExperimentError("ownership.spec must name an existing committed spec under doc/spec")
     contract = data.get("contract") or {}
-    if "tasks" in contract:
-        tasks = tuple(contract.get("tasks") or ())
-        if contract.get("task") is not None or tasks != APPROVED_TASKS:
-            raise ExperimentError(
-                f"contract.tasks must be {list(APPROVED_TASKS)!r} and contract.task must be absent"
-            )
-    else:
-        tasks = (contract.get("task"),)
-        if tasks != ("gsm8k",):
-            raise ExperimentError("contract.task must be 'gsm8k' for a single-task batch")
+    tasks = _batch_tasks(contract)
     expected = {
         "agent_budget_hours": 10,
         "gpus": 1,
@@ -116,12 +177,8 @@ def validate_manifest(data: dict[str, Any]) -> None:
     for key, value in expected.items():
         if contract.get(key) != value:
             raise ExperimentError(f"contract.{key} must be {value!r}")
-    run_index = contract.get("run_index")
-    if len(tasks) == 1:
-        if run_index != 1:
-            raise ExperimentError("contract.run_index must be 1 for the original single-task batch")
-    elif not isinstance(run_index, int) or run_index < 2:
-        raise ExperimentError("contract.run_index must be at least 2 for a dual-task retry")
+    if not _positive_int(contract.get("run_index")):
+        raise ExperimentError("contract.run_index must be a positive integer")
     if contract.get("agent_auth") != {
         "provider": "vertex",
         "project": "sercan-v1",
@@ -129,8 +186,14 @@ def validate_manifest(data: dict[str, Any]) -> None:
     }:
         raise ExperimentError("contract.agent_auth must freeze the approved Vertex route")
     base_models = contract.get("base_models") or {}
-    if set(base_models) != set(APPROVED_BASE_MODELS):
-        raise ExperimentError("contract.base_models must pin the four approved starting models")
+    if (
+        not isinstance(base_models, dict)
+        or not base_models
+        or any(model not in APPROVED_BASE_MODELS for model in base_models)
+    ):
+        raise ExperimentError(
+            "contract.base_models may only pin the approved starting models, and must pin at least one"
+        )
     for model, metadata in base_models.items():
         if not isinstance(metadata, dict) or not re.fullmatch(
             r"[0-9a-f]{40}", str(metadata.get("revision", ""))
@@ -152,76 +215,52 @@ def validate_manifest(data: dict[str, Any]) -> None:
         raise ExperimentError("contract must pin the official judge container SHA-256")
 
     cells = data.get("cells")
-    expected_cell_count = len(tasks) * len(APPROVED_AGENT_SETUPS) * len(APPROVED_BASE_MODELS)
-    if not isinstance(cells, list) or len(cells) != expected_cell_count:
-        raise ExperimentError(f"the formal batch must contain exactly {expected_cell_count} cells")
+    if not isinstance(cells, list) or not cells or not all(isinstance(c, dict) for c in cells):
+        raise ExperimentError("the batch must contain at least one cell")
     ids = [str(cell.get("id")) for cell in cells]
-    if len(set(ids)) != expected_cell_count:
+    if len(set(ids)) != len(ids):
         raise ExperimentError("cell ids must be unique")
-    actual_settings = [
-        (
-            _cell_task(contract, cell),
+    approved_setups = set(APPROVED_AGENT_SETUPS)
+    settings: list[tuple[Any, ...]] = []
+    for cell, cell_id in zip(cells, ids, strict=True):
+        task = _cell_task(contract, cell)
+        if task not in tasks:
+            raise ExperimentError(
+                f"cell {cell_id} names task {task!r}, not one of the batch's tasks {list(tasks)!r}"
+            )
+        setup = (
             cell.get("agent"),
             cell.get("agent_model"),
             cell.get("effort"),
             cell.get("context_tokens"),
-            cell.get("base_model"),
         )
-        for cell in cells
-    ]
-    expected_matrix = {
-        (task, agent, model, effort, context_tokens, base)
-        for task in tasks
-        for agent, model, effort, context_tokens in APPROVED_AGENT_SETUPS
-        for base in APPROVED_BASE_MODELS
-    }
+        if setup not in approved_setups:
+            raise ExperimentError(f"cell {cell_id} is not an approved agent setup: {setup!r}")
+        base = cell.get("base_model")
+        if base not in base_models:
+            raise ExperimentError(
+                f"cell {cell_id} uses base model {base!r}, which contract.base_models does not pin"
+            )
+        settings.append((task, *setup, base))
     replication = contract.get("replication")
-    if replication is None:
-        if set(actual_settings) != expected_matrix:
-            raise ExperimentError(
-                "cells do not match the approved task x 4x4 setup/base-model matrix"
-            )
-    else:
-        expected_replication = {"settings": 16, "repeats": 2, "settings_per_task": 8}
-        if replication != expected_replication:
-            raise ExperimentError(f"contract.replication must be {expected_replication!r}")
-        counts = Counter(actual_settings)
-        if any(setting not in expected_matrix for setting in counts):
-            raise ExperimentError("replication cells must come from the approved full matrix")
-        if len(counts) != 16 or set(counts.values()) != {2}:
-            raise ExperimentError(
-                "replication batch must contain 16 unique settings repeated exactly twice"
-            )
-        settings_by_task = Counter(setting[0] for setting in counts)
-        if settings_by_task != Counter({task: 8 for task in tasks}):
-            raise ExperimentError("replication batch must select exactly 8 settings per task")
-        for cell in cells:
-            if cell.get("replicate") not in (1, 2):
-                raise ExperimentError("every replication cell must declare replicate 1 or 2")
-        for setting in counts:
-            replicates = {
-                cell["replicate"]
-                for cell, cell_setting in zip(cells, actual_settings, strict=True)
-                if cell_setting == setting
-            }
-            if replicates != {1, 2}:
-                raise ExperimentError("each selected setting must contain replicates 1 and 2")
-    pilot = data.get("pilot") or {}
-    pilot_cells = _pilot_cell_ids(data)
-    if (
-        not pilot_cells
-        or any(cell_id not in ids for cell_id in pilot_cells)
-        or len(set(pilot_cells)) != len(tasks)
-        or {_cell_task(contract, _cell(data, cell_id)) for cell_id in pilot_cells} != set(tasks)
-        or pilot.get("agent_budget_hours") != 1
-    ):
-        raise ExperimentError("pilot must select one 1h formal cell from each task")
+    if replication is not None:
+        _validate_replication(replication, cells, settings)
+    pilot = data.get("pilot")
+    if pilot is not None:
+        pilot_cells = _pilot_cell_ids(data)
+        if (
+            not pilot_cells
+            or len(set(pilot_cells)) != len(pilot_cells)
+            or any(cell_id not in ids for cell_id in pilot_cells)
+        ):
+            raise ExperimentError("pilot must name existing, distinct cells of this batch")
+        if pilot.get("agent_budget_hours") != 1:
+            raise ExperimentError("pilot.agent_budget_hours must be 1")
     records = data.get("context_validation") or {}
-    for _, _, model, effort, _, _ in actual_settings:
+    for _, _, model, effort, _, _ in settings:
         profile = f"{model}:{effort}"
         if profile not in records:
             raise ExperimentError(f"missing context-validation path for {profile}")
-
 
 def _cell(data: dict[str, Any], cell_id: str) -> dict[str, Any]:
     try:
@@ -279,6 +318,8 @@ def build_launches(
     purpose: str | None = None,
 ) -> list[Launch]:
     contract = data["contract"]
+    if pilot and not _pilot_cell_ids(data):
+        raise ExperimentError("the manifest declares no pilot cell")
     selected = (
         [_cell(data, cell_id) for cell_id in _pilot_cell_ids(data)]
         if pilot
