@@ -78,7 +78,7 @@ def _strip(card: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     return {k: v for k, v in card.items() if k not in keys}
 
 
-def _history_dir(out: Path, side_dir: Path, run_ref: str, all_runs: list[Path]) -> Path:
+def _history_dir(out: Path, run_ref: str, all_runs: list[Path]) -> Path:
     hist = out / "_history" / run_ref
     hist.mkdir(parents=True, exist_ok=True)
     for other in all_runs:
@@ -160,7 +160,7 @@ def build_samples(corpus: Path, out: Path, *, side: str = "train", sample: int |
     for run_ref, k in pairs:
         cards = loaded[run_ref]
         if run_ref not in hist_cache:
-            hist_cache[run_ref] = _history_dir(out, side_dir, run_ref, runs)
+            hist_cache[run_ref] = _history_dir(out, run_ref, runs)
         session, truth = _build_session(out, run_ref, cards, k, hist_cache[run_ref])
         samples.append(Sample(run_ref, cards[k - 1]["card_id"], k, len(cards), session, truth))
     out.mkdir(parents=True, exist_ok=True)

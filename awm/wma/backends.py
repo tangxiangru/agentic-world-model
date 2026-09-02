@@ -117,7 +117,7 @@ class CommandBackend(Backend):
                     continue
                 a = a.replace("{model}", self.model)
             out.append(a)
-        if self.model is None:
+        if not self.model:
             # drop a dangling "--model" flag whose value was skipped
             out = [a for i, a in enumerate(out) if not (a == "--model" and (i + 1 >= len(out) or out[i + 1].startswith("-")))]
         return out
@@ -143,7 +143,6 @@ class CommandBackend(Backend):
         report = schema.validate_verdict(v)
         if not report.ok:
             raise BackendError(f"{self.name}: invalid verdict:\n{report.render()}")
-        v.setdefault("backend", self.name)
         if not v.get("backend"):
             v["backend"] = self.name
         schema.dump_verdict(brief.verdict_path, v)

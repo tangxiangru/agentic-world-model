@@ -95,3 +95,9 @@ def test_registry_names_the_three_backends_and_passes_the_model(tmp_path) -> Non
     with pytest.raises(backends.BackendError):
         backends.get_backend("nope")
     assert os.path.basename(be.argv()[0]) == "claude"
+
+
+def test_an_empty_model_leaves_no_dangling_model_flag() -> None:
+    for model in (None, ""):
+        argv = backends.get_backend("claude", model=model).argv()
+        assert "--model" not in argv and "{model}" not in " ".join(argv), argv
