@@ -209,9 +209,9 @@ launcher 必须把这些路径从指定 SHA materialize 到共享
 
 ## 十、预算与启动门
 
-本 spec 不自行扩大 GPU 权限。第一轮 queue entry 前必须在 round record/manifest
-旁记录本线 GPU 额度 `G`。planner 保持至少 `G` 个独立、安全的 cells 已提交或排队，
-但不通过取消其他实验抢占容量。
+本线 GPU 额度固定为 `G=16`，由 `gangda_exp-protocol-evolve` subqueue 的
+`slurm2-a3nodesetondem-[0-1]` 硬隔离。planner 保持足够的独立、安全 cells 已提交或
+排队以使用该额度，但不跨到 WMA 节点，也不通过取消其他实验抢占容量。
 
 开始 Round 00 前必须全部满足：
 
@@ -221,6 +221,6 @@ launcher 必须把这些路径从指定 SHA materialize 到共享
 - queue operator 已在独立 checkout 中以 10–15 分钟周期运行；
 - `gangda-slurm-queue --summary` 为 `OWNERSHIP OK`；
 - manifest、spec、queue 与当前 branch 已 commit/push；
-- 用户已确认本线 GPU 额度 `G`。
+- registry 与本线 `.env` 均确认 `gangda_exp-protocol-evolve` 的 `G=16` 节点边界。
 
 完成这些门只表示可以发射，不表示 candidate 可以晋升。

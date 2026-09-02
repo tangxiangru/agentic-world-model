@@ -343,6 +343,66 @@ def test_formal_submit_holds_all_jobs_before_one_release(
     assert len(registered["sources"][0]["jobs"]) == 32
 
 
+def test_pilot_receipt_is_registered_in_its_subqueue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = _two_repeats_manifest()
+    data["ownership"]["branch"] = "gangda_exp_protocol_evolve"
+    fake_launch = ptb.Launch(
+        cell_id="p01r1",
+        command=(
+            "fake-submit",
+            "p01r1",
+            "--job-name",
+            "gangda_exp_protocol_evolve.ptb.ep-r00.p01r1.pilot.r1",
+        ),
+        environment={
+            "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": "/evidence/p01r1.json",
+            "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256": "1" * 64,
+        },
+    )
+    monkeypatch.setattr(ptb, "local_issues", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ptb, "site_issues", list)
+    monkeypatch.setattr(
+        ptb,
+        "source_snapshot",
+        lambda: {
+            "top_branch": "gangda_exp_protocol_evolve",
+            "top_commit": "1" * 40,
+            "ptb_commit": "2" * 40,
+            "top_status": "",
+            "ptb_status": "",
+        },
+    )
+    monkeypatch.setattr(ptb, "dry_run", lambda *_args, **_kwargs: [])
+    ownership_registry = tmp_path / "slurm-ownership.json"
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {
+            "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(ownership_registry),
+            "POST_TRAIN_BENCH_SLURM_SUBQUEUE": "gangda_exp-protocol-evolve",
+        },
+    )
+    monkeypatch.setattr(ptb.paths, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(ptb, "build_launches", lambda *_args, **_kwargs: [fake_launch])
+    monkeypatch.setattr(
+        ptb.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 0, "Submitted Slurm job 9001\n", ""
+        ),
+    )
+
+    receipt_path = ptb.submit(data, pilot=True)
+
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    registry = json.loads(ownership_registry.read_text(encoding="utf-8"))
+    assert receipt["subqueue"] == "gangda_exp-protocol-evolve"
+    assert registry["sources"][0]["subqueue"] == "gangda_exp-protocol-evolve"
+    assert registry["sources"][0]["jobs"][0]["job_id"] == "9001"
+
+
 def test_root_owned_allocations_are_released_through_sudo() -> None:
     assert ptb._release_command({"POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "1"}, "10,11") == [
         "sudo",
@@ -351,6 +411,83 @@ def test_root_owned_allocations_are_released_through_sudo() -> None:
         "10,11",
     ]
     assert ptb._release_command({}, "10,11") == ["scontrol", "release", "10,11"]
+
+
+def test_site_gate_accepts_the_exp_protocol_two_node_subqueue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from awm import slurm_queue
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps(slurm_queue._default_registry()), encoding="utf-8")
+    nodes = ["slurm2-a3nodesetondem-0", "slurm2-a3nodesetondem-1"]
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {
+            "POST_TRAIN_BENCH_SLURM_GPU_MODE": "gres",
+            "POST_TRAIN_BENCH_SLURM_PARTITION": "ptb-a3",
+            "POST_TRAIN_BENCH_SLURM_NODELIST": "slurm2-a3nodesetondem-[0-1]",
+            "POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "0",
+            "POST_TRAIN_BENCH_SLURM_SUBQUEUE": "gangda_exp-protocol-evolve",
+            "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(registry),
+        },
+    )
+    monkeypatch.setattr(ptb, "current_top_branch", lambda: "gangda_exp_protocol_evolve")
+
+    def fake_check_output(command: list[str], **_kwargs: object) -> str:
+        if command[:3] == ["scontrol", "show", "partition"]:
+            return "PartitionName=ptb-a3 OverSubscribe=NO\n"
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            return "\n".join(nodes) + "\n"
+        if command[:3] == ["scontrol", "show", "node"]:
+            return f"NodeName={command[3]} CfgTRES=cpu=104,gres/gpu=8\n"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(ptb.subprocess, "check_output", fake_check_output)
+
+    assert ptb.site_issues() == []
+
+
+def test_site_gate_rejects_nodes_outside_the_named_subqueue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from awm import slurm_queue
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps(slurm_queue._default_registry()), encoding="utf-8")
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {
+            "POST_TRAIN_BENCH_SLURM_GPU_MODE": "gres",
+            "POST_TRAIN_BENCH_SLURM_PARTITION": "ptb-a3",
+            "POST_TRAIN_BENCH_SLURM_NODELIST": "slurm2-a3nodesetondem-[0,2]",
+            "POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "0",
+            "POST_TRAIN_BENCH_SLURM_SUBQUEUE": "gangda_exp-protocol-evolve",
+            "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(registry),
+        },
+    )
+    monkeypatch.setattr(ptb, "current_top_branch", lambda: "gangda_exp_protocol_evolve")
+
+    def fake_check_output(command: list[str], **_kwargs: object) -> str:
+        if command[:3] == ["scontrol", "show", "partition"]:
+            return "PartitionName=ptb-a3 OverSubscribe=NO\n"
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            return "slurm2-a3nodesetondem-0\nslurm2-a3nodesetondem-2\n"
+        if command[:3] == ["scontrol", "show", "node"]:
+            return f"NodeName={command[3]} CfgTRES=cpu=104,gres/gpu=8\n"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(ptb.subprocess, "check_output", fake_check_output)
+
+    assert ptb.site_issues() == [
+        (
+            "site nodelist for subqueue gangda_exp-protocol-evolve must be "
+            "slurm2-a3nodesetondem-0,slurm2-a3nodesetondem-1; got "
+            "slurm2-a3nodesetondem-0,slurm2-a3nodesetondem-2"
+        )
+    ]
 
 
 # ---- a batch is any set of approved cells (2026-09-01) ------------------------

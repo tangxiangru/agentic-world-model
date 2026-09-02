@@ -336,12 +336,21 @@ def _slurm_queue(args: argparse.Namespace) -> int:
             while True:
                 snapshot = slurm_queue.collect_snapshot(registry)
                 if args.json:
-                    print(json.dumps(snapshot, indent=2, sort_keys=True))
+                    view = (
+                        slurm_queue.select_subqueue(snapshot, args.subqueue)
+                        if args.subqueue
+                        else snapshot
+                    )
+                    print(json.dumps(view, indent=2, sort_keys=True))
                 else:
                     if args.watch:
                         print("\033[2J\033[H", end="")
                     print(
-                        slurm_queue.render_snapshot(snapshot, include_jobs=not args.summary),
+                        slurm_queue.render_snapshot(
+                            snapshot,
+                            include_jobs=not args.summary,
+                            subqueue=args.subqueue,
+                        ),
                         end="",
                     )
                 if not args.watch:
@@ -382,7 +391,9 @@ def _slurm_queue(args: argparse.Namespace) -> int:
             return 0
         if args.cmd == "register-receipt":
             path = slurm_queue.register_receipt(
-                args.receipt, label=args.label, registry_path=registry
+                args.receipt,
+                label=args.label,
+                registry_path=registry,
             )
             print(path)
             return 0
@@ -398,6 +409,7 @@ def _slurm_queue(args: argparse.Namespace) -> int:
                 args.job_id,
                 label=args.label,
                 source_id=args.source_id,
+                subqueue=args.subqueue,
                 registry_path=registry,
             )
             print(path)
@@ -431,6 +443,7 @@ def build_parser() -> argparse.ArgumentParser:
     queue.add_argument("--registry", type=Path)
     queue.add_argument("--json", action="store_true")
     queue.add_argument("--summary", action="store_true")
+    queue.add_argument("--subqueue", metavar="NAME")
     queue.add_argument("--watch", type=int, metavar="SECONDS", default=0)
     queue.set_defaults(func=_slurm_queue)
     failures = slurm.add_parser(
@@ -469,6 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_job.add_argument("job_id")
     register_job.add_argument("--label", required=True)
     register_job.add_argument("--source-id")
+    register_job.add_argument("--subqueue", metavar="NAME")
     register_job.add_argument("--registry", type=Path)
     register_job.set_defaults(func=_slurm_queue)
     monitor_start = slurm.add_parser(
