@@ -50,6 +50,20 @@ def _evidence(value: Any) -> str:
     return ", ".join(f"i={e[0]}" for e in value if isinstance(e, (list, tuple)) and len(e) == 2)
 
 
+def _joinable(left: pd.DataFrame, right: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """``right`` narrowed to ``columns``, with ``i`` made comparable to ``left``'s.
+
+    Reinstated events carry a fractional ``i`` so they sort between the two
+    real events they sat between; annotations only ever name whole ones. Left
+    to pandas the mixed dtypes join on nothing and warn about it, so both sides
+    are floats here. A reinstated row matching no annotation is the point —
+    nobody annotated an event that was not in the stream.
+    """
+    out = right[columns].copy()
+    out["i"] = pd.to_numeric(out["i"], errors="coerce").astype("Float64")
+    return out
+
+
 def run_section(
     run_id: str, meta: dict[str, Any], tables: dict[str, pd.DataFrame],
     spans: pd.DataFrame, evals: pd.DataFrame,
@@ -84,8 +98,10 @@ def run_section(
     tr = mine("trainings")
     out.append(f"\n### 训练序列({len(tr)} 段)\n\n")
     if len(tr):
+        tr = tr.assign(i=pd.to_numeric(tr["i"], errors="coerce").astype("Float64"))
         joined = tr.merge(
-            spans[["run_id", "i", "sec", "kind", "end_reason"]], on=["run_id", "i"], how="left"
+            _joinable(tr, spans, ["run_id", "i", "sec", "kind", "end_reason"]),
+            on=["run_id", "i"], how="left",
         )
         out.append("| i | 类型 | 时长 | 结局 | 受测变量 | 相对上一次 |\n|---|---|---|---|---|---|\n")
         for _, r in joined.sort_values("i").iterrows():
@@ -100,8 +116,9 @@ def run_section(
     ve = mine("verifications")
     out.append(f"\n### 验证序列({len(ve)} 次)\n\n")
     if len(ve):
+        ve = ve.assign(i=pd.to_numeric(ve["i"], errors="coerce").astype("Float64"))
         joined = ve.merge(
-            evals[["run_id", "i", "tier", "limit", "got_signal"]],
+            _joinable(ve, evals, ["run_id", "i", "tier", "limit", "got_signal"]),
             on=["run_id", "i"], how="left",
         )
         out.append("| i | 档位 | 样本量 | 拿到信号 | 判定了哪些改动 | 读到什么 |\n|---|---|---|---|---|---|\n")
@@ -118,7 +135,9 @@ def run_section(
 
     unclear = tr[tr.get("tested_variable") == "unclear"] if len(tr) else pd.DataFrame()
     no_signal = (
-        ve.merge(evals[["run_id", "i", "got_signal"]], on=["run_id", "i"], how="left")
+        ve.assign(i=pd.to_numeric(ve["i"], errors="coerce").astype("Float64")).merge(
+            _joinable(ve, evals, ["run_id", "i", "got_signal"]), on=["run_id", "i"], how="left"
+        )
         if len(ve) else pd.DataFrame()
     )
     if len(no_signal):
