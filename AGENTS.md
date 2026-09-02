@@ -1,5 +1,10 @@
 # Experiment operations memory
 
+- `skills/exp_protocol/` is runtime guidance for scientist agents that actually train or
+  evaluate models inside PTB. It is not the workflow for planner, operator, reviewer, or ordinary
+  repository code changes. Before a PTB scientist takes any exploratory or implementation action,
+  the scaffold must make it explicitly invoke/read `exp_protocol`; no training or evaluation
+  command may run before that scientist creates, checks, and locks its experiment card.
 - The active main development and integration branch is `gangda-dev`. Treat
   `gangda_trial_0828` references in existing manifests, specs, receipts, and job names as frozen
   historical provenance; use `gangda-dev` for new development integration and PR targets unless
