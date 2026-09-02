@@ -311,3 +311,23 @@
 - 2026-09-02T23:22:43+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r02 job=90685 RUNNING: no sidecar log; 0 transcript(s); solve_out 278 lines
 - 2026-09-02T23:22:43+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r03 job=90686 RUNNING: no sidecar log; 0 transcript(s); solve_out 417 lines
 - 2026-09-02T23:22:43+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r04 job=90687 RUNNING: no sidecar log; 0 transcript(s); solve_out 282 lines
+- 2026-09-02T23:34:39+00:00 submit wma-gsm8k-gemma4b-high-r02-a-format-floor-x4: 4 job(s) 90861,90862,90863,90864 -> results/ptb/wma-gsm8k-gemma4b-high-r02-a-format-floor-x4/formal-2026-09-02T233327.877094+0000.json
+- 2026-09-02T23:34:39+00:00 submit wma-gsm8k-gemma4b-high-r02-ab-format-floor-width-x4: 4 job(s) 90865,90866,90867,90868 -> results/ptb/wma-gsm8k-gemma4b-high-r02-ab-format-floor-width-x4/formal-2026-09-02T233350.945139+0000.json
+- 2026-09-02T23:34:39+00:00 submit wma-gsm8k-gemma4b-high-r02-c-probe-before-fail-x4: 4 job(s) 90870,90871,90872,90873 -> results/ptb/wma-gsm8k-gemma4b-high-r02-c-probe-before-fail-x4/formal-2026-09-02T233414.405288+0000.json
+- 2026-09-02T23:34:39+00:00 submit wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4: 4 job(s) 90874,90875,90876,90877 -> results/ptb/wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4/formal-2026-09-02T233438.652188+0000.json
+- 2026-09-02T23:34:39+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-b-x8-v2/w02r01 job=90606 RUNNING: sidecar: log empty; 3 transcript(s); solve_out 276 lines
+- 2026-09-02T23:34:40+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-c-x8-v2/w03r04 job=90625 RUNNING: sidecar: log empty; 3 transcript(s); solve_out 329 lines
+- 2026-09-02T23:34:40+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v2/c03r04 job=90786 RUNNING: no sidecar log; 0 transcript(s); solve_out 344 lines
+- 2026-09-02T23:34:40+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v2/c03r05 job=90787 RUNNING: no sidecar log; 0 transcript(s); solve_out 416 lines
+- 2026-09-02T23:34:40+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v2/c03r06 job=90788 RUNNING: no sidecar log; 0 transcript(s); solve_out 309 lines
+- 2026-09-02T23:34:40+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v2/c03r07 job=90789 RUNNING: no sidecar log; 0 transcript(s); solve_out 317 lines
+- 2026-09-02T23:34:40+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v2/c03r08 job=90790 RUNNING: no sidecar log; 0 transcript(s); solve_out 347 lines
+- 2026-09-02T23:34:41+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-b-x8-v3/w04r01 job=90676 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 530 lines
+- 2026-09-02T23:34:41+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-b-x8-v3/w04r02 job=90677 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 472 lines
+- 2026-09-02T23:34:41+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-b-x8-v3/w04r03 job=90678 RUNNING: sidecar: log empty; 3 transcript(s); solve_out 532 lines
+- 2026-09-02T23:34:41+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-b-x8-v3/w04r04 job=90679 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 515 lines
+- 2026-09-02T23:34:41+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-b-x8-v3/w04r05 job=90680 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 399 lines
+- 2026-09-02T23:34:42+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r01 job=90684 RUNNING: no sidecar log; 0 transcript(s); solve_out 490 lines
+- 2026-09-02T23:34:42+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r02 job=90685 RUNNING: no sidecar log; 0 transcript(s); solve_out 345 lines
+- 2026-09-02T23:34:42+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r03 job=90686 RUNNING: no sidecar log; 0 transcript(s); solve_out 476 lines
+- 2026-09-02T23:34:42+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r04 job=90687 RUNNING: no sidecar log; 0 transcript(s); solve_out 310 lines

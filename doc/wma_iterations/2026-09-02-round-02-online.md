@@ -1,6 +1,6 @@
 # WMA online Round 02 — four single-edit candidates
 
-Status: preregistered and queued; no candidate result read.
+Status: launched; all 16 candidate cells safely PENDING; no candidate result read.
 
 ## Frozen basis
 
@@ -42,6 +42,23 @@ Each manifest has one setting and four repeats, no pilot, one H100 per cell,
 the same public protocol/scientist/model/evaluation/judges/history as Round 01,
 and the held-route gate for `slurm2-a3nodesetondem-[2-3]`. No new control arm
 is launched; Round 01 core and w04/c04 provide the frozen v0.2/control views.
+
+## Launch (2026-09-02 23:33–23:35 UTC)
+
+Reconcile submitted all four manifests asynchronously after a clean-tree and
+local-contract check:
+
+- A: jobs `90861..90864`.
+- A+B: jobs `90865..90868`.
+- C: jobs `90870..90873`.
+- D: jobs `90874..90877`.
+
+The held-route gate passed before every release. A post-release `scontrol`
+audit found all 16 jobs `PENDING` with
+`ReqNodeList=slurm2-a3nodesetondem-[2-3]`. Owned allocation remained 16/16 and
+safe PENDING rose from 25 to 41. No cancellation or cross-subqueue action was
+part of the launch. Receipts are under the matching `results/ptb/<batch>/`
+directories.
 
 ## Readout and falsification
 
