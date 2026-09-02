@@ -604,6 +604,10 @@ def build_parser() -> argparse.ArgumentParser:
     from awm.exp_protocol import cli as exp_protocol_cli
 
     exp_protocol_cli.register(sub)
+
+    from awm import sandbox
+
+    sandbox.register(sub)
     return p
 
 

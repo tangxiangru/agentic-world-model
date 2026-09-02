@@ -1,0 +1,147 @@
+#!/bin/bash
+# End-to-end check of the PostTrainBench sandbox wiring on this machine, with the
+# real scaffold and the real Claude Code, and no GPU:
+#
+#   the launcher materialises the checkout it would bind (read-only, like the
+#   :ro bind) -> agents/claude_vertex_max_awm/solve.sh runs under `env -i` with
+#   only the variables run_task.sh passes into the sandbox -> `awm sandbox setup`
+#   installs the protocol into an empty task dir -> Claude Code starts with the
+#   scaffold's exact arguments and is asked four things: is the exp_protocol
+#   skill available, what does CLAUDE.md say, does `awm exp_protocol` run, and
+#   invoke the skill.
+#
+# The one substitution: a stand-in `claude` on PATH replaces the Vertex model
+# with one this machine can reach and drops the Vertex variables; every other
+# argument is the scaffold's. Costs about ten cents of API use. Needs a logged-in
+# Claude Code (~/.claude/.credentials.json), which is copied into the fake home
+# for the run and deleted afterwards.
+#
+#   tools/ptb-sandbox-e2e [--model sonnet] [--keep]
+set -euo pipefail
+
+MODEL="sonnet"
+KEEP=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --model) MODEL="${2:?}"; shift 2 ;;
+        --keep) KEEP=1; shift ;;
+        *) echo "usage: $0 [--model NAME] [--keep]" >&2; exit 2 ;;
+    esac
+done
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOLVE="$REPO/third_party/PostTrainBench/agents/claude_vertex_max_awm/solve.sh"
+UPDATE="$REPO/third_party/PostTrainBench/src/utils/update_agent_cli.sh"
+[ -f "$SOLVE" ] || { echo "FAIL: $SOLVE missing; check out the PTB submodule at a commit with the scaffold" >&2; exit 1; }
+REAL_CLAUDE="$(command -v claude)" || { echo "FAIL: no claude on PATH" >&2; exit 1; }
+[ -f "$HOME/.claude/.credentials.json" ] || { echo "FAIL: no ~/.claude/.credentials.json; log in to Claude Code first" >&2; exit 1; }
+
+S="$(mktemp -d "${TMPDIR:-/tmp}/ptb-sandbox-e2e.XXXXXX")"
+cleanup() {
+    rm -f "$S/home/.claude/.credentials.json" "$S/home/.claude.json"
+    chmod -R u+w "$S" 2>/dev/null || true   # the checkout was made read-only above
+    if [ "$KEEP" = 0 ]; then rm -rf "$S"; else echo "kept: $S"; fi
+}
+trap cleanup EXIT
+mkdir -p "$S/bin" "$S/home/task" "$S/home/.claude" "$S/vol"
+fail() { echo "FAIL: $*" >&2; KEEP=1; exit 1; }
+
+SHA="$(git -C "$REPO" rev-parse HEAD)"
+CHECKOUT="$(cd "$REPO" && AWM_DATA_ROOT="$S/vol" python3 -c "
+from awm import ptb_experiments as ptb
+print(ptb.materialize_awm_checkout('$SHA', ['awm', 'skills/exp_protocol'])['dir'])")"
+chmod -R a-w "$CHECKOUT"
+ln -s "$CHECKOUT" "$S/home/awm"
+[ ! -e "$CHECKOUT/skills/exp_protocol_meta" ] || fail "the checkout contains the meta skill"
+[ ! -e "$CHECKOUT/doc" ] || fail "the checkout contains doc/"
+
+cp "$UPDATE" "$S/home/update_agent_cli.sh"
+install -m 600 "$HOME/.claude/.credentials.json" "$S/home/.claude/.credentials.json"
+python3 - "$S/home/.claude.json" <<'PY'
+import json, pathlib, sys
+src = pathlib.Path.home() / ".claude.json"
+data = json.loads(src.read_text()) if src.is_file() else {}
+keep = {k: data[k] for k in ("oauthAccount", "hasCompletedOnboarding") if k in data}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(keep))
+PY
+
+cat > "$S/bin/claude" <<SHIM
+#!/bin/bash
+printf '%s\n' "\$@" > "$S/claude.args"
+args=(); swap=0
+for a in "\$@"; do
+  if [ \$swap = 1 ]; then args+=("$MODEL"); swap=0; continue; fi
+  if [ "\$a" = "--model" ]; then swap=1; fi
+  args+=("\$a")
+done
+unset CLAUDE_CODE_USE_VERTEX ANTHROPIC_VERTEX_PROJECT_ID ANTHROPIC_VERTEX_REGION
+exec "$REAL_CLAUDE" "\${args[@]}"
+SHIM
+chmod +x "$S/bin/claude"
+
+read -r -d '' PROMPT <<'PROMPT' || true
+This is a wiring check, not a training task. Do exactly these four things, then stop.
+1. Say whether a skill named exp_protocol is available to you in this session: answer SKILL=YES or SKILL=NO.
+2. Quote the first markdown heading (a line starting with #) of the file CLAUDE.md in the current directory, verbatim, prefixed with HEADING=.
+3. Run the shell command: awm exp_protocol --help | head -2 ; and paste its output prefixed with AWM=.
+4. Invoke the exp_protocol skill, then report the title of its SKILL.md (the first line starting with # after the front matter) prefixed with TITLE=.
+Reply in plain text with those four lines and nothing else.
+PROMPT
+
+echo "checkout: $CHECKOUT"
+echo "running $SOLVE under env -i ..."
+set +e
+( cd "$S/home/task" && timeout 600 env -i \
+    PATH="$S/bin:$S/home/.local/bin:/usr/local/bin:/usr/bin:/bin" HOME="$S/home" \
+    PYTHONNOUSERSITE=1 NUM_GPUS=1 \
+    PROMPT="$PROMPT" AGENT_CONFIG="claude-opus-5[1m]" \
+    CLAUDE_CODE_USE_VERTEX=1 ANTHROPIC_VERTEX_PROJECT_ID=sercan-v1 ANTHROPIC_VERTEX_REGION=global \
+    AWM_SANDBOX_SETUP="--exp-protocol --tool claude" AWM_CHECKOUT_SHA="$SHA" \
+    POST_TRAIN_BENCH_SKIP_CLI_UPDATE=1 PTB_SANDBOX_HOME="$S/home" \
+    bash "$SOLVE" > "$S/solve_out.txt" 2>&1 )
+RC=$?
+set -e
+[ "$RC" = 0 ] || { grep -v '^{' "$S/solve_out.txt" | tail -20; fail "solve.sh exited $RC"; }
+
+grep -q "^wrote skills/exp_protocol" "$S/solve_out.txt" || fail "setup did not install the skill"
+grep -q "^wrote CLAUDE.md" "$S/solve_out.txt" || fail "setup did not write CLAUDE.md"
+[ "$(readlink "$S/home/task/.claude/skills/exp_protocol")" = "../../skills/exp_protocol" ] || fail "skill symlink wrong"
+grep -q "\"sha\": \"$SHA\"" "$S/home/task/awm_sandbox.json" || fail "awm_sandbox.json does not carry the checkout sha"
+grep -qx -- "--setting-sources" "$S/claude.args" && grep -qx -- "project" "$S/claude.args" || fail "claude did not get --setting-sources project"
+
+python3 - "$S/solve_out.txt" <<'PY' || fail "Claude's answers do not show the protocol"
+import json, sys
+tools, result = [], None
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        ev = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if ev.get("type") == "assistant":
+        for block in ev.get("message", {}).get("content", []):
+            if block.get("type") == "tool_use":
+                tools.append((block.get("name"), block.get("input") or {}))
+    if ev.get("type") == "result":
+        result = ev
+answer = (result or {}).get("result") or ""
+print("--- tool calls ---")
+for name, inp in tools:
+    print(f"  {name} {json.dumps(inp)[:100]}")
+print("--- final answer ---")
+print(answer)
+if result:
+    print(f"cost_usd={result.get('total_cost_usd')} turns={result.get('num_turns')} is_error={result.get('is_error')}")
+ok = True
+for needle in ("SKILL=YES", "HEADING=## Experiment protocol", "AWM=usage: awm exp_protocol", "TITLE=# Experiment protocol"):
+    if needle not in answer:
+        print(f"missing in the answer: {needle!r}")
+        ok = False
+if not any(name == "Skill" and inp.get("skill") == "exp_protocol" for name, inp in tools):
+    print("Claude never invoked the exp_protocol skill")
+    ok = False
+sys.exit(0 if ok else 1)
+PY
+echo "PASS: the skill reaches the sandbox, Claude Code loads it, and awm runs from the read-only checkout"
