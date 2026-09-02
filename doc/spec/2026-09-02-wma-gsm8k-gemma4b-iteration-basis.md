@@ -306,5 +306,9 @@ docs 仍由发射器拒绝。
    但 `awm wma ledger` 汇报其数量与花费;`wma_skill`、`backend`、`mode`、`model`、
    `effort`、`issued_at`、`card_id` 一律由 harness 按实际写入,agent 自填的值不算数
    (第一份裁决把示例文件里的占位符原样抄了进去)。
+7. **已做**(同一份裁决的第二次):栅栏只把**真实存在**的栅外路径算作越界——sed/awk 的
+   正则字面量(`/^result:/,/^conclusion:/p`、`/1.7B/`)和打错的路径读不到任何东西,
+   而 glob 会展开后逐个判断;stream-json transcript 完整保存为
+   `exp-NN.transcript[.tag].jsonl`,供手读和栅栏规则改动后重扫。
 
 完成这些门只表示可以发射 round-01,不表示 candidate 可以晋升。

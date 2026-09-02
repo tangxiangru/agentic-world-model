@@ -14,6 +14,7 @@ leave a valid verdict file behind. Two kinds:
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import re
@@ -119,6 +120,18 @@ FILE_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit", "MultiEdit", "NotebookEdi
 SHELL_PATH_RE = re.compile(r"(?:^|[\s=\"'(])((?:/|\.\./)[^\s\"'();|&<>]+)")
 
 
+def _read_outside(tok: str, roots: list[Path], cwd: Path) -> bool:
+    """Whether a path-looking token names something real outside the fence.
+
+    A sed/awk regex literal ('/^result:/,/^conclusion:/p'), a mistyped path or a glob with no match
+    cannot have been read, so only what exists counts; a glob is expanded and any match outside counts.
+    """
+    p = os.path.abspath(os.path.join(cwd, tok))
+    if any(ch in tok for ch in "*?["):
+        return any(not _inside(m, roots, cwd) for m in glob.glob(p))
+    return os.path.exists(p) and not _inside(tok, roots, cwd)
+
+
 def _inside(path: str, roots: list[Path], cwd: Path) -> bool:
     """Lexical containment: no symlink resolution, so ``history/<run>/x`` counts as inside ``history``."""
     p = Path(os.path.abspath(os.path.join(cwd, path)))
@@ -158,6 +171,16 @@ def history_dirs(history: Path) -> list[Path]:
     return out
 
 
+def transcript_path(verdict_path: Path) -> Path:
+    """``exp-NN.transcript[.tag].jsonl`` beside the verdict: what the agent did, turn by turn."""
+    verdict_path = Path(verdict_path)
+    m = schema.VERDICT_FILE_RE.match(verdict_path.name)
+    if not m:
+        raise ValueError(f"{verdict_path.name} is not a verdict file name")
+    tag = f".{m.group(2)}" if m.group(2) else ""
+    return verdict_path.with_name(f"{m.group(1)}.transcript{tag}.jsonl")
+
+
 def scan_transcript(stdout: str, brief: Brief) -> tuple[dict[str, Any], dict[str, Any]]:
     """Read a Claude Code stream-json transcript: measured cost, and every path the agent touched."""
     cost: dict[str, Any] = {}
@@ -188,11 +211,11 @@ def scan_transcript(stdout: str, brief: Brief) -> tuple[dict[str, Any], dict[str
                 files += 1
                 for key in PATH_INPUTS:
                     val = inp.get(key)
-                    if isinstance(val, str) and val and not _inside(val, roots, cwd):
+                    if isinstance(val, str) and val and _read_outside(val, roots, cwd):
                         outside.append(val)
             elif name == "Bash":
                 cmd = str(inp.get("command") or "")
-                if any(not _inside(tok, roots, cwd) for tok in SHELL_PATH_RE.findall(cmd)):
+                if any(_read_outside(tok, roots, cwd) for tok in SHELL_PATH_RE.findall(cmd)):
                     outside.append(f"bash: {cmd}")
     return cost, {"files": files, "outside": outside}
 
@@ -259,6 +282,8 @@ class CommandBackend(Backend):
         if self.effort:
             measured["effort"] = self.effort
         if self.transcript == "stream-json":
+            # Kept whole: the iteration agent reads it by hand, and a fence fix can rescan it.
+            transcript_path(brief.verdict_path).write_text(proc.stdout or "")
             cost, access = scan_transcript(proc.stdout or "", brief)
             measured.update({"cost": cost, "access": access, "leak_suspected": bool(access["outside"])})
         try:

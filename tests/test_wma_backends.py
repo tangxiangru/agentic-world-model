@@ -149,6 +149,8 @@ def test_a_read_outside_the_session_and_history_is_flagged_as_a_suspected_leak(t
     hist.mkdir()
     b.history_dir = hist
     truth = tmp_path / "_truth" / "r-x" / "exp-01.yaml"
+    truth.parent.mkdir(parents=True)
+    truth.write_text("card_id: exp-01\n")
     exe = streaming_fake(tmp_path, b, stream_events(
         tool_use("Read", file_path=str(b.card_path)),
         tool_use("Read", file_path=str(hist / "r-y" / "exp-02.yaml")),
@@ -268,3 +270,55 @@ def test_unparseable_output_is_moved_aside_too(tmp_path) -> None:
     assert not b.verdict_path.exists()
     r = json.loads(b.verdict_path.with_name(b.verdict_path.name + ".rejected").read_text())
     assert r["raw"].startswith("not json")
+
+
+def test_only_paths_that_exist_count_as_reads_outside_the_fence(tmp_path) -> None:
+    """The first real verdict was flagged on sed/awk regex literals ('/^result:/,/^conclusion:/p', '/1.7B/')
+    and on a mistyped path: none of those can leak anything. A glob that reaches the truth can."""
+    b = brief(tmp_path)
+    hist = b.session_dir / "history"
+    (hist / "r-y").mkdir(parents=True)
+    (hist / "r-y" / "exp-01.yaml").write_text("card_id: exp-01\n")
+    truth = tmp_path / "_truth" / "r-x" / "exp-01.yaml"
+    truth.parent.mkdir(parents=True)
+    truth.write_text("card_id: exp-01\n")
+    inside = [
+        f"H={hist}; for f in $H/*/exp-01.yaml; do grep -oE 'Qwen[^ ]*' $f; done | awk -F'|' '$2 ~ /1.7B/'",
+        f"sed -n '/^result:/,/^conclusion:/p' {hist}/r-y/exp-01.yaml | head -40",
+        f"ls {tmp_path}/no/such/dir/history",                       # a typo, nothing there to read
+        "grep -c 016546b4 /proc/self/status >/dev/null; echo ok",   # exists, but not a session file either
+    ]
+    exe = streaming_fake(tmp_path, b, stream_events(
+        *[tool_use("Bash", command=c) for c in inside],
+        tool_use("Grep", pattern="/^result:/", path=str(hist)),
+        result_event()))
+    backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b)
+    v = schema.load_verdict(b.verdict_path)
+    assert v["access"]["outside"] == [f"bash: {inside[3]}"], v["access"]["outside"]   # /proc is real and outside; the rest is noise
+    b2 = brief(tmp_path / "two")
+    exe = streaming_fake(tmp_path / "two", b2, stream_events(
+        tool_use("Bash", command=f"cat {tmp_path}/_truth/*/exp-01.yaml"), result_event()))
+    backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b2)
+    v2 = schema.load_verdict(b2.verdict_path)
+    assert v2["leak_suspected"] is True and "_truth/*" in v2["access"]["outside"][0]
+
+
+def test_the_transcript_is_kept_beside_the_verdict_for_hand_reading_and_rescans(tmp_path) -> None:
+    b = brief(tmp_path)
+    events = stream_events(tool_use("Read", file_path=str(b.card_path)), result_event(0.2, 3))
+    exe = streaming_fake(tmp_path, b, events)
+    backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b)
+    t = backends.transcript_path(b.verdict_path)
+    assert t.name == "exp-01.transcript.jsonl" and t.read_text() == events
+    tagged = schema.verdict_path(b.card_path, tag="agent-b")
+    assert backends.transcript_path(tagged).name == "exp-01.transcript.agent-b.jsonl"
+    # a rejected verdict keeps its transcript too — that is where the money went
+    bad = json.loads(good_verdict_json())
+    bad["levels"] = {}
+    b2 = brief(tmp_path / "two")
+    exe = fake_executable(tmp_path / "two", f"cat > /dev/null\nmkdir -p $(dirname '{b2.verdict_path}')\n"
+                                            f"cat > '{b2.verdict_path}' <<'J'\n{json.dumps(bad)}\nJ\n"
+                                            f"cat <<'S'\n{events}S\n")
+    with pytest.raises(backends.BackendError):
+        backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b2)
+    assert backends.transcript_path(b2.verdict_path).read_text() == events
