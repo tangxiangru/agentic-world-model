@@ -12,3 +12,4 @@
 - 2026-09-02T12:37:05+00:00 submit exp-protocol-gsm8k-gemma4b-high-r00-nullctl-c-x8-v1: 8 job(s) 90508,90509,90510,90511,90512,90513,90514,90515 -> results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-c-x8-v1/formal-2026-09-02T123704.216624+0000.json
 - 2026-09-02T12:53:14+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v1/p00r01 job=90462 COMPLETED acc=0.5512 complete clean
 - 2026-09-02T13:10:33+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-x8-v1/c00r01 job=90463 COMPLETED acc=0.4655 complete clean
+- 2026-09-02T13:23:49+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v2/p00r01 job=90464 COMPLETED acc=0.4647 complete general_anomaly
