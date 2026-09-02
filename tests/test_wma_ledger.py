@@ -11,9 +11,15 @@ from test_wma_schema import verdict
 
 
 def write(dir_, card_id, skill, l3="yes", decision="adopt", wall_h=1.0, execution="completed", closed=True,
-          interval=None):
+          interval=None, l0="yes", l1="yes", model=None, effort=None, tag=None):
     v = copy.deepcopy(verdict())
     v.update({"card_id": card_id, "wma_skill": skill})
+    if model:
+        v["model"] = model
+    if effort:
+        v["effort"] = effort
+    v["levels"]["L0_runs"]["answer"] = l0
+    v["levels"]["L1_valid"]["answer"] = l1
     v["levels"]["L3_worth_now"]["answer"] = l3
     if interval is not None:
         v["levels"]["L2_effect"]["interval"] = interval
@@ -29,7 +35,7 @@ def write(dir_, card_id, skill, l3="yes", decision="adopt", wall_h=1.0, executio
             card["result"]["output_checkpoint"] = None
             card["result"]["measurements"] = []
     cards.dump_card(card_path, card)
-    schema.dump_verdict(schema.verdict_path(card_path), v)
+    schema.dump_verdict(schema.verdict_path(card_path, tag=tag), v)
 
 
 def test_rows_score_against_the_card_beside_the_verdict_and_group_by_skill(tmp_path) -> None:
@@ -43,7 +49,7 @@ def test_rows_score_against_the_card_beside_the_verdict_and_group_by_skill(tmp_p
     assert len(rows) == 5
     summary = {s["wma_skill"]: s for s in ledger.summarize(rows)}
     assert summary["AAAA"]["n"] == 2 and summary["AAAA"]["L0_hit"] == 0.5 and summary["AAAA"]["L2_coverage"] == 1.0
-    assert summary["BBBB"]["n"] == 3 and summary["BBBB"]["n_reconciled"] == 2
+    assert summary["BBBB"]["n"] == 3 and summary["BBBB"]["n_scored"] == 2
     assert summary["BBBB"]["gpu_h_saved"] == 2.5 and summary["BBBB"]["gpu_h_wrongly_killed"] == 1.5
     assert summary["BBBB"]["L3_hit"] == 0.5
 
@@ -83,7 +89,7 @@ def test_replay_layout_resolves_truth_outside_the_session(tmp_path) -> None:
     tp, t = ledger.truth_for(schema.verdict_path(card_path))
     assert tp == out / "_truth" / "r-aaaa" / "exp-02.yaml" and t["decision"] == "adopt"
     row = ledger.rows([out])[0]
-    assert row["reconciled"] and row["scored"]["L3"] == "hit"
+    assert row["has_truth"] and row["scored"]["L3"] == "hit"
 
 
 def test_unscorable_levels_are_excluded_from_rates_and_width_is_reported(tmp_path) -> None:
@@ -96,7 +102,7 @@ def test_unscorable_levels_are_excluded_from_rates_and_width_is_reported(tmp_pat
 def test_csv_and_render(tmp_path) -> None:
     write(tmp_path, "exp-01", "AAAA")
     summary = ledger.summarize(ledger.rows([tmp_path]))
-    assert ledger.to_csv(summary).splitlines()[0].startswith("wma_skill,backend,mode,n,")
+    assert ledger.to_csv(summary).splitlines()[0].startswith("wma_skill,backend,model,effort,mode,n,n_scored,")
     assert "AAAA" in ledger.render(summary)
 
 
@@ -108,7 +114,7 @@ def test_tagged_verdicts_resolve_to_the_same_card(tmp_path) -> None:
         v["backend"] = tag
         schema.dump_verdict(schema.verdict_path(card_path, tag=tag), v)
     rows = ledger.rows([tmp_path])
-    assert len(rows) == 2 and all(r["reconciled"] and r["scored"]["L0"] == "hit" for r in rows)
+    assert len(rows) == 2 and all(r["has_truth"] and r["scored"]["L0"] == "hit" for r in rows)
     assert {r["backend"] for r in rows} == {"opus", "codex"}
 
 
@@ -123,6 +129,33 @@ def test_measured_cost_is_summed_and_suspected_leaks_are_kept_out_of_the_rates(t
             v["access"] = {"files": 4, "outside": ["/somewhere/_truth/x.yaml"]}
         schema.dump_verdict(vp, v)
     s = ledger.summarize(ledger.rows([tmp_path]))[0]
-    assert s["n"] == 3 and s["n_leak_suspected"] == 1 and s["n_reconciled"] == 2
+    assert s["n"] == 3 and s["n_leak_suspected"] == 1 and s["n_scored"] == 2
     assert s["cost_usd_sum"] == 2.1 and s["cost_usd_mean"] == 0.7
     assert s["L0_hit"] == 0.0          # computed over the two clean rows only
+
+
+# ---- model and effort are part of the group key; recall on the failed cards is reported (2026-09-02) ----
+
+def test_the_same_skill_on_two_models_or_efforts_is_two_ledger_rows(tmp_path) -> None:
+    write(tmp_path / "a", "exp-01", "AAAA", model="m-1", effort="high")
+    write(tmp_path / "a", "exp-01", "AAAA", model="m-2", effort="high", tag="m2")
+    write(tmp_path / "a", "exp-01", "AAAA", model="m-1", effort="xhigh", tag="xh")
+    summary = ledger.summarize(ledger.rows([tmp_path]))
+    assert [(s["model"], s["effort"]) for s in summary] == [("m-1", "high"), ("m-1", "xhigh"), ("m-2", "high")]
+    assert all(s["n"] == 1 for s in summary)
+    for col in ("model", "effort", "n_scored", "L0_recall_failed", "L1_recall_invalid", "n_L2_scorable"):
+        assert col in ledger.SUMMARY_COLUMNS
+
+
+def test_recall_is_measured_on_the_cards_that_failed_or_yielded_no_candidate(tmp_path) -> None:
+    d = tmp_path / "s"
+    write(d, "exp-01", "AAAA", execution="failed", decision="reject", l0="no", l1="no")   # caught
+    write(d, "exp-02", "AAAA", execution="failed", decision="reject", l0="yes", l1="yes")  # missed
+    write(d, "exp-03", "AAAA", execution="killed", decision="reject", l0="yes", l1="no")   # ran, no candidate: L1 caught
+    write(d, "exp-04", "AAAA", l0="yes", l1="yes")                                          # completed: not in recall
+    write(d, "exp-05", "AAAA", l0="no", l1="no")                                            # a false alarm: hurts hit, not recall
+    s = ledger.summarize(ledger.rows([d]))[0]
+    assert s["L0_recall_failed"] == 0.5          # exp-01 caught, exp-02 missed; exp-03 ran
+    assert s["L1_recall_invalid"] == round(2 / 3, 3)   # exp-01, exp-03 caught; exp-02 missed
+    assert s["L0_hit"] == 0.6 and s["L1_hit"] == 0.6
+    assert s["n_scored"] == 5 and s["n_L2_scorable"] == 2   # only the two completed cards carry a delta

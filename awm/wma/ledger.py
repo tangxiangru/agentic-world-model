@@ -52,8 +52,9 @@ def truth_for(verdict_path: Path) -> tuple[Path | None, dict[str, Any]]:
             return c, t
     return None, schema.truth_from_card({})
 
-SUMMARY_COLUMNS = ("wma_skill", "backend", "mode", "n", "n_reconciled", "n_leak_suspected", "L0_hit", "L1_hit",
-                   "L2_coverage", "L2_width_mean", "L3_hit", "gpu_h_saved", "gpu_h_wrongly_killed",
+SUMMARY_COLUMNS = ("wma_skill", "backend", "model", "effort", "mode", "n", "n_scored", "n_leak_suspected",
+                   "L0_hit", "L0_recall_failed", "L1_hit", "L1_recall_invalid",
+                   "L2_coverage", "L2_width_mean", "n_L2_scorable", "L3_hit", "gpu_h_saved", "gpu_h_wrongly_killed",
                    "cost_usd_sum", "cost_usd_mean", "cost_wall_min_mean")
 
 
@@ -71,11 +72,13 @@ def rows(dirs: list[Path]) -> list[dict[str, Any]]:
             scored = schema.score(v, truth) if truth_path else {}
             out.append({
                 "path": str(p), "card_id": v.get("card_id"), "wma_skill": v.get("wma_skill") or "",
-                "backend": v.get("backend") or "", "mode": v.get("mode") or "",
+                "backend": v.get("backend") or "", "model": v.get("model") or "", "effort": v.get("effort") or "",
+                "mode": v.get("mode") or "",
                 "L3_answer": (lv.get("L3_worth_now") or {}).get("answer"),
                 "L2_width": (iv[1] - iv[0]) if isinstance(iv, list) and len(iv) == 2 else None,
-                "reconciled": truth_path is not None, "truth_path": str(truth_path) if truth_path else "",
+                "has_truth": truth_path is not None, "truth_path": str(truth_path) if truth_path else "",
                 "scored": scored,
+                "truth_levels": schema.truth_levels(truth) if truth_path else {},
                 "actual": {k: truth.get(k) for k in ("execution", "decision", "wall_h", "delta")},
                 "cost": v.get("cost") or {},
                 "leak": bool(v.get("leak_suspected")),
@@ -95,27 +98,34 @@ def _mean(values: list[float]) -> float | str:
 
 
 def summarize(all_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for r in all_rows:
-        groups[(r["wma_skill"], r["backend"], r["mode"])].append(r)
+        groups[(r["wma_skill"], r["backend"], r["model"], r["effort"], r["mode"])].append(r)
     out = []
-    for (skill, backend, mode), rs in sorted(groups.items()):
+    for (skill, backend, model, effort, mode), rs in sorted(groups.items()):
         # A verdict that read outside the fence may have seen its own answer: it costs money and
         # counts in n, but it says nothing about the skill, so it stays out of every rate.
         clean = [r for r in rs if not r["leak"]]
-        rec = [r for r in clean if r["reconciled"]]
+        rec = [r for r in clean if r["has_truth"]]
+        # Recall on the cards that did not run / did not yield a candidate: an agent that always says
+        # yes already has the base rate on L0_hit and L1_hit; only recall shows whether it catches anything.
+        failed = [r for r in rec if r["truth_levels"].get("L0") is False]
+        invalid = [r for r in rec if r["truth_levels"].get("L1") is False]
         usd = [float(r["cost"]["usd"]) for r in rs if isinstance(r["cost"].get("usd"), (int, float))]
         saved = sum(float(r["actual"].get("wall_h") or 0) for r in rec
                     if r["L3_answer"] in ("no", "defer") and r["actual"].get("decision") in ("reject", "abandon_line"))
         killed = sum(float(r["actual"].get("wall_h") or 0) for r in rec
                      if r["L3_answer"] in ("no", "defer") and r["actual"].get("decision") == "adopt")
         out.append({
-            "wma_skill": skill, "backend": backend, "mode": mode, "n": len(rs), "n_reconciled": len(rec),
-            "n_leak_suspected": len(rs) - len(clean),
+            "wma_skill": skill, "backend": backend, "model": model, "effort": effort, "mode": mode,
+            "n": len(rs), "n_scored": len(rec), "n_leak_suspected": len(rs) - len(clean),
             "L0_hit": _rate([r["scored"].get("L0", "unscorable") for r in rec], ("hit",)),
+            "L0_recall_failed": _rate([r["scored"].get("L0", "unscorable") for r in failed], ("hit",)),
             "L1_hit": _rate([r["scored"].get("L1", "unscorable") for r in rec], ("hit",)),
+            "L1_recall_invalid": _rate([r["scored"].get("L1", "unscorable") for r in invalid], ("hit",)),
             "L2_coverage": _rate([r["scored"].get("L2", "unscorable") for r in rec], ("in_interval",)),
             "L2_width_mean": _mean([r["L2_width"] for r in rs if r["L2_width"] is not None]),
+            "n_L2_scorable": sum(r["scored"].get("L2", "unscorable") != "unscorable" for r in rec),
             "L3_hit": _rate([r["scored"].get("L3", "unscorable") for r in rec], ("hit",)),
             "gpu_h_saved": round(saved, 3), "gpu_h_wrongly_killed": round(killed, 3),
             "cost_usd_sum": round(sum(usd), 4) if usd else "",

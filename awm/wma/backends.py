@@ -53,6 +53,7 @@ class Brief:
     model: str | None
     prompt: str
     history_dir: Path | None = None
+    effort: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -196,11 +197,16 @@ class CommandBackend(Backend):
     """Run an agent CLI in the session directory; it must write the verdict file."""
 
     def __init__(self, name: str, argv_template: list[str], model: str | None = None, *,
+                 effort: str | None = None, effort_flag: list[str] | None = None,
                  transcript: str | None = None, history_flag: str | None = None,
                  max_turns_flag: str | None = None) -> None:
         self.name = name
         self.argv_template = list(argv_template)
         self.model = model
+        # Effort is part of the measurement: passed on the command line, never inherited from the
+        # user's CLI settings, and stamped on the verdict with the model so the ledger can group by it.
+        self.effort = effort
+        self.effort_flag = list(effort_flag or [])   # e.g. ["--effort", "{effort}"]
         self.transcript = transcript          # "stream-json" → stdout is parsed for cost and file access
         self.history_flag = history_flag      # e.g. --add-dir: lets the agent read the history link's target
         self.max_turns_flag = max_turns_flag  # e.g. --max-turns: a hard stop on top of the wall budget
@@ -216,6 +222,8 @@ class CommandBackend(Backend):
         if not self.model:
             # drop a dangling "--model" flag whose value was skipped
             out = [a for i, a in enumerate(out) if not (a == "--model" and (i + 1 >= len(out) or out[i + 1].startswith("-")))]
+        if self.effort and self.effort_flag:
+            out += [a.replace("{effort}", self.effort) for a in self.effort_flag]
         if brief is not None:
             if self.history_flag and brief.history_dir:
                 for d in history_dirs(Path(brief.history_dir)):
@@ -249,6 +257,10 @@ class CommandBackend(Backend):
             raise BackendError(f"{self.name}: invalid verdict:\n{report.render()}")
         if not v.get("backend"):
             v["backend"] = self.name
+        if self.model:
+            v["model"] = self.model
+        if self.effort:
+            v["effort"] = self.effort
         if self.transcript == "stream-json":
             cost, access = scan_transcript(proc.stdout or "", brief)
             v.setdefault("cost", {})
@@ -261,19 +273,21 @@ class CommandBackend(Backend):
 
 
 BACKENDS: dict[str, Any] = {
-    "heuristic": lambda model: HeuristicBackend(),
+    "heuristic": lambda model, effort: HeuristicBackend(),
     # stream-json (which needs --verbose in print mode) gives the measured cost and every tool call,
     # so the ledger's cost is real and a read outside the fence is caught, not trusted away.
-    "claude": lambda model: CommandBackend(
+    "claude": lambda model, effort: CommandBackend(
         "claude", ["claude", "--print", "--verbose", "--output-format", "stream-json",
                    "--model", "{model}", "--dangerously-skip-permissions"], model,
+        effort=effort, effort_flag=["--effort", "{effort}"],
         transcript="stream-json", history_flag="--add-dir", max_turns_flag="--max-turns"),
-    "codex": lambda model: CommandBackend(
-        "codex", ["codex", "exec", "--skip-git-repo-check", "--yolo", "--model", "{model}"], model),
+    "codex": lambda model, effort: CommandBackend(
+        "codex", ["codex", "exec", "--skip-git-repo-check", "--yolo", "--model", "{model}"], model,
+        effort=effort, effort_flag=["-c", "model_reasoning_effort={effort}"]),
 }
 
 
-def get_backend(name: str, model: str | None = None) -> Backend:
+def get_backend(name: str, model: str | None = None, effort: str | None = None) -> Backend:
     if name not in BACKENDS:
         raise BackendError(f"unknown backend {name!r}; choose from {', '.join(BACKENDS)}")
-    return BACKENDS[name](model)
+    return BACKENDS[name](model, effort)

@@ -85,6 +85,8 @@ def _detach(args: argparse.Namespace) -> int:
             "--backend", args.backend, "--mode", args.mode, "--jobs", str(args.jobs)]
     if args.model:
         argv += ["--model", args.model]
+    if args.effort:
+        argv += ["--effort", args.effort]
     if args.budget:
         argv += ["--budget", args.budget]
     if args.history:
@@ -127,13 +129,13 @@ def _review(args: argparse.Namespace) -> int:
     if args.tag is not None and not schema.TAG_RE.match(args.tag):
         print(f"--tag must match {schema.TAG_RE.pattern}")
         return 2
-    backend = get_backend(args.backend, args.model)
+    backend = get_backend(args.backend, args.model, args.effort)
     history = Path(args.history) if args.history else None
 
     def one(cid: str):
         try:
             v = review(Path(args.dir), cid, backend, mode=args.mode, budget=budget, model=args.model,
-                       force=args.force, history_dir=history, tag=args.tag)
+                       force=args.force, history_dir=history, tag=args.tag, effort=args.effort)
             return cid, v, None
         except ReviewError as exc:
             return cid, None, str(exc)
@@ -210,11 +212,11 @@ def _replay(args: argparse.Namespace) -> int:
         return 2
     out = Path(args.out)
     samples = replay.build_samples(Path(args.corpus), out, side=args.side, sample=args.sample, seed=args.seed)
-    print(f"{len(samples)} samples under {out}")
+    print(f"{len(samples)} samples under {out}; set fingerprint {replay.fingerprint(samples)[:16]}")
     if args.build_only:
         return 0
-    counts = replay.run_replay(out, get_backend(args.backend, args.model), budget=budget, model=args.model,
-                               limit=args.limit)
+    counts = replay.run_replay(out, get_backend(args.backend, args.model, args.effort), budget=budget,
+                               model=args.model, effort=args.effort, limit=args.limit, jobs=args.jobs)
     print(", ".join(f"{k}={v}" for k, v in counts.items()))
     return 0 if counts.get("errors", 0) == 0 else 1
 
@@ -228,6 +230,8 @@ def register(sub: argparse._SubParsersAction) -> None:
     r.add_argument("card_id", nargs="+", help="exp-NN ...; several cards are reviewed in parallel and ranked")
     r.add_argument("--backend", choices=("heuristic", "claude", "codex"), default="heuristic")
     r.add_argument("--model")
+    r.add_argument("--effort", default="high",
+                   help="reasoning effort passed to the agent CLI (never inherited from its settings)")
     r.add_argument("--mode", choices=("offline", "online"), default="online")
     r.add_argument("--budget", help="cpu=,gpu=,wall= in minutes, turns= for the agent")
     r.add_argument("--history", help="read-only directory of other runs' cards")
@@ -255,7 +259,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     rp.add_argument("--seed", type=int, default=0)
     rp.add_argument("--backend", choices=("heuristic", "claude", "codex"), default="heuristic")
     rp.add_argument("--model")
+    rp.add_argument("--effort", default="high",
+                    help="reasoning effort passed to the agent CLI (never inherited from its settings)")
     rp.add_argument("--budget", help="cpu=,gpu=,wall= in minutes, turns= for the agent")
     rp.add_argument("--limit", type=int, help="review at most this many samples this invocation")
+    rp.add_argument("--jobs", type=int, default=1, help="how many samples to review concurrently")
     rp.add_argument("--build-only", action="store_true", help="build the sessions, review nothing")
     rp.set_defaults(func=_replay)

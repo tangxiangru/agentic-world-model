@@ -112,7 +112,7 @@ def test_run_replay_reviews_reconciles_and_is_resumable(corpus, tmp_path, skill)
     assert counts == {"reviewed": 6, "skipped": 0, "errors": 0}
     summary = ledger.summarize(ledger.rows([out]))
     # six verdicts; five have an outcome — r-aaaa/exp-03 is an open historical card with none
-    assert len(summary) == 1 and summary[0]["n"] == 6 and summary[0]["n_reconciled"] == 5
+    assert len(summary) == 1 and summary[0]["n"] == 6 and summary[0]["n_scored"] == 5
     # the failed and killed cards scored L0/L1 against the truth kept outside
     rows = {(r["path"].split("/")[-5], r["card_id"]): r for r in ledger.rows([out])}
     assert rows[("r-bbbb", "exp-02")]["scored"]["L0"] == "miss"
@@ -184,3 +184,30 @@ def test_an_interrupted_session_build_is_completed_on_the_next_build(corpus, tmp
     replay.build_samples(corpus, out, side="train")
     assert (s.session_dir / "memory" / "cards" / "exp-03.yaml").is_file()
     assert (s.session_dir / "memory" / "index.md").is_file() and (s.session_dir / "history").is_symlink()
+
+
+# ---- the sample set has an identity of its own, and a pass can run in parallel (2026-09-02) ----
+
+def test_the_sample_set_fingerprint_names_the_pairs_not_the_paths(corpus, tmp_path, skill) -> None:
+    a = replay.build_samples(corpus, tmp_path / "out-a", side="train")
+    b = replay.build_samples(corpus, tmp_path / "out-b", side="train")
+    sha_a = (tmp_path / "out-a" / "samples.sha").read_text().strip()
+    assert sha_a == (tmp_path / "out-b" / "samples.sha").read_text().strip() == replay.fingerprint(a) == replay.fingerprint(b)
+    assert len(sha_a) == 64
+    fewer = replay.build_samples(corpus, tmp_path / "out-c", side="train", sample=2, seed=0)
+    assert replay.fingerprint(fewer) != sha_a
+    # the fingerprint is over the (run, card) pairs alone: order of the list does not matter
+    assert replay.fingerprint(list(reversed(a))) == sha_a
+
+
+def test_a_parallel_pass_reviews_every_sample_once(corpus, tmp_path, skill) -> None:
+    out = tmp_path / "replay"
+    replay.build_samples(corpus, out, side="train")
+    counts = replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1), jobs=3)
+    assert counts == {"reviewed": 6, "skipped": 0, "errors": 0}
+    assert len(ledger.rows([out])) == 6
+    limited = replay.build_samples(corpus, tmp_path / "r2", side="train")
+    assert len(limited) == 6
+    counts = replay.run_replay(tmp_path / "r2", backends.HeuristicBackend(), budget=backends.Budget(wall_min=1),
+                               jobs=4, limit=2)
+    assert counts == {"reviewed": 2, "skipped": 0, "errors": 0}

@@ -211,3 +211,30 @@ def test_add_dir_also_covers_where_the_history_links_point(tmp_path) -> None:
     argv = backends.get_backend("claude", model="m").argv(b)
     dirs = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
     assert dirs == [str(hist.resolve()), str(corpus_train.resolve())]
+
+
+# ---- effort and model are part of the measurement: passed explicitly, stamped on the verdict (2026-09-02) ----
+
+def test_effort_is_passed_explicitly_to_each_cli_and_omitted_when_unset() -> None:
+    claude = backends.get_backend("claude", model="claude-opus-5", effort="high").argv()
+    assert claude[claude.index("--effort") + 1] == "high"
+    codex = backends.get_backend("codex", model="gpt-5", effort="high").argv()
+    assert "model_reasoning_effort=high" in codex
+    for be in (backends.get_backend("claude", model="claude-opus-5"), backends.get_backend("codex", model="gpt-5")):
+        assert "--effort" not in be.argv() and not any("model_reasoning_effort" in a for a in be.argv())
+
+
+def test_the_backend_stamps_the_model_and_effort_it_ran_with(tmp_path) -> None:
+    b = brief(tmp_path)
+    exe = streaming_fake(tmp_path, b, stream_events(result_event(0.1, 2)))
+    backends.CommandBackend("fake", [str(exe)], "m-1", effort="high", transcript="stream-json").run(b)
+    v = schema.load_verdict(b.verdict_path)
+    assert v["model"] == "m-1" and v["effort"] == "high"
+
+
+def test_a_backend_without_model_or_effort_stamps_neither(tmp_path) -> None:
+    b = brief(tmp_path)
+    exe = streaming_fake(tmp_path, b, stream_events(result_event(0.1, 2)))
+    backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b)
+    v = schema.load_verdict(b.verdict_path)
+    assert "model" not in v and "effort" not in v

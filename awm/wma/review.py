@@ -85,25 +85,27 @@ Do not look for the card's result anywhere; you are estimating it.
 
 
 def make_brief(session_dir: Path, card_id: str, *, mode: str, budget: Budget, model: str | None,
-               skill_dir: Path, history_dir: Path | None = None, tag: str | None = None) -> Brief:
+               skill_dir: Path, history_dir: Path | None = None, tag: str | None = None,
+               effort: str | None = None) -> Brief:
     session_dir = Path(session_dir)
     card_path = session_dir / "memory" / "cards" / f"{card_id}.yaml"
     brief = Brief(card_id=card_id, session_dir=session_dir, card_path=card_path,
                   verdict_path=schema.verdict_path(card_path, tag=tag), skill_dir=Path(skill_dir), mode=mode,
-                  budget=budget, model=model, prompt="", history_dir=history_dir)
+                  budget=budget, model=model, prompt="", history_dir=history_dir, effort=effort)
     brief.prompt = build_prompt(brief)
     return brief
 
 
 def review(session_dir: Path, card_id: str, backend: Backend, *, mode: str = "offline",
            budget: Budget | None = None, model: str | None = None, skill_dir: Path | None = None,
-           history_dir: Path | None = None, force: bool = False, tag: str | None = None) -> dict[str, Any]:
+           history_dir: Path | None = None, force: bool = False, tag: str | None = None,
+           effort: str | None = None) -> dict[str, Any]:
     if mode not in schema.MODES:
         raise ReviewError(f"mode must be one of {schema.MODES}")
     skill_dir = Path(skill_dir) if skill_dir else default_skill_dir()
     try:
         brief = make_brief(session_dir, card_id, mode=mode, budget=budget or Budget(), model=model,
-                           skill_dir=skill_dir, history_dir=history_dir, tag=tag)
+                           skill_dir=skill_dir, history_dir=history_dir, tag=tag, effort=effort)
     except ValueError as exc:
         raise ReviewError(str(exc)) from exc
     if not brief.card_path.is_file():
@@ -123,6 +125,10 @@ def review(session_dir: Path, card_id: str, backend: Backend, *, mode: str = "of
     v["wma_skill"] = v.get("wma_skill") or schema.skill_sha(skill_dir)
     v["backend"] = v.get("backend") or backend.name
     v["mode"] = v.get("mode") or mode
+    if model and not v.get("model"):
+        v["model"] = model
+    if effort and not v.get("effort"):
+        v["effort"] = effort
     v["issued_at"] = v.get("issued_at") or now()
     v["card_id"] = card_id
     schema.dump_verdict(brief.verdict_path, v)

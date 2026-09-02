@@ -171,6 +171,15 @@ def truth_from_card(card: dict[str, Any]) -> dict[str, Any]:
 
 # ------------------------------------------------------------------ score
 
+def truth_levels(truth: dict[str, Any]) -> dict[str, bool | None]:
+    """What L0 and L1 actually were: ran (completed or killed) / yielded a scorable candidate. None = open."""
+    execution = truth.get("execution")
+    if execution is None:
+        return {"L0": None, "L1": None}
+    return {"L0": execution in RAN,
+            "L1": execution == "completed" and bool(truth.get("output_checkpoint")) and bool(truth.get("measurements"))}
+
+
 def score(verdict: dict[str, Any], truth: dict[str, Any]) -> dict[str, str]:
     lv = verdict["levels"]
     out: dict[str, str] = {}
@@ -181,12 +190,9 @@ def score(verdict: dict[str, Any], truth: dict[str, Any]) -> dict[str, str]:
             return "unscorable"
         return "hit" if (ans == "yes") == actual else "miss"
 
-    execution = truth.get("execution")
-    ran = None if execution is None else execution in RAN
-    out["L0"] = yes_no("L0_runs", ran)
-    valid = None if execution is None else (execution == "completed" and bool(truth.get("output_checkpoint"))
-                                             and bool(truth.get("measurements")))
-    out["L1"] = yes_no("L1_valid", valid)
+    actual = truth_levels(truth)
+    out["L0"] = yes_no("L0_runs", actual["L0"])
+    out["L1"] = yes_no("L1_valid", actual["L1"])
 
     iv = lv["L2_effect"].get("interval")
     delta = truth.get("delta")

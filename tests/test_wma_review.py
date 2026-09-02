@@ -85,3 +85,19 @@ def test_prompt_names_the_paths_the_mode_and_the_rules(tmp_path, skill) -> None:
     b2 = review.make_brief(s, "exp-01", mode="online", budget=backends.Budget(), model="m", skill_dir=skill,
                            history_dir=tmp_path / "hist")
     assert "online" in b2.prompt and str(tmp_path / "hist") in b2.prompt
+
+
+def test_review_stamps_model_and_effort_when_the_backend_leaves_them_blank(tmp_path, skill) -> None:
+    class Blank(backends.Backend):
+        name = "blank"
+
+        def run(self, brief):
+            assert brief.effort == "high" and brief.model == "m-1"
+            schema.dump_verdict(brief.verdict_path, schema.empty_verdict(brief.card_id))
+
+    s = session_with(tmp_path, plan_card())
+    v = review.review(s, "exp-01", Blank(), mode="offline", skill_dir=skill, model="m-1", effort="high")
+    assert v["model"] == "m-1" and v["effort"] == "high"
+    v2 = review.review(session_with(tmp_path / "b", plan_card()), "exp-01", backends.HeuristicBackend(),
+                       mode="offline", skill_dir=skill)
+    assert "model" not in v2 and "effort" not in v2

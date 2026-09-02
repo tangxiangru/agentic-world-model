@@ -164,3 +164,34 @@ def test_budget_accepts_turns() -> None:
     assert b.wall_min == 8 and b.max_turns == 25
     with pytest.raises(ValueError):
         _budget("steps=3")
+
+
+def test_effort_defaults_to_high_and_travels_with_a_background_review(session, monkeypatch) -> None:
+    """The WMA's effort is never inherited from the user's CLI settings: it is always on the command line."""
+    from awm.wma import cli as wma_cli
+
+    import awm.wma.review as review_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_review(session_dir, cid, backend, **kw):
+        seen.update(kw)
+        v = schema.empty_verdict(cid)
+        schema.dump_verdict(schema.verdict_path(lineage.cards_dir(session_dir) / f"{cid}.yaml"), v)
+        return v
+
+    monkeypatch.setattr(review_mod, "review", fake_review)
+    assert main(["wma", "review", "--dir", str(session), "exp-01", "--backend", "heuristic"]) == 0
+    assert seen["effort"] == "high"
+
+    class FakePopen:
+        pid = 4242
+
+        def __init__(self, argv, **kw):
+            seen["argv"] = argv
+
+    monkeypatch.setattr(wma_cli.subprocess, "Popen", FakePopen)
+    assert main(["wma", "review", "--dir", str(session), "exp-02", "--backend", "claude", "--model", "m-1",
+                 "--effort", "medium", "--background"]) == 0
+    argv = seen["argv"]
+    assert argv[argv.index("--effort") + 1] == "medium" and argv[argv.index("--model") + 1] == "m-1"
