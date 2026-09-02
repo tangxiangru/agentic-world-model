@@ -86,6 +86,9 @@ one. It is advice; you decide. Three things matter about how you use it:
 - **Do not wait for it to launch.** If the verdict has not arrived by the time you
   would start the run, start the run. Time is the budget; the verdict is worth
   exactly what it saves you, and nothing when it costs you the launch.
+- **If it answers "no world-model agent is attached to this cell", that is the
+  whole answer.** No verdict will come; do not retry, do not look for one. Carry
+  on with step 5.
 
 Read the verdict when it arrives. If it says *verify first*, that is usually
 minutes on CPU that can save an hour on the GPU. If it says *no* and you disagree,

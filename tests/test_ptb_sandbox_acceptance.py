@@ -105,6 +105,11 @@ def test_the_scientist_sees_the_protocol_and_nothing_about_its_iteration(cell) -
     assert json.loads((task / "awm_sandbox.json").read_text())["sha"] == sha
     assert not list(task.rglob("*exp_protocol_meta*"))
     assert not (task / "skills" / "wma").exists()
+    # a cell where no sidecar opened a queue is the control arm: the client says so and queues nothing
+    control = _awm(checkout, task, "wma", "review", "--dir", str(task), "exp-01", "--background")
+    assert control.returncode == 0 and "no world-model agent is attached" in control.stdout
+    assert not (task / ".wma").exists()
+    (task / ".wma" / "requests").mkdir(parents=True)          # what the sidecar does when it starts
     queued = _awm(checkout, task, "wma", "review", "--dir", str(task), "exp-01", "--background")
     assert queued.returncode == 2 and "no such card" in queued.stdout
     assert not (task / "AGENTS.md").exists()  # --tool claude only
@@ -129,6 +134,7 @@ def test_one_card_end_to_end_with_the_shipped_code(cell) -> None:
     assert locked.returncode == 0, locked.stdout + locked.stderr
     assert (lineage.cards_dir(task) / "exp-01.lock.json").is_file()
     assert (lineage.cards_dir(task) / "exp-01.preflight.json").is_file()
+    (task / ".wma" / "requests").mkdir(parents=True)          # the sidecar's queue, opened before the scientist
     queued = _awm(
         checkout,
         task,

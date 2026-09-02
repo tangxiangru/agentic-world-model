@@ -258,9 +258,15 @@ wma:
 1. 公共 checkout 继续拒绝 `skills/wma`、`awm/wma`、两个 meta skill 与 `doc`;只增加
    `awm/wma_client.py`。私有 checkout 只挂进 sidecar container。
 2. `history` 只读挂载到 sidecar 的 `/history`,不挂进 scientist container。
-3. 无 WMA 对照臂:同一 `skills/exp_protocol` commit 去掉第 4b 步。现成的做法是把 4b 段
-   搬到 `skills/wma/scientist_section.md`,由 `awm exp_protocol install --with-wma`
-   装船时追加——用户 2026-09-02 决定暂不做;上线前重新决定。
+3. **无 WMA 对照臂(已实现,2026-09-02)**:对照 cell 装**同一个**公共 checkout、同一份
+   含 4b 步的 `skills/exp_protocol`,只是 manifest 不写 `wma` 块,于是 host 不起 sidecar。
+   sidecar 启动时会先建 `<task>/.wma/requests`;客户端 `awm wma review` / `status` 发现
+   这个目录不存在就回答 "no world-model agent is attached to this cell; no verdict will
+   come",返回 0,不入队、不建目录;规程告诉 scientist 这句就是全部答案,继续第 5 步。
+   两臂 scientist 看到的字节逐一相同。硬化建议(fork 侧,未做):`run_task.sh` 在启动
+   scientist 之前自己 `mkdir -p task/.wma/requests`,消除 sidecar 进程起慢的竞态。
+   另一条路——把 WMA 装进 scientist 沙箱、用 `awm_wma.json` 开关——已实现过但被 sidecar
+   设计取代,留在 tag `wip-online-in-sandbox` 供查。
 4. WMA 子进程的 effort 与 model 必须显式传入并盖进 verdict(第十一节第 1 条)。
 5. Scientist 只能写 review request、读 status/verdict;不能读取 WMA skill、先验、历史或
    sidecar checkout。完整 WMA transcript 写到 result-private 目录,不落在 scientist 的

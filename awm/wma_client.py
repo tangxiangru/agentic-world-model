@@ -17,10 +17,22 @@ from pathlib import Path
 
 REQUEST_SCHEMA = "awm-wma-review-request-v1"
 CARD_ID = re.compile(r"^exp-[0-9]+$")
+NOT_ATTACHED = ("no world-model agent is attached to this cell; no verdict will come — "
+                "carry on with the next step of the protocol")
+
+
+class NoSidecar(RuntimeError):
+    """No sidecar opened a queue in this session: the control arm, or a sidecar that never started."""
 
 
 def _control_dir(session_dir: Path) -> Path:
     return Path(session_dir).resolve() / ".wma"
+
+
+def sidecar_attached(session_dir: Path) -> bool:
+    """The sidecar creates ``.wma/requests`` when it starts, before the scientist does; a cell without
+    that directory has no world-model agent, and a request written there would wait forever."""
+    return (_control_dir(session_dir) / "requests").is_dir()
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -36,6 +48,8 @@ def enqueue(session_dir: Path, card_ids: list[str]) -> tuple[str, Path]:
     session_dir = Path(session_dir).resolve()
     if not session_dir.is_dir():
         raise ValueError(f"session directory does not exist: {session_dir}")
+    if not sidecar_attached(session_dir):
+        raise NoSidecar(NOT_ATTACHED)
     if not card_ids:
         raise ValueError("at least one experiment card is required")
     if len(card_ids) != len(set(card_ids)):
@@ -65,6 +79,9 @@ def _review(args: argparse.Namespace) -> int:
         return 2
     try:
         request_id, path = enqueue(Path(args.dir), list(args.card_id))
+    except NoSidecar as exc:
+        print(str(exc))          # not an error: the control arm's whole answer
+        return 0
     except ValueError as exc:
         print(f"not queued: {exc}")
         return 2
@@ -82,6 +99,9 @@ def _status(args: argparse.Namespace) -> int:
         print(f"no cards under {session}")
         return 2
     control = _control_dir(session)
+    if not sidecar_attached(session):
+        print(NOT_ATTACHED)
+        return 0
     responses: dict[str, dict] = {}
     for path in sorted((control / "responses").glob("*.json")):
         try:
