@@ -89,7 +89,7 @@ iteration agent 对 baseline 至少人工读 3 张 cards；若所有 cells 合�
 ## 四、常规 GSM8K 迭代轮
 
 每轮比较若干 protocol variants，其中一个总是当前 baseline。**自 Round 02 起按用户
-2026-09-02 21:45 UTC 的指令采用两段式（见 §七 用户指令第 5 条）**：
+2026-09-02 的指令（约 21:15 UTC，记录于 commit d89fe2f）采用两段式（见 §七 用户指令第 5 条）**：
 
 - **筛选段：每个 candidate 4 个正式 cell。** 每个 candidate 相对 baseline 只改一个
   protocol 事项，并在 spec 里预先写明它要改变的那个指标（例如"因会话结束丢失训练的
@@ -100,8 +100,11 @@ iteration agent 对 baseline 至少人工读 3 张 cards；若所有 cells 合�
 - **确认段：只给赢家补到 8 个。** 要宣称一个改动对分数有 0.03–0.05 的效应，或把它
   送进 §五 的候选池，必须先补齐第二个 4-cell block（新的 immutable manifest，
   `run_index` 递增）。输家不补跑，按 §七 从 queue 撤下尚未开始的 cells。
-- **一轮可并行多个 candidate**（16 卡一波最多 4 个 candidate × 4 cells），每个
-  candidate 仍只改一处，可追溯性不变；round record 逐 candidate 记录。
+- **一轮可并行多个 candidate**，每个 candidate 仍只改一处，可追溯性不变；round record
+  逐 candidate 记录。一波 16 卡的默认组成是 **3 个 candidate × 4 cells + 2 个 baseline
+  漂移 cell + 2 个机动 slot（赢家的确认 block 或补跑）= 16**；不掺 baseline 时最多
+  4 个 candidate。这条由用户批准的两段式提案引入，在 meta 回顾前覆盖
+  `exp_protocol_meta` 中"每轮 2–3 个 variant"的表述。
 - **baseline 每波掺 2 个 cell**，用于监测 PTB commit、API 行为随时间的漂移；它们并入
   baseline 池，不单独成臂。
 - Round 00 两臂各 16 个与 Round 01 的 8 + 8 个 strict 补跑已登记，维持不变。
@@ -223,11 +226,12 @@ Fable 单独写一次跨轮 meta retrospective；只有至少两个 rounds 重�
    operator 保留到自然结束）。
 4. 本指令由分支负责 agent（Fable）以 commit 落实；`queue.yaml` 的改动直接提交到
    `gangda_exp_protocol_evolve`，不再开新 PR。
-5. **（2026-09-02 21:45 UTC 追加）每个 candidate 先跑 4 个 cell。** 用户认为每个候选
+5. **（2026-09-02 约 21:15 UTC，记录于 d89fe2f）每个 candidate 先跑 4 个 cell。** 用户认为每个候选
    固定 8 个不利于发现；Fable 提出两段式（4 个筛选、赢家补到 8 个、一轮并行多个
    单一改动的 candidate、baseline 每波掺 2 个），用户批准"先每个候选 4 个 cell"。
-   §四、§五据此修订，自 Round 02 起生效；已登记的 Round 00/01 cells 不变。held
-   pending 下限 8 个 = 两个 candidate 的筛选 block。
+   提案包含并行多个单一改动的 candidate；§四 把一波的组成定为 3 个 candidate + 2 个
+   baseline + 2 个机动 slot。§四、§五据此修订，自 Round 02 起生效；已登记的 Round 00/01
+   cells 不变。held pending 下限 8 个 = 两个 candidate 的筛选 block。
 
 ## 八、结果与 provenance
 

@@ -85,7 +85,7 @@ Verdict
 
 Recommended changes
 - one change per candidate variant, with exact evidence; several single-change
-  candidates may run in one round (user directive 2026-09-02 21:45 UTC)
+  candidates may run in one round (user directive 2026-09-02, commit d89fe2f); a 16-GPU wave is 3 candidates × 4 + 2 baseline + 2 flexible slots
 - allowed surface: skills/exp_protocol/SKILL.md, pitfalls.yaml,
   awm/exp_protocol/preflight.py + tests, or an optional card field
 
