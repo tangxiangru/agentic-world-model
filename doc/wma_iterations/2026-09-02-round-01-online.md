@@ -7,7 +7,7 @@ allowed until the validator-complete comparison boundary below is met.
 
 | label | private WMA commit / skill hash | what differs from control |
 |---|---|---|
-| `wma-v0.2` | first wave `e8a8599`; fixed-runtime buffers `bf87dfb`; skill `176f0a464986` in both | private Claude Opus 5 / high online sidecar, train-only history and `cpu=10,gpu=0,wall=15,turns=40` |
+| `wma-v0.2` | first wave `e8a8599`; v2 runtime `bf87dfb`; v3 runtime `34535c7`; skill `176f0a464986` throughout | private Claude Opus 5 / high online sidecar, train-only history and `cpu=10,gpu=0,wall=15,turns=40` |
 | `ctl` | no private WMA checkout | same public checkout and protocol; the only difference is no `wma` manifest block |
 
 `bf87dfb` is a registered measurement/runtime repair, not a skill variant: it
@@ -24,17 +24,22 @@ scientist: `claude-opus-5[1m]`, high, 1M context · 10 h · one H100 per cell.
 - Pre-result precision extensions: fixed-runtime v2 `w02/c02` and `w03/c03`
   (16 more per arm). The v1 buffers were cancelled while all 32 jobs were
   PENDING; they never replace a result.
+- Independent probe-basis-runtime extensions: v3 `w04/c04` and `w05/c05`
+  (16 more per arm). They are fresh paired observations, not replacements for
+  v2 cells that had already started.
 - Held-out task this round: none. `aime2025` remains promotion-only.
 - Primary end-to-end view: WMA **as attached** versus control. Sensitivity:
   **as answered**, requiring at least one valid verdict in that WMA cell.
 
 ## Results
 
-No cell is terminal or validator-complete as of 2026-09-02 18:57 UTC. Slurm
-has 16 first-wave cells RUNNING and 32 fixed-runtime cells PENDING; therefore
-there is no PTB score comparison or final online ledger conclusion yet. The
-closed-card observations below are provisional training-side evidence exposed
-to later, pre-launch WMA reviews; they are not terminal PTB results.
+No cell is terminal or validator-complete as of 2026-09-02 19:21 UTC. The WMA
+subqueue's owned nodes remain 16/16 allocated. First-wave 16 and 27 v2 cells
+are RUNNING; five v2 cells plus all 32 v3 cells are PENDING, restoring the
+required waiting waterline to 37. Therefore there is no PTB score comparison
+or final online ledger conclusion yet. The closed-card observations below are
+provisional training-side evidence exposed to later, pre-launch WMA reviews;
+they are not terminal PTB results.
 
 ### Inflight WMA evidence
 
@@ -129,8 +134,24 @@ the first cross-arm falsification check for a termination-floor prior on the
 complete first wave, not just its visible half. It also shows that `<= 0.07`
 must not be a hard upper cutoff: the useful prior is a low-score band of
 roughly 0.03–0.09, centred near or below 0.07, coupled to the diagnostic. The
-second check—whether fixed-runtime v2 verdicts already learn that band without
-a manual entry—remains open.
+second check is resolved below.
+
+### V2 pre-change falsification check
+
+All 16 v2 WMA cells (`w02` and `w03`) produced an exp-01 verdict under the
+unchanged v0.2 skill. Ten correctly treat the baseline card's structured L2 as
+a delta against itself and centre it near zero. Six instead put an
+absolute-looking interval in the same delta field, with upper bounds 0.30–0.45;
+some simultaneously label the direction `flat`. None gives a consistent
+structured 0.03–0.09 absolute band. Thus the second falsification condition
+does not fire: v0.2 does not already encode the format-floor prior reliably.
+
+This also corrects the promotion readout proposed in Fable Window 04. The
+current ledger scores L2 delta, so an "exp-01 in-band rate" is not mechanically
+defined without adding a second schema field. Round 02 should remain a
+single-policy change and evaluate the prior through first-format-fix SFT L2
+coverage, diagnostic use, and manual exp-01 absolute-estimate audit. Adding an
+absolute prediction slot in the same round would confound the policy change.
 
 ## Decision
 
@@ -151,10 +172,15 @@ Measurement-only changes already made and separately attributable:
 
 - `bf87dfb`: accept `not_run` as pre-launch in the post-hoc guard.
 - `2b094c7`: replace only unstarted v1 buffer cells with paired v2 manifests.
-- Current checkpoint: allow a level's `basis` to cite its own recorded probe
+- `34535c7`: allow a level's `basis` to cite its own recorded probe
   ids as well as evidence ids; 53 focused schema/backend tests pass and all 26
   inflight payloads validate. No scorer, prediction, skill file, or skill hash
   changes.
+- `3b2d4f1`: verify every held formal job's scheduler `ReqNodeList` before
+  release. Existing v2 receipts recorded the right subqueue but some running
+  jobs now show `ReqNodeList=(null)` outside the four-node scope; those RUNNING
+  jobs were not cancelled. All 32 v3 jobs passed both held and post-release
+  checks and remain PENDING on `slurm2-a3nodesetondem-[2-3]`.
 
 ## Evidence
 
@@ -182,6 +208,12 @@ Pre-registered falsification:
    is WMA-arm-specific and the prior is wrong.
 2. If the v2 pre-change WMA exp-01 verdicts already centre on the floor, the
    entry adds no useful discipline.
+
+Check 1 passes on all 16 first-wave cells. Check 2 also passes in the sense
+required for a non-redundant candidate: the 16 v2 verdicts are inconsistent
+between zero-delta and broad absolute-like interpretations and never express a
+stable floor band. Promotion must use first-SFT L2 coverage rather than a
+nonexistent structured exp-01 absolute field.
 
 The competing interval-width cap is now rejected by the provisional ledger:
 the wide exp-02 intervals were needed and still missed high twice. Re-open it
