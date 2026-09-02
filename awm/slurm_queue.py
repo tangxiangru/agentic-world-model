@@ -421,6 +421,13 @@ def render_snapshot(snapshot: dict[str, Any], *, include_jobs: bool = True) -> s
     return "\n".join(lines) + "\n"
 
 
+def _has_validated_ptb_result(job_id: str) -> bool:
+    from awm import ptb_experiments
+
+    result_dir = ptb_experiments.result_for_job(job_id)
+    return result_dir is not None and not ptb_experiments.audit_result(result_dir)
+
+
 def failure_records(snapshot: dict[str, Any], *, include_resolved: bool = False) -> list[dict]:
     """Return terminal failures, suppressing ones replaced by a later healthy retry."""
     candidates: dict[tuple[str, str], list[tuple[str, dict[str, Any], dict[str, Any]]]] = {}
@@ -441,20 +448,25 @@ def failure_records(snapshot: dict[str, Any], *, include_resolved: bool = False)
             if state not in FAILURE_STATES:
                 continue
             cell_id = str(job.get("cell_id", ""))
-            replacement = None
-            for candidate_time, candidate_source, candidate_job in candidates.get(
-                (batch_id, cell_id), []
-            ):
-                candidate_state = _state_key(candidate_job.get("state"))
-                if candidate_time > source_time and candidate_state in (
-                    ACTIVE_STATES | {"COMPLETED"}
+            replacement = (
+                {"source": "validated PTB result", "job_id": job["job_id"], "state": "COMPLETE"}
+                if _has_validated_ptb_result(str(job["job_id"]))
+                else None
+            )
+            if replacement is None:
+                for candidate_time, candidate_source, candidate_job in candidates.get(
+                    (batch_id, cell_id), []
                 ):
-                    replacement = {
-                        "source": candidate_source["label"],
-                        "job_id": candidate_job["job_id"],
-                        "state": candidate_job.get("state", "UNKNOWN"),
-                    }
-                    break
+                    candidate_state = _state_key(candidate_job.get("state"))
+                    if candidate_time > source_time and candidate_state in (
+                        ACTIVE_STATES | {"COMPLETED"}
+                    ):
+                        replacement = {
+                            "source": candidate_source["label"],
+                            "job_id": candidate_job["job_id"],
+                            "state": candidate_job.get("state", "UNKNOWN"),
+                        }
+                        break
             record = {
                 "source": source["label"],
                 "source_path": source.get("path", ""),

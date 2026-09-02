@@ -118,7 +118,8 @@ def test_unknown_jobs_become_enforceable_only_after_grace() -> None:
     assert due == ["101", "999"]
 
 
-def test_current_failures_and_history_are_separate_views() -> None:
+def test_current_failures_and_history_are_separate_views(monkeypatch) -> None:
+    monkeypatch.setattr(slurm_queue, "_has_validated_ptb_result", lambda _job_id: False)
     snapshot = {
         "updated_at": "2026-09-01T00:00:00+00:00",
         "queue_name": "gangda",
@@ -182,6 +183,33 @@ def test_current_failures_and_history_are_separate_views() -> None:
     assert "NO UNRESOLVED FAILURES" in slurm_queue.render_failures(snapshot)
     assert "old launch" in slurm_queue.render_history(snapshot)
     assert "resolved_by=102:RUNNING" in slurm_queue.render_failures(snapshot, include_resolved=True)
+
+
+def test_validated_result_resolves_scheduler_failure(monkeypatch) -> None:
+    monkeypatch.setattr(slurm_queue, "_has_validated_ptb_result", lambda job_id: job_id == "101")
+    snapshot = {
+        "updated_at": "2026-09-01T00:00:00+00:00",
+        "queue_name": "gangda",
+        "unknown_jobs": [],
+        "name_mismatches": [],
+        "sources": [
+            {
+                "id": "recovery",
+                "label": "recovery",
+                "batch_id": "",
+                "registered_at": "2026-09-01T00:00:00+00:00",
+                "jobs": [{"job_id": "101", "state": "FAILED", "cell_id": ""}],
+            }
+        ],
+    }
+
+    assert slurm_queue.failure_records(snapshot) == []
+    resolved = slurm_queue.failure_records(snapshot, include_resolved=True)
+    assert resolved[0]["replacement"] == {
+        "source": "validated PTB result",
+        "job_id": "101",
+        "state": "COMPLETE",
+    }
 
 
 def test_show_resolves_job_to_receipt_cell(tmp_path: Path) -> None:

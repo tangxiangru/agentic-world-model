@@ -1,17 +1,18 @@
 # PTB Batch 1 completed-result analysis
 
-Analysis timestamp: 2026-09-01 UTC. Source batch:
+Analysis started 2026-09-01 UTC and updated after a13 completed on 2026-09-02 UTC. Source batch:
 `gsm8k-aime2025-opus5-4x4x2-batch1-v3`.
 
 ## Coverage and validity
 
 - Intended cells: 32.
-- Validator-complete cells: 31 (all 16 GSM8K and 15/16 AIME2025).
-- Complete cells without a true official judge flag: 28.
+- Validator-complete cells: 32.
+- Complete cells without a true official judge flag: 29.
 - Complete cells requiring general-anomaly review: g03, g09, g14.
-- Incomplete: a13, whose recovery job is still active at this snapshot.
+- Incomplete: none. The a13 recovery produced a valid 0/30 result despite its Slurm envelope later
+  exiting nonzero during cleanup.
 
-The 31 complete results include recovered evaluation/judge evidence after the Slurm reservation
+The 32 complete results include recovered evaluation/judge evidence after the Slurm reservation
 incident. Their original Slurm terminal state is not used as scientific completion evidence; the
 PTB completed-run validator is authoritative.
 
@@ -33,7 +34,7 @@ AIME2025 values are correct questions out of 30; one question is 3.33 accuracy p
 | max / 1M | 3 | 5 | 4 | 1 |
 | xhigh / 1M | 3 | **6** | 4 | 0 |
 | high / 1M | 1 | **6** | 3 | 0 |
-| max / 200K | incomplete | 5 | 5 | 0 |
+| max / 200K | 0 | 5 | 5 | 0 |
 
 ## Main findings
 
@@ -41,8 +42,8 @@ AIME2025 values are correct questions out of 30; one question is 3.33 accuracy p
    means are Qwen3-4B 0.9090, SmolLM3 0.8400, Qwen3-1.7B 0.8355, and Gemma 0.7170. Restricting
    GSM8K to clean cells gives Qwen3-4B 0.9141, SmolLM3 0.8418, Qwen3-1.7B 0.8279, and Gemma
    0.7170.
-2. AIME shows the same model ordering among completed cells: Qwen3-4B averages 5.5/30, SmolLM3
-   4.0/30, Qwen3-1.7B 2.33/30 (three profiles; a13 missing), and Gemma 0.25/30.
+2. AIME shows the same model ordering: Qwen3-4B averages 5.5/30, SmolLM3 4.0/30, Qwen3-1.7B
+   1.75/30, and Gemma 0.25/30.
 3. There is no single monotone effort ordering across models. Qwen3-4B is consistently strong on
    GSM8K at max/xhigh/high 1M, while SmolLM3's best clean GSM8K result is max/200K. One run per
    setting cannot separate true profile effects from agent/run randomness.
@@ -72,7 +73,7 @@ general-anomaly flag in the canonical/rerun verdicts.
 uv run awm ptb results \
   experiments/posttrainbench/gsm8k-aime2025-opus5-4x4x2-batch1.yaml
 
-# Include a13 and any other incomplete latest attempts
+# Include incomplete latest attempts when analyzing an in-progress batch
 uv run awm ptb results \
   experiments/posttrainbench/gsm8k-aime2025-opus5-4x4x2-batch1.yaml --all
 

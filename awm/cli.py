@@ -341,15 +341,18 @@ def _slurm_queue(args: argparse.Namespace) -> int:
                 time.sleep(args.watch)
         if args.cmd == "failures":
             snapshot = slurm_queue.collect_snapshot(registry)
-            failures = slurm_queue.failure_records(snapshot, include_resolved=args.include_resolved)
+            unresolved = slurm_queue.failure_records(snapshot)
+            displayed = slurm_queue.failure_records(
+                snapshot, include_resolved=args.include_resolved
+            )
             if args.json:
-                print(json.dumps(failures, indent=2, sort_keys=True))
+                print(json.dumps(displayed, indent=2, sort_keys=True))
             else:
                 print(
                     slurm_queue.render_failures(snapshot, include_resolved=args.include_resolved),
                     end="",
                 )
-            return 1 if failures or not snapshot["ownership_ok"] else 0
+            return 1 if unresolved or not snapshot["ownership_ok"] else 0
         if args.cmd == "history":
             snapshot = slurm_queue.collect_snapshot(registry)
             if args.json:
