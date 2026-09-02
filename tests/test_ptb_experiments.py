@@ -142,7 +142,7 @@ def test_selected_replication_rejects_an_unbalanced_repeat() -> None:
     data = _selected_replication_manifest()
     data["cells"][-1] = data["cells"][0] | {"id": "extra", "replicate": 2}
 
-    with pytest.raises(ptb.ExperimentError, match="repeated exactly twice"):
+    with pytest.raises(ptb.ExperimentError, match="repeated exactly 2 times"):
         ptb.validate_manifest(data)
 
 
@@ -202,7 +202,7 @@ def test_pilot_is_b06_shape_and_one_hour() -> None:
 def test_manifest_rejects_wrong_context_setup() -> None:
     data = ptb.load_manifest(MANIFEST)
     data["cells"][0]["context_tokens"] = 200_000
-    with pytest.raises(ptb.ExperimentError, match="4x4"):
+    with pytest.raises(ptb.ExperimentError, match="approved agent setup"):
         ptb.validate_manifest(data)
 
 
@@ -343,3 +343,130 @@ def test_root_owned_allocations_are_released_through_sudo() -> None:
         "10,11",
     ]
     assert ptb._release_command({}, "10,11") == ["scontrol", "release", "10,11"]
+
+
+# ---- a batch is any set of approved cells (2026-09-01) ------------------------
+# The first batches were a full 4x4 matrix and a 16x2 replication; those were
+# decisions about those batches, not properties of a valid batch. A protocol-
+# iteration round is two repeats of one setting, and must submit through the
+# same launcher, receipts, and registry.
+
+
+def _two_repeats_manifest() -> dict:
+    data = deepcopy(ptb.load_manifest(MANIFEST))
+    gemma_max = next(cell for cell in data["cells"] if cell["id"] == "b04")
+    data["batch_id"] = "ep-r01-baseline-x2"
+    data["cells"] = [gemma_max | {"id": f"p01r{r}", "replicate": r} for r in (1, 2)]
+    data["contract"]["replication"] = {"settings": 1, "repeats": 2}
+    data["contract"]["base_models"] = {
+        "google/gemma-3-4b-pt": data["contract"]["base_models"]["google/gemma-3-4b-pt"]
+    }
+    data["pilot"] = {"cell": "p01r1", "agent_budget_hours": 1}
+    return data
+
+
+def test_two_repeats_of_one_setting_is_a_valid_batch() -> None:
+    data = _two_repeats_manifest()
+    ptb.validate_manifest(data)
+    launches = ptb.build_launches(data, hold=True)
+    assert [launch.cell_id for launch in launches] == ["p01r1", "p01r2"]
+    assert all(
+        launch.environment["POST_TRAIN_BENCH_BASE_MODEL_REVISION"]
+        == "cc012e0a6d0787b4adcc0fa2c4da74402494554d"
+        for launch in launches
+    )
+    assert [launch.command[launch.command.index("--job-name") + 1] for launch in launches] == [
+        "gangda_trial_0828.ptb.ep-r01-baseline-x2.p01r1.formal.r1",
+        "gangda_trial_0828.ptb.ep-r01-baseline-x2.p01r2.formal.r1",
+    ]
+    (pilot,) = ptb.build_launches(data, pilot=True)
+    assert pilot.cell_id == "p01r1"
+    assert pilot.command[pilot.command.index("--hours") + 1] == "1"
+
+
+def test_a_batch_pins_only_the_base_models_it_uses_but_all_of_those() -> None:
+    data = _two_repeats_manifest()
+    ptb.validate_manifest(data)
+    data["cells"][0]["base_model"] = "Qwen/Qwen3-4B-Base"
+    with pytest.raises(ptb.ExperimentError, match="does not pin"):
+        ptb.validate_manifest(data)
+    data["contract"]["base_models"]["not/approved"] = {"revision": "a" * 40}
+    with pytest.raises(ptb.ExperimentError, match="approved starting models"):
+        ptb.validate_manifest(data)
+
+
+def test_a_cell_outside_the_approved_setups_is_rejected() -> None:
+    data = _two_repeats_manifest()
+    data["cells"][0]["agent"] = "claude_non_api"
+    with pytest.raises(ptb.ExperimentError, match="approved agent setup"):
+        ptb.validate_manifest(data)
+
+
+def test_duplicate_cell_ids_are_rejected() -> None:
+    data = _two_repeats_manifest()
+    data["cells"][1]["id"] = "p01r1"
+    with pytest.raises(ptb.ExperimentError, match="unique"):
+        ptb.validate_manifest(data)
+
+
+def test_an_empty_batch_is_rejected() -> None:
+    data = _two_repeats_manifest()
+    data["cells"] = []
+    del data["pilot"]
+    with pytest.raises(ptb.ExperimentError, match="at least one cell"):
+        ptb.validate_manifest(data)
+
+
+def test_replication_is_checked_against_the_shape_it_declares() -> None:
+    data = _two_repeats_manifest()
+    data["contract"]["replication"] = {"settings": 1, "repeats": 3}
+    with pytest.raises(ptb.ExperimentError, match="repeated exactly 3 times"):
+        ptb.validate_manifest(data)
+    data["contract"]["replication"] = {"settings": 1, "repeats": 2}
+    data["cells"][1]["replicate"] = 1
+    with pytest.raises(ptb.ExperimentError, match="replicates 1..2"):
+        ptb.validate_manifest(data)
+
+
+def test_pilot_is_optional_but_a_pilot_launch_needs_one() -> None:
+    data = _two_repeats_manifest()
+    del data["pilot"]
+    ptb.validate_manifest(data)
+    with pytest.raises(ptb.ExperimentError, match="no pilot"):
+        ptb.build_launches(data, pilot=True)
+    data["pilot"] = {"cell": "nope", "agent_budget_hours": 1}
+    with pytest.raises(ptb.ExperimentError, match="existing"):
+        ptb.validate_manifest(data)
+
+
+def test_a_single_task_batch_may_be_aime2025() -> None:
+    data = _two_repeats_manifest()
+    data["contract"]["task"] = "aime2025"
+    ptb.validate_manifest(data)
+    launch, _ = ptb.build_launches(data)
+    assert launch.command[launch.command.index("--eval") + 1] == "aime2025"
+
+
+def test_a_cell_task_outside_the_batch_tasks_is_rejected() -> None:
+    data = _two_repeats_manifest()
+    data["cells"][0]["task"] = "aime2025"
+    with pytest.raises(ptb.ExperimentError, match="not one of the batch"):
+        ptb.validate_manifest(data)
+
+
+def test_a_task_outside_the_approved_list_is_rejected() -> None:
+    data = _two_repeats_manifest()
+    data["contract"]["task"] = "humaneval"
+    with pytest.raises(ptb.ExperimentError, match="subset"):
+        ptb.validate_manifest(data)
+
+
+def test_run_index_is_any_positive_integer() -> None:
+    data = _two_repeats_manifest()
+    data["contract"]["run_index"] = 7
+    ptb.validate_manifest(data)
+    launch, _ = ptb.build_launches(data)
+    assert launch.command[launch.command.index("--job-name") + 1].endswith(".r7")
+    data["contract"]["run_index"] = 0
+    with pytest.raises(ptb.ExperimentError, match="positive integer"):
+        ptb.validate_manifest(data)
