@@ -1,0 +1,110 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-02T18:05:00Z'
+situation:
+  elapsed_h: 4.0
+  remaining_h: 6.0
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.732, protocol_n: 500}
+  trigger: "exp-05 scored exp-02 and exp-04 at 0.732 and 0.718 on the same 500 greedy items with 57 discordant pairs (32 exp-02-only, 25 exp-04-only, p=0.427): two statistically indistinguishable checkpoints on the same optimisation path whose mistakes only partly overlap."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-05_paired.json, locator: "exp02_only 32, exp04_only 25, mcnemar_p 0.427"}
+    - {path: /home/ben/task/eval/exp-05-a_dev500.json, locator: "accuracy 0.732"}
+    - {path: /home/ben/task/eval/exp-05-b_dev500.json, locator: "accuracy 0.718"}
+  alternatives_rejected:
+    - {option: "an ensemble / self-consistency vote over the two checkpoints", reason: "the grader scores one completion from one model directory; there is nowhere to put a vote"}
+    - {option: "include exp-02/checkpoint-1292 (the epoch-1 checkpoint) in the average", reason: "it is 1300 steps and one whole LR cycle away from the other two and was never scored, so it would add an unmeasured arm to a 3-way average I have time to evaluate only once"}
+    - {option: "skip souping and go straight to a rejection-sampling round", reason: "the soup costs ~15 min of GPU against RFT's ~2 h, and if it wins it is also the better checkpoint to sample from; RFT is queued as exp-07 either way"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The two trained checkpoints are equally good overall but disagree on 57 of 500 benchmark items, so roughly 11% of the benchmark is decided by which of two arbitrary points on the same training path I happen to ship. Neither single checkpoint captures the items the other gets right."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_paired.json, locator: "exp02_only=32, exp04_only=25", observation: "each checkpoint solves ~30 items the other misses, out of 500"}
+  affected_share: 0.114
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_watch.jsonl
+    n: 64
+    selection: "the 64 held-out gsm8k-TRAIN dev items exp-02 answers wrong under greedy 10-shot decoding"
+hypothesis:
+  claim: "A uniform weight average of exp-02/final and exp-04/final scores higher than exp-02/final's 0.732 on the same 500 greedy benchmark items."
+  mechanism: "exp-04 was initialised from exp-02/final and trained 1858 further steps at a lower peak LR, so the two weight sets are connected by a low-loss path and their midpoint is not a random interpolation between unrelated minima. Averaging along such a path behaves like a cheap EMA: it cancels the step-to-step gradient noise that makes each endpoint solve a slightly different 6% of the benchmark, without needing either endpoint to be better than the other."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+0 to +2 points on the 500-item greedy protocol; this is a variance-reduction move, not a capability move"
+  falsified_if: "the soup scores at or below exp-02's 0.732 at n=500 greedy, or it fails to load / breaks the output format (internal-dev stop_rate below 0.98)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-02/final/model.safetensors.index.json
+      source: "derived:exp-02 + derived:exp-04"
+      n_examples: 2
+      built_by: /home/ben/task/scripts/soup.py
+      build_command: [python, scripts/soup.py, --ckpts, ckpts/exp-02/final, ckpts/exp-04/final, --out, ckpts/exp-06-soup]
+      selection: "merge card: the two inputs are checkpoints, not a dataset (n_examples=2 counts them; path points at one of them). Uniform 0.5/0.5 average of every tensor, computed in float32 and stored back in bfloat16"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: merge
+    framework: safetensors streaming average (scripts/soup.py)
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: "fp32 accumulate, bf16 store", seed: null}
+    target_format: "unchanged; generation_config set to greedy like both arms of exp-05"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --ckpts, /home/ben/task/ckpts/exp-02/final, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/ckpts/exp-06-soup]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06-soup
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.35}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.75']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, no shuffle), greedy decode"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.732
+    path: /home/ben/task/eval/exp-05-a_dev500.json
+  diagnostic:
+    what: "internal dev probe (250 held-out gsm8k-TRAIN items, greedy, 10-shot): accuracy and stop_rate; comparators 0.744/0.992 (exp-02) and 0.736/0.992 (exp-04)"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.33
+  output_checkpoint: /home/ben/task/ckpts/exp-06-soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06-soup, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 883 tensors averaged across two shards in float32 and written back as bf16; the result loads in vLLM and generates normally"}
+  measurements:
+    - {metric: accuracy, value: 0.718, n: 500, path: /home/ben/task/eval/exp-06_dev500.json, delta_vs_comparator: -0.014}
+  diagnostic_result:
+    value: 0.716
+    path: /home/ben/task/analysis/exp-06_dev_greedy_fs10.json
+    notes: "internal dev 0.716 with stop_rate 1.000, against 0.744 for exp-02 and 0.736 for exp-04: the soup sits at or below both of its parents on both measurements, not above them. Paired on the same 500 greedy items: exp-02 366, soup 359, discordant 26 vs 19, p=0.371."
+  watch_set_result: {fixed: 10, still_failing: 54, regressions: 17, path: /home/ben/task/analysis/exp-06_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The soup scores 0.718 at n=500 greedy and 0.716 on the internal probe, i.e. it lands on exp-04's number rather than above exp-02's 0.732/0.744. Averaging did not recover the ~30 items each parent solves alone: it fixed 10 watch items and regressed 17, the same pattern exp-04 alone showed. The two endpoints are 1858 steps and a full LR cycle apart, which is evidently too far for the midpoint to behave like an EMA of one trajectory."
+  decision: reject
+  next_step: "exp-02/final stays the incumbent at 0.732 (n=500, greedy). Three different post-hoc moves - more teacher data, a decode change, weight averaging - have now all failed to beat it, which says the remaining headroom is not in that direction. Last experiment worth the time: exp-07, a rejection-sampling round that trains on the model's own correct solutions to problems it only sometimes gets right. That is the one lever that adds on-policy signal about its own error modes rather than more of the same teacher distribution."

@@ -161,48 +161,55 @@ single-policy change and evaluate the prior through first-format-fix SFT L2
 coverage, diagnostic use, and manual exp-01 absolute-estimate audit. Adding an
 absolute prediction slot in the same round would confound the policy change.
 
-## Terminal window 05A (2026-09-02 22:1x–22:5x UTC)
+## Terminal Window 05 (2026-09-02 22:1x–23:2x UTC)
 
-Two reconcile passes harvested twelve validator-complete, judge-clean cells
+Three reconcile passes harvested all sixteen validator-complete, judge-clean cells
 through their frozen manifests:
 
 | arm | cells | n | accuracy mean | range | sampling stderr |
 |---|---|---:|---:|---:|---:|
-| WMA v0.2 | `w01r02,r03,r04,r05,r06,r08` | 6 | 0.7584 | 0.7286–0.7976 | 0.0121 |
-| no-WMA control | `c01r01,r02,r03,r05,r07,r08` | 6 | 0.7483 | 0.6808–0.8158 | 0.0209 |
+| WMA v0.2 | `w01r01..08` | 8 | 0.7565 | 0.7165–0.7976 | 0.0110 |
+| no-WMA control | `c01r01..08` | 8 | 0.7523 | 0.6808–0.8158 | 0.0176 |
 
-The unpaired mean difference is +0.0101 for WMA. Four replicate indices are
-complete in both arms: r02 +0.0303, r03 +0.0205, r05 -0.0182 and r08 +0.0227.
-Their paired mean is +0.0138, sampling stderr 0.0109, range -0.0182–+0.0303,
-with 3/4 positive. This remains provisional because r01/r07 and r04/r06 are
-still unmatched and neither arm has reached 8/8. Every harvested cell has an
-empty validator issue list and empty judge flags; result provenance remains
-under the corresponding
+The unpaired and paired mean difference is +0.0043 for WMA. Matched replicate
+deltas are r01 -0.0030, r02 +0.0303, r03 +0.0205, r04 +0.0258, r05 -0.0182,
+r06 -0.0796, r07 +0.0356 and r08 +0.0227. The paired sampling stderr is 0.0136,
+range -0.0796–+0.0356, with 5/8 positive. The mean is only 0.31 standard errors
+from zero and far smaller than the observed replicate spread: Round 01 does not
+show a reliable PTB gain from attaching WMA v0.2. Every harvested cell has an
+empty validator issue list and empty judge flags; result provenance remains under
+the corresponding
 `results/ptb/wma-gsm8k-gemma4b-high-r01-{wma,ctl}-x8-v1/` cell directory.
 
-The terminal WMA ledger over the six harvested WMA cells is:
+The terminal WMA ledger over all eight harvested WMA cells is:
 
 - skill `176f0a464986`, `claude-opus-5`, high, online;
-- 14 verdicts, 12 scored, 2 leak-suspected and excluded from scored levels;
-- L0 hit 1.00, L1 hit 1.00, L2 coverage 0.778 at `n_L2_scorable=9`;
-- mean L2 width 0.1993, width/noise 6.6429, L3 hit 0.889;
+- 22 verdicts, 15 scored, 7 leak-suspected and excluded from scored levels;
+- L0 hit 0.933, L1 hit 0.933, L2 coverage 0.636 at `n_L2_scorable=11`;
+- mean L2 width 0.1805, width/noise 6.1667, L3 hit 0.900;
 - `gpu_h_saved=0`, `gpu_h_wrongly_killed=0`;
-- accepted-verdict cost $25.3068 total, $1.8076/verdict, mean 5.7534 wall
-  minutes; three rejected non-verdict outputs cost another $5.3372.
+- accepted-verdict cost $41.7746 total, $1.8988/verdict, mean 6.0905 wall
+  minutes; five rejected non-verdict outputs cost another $9.4794.
 
-Both leak flags are exp-04 verdicts whose retained transcript reports an
-outside-workspace shell probe. They stay excluded unless a separately justified
-measurement rescan proves the fence classification wrong. This partial window
-still does not cross the pre-registered eight-clean-cells-per-arm boundary.
+The seven leak flags report outside-workspace shell probes in their retained
+transcripts. They stay excluded unless a separately justified measurement
+rescan proves the fence classification wrong; candidate comparison uses the
+same fence and requires zero new leak-suspected verdicts.
+
+The D/E branch is fixed before candidate text is written. C5 was suggested on
+the two C5-labelled terminal verdicts, but neither result card evaluated the
+suggested saved checkpoints (0/2 uptake, below the pre-registered 50% switch).
+Round 02 therefore tests D `checkpoint-precondition`, not E `history-cite`.
 
 ## Decision
 
-Inconclusive. Runtime/isolation/procedure are supported by the inflight corpus
-and twelve clean terminal cells. The provisional paired PTB difference is
-positive in 3/4 pairs but comparable to its uncertainty, and the terminal
-ledger remains below the complete first-wave boundary. The evidence still
-rejects the interval-width cap and strengthens the termination-floor candidate,
-but does not meet the promotion boundary. Keep skill v0.2 unchanged.
+Round 01 is complete and inconclusive for benefit: runtime/isolation/procedure
+worked, but the paired PTB delta (+0.0043 ± 0.0136 sampling SE) is noise-scale.
+The ledger contradicts promotion of v0.2 as an adequate calibrated predictor:
+L2 coverage is 0.636 with intervals 6.17× the noise floor, and 7/22 verdicts are
+excluded by the access fence. Keep skill v0.2 as the experimental baseline, not
+as a promoted improvement. Proceed to the pre-registered four Round 02
+single-edit candidates A, A+B, C and D; only one edit may be promoted.
 
 The end-to-end conclusion requires at least eight validator-complete cells per
 arm. A skill candidate additionally requires closed-card ledger evidence and

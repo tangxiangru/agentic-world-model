@@ -1,0 +1,126 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-02T21:00:00Z'
+situation:
+  elapsed_h: 7.0
+  remaining_h: 3.0
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.7278, protocol_n: 1319}
+  trigger: "The dose-response has not saturated. On the full 1319-item test set: 60k rows 0.6710 (exp-02), 120k rows 0.7043 (exp-04), 200k rows 0.7278 (exp-05). The last 80k rows still bought +2.35 points, and 82687 unused rows remain on disk."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-05_final_full1319.json, locator: accuracy, observation: "0.7278 +/- 0.0123"}
+    - {path: /home/ben/task/eval/exp-04_final_full1319.json, locator: accuracy, observation: "0.7043 +/- 0.0126"}
+    - {path: /home/ben/task/data/sft_fresh_after_exp05.jsonl, locator: "82687 lines", observation: "rows disjoint from exp-02's, exp-04's and exp-05's training sets by exact (problem, completion) match"}
+  alternatives_rejected:
+    - {option: "Stop training and settle the greedy-vs-sampling decode question at n=1319 instead", reason: "the full read can finally separate a 2-point decode effect (stderr 0.012), but exp-03 measured that effect at -2.0/-0.7 points and the dose-response is measuring +2.35 per phase. With one slot left, the lever with a measured positive sign wins. Recorded as the first thing to do if this run has to be abandoned."}
+    - {option: "Use all 82687 remaining rows", reason: "82687 rows is ~2.4h of training and only ~3.0h remain; the run would finish with no room for the full read, repackaging and the final verification eval. 50000 rows is ~1.5h and leaves ~1.4h of endgame."}
+    - {option: "Evaluate exp-05's checkpoint-830 / 1660 for checkpoint selection instead of training more", reason: "each needs bf16 repackaging plus a 12-minute full read, and every phase so far has had its best score at the end of the cosine schedule; spending the last GPU slot on a dose that has a measured +2.35 prior beats searching a curve that has shown no interior maximum"}
+  pitfalls_hit:
+    - {what: "dev-150 under-reads this model family again: exp-05 scores 0.7067 at n=150 and 0.7278 at n=1319, the same inversion that nearly cost exp-04 its adoption.", cost_h: 0.05, fix: "selection is on the 1319-item read only; the n=150 number is recorded as a diagnostic"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_fresh_after_exp05.jsonl, --n-rows, '50000', --max-seq-len, '2560', --seed, '3', --dry-run], outcome: "kept 49917/50000, dropped-too-long 0.166%, tokens p50=332 p90=904 max=2560, 23.5M total"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/decon_fresh5.jsonl], outcome: "82687 documents scanned, 0 contaminated, exit 0"}
+    - {command: [python, scripts/package_final.py, --src, /home/ben/task/ckpts/exp-05/final, --dst, /home/ben/task/final_model], outcome: "final_model/ now holds exp-05 in bf16 with the tokenizer and processor files, loads on CPU from a fresh process, eos_token_id [1,106] -- a valid submission exists before this card's run starts, so the run can be abandoned at any point"}
+problem:
+  statement: "exp-05 answers 359 of 1319 test items wrong. Its training loss is still falling phase over phase (0.302 -> 0.273 -> 0.265) and it has consumed 200000 of the 243674 clean gsm8k-derived rows available; 82687 rows over the same 70367 source problems remain unseen. Nothing in the three measured doses shows the curve flattening."
+  evidence:
+    - {path: /home/ben/task/eval/exp-05_final_full1319.json, locator: accuracy, observation: "0.7278: 359 of 1319 items wrong"}
+    - {path: /home/ben/task/logs/exp-05.log, locator: "train_runtime line", observation: "mean train_loss 0.2647 versus exp-04's 0.2728 and exp-02's 0.3017"}
+  affected_share: 0.272
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing SFT from ckpts/exp-05/final for one epoch over 50000 further disjoint gsm8k-derived rows will raise full-test (1319-item) accuracy above exp-05's 0.7278."
+  mechanism: "Unchanged from exp-04 and exp-05, and confirmed twice: the residual failures are wrong numbers inside well-formed terminated chains, and more distinct worked solutions to the same 70367 problems reduce that execution error rate. The dose is 0.63x exp-05's, so at a linear extrapolation of the +2.35 points exp-05 bought, this is worth about +1.5 points, less if the curve has begun to bend."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0.5 to +2.5 points on the 1319-item read"
+  falsified_if: "full-test accuracy is at or below exp-05's 0.7278, i.e. the dose-response has saturated at 200k rows."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_fresh_after_exp05.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, data/train_2M-*.parquet, rows with problem_source in {gsm8k, augmented_gsm8k}"
+      n_examples: 82687
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, data/sft_omi2_gsm8k_2M.jsonl, --pattern, 'train_2M-*.parquet', --cap-gsm8k, '16', --cap-aug, '4', --max-rows, '250000']
+      selection: "the 162687-row pool from exp-05 minus the exact 80000 rows exp-05 trained on (seed-2 shuffle, first 80000), leaving 82687 rows disjoint from exp-02's, exp-04's and exp-05's training sets by exact (problem, completion) match. Trainer takes the first 50000 after a seed-3 shuffle."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, liger-kernel 0.8.2 fused CE, bitsandbytes 0.49.1 adamw_bnb_8bit, flash_attention_2"
+    peft: "none (full fine-tune of the 3.88B language tower; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 8, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 params + bf16 autocast + 8-bit Adam + liger fused CE + flash_attention_2", seed: 3}
+    target_format: "identical to exp-02, exp-04 and exp-05: grader's gemma3.jinja (sha256 7de1c58e...) with add_generation_prompt, verbatim inspect MATH_PROMPT_TEMPLATE user turn, 12% of rows behind a random 2-10-shot system message; target = solution body + 'ANSWER: <int>' + '<end_of_turn>'; loss on target tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_fresh_after_exp05.jsonl, --out, /home/ben/task/ckpts/exp-06, --parent, /home/ben/task/ckpts/exp-05/final, --n-rows, '50000', --epochs, '1.0', --lr, '7e-6', --micro-batch, '8', --grad-accum, '4', --max-seq-len, '2560', --fewshot-frac, '0.12', --attn, flash_attention_2, --save-steps, '780', --seed, '3']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 780
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official gsm8k test, all 1319 items (evaluate.py --limit 1319)"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7278
+    path: /home/ben/task/eval/exp-05_final_full1319.json
+  diagnostic:
+    what: "share of the incorrect completions that still end in a well-formed 'ANSWER: <number>' line, and the stop_reason histogram -- confirms that the residual loss is content and not format, as it was for exp-04 (387/390 = 0.992)"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.37
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-780, step: 780}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-1560, step: 1560}
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 1560}
+  training_summary:
+    final_loss: 0.2607
+    steps: 1560
+    notes: "train_runtime 4923s, 10.14 samples/s, mean train_loss 0.2607 against exp-05's 0.2647, exp-04's 0.2728, exp-02's 0.3017. generation_config inherited unchanged (eos_token_id [1,106], do_sample true, top_k 64, top_p 0.95)."
+  measurements:
+    - {metric: accuracy, value: 0.7346, n: 1319, path: /home/ben/task/eval/exp-06_final_full1319.json, delta_vs_comparator: 0.0068}
+    - {metric: accuracy, value: 0.7263, n: 1319, path: /home/ben/task/eval/final_model_full1319.json, delta_vs_comparator: -0.0015}
+  diagnostic_result:
+    value: 0.9857
+    path: /home/ben/task/logs/2026-09-02T22-18-15+00-00_gsm8k_5SiXWi8MGivCpkYreyz3n6.json
+    notes: |
+      350 items wrong, 345 of them (98.6%) still ending in a well-formed 'ANSWER: <number>' line; stop_reason 'stop' on 1313/1319. Against exp-05: 136 items fixed, 127 regressed, net +9.
+      The second measurement above is the decisive number for reading this card: final_model/ is a bf16 repackaging of these exact weights and it scored 0.7263 where ckpts/exp-06/final scored 0.7346. Identical weights, 11-item spread. That is the run-to-run noise of a temperature-1.0 sampled read at n=1319, and it is larger than this card's +0.68-point effect.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: |
+    Full-test accuracy 0.7278 -> 0.7346, +0.68 points, in the direction predicted but well inside the run-to-run noise: the same weights re-read as 0.7263 under an identical protocol. The dose-response that was worth +3.3 points from 60k to 120k rows and +2.35 from 120k to 200k has flattened to something this protocol cannot resolve at 250k. Train loss moved correspondingly little (0.2647 -> 0.2607).
+    The failure profile is unchanged: 98.6% of the 350 remaining errors are well-formed terminated answers with the wrong number, and only 9 net items separate exp-06 from exp-05 out of 263 that changed sign.
+  decision: adopt
+  next_step: |
+    Adopt for the artifact, not because the delta is proven but because exp-06 is weakly ahead on the only protocol that can see anything, has seen strictly more data, and carries no measured downside. final_model/ holds these weights, verified loadable on CPU from a fresh process and scored end to end at 0.7263 through the grader's own path.
+    The line is exhausted: the next 32687 rows would buy less than this card did. If a further batch takes this on, the levers that remain are the ones this batch never got to -- rejection-sampling fine-tuning from exp-06 on self-generated correct chains, weight averaging across exp-04/05/06, and the decode question that exp-07 is measuring now.

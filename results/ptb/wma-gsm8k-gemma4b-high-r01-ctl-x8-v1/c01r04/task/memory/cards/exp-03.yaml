@@ -1,0 +1,112 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T16:15:00Z'
+situation:
+  elapsed_h: 2.25
+  remaining_h: 7.75
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7133, protocol_n: 150}
+  trigger: "The vLLM server log line 'Default sampling parameters have been overridden by the model's Hugging Face generation config' shows the graded run inherits the snapshot's generation_config (do_sample true, top_k 64, top_p 0.95, no temperature -> T=1.0), so exp-02's 0.7133 was measured under sampling; on the 250 internal-dev items the same weights score 0.744 greedy vs 0.708 sampled."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-01.log, locator: "line 72", observation: "vLLM adopts the model's generation_config as the server's default sampling params"}
+    - {path: /home/ben/task/analysis/exp-02_dev_greedy_fs10.json, locator: "summary.accuracy = 0.744 (T=0)"}
+    - {path: /home/ben/task/analysis/exp-02_dev_sampled_fs10.json, locator: "summary.accuracy = 0.708 (T=1.0, top_p 0.95, top_k 64)"}
+  alternatives_rejected:
+    - {option: "leave the decode config alone and spend the time on more training data", reason: "this costs one 6-minute eval and the internal probe already puts the effect at ~+3.6 points; it also has to be settled before the final model is packaged, since generation_config.json ships with the weights"}
+    - {option: "low temperature (0.2-0.4) instead of exactly greedy", reason: "single-sample math grading has no diversity to exploit; the probe compared 0.0 against the inherited 1.0 and 0.0 won, so a third point on the curve is not worth another eval"}
+    - {option: "raise max_tokens or add repetition_penalty at the same time", reason: "two changes in one card; max_tokens is already 4000 in evaluate.py and exp-02's internal stop_rate is 0.992, so runaway generations are not the binding constraint"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/finalize_ckpt.py, --ckpt, ckpts/exp-02/final, --dest, ckpts/exp-03-greedy, --decode, greedy], outcome: "pending at write time; copies the snapshot's processor files alongside the weights and rewrites generation_config"}
+problem:
+  statement: "exp-02's graded score is produced by sampling at temperature 1.0 with top_p 0.95 / top_k 64, because vLLM adopts the checkpoint's generation_config as its default sampling params and inspect_ai sends no temperature. For single-sample exact-match grading on math that is a pure loss: one bad token anywhere in a 200-token chain of thought changes the final number."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_dev_sampled_fs10.json, locator: "summary", observation: "0.708 on 250 held-out items under the inherited sampling config"}
+    - {path: /home/ben/task/analysis/exp-02_dev_greedy_fs10.json, locator: "summary", observation: "0.744 on the same 250 items, same weights, T=0"}
+  affected_share: 0.036
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch.jsonl
+    n: 243
+    selection: "unchanged from exp-02: the 243 held-out gsm8k-TRAIN dev items the base model got wrong"
+hypothesis:
+  claim: "Setting temperature 0.0 (and dropping top_k/top_p) in the checkpoint's generation_config.json raises dev-150 accuracy relative to exp-02's 0.7133, with the weights untouched."
+  mechanism: "vLLM's --generation-config auto (its default, confirmed in the server log) reads generation_config.json and uses it as the server's default sampling params; inspect_ai's OpenAI-compatible client only sends parameters it was configured with, and its GenerateConfig leaves temperature unset. Writing temperature 0.0 therefore switches the graded decode to greedy, which for a single-sample exact-match math grader removes sampling noise from a ~200-token chain where any one wrong token changes the final number."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +5 points on dev-150 (the 250-item internal probe measured +3.6 on the same weights)"
+  falsified_if: "dev-150 accuracy at or below exp-02's 0.7133, or the eval fails to run because vLLM rejects temperature 0.0 in generation_config"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: "hf://openai/gsm8k:main:test (loaded inside evaluate.py by inspect_evals; nothing is read from disk in this task dir)"
+      source: openai/gsm8k
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "first 150 items of the official test split, as evaluate.py --limit 150 does; GRADING input only, never training data"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 default_sampling_params from generation_config.json
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "weights unchanged from exp-02; only generation_config.json differs: do_sample false, temperature 0.0, top_k/top_p removed, eos_token_id [1,106] kept"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_protocol_eval.sh, /home/ben/task/ckpts/exp-03-greedy, exp-03]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_protocol_eval.sh
+    env: {}
+    log: /home/ben/task/logs/exp-03_eval.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.75']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7133
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "internal dev probe already run on the same weights: 0.744 greedy vs 0.708 sampled over 250 held-out gsm8k-train items"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 2584}
+  training_summary: {final_loss: null, steps: null, notes: "no training: weights are byte-identical to exp-02/final, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.7000, n: 150, path: /home/ben/task/eval/exp-03_dev150.json, delta_vs_comparator: -0.0133}
+  diagnostic_result:
+    value: 0.744
+    path: /home/ben/task/analysis/exp-02_dev_greedy_fs10.json
+    notes: "The mechanism itself worked: the vLLM server log shows the generation config was adopted and all 150 completions differ from exp-02's, so the decode really did change. But the two measurements disagree in sign. Paired McNemar on the same 150 test items: 16 items sampling got right and greedy got wrong, 14 the other way, p=0.86 - no detectable difference. Pooling all 400 graded items (150 official + 250 internal) gives greedy 291 vs sampling 284."
+  watch_set_result: {fixed: 0, still_failing: 243, regressions: null, path: /home/ben/task/analysis/exp-02_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "dev-150 0.7133 -> 0.7000 (-1.3), but the paired test over the same items gives 16 vs 14 discordant pairs (p=0.86) and the 250-item internal probe pointed the other way (+3.6). The effect, if any, is smaller than what n=150 can resolve; the mechanism (vLLM adopting generation_config.json as its default sampling params) is confirmed - every completion changed."
+  decision: iterate
+  next_step: "Do not spend more GPU on this now: settle it once on the final weights with a higher-powered paired comparison (--limit 500 per arm) if time remains. Greedy stays the default choice for the shipped model on variance grounds - it removes decode noise from a single-sample exact-match grade at equal measured mean - not on a measured gain. Next: exp-04, a second SFT stage on the 99424 unseen OpenMathInstruct-2 rows."

@@ -1,0 +1,115 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-02T19:32:00Z'
+situation:
+  elapsed_h: 5.55
+  remaining_h: 4.45
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.732, protocol_n: 500}
+  trigger: "Four post-hoc interventions on top of exp-02 have all landed within +-1.4 points of it (exp-03 decode p=0.86, exp-04 more data 0.718, exp-06 soup 0.718 p=0.37, exp-07 RFT 0.728 p=0.90). Every one of them modified exp-02 after the fact; none re-ran the training itself. The one confound left in the record is that exp-04 delivered the extra 99424 rows as a *second* cosine cycle at a lower peak LR, so 'more data does not help' and 'a second LR cycle does not help' are still the same observation."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-03..exp-07 rows: verdicts inconclusive, contradicted, contradicted, contradicted"}
+    - {path: /home/ben/task/analysis/exp-07_paired.json, locator: "exp02_only 31, exp07_only 29, mcnemar_p 0.897"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "the continuation arm, launched at lr 7e-6 on a fresh cosine cycle"}
+  alternatives_rejected:
+    - {option: "stop here and ship exp-02", reason: "final_model is already built and CPU-verified from exp-02, so this run risks nothing but GPU time, and 4.45 h is enough for a 1.95 h train plus eval plus repackaging with ~1.7 h to spare"}
+    - {option: "two epochs over all 169424 rows", reason: "~3.9 h of training; it does not fit in the remaining budget with any margin"}
+    - {option: "raise the LR to 1.2e-5 for the longer schedule", reason: "would change data volume and LR at once; exp-02's 1e-5 is the only peak LR with a measured outcome, so holding it fixed makes this a clean one-variable test"}
+    - {option: "another sampling-based round (RFT with a verifier, self-consistency filtering)", reason: "exp-07 just showed the on-policy round produces one-for-one churn; a variant of it is the least likely thing to break the plateau"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/verify_data.py, --data, data/sft_train_220k.jsonl], outcome: "template match OK both ways; 0/169424 completions miss <end_of_turn>; 0 miss a single 'ANSWER: '; 0 misread by the scorer; 0% over max_seq_len 3072"}
+problem:
+  statement: "exp-02 was fit on 47673 distinct problems, seen twice. 78879 distinct problems are available and verified on disk. Whether the ceiling at ~0.73 comes from the model, the corpus size, or the two-cycle schedule has not been separated: the only run that used the larger corpus did so as a continuation at a lower peak LR from an already-converged checkpoint."
+  evidence:
+    - {path: /home/ben/task/data/sft_train_220k.jsonl, locator: "169424 lines over 78879 distinct problems", observation: "65% more distinct problems than exp-02 was trained on"}
+    - {path: /home/ben/task/eval/exp-05-a_dev500.json, locator: "accuracy 0.732", observation: "the number to beat, greedy, n=500"}
+    - {path: /home/ben/task/eval/exp-05-b_dev500.json, locator: "accuracy 0.718", observation: "the continuation arm under the same protocol"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_watch.jsonl
+    n: 64
+    selection: "the 64 held-out gsm8k-TRAIN dev items exp-02 answers wrong under greedy 10-shot decoding"
+hypothesis:
+  claim: "One cosine cycle from the base snapshot over all 169424 rows, at exp-02's peak LR of 1e-5, scores higher than exp-02's 0.732 on the 500-item greedy protocol."
+  mechanism: "Same optimizer-step count as exp-02 (~3130 vs 2584) and the same peak LR, but every step sees a row the run has not seen before, over 78879 distinct problems instead of 47673 seen twice. If the plateau is set by how many distinct problems the model was fit on, this moves it; if it is set by the model or by the teacher distribution, this reproduces exp-02 and the plateau is real. Either way the confound in exp-04 - extra data delivered only as a second, lower-LR cycle - is removed."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+0 to +3 points at n=500 greedy; my honest prior after four null results is that this reproduces exp-02 to within noise"
+  falsified_if: "accuracy at or below exp-02's 0.732 at n=500 greedy, or internal-dev stop_rate below 0.98"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_train_220k.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (shards 0-5 of 32), problem_source in {gsm8k, augmented_gsm8k}"
+      n_examples: 169424
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_train_220k.jsonl, --dev-out, data/dev_gsm8ktrain_check.jsonl, --n-target, '220000']
+      selection: "identical filters to exp-02; this is the superset from which exp-02's 70000 rows are the first 70000 (verified byte-identical) and exp-04's 99424 are the remainder, so both of those corpora were already contamination-checked as parts of this file: 0 matches over 70000 rows and 0 over 99424"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross-entropy"
+    peft: "none (full fine-tune of the 3.88B language model; SigLIP tower and projector frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 32768, grad_accum: 1, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant turn = <chain of thought>\\n\\nANSWER: <number><end_of_turn>\\n ; loss on completion tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_train_220k.jsonl, --out, /home/ben/task/ckpts/exp-08, --epochs, '1', --lr, '1e-5', --max-tokens-per-batch, '32768', --accum, '1', --max-seq-len, '3072', --scheduler, cosine, --warmup, '0.03', --seed, '0', --save-epochs]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PTB_BASE_MODEL_SNAPSHOT: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/exp-08
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.75']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, no shuffle), greedy decode"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.732
+    path: /home/ben/task/eval/exp-05-a_dev500.json
+  diagnostic:
+    what: "internal dev probe (250 held-out gsm8k-TRAIN items, greedy, 10-shot): accuracy and stop_rate; comparator 0.744 / 0.992"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.45
+  output_checkpoint: /home/ben/task/ckpts/exp-08/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08/checkpoint-3145, step: 3145}
+    - {path: /home/ben/task/ckpts/exp-08/final, step: 3145}
+  training_summary: {final_loss: null, steps: 3145, notes: "train_loss 0.2879 over 7020 s, peak 34.0 GiB. Two failed launches before this one: the installed liger_kernel package had been zeroed on disk (METADATA was 35401 NUL bytes, then the .py files raised 'source code string cannot contain null bytes'); a clean reinstall fixed it and a safetensors read-through confirmed final_model and ckpts/exp-02/final were not affected. Cost ~0.5 h."}
+  measurements:
+    - {metric: accuracy, value: 0.730, n: 500, path: /home/ben/task/eval/exp-08_dev500.json, delta_vs_comparator: -0.002}
+  diagnostic_result:
+    value: 0.744
+    path: /home/ben/task/analysis/exp-08_dev_greedy_fs10.json
+    notes: "internal dev 0.744 and stop_rate 0.992 - identical to exp-02 on both, to three digits. Paired on the same 500 greedy items: exp-02 366, exp-08 365, discordant 33 vs 32, McNemar p=1.000."
+  watch_set_result: {fixed: 17, still_failing: 47, regressions: 17, path: /home/ben/task/analysis/exp-08_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "One clean cosine cycle over all 169424 rows and 78879 distinct problems reproduces exp-02 exactly: 0.730 vs 0.732 at n=500 greedy (p=1.000) and 0.744 vs 0.744 on the internal probe. 65% more distinct problems, delivered without the second-LR-cycle confound that exp-04 had, changes nothing - so the ceiling is not corpus size and it was not exp-04's schedule either."
+  decision: reject
+  next_step: "Ship exp-02/final. Five interventions - more data as a continuation, a clean single cycle over all of it, a decode change, weight averaging, and an on-policy RFT round - now all sit inside a 1.4-point band around 0.732 with paired p-values from 0.37 to 1.00, on two independent evaluation sets. For this base model, this teacher corpus and this format, ~0.73 is the plateau; the next thing to try would be a different teacher distribution (problems with verified gold outside the augmented_gsm8k pool) or a verifier/reranker the grader would let you use, not more of the same."

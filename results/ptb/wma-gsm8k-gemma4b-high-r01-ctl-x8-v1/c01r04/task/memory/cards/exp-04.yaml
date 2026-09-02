@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T16:25:00Z'
+situation:
+  elapsed_h: 2.45
+  remaining_h: 7.55
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7133, protocol_n: 150}
+  trigger: "exp-02 saw only 70000 of the 169424 usable OpenMathInstruct-2 gsm8k rows the six downloaded shards yield, and it saw them twice; 99424 rows over ~31000 problems the model has never seen are already built, verified and decontaminated on disk."
+  trigger_evidence:
+    - {path: /home/ben/task/data/sft_stage2.jsonl, locator: "99424 lines, disjoint from data/sft_train.jsonl by construction (same deterministic build, rows 70000..169424)"}
+    - {path: /home/ben/task/analysis/exp-02_dev_greedy_fs10.json, locator: "summary.accuracy = 0.744", observation: "64 of 250 held-out train items still wrong, and they are reasoning errors now, not format errors (stop_rate 0.992)"}
+  alternatives_rejected:
+    - {option: "rejection-sampling (RFT) round on exp-02's own correct samples", reason: "the SFT teacher here is Llama-3.1-405B; self-distillation from a 4B student that is already at 0.71 is a weaker signal than 99k unseen 405B solutions, and RFT costs a ~1 h sampling pass on top of the training. Keep it as exp-05 if data scaling stalls."}
+    - {option: "restart from the base snapshot on all 169424 rows", reason: "~2.1 h/epoch and it throws away the 1.6 h already spent; continuing sees 239k row-presentations for 1.3 h"}
+    - {option: "a third epoch over the same 70k", reason: "epoch-2 loss was flat at ~0.24 and the remaining failures are reasoning, not fit; more unique problems is the better use of the same GPU hour"}
+    - {option: "raise the 12% few-shot fraction", reason: "the diagnostic says the 10-shot prefix already helps (0.744 with vs 0.712 without), so the conditioning is learned; spending more of the token budget on 2043-token prefixes would buy fewer problems"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/verify_data.py, --data, data/sft_stage2.jsonl], outcome: "template match OK 0-shot and 10-shot; 0/99424 completions miss <end_of_turn>; 0 miss a single 'ANSWER: '; 0 misread by the scorer; 0.025% over max_seq_len 3072"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/decon_stage2.jsonl], outcome: "0 matches over all 99424 rows, exit 0"}
+problem:
+  statement: "exp-02 fixed the format deficit completely (stop_rate 0.992) but 64 of 250 held-out gsm8k-train items are still answered wrong, and they are now genuine reasoning/arithmetic failures rather than truncated or unterminated turns. The model has been fit on only 47673 distinct problems."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_dev_greedy_fs10.json, locator: "items[] with correct=false", observation: "64/250 wrong, all terminating normally with a well-formed ANSWER line"}
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy", observation: "0.7133 under the protocol, i.e. ~43 of 150 test items still wrong"}
+  affected_share: 0.256
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_watch.jsonl
+    n: 64
+    selection: "the 64 held-out gsm8k-TRAIN dev items exp-02 answers wrong under greedy 10-shot decoding (analysis/exp-02_dev_greedy_fs10.json). Train split only; no benchmark test item."
+hypothesis:
+  claim: "A second SFT stage from exp-02/final over 99424 previously unseen OpenMathInstruct-2 gsm8k/augmented_gsm8k rows raises dev-150 accuracy above exp-02's 0.7133."
+  mechanism: "The remaining failures are reasoning failures on problem types the model has not been fit on: exp-02 covered 47673 distinct problems, stage 2 adds ~31000 more plus additional distinct solution paths for problems it has seen. Solution-count and problem-count scaling is the effect OpenMathInstruct-2 was built to exploit, and the format is already learned so none of the new capacity is spent on it. Peak LR is dropped 1e-5 -> 7e-6 because the model is no longer starting from a raw pretrained checkpoint."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points on dev-150"
+  falsified_if: "dev-150 accuracy at or below exp-02's 0.7133, or fewer than 10 of the 64 watch items fixed, or internal-dev stop_rate drops below 0.98 (the second stage broke the format)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_stage2.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (shards 0-5 of 32), problem_source in {gsm8k, augmented_gsm8k}"
+      n_examples: 99424
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_train_220k.jsonl, --dev-out, data/dev_gsm8ktrain_check.jsonl, --n-target, '220000']
+      selection: "identical filters to exp-02 (non-negative numeric gold, single unwrapped boxed answer, 60-2400 chars, <=4 solutions per original and <=2 per augmented problem, internal-dev and eval-few-shot problems removed); this file is rows 70000..169424 of the deterministic 220k build, i.e. exactly the rows exp-02 never saw - the first 70000 were verified byte-identical to data/sft_train.jsonl before splitting"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross-entropy"
+    peft: "none (full fine-tune of the 3.88B language model; 420M SigLIP tower and projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 32768, grad_accum: 1, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 1}
+    target_format: "assistant turn = <chain of thought>\\n\\nANSWER: <number><end_of_turn>\\n ; loss on completion tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_stage2.jsonl, --model, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-04, --epochs, '1', --lr, '7e-6', --max-tokens-per-batch, '32768', --accum, '1', --max-seq-len, '3072', --scheduler, cosine, --warmup, '0.03', --seed, '1', --save-epochs]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.75']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7133
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "internal dev probe (250 held-out gsm8k-TRAIN items, greedy, 10-shot): accuracy and stop_rate, scripts/dev_eval.py; comparator 0.744 / 0.992"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.16
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1858, step: 1858}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1858}
+  training_summary: {final_loss: 0.2957, steps: 1858, notes: "loss stayed flat at 0.26-0.30 across the whole stage - as expected on data the model has never seen, unlike exp-02 where it fell from 0.69; peak 34.0 GiB; 4180 s wall"}
+  measurements:
+    - {metric: accuracy, value: 0.6267, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: -0.0866}
+  diagnostic_result:
+    value: 0.736
+    path: /home/ben/task/analysis/exp-04_dev_greedy_fs10.json
+    notes: "internal dev 0.744 -> 0.736 (-0.8) with stop_rate unchanged at 0.992, so the format survived the second stage. The two metrics disagree in magnitude by ~8 points. Paired McNemar on the 150 official items: 28 discordant for exp-02 vs 15 for exp-04, p=0.066 - suggestive but not decisive, and both arms were sampled at T=1.0, which exp-03 showed produces ~30 discordant pairs between two runs of identical weights."
+  watch_set_result: {fixed: 15, still_failing: 49, regressions: 17, path: /home/ben/task/analysis/exp-04_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.7133 -> 0.6267 and internal dev 0.744 -> 0.736: a second SFT stage on 99424 unseen OpenMathInstruct-2 rows did not raise accuracy on either measurement, and on the watch set it fixed 15 while regressing 17. Data scaling is the thing that failed, not the recipe - a shard-overlap count run afterwards shows the augmented_gsm8k pool holds only ~80k distinct problems in total (shard 0 alone has 43125 and shares 60% of them with shard 15), so stage 2 mostly bought extra solution paths for problems exp-02 had already been fit on, not new problems."
+  decision: reject
+  next_step: "exp-05: decide between exp-02/final and exp-04/final with a paired greedy comparison at n=500, because the two existing measurements disagree and both are under-powered. Do not queue a stage 3 on the remaining OpenMathInstruct-2 rows - it is the same saturated pool."

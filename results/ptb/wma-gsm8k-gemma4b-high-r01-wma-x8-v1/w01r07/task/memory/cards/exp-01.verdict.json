@@ -1,0 +1,177 @@
+{
+  "schema_version": "awm-wma-verdict-v1",
+  "card_id": "exp-01",
+  "wma_skill": "176f0a464986",
+  "backend": "claude",
+  "mode": "online",
+  "issued_at": "2026-09-02T14:07:01Z",
+  "change_types": [
+    "C1a",
+    "C12",
+    "C18"
+  ],
+  "levels": {
+    "L0_runs": {
+      "answer": "yes",
+      "confidence": 0.88,
+      "basis": [
+        "e1",
+        "e2",
+        "e3",
+        "e9"
+      ]
+    },
+    "L1_valid": {
+      "answer": "yes",
+      "confidence": 0.82,
+      "basis": [
+        "e2",
+        "e3",
+        "e4",
+        "e8"
+      ]
+    },
+    "L2_effect": {
+      "metric": "accuracy",
+      "direction": "higher",
+      "interval": [
+        0.04,
+        0.22
+      ],
+      "confidence": 0.7,
+      "basis": [
+        "e5",
+        "e6",
+        "e7",
+        "e4"
+      ]
+    },
+    "L3_worth_now": {
+      "answer": "yes",
+      "confidence": 0.9,
+      "expected_cost_h": 0.4,
+      "basis": [
+        "e5",
+        "e6",
+        "e10"
+      ]
+    }
+  },
+  "evidence": [
+    {
+      "id": "e1",
+      "path": "/home/ben/task/scripts/run_exp01.sh",
+      "locator": "lines 1-28",
+      "note": "two sequential evaluate.py calls, stock snapshot then ckpts/base_greedy, identical --limit 150 --max-connections 16 --gpu-memory-utilization 0.85; single-variable A/B. `set -euo pipefail` with the stock arm first means a failure in arm 1 forfeits the greedy number, which is the one every later card needs."
+    },
+    {
+      "id": "e2",
+      "path": "/home/ben/task/ckpts/base_greedy/",
+      "locator": "directory listing (12 symlinks + 1 real file)",
+      "note": "complete symlink farm into the immutable snapshot: config.json, both safetensors shards + index, tokenizer.json/.model, tokenizer_config, special_tokens_map, added_tokens, preprocessor/processor_config; only generation_config.json is a real file. No missing shard. NB: the symlink targets are not readable from the WMA sandbox (/home/ben is not mounted for me), so their resolution is inferred, not checked."
+    },
+    {
+      "id": "e3",
+      "path": "/home/ben/task/evaluate.py",
+      "locator": "lines 98-135",
+      "note": "model_type() falls through the path-substring test for 'ckpts/base_greedy' (no 'gemma' in the string) and reads config.json -> architectures[0] contains 'gemma' -> templates/gemma3.jinja. The stock arm matches on the path substring. Both arms therefore render the same template; the template comparison is symmetric."
+    },
+    {
+      "id": "e4",
+      "path": "/home/ben/task/ckpts/base_greedy/generation_config.json",
+      "locator": "whole file",
+      "note": "temperature 0.0, top_p 1.0, top_k 0, do_sample false, eos_token_id [1,106] (<end_of_turn> kept), pad 0, bos 2. Explicit temperature is the field vLLM actually reads (do_sample is ignored), so the greedy switch will really take effect; top_k 0 avoids the -1 sentinel that breaks later save_pretrained. The do_sample=false + temperature=0.0 pair is nonetheless the exact combination that GenerationConfig.save_pretrained rejects downstream (see e8)."
+    },
+    {
+      "id": "e5",
+      "path": "history/r-1fff43fc/exp-03.yaml",
+      "locator": "problem.evidence, result.delta_vs_comparator, conclusion.summary",
+      "note": "Same harness, same change: generation_config with no temperature -> vllm sampled at T=1.0; writing greedy gave 0.533 -> 0.733 on the same weights under the same --limit 150 protocol, +20 pp attributed to the decode change alone. Base model SmolLM3-3B-Base (not gemma), checkpoint was SFT'd, so magnitude does not transfer directly."
+    },
+    {
+      "id": "e6",
+      "path": "history/r-2fa3e9e7/exp-30.yaml",
+      "locator": "lines 32, 176 (provenance note)",
+      "note": "Identical evaluate.py invocation, only generation_config edited to greedy: 0.513 -> 0.740 on the 150-item protocol. Confirms end-to-end on this harness that inspect_ai/vLLM takes its default sampling params from the model directory's generation_config.json \u2014 the card's central mechanism, which I could not verify directly (inspect_ai's vllm.py is outside my read scope)."
+    },
+    {
+      "id": "e7",
+      "path": "history/r-426bd770/exp-06.yaml",
+      "locator": "conclusion.summary",
+      "note": "Same-checkpoint sampled-vs-greedy pairs at n=500: 0.676 -> 0.820 (+14.4 pp) for the SFT checkpoint but only 0.826 -> 0.858 (+3.2 pp) for the GRPO one. Together with history/r-01ed5927/exp-02 (42.7% -> 78% at n=50) the sampling->greedy delta on this harness spans roughly +3 to +35 pp \u2014 wide, and measured only on trained checkpoints."
+    },
+    {
+      "id": "e8",
+      "path": "history/r-14faeaaa/exp-07.yaml",
+      "locator": "lines 123-131",
+      "note": "'temperature 0.0 with do_sample False' is rejected by GenerationConfig.save_pretrained: 'No checkpoint survived.' Reproduced in r-01ed5927/exp-05, r-08a3dad0/exp-04, r-06a66e16/exp-04 (crash at first checkpoint save). Harmless for this eval-only card, but ckpts/base_greedy/generation_config.json is now a landmine for any later training that resumes from or copies it."
+    },
+    {
+      "id": "e9",
+      "path": "history/r-4463b5d3/exp-01.yaml",
+      "locator": "problem.evidence",
+      "note": "Session-start baseline on this harness with exactly --limit 150 --max-connections 16 --gpu-memory-utilization 0.85 completed and returned 0.207 for an untrained base model. Concurrency 16 at n=150 is common in the corpus and usually survives; the EngineDeadError / '!!!!'-garbage cases cluster at --limit -1 or odd-precision checkpoints (r-51c52152/exp-08, r-7842f260/exp-10, r-ee271986/exp-11)."
+    },
+    {
+      "id": "e10",
+      "path": "/home/ben/task/memory/cards/exp-01.yaml",
+      "locator": "situation, setup.budget",
+      "note": "9.9 h left, 0.1 h elapsed, no measured baseline of any kind exists, incumbent score null. planned_h 0.7 (~7 % of the run) for two 150-item evals; the corpus median for a full gsm8k eval is 3.0 min, so 0.7 h is a generous ceiling."
+    }
+  ],
+  "probes": [
+    {
+      "id": "p1",
+      "kind": "data_probe",
+      "cost": {
+        "cpu_min": 1
+      },
+      "result": "Read the staged ckpts/base_greedy/generation_config.json: explicit temperature 0.0 (not merely do_sample=false), top_k 0 not -1, eos_token_id [1,106] preserved. The 'right diagnosis, wrong field' failure (editing do_sample only, worth 19 points in the corpus) is not present here.",
+      "changed": "L2"
+    },
+    {
+      "id": "p2",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 1
+      },
+      "result": "Traced evaluate.py's model_type()/template_kwargs() for both arms: the greedy arm resolves via config.json's architecture (the path string 'ckpts/base_greedy' contains no model keyword), the stock arm via its snapshot path. Both land on templates/gemma3.jinja, so the two arms are prompt-identical. Also checked the symlink farm is complete (both shards + index + tokenizer files present).",
+      "changed": "L0"
+    },
+    {
+      "id": "p3",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 1
+      },
+      "result": "Retrieved history by change type (sampling->greedy on the same weights, same evaluate.py): 6 precedents, deltas +3.2 to +35.3 pp, median ~+17 pp. No run in history/ uses a gemma base model (all 143 runs are Qwen3-1.7B/4B-Base or SmolLM3-3B-Base), so there is no same-base-model precedent and no prior for gemma-3-4b-pt's absolute GSM8K level under this protocol.",
+      "changed": "L2"
+    }
+  ],
+  "suggestions": {
+    "preconditions": [
+      "[tier 1, 1 min] resolve the 12 symlinks in ckpts/base_greedy (`ls -lL` or `python -c \"import json,os;json.load(open('ckpts/base_greedy/config.json'))\"`) before the launch \u2014 a dangling shard link only surfaces as a vLLM load error several minutes in, and I could not check the targets from my sandbox.",
+      "[tier 1, 1 min] swap the arm order in run_exp01.sh so the greedy arm runs first: with `set -euo pipefail` a crash in the stock arm currently costs the greedy number, which is the comparator every later card needs; the stock arm is the disposable one.",
+      "[tier 1, 0 min GPU] add a C11 read to the plan: count, per arm, outputs whose token count sits at the 4000 cap and outputs beginning with a garbage prefix ('!!!!'), from the inspect JSON log in logs/. gemma-3-4b-pt is a *pt* model with the fewshots in the system prompt \u2014 if it runs past its answer into invented follow-up questions, match(numeric=True, location='end') scores the last number and both arms read low for a reason that has nothing to do with decoding. The truncation/garbage rate is the only thing that distinguishes that from a real decode effect.",
+      "[tier 1, 2 min] before any later card resumes training from, or copies, ckpts/base_greedy: drop `do_sample: false` or unset `temperature`. The pair (temperature 0.0, do_sample false) is what GenerationConfig.save_pretrained raises on \u2014 four history runs lost a finished training to it (e8)."
+    ],
+    "cheaper_variants": [
+      "[tier 3, ~5 min saved] the stock-config arm is a mechanism demonstration that history already supplies six times over on this exact harness (e5, e6, e7); if wall-clock gets tight later, it is the arm to cut, not the greedy baseline. Running it now is still the right call \u2014 it is the only way to get a same-protocol, same-items number for the config the grader would use if final_model shipped the stock file.",
+      "[tier 4, +3 min] if the observed gap comes back under ~5 pp, do not conclude 'flat': at n=150 the floor is ~3 pp greedy and ~3.3 pp under sampling decode (manual \u00a75), and the stock arm is the sampling one. One C18 repeat of the stock arm buys the standard error before the decode question is closed.",
+      "[tier 1, 0 min] record the exact invocation (--limit 150, --max-connections 16, --gpu-memory-utilization 0.85, --max-tokens default 4000) next to the baseline number in memory/index.md. Every later delta must be read at the same invocation; the corpus's costliest C12 mistake is comparing two candidates measured under different eval parameters."
+    ]
+  },
+  "cost": {
+    "cpu_min": 3,
+    "gpu_min": 0,
+    "wall_min": 5.505145,
+    "usd": 1.7167,
+    "turns": 28
+  },
+  "model": "claude-opus-5",
+  "effort": "high",
+  "access": {
+    "files": 7,
+    "outside": []
+  }
+}

@@ -1,0 +1,111 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-02T23:00:00Z'
+situation:
+  elapsed_h: 8.5
+  remaining_h: 1.5
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7346, protocol_n: 1319}
+  trigger: "The same exp-06 weights read 0.7346 (ckpts/exp-06/final) and 0.7263 (final_model, an identical bf16 repackaging) on two full-test runs. An 11-item gap on identical weights is sampling-decode variance, and it is now measurable at n=1319 -- the resolution exp-03 lacked when it tried the same question at n=150."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-06_final_full1319.json, locator: accuracy, observation: "0.7346 +/- 0.0122"}
+    - {path: /home/ben/task/eval/final_model_full1319.json, locator: accuracy, observation: "0.7263 +/- 0.0123 on the same weights"}
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "conclusion.next_step", observation: "exp-03 explicitly deferred this question to a larger --limit on the final candidate"}
+  alternatives_rejected:
+    - {option: "Ship the sampling config without testing", reason: "12 minutes of eval against a decode choice that is baked into the submitted artifact; the budget affords exactly one such read"}
+    - {option: "Another training phase with the 32687 rows still unused", reason: "1.5h remain and a phase plus a read is ~1.2h with no margin for packaging or closing the record"}
+    - {option: "Average the exp-05 and exp-06 weights", reason: "untested here, needs its own full read to justify, and there is time for one read"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/make_variant.py, --src, /home/ben/task/ckpts/exp-06/final, --dst, /home/ben/task/ckpts/exp-06/final_greedy, --greedy], outcome: "weights symlinked, generation_config rewritten to do_sample false / temperature 0.0 with top_k and top_p removed; eos_token_id still [1,106]"}
+problem:
+  statement: "The artifact's shipped generation_config.json decides how the grader decodes it, because evaluate.py sends only max_tokens and vLLM's --generation-config auto falls back to the file. The inherited config samples at temperature 1.0 with top_k 64 / top_p 0.95, which costs the submission an unknown amount of expected accuracy and adds about 1 point of run-to-run variance on a single-sample benchmark."
+  evidence:
+    - {path: /home/ben/task/eval/final_model_full1319.json, locator: accuracy, observation: "0.7263 against 0.7346 on identical weights: the decode alone moves the reported score by 11 items"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py, locator: "ModelConfig.get_diff_sampling_param", observation: "the model's own generation_config supplies the server's default sampling params"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Grading the exp-06 weights with a greedy generation_config will score higher on the full 1319-item test set than the mean of the two sampling reads of the same weights (0.7305)."
+  mechanism: "One sample per item, graded on the final number, with no self-consistency vote: divergence from the argmax path can only help by luck. Removing the sampler both takes the expected-value loss back and removes the run-to-run variance that produced the 11-item spread."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "+0 to +2 points"}
+  falsified_if: "greedy full-test accuracy is at or below 0.7305, the mean of the two sampling reads of these weights."
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-06/final, origin: exp-06, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+      source: "openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 (main/test)"
+      n_examples: 1319
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '1319']
+      selection: "READ-ONLY EVALUATION INPUT, NOT TRAINING DATA. This card performs no gradient step."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "scripts/make_variant.py -> vllm 0.11.0 --generation-config auto"
+    peft: "none"
+    hyperparams: {}
+    target_format: "weights byte-identical to ckpts/exp-06/final (safetensors symlinked); only generation_config.json differs"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-06/final_greedy, --limit, '1319', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-07_greedy_full1319.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-06/final_greedy
+  checkpoints: {every_steps: null, keep: all}
+  budget: {gpu: H100-80GB, planned_h: 0.25}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official gsm8k test, all 1319 items"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.7346
+    path: /home/ben/task/eval/exp-06_final_full1319.json
+  diagnostic:
+    what: "decision rule fixed before the read: adopt greedy for final_model only if it beats 0.7305 (the mean of the two sampling reads of these weights) by more than 1.0 point; otherwise keep the inherited sampling config, since a late config change to a working artifact is not worth a within-noise gain"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.2
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final_greedy, step: 1560}
+    - {path: /home/ben/task/final_model, step: 1560}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights byte-identical to ckpts/exp-06/final, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.7824, n: 1319, path: /home/ben/task/eval/exp-07_greedy_full1319.json, delta_vs_comparator: 0.0478}
+    - {metric: accuracy, value: 0.7824, n: 1319, path: /home/ben/task/eval/final_model_greedy_full1319.json, delta_vs_comparator: 0.0478}
+  diagnostic_result:
+    value: 0.7824
+    path: /home/ben/task/eval/exp-07_greedy_full1319.json
+    notes: |
+      Decision rule was 'adopt only if greedy beats 0.7305 by more than 1.0 point'. It beat it by 5.2 points (0.7824 against the 0.7305 mean of the two sampling reads of these weights, and by 4.8 against the better of the two). stderr 0.0114, so the gap is roughly 4.5 sigma -- far outside anything the noise can explain.
+      Item level against the sampled read of the same weights: 1032 correct versus 969; 154 items fixed, 91 lost. stop_reason 'stop' on 1299/1319 (20 hit the token cap against 6 under sampling, the expected cost of greedy occasionally entering a loop). Of the 287 remaining failures, 268 still end in a well-formed 'ANSWER: <number>' line.
+      Reproducibility: the independent verification run through final_model/ returned 0.7824109173616376, identical to the digit -- at fixed concurrency greedy is exactly reproducible here, unlike the cross-concurrency case exp-03 found.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: |
+    Greedy decoding is worth +5.2 points on this model: 0.7824 against a 0.7305 sampled mean over all 1319 test items, 1032 correct versus 969. The mechanism is exactly as stated -- one sample per item with no vote, so any divergence from the argmax path is on average a loss, and at temperature 1.0 with top_p 0.95 there are ~150 tokens per answer for that to happen.
+    This is the same hypothesis exp-03 recorded as contradicted at n=150, where it read -2.0 and -0.7 points. exp-03 was not wrong to be measured; it was measured on a protocol with a +/- 3.7-point floor against an effect of +5. The lesson is the one exp-04 taught for training and this card repeats for decoding: at n=150 this harness cannot see a 5-point effect.
+  decision: adopt
+  next_step: |
+    final_model/ now holds the exp-06 weights with a greedy generation_config (do_sample false, temperature 0.0, top_k/top_p removed, eos_token_id [1,106] intact), verified by loading from disk on CPU in a fresh process and by an end-to-end 1319-item run through evaluate.py at 0.7824.
+    For a next batch: this was the single largest per-minute gain in the whole run -- 12 minutes of eval for +5.2 points, against 5.3 GPU-hours of SFT for the +6.4 points from 60k to 250k rows. Check the shipped generation_config.json before spending a training slot.
