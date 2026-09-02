@@ -307,8 +307,15 @@ verdict 里的 `cost.usd` 是 CLI 报的**影子价**,不是账单——它用�
 4. 第九节五项全部通过装船和 sidecar 隔离测试。
 
 设计文档 §4.4 原写"显著优于查表基线";查表基线没有实现,本阶段不补,§4.4 已改为
-对 heuristic 地板。上线后第一轮**只跑 baseline skill**(≥3 cell)加对照臂,先看探测层
-的信息价值和成本,再谈变体。
+对 heuristic 地板。上线后第一轮**只跑 baseline skill**加对照臂,先看探测层的信息价值
+和成本,再谈变体。
+
+**用户指令(2026-09-02,覆盖本节与 §九 第 4 项里"先冒烟、先跑 ≥3 cell"的措辞)**:
+不走 pilot;16 卡必须始终用满,queue 里永远保留待排的 cells;全部启动、边跑边分析,
+发现不成立就撤下尚未开始的 cells。第一轮在线批次据此为两臂各 16 cell、四个 immutable
+manifest 同时排队,见 `doc/spec/2026-09-02-wma-round01-online-gsm8k-gemma4b.md`;
+sidecar 的冒烟由第一波的 8 个 wma cell 承担。Fable 以 commit 落实 manifest 与
+`queue.yaml`,仍不跑 `sbatch` / `scancel` / `reconcile --apply`,不写 `results/ptb`。
 
 ## 十一、本 spec 登记的测量侧改动
 
