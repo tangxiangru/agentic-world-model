@@ -49,6 +49,7 @@ awm exp_protocol new --dir {dir}            # 2. writes exp-NN.yaml with every r
 #    edit sections 0-4
 awm exp_protocol check --dir {dir} exp-NN   # 3. repeat until no ERROR lines and no questions; "ok (N warnings, advisory)" is ok
 awm exp_protocol lock  --dir {dir} exp-NN   # 4. runs preflight; refuses on any FAIL; pins sections 0-4, the script, and the data
+awm wma review --dir {dir} exp-NN --background   # 4b. if a world-model agent is installed — see below
 #    launch your command exactly as written in setup.command.argv
 #    keep checkpoints as setup.checkpoints says
 #    evaluate the output under evaluation.protocol; fill sections 5-6
@@ -63,6 +64,27 @@ them: `lock --relock "<reason>"` when you must change sections 0–4 after a
 lock (the previous hash is kept), and `lock --override <check>="<reason>"`
 when a pre-flight check is wrong for your data (say why). Neither is free:
 a re-lock or an override without a real reason is what the record will show.
+
+## If a world-model agent is installed
+
+`awm wma review` asks an estimator what your locked card will do: one line —
+*worth running now*, why, what to verify first, a cheaper variant if there is
+one. It is advice; you decide. Three things matter about how you use it:
+
+- **Always `--background`.** It returns at once and the verdict lands beside the
+  card (`exp-NN.verdict.json`) when it is done. Never sit waiting for it; keep
+  preparing the launch. `awm wma status --dir {dir}` shows what is in.
+- **Batch your candidates.** If you have several cards you could run next, review
+  them in one call — `awm wma review --dir {dir} exp-05 exp-06 exp-07 --background`
+  — they run in parallel and you get a ranking, not three separate waits.
+- **Do not wait for it to launch.** If the verdict has not arrived by the time you
+  would start the run, start the run. Time is the budget; the verdict is worth
+  exactly what it saves you, and nothing when it costs you the launch.
+
+Read the verdict when it arrives. If it says *verify first*, that is usually
+minutes on CPU that can save an hour on the GPU. If it says *no* and you disagree,
+run anyway and note why in `situation.alternatives_rejected` of the next card;
+that disagreement is the record the estimator learns from.
 
 ## The rules
 

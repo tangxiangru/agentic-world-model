@@ -8,6 +8,7 @@ the library or the parquet index instead.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -632,6 +633,15 @@ def build_parser() -> argparse.ArgumentParser:
     from awm.exp_protocol import cli as exp_protocol_cli
 
     exp_protocol_cli.register(sub)
+
+    # The world-model agent is optional: a checkout shipped into a sandbox for the
+    # protocol-only ablation carries no awm/wma at all, and the CLI must still work.
+    # find_spec, not try/except ImportError, so a real import error inside awm.wma
+    # is not mistaken for its absence.
+    if importlib.util.find_spec("awm.wma") is not None:
+        from awm.wma import cli as wma_cli
+
+        wma_cli.register(sub)
 
     from awm import sandbox
 

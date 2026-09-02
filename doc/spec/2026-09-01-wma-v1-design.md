@@ -53,6 +53,8 @@ suggestions:
 cost: {cpu_min: 6, gpu_min: 4, wall_min: 9}
 ```
 
+**四层是账本的接口,不是 scientist 的接口。** scientist 看到的只有一行:L3 的答案、置信度、一句理由,以及两类建议;四层分解留在文件里给对账和迭代用。分层的必要性在于让"估错了"可归因——L0 错是代码/数据问题(探测能治),L1 错主要是时间预算与评估流程(round-00:L0 miss 9%,L1 miss 37%,中间 28 个点几乎全是被 deadline 杀掉或跑完没测量的卡),L2 错是效应量估错(历史经验能治),L3 错是预算判断错;四种错四种药,合并成一个数就无从迭代。各层的标签质量与基率也差别很大(0.91 / 0.63 / 0.50 / 0.43),合并会让干净信号被脏信号淹没。
+
 四层的含义与来源:
 
 | 层 | 问题 | 主要来源 | 预期可信度 |
@@ -62,25 +64,28 @@ cost: {cpu_min: 6, gpu_min: 4, wall_min: 9}
 | L2 | 相对现任的方向与量级? | 历史经验 + 小批量信号 | 低→中,随账本改善 |
 | L3 | **现在**值不值得?(预算、剩余时间、已排除的备选) | L0–L2 + `situation` | 决策层,scientist 真正看的 |
 
-### 对账:`reconcile` 追加到同一文件
+### 对账:读时计算,verdict 文件写一次、永不改
 
-```yaml
-reconciled_at: <ISO-8601>
-actual: {execution: completed, measurements: [...], decision: adopt, wall_h: 1.4}
+结果只有一份真相——卡片的第 5–6 节,exp_protocol 的审计记录。WMA 不复制它,也不往 verdict 里追加任何东西。打分是读时的纯函数:`ledger` 读到一个 verdict,就去找它的 truth 并现算
+
+```
 scored:
-  L0: hit | miss
-  L1: hit | miss
+  L0: hit | miss | unscorable
+  L1: hit | miss | unscorable
   L2: in_interval | above | below | unscorable      # unscorable = 无同协议测量
   L3: hit | miss | unscorable                        # 事后看:说值得的兑现了吗,说不值得的省下了吗
 ```
+
+truth 的位置由规则决定:**在线 = verdict 旁边那张卡**;**离线回放 = 按目录布局映射到 session 之外的 `_truth/<run>/<card>.yaml`**(agent 看不到的地方)。打分规则改了,重跑一次 `ledger` 即可,没有任何文件需要重写。
 
 **账本 = 全部 verdict 文件的集合。** 按 `wma_skill` 分组、按层算校准,就是 P2 的反馈信号;攒够了就是 v2 训练权重的数据集。
 
 ### 调用方式
 
-- **pull**:`awm wma review --dir DIR exp-NN [--budget cpu=,gpu=,wall=] [--mode offline|online]`。
-- **自动**:exp_protocol `lock` 成功后触发一次,**非阻塞**:先返回"仅历史"的即时裁决(秒级),探测完成后更新同一文件(分钟级)。scientist 可以在任一时刻继续。这需要 exp_protocol 留一个钩子(见第七节)。
-- **对账**:exp_protocol `close` 成功后调 `awm wma reconcile --dir DIR exp-NN`。
+- **pull,且只有 pull**:`awm wma review --dir DIR exp-NN [exp-MM ...] --background [--tag T] [--budget ...] [--mode ...]`。scientist 知道它的唯一途径是 `skills/exp_protocol/SKILL.md` 里的第 4b 步(方案 B);没有代码钩子。
+- **非阻塞是硬要求**:`--background` 脱离前台立即返回,裁决写到卡片旁边;`awm wma status` 看进度。时间是 PostTrainBench 的核心约束,scientist **永远不等它**——到了要启动的时候裁决还没来,就直接启动。
+- **批量并行**:一次调用多张卡,并行评、给排序;`--tag` 让不同的 WMA agent(后端 / 模型)对同一张卡各出一份 `exp-NN.verdict.<tag>.json`,账本按 (skill, backend, mode) 分开。
+- **对账**:不需要调用。`close` 写完卡片,`ledger` 读时就能算。
 
 ## 三、两条路径
 
@@ -105,7 +110,7 @@ P2 的循环是同一个,差别在 rollout 从哪来:
 skills/wma (vN)
    │
    ▼
-rollout:WMA 对一批方案出裁决 ──► 方案的结果 ──► reconcile 对账 ──► 账本
+rollout:WMA 对一批方案出裁决 ──► 方案的结果(卡片)──► ledger 读时对账 ──► 账本
    ▲                                                                  │
    │            改 skill(一轮一个改动,先写记录,held-out 不迭代)         │
    └──────────────────────────────────────────────────────────────────┘
@@ -129,7 +134,7 @@ rollout:WMA 对一批方案出裁决 ──► 方案的结果 ──► reconci
    
    **不可见**:R 的卡 k 的第 5–6 节、卡 k+1 及以后、R 的 official accuracy。
 3. **裁决**。`mode: offline`。探测层**受限**:只有静态探测——读代码、读数据文件、读配置、对照历史;**不能**试跑训练或评估(历史 run 没有 checkpoint)。
-4. **对账**。与卡 k 的 `result` / `conclusion` 对账;L2 的区间用同协议的测量;run 级的 official accuracy 只用于该 run 最终 adopt 那张卡。
+4. **对账**。`ledger` 读时把 verdict 与 `_truth/` 里的卡 k 对照;L2 的区间用同协议的测量;run 级的 official accuracy 只用于该 run 最终 adopt 那张卡。
 5. **汇总**(每轮):
    - 每层校准:L0/L1 的命中率(**历史里 `result.execution` 100% 有值,213 张 failed/killed——这是现成的 L0/L1 标签**);L2 的区间覆盖率与 Brier;L3 对 `decision` 的预测。
    - 排序质量:同一 run 内多张卡的 L3 排序 vs 实际 adopt,以及 run 间的排序 Spearman。
@@ -140,7 +145,7 @@ rollout:WMA 对一批方案出裁决 ──► 方案的结果 ──► reconci
 **泄漏规则**(硬约束):
 - **时间截断**:上面第 2 步,机械执行,写成回放器的代码而不是靠自觉。
 - **splits 契约**:`gsm8k-gemma-holdout-v1` 的 train 143 用于迭代,test 50(gemma)是 held-out——只在"是否晋升"时跑一次,永不据此改 skill。
-- **不看分数**:official accuracy 只在 reconcile 读。
+- **不看分数**:official accuracy 只在 `ledger` 从 `_truth/` 读。
 
 **能测 / 不能测**:
 
@@ -161,7 +166,7 @@ rollout:WMA 对一批方案出裁决 ──► 方案的结果 ──► reconci
 
 1. **环境**。H100 cell,scientist 遵守 exp_protocol;WMA 与 scientist 同沙箱或旁侧,由 lock 钩子调用;GPU 在此刻空闲。
 2. **裁决**。`mode: online`。探测层**开启**:静态 + 动态(在 scratch 副本里 20 步试跑、用 parent model 在 watch set 上采样、跑 scientist 的单测),受预算约束。**两阶段输出**:即时裁决(仅历史,秒级)→ 探测后更新(分钟级);scientist 不必等。
-3. **对账**。close 后 `reconcile`。
+3. **对账**。close 写完卡片即可;`ledger` 读时算。
 4. **汇总**(每轮):离线的全部指标,加上探测层专属的:
    - 探测的信息价值:`changed != none` 的探测占比;
    - 探测成本 vs 省下的 GPU 小时;
@@ -181,7 +186,7 @@ rollout:WMA 对一批方案出裁决 ──► 方案的结果 ──► reconci
 | 能优化的 skill 部分 | 判断层、证据使用、裁决格式、初始启发式 | 探测手册、预算分配、两阶段时机、建议措辞 |
 | 对账延迟 | 即时 | 小时级 |
 | 主要指标 | 各层校准、排序 vs 查表基线、失败卡召回 | 省下的 GPU 小时、探测信息价值、采纳率 |
-| 基础设施 | 回放器(时间截断的样本构造)+ `awm wma review/reconcile` | exp_protocol 的 lock/close 钩子 + H100 发射器 + `exp_protocol_meta` 的循环 |
+| 基础设施 | 回放器(时间截断的样本构造)+ `awm wma review/ledger` | exp_protocol skill 的第 4b 步(无代码钩子)+ H100 发射器 + `exp_protocol_meta` 的循环 |
 
 ### 4.4 从离线到在线的门槛
 
@@ -204,7 +209,7 @@ rollout:WMA 对一批方案出裁决 ──► 方案的结果 ──► reconci
 
 ## 六、账本与指标
 
-账本 = `exp-NN.verdict.json` 的集合,按 `wma_skill` 分组。`awm wma ledger <dirs>` 汇总:
+账本 = `exp-NN.verdict.json` 的集合,按 `wma_skill` 分组;每条的 `scored` 由 `awm wma ledger <dirs>` 读时现算(见第二节"对账")。汇总列:
 
 | 指标 | 定义 | 好的方向 |
 |---|---|---|
@@ -220,16 +225,14 @@ rollout:WMA 对一批方案出裁决 ──► 方案的结果 ──► reconci
 
 ## 七、与 exp_protocol 及 evolve 分支的接口
 
-WMA 线**只读** card、**只写** `exp-NN.verdict.json`。需要 exp_protocol 那边留两个钩子,都是一行调用、失败不阻塞:
-- `lock` 成功后:若 `awm wma` 可用则 `awm wma review --dir DIR exp-NN --mode online`(后台,非阻塞);
-- `close` 成功后:若存在 verdict 文件则 `awm wma reconcile --dir DIR exp-NN`。
+WMA 线**只读** card、**只写** `exp-NN.verdict[.tag].json`,写一次不再改。**exp_protocol 的代码里没有任何 WMA 相关内容**;scientist 与 WMA 的全部交互是 `skills/exp_protocol/SKILL.md` 的第 4b 步——lock 之后后台运行 `awm wma review`。对账也不需要钩子——`close` 写完卡片,`ledger` 读时就能算。
 
-离线回放阶段**不需要**这两个钩子——回放器自己调 review/reconcile。钩子等到 4.4 的门槛过了再和 evolve 分支协调加入。
+**分支分工**:这一句 4b 以及任何 WMA-aware 的规程改动都落在 WMA 线(主线上的 `gangda_wma_*`);`gangda_exp_protocol_evolve` 是"没有 WMA 时纯规程能做多好"的消融研究,它的 `skills/exp_protocol/` 不提 WMA。
 
 ## 八、研发顺序
 
 0. 本文档 + 定义文档第四节修订(职责措辞、线名)。
-1. `skills/wma/` v0 + verdict schema + `awm wma review | reconcile | ledger`(全部 CPU 可测;review 的推理部分是调用模型,测试用假模型)。
+1. `skills/wma/` v0 + verdict schema + `awm wma review | ledger`(全部 CPU 可测;review 的推理部分是调用模型,测试用假模型)。
 2. 回放器:时间截断的样本构造 + 泄漏规则的测试 + 一轮基线跑分(baseline skill vs 查表 / 常数 / 随机)。
 3. 离线迭代 N 轮,每轮一个改动、一份记录。
 4. 过门槛 → 与 evolve 分支协调钩子 → 在线第一轮(仅 baseline)。
