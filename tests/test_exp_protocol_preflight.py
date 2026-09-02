@@ -123,3 +123,78 @@ def test_the_shipped_catalogue_loads_and_names_only_real_checks() -> None:
     for p in pitfalls:
         assert set(p) >= {"id", "symptom", "cause", "check", "guidance", "source"}
         assert p["check"] is None or p["check"] in preflight.CHECKS, p["id"]
+
+
+# ---- review findings (2026-09-01) --------------------------------------------
+
+def test_chat_rows_with_an_id_field_are_still_measured(session) -> None:
+    """C1: {"id", "messages"} rows used to pass with 'longest ~0' because the id string short-circuited."""
+    root, card = session
+    long = "x" * 20000
+    rows = [{"id": f"r{i}", "messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": long}]}
+            for i in range(20)]
+    write_jsonl(root / "data" / "train.jsonl", rows)
+    r = next(x for x in preflight.run_preflight(card, root, pitfalls=[])["results"] if x["check"] == "max_seq_len_headroom")
+    assert r["status"] == "fail", r
+    assert "longest ~0" not in r["detail"]
+
+
+def test_rows_with_no_measurable_text_never_pass(session) -> None:
+    root, card = session
+    write_jsonl(root / "data" / "train.jsonl", [{"id": 1, "n": 2} for _ in range(5)])
+    r = next(x for x in preflight.run_preflight(card, root, pitfalls=[])["results"] if x["check"] == "max_seq_len_headroom")
+    assert r["status"] == "skip"
+
+
+def test_short_answer_field_does_not_shadow_the_training_text(session) -> None:
+    """I5: a row carrying both answer (gold) and text (the target) must be checked on text."""
+    root, card = session
+    rows = [{"prompt": "q", "answer": "141", "text": "reasoning #### 141<|im_end|>"} for _ in range(50)]
+    write_jsonl(root / "data" / "train.jsonl", rows)
+    report = preflight.run_preflight(card, root, pitfalls=[])
+    assert status(report, "stop_token_consistent") == "pass"
+    detail = next(x["detail"] for x in report["results"] if x["check"] == "stop_token_consistent")
+    assert "field=text" in detail
+
+
+def test_details_state_the_sample_and_the_threshold(session) -> None:
+    root, card = session
+    report = preflight.run_preflight(card, root, pitfalls=[])
+    d = {x["check"]: x["detail"] for x in report["results"]}
+    assert "first 500 rows" in d["stop_token_consistent"] and ">=95%" in d["stop_token_consistent"]
+    assert "first 500 rows" in d["max_seq_len_headroom"] and "chars/4" in d["max_seq_len_headroom"]
+
+
+def test_missing_catalogue_is_reported_not_raised(session, monkeypatch) -> None:
+    """I2: preflight must not traceback because pitfalls.yaml is not where skill_dir() points."""
+    root, card = session
+    monkeypatch.setenv("AWM_EXP_PROTOCOL_DIR", str(root / "nowhere"))
+    report = preflight.run_preflight(card, root)          # pitfalls=None -> loads the catalogue
+    assert report["catalogue"] is None and report["reminders"] == []
+    assert "pitfalls.yaml" in preflight.render(report)
+
+
+def test_the_installed_copy_in_the_session_dir_is_preferred(session, monkeypatch) -> None:
+    root, card = session
+    monkeypatch.setenv("AWM_EXP_PROTOCOL_DIR", str(root / "nowhere"))
+    local = root / "skills" / "exp_protocol" / "pitfalls.yaml"
+    local.parent.mkdir(parents=True)
+    local.write_text("- {id: local_only, symptom: s, cause: c, check: null, guidance: g, source: x}\n")
+    report = preflight.run_preflight(card, root)
+    assert report["catalogue"] == str(local)
+    assert [r["id"] for r in report["reminders"]] == ["local_only"]
+
+
+def test_relative_parent_path_is_not_mistaken_for_a_hub_id(session) -> None:
+    root, card = session
+    card["setup"]["parent_checkpoint"] = {"path": "ckpts/exp-02/final", "origin": "exp-02"}
+    assert status(preflight.run_preflight(card, root, pitfalls=[]), "parent_checkpoint_loadable") == "fail"
+    card["setup"]["parent_checkpoint"] = {"path": "google/gemma-3-4b-pt", "origin": "base_model"}
+    assert status(preflight.run_preflight(card, root, pitfalls=[]), "parent_checkpoint_loadable") == "pass"
+
+
+def test_script_not_named_in_argv_is_a_warning(session) -> None:
+    root, card = session
+    card["setup"]["command"]["argv"] = ["python", "train2.py"]
+    r = next(x for x in preflight.run_preflight(card, root, pitfalls=[])["results"] if x["check"] == "command_resolves")
+    assert r["status"] == "warn" and "argv" in r["detail"]

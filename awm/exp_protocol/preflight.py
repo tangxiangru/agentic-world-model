@@ -4,12 +4,20 @@ A check reads the card and the files it names and returns pass / warn /
 fail / skip with one line of detail. Nothing here starts a process. The
 catalogue in ``skills/exp_protocol/pitfalls.yaml`` names which check covers
 which pitfall; pitfalls without a check are printed as reminders.
+
+Every data check reads the **first** ``SAMPLE_ROWS`` rows of each jsonl file,
+not a random sample, and says so in its detail: a file concatenated from a
+good source and a bad one passes on its head. The token estimate is
+``chars / CHARS_PER_TOKEN``, an English-prose constant that under-counts CJK
+and dense code and ignores whatever the trainer's template adds at run time;
+both push toward a false pass, which the detail also states.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -21,10 +29,20 @@ from awm import paths
 
 from .schema import get, now
 
-#: Keys that hold the training target in a jsonl row, most specific first.
-TARGET_KEYS = ("completion", "target", "output", "response", "answer")
+#: Keys that hold the full training target in a jsonl row, most specific first.
+#: ``answer`` comes last because it is often the short gold label, not the target.
+TARGET_KEYS = ("completion", "target", "output", "response")
+FALLBACK_KEYS = ("text", "answer")
 SAMPLE_ROWS = 500
-CHARS_PER_TOKEN = 4  # a coarse estimate; the check says so in its detail
+CHARS_PER_TOKEN = 4
+#: A target that does not end with the stop token is the eos pitfall; a few
+#: malformed rows are tolerated, a systematic mismatch is not.
+STOP_TOKEN_MIN_FRAC = 0.95
+#: The share of rows allowed to carry the answer marker other than exactly once.
+BAD_MARKER_MAX_FRAC = 0.02
+#: The share of rows allowed to exceed max_seq_len (origin/main's runtime guard uses 2 %).
+OVER_LEN_MAX_FRAC = 0.02
+HUB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
 @dataclass
@@ -74,21 +92,36 @@ def _data_paths(ctx: Context) -> list[str]:
     return [str(d["path"]) for d in (get(ctx.card, "setup.data") or []) if isinstance(d, dict) and d.get("path")]
 
 
-def target_text(row: dict[str, Any]) -> str | None:
+def target_text(row: dict[str, Any]) -> tuple[str, str] | None:
+    """The training target of a row and the field it came from, or None."""
     for key in TARGET_KEYS:
         if isinstance(row.get(key), str):
-            return row[key]
+            return row[key], key
     msgs = row.get("messages")
     if isinstance(msgs, list) and msgs and isinstance(msgs[-1], dict) and isinstance(msgs[-1].get("content"), str):
-        return msgs[-1]["content"]
-    if isinstance(row.get("text"), str):
-        return row["text"]
+        return msgs[-1]["content"], "messages[-1].content"
+    for key in FALLBACK_KEYS:
+        if isinstance(row.get(key), str):
+            return row[key], key
     return None
+
+
+def row_chars(row: dict[str, Any]) -> int:
+    """Every character the trainer could see: top-level strings plus all message contents."""
+    chars = sum(len(v) for v in row.values() if isinstance(v, str))
+    msgs = row.get("messages")
+    if isinstance(msgs, list):
+        chars += sum(len(m.get("content", "")) for m in msgs if isinstance(m, dict) and isinstance(m.get("content"), str))
+    return chars
 
 
 def _count_lines(path: Path) -> int:
     with path.open("rb") as fh:
         return sum(1 for _ in fh)
+
+
+def _sample_note() -> str:
+    return f"first {SAMPLE_ROWS} rows of each file"
 
 
 # ----------------------------------------------------------------- checks
@@ -119,13 +152,14 @@ def data_n_examples_match(ctx: Context) -> CheckResult:
         return CheckResult("data_n_examples_match", "skip", "no jsonl data files to count")
     if bad:
         return CheckResult("data_n_examples_match", "fail", "; ".join(bad))
-    return CheckResult("data_n_examples_match", "pass", f"{seen} file(s) match")
+    return CheckResult("data_n_examples_match", "pass", f"{seen} file(s) match (whole-file line count)")
 
 
-@check("command_resolves", "cwd is a directory and the script is a file")
+@check("command_resolves", "cwd is a directory, the script is a file, and argv names it")
 def command_resolves(ctx: Context) -> CheckResult:
     cwd = get(ctx.card, "setup.command.cwd")
     script = get(ctx.card, "setup.command.script")
+    argv = get(ctx.card, "setup.command.argv") or []
     problems = []
     if cwd and not Path(cwd).is_dir():
         problems.append(f"cwd {cwd} is not a directory")
@@ -135,7 +169,11 @@ def command_resolves(ctx: Context) -> CheckResult:
         return CheckResult("command_resolves", "fail", "; ".join(problems))
     if not script:
         return CheckResult("command_resolves", "warn", "no setup.command.script named; the lock cannot hash what will run")
-    return CheckResult("command_resolves", "pass", "cwd and script resolve")
+    name = Path(str(script)).name
+    if not any(name in str(a) for a in argv):
+        return CheckResult("command_resolves", "warn",
+                           f"script {name} does not appear in argv {argv}; the lock would hash a file the command does not run")
+    return CheckResult("command_resolves", "pass", "cwd and script resolve; argv names the script")
 
 
 @check("output_dir_creatable", "output_dir exists or its parent does")
@@ -149,25 +187,35 @@ def output_dir_creatable(ctx: Context) -> CheckResult:
     return CheckResult("output_dir_creatable", "warn", f"neither {p} nor its parent exists yet")
 
 
+def _targets(ctx: Context) -> tuple[list[str], set[str]]:
+    texts: list[str] = []
+    fields: set[str] = set()
+    for path in _data_paths(ctx):
+        for row in ctx.rows(path):
+            hit = target_text(row)
+            if hit is None:
+                continue
+            texts.append(hit[0])
+            fields.add(hit[1])
+    return texts, fields
+
+
 @check("stop_token_consistent", "training targets end with the declared stop token")
 def stop_token_consistent(ctx: Context) -> CheckResult:
     tok = get(ctx.card, "setup.method.stop_token")
     if not tok:
         return CheckResult("stop_token_consistent", "warn",
                            "setup.method.stop_token not declared; the eos-mismatch pitfall cannot be checked")
-    total = ok = 0
-    for path in _data_paths(ctx):
-        for row in ctx.rows(path):
-            t = target_text(row)
-            if t is None:
-                continue
-            total += 1
-            ok += t.rstrip().endswith(tok)
-    if total == 0:
-        return CheckResult("stop_token_consistent", "skip", "no jsonl rows with a recognisable target field")
-    frac = ok / total
-    status = "pass" if frac >= 0.95 else "fail"
-    return CheckResult("stop_token_consistent", status, f"{ok}/{total} sampled targets end with {tok!r}")
+    texts, fields = _targets(ctx)
+    if not texts:
+        return CheckResult("stop_token_consistent", "skip",
+                           f"no recognisable target field in the {_sample_note()} (looked for {TARGET_KEYS + ('messages',) + FALLBACK_KEYS})")
+    ok = sum(t.rstrip().endswith(tok) for t in texts)
+    frac = ok / len(texts)
+    status = "pass" if frac >= STOP_TOKEN_MIN_FRAC else "fail"
+    return CheckResult("stop_token_consistent", status,
+                       f"{ok}/{len(texts)} targets end with {tok!r} (pass needs >={STOP_TOKEN_MIN_FRAC:.0%}; "
+                       f"{_sample_note()}; field={'/'.join(sorted(fields))})")
 
 
 @check("answer_marker_single", "each target contains the answer marker exactly once")
@@ -176,19 +224,14 @@ def answer_marker_single(ctx: Context) -> CheckResult:
     if not marker:
         return CheckResult("answer_marker_single", "warn",
                            "setup.method.answer_marker not declared; the double-format pitfall cannot be checked")
-    total = bad = 0
-    for path in _data_paths(ctx):
-        for row in ctx.rows(path):
-            t = target_text(row)
-            if t is None:
-                continue
-            total += 1
-            bad += t.count(marker) != 1
-    if total == 0:
-        return CheckResult("answer_marker_single", "skip", "no jsonl rows with a recognisable target field")
-    status = "pass" if bad / total <= 0.02 else "fail"
+    texts, fields = _targets(ctx)
+    if not texts:
+        return CheckResult("answer_marker_single", "skip", f"no recognisable target field in the {_sample_note()}")
+    bad = sum(t.count(marker) != 1 for t in texts)
+    status = "pass" if bad / len(texts) <= BAD_MARKER_MAX_FRAC else "fail"
     return CheckResult("answer_marker_single", status,
-                       f"{bad}/{total} sampled targets do not contain {marker!r} exactly once")
+                       f"{bad}/{len(texts)} targets do not contain {marker!r} exactly once "
+                       f"(fail above {BAD_MARKER_MAX_FRAC:.0%}; {_sample_note()}; field={'/'.join(sorted(fields))})")
 
 
 @check("max_seq_len_headroom", "rows fit in max_seq_len (chars/4 estimate)")
@@ -197,23 +240,22 @@ def max_seq_len_headroom(ctx: Context) -> CheckResult:
     if not isinstance(msl, int) or msl <= 0:
         return CheckResult("max_seq_len_headroom", "warn",
                            "hyperparams.max_seq_len not declared; truncation cannot be estimated")
-    total = over = 0
-    longest = 0
+    total = over = longest = measured = 0
     for path in _data_paths(ctx):
         for row in ctx.rows(path):
-            chars = sum(len(v) for v in row.values() if isinstance(v, str))
-            if not chars and isinstance(row.get("messages"), list):
-                chars = sum(len(m.get("content", "")) for m in row["messages"] if isinstance(m, dict))
+            chars = row_chars(row)
+            measured += chars
             est = chars // CHARS_PER_TOKEN
             total += 1
             longest = max(longest, est)
             over += est > msl
-    if total == 0:
-        return CheckResult("max_seq_len_headroom", "skip", "no jsonl rows to measure")
+    if total == 0 or measured == 0:
+        return CheckResult("max_seq_len_headroom", "skip", f"no measurable text in the {_sample_note()}")
     frac = over / total
-    detail = (f"{over}/{total} sampled rows estimated over {msl} tokens "
-              f"(longest ~{longest}; estimate is chars/{CHARS_PER_TOKEN})")
-    if frac > 0.02:
+    detail = (f"{over}/{total} rows estimated over {msl} tokens, longest ~{longest} "
+              f"(fail above {OVER_LEN_MAX_FRAC:.0%}; {_sample_note()}; estimate is chars/{CHARS_PER_TOKEN} of the row text "
+              f"only — template and system-prompt tokens added at training time are not counted)")
+    if frac > OVER_LEN_MAX_FRAC:
         return CheckResult("max_seq_len_headroom", "fail", detail)
     if over:
         return CheckResult("max_seq_len_headroom", "warn", detail)
@@ -248,9 +290,13 @@ def parent_checkpoint_loadable(ctx: Context) -> CheckResult:
     path = get(ctx.card, "setup.parent_checkpoint.path")
     if not path:
         return CheckResult("parent_checkpoint_loadable", "skip", "no parent path")
-    p = Path(str(path))
-    if not str(path).startswith("/"):
-        return CheckResult("parent_checkpoint_loadable", "pass", f"{path} is a hub id; not checked offline")
+    s = str(path)
+    p = Path(s)
+    if not s.startswith("/"):
+        if HUB_ID_RE.match(s) and not p.exists():
+            return CheckResult("parent_checkpoint_loadable", "pass", f"{s} is a hub id; not checked offline")
+        return CheckResult("parent_checkpoint_loadable", "fail",
+                           f"{s} is a relative path; write the absolute path of the checkpoint directory")
     if not p.is_dir():
         return CheckResult("parent_checkpoint_loadable", "fail", f"{p} is not a directory")
     if not (p / "config.json").is_file():
@@ -267,8 +313,23 @@ def skill_dir() -> Path:
     return Path(env) if env else paths.REPO_ROOT / "skills" / "exp_protocol"
 
 
+def pitfalls_path(session_dir: Path | None = None) -> Path | None:
+    """The copy ``install`` put in the session dir wins; else the skill dir's; else None."""
+    candidates = []
+    if session_dir is not None:
+        candidates.append(Path(session_dir) / "skills" / "exp_protocol" / "pitfalls.yaml")
+    candidates.append(skill_dir() / "pitfalls.yaml")
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
 def load_pitfalls(path: Path | None = None) -> list[dict[str, Any]]:
+    """The catalogue at ``path`` (default: the skill dir's). Missing file → empty list, never an exception."""
     p = Path(path) if path else skill_dir() / "pitfalls.yaml"
+    if not p.is_file():
+        return []
     data = yaml.safe_load(p.read_text()) or []
     if not isinstance(data, list):
         raise ValueError(f"{p}: pitfalls.yaml must be a list")
@@ -280,17 +341,29 @@ def run_preflight(card: dict[str, Any], session_dir: Path | None = None,
     ctx = Context(card, Path(session_dir) if session_dir else None, {})
     results = [fn(ctx) for _, fn in CHECKS.values()]
     summary = {s: sum(r.status == s for r in results) for s in ("pass", "warn", "fail", "skip")}
-    catalogue = load_pitfalls() if pitfalls is None else pitfalls
+    catalogue_path: str | None = None
+    if pitfalls is None:
+        found = pitfalls_path(ctx.session_dir)
+        catalogue = load_pitfalls(found) if found else []
+        catalogue_path = str(found) if found else None
+    else:
+        catalogue = pitfalls
     reminders = [{"id": p["id"], "symptom": p["symptom"], "guidance": p["guidance"]}
                  for p in catalogue if p.get("check") is None]
     return {"ran_at": now(), "results": [asdict(r) for r in results],
-            "summary": summary, "reminders": reminders}
+            "summary": summary, "reminders": reminders, "catalogue": catalogue_path}
 
 
 def render(report: dict[str, Any]) -> str:
-    lines = [f"{r['status'].upper():5} {r['check']}: {r['detail']}" for r in report["results"]]
+    lines = []
+    for r in report["results"]:
+        desc = CHECKS.get(r["check"], ("", None))[0]
+        lines.append(f"{r['status'].upper():5} {r['check']} — {desc}: {r['detail']}")
     s = report["summary"]
     lines.append(f"-- {s['pass']} pass, {s['warn']} warn, {s['fail']} fail, {s['skip']} skip")
+    if report.get("catalogue") is None and "catalogue" in report:
+        lines.append("-- no pitfalls.yaml found (looked in <session>/skills/exp_protocol and the skill dir); "
+                     "reminders unavailable")
     if report["reminders"]:
         lines.append("-- not checkable by machine; check yourself:")
         for rem in report["reminders"]:
