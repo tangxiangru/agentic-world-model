@@ -311,6 +311,10 @@ def _ptb(args: argparse.Namespace) -> int:
             output = ptb.submit_research_judges(ptb.load_receipt(args.receipt))
             print(output)
             return 0
+        if args.cmd == "recover-judges":
+            output = ptb.submit_official_judge_recovery(ptb.load_receipt(args.receipt))
+            print(output)
+            return 0
     except ptb.ExperimentError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -617,7 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("result_dir", type=Path)
     audit.add_argument("--manifest", type=Path, default=default_manifest)
     audit.set_defaults(func=_ptb)
-    for command_name in ("status", "audit-receipt", "research-judges"):
+    for command_name in ("status", "audit-receipt", "research-judges", "recover-judges"):
         receipt_command = eps.add_parser(command_name)
         receipt_command.add_argument("receipt", type=Path)
         receipt_command.add_argument("--manifest", type=Path, default=default_manifest)

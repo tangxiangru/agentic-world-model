@@ -125,9 +125,10 @@ slurm2-a3nodesetondem-3
 PTB fork 提供两套运行/输出 profile，但复用完全相同的 `prompt.md`、
 `get_judge_prompt.py`、judge tools 和 `task/judgement.json` schema：
 
-- `official`（默认）：Codex CLI + 官方 GPT judge，继续生成聚合脚本读取的
-  canonical `judgement_gpt5_4/api/ptb_lookup/general*.json`。
-- `claude`（研究用途）：Claude Code CLI + 显式 `claude-opus-5[1m]` + 明确的 `xhigh`
+- `official`（默认）：Claude Code CLI + 显式 `claude-opus-5[1m]` + `high`，四个 judge
+  （包括 general）统一生成聚合和验证器读取的 canonical
+  `judgement_gpt5_4/api/ptb_lookup/general*.json`。
+- `claude`（研究用途）：相同的 Claude Opus 5 + `high` runtime，但
   effort；生成隔离的 `judgement_claude_*.json`，不会冒充或覆盖官方 verdict。
 
 通用 backend、认证隔离、trace parser 和输出 contract 属于第二层，保存在 PTB
@@ -138,8 +139,8 @@ fork；某次实验选用哪个 profile、是否 pin 精确 Opus 5 model id 属�
 挂载独立 ADC 文件。Claude judge 使用 safe mode，禁止加载 agent 留下的 `CLAUDE.md`、skills、
 plugins、hooks、MCP 和 custom agents；其唯一任务规则来自共享 judge prompt。
 
-因此，`claude` profile 可用于深度分析和 judge agreement 研究，但在形成正式 PTB
-可比结果时仍需保留 `official` profile 的 canonical verdict。每次 Claude verdict
+因此，`claude` profile 可用于 judge agreement 研究；正式 PTB 结果使用同一 Claude
+runtime 的 `official` profile 来写 canonical verdict。每次 Claude verdict
 还应保留 metadata 中的 requested model、resolved model、effort、container 和 CLI
 version，以免 provider 路由随时间变化后无法复现。
 

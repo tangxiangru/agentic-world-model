@@ -371,7 +371,7 @@ def validate_manifest(data: dict[str, Any]) -> None:
         "context_windows": [200_000, 1_000_000],
         "agent_cli_version": "2.1.219",
         "judge_profile": "official",
-        "research_judge_profile": "claude-opus-5[1m]-xhigh",
+        "research_judge_profile": "claude-opus-5[1m]-high",
         "require_complete": True,
         "cli_auto_update": False,
     }
@@ -1305,6 +1305,272 @@ def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
     return issues
 
 
+OFFICIAL_JUDGE_RECOVERY_ISSUES = {
+    "missing or empty: judgement_gpt5_4.json or its _rerun variant",
+    "missing or empty: judgement_api.json or its _rerun variant",
+    "missing or empty: judgement_ptb_lookup.json or its _rerun variant",
+    "missing or empty: judgement_general.json or its _rerun variant",
+}
+
+
+def official_judge_recovery_candidates(
+    receipt: dict[str, Any],
+) -> tuple[list[dict[str, str]], dict[str, list[str]]]:
+    """Select failed cells whose only missing evidence is the four official judges."""
+
+    candidates: list[dict[str, str]] = []
+    skipped: dict[str, list[str]] = {}
+    for job in receipt_status(receipt):
+        cell_id = str(job["cell_id"])
+        result_name = job.get("result_dir")
+        if not result_name:
+            skipped[cell_id] = ["result directory not found"]
+            continue
+        issues = audit_result(Path(result_name))
+        if set(issues) != OFFICIAL_JUDGE_RECOVERY_ISSUES:
+            skipped[cell_id] = issues or ["result is already complete"]
+            continue
+        candidates.append(
+            {
+                "cell_id": cell_id,
+                "source_job_id": str(job["job_id"]),
+                "result_dir": str(Path(result_name).resolve()),
+            }
+        )
+    return candidates, skipped
+
+
+def submit_official_judge_recovery(receipt: dict[str, Any]) -> Path:
+    """Resume judge-only work with receipt-backed, held Slurm submissions."""
+
+    candidates, skipped = official_judge_recovery_candidates(receipt)
+    if not candidates:
+        details = [f"{cell}: {', '.join(issues)}" for cell, issues in skipped.items()]
+        raise ExperimentError(
+            "receipt has no judge-only recovery candidates"
+            + (("\n- " + "\n- ".join(details)) if details else "")
+        )
+
+    snapshot = source_snapshot()
+    if snapshot["top_status"] or snapshot["ptb_status"]:
+        raise ExperimentError("official judge recovery requires clean top and PTB worktrees")
+    branch = snapshot["top_branch"]
+    if not branch:
+        raise ExperimentError("official judge recovery requires a named top-level branch")
+
+    env = read_ptb_env()
+    partition = env.get("POST_TRAIN_BENCH_SLURM_PARTITION", "")
+    nodelist = env.get("POST_TRAIN_BENCH_SLURM_NODELIST", "")
+    reservation = env.get("POST_TRAIN_BENCH_SLURM_RESERVATION", "")
+    subqueue = env.get("POST_TRAIN_BENCH_SLURM_SUBQUEUE", "")
+    ownership_registry = env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
+    required_site = {
+        "POST_TRAIN_BENCH_SLURM_PARTITION": partition,
+        "POST_TRAIN_BENCH_SLURM_NODELIST": nodelist,
+        "POST_TRAIN_BENCH_SLURM_SUBQUEUE": subqueue,
+        "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": ownership_registry,
+    }
+    missing_site = [name for name, value in required_site.items() if not value]
+    if missing_site:
+        raise ExperimentError(
+            "official judge recovery requires site configuration: " + ", ".join(missing_site)
+        )
+
+    context_path = paths.REPO_ROOT / "data/ptb/context-validation/claude-opus-5-1m-high.json"
+    if not context_path.is_file():
+        raise ExperimentError(f"Opus 5 high context-validation evidence is missing: {context_path}")
+    context_data = json.loads(context_path.read_text(encoding="utf-8"))
+    if (
+        context_data.get("requested_model") != "claude-opus-5[1m]"
+        or context_data.get("effort") != "high"
+        or context_data.get("provider") != "vertex"
+        or context_data.get("verified") is not True
+    ):
+        raise ExperimentError("Opus 5 high context-validation evidence is invalid")
+    context_digest = _sha256(context_path)
+
+    containers = Path(env.get("POST_TRAIN_BENCH_CONTAINERS_DIR", PTB_ROOT / "containers"))
+    judge_container_name = env.get("POST_TRAIN_BENCH_CLAUDE_JUDGE_CONTAINER", "opus_5.sif")
+    judge_container = containers / judge_container_name
+    if not judge_container.is_file():
+        raise ExperimentError(f"official Claude judge container is missing: {judge_container}")
+    judge_container_digest = _sha256(judge_container)
+
+    source_receipt = Path(receipt["_path"])
+    submitted_at = datetime.now(timezone.utc)
+    timestamp = submitted_at.strftime("%Y-%m-%dT%H%M%S.%f%z")
+    output = source_receipt.with_name(f"official-judge-recovery-{timestamp}.json")
+    spec = "doc/spec/2026-09-02-ptb-official-claude-opus5-high-recovery.md"
+    if not (paths.REPO_ROOT / spec).is_file():
+        raise ExperimentError(f"official judge recovery spec is missing: {spec}")
+
+    recovery_receipt: dict[str, Any] = {
+        "schema_version": 1,
+        "kind": "official-judge-recovery",
+        "state": "submitting",
+        "batch_id": receipt["batch_id"],
+        "source_receipt": str(source_receipt),
+        "manifest": str(receipt.get("manifest", "")),
+        "ownership": {"branch": branch, "spec": spec},
+        "subqueue": subqueue,
+        "source": snapshot,
+        "submitted_at": submitted_at.isoformat(),
+        "contract": {
+            "profile": "official",
+            "backend": "claude",
+            "model": "claude-opus-5[1m]",
+            "effort": "high",
+            "auth_mode": "vertex",
+            "container": judge_container_name,
+            "container_sha256": judge_container_digest,
+            "context_validation": {
+                "path": str(context_path.resolve()),
+                "sha256": context_digest,
+            },
+        },
+        "site": {
+            "partition": partition,
+            "nodelist": nodelist,
+            "reservation": reservation,
+            "subqueue": subqueue,
+        },
+        "skipped": skipped,
+        "jobs": [],
+    }
+    output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+
+    entrypoint = PTB_ROOT / "src/commit_utils/slurm/official_judge_recovery.sbatch"
+    log_dir = PTB_ROOT / "logs/slurm"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    recovery_environment = {
+        "POST_TRAIN_BENCH_REPO_ROOT": str(PTB_ROOT),
+        "POST_TRAIN_BENCH_ENV_FILE": str(PTB_ROOT / ".env"),
+        "POST_TRAIN_BENCH_SLURM_ENTRYPOINT": str(entrypoint),
+        "POST_TRAIN_BENCH_FROZEN_TOP_BRANCH": branch,
+        "POST_TRAIN_BENCH_FROZEN_TOP_COMMIT": snapshot["top_commit"],
+        "POST_TRAIN_BENCH_FROZEN_PTB_COMMIT": snapshot["ptb_commit"],
+        "POST_TRAIN_BENCH_BATCH_ID": receipt["batch_id"],
+        "POST_TRAIN_BENCH_SPEC_PATH": spec,
+        "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": str(context_path.resolve()),
+        "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256": context_digest,
+        "POST_TRAIN_BENCH_JUDGE_PROFILE": "official",
+        "POST_TRAIN_BENCH_JUDGE_AUTH_MODE": "vertex",
+        "POST_TRAIN_BENCH_CLAUDE_JUDGE_MODEL": "claude-opus-5[1m]",
+        "POST_TRAIN_BENCH_CLAUDE_JUDGE_CONTAINER": judge_container_name,
+        "POST_TRAIN_BENCH_OFFICIAL_JUDGE_CONTAINER": judge_container_name,
+        "POST_TRAIN_BENCH_OFFICIAL_JUDGE_CONTAINER_SHA256": judge_container_digest,
+    }
+    submit_as_root = env.get("POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT") == "1"
+    for candidate in candidates:
+        cell_id = candidate["cell_id"]
+        job_name = _slug(
+            f"{branch}.ptb.{receipt['batch_id']}.{cell_id}.official-judge-recovery"
+        )
+        if len(job_name) > 128:
+            raise ExperimentError(f"official judge recovery job name exceeds 128 characters: {job_name}")
+        command = [
+            "sbatch",
+            "--parsable",
+            "--hold",
+            f"--partition={partition}",
+            f"--nodelist={nodelist}",
+            "--nodes=1",
+            "--ntasks=1",
+            "--cpus-per-task=2",
+            "--mem=16G",
+            "--time=04:00:00",
+            f"--job-name={job_name}",
+            f"--chdir={PTB_ROOT}",
+            f"--output={log_dir}/official-judge-{cell_id}-%j.out",
+            f"--error={log_dir}/official-judge-{cell_id}-%j.err",
+        ]
+        if reservation:
+            command.append(f"--reservation={reservation}")
+        command.extend([str(entrypoint), candidate["result_dir"]])
+        if submit_as_root:
+            command = ["sudo", "--preserve-env", *command]
+        result = subprocess.run(
+            command,
+            cwd=PTB_ROOT,
+            env=os.environ
+            | recovery_environment
+            | {
+                "POST_TRAIN_BENCH_CELL_ID": cell_id,
+                "POST_TRAIN_BENCH_SOURCE_JOB_ID": candidate["source_job_id"],
+                "POST_TRAIN_BENCH_RUN_PURPOSE": "official-judge-recovery",
+                "POST_TRAIN_BENCH_SLURM_JOB_NAME": job_name,
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            recovery_receipt["state"] = "submission_failed"
+            recovery_receipt["failure"] = {
+                "cell_id": cell_id,
+                "stderr": result.stderr.strip(),
+                "held_job_ids": [job["job_id"] for job in recovery_receipt["jobs"]],
+            }
+            output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+            raise ExperimentError(
+                f"official judge recovery submission failed for {cell_id}; prior jobs remain held "
+                f"(receipt: {output}): {result.stderr.strip()}"
+            )
+        job_id = result.stdout.strip().split(";", 1)[0]
+        if not job_id.isdigit():
+            raise ExperimentError(f"invalid official judge recovery job id: {result.stdout}")
+        recovery_receipt["jobs"].append(
+            {
+                **candidate,
+                "job_id": job_id,
+                "job_name": job_name,
+            }
+        )
+        output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+
+    recovery_receipt["state"] = "held"
+    output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+    try:
+        from awm import slurm_queue
+
+        slurm_queue.register_receipt(
+            output,
+            label=f"{receipt['batch_id']} official Claude judge recovery",
+            registry_path=Path(ownership_registry),
+        )
+    except (OSError, slurm_queue.QueueError) as exc:
+        recovery_receipt["state"] = "ownership_registration_failed"
+        recovery_receipt["failure"] = {
+            "reason": "all official judge recovery jobs remain held",
+            "error": str(exc),
+        }
+        output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+        raise ExperimentError(
+            f"official judge recovery jobs remain held because ownership registration failed: "
+            f"{exc} (receipt: {output})"
+        ) from exc
+
+    job_ids = ",".join(job["job_id"] for job in recovery_receipt["jobs"])
+    release = subprocess.run(
+        _release_command(env, job_ids), text=True, capture_output=True, check=False
+    )
+    if release.returncode:
+        recovery_receipt["state"] = "release_failed"
+        recovery_receipt["failure"] = {
+            "reason": "all official judge recovery jobs remain held",
+            "stderr": release.stderr.strip(),
+        }
+        output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+        raise ExperimentError(
+            f"official judge recovery jobs remain held; release failed: {release.stderr.strip()} "
+            f"(receipt: {output})"
+        )
+    recovery_receipt["state"] = "submitted"
+    recovery_receipt["released_at"] = datetime.now(timezone.utc).isoformat()
+    output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+    return output
+
+
 def submit_research_judges(receipt: dict[str, Any]) -> Path:
     audit = audit_receipt(receipt)
     failures = {cell: issues for cell, issues in audit.items() if issues}
@@ -1339,10 +1605,10 @@ def submit_research_judges(receipt: dict[str, Any]) -> Path:
             (context_validation.get(cell_id) or {}).get("sha256"),
         )
         for cell_id, cell in cells.items()
-        if cell.get("agent_model") == "claude-opus-5[1m]" and cell.get("effort") == "xhigh"
+        if cell.get("agent_model") == "claude-opus-5[1m]" and cell.get("effort") == "high"
     }
     if len(evidence) != 1:
-        raise ExperimentError("official receipt has no unique Opus 5 xhigh 1M validation evidence")
+        raise ExperimentError("official receipt has no unique Opus 5 high 1M validation evidence")
     research_context_path, research_context_digest = evidence.pop()
     if (
         not research_context_path
@@ -1350,7 +1616,7 @@ def submit_research_judges(receipt: dict[str, Any]) -> Path:
         or not Path(research_context_path).is_file()
         or _sha256(Path(research_context_path)) != research_context_digest
     ):
-        raise ExperimentError("Opus 5 xhigh 1M validation evidence is missing or changed")
+        raise ExperimentError("Opus 5 high 1M validation evidence is missing or changed")
     research_environment = {
         "POST_TRAIN_BENCH_FROZEN_TOP_BRANCH": branch,
         "POST_TRAIN_BENCH_FROZEN_PTB_COMMIT": frozen_ptb_commit,
@@ -1413,7 +1679,7 @@ def submit_research_judges(receipt: dict[str, Any]) -> Path:
                 "source_receipt": str(source_receipt),
                 "ownership": receipt["ownership"],
                 "batch_id": receipt["batch_id"],
-                "profile": "claude-opus-5[1m]-xhigh",
+                "profile": "claude-opus-5[1m]-high",
                 "ptb_commit": frozen_ptb_commit,
                 "context_validation": {
                     "path": research_context_path,

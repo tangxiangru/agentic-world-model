@@ -247,6 +247,142 @@ def test_result_audit_requires_full_official_flow(tmp_path: Path) -> None:
     assert "missing or empty: judgement_general.json or its _rerun variant" in issues
 
 
+def test_official_judge_recovery_selects_only_judge_only_failures(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ready = tmp_path / "ready"
+    broken = tmp_path / "broken"
+    ready.mkdir()
+    broken.mkdir()
+    monkeypatch.setattr(
+        ptb,
+        "receipt_status",
+        lambda _receipt: [
+            {"cell_id": "g01r1", "job_id": "101", "result_dir": str(ready)},
+            {"cell_id": "g02r1", "job_id": "102", "result_dir": str(broken)},
+        ],
+    )
+    monkeypatch.setattr(
+        ptb,
+        "audit_result",
+        lambda path: (
+            sorted(ptb.OFFICIAL_JUDGE_RECOVERY_ISSUES)
+            if path == ready
+            else ["missing or empty: metrics.json"]
+        ),
+    )
+
+    candidates, skipped = ptb.official_judge_recovery_candidates({"jobs": []})
+
+    assert candidates == [
+        {"cell_id": "g01r1", "source_job_id": "101", "result_dir": str(ready)}
+    ]
+    assert skipped == {"g02r1": ["missing or empty: metrics.json"]}
+
+
+def test_official_judge_recovery_registers_held_jobs_before_release(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    ptb_root = repo / "third_party/PostTrainBench"
+    source_receipt = repo / "data/source.json"
+    result_dir = repo / "data/results/cell_101"
+    context = repo / "data/ptb/context-validation/claude-opus-5-1m-high.json"
+    spec = repo / "doc/spec/2026-09-02-ptb-official-claude-opus5-high-recovery.md"
+    container = tmp_path / "containers/opus_5.sif"
+    entrypoint = ptb_root / "src/commit_utils/slurm/official_judge_recovery.sbatch"
+    for path in (source_receipt, spec, container, entrypoint):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture", encoding="utf-8")
+    result_dir.mkdir(parents=True)
+    context.parent.mkdir(parents=True)
+    context.write_text(
+        json.dumps(
+            {
+                "requested_model": "claude-opus-5[1m]",
+                "effort": "high",
+                "provider": "vertex",
+                "verified": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ptb.paths, "REPO_ROOT", repo)
+    monkeypatch.setattr(ptb, "PTB_ROOT", ptb_root)
+    monkeypatch.setattr(
+        ptb,
+        "official_judge_recovery_candidates",
+        lambda _receipt: (
+            [
+                {
+                    "cell_id": "g01r1",
+                    "source_job_id": "101",
+                    "result_dir": str(result_dir),
+                }
+            ],
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        ptb,
+        "source_snapshot",
+        lambda: {
+            "top_branch": "gangda_wma_evolve",
+            "top_commit": "a" * 40,
+            "ptb_commit": "b" * 40,
+            "top_status": "",
+            "ptb_status": "",
+        },
+    )
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {
+            "POST_TRAIN_BENCH_SLURM_PARTITION": "ptb-a3",
+            "POST_TRAIN_BENCH_SLURM_NODELIST": "node-[2-3]",
+            "POST_TRAIN_BENCH_SLURM_SUBQUEUE": "gangda_wma_evolve",
+            "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(tmp_path / "registry.json"),
+            "POST_TRAIN_BENCH_CONTAINERS_DIR": str(container.parent),
+        },
+    )
+    events: list[str] = []
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(list(command))
+        if command[0] == "sbatch":
+            events.append("submit-held")
+            return subprocess.CompletedProcess(command, 0, "123\n", "")
+        events.append("release")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+    from awm import slurm_queue
+
+    monkeypatch.setattr(
+        slurm_queue,
+        "register_receipt",
+        lambda *_args, **_kwargs: events.append("register"),
+    )
+    receipt = {
+        "_path": str(source_receipt),
+        "batch_id": "batch-v1",
+        "manifest": "experiments/batch.yaml",
+    }
+
+    output = ptb.submit_official_judge_recovery(receipt)
+
+    assert events == ["submit-held", "register", "release"]
+    assert "--hold" in calls[0]
+    assert not any(argument.startswith("--gres") for argument in calls[0])
+    assert calls[1] == ["scontrol", "release", "123"]
+    saved = json.loads(output.read_text(encoding="utf-8"))
+    assert saved["state"] == "submitted"
+    assert saved["contract"]["model"] == "claude-opus-5[1m]"
+    assert saved["contract"]["effort"] == "high"
+    assert saved["jobs"][0]["job_id"] == "123"
+
+
 def test_receipt_validation(tmp_path: Path) -> None:
     receipt = tmp_path / "receipt.json"
     receipt.write_text('{"schema_version": 1, "jobs": [{"cell_id": "b06", "job_id": "1"}]}')
