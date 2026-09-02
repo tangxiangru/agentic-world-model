@@ -547,6 +547,22 @@ def test_a_cell_outside_the_approved_setups_is_rejected() -> None:
         ptb.validate_manifest(data)
 
 
+def test_high_effort_awm_scaffold_is_an_approved_setup() -> None:
+    data = _awm_manifest()
+    for cell in data["cells"]:
+        cell["agent"] = "claude_vertex_high_awm"
+        cell["effort"] = "high"
+
+    ptb.validate_manifest(data)
+
+    launches = ptb.build_launches(data)
+    assert all(
+        launch.command[launch.command.index("--agent") + 1]
+        == "claude_vertex_high_awm"
+        for launch in launches
+    )
+
+
 def test_duplicate_cell_ids_are_rejected() -> None:
     data = _two_repeats_manifest()
     data["cells"][1]["id"] = "p01r1"

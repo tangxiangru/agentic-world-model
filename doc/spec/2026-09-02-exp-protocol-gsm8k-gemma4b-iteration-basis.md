@@ -43,8 +43,8 @@ pilot 若使用缩短预算，只验证接线，不计入正式重复。
 
 ### High-effort AWM scaffold 门
 
-当前 PTB 只有 `claude_vertex_max_awm`，其 `profile.env` 和 `solve.sh` 都真实请求
-`max`。本实验不得把它在 manifest 中伪装成 `high`。第一轮发射前必须：
+本 spec 编写时 PTB 只有 `claude_vertex_max_awm`，其 `profile.env` 和 `solve.sh`
+都真实请求 `max`。本实验不得把它在 manifest 中伪装成 `high`。第一轮发射前必须：
 
 1. 在 PTB fork 增加并测试 `claude_vertex_high_awm`，保留 AWM 只读挂载与
    `awm sandbox setup`，但 profile 与 Claude CLI 均使用 `high`；
@@ -55,7 +55,11 @@ pilot 若使用缩短预算，只验证接线，不计入正式重复。
    加入 launcher 白名单并补测试；
 5. PTB scaffold test、顶层 launcher/sandbox tests 与 `awm ptb check` 全部通过。
 
-这五项未完成时，queue 必须保持空。
+**完成状态（2026-09-02）**：PTB PR #2 已合并为
+`f4ae55a8f2bbfb8809839b87248c8f9998015518`；high scaffold test、canonical judge
+profile test、顶层 allowlist test 与完整 CPU suite（622 passed、18 skipped）均通过。
+后续 manifest 必须使用该 commit 或包含它的后继 commit。这五项未完成时 queue 必须
+保持空的约束继续适用于任何未来替换 scaffold。
 
 ## 三、Round 00：只测 baseline 分布
 

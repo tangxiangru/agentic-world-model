@@ -38,9 +38,11 @@ APPROVED_AGENT_SETUPS = (
     ("claude_vertex_xhigh", "claude-opus-5[1m]", "xhigh", 1_000_000),
     ("claude_vertex_high", "claude-opus-5[1m]", "high", 1_000_000),
     ("claude_vertex_max_200k", "claude-opus-5", "max", 200_000),
-    # claude_vertex_max plus a read-only checkout of this repository at AWM_MOUNT and
-    # `awm sandbox setup` before the prompt; the cell's `awm` block says what it ships.
+    # The matching Vertex profile plus a read-only checkout of this repository at
+    # AWM_MOUNT and `awm sandbox setup` before the prompt; the cell's `awm` block
+    # says what it ships.
     ("claude_vertex_max_awm", "claude-opus-5[1m]", "max", 1_000_000),
+    ("claude_vertex_high_awm", "claude-opus-5[1m]", "high", 1_000_000),
 )
 
 #: Where an `_awm` scaffold expects the checkout inside the sandbox.
