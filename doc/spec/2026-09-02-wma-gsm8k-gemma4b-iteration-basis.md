@@ -358,5 +358,13 @@ sidecar 的冒烟由第一波的 8 个 wma cell 承担。Fable 以 commit 落实
    prompt 使用私有 skill 的绝对路径,Claude 以空 setting sources 启动;review 不在
    scientist session 建立 `skills/wma` symlink,完整 transcript 写入 scientist container
    不可见的 `wma_private/`。该改动不改变 verdict schema 或 scorer。
+11. **已做**(2026-09-02,用户"边跑边分析"指令):operator 的 `awm ptb reconcile` 对每个
+   RUNNING / COMPLETING 的 job 增加 `peek` 动作——把共享结果卷上已经存在的
+   `wma_sidecar.log`、`wma_private/*.jsonl`(gzip)与 `solve_out.txt` 尾部快照到
+   `results/ptb/<batch>/<cell>.inflight/`(附 `peek.json`:sidecar 日志最后一行、
+   transcript 清单、stdout 行数),每轮原地覆盖,cell 结束后由收割删除。收割本身也开始
+   带走 `wma_sidecar.log` 与 gzip 的 transcripts,`status.json` 记 `sidecar_log` 与
+   `transcripts`。scientist 的 task 树在 job 结束前是节点本地的,快照里没有它;cards 与
+   verdict 仍只在收割后可读。不改 verdict schema、scorer 或样本契约。
 
 完成这些门只表示可以发射 round-01,不表示 candidate 可以晋升。

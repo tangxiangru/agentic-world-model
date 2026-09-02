@@ -51,6 +51,14 @@ ALWAYS_FILES = ("metrics.json", "runtime_provenance.json", "time_taken.txt", "cl
 GLOB_FILES = ("judgement_*.json", "final_eval_*.txt")
 GZIP_FILES = ("solve_parsed.txt",)
 LISTED_ONLY = ("solve_out.txt", "system_monitor.log")
+#: What the private WMA sidecar leaves on the shared results volume: its log, and the
+#: transcripts it writes under wma_private/. Both are harvested; both are also the earliest
+#: in-flight evidence, because the scientist's task tree stays node-local until the job ends.
+SIDECAR_LOG = "wma_sidecar.log"
+PRIVATE_DIR = "wma_private"
+#: A running cell's snapshot lives beside the bundle the harvest will write, and is removed by it.
+INFLIGHT_SUFFIX = ".inflight"
+INFLIGHT_STATES = frozenset({"RUNNING", "COMPLETING"})
 SKIP_DIRS = frozenset(
     {"final_model", ".cache", "__pycache__", ".git", "node_modules", "hf_cache", "wandb",
      ".venv", "venv"}
@@ -150,7 +158,7 @@ def _bundle_status(repo_root: Path, batch: str, cell: str) -> dict[str, Any] | N
 
 @dataclass(frozen=True)
 class Action:
-    kind: str  # submit | copy_receipt | cancel | harvest | wait | blocked
+    kind: str  # submit | copy_receipt | cancel | harvest | peek | wait | blocked
     batch: str
     detail: str
     cell: str | None = None
@@ -201,6 +209,11 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
                         actions.append(Action("harvest", batch, state, cell=job["cell_id"],
                                               job_id=job["job_id"], receipt=name,
                                               job_name=job.get("job_name"), state=state))
+                elif state in INFLIGHT_STATES:
+                    # analysis does not wait for the job: snapshot what the shared volume holds
+                    actions.append(Action("peek", batch, state, cell=job["cell_id"],
+                                          job_id=job["job_id"], receipt=name,
+                                          job_name=job.get("job_name"), state=state))
         if entry["want"] == "cancelled":
             for name, receipt in receipts:
                 done = {c["job_id"] for c in receipt.get("cancellations") or []}
@@ -297,6 +310,89 @@ def _copy_task_tree(task: Path, out: Path, skipped: list[dict[str, Any]]) -> Non
             shutil.copy2(src, dst)
 
 
+def _copy_sidecar(result_dir: Path, out_dir: Path, skipped: list[dict[str, Any]]) -> dict[str, Any]:
+    """The sidecar's log and its transcripts (gzipped), from the result directory into ``out_dir``.
+
+    Returns what was found, for status.json / peek.json: whether the log exists and what it
+    last said, and the transcripts by name and size. Nothing here is scientist-visible: the
+    sidecar writes these outside the task tree.
+    """
+    found: dict[str, Any] = {"sidecar_log": False, "sidecar_log_tail": None, "transcripts": []}
+    log = result_dir / SIDECAR_LOG
+    if log.is_file():
+        found["sidecar_log"] = True
+        if log.stat().st_size > PER_FILE_CAP:
+            (out_dir / f"{SIDECAR_LOG}.tail").write_text(_tail(log) or "", encoding="utf-8")
+            skipped.append({"path": SIDECAR_LOG, "size": log.stat().st_size,
+                            "reason": f"over {PER_FILE_CAP} bytes; tail kept"})
+        else:
+            shutil.copy2(log, out_dir / SIDECAR_LOG)
+        lines = (_tail(log, 5) or "").splitlines()
+        found["sidecar_log_tail"] = lines[-1] if lines else ""
+    private = result_dir / PRIVATE_DIR
+    if private.is_dir():
+        for src in sorted(private.glob("*.jsonl")):
+            size = src.stat().st_size
+            found["transcripts"].append({"name": src.name, "size": size})
+            rel = f"{PRIVATE_DIR}/{src.name}"
+            if size > PER_FILE_CAP:
+                skipped.append({"path": rel, "size": size, "reason": f"over {PER_FILE_CAP} bytes"})
+                continue
+            (out_dir / PRIVATE_DIR).mkdir(exist_ok=True)
+            with src.open("rb") as fin, gzip.open(out_dir / PRIVATE_DIR / f"{src.name}.gz", "wb") as fout:
+                shutil.copyfileobj(fin, fout)
+    return found
+
+
+def peek_job(
+    result_dir: Path | None,
+    out_dir: Path,
+    *,
+    batch: str,
+    cell: str,
+    job_id: str,
+    state: str | None = None,
+) -> dict[str, Any]:
+    """Snapshot a running cell: the sidecar log, the transcripts so far, the scientist's stdout tail.
+
+    Overwrites ``out_dir`` each time, so the operator's commit carries only what changed. The
+    task tree (cards, verdicts, .wma) is not here yet: PTB copies it to the results volume only
+    when the job ends. With no result directory yet, peek.json says so and nothing else is written.
+    """
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+    skipped: list[dict[str, Any]] = []
+    peek: dict[str, Any] = {
+        "schema_version": 1,
+        "batch": batch,
+        "cell": cell,
+        "job_id": job_id,
+        "slurm_state": state,
+        "result_dir": str(result_dir) if result_dir else None,
+        "peeked_at": _now(),
+        "sidecar_log": False,
+        "sidecar_log_tail": None,
+        "transcripts": [],
+        "solve_out_lines": None,
+        "skipped": skipped,
+    }
+    if result_dir is not None and result_dir.is_dir():
+        peek.update(_copy_sidecar(result_dir, out_dir, skipped))
+        solve_out = result_dir / "solve_out.txt"
+        if solve_out.is_file():
+            tail = _tail(solve_out)
+            if tail is not None:
+                (out_dir / "solve_out.tail").write_text(tail, encoding="utf-8")
+            try:
+                with solve_out.open("rb") as f:
+                    peek["solve_out_lines"] = sum(1 for _ in f)
+            except OSError:
+                pass
+    (out_dir / "peek.json").write_text(json.dumps(peek, indent=2) + "\n", encoding="utf-8")
+    return peek
+
+
 def harvest_job(
     result_dir: Path | None,
     out_dir: Path,
@@ -325,6 +421,9 @@ def harvest_job(
         else:
             shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
+    inflight = out_dir.parent / f"{cell}{INFLIGHT_SUFFIX}"
+    if inflight.is_dir():
+        shutil.rmtree(inflight)  # the bundle supersedes the snapshots
     skipped: list[dict[str, Any]] = []
     status: dict[str, Any] = {
         "schema_version": 1,
@@ -341,12 +440,17 @@ def harvest_job(
         "judge_flags": [],
         "awm_sha": None,
         "harvested_at": _now(),
+        "sidecar_log": False,
+        "transcripts": [],
         "skipped": skipped,
     }
     if result_dir is not None and result_dir.is_dir():
         for name in ALWAYS_FILES:
             if (result_dir / name).is_file():
                 shutil.copy2(result_dir / name, out_dir / name)
+        sidecar = _copy_sidecar(result_dir, out_dir, skipped)
+        status["sidecar_log"] = sidecar["sidecar_log"]
+        status["transcripts"] = sidecar["transcripts"]
         for pattern in GLOB_FILES:
             for src in sorted(result_dir.glob(pattern)):
                 if src.stat().st_size > PER_FILE_CAP:
@@ -487,6 +591,18 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
                 line = f"cancel {action.batch}/{action.cell} job={action.job_id} did not happen: {exc}"
             else:
                 line = f"cancel {action.batch}/{action.cell} job={record['job_id']} ({record['state_before']}): {action.detail}"
+        elif action.kind == "peek":
+            result_dir = result_for_job(str(action.job_id))
+            out_dir = repo_root / RESULTS_ROOT / action.batch / f"{action.cell}{INFLIGHT_SUFFIX}"
+            peek = peek_job(result_dir, out_dir, batch=action.batch, cell=str(action.cell),
+                            job_id=str(action.job_id), state=action.state)
+            if peek["result_dir"] is None:
+                what = "no result directory yet"
+            else:
+                sidecar = ("sidecar: " + (peek["sidecar_log_tail"] or "log empty")) if peek["sidecar_log"] else "no sidecar log"
+                what = (f"{sidecar}; {len(peek['transcripts'])} transcript(s); "
+                        f"solve_out {peek['solve_out_lines']} lines")
+            line = f"peek {action.batch}/{action.cell} job={action.job_id} {action.state}: {what}"
         elif action.kind == "harvest":
             result_dir = result_for_job(str(action.job_id))
             out_dir = repo_root / RESULTS_ROOT / action.batch / str(action.cell)

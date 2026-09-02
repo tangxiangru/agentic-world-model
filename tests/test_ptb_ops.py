@@ -118,7 +118,7 @@ def test_pilot_first_gates_the_formal_submission(repo, tmp_path: Path) -> None:
     _receipt(tmp_path / "vol", "ep-r01", "pilot", [("p01r1", "100")])
     states["100"] = "RUNNING"
     kinds = [a.kind for a in ops.plan([entry], root)]
-    assert kinds == ["copy_receipt", "wait"]
+    assert kinds == ["copy_receipt", "peek", "wait"]
 
     states["100"] = "COMPLETED"
     kinds = [a.kind for a in ops.plan([entry], root)]
@@ -141,15 +141,20 @@ def test_finished_jobs_are_harvested_once(repo, tmp_path: Path) -> None:
     _receipt(tmp_path / "vol", "ep-r01", "formal", [("p01r1", "201"), ("p01r2", "202")])
     states.update({"201": "COMPLETED", "202": "RUNNING"})
     actions = ops.plan([ENTRY], root)
-    assert [a.kind for a in actions] == ["copy_receipt", "harvest"]
+    assert [a.kind for a in actions] == ["copy_receipt", "harvest", "peek"]
     assert actions[1].cell == "p01r1" and actions[1].state == "COMPLETED"
+    assert actions[2].cell == "p01r2" and actions[2].state == "RUNNING"  # peeked every round
     ops.apply(actions, root)
     assert (root / "results/ptb/ep-r01/formal-2026-09-02T000000.json").is_file()
     assert (root / "results/ptb/ep-r01/p01r1/status.json").is_file()
-    assert ops.plan([ENTRY], root) == []  # harvested, tracked, and the formal receipt exists
+    assert json.loads((root / "results/ptb/ep-r01/p01r2.inflight/peek.json").read_text())["result_dir"] is None
+    (peek,) = ops.plan([ENTRY], root)  # harvested, tracked, and the formal receipt exists
+    assert (peek.kind, peek.cell) == ("peek", "p01r2")
     states["202"] = "FAILED"
     (again,) = ops.plan([ENTRY], root)
     assert (again.kind, again.cell, again.state) == ("harvest", "p01r2", "FAILED")
+    ops.apply([again], root)
+    assert not (root / "results/ptb/ep-r01/p01r2.inflight").exists()  # the bundle supersedes it
 
 
 def test_a_cancelled_entry_cancels_pending_jobs_only(repo, tmp_path: Path, monkeypatch) -> None:
@@ -159,7 +164,7 @@ def test_a_cancelled_entry_cancels_pending_jobs_only(repo, tmp_path: Path, monke
     entry = {**ENTRY, "want": "cancelled", "why": "replaced by ep-r02"}
     actions = ops.plan([entry], root)
     assert [(a.kind, a.cell) for a in actions] == [
-        ("copy_receipt", None), ("harvest", "p01r3"), ("cancel", "p01r1"), ("wait", "p01r2")]
+        ("copy_receipt", None), ("peek", "p01r2"), ("harvest", "p01r3"), ("cancel", "p01r1"), ("wait", "p01r2")]
     calls: list[list[str]] = []
     monkeypatch.setattr(ops.subprocess, "run", lambda cmd, **kw: (calls.append(list(cmd)) or
                         __import__("subprocess").CompletedProcess(cmd, 0, "", "")))
@@ -172,7 +177,7 @@ def test_a_cancelled_entry_cancels_pending_jobs_only(repo, tmp_path: Path, monke
     # the next plan does not cancel it again, and still leaves the running one alone
     states["301"] = "CANCELLED"
     kinds = [(a.kind, a.cell) for a in ops.plan([entry], root)]
-    assert kinds == [("harvest", "p01r1"), ("wait", "p01r2")]
+    assert kinds == [("harvest", "p01r1"), ("peek", "p01r2"), ("wait", "p01r2")]
 
 
 def test_a_receipt_that_did_not_reach_submitted_blocks(repo, tmp_path: Path) -> None:
@@ -251,6 +256,11 @@ def _fake_result(tmp_path: Path) -> Path:
     (task / "ckpt.bin").write_bytes(b"b" * 3)
     (task / "skills" / "exp_protocol" / "SKILL.md").write_text("skill\n")
     (task / ".claude" / "skills" / "exp_protocol").symlink_to("../../skills/exp_protocol")
+    # what the private sidecar leaves on the results volume, outside the task tree
+    (result / "wma_sidecar.log").write_text("Starting private WMA sidecar\nreviewed exp-01\n")
+    (result / "wma_private").mkdir()
+    (result / "wma_private" / "exp-01.transcript.jsonl").write_text('{"type": "assistant"}\n' * 50)
+    (result / "wma_private" / "exp-02.transcript.jsonl").write_bytes(b"x" * (ops.PER_FILE_CAP + 1))
     return result
 
 
@@ -283,7 +293,44 @@ def test_harvest_keeps_the_readable_part_and_lists_the_rest(tmp_path: Path, monk
     assert skipped["ckpt.bin"] == "binary" and skipped["data/big.jsonl"].startswith("over")
     tail = (out / "slurm.out.tail").read_text().splitlines()
     assert len(tail) == ops.LOG_TAIL_LINES and tail[-1] == "line 499"
+    # the sidecar's log and transcripts come along, gzipped, never into task/
+    assert (out / "wma_sidecar.log").read_text().endswith("reviewed exp-01\n")
+    with gzip.open(out / "wma_private" / "exp-01.transcript.jsonl.gz", "rt") as f:
+        assert f.readline() == '{"type": "assistant"}\n'
+    assert not (out / "wma_private" / "exp-02.transcript.jsonl.gz").exists()
+    assert skipped["wma_private/exp-02.transcript.jsonl"].startswith("over")
+    assert status["sidecar_log"] is True
+    assert [t["name"] for t in status["transcripts"]] == ["exp-01.transcript.jsonl", "exp-02.transcript.jsonl"]
+    assert not (out / "task" / "wma_private").exists()
     assert json.loads((out / "status.json").read_text()) == status
+
+
+def test_peek_snapshots_a_running_cell_and_the_harvest_replaces_it(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
+    result = _fake_result(tmp_path)
+    batch = tmp_path / "results" / "ptb" / "ep-r01"
+    inflight = batch / "p01r1.inflight"
+    peek = ops.peek_job(result, inflight, batch="ep-r01", cell="p01r1", job_id="555", state="RUNNING")
+    assert peek["sidecar_log"] is True and peek["sidecar_log_tail"] == "reviewed exp-01"
+    assert [t["name"] for t in peek["transcripts"]] == ["exp-01.transcript.jsonl", "exp-02.transcript.jsonl"]
+    assert peek["solve_out_lines"] == 1000
+    assert (inflight / "wma_sidecar.log").is_file()
+    assert (inflight / "wma_private" / "exp-01.transcript.jsonl.gz").is_file()
+    assert len((inflight / "solve_out.tail").read_text().splitlines()) == ops.LOG_TAIL_LINES
+    assert json.loads((inflight / "peek.json").read_text()) == peek
+    # the task tree is node-local while the job runs: nothing from it is snapshotted
+    assert not (inflight / "task").exists()
+    # the next round overwrites the snapshot in place
+    (result / "wma_sidecar.log").write_text("Starting private WMA sidecar\nreviewed exp-01\nreviewed exp-02\n")
+    again = ops.peek_job(result, inflight, batch="ep-r01", cell="p01r1", job_id="555", state="RUNNING")
+    assert again["sidecar_log_tail"] == "reviewed exp-02"
+    # a job whose result directory PTB has not created yet
+    nothing = ops.peek_job(None, batch / "p01r2.inflight", batch="ep-r01", cell="p01r2", job_id="556", state="RUNNING")
+    assert nothing["result_dir"] is None and nothing["sidecar_log"] is False
+    assert sorted(p.name for p in (batch / "p01r2.inflight").iterdir()) == ["peek.json"]
+    # the harvest of the same cell removes its snapshot
+    ops.harvest_job(result, batch / "p01r1", batch="ep-r01", cell="p01r1", job_id="555", state="COMPLETED")
+    assert not inflight.exists() and (batch / "p01r1" / "status.json").is_file()
 
 
 def test_harvest_without_a_result_dir_records_that(tmp_path: Path) -> None:
