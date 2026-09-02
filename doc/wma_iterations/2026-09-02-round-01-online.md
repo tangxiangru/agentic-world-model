@@ -104,6 +104,14 @@ the provisional L2 coverage is:
 | exp-04 follow-on SFT | 4 | 2 | 2 above |
 | **total** | **12** | **7 (58%)** | **4 above, 1 below** |
 
+Fable commit `82cf601` makes the corresponding read-time scorer distinction
+explicit. A first card that measures its own previously unmeasured base
+comparator is valid at L1 when it produces a reading, but its self-delta and
+next-step decision are unscorable at L2/L3. Across all 15 accepted closed
+cards this corrects L1 from 12/15 to 14/15 and removes three self-measurement
+cards from L2, yielding the same 7/12 table above. The intervention-only 12
+cards retain L0/L1 11/12.
+
 The same 12 cards give provisional L0 and L1 hit rates of 11/12. The sole
 shared miss is `w01r07/exp-02`: WMA predicted that the launch would not run or
 produce a valid candidate, but it completed, scored 0.6533, and was adopted.
@@ -181,6 +189,11 @@ Measurement-only changes already made and separately attributable:
   jobs now show `ReqNodeList=(null)` outside the four-node scope; those RUNNING
   jobs were not cancelled. All 32 v3 jobs passed both held and post-release
   checks and remain PENDING on `slurm2-a3nodesetondem-[2-3]`.
+- `82cf601` (Fable): score a first self-measurement on whether its reading
+  exists at L1, and leave its self-delta and next-step decision unscorable at
+  L2/L3. Decode comparisons with a real comparator path remain scorable. This
+  reconciles the mechanical ledger with the pre-registered 12-card audit and
+  changes no verdict or skill bytes.
 
 ## Evidence
 
