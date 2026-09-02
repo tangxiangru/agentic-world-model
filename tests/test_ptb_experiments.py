@@ -12,6 +12,10 @@ MANIFEST = paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-opus5-4x4-batch1.
 DUAL_MANIFEST = (
     paths.REPO_ROOT / "experiments/posttrainbench/gsm8k-aime2025-opus5-4x4x2-batch1.yaml"
 )
+ROUND00_MANIFEST = (
+    paths.REPO_ROOT
+    / "experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16.yaml"
+)
 
 
 def test_manifest_is_exact_approved_matrix() -> None:
@@ -561,6 +565,41 @@ def test_high_effort_awm_scaffold_is_an_approved_setup() -> None:
         == "claude_vertex_high_awm"
         for launch in launches
     )
+
+
+def test_round00_is_sixteen_identical_high_awm_baseline_repeats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ptb.paths, "data_root", lambda *_args, **_kwargs: tmp_path)
+
+    data = ptb.load_manifest(ROUND00_MANIFEST)
+    launches = ptb.build_launches(data, hold=True)
+
+    assert data["ownership"] == {
+        "branch": "gangda_exp_protocol_evolve",
+        "spec": "doc/spec/2026-09-02-exp-protocol-round00-gsm8k-baseline.md",
+    }
+    assert data["contract"]["task"] == "gsm8k"
+    assert data["contract"]["replication"] == {"settings": 1, "repeats": 16}
+    assert data["contract"]["official_judge_container"] == "opus_5.sif"
+    assert len(launches) == 16
+    assert [cell["replicate"] for cell in data["cells"]] == list(range(1, 17))
+    assert {cell["agent"] for cell in data["cells"]} == {"claude_vertex_high_awm"}
+    assert {cell["effort"] for cell in data["cells"]} == {"high"}
+    assert {cell["base_model"] for cell in data["cells"]} == {"google/gemma-3-4b-pt"}
+    assert {cell["awm"]["sha"] for cell in data["cells"]} == {
+        "eaf50919ff5f79f15e33df7bb49f44ffebacfc64"
+    }
+    assert all(cell["awm"]["paths"] == list(ptb.EXP_PROTOCOL_SHIP) for cell in data["cells"])
+    assert all("--hold" in launch.command for launch in launches)
+    assert all(
+        launch.environment["POST_TRAIN_BENCH_OFFICIAL_JUDGE_CONTAINER_SHA256"]
+        == "35f287e7b17d62ab44cd95db26dfeeac166943daed5f7b557b008bae51acc759"
+        for launch in launches
+    )
+    (pilot,) = ptb.build_launches(data, pilot=True)
+    assert pilot.cell_id == "p00r01"
+    assert pilot.command[pilot.command.index("--hours") + 1] == "1"
 
 
 def test_duplicate_cell_ids_are_rejected() -> None:

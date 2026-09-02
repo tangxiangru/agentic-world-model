@@ -36,10 +36,16 @@ scientist；它并行运行受不同 protocol commit 约束的 scientist cells�
 | canonical judges | `official` profile = Claude Opus 5 high through Vertex |
 | judge container | `opus_5.sif` @ `35f287e7b17d62ab44cd95db26dfeeac166943daed5f7b557b008bae51acc759` |
 | minimum repeats | 每个 task × protocol variant 至少 2 个正式、独立、有效 cell |
-| initial baseline | `9680574019311c98b0171c3df8d81f2294a21244`（短 SHA `9680574`） |
+| initial protocol-content commit | `9680574019311c98b0171c3df8d81f2294a21244`（短 SHA `9680574`） |
+| initial shippable baseline | `eaf50919ff5f79f15e33df7bb49f44ffebacfc64`（短 SHA `eaf5091`） |
 
 `replicate` 是预先写入 manifest 的独立重复编号，不得在看到结果后重命名或挑选。
 pilot 若使用缩短预算，只验证接线，不计入正式重复。
+
+`9680574` 是最后一次直接修改 scientist skill 的 commit，但它早于
+`awm/sandbox.py` 和只读 source 的 install 修复，不能满足六路径 shipping contract。
+`eaf5091` 保留当前 protocol 内容并包含可执行的 CLI、sandbox、`awm/exp_protocol`
+与 skill，因此是 Round 00 实际写入 `awm.sha` 的 baseline。
 
 ### High-effort AWM scaffold 门
 
