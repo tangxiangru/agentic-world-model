@@ -263,8 +263,9 @@ wma:
    sidecar 启动时会先建 `<task>/.wma/requests`;客户端 `awm wma review` / `status` 发现
    这个目录不存在就回答 "no world-model agent is attached to this cell; no verdict will
    come",返回 0,不入队、不建目录;规程告诉 scientist 这句就是全部答案,继续第 5 步。
-   两臂 scientist 看到的字节逐一相同。硬化建议(fork 侧,未做):`run_task.sh` 在启动
-   scientist 之前自己 `mkdir -p task/.wma/requests`,消除 sidecar 进程起慢的竞态。
+   两臂 scientist 看到的字节逐一相同。**已硬化(fork 侧):**`run_task.sh` 在启动
+   scientist 之前同步 `mkdir -p task/.wma/requests`,消除 sidecar 进程起慢时被薄客户端
+   错认成无 WMA 对照的竞态；adapter 测试锁住这个顺序。
    另一条路——把 WMA 装进 scientist 沙箱、用 `awm_wma.json` 开关——已实现过但被 sidecar
    设计取代,留在 tag `wip-online-in-sandbox` 供查。
 4. WMA 子进程的 effort 与 model 必须显式传入并盖进 verdict(第十一节第 1 条)。
