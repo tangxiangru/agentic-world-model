@@ -103,7 +103,8 @@
 decision adopt 121 / reject 116 / abandon_line 50 / iterate 13。抽样与全量各层相差
 < 0.02,标准集无偏。
 
-**Round 01** 是第一个模型驱动的 baseline:v0 skill、`claude` 后端、第二节 A 表的全部
+**Round 01** 的早期 Fable 5.1 / medium 计价结果只保留为历史接线证据，不是当前合同的
+baseline pass。当前模型驱动 baseline 使用 v0 skill、`claude` 后端、第二节 A 表的全部
 固定值。目的不是宣布改进,而是得到:
 
 - 每层的 hit 对 round-00 基率;**`L0_recall_failed`**(28 张 failed 卡上说 no 的比例)
@@ -225,9 +226,11 @@ held-out 只回答"train 侧看到的改善是否泛化到另一个 base model"�
 
 所有分析必须保留 out 目录路径、指纹、variant commit 和 record 路径。
 
-## 九、在线阶段的 WMA 注入(第二阶段;先登记,不执行)
+## 九、在线阶段的 WMA 注入(第二阶段)
 
-每个正式 cell 使用 `claude_vertex_high_awm`,manifest 在消融线的 `awm` 块之上加:
+每个正式 cell 使用 `claude_vertex_high_awm`。Scientist 的公共 checkout 只包含
+`exp_protocol`、薄 `awm wma` 请求客户端和必要 CLI；WMA runtime、skill、历史由 PTB host
+启动的独立 sidecar 私有挂载，绝不进入 scientist container。manifest 在 `awm` 块之外加:
 
 ```yaml
 awm:
@@ -238,33 +241,33 @@ awm:
     - awm/paths.py
     - awm/sandbox.py
     - awm/exp_protocol
-    - awm/wma
     - skills/exp_protocol
-    - skills/wma
   setup: "--exp-protocol --tool claude"
 wma:
+  sha: <wma-variant-top-level-commit>
   backend: claude
-  model: <与离线相同>
+  model: claude-opus-5
   effort: high
+  mode: online
   budget: "cpu=10,gpu=0,wall=15,turns=40"
   history: <train 侧语料的只读挂载路径>
 ```
 
-上线前必须解决、且每一项都要写进本文的修订或单独 spec:
+在线装船必须满足:
 
-1. 发射器的 `AWM_FORBIDDEN_TREES` 现在按名拒绝 `skills/wma` 与 `awm/wma`。需要一种
-   "WMA-aware study"模式允许这两棵树,同时继续拒绝 `skills/wma_meta`、
-   `skills/exp_protocol_meta`、`doc`。
-2. `history` 挂载:WMA 在 cell 里读 train 侧语料的方式(只读、路径固定、在 `--add-dir`
-   栅栏之内)。
+1. 公共 checkout 继续拒绝 `skills/wma`、`awm/wma`、两个 meta skill 与 `doc`;只增加
+   `awm/wma_client.py`。私有 checkout 只挂进 sidecar container。
+2. `history` 只读挂载到 sidecar 的 `/history`,不挂进 scientist container。
 3. 无 WMA 对照臂:同一 `skills/exp_protocol` commit 去掉第 4b 步。现成的做法是把 4b 段
    搬到 `skills/wma/scientist_section.md`,由 `awm exp_protocol install --with-wma`
    装船时追加——用户 2026-09-02 决定暂不做;上线前重新决定。
 4. WMA 子进程的 effort 与 model 必须显式传入并盖进 verdict(第十一节第 1 条)。
-5. scientist 能读到挂载里的 `skills/wma/`(含先验)。是否接受,上线前定。
+5. Scientist 只能写 review request、读 status/verdict;不能读取 WMA skill、先验、历史或
+   sidecar checkout。完整 WMA transcript 写到 result-private 目录,不落在 scientist 的
+   `memory/cards`;WMA 只接受已 lock 的 card。
 
-scientist 只得到 `exp_protocol`(含 4b)与调用 `awm wma review` 的权限;meta skill 和
-docs 仍由发射器拒绝。
+Scientist 只得到 `exp_protocol`(含 4b)与调用 `awm wma review --background` 的权限;
+sidecar 异步处理批量 request,meta skill 和 docs 仍由发射器拒绝。
 
 ## 十、预算与启动门
 
@@ -295,7 +298,7 @@ verdict 里的 `cost.usd` 是 CLI 报的**影子价**,不是账单——它用�
    打赢 heuristic 地板超过 `max(spread_L, 0.03)`;
 2. `L0_recall_failed` 与 `L1_recall_invalid` 达到 0.8(设计文档 §4.4 的建议线);
 3. held-out(test 侧)上前两条不塌;
-4. 第九节五项全部解决。
+4. 第九节五项全部通过装船和 sidecar 隔离测试。
 
 设计文档 §4.4 原写"显著优于查表基线";查表基线没有实现,本阶段不补,§4.4 已改为
 对 heuristic 地板。上线后第一轮**只跑 baseline skill**(≥3 cell)加对照臂,先看探测层
@@ -337,5 +340,10 @@ verdict 里的 `cost.usd` 是 CLI 报的**影子价**,不是账单——它用�
    `noise_floor(n)` 与新列 `L2_width_over_noise`;把 base model 原样打包的 baseline 卡
    在 L3 上 unscorable;`skill_sha` 改为覆盖 `skills/wma/` 全部文件(手册是 skill 的一部分);
    回放器 `--agents REGEX`(经 split 文件的 run id 过滤,session 不带身份)与 `filter.json`。
+10. **已做**(在线隔离):scientist-side `awm wma` 是只写原子 request、只读 status 的薄
+   client;真正的 `awm/wma`、`skills/wma` 与 history 在独立 sidecar container。WMA
+   prompt 使用私有 skill 的绝对路径,Claude 以空 setting sources 启动;review 不在
+   scientist session 建立 `skills/wma` symlink,完整 transcript 写入 scientist container
+   不可见的 `wma_private/`。该改动不改变 verdict schema 或 scorer。
 
 完成这些门只表示可以发射 round-01,不表示 candidate 可以晋升。

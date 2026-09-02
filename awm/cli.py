@@ -656,10 +656,16 @@ def build_parser() -> argparse.ArgumentParser:
     # protocol-only ablation carries no awm/wma at all, and the CLI must still work.
     # find_spec, not try/except ImportError, so a real import error inside awm.wma
     # is not mistaken for its absence.
-    if importlib.util.find_spec("awm.wma") is not None:
+    if (Path(__file__).resolve().parent / "wma").is_dir() and importlib.util.find_spec(
+        "awm.wma"
+    ) is not None:
         from awm.wma import cli as wma_cli
 
         wma_cli.register(sub)
+    else:
+        from awm import wma_client
+
+        wma_client.register(sub)
 
     from awm import sandbox
 

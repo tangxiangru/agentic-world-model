@@ -145,16 +145,14 @@ def test_status_reports_pending_and_done(session, capsys) -> None:
     assert "exp-01" in out and "exp-02" in out and "no verdict" in out
 
 
-def test_the_cli_builds_and_serves_the_protocol_without_the_wma_package(monkeypatch) -> None:
-    """The ablation sandbox ships a checkout with no awm/wma; every other command must still work."""
+def test_the_cli_uses_the_thin_client_without_the_private_wma_package(monkeypatch) -> None:
     import awm.cli as cli
 
     real = cli.importlib.util.find_spec
     monkeypatch.setattr(cli.importlib.util, "find_spec",
                         lambda name, *a, **k: None if name == "awm.wma" else real(name, *a, **k))
     parser = cli.build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["wma", "status", "--dir", "x"])
+    assert parser.parse_args(["wma", "status", "--dir", "x"]).cmd == "status"
     assert parser.parse_args(["exp_protocol", "index", "--dir", "x"]).cmd == "index"
 
 

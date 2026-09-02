@@ -185,7 +185,7 @@ def test_claude_argv_carries_history_add_dir_and_max_turns(tmp_path) -> None:
     argv = be.argv(b)
     assert "--output-format" in argv and argv[argv.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in argv
-    assert argv[argv.index("--add-dir") + 1] == str((tmp_path / "hist").resolve())
+    assert argv[argv.index("--add-dir") + 1] == str((tmp_path / "skills/wma").resolve())
     assert argv[argv.index("--max-turns") + 1] == "30"
     assert "--model" in argv and "claude-opus-5" in argv
 
@@ -212,7 +212,7 @@ def test_add_dir_also_covers_where_the_history_links_point(tmp_path) -> None:
     b.history_dir = hist
     argv = backends.get_backend("claude", model="m").argv(b)
     dirs = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
-    assert dirs == [str(hist.resolve()), str(corpus_train.resolve())]
+    assert dirs == [str(b.skill_dir.resolve()), str(hist.resolve()), str(corpus_train.resolve())]
 
 
 # ---- effort and model are part of the measurement: passed explicitly, stamped on the verdict (2026-09-02) ----
@@ -232,6 +232,35 @@ def test_the_backend_stamps_the_model_and_effort_it_ran_with(tmp_path) -> None:
     backends.CommandBackend("fake", [str(exe)], "m-1", effort="high", transcript="stream-json").run(b)
     v = schema.load_verdict(b.verdict_path)
     assert v["model"] == "m-1" and v["effort"] == "high"
+
+
+def test_online_sidecar_can_keep_the_transcript_outside_the_scientist_session(
+    tmp_path,
+) -> None:
+    b = brief(tmp_path)
+    private = tmp_path / "private-transcripts"
+    private.mkdir()
+    b.extra["transcript_dir"] = private
+    exe = streaming_fake(tmp_path, b, stream_events(result_event(0.1, 2)))
+
+    backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b)
+
+    assert (private / "exp-01.transcript.jsonl").is_file()
+    assert not b.verdict_path.with_name("exp-01.transcript.jsonl").exists()
+
+
+def test_online_sidecar_private_scratch_is_inside_the_access_fence(tmp_path) -> None:
+    b = brief(tmp_path)
+    scratch = tmp_path / "sidecar-scratch"
+    scratch.mkdir()
+    probe = scratch / "probe.py"
+    probe.write_text("pass\n")
+    b.extra["allowed_roots"] = [scratch]
+    stdout = stream_events(tool_use("Bash", command=f"python {probe}"))
+
+    _, access = backends.scan_transcript(stdout, b)
+
+    assert access["outside"] == []
 
 
 def test_a_backend_without_model_or_effort_stamps_neither(tmp_path) -> None:

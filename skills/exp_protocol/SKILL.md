@@ -67,7 +67,12 @@ a re-lock or an override without a real reason is what the record will show.
 
 ## If a world-model agent is installed
 
-`awm wma review` asks an estimator what your locked card will do: one line —
+You interact with the WMA only through the thin `awm wma` client. The WMA's
+own skill, priors, historical corpus and execution process are private to its
+sidecar and are not scientist inputs: do not look for or try to read them.
+
+After a successful lock, `awm wma review` asks the private estimator what the
+proposal will do: one line —
 *worth running now*, why, what to verify first, a cheaper variant if there is
 one. It is advice; you decide. Three things matter about how you use it:
 
@@ -76,7 +81,8 @@ one. It is advice; you decide. Three things matter about how you use it:
   preparing the launch. `awm wma status --dir {dir}` shows what is in.
 - **Batch your candidates.** If you have several cards you could run next, review
   them in one call — `awm wma review --dir {dir} exp-05 exp-06 exp-07 --background`
-  — they run in parallel and you get a ranking, not three separate waits.
+  — they run in parallel and you get independent verdicts plus a ranking, not
+  three separate waits. Every named card must already be locked.
 - **Do not wait for it to launch.** If the verdict has not arrived by the time you
   would start the run, start the run. Time is the budget; the verdict is worth
   exactly what it saves you, and nothing when it costs you the launch.
@@ -85,6 +91,10 @@ Read the verdict when it arrives. If it says *verify first*, that is usually
 minutes on CPU that can save an hour on the GPU. If it says *no* and you disagree,
 run anyway and note why in `situation.alternatives_rejected` of the next card;
 that disagreement is the record the estimator learns from.
+
+Use `awm wma status --dir {dir}` to check whether the sidecar has written the
+verdict. The only WMA files you should see are request/status records and
+`exp-NN.verdict.json` beside the card. Missing `skills/wma` is intentional.
 
 ## The rules
 

@@ -3,8 +3,9 @@
 ``review`` is the pull entry point: load the card, refuse a post-hoc verdict
 (a card that already has a result), build the brief, run the backend, check
 the file it left, stamp what it left blank. It never modifies the card. The
-session directory gets a ``skills/wma`` link so an agentic backend can read
-its own instructions from where it stands.
+For local/offline use the session gets a ``skills/wma`` link. An online
+sidecar instead reads a private absolute skill path and never exposes that
+link to the scientist.
 """
 
 from __future__ import annotations
@@ -67,8 +68,9 @@ def build_prompt(brief: Brief) -> str:
     )
     history = (f"Historical experience (other runs, read-only): {brief.history_dir}\n"
                if brief.history_dir else "")
+    skill = Path(brief.skill_dir) / "SKILL.md"
     b = brief.budget
-    return f"""You are the world-model agent (WMA). Read skills/wma/SKILL.md in this directory first and follow it.
+    return f"""You are the world-model agent (WMA). Read {skill} first and follow it.
 
 Task: produce a verdict for card {brief.card_id}.
 Card (sections 0-4 are the proposal): {brief.card_path}
@@ -79,7 +81,7 @@ Budget: cpu_min={b.cpu_min}, gpu_min={b.gpu_min}, wall_min={b.wall_min}. Stop an
 Write the verdict as JSON to exactly this path and nothing else:
 {brief.verdict_path}
 Its shape is skills/wma/verdict.example.json (schema awm-wma-verdict-v1). Set mode to "{brief.mode}".
-Do not modify any other file. Do not read outside the session directory except the historical experience path above.
+Do not modify any other file. Do not read outside the session directory except the WMA skill and historical experience paths above.
 Do not look for the card's result anywhere; you are estimating it.
 """
 
@@ -99,7 +101,9 @@ def make_brief(session_dir: Path, card_id: str, *, mode: str, budget: Budget, mo
 def review(session_dir: Path, card_id: str, backend: Backend, *, mode: str = "offline",
            budget: Budget | None = None, model: str | None = None, skill_dir: Path | None = None,
            history_dir: Path | None = None, force: bool = False, tag: str | None = None,
-           effort: str | None = None) -> dict[str, Any]:
+           effort: str | None = None, expose_skill: bool = True,
+           transcript_dir: Path | None = None,
+           allowed_roots: list[Path] | None = None) -> dict[str, Any]:
     if mode not in schema.MODES:
         raise ReviewError(f"mode must be one of {schema.MODES}")
     skill_dir = Path(skill_dir) if skill_dir else default_skill_dir()
@@ -110,10 +114,17 @@ def review(session_dir: Path, card_id: str, backend: Backend, *, mode: str = "of
         raise ReviewError(str(exc)) from exc
     if not brief.card_path.is_file():
         raise ReviewError(f"no such card: {brief.card_path}")
+    if transcript_dir is not None:
+        transcript_dir = Path(transcript_dir)
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        brief.extra["transcript_dir"] = transcript_dir
+    if allowed_roots:
+        brief.extra["allowed_roots"] = [Path(root) for root in allowed_roots]
     card = migrate_v1(load_card(brief.card_path))
     if not force and (get(card, "result.execution") or get(card, "conclusion.decision")):
         raise ReviewError(f"{card_id} already has a result; a verdict now would be post-hoc (use force to override)")
-    prepare_session(brief.session_dir, skill_dir)
+    if expose_skill:
+        prepare_session(brief.session_dir, skill_dir)
     try:
         backend.run(brief)
     except BackendError as exc:

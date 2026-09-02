@@ -38,9 +38,10 @@ APPROVED_AGENT_SETUPS = (
     ("claude_vertex_xhigh", "claude-opus-5[1m]", "xhigh", 1_000_000),
     ("claude_vertex_high", "claude-opus-5[1m]", "high", 1_000_000),
     ("claude_vertex_max_200k", "claude-opus-5", "max", 200_000),
-    # claude_vertex_max plus a read-only checkout of this repository at AWM_MOUNT and
-    # `awm sandbox setup` before the prompt; the cell's `awm` block says what it ships.
+    # A read-only public checkout at AWM_MOUNT runs `awm sandbox setup` before the prompt;
+    # the cell's `awm` block says what the scientist may see.
     ("claude_vertex_max_awm", "claude-opus-5[1m]", "max", 1_000_000),
+    ("claude_vertex_high_awm", "claude-opus-5[1m]", "high", 1_000_000),
 )
 
 #: Where an `_awm` scaffold expects the checkout inside the sandbox.
@@ -54,14 +55,23 @@ AWM_FORBIDDEN_TREES = (
     "awm/wma",
     "doc",
 )
-#: What a cell of the experiment-protocol line ships: the CLI, the protocol, nothing else.
+#: Scientist-visible protocol, CLI and thin request client; no WMA policy/runtime.
 EXP_PROTOCOL_SHIP = (
     "awm/__init__.py",
     "awm/cli.py",
     "awm/paths.py",
     "awm/sandbox.py",
+    "awm/wma_client.py",
     "awm/exp_protocol",
     "skills/exp_protocol",
+)
+#: Mounted only into the WMA sidecar container, never into the scientist.
+WMA_PRIVATE_SHIP = (
+    "awm/__init__.py",
+    "awm/paths.py",
+    "awm/exp_protocol",
+    "awm/wma",
+    "skills/wma",
 )
 
 
@@ -76,6 +86,8 @@ class Launch:
     environment: dict[str, str]
     #: {sha, paths, dir, digest} of the checkout an `_awm` cell ships; None otherwise.
     checkout: dict[str, Any] | None = None
+    #: Private WMA runtime mounted only into the host sidecar container.
+    wma_checkout: dict[str, Any] | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -162,6 +174,33 @@ def _validate_awm_block(cell_id: str, agent: Any, block: Any) -> None:
         )
 
 
+def _validate_wma_block(cell_id: str, agent: Any, block: Any) -> None:
+    """Validate a private online-WMA sidecar contract."""
+
+    if block is None:
+        return
+    if not str(agent).endswith("_awm"):
+        raise ExperimentError(f"cell {cell_id}: a wma block requires an _awm scientist scaffold")
+    if not isinstance(block, dict):
+        raise ExperimentError(f"cell {cell_id}: wma must be a mapping")
+    expected = {
+        "backend": "claude",
+        "model": "claude-opus-5",
+        "effort": "high",
+        "mode": "online",
+        "budget": "cpu=10,gpu=0,wall=15,turns=40",
+    }
+    for key, value in expected.items():
+        if block.get(key) != value:
+            raise ExperimentError(f"cell {cell_id}: wma.{key} must be {value!r}")
+    sha = str(block.get("sha", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ExperimentError(f"cell {cell_id}: wma.sha must be a full commit id")
+    history = block.get("history")
+    if not isinstance(history, str) or not history.startswith("/"):
+        raise ExperimentError(f"cell {cell_id}: wma.history must be a fixed absolute host path")
+
+
 def _git_has_commit(sha: str) -> bool:
     return (
         subprocess.run(
@@ -204,7 +243,9 @@ def _tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
+def materialize_awm_checkout(
+    sha: str, shipped: list[str], *, private: bool = False
+) -> dict[str, Any]:
     """``git archive`` the given paths of ``sha`` onto the data volume, once per (sha, paths).
 
     The directory is what the scaffold sees at AWM_MOUNT, read-only. A marker
@@ -212,9 +253,12 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
     marker matches is reused, so dry-run, submit and a retry all bind the same
     bytes. The forbidden trees are checked again on the extracted files.
     """
-    for path in shipped:
-        _check_awm_path("<checkout>", path)
-    root = paths.data_root() / "ptb" / "awm-checkouts"
+    if not private:
+        for path in shipped:
+            _check_awm_path("<checkout>", path)
+    root = paths.data_root() / "ptb" / (
+        "wma-private-checkouts" if private else "awm-checkouts"
+    )
     key = hashlib.sha256("\n".join(shipped).encode()).hexdigest()[:12]
     target = root / f"{sha}-{key}"
     marker_name = ".awm-checkout.json"
@@ -255,9 +299,12 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
                 tar.extractall(staging, filter="data")
             else:  # Python < 3.12
                 tar.extractall(staging)
-        for tree in AWM_FORBIDDEN_TREES:
-            if (staging / tree).exists():
-                raise ExperimentError(f"archive of {sha[:12]} contains {tree}; refusing to ship it")
+        if not private:
+            for tree in AWM_FORBIDDEN_TREES:
+                if (staging / tree).exists():
+                    raise ExperimentError(
+                        f"archive of {sha[:12]} contains {tree}; refusing to ship it"
+                    )
         digest = _tree_digest(staging)
         marker = {
             "sha": sha,
@@ -443,6 +490,7 @@ def validate_manifest(data: dict[str, Any]) -> None:
                 f"cell {cell_id} uses base model {base!r}, which contract.base_models does not pin"
             )
         _validate_awm_block(cell_id, cell.get("agent"), cell.get("awm"))
+        _validate_wma_block(cell_id, cell.get("agent"), cell.get("wma"))
         settings.append((task, *setup, base))
     replication = contract.get("replication")
     if replication is not None:
@@ -599,7 +647,25 @@ def build_launches(
             # Forwarded into the sandbox by the scaffold's env_passthrough.txt.
             environment["AWM_SANDBOX_SETUP"] = cell["awm"]["setup"]
             environment["AWM_CHECKOUT_SHA"] = cell["awm"]["sha"]
-        launches.append(Launch(cell["id"], command, environment, checkout))
+        wma_checkout = None
+        if cell.get("wma"):
+            wma_checkout = materialize_awm_checkout(
+                cell["wma"]["sha"], list(WMA_PRIVATE_SHIP), private=True
+            )
+            environment.update(
+                {
+                    "POST_TRAIN_BENCH_WMA_SIDECAR_CHECKOUT": wma_checkout["dir"],
+                    "POST_TRAIN_BENCH_WMA_CHECKOUT_SHA": cell["wma"]["sha"],
+                    "POST_TRAIN_BENCH_WMA_CHECKOUT_DIGEST": wma_checkout["digest"],
+                    "POST_TRAIN_BENCH_WMA_HISTORY": cell["wma"]["history"],
+                    "POST_TRAIN_BENCH_WMA_BACKEND": cell["wma"]["backend"],
+                    "POST_TRAIN_BENCH_WMA_MODEL": cell["wma"]["model"],
+                    "POST_TRAIN_BENCH_WMA_EFFORT": cell["wma"]["effort"],
+                    "POST_TRAIN_BENCH_WMA_BUDGET": cell["wma"]["budget"],
+                    "POST_TRAIN_BENCH_WMA_MODE": cell["wma"]["mode"],
+                }
+            )
+        launches.append(Launch(cell["id"], command, environment, checkout, wma_checkout))
     if len({launch.cell_id for launch in launches}) != len(launches):
         raise ExperimentError("launch result ids are not unique")
     return launches
@@ -631,6 +697,17 @@ def local_issues(
     for cell in selected_cells:
         if cell.get("awm"):
             issues.extend(_awm_issues(str(cell["id"]), cell["awm"]))
+        if cell.get("wma"):
+            wma = cell["wma"]
+            issues.extend(
+                _awm_issues(
+                    str(cell["id"]),
+                    {"sha": wma["sha"], "paths": list(WMA_PRIVATE_SHIP)},
+                )
+            )
+            history = Path(wma["history"])
+            if not history.is_dir():
+                issues.append(f"cell {cell['id']}: WMA history directory is missing: {history}")
         for name in ("solve.sh", "api_keys.json", "profile.env"):
             relative = f"agents/{cell['agent']}/{name}"
             if not (PTB_ROOT / relative).is_file():
@@ -1013,6 +1090,9 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         "awm_checkouts": {
             launch.cell_id: launch.checkout for launch in launches if launch.checkout
         },
+        "wma_private_checkouts": {
+            launch.cell_id: launch.wma_checkout for launch in launches if launch.wma_checkout
+        },
         "site": {
             key: ptb_env.get(key, "")
             for key in (
@@ -1263,6 +1343,35 @@ def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
                         cell_issues.append("runtime base-model cache snapshot is incomplete")
                     if provenance.get("judge_profile") != "official":
                         cell_issues.append("runtime provenance judge profile is not official")
+                    expected_wma = expected_cell.get("wma")
+                    runtime_wma = provenance.get("wma_runtime") or {}
+                    if expected_wma:
+                        expected_private = (receipt.get("wma_private_checkouts") or {}).get(
+                            job["cell_id"], {}
+                        )
+                        for key in ("backend", "model", "effort", "mode", "budget"):
+                            if runtime_wma.get(key) != expected_wma.get(key):
+                                cell_issues.append(f"runtime WMA {key} differs from frozen cell")
+                        if runtime_wma.get("checkout_sha") != expected_wma.get("sha"):
+                            cell_issues.append("runtime WMA checkout SHA differs from frozen cell")
+                        if runtime_wma.get("checkout_digest") != expected_private.get("digest"):
+                            cell_issues.append("runtime WMA checkout digest differs from receipt")
+                        task_dir = result_dir / "task"
+                        status_path = task_dir / ".wma/sidecar_status.json"
+                        try:
+                            status = json.loads(status_path.read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            status = {}
+                        if status.get("state") != "completed":
+                            cell_issues.append("private WMA sidecar did not complete")
+                        if not list((task_dir / "memory/cards").glob("exp-*.verdict.json")):
+                            cell_issues.append("online WMA cell has no verdict")
+                        if (task_dir / "skills/wma").exists() or (task_dir / "skills/wma_meta").exists():
+                            cell_issues.append("scientist result exposed a private WMA skill")
+                        if list((task_dir / "memory/cards").glob("exp-*.transcript*.jsonl")):
+                            cell_issues.append("scientist result exposed a private WMA transcript")
+                    elif runtime_wma.get("enabled"):
+                        cell_issues.append("runtime enabled WMA for a cell with no WMA contract")
                     if slurm.get("partition") != site.get("POST_TRAIN_BENCH_SLURM_PARTITION"):
                         cell_issues.append("runtime Slurm partition differs from frozen site")
                     if str(slurm.get("cpus_per_task")) != str(contract.get("cpus")):

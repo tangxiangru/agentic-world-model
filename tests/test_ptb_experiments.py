@@ -793,6 +793,7 @@ def test_an_awm_cell_ships_its_checkout_read_only(tmp_path: Path, monkeypatch) -
     assert first.environment["AWM_CHECKOUT_SHA"] == sha
     assert checkout.is_relative_to(tmp_path / "ptb" / "awm-checkouts")
     assert (checkout / "awm" / "cli.py").is_file()
+    assert (checkout / "awm" / "wma_client.py").is_file()
     assert (checkout / "skills" / "exp_protocol" / "SKILL.md").is_file()
     assert not (checkout / "skills" / "exp_protocol_meta").exists()
     assert not (checkout / "doc").exists()
@@ -816,6 +817,72 @@ def test_a_plain_cell_gets_no_checkout_variables(tmp_path: Path, monkeypatch) ->
     launches = ptb.build_launches(_two_repeats_manifest())
     assert "POST_TRAIN_BENCH_EXTRA_BINDS" not in launches[0].environment
     assert launches[0].checkout is None
+    assert launches[0].wma_checkout is None
+
+
+def test_online_wma_uses_a_private_checkout_never_mounted_into_the_scientist(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path)
+    history = tmp_path / "history"
+    history.mkdir()
+    data = _awm_manifest()
+    sha = data["cells"][0]["awm"]["sha"]
+    for cell in data["cells"]:
+        cell.update(
+            {
+                "agent": "claude_vertex_high_awm",
+                "agent_model": "claude-opus-5[1m]",
+                "effort": "high",
+                "context_tokens": 1_000_000,
+                "wma": {
+                    "sha": sha,
+                    "backend": "claude",
+                    "model": "claude-opus-5",
+                    "effort": "high",
+                    "mode": "online",
+                    "budget": "cpu=10,gpu=0,wall=15,turns=40",
+                    "history": str(history),
+                },
+            }
+        )
+    ptb.validate_manifest(data)
+
+    first = ptb.build_launches(data)[0]
+
+    public = Path(first.checkout["dir"])
+    private = Path(first.wma_checkout["dir"])
+    assert public.is_relative_to(tmp_path / "ptb/awm-checkouts")
+    assert private.is_relative_to(tmp_path / "ptb/wma-private-checkouts")
+    assert (public / "awm/wma_client.py").is_file()
+    assert not (public / "awm/wma").exists()
+    assert not (public / "skills/wma").exists()
+    assert (private / "awm/wma/sidecar.py").is_file()
+    assert (private / "skills/wma/SKILL.md").is_file()
+    assert first.environment["POST_TRAIN_BENCH_WMA_SIDECAR_CHECKOUT"] == str(private)
+    assert first.environment["POST_TRAIN_BENCH_WMA_HISTORY"] == str(history)
+    assert str(private) not in first.environment["POST_TRAIN_BENCH_EXTRA_BINDS"]
+
+
+def test_online_wma_contract_is_fixed_and_requires_an_awm_scientist(tmp_path: Path) -> None:
+    data = _awm_manifest()
+    cell = data["cells"][0]
+    cell["wma"] = {
+        "sha": cell["awm"]["sha"],
+        "backend": "claude",
+        "model": "claude-opus-5",
+        "effort": "medium",
+        "mode": "online",
+        "budget": "cpu=10,gpu=0,wall=15,turns=40",
+        "history": str(tmp_path),
+    }
+    with pytest.raises(ptb.ExperimentError, match="wma.effort must be 'high'"):
+        ptb.validate_manifest(data)
+    cell["wma"]["effort"] = "high"
+    cell["agent"] = "claude_vertex_high"
+    del cell["awm"]
+    with pytest.raises(ptb.ExperimentError, match="requires an _awm scientist"):
+        ptb.validate_manifest(data)
 
 
 def test_an_awm_cell_needs_its_block_and_a_plain_cell_must_not_have_one() -> None:

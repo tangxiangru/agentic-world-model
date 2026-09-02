@@ -1,11 +1,12 @@
 """``awm sandbox setup``: the one step a PostTrainBench scaffold runs before the prompt.
 
-The scaffold (``agents/claude_vertex_max_awm/solve.sh`` in the PostTrainBench
-fork) mounts a read-only checkout of this repository at ``/home/ben/awm``,
+The scaffold (``agents/claude_vertex_high_awm/solve.sh`` in the PostTrainBench
+fork) mounts a read-only public checkout of this repository at ``/home/ben/awm``,
 puts it on ``PYTHONPATH``, and runs this command in the task directory with
 the arguments the launcher forwarded in ``AWM_SANDBOX_SETUP``. What gets
 installed is decided here, by the mounted commit; the scaffold never changes
-between studies. Everything written lands inside ``--target`` and is listed
+between studies. The private WMA sidecar checkout is not mounted here.
+Everything written lands inside ``--target`` and is listed
 in ``<target>/awm_sandbox.json`` with the checkout's commit, so a harvested
 result says which protocol it ran under.
 """

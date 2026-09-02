@@ -165,6 +165,8 @@ def _fence(brief: Brief) -> list[Path]:
                 roots.append(entry.resolve())
         except OSError:
             pass
+    for root in brief.extra.get("allowed_roots") or []:
+        roots.append(Path(os.path.abspath(root)))
     return roots
 
 
@@ -182,14 +184,15 @@ def history_dirs(history: Path) -> list[Path]:
     return out
 
 
-def transcript_path(verdict_path: Path) -> Path:
+def transcript_path(verdict_path: Path, output_dir: Path | None = None) -> Path:
     """``exp-NN.transcript[.tag].jsonl`` beside the verdict: what the agent did, turn by turn."""
     verdict_path = Path(verdict_path)
     m = schema.VERDICT_FILE_RE.match(verdict_path.name)
     if not m:
         raise ValueError(f"{verdict_path.name} is not a verdict file name")
     tag = f".{m.group(2)}" if m.group(2) else ""
-    return verdict_path.with_name(f"{m.group(1)}.transcript{tag}.jsonl")
+    filename = f"{m.group(1)}.transcript{tag}.jsonl"
+    return Path(output_dir) / filename if output_dir else verdict_path.with_name(filename)
 
 
 def scan_transcript(stdout: str, brief: Brief) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -301,6 +304,8 @@ class CommandBackend(Backend):
         if self.effort and self.effort_flag:
             out += [a.replace("{effort}", self.effort) for a in self.effort_flag]
         if brief is not None:
+            if self.history_flag:
+                out += [self.history_flag, str(Path(brief.skill_dir).resolve())]
             if self.history_flag and brief.history_dir:
                 for d in history_dirs(Path(brief.history_dir)):
                     out += [self.history_flag, str(d)]
@@ -317,7 +322,8 @@ class CommandBackend(Backend):
         started = time.monotonic()
         try:
             proc = subprocess.run(argv, input=brief.prompt, text=True, cwd=str(brief.session_dir),
-                                  capture_output=True, timeout=max(1.0, brief.budget.wall_min * 60))
+                                  capture_output=True, timeout=max(1.0, brief.budget.wall_min * 60),
+                                  check=False)
         except subprocess.TimeoutExpired as exc:
             raise BackendError(f"{self.name}: timed out after {brief.budget.wall_min} min") from exc
         wall_min = round((time.monotonic() - started) / 60, 6)
@@ -332,7 +338,9 @@ class CommandBackend(Backend):
             measured["effort"] = self.effort
         if self.transcript == "stream-json":
             # Kept whole: the iteration agent reads it by hand, and a fence fix can rescan it.
-            transcript_path(brief.verdict_path).write_text(proc.stdout or "")
+            transcript_path(
+                brief.verdict_path, brief.extra.get("transcript_dir")
+            ).write_text(proc.stdout or "")
             cost, access = scan_transcript(proc.stdout or "", brief)
             measured.update({"cost": cost, "access": access, "leak_suspected": bool(access["outside"])})
         try:
@@ -367,7 +375,8 @@ BACKENDS: dict[str, Any] = {
     # so the ledger's cost is real and a read outside the fence is caught, not trusted away.
     "claude": lambda model, effort: CommandBackend(
         "claude", ["claude", "--print", "--verbose", "--output-format", "stream-json",
-                   "--model", "{model}", "--dangerously-skip-permissions"], model,
+                   "--model", "{model}", "--setting-sources", "", "--no-session-persistence",
+                   "--dangerously-skip-permissions"], model,
         effort=effort, effort_flag=["--effort", "{effort}"],
         transcript="stream-json", history_flag="--add-dir", max_turns_flag="--max-turns"),
     "codex": lambda model, effort: CommandBackend(
