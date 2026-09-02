@@ -1,0 +1,200 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T12:50:16Z'
+situation:
+  elapsed_h: 0.4
+  remaining_h: 9.6
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.045, protocol_n: 200}
+  trigger: "exp-01 found 144 of 191 dev-200 failures are format failures and 100 of
+    200 completions hit the token cap without ever emitting <end_of_turn>
+    (analysis/exp-01_failure_tags.json)."
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp-01_failure_tags.json
+    locator: "ends_with_answer=false (144 rows), stop_reason=max_tokens (100 rows)"
+  - path: /home/ben/task/eval/base_dev200.json
+    locator: "accuracy 0.045"
+  alternatives_rejected:
+  - option: "Few-shot / decoding-only fixes (stop strings, shorter max_tokens)"
+    reason: "evaluate.py and templates/ are immutable and the harness owns the
+      decode config; nothing can be changed at inference time."
+  - option: "LoRA instead of a full fine-tune"
+    reason: "the base checkpoint has had no instruction tuning at all, so this is a
+      large behaviour change, not a small one; a full FT fits in 80 GB once the loss
+      is taken on completion positions only."
+  - option: "Train on MetaMathQA"
+    reason: "its bodies keep gsm8k's own '#### n' line alongside a boxed answer -
+      the double_answer_format pitfall. OpenMathInstruct-2 has a single boxed answer
+      that is easy to rewrite into the one marker the grader reads."
+  pitfalls_hit:
+  - what: "OOM at bs=16: Gemma3's 262k vocab makes logits for a [16,2048] batch cost
+      30 GB, and the stock forward materialises them for every position"
+    cost_h: 0.1
+    fix: "custom compute_loss applies lm_head only to positions whose label is not
+      -100 (~15% of tokens); peak memory now ~50 GB at bs=8"
+  - what: "vllm refused to load the smoke checkpoint: IndexError in
+      get_image_processor_dict, because save_pretrained does not write
+      preprocessor_config.json for Gemma3ForConditionalGeneration"
+    cost_h: 0.15
+    fix: "save_aux() copies preprocessor_config.json and processor_config.json from
+      the base snapshot into every output dir"
+  - what: "load_dataset('nvidia/OpenMathInstruct-2') blocks far longer than a
+      foreground shell timeout"
+    cost_h: 0.03
+    fix: "background nohup download"
+  smoke_runs:
+  - command: [python, scripts/train_sft.py, --data, data/sft_v1.jsonl, --out, ckpts/smoke,
+      --max-rows, '1920', --bs, '8', --accum, '4']
+    outcome: "60 steps, loss 0.49 -> 0.37, no OOM, 4.30B params with 420M vision
+      params frozen"
+  - command: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/smoke/final, smoke100,
+      '100']
+    outcome: "0.46 at n=100 from 1920 rows; confirms the format hypothesis and that
+      the save -> vllm path works end to end (eval/smoke100.json)"
+  - command: [python, scripts/train_sft.py, --dry-run, --data, data/sft_v1.jsonl]
+    outcome: "67470/67470 rows end in <end_of_turn> with that token under loss; 0
+      truncated at max_seq_len 2048; p50 357, p95 1676 tokens"
+problem:
+  statement: "google/gemma-3-4b-pt has never been instruction tuned. On the harness
+    it produces a plausible chain of thought, emits an answer, and then keeps
+    generating further invented problems because nothing taught it to stop at
+    <end_of_turn>. The grader reads the last numeric token of the completion, so
+    those run-ons are scored wrong even when the arithmetic was right."
+  evidence:
+  - path: /home/ben/task/analysis/exp-01_failure_tags.json
+    locator: "191 failures; 144 with ends_with_answer=false"
+    observation: "75.4% of failures are format failures, not arithmetic"
+  - path: /home/ben/task/analysis/exp-01_failure_tags.json
+    locator: "stop_reason field"
+    observation: "100 of 200 completions were cut off by the 1024-token cap"
+  affected_share: 0.754
+  failure_examples:
+  - id: gsm8k_010d0010
+    source: /home/ben/task/analysis/exp-01_failure_tags.json
+    question: "Cody eats three times as many cookies as Amir (5); how many together?"
+    gold: '20'
+    model_output: "...ANSWER: 20 / then invents 'Jasmine has 14 bags of toys...' and
+      degenerates into /******// repeated to the 1024-token cap"
+    failure: "right answer, then runs on; the last numeric token is not 20"
+  - id: gsm8k_013c2fba
+    source: /home/ben/task/analysis/exp-01_failure_tags.json
+    question: "25 oranges, 25% unripe, 20% sour; how many good?"
+    gold: '17'
+    model_output: "0.25*25 = 6.25 ... 25-6-5 = 14 ... ANSWER: 14"
+    failure: "well formed but the rounding is wrong"
+  - id: gsm8k_01a47d5c
+    source: /home/ben/task/analysis/exp-01_failure_tags.json
+    question: "bee hive question"
+    gold: '400'
+    model_output: ">>700  bee in a hive are 2x 2x >> 700  = 560"
+    failure: "degenerate imitation of the few-shot calculator annotations, no
+      reasoning at all"
+  watch_set: null
+hypothesis:
+  claim: "Supervised fine-tuning of gemma-3-4b-pt on 63k GSM8K-train-derived
+    chain-of-thought targets, rendered through the grader's own chat template and
+    terminated with <end_of_turn>, will raise dev-200 accuracy over the 0.045 base
+    model, and will do so mainly by eliminating format failures."
+  mechanism: "Completion-only loss on targets that stop right after the 'ANSWER: n'
+    line teaches both the stop behaviour the base model lacks and a consistent
+    step-by-step solution style; the 1920-row smoke run already reached 0.46 at
+    n=100, so the effect is not subtle."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+40 points or more on dev-200 (1/35 of the data gave +41 at n=100)"
+  falsified_if: "dev-200 accuracy below 0.46 (35x the smoke run's data should not be
+    worse than the smoke run), or format failures still account for more than 20% of
+    the remaining failures"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/sft_v2.jsonl
+    source: "nvidia/OpenMathInstruct-2 (problem_source in {gsm8k, augmented_gsm8k})
+      + openai/gsm8k split=train"
+    n_examples: 63470
+    built_by: /home/ben/task/scripts/build_sft_data.py
+    build_command: [python, scripts/build_sft_data.py, --max-per-problem, '1', --max-omi2,
+      '56000', --out, data/sft_v2.jsonl]
+    selection: "keep rows whose solution has exactly one boxed value equal to the
+      integer expected_answer; rewrite it to a trailing 'ANSWER: n' line; drop rows
+      still containing a boxed marker, '####' or a second 'ANSWER:'; at most one
+      solution per unique problem; body length 40-3000 chars. GSM8K train bodies
+      additionally have their <<a*b=c>> calculator annotations stripped."
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer, custom completion-only loss
+    peft: none
+    hyperparams: {lr: 1.0e-05, epochs: 1, batch_size: 8, grad_accum: 4, max_seq_len: 2048,
+      scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "grader's own prompt (inspect_evals MATH_PROMPT_TEMPLATE, plus a
+      few-shot system message on 30% of rows) rendered with templates/gemma3.jinja;
+      target is the solution body, a blank line, 'ANSWER: <int>', then
+      <end_of_turn>. Loss on the target only."
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v2.jsonl, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d,
+      --out, /home/ben/task/ckpts/exp-02, --max-seq-len, '2048', --bs, '8', --accum,
+      '4', --lr, '1e-5', --epochs, '1', --save-steps, '700']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 700
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-connections,
+      '32', --max-tokens, '1024', --gpu-memory-utilization, '0.85', --json-output-file,
+      '{out}.json']
+    dev_set: official gsm8k test, first 200 items (--limit 200)
+    n: 200
+    seed: 42
+  comparator: {ref: base_model, value: 0.045, path: /home/ben/task/eval/base_dev200.json}
+  diagnostic:
+    what: "share of remaining failures that are format failures (last non-empty line
+      does not start with 'ANSWER:')"
+    n: 200
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.26
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-02/final, step: 1984}
+  - {path: /home/ben/task/ckpts/exp-02/checkpoint-1400, step: 1400}
+  training_summary:
+    final_loss: 0.337
+    steps: 1984
+    notes: "train_runtime 4525 s, 14.0 samples/s; 0 rows truncated at max_seq_len 2048; peak GPU ~45 GB at bs=8"
+  measurements:
+  - {metric: accuracy, value: 0.58, n: 200, path: /home/ben/task/eval/exp-02_dev200.json, delta_vs_comparator: 0.535}
+  diagnostic_result:
+    value: 0.036
+    path: /home/ben/task/analysis/exp-02_failure_tags.json
+    notes: "format-failure share of failures 0.754 -> 0.036 (3 of 84). Tags: 116 correct, 81 wrong_number, 3 format_no_answer_line, 0 truncated. Completion length p50 405 chars, p95 1070, max 3761 - well inside the 1024-token cap."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: |
+    dev-200 0.045 -> 0.580 (+53.5). The mechanism was the one predicted: format failures fell from
+    75.4% of failures to 3.6%, and every completion now stops at <end_of_turn>. What is left is
+    almost entirely genuine reasoning error - misread problem structure and arithmetic slips.
+  decision: adopt
+  next_step: "The remaining 81 of 84 failures are wrong numbers, so the next lever is solution quality rather than format: rejection-sampling fine-tuning on exp-02's own correct samples (exp-03)."
