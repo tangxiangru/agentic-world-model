@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T15:10:37Z'
+situation:
+  elapsed_h: 2.75
+  remaining_h: 7.25
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.7133, protocol_n: 150}
+  trigger: "exp-03 removed every decode-side and format-side loss: 0 missing markers, 2/150 non-terminating. The 43 remaining dev-150 failures are wrong reasoning under the model's own modal chain, so the next gain has to come from moving the mode. A k=4 sampling pass over 24000 train-derived questions shows the headroom is real: pass@4 is 0.837 while greedy pass@1 is 0.713, i.e. the model can already reach the right answer on far more problems than its mode does."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/rft_round1_stats.json, locator: "pass_at_k 0.837, mean_correct_per_question 2.50 of 4", observation: "20089 of 24000 questions solved at least once at T=0.9"}
+    - {path: /home/ben/task/analysis/exp03_dev150_wrong.jsonl, locator: "43 wrong items", observation: "well-formed chains with wrong numbers; format is no longer the failure mode"}
+  alternatives_rejected:
+    - {option: "Retrain from base_model on OMI-2 SFT + RFT together", reason: "about 1.6 h against ~0.4 h for continuing from exp-02; run the cheap arm first and keep the expensive one as exp-05 if this one moves the metric"}
+    - {option: "DPO/GRPO on correct-vs-incorrect pairs", reason: "the incorrect draws are available, but a preference/RL stage needs a reference-model pass and its own tuning; with ~7 h left the on-policy SFT arm has the better return per hour"}
+    - {option: "Keep all 37086 correct draws (2 per solved question regardless of difficulty)", reason: "9269 of 20089 solved questions were solved 4/4 and would supply half the corpus; those are already correct under greedy, so the rows spend compute on what is not broken. The balanced build keeps 2 rows for questions solved 1-2 times out of 4 and 1 row for those solved 3-4 times."}
+    - {option: "Higher k (8-16) to mine harder problems", reason: "the k=4 pass alone cost 0.55 h of GPU; doubling it buys the 3911 unsolved questions at best, and those are the ones self-distillation cannot label correctly anyway"}
+  pitfalls_hit:
+    - {what: "The first k=4 generation pass finished all 96000 draws and then died in the answer parser: a degenerate draw produced a 300-digit 'ANSWER:' string, float() returned inf, and int(inf) raised OverflowError before anything was written. The whole pass was lost.", cost_h: 0.6, fix: "norm() now rejects >20-char numerals and catches OverflowError; gen_rft.py writes the raw draws to <out>.raw.jsonl before any filtering, so the filter can be re-run without re-generating (the difficulty-balanced rebuild used exactly that file)"}
+    - {what: "Killing the crashed run left an orphaned VLLM::EngineCore holding 66 GB; the relaunch would have OOMed.", cost_h: 0.05, fix: "check nvidia-smi and kill the EngineCore pid explicitly, not just the parent python"}
+  smoke_runs:
+    - {command: [python, -c, "difficulty histogram over data/rft_round1.jsonl.raw.jsonl"], outcome: "correct-draws-out-of-4 histogram {0: 3911, 1: 3092, 2: 3353, 3: 4375, 4: 9269}; balanced build -> 23442 rows"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/rft_bal_check.jsonl], outcome: "23442 docs scanned, 0 contaminated"}
+problem:
+  statement: "exp-03's greedy chain is wrong on 43 of 150 dev items, yet the same model reaches the gold answer within 4 samples on 84% of held-out train-derived questions. The model's modal reasoning path is worse than its own reachable distribution."
+  evidence:
+    - {path: /home/ben/task/analysis/exp03_dev150_wrong.jsonl, locator: "43 wrong items", observation: "n_wrong 43/150; 2 of them are greedy repetition loops, the other 41 are wrong arithmetic or a wrong plan"}
+    - {path: /home/ben/task/analysis/rft_round1_stats.json, locator: "pass_at_k 0.837 vs greedy 0.713", observation: "a ~12-point gap between what the model can reach and what its mode produces"}
+  affected_share: 0.95
+  failure_examples:
+    - {id: exp03-w1, source: /home/ben/task/analysis/exp03_dev150_wrong.jsonl, question: "dev-150 item wrong under greedy exp-03", gold: "see file", model_output: "see file - well-formed chain, wrong final number", failure: "wrong plan or arithmetic in the modal chain"}
+    - {id: exp03-w2, source: /home/ben/task/analysis/exp03_dev150_wrong.jsonl, question: "dev-150 item wrong under greedy exp-03", gold: "see file", model_output: "see file", failure: "wrong plan or arithmetic in the modal chain"}
+    - {id: exp03-w3, source: /home/ben/task/analysis/exp03_dev150_wrong.jsonl, question: "dev-150 item wrong under greedy exp-03", gold: "see file", model_output: "see file - ran to the 4000-token cap", failure: "greedy repetition loop, no stop token, no ANSWER marker"}
+  watch_set:
+    path: /home/ben/task/analysis/exp03_dev150_wrong.jsonl
+    n: 43
+    selection: "every dev-150 item exp-03 got wrong under greedy decoding"
+hypothesis:
+  claim: "Continuing SFT from exp-02 on the model's own verified-correct solutions (rejection sampling, k=4 at T=0.9 over 24000 train-derived questions, difficulty-balanced) increases greedy dev-150 accuracy relative to exp-03."
+  mechanism: "Rejection-sampling fine-tuning raises the likelihood of chains the model already produces sometimes and that end at the gold answer, and lowers it for the paths it currently prefers on those items. That moves probability mass from the pass@4 tail into the mode, which is the only sample the grader scores. Because the targets are on-policy the update is small and the learned format is preserved."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 pts; the pass@4 - pass@1 gap is ~12 pts and one RFT round typically recovers a third of it"
+  falsified_if: "greedy dev-150 accuracy is at or below exp-03's 0.7133, or the non-termination rate rises above exp-03's 2/150."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_bal.jsonl
+      source: "synthetic:self (exp-02 checkpoint sampled at T=0.9, top_p 0.95, k=4, max_tokens 640, seed 0); questions from openai/gsm8k TRAIN split (7473) and OpenMathInstruct-2 gsm8k/augmented_gsm8k problems not used in exp-02's SFT set (32858 pool, revision 469216e3f46f4dacf476b382e192485ea51a143e)"
+      n_examples: 23442
+      built_by: /home/ben/task/scripts/gen_rft.py
+      build_command: [python, scripts/gen_rft.py, --model, /home/ben/task/ckpts/exp-02/final, --out, data/rft_round1.jsonl, --pool, data/rft_pool.jsonl, --gsm-train, '1', --n-questions, '24000', --k, '4', --keep-per-question, '2', --temperature, '0.9', --max-tokens, '640', --stats, analysis/rft_round1_stats.json]
+      selection: "keep a draw only if its final 'ANSWER: N' normalises to the gold answer; dedup identical draws; 2 shortest kept for questions solved 1-2 of 4, 1 for questions solved 3-4 of 4; 3911 questions never solved are dropped. Rebuilt from data/rft_round1.jsonl.raw.jsonl. Every completion already ends in <end_of_turn>."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer, custom SelectiveLossTrainer (completion-only CE on labelled positions)
+    peft: none
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 8, grad_accum: 4, max_seq_len: 3456, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged: chain, then a single 'ANSWER: <number>' line, then <end_of_turn>; 12% of rows carry the grader's exact 10-shot system prefix"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_bal.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, ckpts/exp-04, --fewshot-frac, '0.12', --max-seq-len, '3456', --lr, '7e-6', --epochs, '1', --bs, '8', --grad-accum, '4', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, '{checkpoint}', '{tag}', '150']
+    dev_set: "official --limit 150 (gsm8k test, dataset order), greedy decode pinned by generation_config.json"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7133
+    path: /home/ben/task/eval/exp03_dev150.json
+  diagnostic:
+    what: "non-termination rate under greedy (exp-03: 2/150 = 0.013) and mean completion length (exp-03: 696 chars) - on-policy self-distillation should shorten chains and should not add repetition loops"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.45
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 733}
+  training_summary: {final_loss: 0.1916, steps: 733, notes: "train_runtime 1466.8 s, 15.98 samples/s. Loss starts far below exp-02's because the targets are the model's own draws; last logged steps 0.18-0.19."}
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp04_dev150.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 0.013
+    path: /home/ben/task/analysis/exp04_dev150_wrong.jsonl
+    notes: "Non-termination unchanged at 2/150 and still no ANSWER marker on exactly those 2. Mean completion 696 -> 637 chars, so the chains did get shorter (on-policy targets are terser than OMI-2's), but the shortening bought nothing."
+  watch_set_result: {fixed: 11, still_failing: 32, regressions: 12, path: /home/ben/task/analysis/exp04_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.7133 -> 0.7067 (-0.7 pts, well inside stderr 0.037): one RFT round from exp-02 did not move the mode. The item-level churn says why it is not merely noise-free-flat: 11 items fixed against 12 newly broken, i.e. the update reshuffled which problems are solved without net gain."
+  decision: reject
+  next_step: "Stop the sequential on-policy line. exp-05 instead attacks the teacher-data axis: retrain from base_model on a larger OMI-2 corpus (78k gsm8k/MATH-derived problems, from 8 shards instead of 4) mixed with the 37k verified self-generated solutions, one epoch. exp-03 remains the incumbent and stays installed as final_model until something beats it."
