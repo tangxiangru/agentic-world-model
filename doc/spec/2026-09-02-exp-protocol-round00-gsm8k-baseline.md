@@ -32,6 +32,9 @@ PTB 流程中工作。Round 00 不产生晋升结论，不运行 AIME2025。
 
 ## Pilot 与异步发射
 
+> 2026-09-02 12:20 UTC 用户指令：不走 pilot，formal cells 直接发射；见基线 spec §七的
+> 「用户指令」小节。本节其余内容保留为历史记录。
+
 `p00r01` 先以 1 h pilot 验证完整 wiring。pilot 不计入 16 个 10 h formal repeats。
 operator 通过 `pilot: first` 提交；只有 pilot 被 PTB validator 接受后才提交 formal
 batch。planner 不运行 `sbatch`。

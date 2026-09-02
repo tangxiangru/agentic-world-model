@@ -193,6 +193,18 @@ Fable 单独写一次跨轮 meta retrospective；只有至少两个 rounds 重�
 
 任何 `OWNERSHIP FAIL` 立即停止新提交并报告。Slurm `COMPLETED` 不等于科学完成。
 
+### 用户指令（2026-09-02 12:20 UTC，覆盖本节与 Round 00 spec 中与之冲突的条款）
+
+1. **不走 pilot。** manifest 直接以 formal cells 发射；queue entry 一律 `pilot: null`。
+   已经跑起来的两个 1 h pilot 只作证据保留，不计入 formal。
+2. **16 卡必须始终用满，不许空着。** 只要有独立、已验证的 manifest，就立即排进 queue；
+   queue 里永远保留待排的 cells。
+3. **全部启动，边跑边分析。** 分析异步进行，不等批次跑完；发现某个设计不成立，
+   从 queue 中撤下它尚未开始的 cells（`want: cancelled` 只取消 PENDING，RUNNING 由
+   operator 保留到自然结束）。
+4. 本指令由分支负责 agent（Fable）以 commit 落实；`queue.yaml` 的改动直接提交到
+   `gangda_exp_protocol_evolve`，不再开新 PR。
+
 ## 八、结果与 provenance
 
 四层记录必须同时保留：
