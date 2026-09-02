@@ -322,3 +322,51 @@ def test_the_transcript_is_kept_beside_the_verdict_for_hand_reading_and_rescans(
     with pytest.raises(backends.BackendError):
         backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b2)
     assert backends.transcript_path(b2.verdict_path).read_text() == events
+
+
+def test_bare_slashes_and_the_cli_spill_dir_are_not_reads_outside_the_fence(tmp_path, monkeypatch) -> None:
+    """From the 20-verdict pass: sed 's/.*path: //' yields the token '//' (which exists: it is /), and the
+    agent re-reads its own oversized tool output from ~/.claude/projects/<cwd-mangled>/…/tool-results/."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    b = brief(tmp_path)
+    spill = backends.cli_project_dir(b.session_dir) / "9d52-uuid" / "tool-results" / "b6eylsbwb.txt"
+    spill.parent.mkdir(parents=True)
+    spill.write_text("== r-a ==\n")
+    other = tmp_path / "home" / ".claude" / "projects" / "-some-other-cwd" / "x" / "tool-results" / "y.txt"
+    other.parent.mkdir(parents=True)
+    other.write_text("not ours\n")
+    exe = streaming_fake(tmp_path, b, stream_events(
+        tool_use("Bash", command="grep path memory/index.md | sed 's/.*path: //' | sort -u"),
+        tool_use("Bash", command="awk -F'|' '{print $2}' memory/index.md | sed 's////////'"),
+        tool_use("Bash", command=f"grep -c '^==' {spill}"),
+        tool_use("Bash", command=f"cat {other}"),
+        result_event()))
+    backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b)
+    v = schema.load_verdict(b.verdict_path)
+    assert v["access"]["outside"] == [f"bash: cat {other}"], v["access"]["outside"]
+
+
+def test_direction_synonyms_are_normalised_before_validation(tmp_path) -> None:
+    b = brief(tmp_path)
+    v = json.loads(good_verdict_json())
+    v["levels"]["L2_effect"]["direction"] = "none"
+    exe = fake_executable(tmp_path, f"cat > /dev/null\nmkdir -p $(dirname '{b.verdict_path}')\n"
+                                    f"cat > '{b.verdict_path}' <<'J'\n{json.dumps(v)}\nJ\n")
+    backends.CommandBackend("fake", [str(exe)]).run(b)
+    assert schema.load_verdict(b.verdict_path)["levels"]["L2_effect"]["direction"] == "flat"
+
+
+def test_rescan_rederives_access_from_the_kept_transcript_and_touches_nothing_else(tmp_path) -> None:
+    b = brief(tmp_path)
+    exe = streaming_fake(tmp_path, b, stream_events(tool_use("Read", file_path=str(b.card_path)), result_event(0.5, 4)))
+    backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b)
+    v = schema.load_verdict(b.verdict_path)
+    v["access"] = {"files": 0, "outside": ["bash: sed 's/x//'"]}     # what an older fence wrote
+    v["leak_suspected"] = True
+    schema.dump_verdict(b.verdict_path, v)
+    before_levels = v["levels"]
+    changed = backends.rescan([tmp_path])
+    after = schema.load_verdict(b.verdict_path)
+    assert changed == {"scanned": 1, "changed": 1}
+    assert after["access"] == {"files": 1, "outside": []} and "leak_suspected" not in after
+    assert after["levels"] == before_levels and after["cost"]["usd"] == 0.5

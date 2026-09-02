@@ -205,6 +205,14 @@ def _ledger(args: argparse.Namespace) -> int:
     return 0
 
 
+def _rescan(args: argparse.Namespace) -> int:
+    from .backends import rescan
+
+    counts = rescan([Path(d) for d in args.dirs])
+    print(", ".join(f"{k}={v}" for k, v in counts.items()))
+    return 0
+
+
 def _replay(args: argparse.Namespace) -> int:
     from . import replay
     from .backends import get_backend
@@ -254,6 +262,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     lg.add_argument("dirs", nargs="+")
     lg.add_argument("--csv", action="store_true")
     lg.set_defaults(func=_ledger)
+
+    rs = cmds.add_parser("rescan", help="re-derive access / leak_suspected from the kept transcripts (after a fence change)")
+    rs.add_argument("dirs", nargs="+")
+    rs.set_defaults(func=_rescan)
 
     rp = cmds.add_parser("replay", help="offline replay over the historical card corpus")
     rp.add_argument("--corpus", required=True, help="results/exp-cards/<split> directory with train/ and test/")

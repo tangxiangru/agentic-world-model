@@ -127,6 +127,8 @@ def _read_outside(tok: str, roots: list[Path], cwd: Path) -> bool:
     cannot have been read, so only what exists counts; a glob is expanded and any match outside counts.
     """
     p = os.path.abspath(os.path.join(cwd, tok))
+    if not p.strip("/"):
+        return False        # '//' from sed 's/x//' is the root directory (abspath keeps '//'); nothing is read from it
     if any(ch in tok for ch in "*?["):
         return any(not _inside(m, roots, cwd) for m in glob.glob(p))
     return os.path.exists(p) and not _inside(tok, roots, cwd)
@@ -138,9 +140,18 @@ def _inside(path: str, roots: list[Path], cwd: Path) -> bool:
     return any(p == r or r in p.parents for r in roots)
 
 
+def cli_project_dir(session_dir: Path) -> Path:
+    """Where Claude Code keeps this cwd's own state (~/.claude/projects/<cwd with / as ->): an oversized
+    tool result is spilled to tool-results/ there and the agent reads it back — its own output, not a leak."""
+    name = re.sub(r"[^A-Za-z0-9-]", "-", os.path.abspath(session_dir))
+    return Path.home() / ".claude" / "projects" / name
+
+
 def _fence(brief: Brief) -> list[Path]:
-    """Where the agent may read: the session, the skill, the history link and what it points at."""
-    roots = [Path(os.path.abspath(brief.session_dir)), Path(os.path.abspath(brief.skill_dir))]
+    """Where the agent may read: the session, the skill, the history link and what it points at,
+    and the CLI's own spill directory for this session."""
+    roots = [Path(os.path.abspath(brief.session_dir)), Path(os.path.abspath(brief.skill_dir)),
+             cli_project_dir(brief.session_dir)]
     try:
         roots.append(Path(brief.skill_dir).resolve())
     except OSError:
@@ -220,6 +231,44 @@ def scan_transcript(stdout: str, brief: Brief) -> tuple[dict[str, Any], dict[str
     return cost, {"files": files, "outside": outside}
 
 
+def rescan(dirs: list[Path], *, skill_dir: Path | None = None) -> dict[str, int]:
+    """Re-derive ``access`` / ``leak_suspected`` for every verdict from its kept transcript.
+
+    The fence is a harness rule, not the agent's judgment: when the rule changes, the flags are recomputed
+    from the transcript instead of buying the verdict again. Nothing else in the verdict is touched.
+    """
+    from .review import default_skill_dir
+
+    skill_dir = Path(skill_dir) if skill_dir else default_skill_dir()
+    counts = {"scanned": 0, "changed": 0}
+    for d in dirs:
+        for t in sorted(Path(d).rglob("exp-*.transcript*.jsonl")):
+            m = re.match(r"^(exp-\d+)\.transcript(?:\.([A-Za-z0-9_-]+))?\.jsonl$", t.name)
+            if not m:
+                continue
+            vp = schema.verdict_path(t.with_name(m.group(1) + ".yaml"), tag=m.group(2))
+            if not vp.is_file():
+                continue
+            session = vp.parents[2]
+            history = session / "history"
+            brief = Brief(card_id=m.group(1), session_dir=session, card_path=t.with_name(m.group(1) + ".yaml"),
+                          verdict_path=vp, skill_dir=skill_dir, mode="offline", budget=Budget(), model=None,
+                          prompt="", history_dir=history if history.exists() else None)
+            _, access = scan_transcript(t.read_text(), brief)
+            v = schema.load_verdict(vp)
+            counts["scanned"] += 1
+            before = (v.get("access"), bool(v.get("leak_suspected")))
+            v["access"] = access
+            if access["outside"]:
+                v["leak_suspected"] = True
+            else:
+                v.pop("leak_suspected", None)
+            if before != (access, bool(access["outside"])):
+                counts["changed"] += 1
+                schema.dump_verdict(vp, v)
+    return counts
+
+
 class CommandBackend(Backend):
     """Run an agent CLI in the session directory; it must write the verdict file."""
 
@@ -291,6 +340,7 @@ class CommandBackend(Backend):
         except ValueError as exc:
             schema.reject_verdict(brief.verdict_path, f"invalid verdict JSON: {exc}", **measured)
             raise BackendError(f"{self.name}: invalid verdict JSON: {exc}") from exc
+        schema.normalize_verdict(v)
         report = schema.validate_verdict(v)
         if not report.ok:
             schema.reject_verdict(brief.verdict_path, report.render(), **measured)

@@ -65,6 +65,21 @@ def dump_verdict(path: Path, verdict: dict[str, Any]) -> None:
     path.write_text(json.dumps(verdict, indent=2) + "\n")
 
 
+#: What agents write for "no change expected" besides flat; all mean the same and direction is never scored.
+FLAT_SYNONYMS = ("none", "n/a", "na", "neutral", "no_change", "no change", "unchanged", "zero", "same")
+
+
+def normalize_verdict(v: dict[str, Any]) -> dict[str, Any]:
+    """Fold harmless spelling variants into the schema's vocabulary, in place. Nothing scored changes."""
+    lv = v.get("levels")
+    if isinstance(lv, dict) and isinstance(lv.get("L2_effect"), dict):
+        d = lv["L2_effect"].get("direction")
+        if isinstance(d, str):
+            d = d.strip().lower()
+            lv["L2_effect"]["direction"] = "flat" if d in FLAT_SYNONYMS else (d or None)
+    return v
+
+
 def reject_verdict(path: Path, reason: str, **measured: Any) -> Path:
     """Move an unusable verdict file aside so the card counts as unreviewed, keeping the text and what it cost.
 

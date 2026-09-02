@@ -313,5 +313,11 @@ verdict 里的 `cost.usd` 是 CLI 报的**影子价**,不是账单——它用�
    正则字面量(`/^result:/,/^conclusion:/p`、`/1.7B/`)和打错的路径读不到任何东西,
    而 glob 会展开后逐个判断;stream-json transcript 完整保存为
    `exp-NN.transcript[.tag].jsonl`,供手读和栅栏规则改动后重扫。
+8. **已做**(20 份计价 pass 暴露的):栅栏再排除两类假阳性——`sed 's/x//'` 抽出的 `//`
+   (是根目录)和 CLI 自己的溢出目录 `~/.claude/projects/<cwd 改写>/…/tool-results/`
+   (agent 回读自己过长的工具输出);`awm wma rescan <dirs>` 用保存的 transcript 重算
+   `access` / `leak_suspected`,verdict 其余字段不动(栅栏是 harness 规则,不是 agent 的
+   判断,规则改了就重算而不是重买);`direction` 的同义写法(`none`、`n/a`、`unchanged`…)
+   在校验前折成 `flat`。
 
 完成这些门只表示可以发射 round-01,不表示 candidate 可以晋升。
