@@ -1,6 +1,6 @@
 # exp_protocol Round 02：三个独立的 4-cell 筛选 + guard 漂移对
 
-**日期**：2026-09-02 23:30 UTC **状态**：已登记为 held **前置**：`doc/exp_protocol_iterations/2026-09-02-round-00.md` 的 Analysis window 01、`doc/spec/2026-09-02-exp-protocol-gsm8k-gemma4b-iteration-basis.md` §四（两段式）、planner 决定（PR #20 评论 5517615610）
+**日期**：2026-09-02 23:07 UTC **状态**：待登记为 held **前置**：`doc/exp_protocol_iterations/2026-09-02-round-00.md` 的 Analysis window 01、`doc/spec/2026-09-02-exp-protocol-gsm8k-gemma4b-iteration-basis.md` §四（两段式）、planner 决定（PR #20 评论 5517615610）
 
 ## 一、依据
 
@@ -25,7 +25,7 @@ planner 的要求先回退再添加：每个候选 commit 的规程树与 guard 
 |---|---|---|---|---|
 | A | `pitfalls.yaml` 新增 `decode_config_inherited`（check: null，preflight 每次打印） | `3be3a29` | `d300656e` | `…-r02-a-decode-x4`，`a02r01–04` |
 | B | `pitfalls.yaml` 新增 `vllm_offline_prompt_and_stop`（A 不在树内） | `92d5c79` | `f319e5ae` | `…-r02-b-vllm-sampling-x4`，`b02r01–04` |
-| C | `SKILL.md` 规则 2 加一段：n 必须承载所声称的差距，交付决定不得少于 500 题（A、B 不在树内） | `1a41dbb` | `9710b194` | `…-r02-c-eval-n-x4`，`n02r01–04` |
+| C | `SKILL.md` 规则 2 加一段：n 必须承载所声称的差距，交付决定不得少于 500 题（A、B 不在树内） | `7f117a0` | `beef82de` | `…-r02-c-eval-n-x4`，`n02r01–04` |
 | 漂移对 | 无改动，guard 本身 | `4ae3d87` | `189319d6` | `…-r02-guard-drift-x2`，`g02r01–02`，`run_index: 3` |
 
 commit `97081ef` 把分支 head 的规程树还原为 guard 树；三个候选只存在于各自的 commit 中，
