@@ -1,0 +1,117 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-02T19:25:00Z'
+
+situation:
+  elapsed_h: 6.5
+  remaining_h: 3.5
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.704, protocol_n: 500}
+  trigger: "exp-05 showed the model is still data-limited (+3.2 pts from 55k unseen off-policy rows) while exp-04 showed self-distillation is not the lever, but OpenMathInstruct-2 is now exhausted: a sweep of its full 14M train split for unseen augmented_gsm8k questions returned 134 rows (logs/prep3.log)."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-05_final_dev500.json, locator: "accuracy=0.704 vs exp-02's 0.672"}
+    - {path: /home/ben/task/logs/prep3.log, locator: "augmented_gsm8k rows 2111683 -> total 134 distinct 67 after excluding everything already trained on"}
+    - {path: /home/ben/task/eval/soup245_dev500.json, locator: "accuracy=0.704 - merging the existing checkpoints adds nothing"}
+  alternatives_rejected:
+    - {option: "MetaMathQA (exact 'The answer is: N' targets)", reason: "the cleanest extraction available, but the Hub rate-limited this IP (429) mid-build and there is no time left to retry a download"}
+    - {option: "Raise max-solutions-per-question on OpenMathInstruct-2 from 2 to 4", reason: "adds solution diversity but no new problems; exp-02's second epoch on repeated questions already showed the weaker return"}
+    - {option: "Stop at exp-05 and spend the remaining time on confirmation evals", reason: "exp-05/final is already installed as final_model, so this card risks nothing: it is only adopted if it beats 0.704 under the same protocol"}
+    - {option: "Train from exp-02/final instead of the incumbent", reason: "exp-05's gain came from data the parent had not seen; stacking on the incumbent keeps that gain and tests whether a third distinct source stacks too"}
+  pitfalls_hit:
+    - {what: "The first Orca-Math build took the LAST number in each solution as the answer; on rows whose closing sentence restates the question ('So, it takes the boat 5 hours to go 125 km downstream') that number is not the answer, and the row would have taught 'ANSWER: 125' for a problem whose answer is 5", cost_h: 0.2, fix: "the final number now has to be presented as a verdict - preceded within 30 chars by is/are/was/were/equals/=/: - which drops 57% of rows and made all 6 hand-inspected tails correct"}
+    - {what: "OpenMathInstruct-2's supply of unseen augmented_gsm8k problems ran out; the full 14M split yielded 134 usable rows", cost_h: 0.2, fix: "switched source family to Orca-Math grade-school word problems"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --dry-run, --model, ckpts/exp-05/final, --data, data/sft_mix_v4.jsonl], outcome: "77404 of 77413 rows fit under max_seq_len; 44.4M tokens at p50=464 - about 75 min of training, so the file was truncated to its first 60000 rows (~34M tokens, ~57 min) to leave room for the eval and the final-model verification"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/contam_v4.jsonl], outcome: "77413 documents scanned, 0 contaminated, 0 matches"}
+
+problem:
+  statement: "Every source the model has been trained on is OpenMathInstruct-2 or GSM8K-train derived, and that well is dry. exp-05 proved accuracy still moves with unseen off-policy data, but there is no unseen data left in that family, so it is untested whether the gain came from *more data* or specifically from *more OpenMathInstruct-2*."
+  evidence:
+    - {path: /home/ben/task/logs/prep3.log, locator: "total 134 distinct 67", observation: "the OpenMathInstruct-2 well is dry"}
+    - {path: /home/ben/task/analysis/exp-05_final_dev500.json, locator: "accuracy=0.704, max_tokens_share=0.010", observation: "148 of 500 still wrong, all reasoning"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: "One epoch of continued training from exp-05/final on 60000 Orca-Math grade-school word problems - a source family the model has never seen - raises n=500 accuracy above exp-05/final's 0.704."
+  mechanism: "Orca-Math is 200k GPT-4-written grade-school word problems, the same difficulty band as GSM8K but generated from a different seed set and in a different solution style. If exp-05's gain was about unseen problems rather than about OpenMathInstruct-2 specifically, a third distinct source should stack on it."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-05, magnitude: "+1 to +3 pts at n=500"}
+  falsified_if: "n=500 accuracy is at or below exp-05/final's 0.704 - either the data-scaling has flattened at 4B, or Orca-Math's verbose style costs more than its coverage buys."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_mix_v4_60k.jsonl
+      source: "microsoft/orca-math-word-problems-200k split=train"
+      n_examples: 60000
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py]
+      selection: "questions disjoint from sft_mix_v1/rft_mix_v1/sft_mix_v2 and from dev_aug500 (normalised alphanumeric match); the answer is the final number of the solution and is kept only if it is presented as a verdict (preceded within 30 chars by is/are/was/were/equals/=/:), <=12 chars and float-parseable; \\boxed{} unwrapped; solution 40-3000 chars. First 60000 rows of the shuffled 77413. No item from the gsm8k TEST split is read at any point."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full fine-tune, flash_attention_2, token-budget batch sampler"
+    peft: "none (vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 10240, grad_accum: 4, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02/exp-05: <bos><start_of_turn>user\\n{10-shot prefix on 6% of rows}{MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n{solution}\\n\\nANSWER: {N}<end_of_turn>; loss on the model turn only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-05/final, --data, /home/ben/task/data/sft_mix_v4_60k.jsonl, --out, /home/ben/task/ckpts/exp-07, --epochs, '1', --lr, '1e-5', --max-tokens, '10240', --grad-accum, '4', --attn, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '48', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.704
+    path: /home/ben/task/eval/exp-05_final_dev500.json
+  diagnostic:
+    what: "max_tokens share and multiple-ANSWER-marker share must stay <=0.01 each; Orca-Math solutions are 30% longer than OpenMathInstruct-2's, so length drift is the specific risk"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.15
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/checkpoint-889, step: 889}
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 889}
+  training_summary: {final_loss: 0.2458, steps: 889, notes: "train_runtime 3797 s, 15.8 samples/s"}
+  measurements:
+    - {metric: accuracy, value: 0.672, n: 500, path: /home/ben/task/eval/exp-07_final_dev500.json, delta_vs_comparator: -0.032}
+  diagnostic_result:
+    value: 0.010
+    path: /home/ben/task/analysis/exp-07_final_dev500.json
+    notes: "max_tokens 0.010 and multiple-marker 0.000 are unchanged, so nothing broke in the output contract - but median completion length went 407 -> 556 chars (+37%), matching Orca-Math's verbose house style. The model was pulled toward a longer, chattier derivation and its latent first-answer accuracy fell in step with the score (0.702 -> 0.664)."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "n=500 0.704 -> 0.672 (-3.2 pts): a third distinct source did not stack. The style diagnostic says why - completions grew 37% longer and took on Orca-Math's phrasing, so this epoch spent its capacity on imitating a new writing style rather than on new reasoning, and it partly overwrote what exp-05 bought. 'Unseen data' is not the mechanism by itself; the source has to match the target's solution style."
+  decision: reject
+  next_step: "Ship exp-05/final. exp-08 verifies that the final_model/ directory the grader will load is that checkpoint and reproduces its score from a fresh vLLM process."
