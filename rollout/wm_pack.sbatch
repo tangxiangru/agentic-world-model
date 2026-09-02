@@ -4,7 +4,7 @@
 set -euo pipefail
 
 [ "$#" -eq 1 ] || {
-    echo "usage: wm_pack.sbatch <one c1/c2/c3 study spec>" >&2
+    echo "usage: wm_pack.sbatch <one c0/c1/c2/c3 study spec>" >&2
     exit 2
 }
 
@@ -27,6 +27,17 @@ case "${SCIENTIST}" in
 esac
 
 case "${CONDITION}" in
+    c0)
+        # No prior information at all: c0:<scientist>:<repetition>. Nothing is
+        # mounted and there is no scope factor.
+        REPETITION="${FIELD3}"
+        SCOPE=none
+        [ -z "${FIELD4}${FIELD5}${EXTRA}" ] || { echo "invalid C0 spec (c0:<model>:<rep>): ${SPEC}" >&2; exit 2; }
+        AGENT=claude_noprior_noawm
+        AGENT_CONFIG="${SCIENTIST}"
+        PROMPT_NAME=prompt_noprior
+        BINDS=()
+        ;;
     c1)
         SCOPE="${FIELD3}"
         REPETITION="${FIELD4}"
@@ -61,11 +72,19 @@ case "${CONDITION}" in
             [ "${SMOKE}" != 1 ] || PROMPT_NAME=prompt_wm_smoke
         fi
         ;;
-    *) echo "condition must be c1, c2, or c3: ${SPEC}" >&2; exit 2 ;;
+    *) echo "condition must be c0, c1, c2, or c3: ${SPEC}" >&2; exit 2 ;;
 esac
 
-case "${SCOPE}" in train|train,test) ;; *) echo "invalid scope: ${SCOPE}" >&2; exit 2;; esac
-case "${REPETITION}" in 1|2) ;; *) echo "invalid repetition: ${REPETITION}" >&2; exit 2;; esac
+case "${SCOPE}" in
+    train|train,test) ;;
+    none) [ "${CONDITION}" = c0 ] || { echo "invalid scope: ${SCOPE}" >&2; exit 2; } ;;
+    *) echo "invalid scope: ${SCOPE}" >&2; exit 2 ;;
+esac
+case "${REPETITION}" in
+    1|2) ;;
+    3|4) [ "${CONDITION}" = c0 ] || { echo "invalid repetition: ${REPETITION}" >&2; exit 2; } ;;
+    *) echo "invalid repetition: ${REPETITION}" >&2; exit 2 ;;
+esac
 
 SAFE_SPEC="${SPEC//\//_}"
 SAFE_SPEC="${SAFE_SPEC//:/_}"
@@ -77,7 +96,7 @@ source src/commit_utils/set_env_vars.sh
 
 export NUM_GPUS=1
 export POST_TRAIN_BENCH_PROMPT="${PROMPT_NAME}"
-export POST_TRAIN_BENCH_EXTRA_BINDS="$(IFS=,; echo "${BINDS[*]}")"
+export POST_TRAIN_BENCH_EXTRA_BINDS="$(IFS=,; echo "${BINDS[*]-}")"
 
 # Preserve the allocation's GPU visibility. PTB still performs its ordinary
 # CUDA check and all ordinary evaluation/result handling.

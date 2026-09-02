@@ -242,3 +242,108 @@ def test_removed_runtime_gate_files_stay_removed() -> None:
         "patches/apply_study_runner.py",
     )
     assert all(not (ROLLOUT / name).exists() for name in removed)
+
+
+# --- C0: the no-prior-information baseline -----------------------------------
+
+
+def _without_leading_comment(text: str) -> str:
+    lines = text.splitlines()
+    body = []
+    seen_code = False
+    for line in lines:
+        if not seen_code and (line.startswith("#") or not line.strip()):
+            if line.startswith("#!"):
+                body.append(line)
+            continue
+        seen_code = True
+        body.append(line)
+    return "\n".join(body)
+
+
+def test_c0_agent_is_byte_identical_to_c1_agent_apart_from_its_header() -> None:
+    c0 = ROLLOUT / "agents/claude_noprior_noawm"
+    c1 = ROLLOUT / "agents/claude_fulltraj_noawm"
+    assert _without_leading_comment((c0 / "solve.sh").read_text()) == _without_leading_comment(
+        (c1 / "solve.sh").read_text()
+    )
+    assert (c0 / "api_keys.json").read_text() == (c1 / "api_keys.json").read_text()
+    c0_env = [l for l in (c0 / "env_passthrough.txt").read_text().splitlines() if l and not l.startswith("#")]
+    c1_env = [l for l in (c1 / "env_passthrough.txt").read_text().splitlines() if l and not l.startswith("#")]
+    assert c0_env == c1_env
+    subprocess.run(["bash", "-n", str(c0 / "solve.sh")], check=True)
+
+
+def test_c0_prompt_is_ptb_plus_only_the_session_completion_note() -> None:
+    base = "before\n\n## Rules\n1. baseline\n"
+    c0 = build_prompts.ptb_noprior(base)
+    assert "## Prior runs" not in c0
+    assert "## The world-model agent" not in c0
+    assert "## Session completion" in c0
+    assert c0.count("## Rules") == 1
+    # Removing the one shared section gives back PTB's prompt unchanged.
+    assert c0.replace(build_prompts.SESSION_COMPLETION_SECTION, "") == base
+
+
+def test_c0_matrix_is_eight_cells_over_the_same_two_models() -> None:
+    cells = study_matrix.c0_matrix()
+    assert len(cells) == 8
+    assert {cell.scientist_model for cell in cells} == {"claude-opus-4-8", "claude-opus-5"}
+    assert {cell.repetition for cell in cells} == {1, 2, 3, 4}
+    assert all(cell.spec == f"c0:{cell.scientist_model}:{cell.repetition}" for cell in cells)
+    assert all(cell.record()["prior_rollout_count"] == 0 for cell in cells)
+    assert all(cell.record()["setting"] == "no_prior_information" for cell in cells)
+    # The 24-cell matrix is untouched by the baseline.
+    assert len(study_matrix.study_matrix()) == 24
+    assert not any(cell.condition == "c0" for cell in study_matrix.study_matrix())
+
+
+def test_c0_pack_calls_ptb_with_no_binds_and_the_noprior_prompt(tmp_path: Path) -> None:
+    ptb, capture, env_capture = _fake_ptb(tmp_path)
+    env = {
+        **os.environ,
+        "HV_PTB_DIR": str(ptb),
+        "CAPTURE_ARGS": str(capture),
+        "CAPTURE_ENV": str(env_capture),
+        "PTB_RUN_ID": "test",
+        "PTB_GPU_SLOTS": "3",
+    }
+    env.pop("PRIOR_RUNS", None)
+    env.pop("WM_MEMORY", None)
+    subprocess.run(
+        ["bash", str(ROLLOUT / "wm_pack.sbatch"), "c0:claude-opus-5:3"],
+        cwd=REPO,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    args = capture.read_text().splitlines()
+    assert args[0:3] == ["gsm8k", "claude_noprior_noawm", "google/gemma-3-4b-pt"]
+    assert args[3] == "test_c0_claude-opus-5_3"
+    assert args[4:] == ["10", "claude-opus-5", "1"]
+    forwarded = env_capture.read_text()
+    assert "POST_TRAIN_BENCH_PROMPT=prompt_noprior\n" in forwarded
+    assert "POST_TRAIN_BENCH_EXTRA_BINDS=\n" in forwarded
+    assert "/home/ben/prior_runs" not in forwarded
+    assert "/home/ben/wm-memory" not in forwarded
+    assert "NUM_GPUS=1\n" in forwarded
+    assert "POST_TRAIN_BENCH_VISIBLE_GPUS=3\n" in forwarded
+
+
+@pytest.mark.parametrize("bad", ("c0:claude-opus-5:train:1", "c0:claude-opus-5:5", "c0:claude-opus-5"))
+def test_c0_pack_rejects_scoped_or_out_of_range_specs(tmp_path: Path, bad: str) -> None:
+    ptb, capture, env_capture = _fake_ptb(tmp_path)
+    env = {**os.environ, "HV_PTB_DIR": str(ptb), "CAPTURE_ARGS": str(capture),
+           "CAPTURE_ENV": str(env_capture), "PTB_RUN_ID": "test", "PTB_GPU_SLOTS": "0"}
+    result = subprocess.run(["bash", str(ROLLOUT / "wm_pack.sbatch"), bad], cwd=REPO, env=env,
+                            capture_output=True, text=True)
+    assert result.returncode == 2
+    assert not capture.exists()
+
+
+def test_setup_and_prompt_file_patch_cover_the_c0_agent() -> None:
+    setup = (ROLLOUT / "setup.sh").read_text()
+    assert "for agent in claude_noprior_noawm claude_fulltraj_noawm claude_wm; do" in setup
+    patched = apply_prompt_file.apply('x\necho "$PROMPT" > "${EVAL_DIR}/prompt.txt"\ny\n')
+    assert "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm" in patched

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Give only the two study agents PTB's generated prompt as a task file.
+"""Give only the study agents PTB's generated prompt as a task file.
 
 Apptainer's multiline ``--env PROMPT=...`` transport can truncate the long
 study prompts. The task directory is already part of PTB's normal sandbox
@@ -17,7 +17,7 @@ MARK = "# --- awm: prompt file for study agents ---"
 ANCHOR = 'echo "$PROMPT" > "${EVAL_DIR}/prompt.txt"\n'
 BLOCK = f'''{MARK}
 case "$AGENT" in
-    claude_fulltraj_noawm|claude_wm)
+    claude_noprior_noawm|claude_fulltraj_noawm|claude_wm)
         cp "${{EVAL_DIR}}/prompt.txt" "${{JOB_DIR}}/task/instruction.md"
         ;;
 esac

@@ -1,10 +1,11 @@
 # PostTrainBench WMA study
 
-The study runs the ordinary PostTrainBench scientist and evaluator under three
-information conditions:
+The study runs the ordinary PostTrainBench scientist and evaluator under a
+no-information baseline and three information conditions:
 
 | condition | scientist information | peer WMA | prompt |
 |---|---|---|---|
+| C0 | none | no | PTB only (plus the shared session-completion note) |
 | C1 | raw prior trajectories | no | PTB + prior-runs section |
 | C2 | raw prior trajectories | trajectory WMA | PTB + prior-runs + WMA sections |
 | C3 | none of the raw trajectories | retrieval WMA over cards | PTB + WMA section |
@@ -16,7 +17,13 @@ polling active training/evaluation work and verify model weights before exit.
 The matrix is two scientist models (`claude-opus-4-8`, `claude-opus-5`) ×
 three conditions × two information scopes (`train`, `train,test`) × two
 repetitions: 24 one-H100 cells. `rollout/study_matrix.py --format specs` emits
-the authoritative list. Opus 4.6 is not in the matrix. The peer model defaults
+the authoritative list. C0 is the no-prior-information baseline outside that
+cross: it has no corpus and therefore no scope factor, so it runs two scientist
+models × four repetitions = 8 cells (`--c0`), the same four runs per model that
+each other condition gets from 2 scopes × 2 repetitions. Its spec is
+`c0:<model>:<rep>`, its agent `claude_noprior_noawm` is byte-for-byte the C1
+agent apart from its header comment, and its prompt is PTB's prompt plus only
+the session-completion note every condition carries. Opus 4.6 is not in the matrix. The peer model defaults
 to `claude-opus-5` and can be selected with `AWM_WMA_MODEL`.
 
 ## Baseline-equivalent execution

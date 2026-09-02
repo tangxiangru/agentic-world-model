@@ -4,6 +4,7 @@ Every prompt is PostTrainBench's own ``prompt.txt`` plus study sections
 inserted before ``## Rules`` — nothing else changes, so a cell differs from the
 corpus runs only by what was added:
 
+    prompt_noprior.txt       PTB prompt + nothing historical                    (C0: no prior runs, no WMA)
     prompt_fulltraj.txt      PTB prompt + "Prior runs"                          (C1: raw files, no WMA)
     prompt_wm.txt            PTB prompt + "The world-model agent"               (C3: WMA over memory)
     prompt_wm_fulltraj.txt   PTB prompt + "Prior runs" + "The world-model agent" (C2: raw files + WMA)
@@ -54,6 +55,11 @@ def _insert_before_rules(prompt: str, *sections: str) -> str:
         raise SystemExit("PTB prompt.txt has no '## Rules' heading; update build_prompts.py")
     block = "".join(sec if sec.endswith("\n\n") else sec.rstrip("\n") + "\n\n" for sec in sections)
     return prompt.replace(anchor, block + anchor, 1)
+
+
+def ptb_noprior(ptb_prompt: str) -> str:
+    """C0: the PTB prompt with no prior information; only the shared completion note."""
+    return _insert_before_rules(ptb_prompt, SESSION_COMPLETION_SECTION)
 
 
 def ptb_fulltraj(ptb_prompt: str) -> str:
@@ -107,6 +113,7 @@ def main() -> int:
     wm = wm_prompt(ptb_prompt, fulltraj=False)
     wm_fulltraj = wm_prompt(ptb_prompt, fulltraj=True)
     files = {
+        "prompt_noprior.txt": ptb_noprior(ptb_prompt),
         "prompt_fulltraj.txt": ptb_fulltraj(ptb_prompt),
         "prompt_wm.txt": wm,
         "prompt_wm_fulltraj.txt": wm_fulltraj,
