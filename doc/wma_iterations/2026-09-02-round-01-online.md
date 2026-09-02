@@ -225,6 +225,13 @@ safe PENDING jobs; the operational guard fires below 24 and replenishes to at
 least 32. With at most 16 owned GPUs starting one wave between checks, this
 keeps an eight-job reserve without high-frequency polling.
 
+The repeats-4 redesign must preserve that invariant during the transition.
+The 32 routed v3 jobs remain submitted safety inventory until all Round 02
+replacement manifests are frozen and submit-ready. Cancellation and replacement
+are one previewed cutover leaving at least 24 safe PENDING jobs; the operator
+must not apply the proposed intermediate state of 13. If an inventory job starts
+first, it finishes naturally and is analysed in its actual cohort.
+
 ## Evidence
 
 - Receipts and inflight snapshots under

@@ -165,22 +165,26 @@ job 已在 RUNNING,不动。我在同一时间写的替代 manifest `ctl-c-x5-v2
 setting,而不是同一 setting 的更多重复。落实:
 
 - 四个八 cell 的 v3 manifest(`wma/ctl-b-x8-v3`、`wma/ctl-c-x8-v3`,jobs 90676–90707)
-  在全部 PENDING、一个都没启动时 `want: cancelled`;它们从未产生结果,预注册的
-  core-16 / all-32 / all-48 三个 cohort 不含它们,不受影响。
+  原计划在全部 PENDING、一个都没启动时撤回。21:35 UTC 的 operator 监控确认这 32 个
+  job 仍在安全 PENDING,取消计划尚未执行。为满足“任何时候至少 8 个 PENDING”的硬约束,
+  它们暂时保持 `want: submitted`;只在 Round 02 候选全部冻结且可提交时做一次原子切换。
+  切换 preview 必须证明操作后安全 PENDING ≥ 24,这样 30 分钟检查间隔内即使一整波
+  16 GPU 开始,仍保留 ≥ 8。若其中某个先开始,不取消 RUNNING,按实际 cohort 分析。
 - 同一 setting 只保留一对 4+4:`wma-x4-v3` / `ctl-x4-v3`(`w04r01..04` / `c04r01..04`,
   `run_index 4`,全局观测 25–28,私有 runtime 仍为 `34535c7`,skill hash 不变)。它承担
   runtime 修复的在线接受率 cohort;v2 的 26 份 transcript 在新 validator 下已 26/26
   重放通过。中间版本的 2+2 pair(`wma/ctl-x2-v3`,commit `afcb86a`)在 operator 提交前
   就被本节替换,从未进过 Slurm。
 - 43 个 RUNNING cell(首波 16 + v2 27)不动;5 个 ctl-c 重试 cell(90786–90790)不动。
-  撤回后安全 PENDING = 5 + 8 = 13,高于 operator 的下限 8。
+  不能先落到“撤回后 5 + 8 = 13”的中间状态:13 虽在检查瞬间高于 8,但一波启动后会
+  变成 0。旧 32 个 pending 是替代候选 submit-ready 前的安全库存。
 
-**对"16 卡永远用满"的影响(明说)**:首波 ≈ 00:00 UTC 释放 16 卡时只有 13 个 PENDING,
-在 Round 02 的 manifest 排进来之前会有约 3 卡空 1–2 h。要在 repeats 4 下填满 16 卡,
+**对"16 卡永远用满"的影响(明说)**:要在 repeats 4 下填满 16 卡,
 一波 = 4 个 setting;"一轮一处 skill 改动"的协作规则只给一个候选,其余容量的去向
 (并行多个单改动候选、各 4+4;或换任务/模型的 breadth)由用户决定,Fable 不自行
-编造 setting。上文"目标 `PENDING ≈ 16`"从此按 repeats 4 解释:下限 8,补货单位是
-4+4 的配对 manifest。
+编造 setting。现有 v3 保证过渡期间不会空卡;上文"目标 `PENDING ≈ 16`"从此按
+repeats 4 解释:硬下限 8、操作 guard 24、补货目标至少 32,补货单位是 4+4 的配对
+manifest。
 
 ## 2026-09-02 21:3x UTC:用户选定容量去向——并行多个单改动候选(Round 02 的形状,预注册)
 
@@ -225,9 +229,10 @@ setting,而不是同一 setting 的更多重复。落实:
 
 候选的 skill 文本在 **WINDOW 05(首波 terminal validator 证据)之后**才 commit——这是
 与 operator 的约定,不因并行而提前;patch、manifest 草稿先在本地备好,证据一到即
-提交。首波 ≈ 00:00 UTC 释放 16 卡时 PENDING = 13(`w04/c04` 各 4 + ctl-c 重试 5),约
-3 卡空到候选进队(≈ 01:30–02:30 UTC);候选 16 cell 进队后 PENDING ≈ 29,足够到
-09-03 的第二波。cell id:`w06..w09`(`run_index 6..9`),不复用已撤回的 `w05`。
+提交。旧 v3 的 32 个安全 PENDING 在此之前不撤;候选 16 cell 与 `w04/c04` 8 cell
+submit-ready 后,同一次 reconcile preview 才允许把旧 v3 标成取消并加入新任务。该
+切换后 PENDING 约 29(候选 16 + `w04/c04` 8 + ctl-c 重试 5),足以满足 guard,不会出现
+13→0 的空窗。cell id:`w06..w09`(`run_index 6..9`),不复用 `w05`。
 
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
