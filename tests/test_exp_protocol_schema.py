@@ -167,7 +167,8 @@ class TestV1Compat:
         assert card["schema_version"] == schema.CARD_SCHEMA
         assert "elapsed_h" not in card and card["situation"]["elapsed_h"] == 2.5
         gaps = sorted(p.field for p in schema.validate_plan(card).errors)
-        assert gaps == ["setup.checkpoints.keep", "situation.trigger"]
+        assert gaps == ["setup.checkpoints.keep", "setup.method.hyperparams.max_seq_len",
+                        "setup.method.stop_token", "situation.trigger"]
 
     def test_migrate_is_a_no_op_on_a_v2_card(self) -> None:
         card = plan_card()
@@ -180,3 +181,30 @@ def test_render_says_ok_with_warnings_when_there_are_no_errors() -> None:
     assert r.ok and r.warnings
     text = r.render()
     assert text.splitlines()[-1].startswith("ok")
+
+
+class TestTrainingFamiliesDeclareWhatPreflightNeeds:
+    """#2 tightened: a card that trains must say what the eos and truncation checks need, or it cannot lock."""
+
+    @pytest.mark.parametrize("family", schema.TRAINING_FAMILIES)
+    def test_training_family_without_stop_token_and_max_seq_len_is_an_error(self, family: str) -> None:
+        card = plan_card()
+        card["setup"]["method"] = {"family": family}
+        fields = {p.field for p in schema.validate_plan(card).errors}
+        assert {"setup.method.stop_token", "setup.method.hyperparams.max_seq_len"} <= fields
+
+    @pytest.mark.parametrize("family", ("merge", "decode-config", "other"))
+    def test_non_training_family_needs_neither(self, family: str) -> None:
+        card = plan_card()
+        card["setup"]["method"] = {"family": family}
+        assert schema.validate_plan(card).ok
+
+    def test_max_seq_len_must_be_a_positive_int(self) -> None:
+        card = plan_card()
+        card["setup"]["method"]["hyperparams"]["max_seq_len"] = "2048"
+        assert any(p.field == "setup.method.hyperparams.max_seq_len" for p in schema.validate_plan(card).errors)
+
+    def test_answer_marker_stays_advisory(self) -> None:
+        card = plan_card()
+        card["setup"]["method"].pop("answer_marker", None)
+        assert schema.validate_plan(card).ok

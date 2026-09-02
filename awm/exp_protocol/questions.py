@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .schema import get
+from .schema import TRAINING_FAMILIES, get
 
 REQUIRED: dict[str, str] = {
     "situation.elapsed_h": "How many hours into the run are you (bash timer.sh)?",
@@ -27,10 +27,20 @@ REQUIRED: dict[str, str] = {
 }
 
 
+#: Asked only when setup.method.family trains on target text (schema.TRAINING_FAMILIES).
+TRAINING_REQUIRED: dict[str, str] = {
+    "setup.method.stop_token": "Which stop token does the grading chat template end a turn with (e.g. <|im_end|>)? Every training target must end with it.",
+    "setup.method.hyperparams.max_seq_len": "What max_seq_len will the trainer use? (preflight estimates how many rows would truncate)",
+}
+
+
 def _missing(card: dict[str, Any], dotted: str) -> bool:
     value = get(card, dotted)
     return value is None or value == [] or value == ""
 
 
 def missing_fields(card: dict[str, Any]) -> list[tuple[str, str]]:
-    return [(f, q) for f, q in REQUIRED.items() if _missing(card, f)]
+    asked = [(f, q) for f, q in REQUIRED.items() if _missing(card, f)]
+    if get(card, "setup.method.family") in TRAINING_FAMILIES:
+        asked += [(f, q) for f, q in TRAINING_REQUIRED.items() if _missing(card, f)]
+    return asked

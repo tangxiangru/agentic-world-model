@@ -17,7 +17,7 @@ def plan_card() -> dict:
         "setup": {
             "parent_checkpoint": {"path": "google/gemma-3-4b-pt", "origin": "base_model"},
             "data": [{"path": "/t/data/train.jsonl", "source": "synthetic:self", "n_examples": 120}],
-            "method": {"family": "sft"},
+            "method": {"family": "sft", "stop_token": "<|im_end|>", "hyperparams": {"max_seq_len": 2048}},
             "command": {"argv": ["python", "train.py"], "cwd": "/t"},
             "output_dir": "/t/ckpts/exp-01",
             "checkpoints": {"keep": "last"},

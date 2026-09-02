@@ -25,3 +25,13 @@ def test_an_empty_data_list_asks_for_data() -> None:
     card = plan_card()
     card["setup"]["data"] = []
     assert [f for f, _ in questions.missing_fields(card)] == ["setup.data"]
+
+
+def test_a_training_family_adds_the_stop_token_and_max_seq_len_questions() -> None:
+    card = schema.minimal_card("exp-01")
+    card["setup"]["method"]["family"] = "sft"
+    asked = [f for f, _ in questions.missing_fields(card)]
+    assert asked[-2:] == ["setup.method.stop_token", "setup.method.hyperparams.max_seq_len"]
+    card["setup"]["method"]["family"] = "merge"
+    asked = [f for f, _ in questions.missing_fields(card)]
+    assert "setup.method.stop_token" not in asked

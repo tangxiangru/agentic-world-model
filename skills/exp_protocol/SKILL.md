@@ -94,9 +94,12 @@ a re-lock or an override without a real reason is what the record will show.
 
 `pitfalls.yaml` in this directory lists the known ways a run produces a
 clean-looking wrong answer. Each names the preflight check that catches it,
-or says `check: null` when only you can. Declare `setup.method.stop_token`,
-`setup.method.answer_marker`, and `hyperparams.max_seq_len` so the checks can
-run against your data; undeclared is a WARN, not a pass. The data checks read
+or says `check: null` when only you can. For any card that trains on target
+text (`family` sft / rft / dpo / grpo / distill), `setup.method.stop_token` and
+`hyperparams.max_seq_len` are **required** — `check` refuses the card without
+them, because the eos and truncation checks are the two that each cost a whole
+run. `setup.method.answer_marker` is advisory: declare it when the grader reads
+one (gsm8k, aime), leave it null when it does not. The data checks read
 the first 500 rows of each jsonl file and look for the target under
 `completion`, `target`, `output`, `response`, then `messages[-1].content`,
 then `text` / `answer`; if your field is named differently the check SKIPs

@@ -27,6 +27,8 @@ PLAN_SECTIONS = ("situation", "problem", "hypothesis", "setup", "evaluation")
 RESULT_SECTIONS = ("result", "conclusion")
 CARD_ID_RE = re.compile(r"^exp-\d{2,}$")
 METHOD_FAMILIES = ("sft", "rft", "dpo", "grpo", "distill", "merge", "decode-config", "other")
+#: Families that train on target text: they must declare what the eos and truncation checks need.
+TRAINING_FAMILIES = ("sft", "rft", "dpo", "grpo", "distill")
 EXECUTIONS = ("completed", "failed", "killed", "not_run")
 VERDICTS = ("supported", "contradicted", "inconclusive")
 MECHANISM_VERDICTS = ("supported", "contradicted", "not_tested")
@@ -294,6 +296,16 @@ def validate_plan(card: dict[str, Any], session_dir: Path | None = None) -> Repo
     family = _require(r, card, "setup.method.family")
     if family and family not in METHOD_FAMILIES:
         r.error("setup.method.family", f"must be one of {METHOD_FAMILIES}")
+    if family in TRAINING_FAMILIES:
+        # Without these two, the eos-mismatch and truncation checks cannot run — the two
+        # pitfalls that each cost a whole run. Declaring them is the price of a training card.
+        if not get(card, "setup.method.stop_token"):
+            r.error("setup.method.stop_token",
+                    f"required for {family}: the terminator the grading template stops on (preflight checks the data against it)")
+        msl = get(card, "setup.method.hyperparams.max_seq_len")
+        if not (isinstance(msl, int) and not isinstance(msl, bool) and msl > 0):
+            r.error("setup.method.hyperparams.max_seq_len",
+                    f"required for {family}: a positive integer (preflight estimates truncation against it)")
     argv = _require(r, card, "setup.command.argv", "list")
     if argv and not all(isinstance(a, str) and a for a in argv):
         r.error("setup.command.argv", "must be a list of non-empty strings")

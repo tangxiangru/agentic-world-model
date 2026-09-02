@@ -4,14 +4,14 @@
 
 ## 一、基底
 
-v2 以 2030 张历史重建卡所用的六节格式(problem / hypothesis / setup / evaluation / result / conclusion)为基底,目录布局不变:`{dir}/memory/cards/exp-NN.yaml`、`{dir}/memory/index.md`。历史语料的 v1 卡经 `awm.exp_protocol.schema.migrate_v1` 处理后(把顶层 `elapsed_h` 挪进新建的 `situation` 节、改 `schema_version`)可以被 `load`、`index`、`chain` 读取;但 `check` 仍会报出 v2 新增而 v1 没有的两个必填字段——`situation.trigger` 与 `setup.checkpoints.keep`——它们只能由人补。`tests/test_exp_protocol_schema.py::TestV1Compat` 把这句话钉成测试。
+v2 以 2030 张历史重建卡所用的六节格式(problem / hypothesis / setup / evaluation / result / conclusion)为基底,目录布局不变:`{dir}/memory/cards/exp-NN.yaml`、`{dir}/memory/index.md`。历史语料的 v1 卡经 `awm.exp_protocol.schema.migrate_v1` 处理后(把顶层 `elapsed_h` 挪进新建的 `situation` 节、改 `schema_version`)可以被 `load`、`index`、`chain` 读取;但 `check` 仍会报出 v2 新增而 v1 没有的必填字段——`situation.trigger` 与 `setup.checkpoints.keep`,训练类 family 还有 `setup.method.stop_token` 与 `hyperparams.max_seq_len`——它们只能由人补。`tests/test_exp_protocol_schema.py::TestV1Compat` 把这句话钉成测试。
 
 ## 二、新增
 
 | 位置 | 字段 | 为什么 |
 |---|---|---|
 | 第 0 节 `situation` | `elapsed_h`(自 v1 顶层挪入)`remaining_h` `incumbent` `trigger` `trigger_evidence` `alternatives_rejected` `pitfalls_hit` `smoke_runs` | 决策发生时的处境。历史语料里"状态类"字段覆盖率 2%–20%,"动作和结论类"100%:轨迹能考古出做了什么,考古不出当时处于什么处境。v2 给处境一个必须先写的位置。 |
-| `setup.method` | `stop_token` `answer_marker` | 让 pre-flight 能对训练数据机械检查 eos 一致性与答案格式唯一性——这两个坑各自让一整个 run 干净地跑出错误答案且 exit 0。 |
+| `setup.method` | `stop_token` `answer_marker` | 让 pre-flight 能对训练数据机械检查 eos 一致性与答案格式唯一性——这两个坑各自让一整个 run 干净地跑出错误答案且 exit 0。**训练类 family(sft/rft/dpo/grpo/distill)必须声明 `stop_token` 与 `hyperparams.max_seq_len`,否则 `check` 报错、`lock` 不过**;`answer_marker` 保持建议性,因为不是每个任务都有答案标记。 |
 | `setup` | `checkpoints: {every_steps, keep}` | 对后续卡的承诺:保存哪些 checkpoint。没有它,"从历史起始点续跑"永远积累不起来。 |
 | `result` | `checkpoints_kept` | 承诺的兑现记录;谱系工具用它判断一个起始点是 checkpoint 级还是配方级。 |
 
