@@ -11,13 +11,16 @@ from test_wma_schema import verdict
 
 
 def write(dir_, card_id, skill, l3="yes", decision="adopt", wall_h=1.0, execution="completed", closed=True,
-          interval=None, l0="yes", l1="yes", model=None, effort=None, tag=None):
+          interval=None, l0="yes", l1="yes", model=None, effort=None, tag=None, valid=True, change_types=None,
+          family=None):
     v = copy.deepcopy(verdict())
     v.update({"card_id": card_id, "wma_skill": skill})
     if model:
         v["model"] = model
     if effort:
         v["effort"] = effort
+    if change_types is not None:
+        v["change_types"] = change_types
     v["levels"]["L0_runs"]["answer"] = l0
     v["levels"]["L1_valid"]["answer"] = l1
     v["levels"]["L3_worth_now"]["answer"] = l3
@@ -31,9 +34,11 @@ def write(dir_, card_id, skill, l3="yes", decision="adopt", wall_h=1.0, executio
         card["conclusion"]["verdict"] = "inconclusive" if decision != "adopt" else "supported"
         card["result"].update({"execution": execution, "wall_h": wall_h})
         card["result"]["measurements"][0]["delta_vs_comparator"] = 0.01
-        if execution != "completed":
+        if execution != "completed" or not valid:
             card["result"]["output_checkpoint"] = None
             card["result"]["measurements"] = []
+    if family:
+        card["setup"]["method"]["family"] = family
     cards.dump_card(card_path, card)
     schema.dump_verdict(schema.verdict_path(card_path, tag=tag), v)
 
@@ -93,16 +98,16 @@ def test_replay_layout_resolves_truth_outside_the_session(tmp_path) -> None:
 
 
 def test_unscorable_levels_are_excluded_from_rates_and_width_is_reported(tmp_path) -> None:
-    write(tmp_path, "exp-01", "AAAA", execution="killed")     # ran, no valid candidate, no delta
+    write(tmp_path, "exp-01", "AAAA", execution="killed")     # ran; L1 not scored on a killed run; no delta
     s = ledger.summarize(ledger.rows([tmp_path]))[0]
-    assert s["L0_hit"] == 1.0 and s["L1_hit"] == 0.0 and s["L2_coverage"] == ""
+    assert s["L0_hit"] == 1.0 and s["L1_hit"] == "" and s["L2_coverage"] == ""
     assert s["L2_width_mean"] == 0.05
 
 
 def test_csv_and_render(tmp_path) -> None:
     write(tmp_path, "exp-01", "AAAA")
     summary = ledger.summarize(ledger.rows([tmp_path]))
-    assert ledger.to_csv(summary).splitlines()[0].startswith("wma_skill,backend,model,effort,mode,n,n_scored,")
+    assert ledger.to_csv(summary).splitlines()[0].startswith("wma_skill,backend,model,effort,mode,slice,n,n_scored,")
     assert "AAAA" in ledger.render(summary)
 
 
@@ -149,16 +154,18 @@ def test_the_same_skill_on_two_models_or_efforts_is_two_ledger_rows(tmp_path) ->
 
 def test_recall_is_measured_on_the_cards_that_failed_or_yielded_no_candidate(tmp_path) -> None:
     d = tmp_path / "s"
-    write(d, "exp-01", "AAAA", execution="failed", decision="reject", l0="no", l1="no")   # caught
-    write(d, "exp-02", "AAAA", execution="failed", decision="reject", l0="yes", l1="yes")  # missed
-    write(d, "exp-03", "AAAA", execution="killed", decision="reject", l0="yes", l1="no")   # ran, no candidate: L1 caught
-    write(d, "exp-04", "AAAA", l0="yes", l1="yes")                                          # completed: not in recall
-    write(d, "exp-05", "AAAA", l0="no", l1="no")                                            # a false alarm: hurts hit, not recall
+    write(d, "exp-01", "AAAA", execution="failed", decision="reject", l0="no", l1="no")   # L0 caught; L1 not scored
+    write(d, "exp-02", "AAAA", execution="failed", decision="reject", l0="yes", l1="yes")  # L0 missed
+    write(d, "exp-03", "AAAA", execution="killed", decision="reject", l0="yes", l1="no")   # ran; L1 not scored
+    write(d, "exp-04", "AAAA", l0="yes", l1="yes")                                          # completed, valid
+    write(d, "exp-05", "AAAA", l0="no", l1="no")                                            # completed, valid: false alarms
+    write(d, "exp-06", "AAAA", decision="reject", l1="no", valid=False)                     # completed, no candidate: caught
+    write(d, "exp-07", "AAAA", decision="reject", l1="yes", valid=False)                    # completed, no candidate: missed
     s = ledger.summarize(ledger.rows([d]))[0]
-    assert s["L0_recall_failed"] == 0.5          # exp-01 caught, exp-02 missed; exp-03 ran
-    assert s["L1_recall_invalid"] == round(2 / 3, 3)   # exp-01, exp-03 caught; exp-02 missed
-    assert s["L0_hit"] == 0.6 and s["L1_hit"] == 0.6
-    assert s["n_scored"] == 5 and s["n_L2_scorable"] == 2   # only the two completed cards carry a delta
+    assert s["L0_recall_failed"] == 0.5                      # exp-01 caught, exp-02 missed; exp-03 ran
+    assert s["L1_recall_invalid"] == 0.5                     # exp-06 caught, exp-07 missed; failed/killed not scored
+    assert s["L0_hit"] == round(5 / 7, 3) and s["L1_hit"] == 0.5   # L1 over the four completed cards
+    assert s["n_scored"] == 7 and s["n_L2_scorable"] == 2    # only the two completed, valid cards carry a delta
 
 
 def test_rejected_files_are_not_verdicts_but_their_spend_is_counted(tmp_path) -> None:
@@ -172,3 +179,26 @@ def test_rejected_files_are_not_verdicts_but_their_spend_is_counted(tmp_path) ->
     assert len(ledger.rows([tmp_path])) == 1
     r = ledger.rejected([tmp_path])
     assert r == {"n": 2, "cost_usd_sum": 0.9}
+
+
+def test_width_is_reported_against_the_noise_floor_of_the_evaluation(tmp_path) -> None:
+    """closed_card measures at n=150 → floor 0.03; an interval of width 0.06 is twice the floor, not 'wide'."""
+    write(tmp_path, "exp-01", "AAAA", interval=[0.0, 0.06])
+    s = ledger.summarize(ledger.rows([tmp_path]))[0]
+    assert s["L2_width_mean"] == 0.06 and s["L2_width_over_noise"] == 2.0
+    assert "L2_width_over_noise" in ledger.SUMMARY_COLUMNS
+
+
+def test_the_ledger_slices_by_change_type_and_by_family(tmp_path) -> None:
+    write(tmp_path, "exp-01", "AAAA", change_types=["C2", "C3"], family="sft")
+    write(tmp_path, "exp-02", "AAAA", change_types=["C1b"], family="decode-config", l3="no", decision="reject")
+    write(tmp_path, "exp-03", "AAAA", family="sft", l3="no", decision="adopt")          # no change_types on this one
+    rows = ledger.rows([tmp_path])
+    by_type = {s["slice"]: s for s in ledger.summarize(rows, by="type")}
+    assert set(by_type) == {"C2", "C3", "C1b", "(untyped)"}
+    assert by_type["C2"]["n"] == 1 and by_type["C3"]["n"] == 1 and by_type["C1b"]["L3_hit"] == 1.0
+    assert by_type["(untyped)"]["n"] == 1 and by_type["(untyped)"]["L3_hit"] == 0.0
+    by_family = {s["slice"]: s for s in ledger.summarize(rows, by="family")}
+    assert by_family["sft"]["n"] == 2 and by_family["decode-config"]["n"] == 1
+    plain = ledger.summarize(rows)
+    assert len(plain) == 1 and plain[0]["slice"] == "" and plain[0]["n"] == 3

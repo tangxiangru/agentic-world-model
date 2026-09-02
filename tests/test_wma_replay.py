@@ -116,8 +116,7 @@ def test_run_replay_reviews_reconciles_and_is_resumable(corpus, tmp_path, skill)
     # the failed and killed cards scored L0/L1 against the truth kept outside
     rows = {(r["path"].split("/")[-5], r["card_id"]): r for r in ledger.rows([out])}
     assert rows[("r-bbbb", "exp-02")]["scored"]["L0"] == "miss"
-    assert rows[("r-cccc", "exp-01")]["scored"] == {"L0": "hit", "L1": "miss", "L2": "unscorable", "L3": "hit"} or \
-        rows[("r-cccc", "exp-01")]["scored"]["L1"] == "miss"
+    assert rows[("r-cccc", "exp-01")]["scored"] == {"L0": "hit", "L1": "unscorable", "L2": "unscorable", "L3": "miss"}   # heuristic said yes; it was rejected
     again = replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1))
     assert again == {"reviewed": 0, "skipped": 6, "errors": 0}
 
@@ -232,3 +231,39 @@ def test_a_sample_whose_verdict_was_rejected_is_pending_again_on_the_next_pass(c
     assert counts["errors"] == 2
     again = replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1))
     assert again["reviewed"] == 2 and again["skipped"] == 0
+
+
+# ---- the sample set can be restricted to runs by agent, without the session learning the agent (2026-09-02) ----
+
+def test_agent_filter_selects_runs_through_the_split_file_and_never_names_them(corpus, tmp_path, skill) -> None:
+    """run_ref is 'r-' + sha256(run id)[:8]; the split file lists run ids. A filter on the agent in the run id
+    picks the runs, but sessions and history keep only the opaque run_ref."""
+    import yaml
+
+    runs = {"claude_non_api_claude-opus-5_10h_run1/gsm8k_x_1": "r-aaaa",
+            "codex_non_api_gpt-5.5_10h_run1/gsm8k_x_2": "r-bbbb",
+            "claude_non_api_max_claude-fable-5_1m__10h_run2/gsm8k_x_3": "r-cccc"}
+    # rename the fixture's runs to hash-derived refs so the split file resolves them
+    for run_id, old in runs.items():
+        (corpus / "train" / old).rename(corpus / "train" / replay.run_ref(run_id))
+    split = tmp_path / "split.yaml"
+    split.write_text(yaml.safe_dump({"splits": {"train": list(runs), "test": []}}))
+    out = tmp_path / "replay"
+    samples = replay.build_samples(corpus, out, side="train", split=split, agents=r"claude-(opus-5|fable-5)")
+    picked = {s.run_ref for s in samples}
+    assert picked == {replay.run_ref("claude_non_api_claude-opus-5_10h_run1/gsm8k_x_1"),
+                      replay.run_ref("claude_non_api_max_claude-fable-5_1m__10h_run2/gsm8k_x_3")}
+    assert len(samples) == 4          # 3 cards + 1 card; the codex run's 2 cards are out
+    meta = json.loads((out / "filter.json").read_text())
+    assert meta["agents"] == r"claude-(opus-5|fable-5)" and meta["runs_matched"] == 2 and meta["runs_total"] == 3
+    # nothing under the out dir names an agent: sessions, history links, samples, truth
+    text = "".join(p.read_text() for p in out.rglob("*") if p.is_file() and p.suffix in (".yaml", ".jsonl", ".md"))
+    assert "opus" not in text and "codex" not in text and "fable" not in text
+    # the codex run is still available as history to the picked ones
+    hist = samples[0].session_dir / "history"
+    assert replay.run_ref("codex_non_api_gpt-5.5_10h_run1/gsm8k_x_2") in {p.name for p in hist.iterdir()}
+
+
+def test_agent_filter_needs_a_split_file_that_resolves_the_corpus(corpus, tmp_path, skill) -> None:
+    with pytest.raises(FileNotFoundError):
+        replay.build_samples(corpus, tmp_path / "r", side="train", agents="opus")

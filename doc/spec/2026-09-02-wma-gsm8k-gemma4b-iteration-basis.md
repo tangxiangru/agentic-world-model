@@ -23,10 +23,16 @@
   `static_check` / `data_probe`。上线(在线优化)是第二阶段,合同见第二节 B 表,
   门槛见第十节。
 - 唯一迭代样本集是 `gsm8k-gemma-holdout-v1` 的 **train 侧**(post-train Qwen3-4B /
-  Qwen3-1.7B / SmolLM3-3B 的 143 个 run,1580 张卡)的固定 300 抽样。
-- **test 侧(post-train gemma-3-4b 的 50 个 run,450 张卡)是 held-out promotion gate**,
-  只验证少量已由 train 侧选出的候选;不用它选择改动、换先验、写规则。它的 base
-  model 与在线阶段相同,是离线能得到的最接近上线的检验。
+  Qwen3-1.7B / SmolLM3-3B)里 **scientist 为 claude-opus-5 / claude-fable-5 /
+  claude-opus-4-8 / claude-opus-4-7 的 31 个 run 的全部 313 张卡**(用户 2026-09-02 定:
+  只回放强模型的 trial;不抽样)。
+- **test 侧同一批 agent 的 11 个 run、100 张卡(post-train gemma-3-4b)是 held-out
+  promotion gate**,只验证少量已由 train 侧选出的候选;不用它选择改动、换先验、写规则。
+  它的 base model 与在线阶段相同,是离线能得到的最接近上线的检验。
+- **WMA 不得凭 scientist 的身份预测。** 过滤按 split 文件里的 run id 做
+  (`run_ref = "r-" + sha256(run_id)[:8]`),session、history、truth 里只有不透明的
+  `run_ref`;已核对语料卡片里的 `claude-opus-5` 只出现在 `provenance.extractor`(抽卡的
+  模型),`openai` 只出现在数据集名 `openai/gsm8k`。skill 明文禁止从身份推断。
 - 一轮内除 `skills/wma` commit 外,样本集、后端、模型、effort、预算、mode 完全相同。
 - `skills/wma_meta` 永不进入 WMA 的会话;WMA 出裁决时不改 `skills/wma`。
 - 本线不改进 scientist 的规程:`skills/exp_protocol/` 只允许 WMA-aware 的改动
@@ -42,15 +48,15 @@
 |---|---|
 | 语料 | `results/exp-cards/gsm8k-gemma-holdout-v1`,jerry-dev 分支 `a8b12af`,只读;卡片抽自 HF `aisa-group/PostTrainBench-Trajectories@39d3fcd` |
 | split 契约 | `splits/posttrainbench/gsm8k-gemma-holdout-v1.yaml`,train 143 / test 50 |
-| 迭代集 | train 侧 `--sample 300 --seed 0`;(run, card) 集合指纹 `509ba0772ffc4fab`(排序后每行 `run_ref card_id` 的 sha256 前 16 位);与 round-00 逐对相同 |
-| held-out 集 | test 侧 `--sample 200 --seed 0`,第一次晋升前构建一次(`heldout-00`),之后不变;若 round-01 计价后全量 450 张装得进一轮预算,构建时改为全量并在此处改数 |
+| 迭代集 | train 侧 `--agents 'claude-(opus-5\|fable-5\|opus-4-8\|opus-4-7)'`,不抽样:31 run / 313 卡(completed 241 / killed 34 / failed 38;adopt 165 / reject 79 / abandon 59 / iterate 10);集合指纹见 round-00s 记录。旧的 300 抽样(指纹 `509ba0772ffc4fab`,全体 agent)只用于 round-00 与两次计价 |
+| held-out 集 | test 侧同一 `--agents` 过滤,不抽样:11 run / 100 卡;第一次晋升前构建一次(`heldout-00`),之后不变 |
 | mode | `offline`;探测只有 `static_check` / `data_probe` |
 | 地板 | `heuristic` 后端(`wma_skill: heuristic-priors`),round-00 已测 |
-| 后端 / 模型 | `claude` / `claude-fable-5-1`;离线与在线同一个模型(2026-09-02 由 `claude-opus-5` 改,改在花钱之前;opus-5/high 只跑了接线验证) |
-| effort | `medium`,由后端显式传 `--effort`(CLI 默认值是 `high`,replay 命令必须写 `--effort medium`),盖进 verdict;不继承本机 settings 的默认值(现为 `xhigh`) |
+| 后端 / 模型 | `claude` / `claude-opus-5`;离线与在线同一个模型(2026-09-02 先改成 fable-5-1 计了 20 份的价,又由用户定回 opus-5) |
+| effort | `high`,由后端显式传 `--effort`(也是 CLI 默认值),盖进 verdict;不继承本机 settings 的默认值(现为 `xhigh`) |
 | 预算 | `cpu=5,gpu=0,wall=8,turns=30` |
 | 每变体 pass 数 | baseline 2 个完整 pass;candidate 1 个;目标层的差距落在 baseline 两 pass 之差以内时补第 2 个 |
-| initial baseline | `skills/wma` v0 修掉过时措辞、放平语气后的 commit `971ab3b`(`SKILL.md` sha `116b98b07d1a`);round-01 记录里再抄一遍 |
+| initial baseline | **skill v0.2** `47ec0b6`(sha `176f0a464986`,对整个 `skills/wma/` 目录):类型 × 档位手册版。v0.1(`971ab3b`,sha `116b98b07d1a`,类型无关)保留为对照臂 |
 
 - 一个 out 目录 = 一个 (variant, backend, model, effort, pass),命名
   `round-NN-a` / `round-NN-b`(baseline 的两个 pass)与 `round-NN-<label>`(candidate)。
@@ -74,7 +80,7 @@
 | minimum repeats | 每个 task × variant 至少 2 个正式、独立、有效 cell |
 | scaffold | `claude_vertex_high_awm`——消融线的 high-effort 门也是本线的门 |
 | scientist 规程 | `skills/exp_protocol` 固定在本线的一个 commit(含第 4b 步),整个在线阶段不变 |
-| WMA backend / model / effort | `claude` / `claude-fable-5-1`(与离线相同)/ `medium` |
+| WMA backend / model / effort | `claude` / `claude-opus-5`(与离线相同)/ `high` |
 | WMA mode / 预算 | `online`;`cpu=10,gpu=0,wall=15,turns=40` 【待定:第一轮是否开放 `gpu_min`】 |
 | WMA history | train 侧语料只读挂载进 cell 【需要发射器支持,见第九节】 |
 | 变体 | `skills/wma` 的 commit;scientist、规程、任务、模型、时长、资源全部相同 |
@@ -158,7 +164,8 @@ baseline 只改一件事。API 回放没有 GPU 排队,两个 candidate 可以�
 2. 预注册的目标层上,candidate 高于 baseline 两 pass 的均值,幅度超过
    `max(spread_L, 0.03)`;只有 1 个 pass 且差距在这个线以内时,先补第 2 个 pass 再判;
 3. 其他任一层不低于 baseline 均值超过 `max(spread_L, 0.03)`;
-4. L2 的 coverage 提升只有在宽度不增时才算;
+4. L2 的 coverage 提升只有在 `L2_width_over_noise`(区间宽度 ÷ 该卡评测 n 的噪声底)不增时才算——
+   宽度本身随评测 n 变,不能直接比;
 5. `gpu_h_wrongly_killed` 不增加;candidate 的 pass 里 `n_leak_suspected = 0`;
 6. `cost_usd_mean` 不超过 baseline 的 1.5 倍,否则 record 里必须写明这笔交换;
 7. 改动及其理由已写进对应 round record。
@@ -276,8 +283,13 @@ verdict 里的 `cost.usd` 是 CLI 报的**影子价**,不是账单——它用�
 - round-01 目录已构建,集合指纹 = `509ba0772ffc4fab`;
 - 用户已确认模型与 `$B`。
 
+**用户 2026-09-02 的决定:离线阶段快速收尾,更新完 skill 就转在线;下面三条离线门槛
+不再作为上线前提。** 理由:回放 session 没有工作区(脚本、数据、config),第一档探针在
+离线做不了,L1 只能靠猜——而 skill v0.2 的价值正在于探针;这一层只有在线才测得到。
+离线分析的不足记在 GitHub issue(见 round-01 记录)。
+
 **上线**:除消融线第十节的全部门(scaffold、tests、`awm ptb check`、operator、
-`OWNERSHIP OK`、GPU 额度 `G`)外,本线另需:
+`OWNERSHIP OK`、GPU 额度 `G`)外,本线另需(前三条已由上述决定豁免,保留作记录):
 
 1. train 侧:baseline skill 的 `L3_hit` 与 `L0_recall_failed` / `L1_recall_invalid`
    打赢 heuristic 地板超过 `max(spread_L, 0.03)`;
@@ -319,5 +331,11 @@ verdict 里的 `cost.usd` 是 CLI 报的**影子价**,不是账单——它用�
    `access` / `leak_suspected`,verdict 其余字段不动(栅栏是 harness 规则,不是 agent 的
    判断,规则改了就重算而不是重买);`direction` 的同义写法(`none`、`n/a`、`unchanged`…)
    在校验前折成 `flat`。
+9. **已做**(2026-09-02,用户批准的第二批):verdict 带 `change_types`(C1–C18,C1 分
+   a/b),`awm wma ledger --by type|family` 按 WMA 的分类或卡的 family 切片;**L1 只在
+   completed 卡上打分**(killed 是 scientist 的时间决策,failed 是 L0 的失误);
+   `noise_floor(n)` 与新列 `L2_width_over_noise`;把 base model 原样打包的 baseline 卡
+   在 L3 上 unscorable;`skill_sha` 改为覆盖 `skills/wma/` 全部文件(手册是 skill 的一部分);
+   回放器 `--agents REGEX`(经 split 文件的 run id 过滤,session 不带身份)与 `filter.json`。
 
 完成这些门只表示可以发射 round-01,不表示 candidate 可以晋升。

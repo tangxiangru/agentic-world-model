@@ -197,7 +197,7 @@ def _ledger(args: argparse.Namespace) -> int:
     from . import ledger
 
     dirs = [Path(d) for d in args.dirs]
-    summary = ledger.summarize(ledger.rows(dirs))
+    summary = ledger.summarize(ledger.rows(dirs), by=args.by)
     print(ledger.to_csv(summary) if args.csv else ledger.render(summary), end="" if args.csv else "\n")
     rej = ledger.rejected(dirs)
     if rej["n"] and not args.csv:
@@ -223,7 +223,12 @@ def _replay(args: argparse.Namespace) -> int:
         print(exc)
         return 2
     out = Path(args.out)
-    samples = replay.build_samples(Path(args.corpus), out, side=args.side, sample=args.sample, seed=args.seed)
+    try:
+        samples = replay.build_samples(Path(args.corpus), out, side=args.side, sample=args.sample, seed=args.seed,
+                                       agents=args.agents, split=Path(args.split) if args.split else None)
+    except FileNotFoundError as exc:
+        print(exc)
+        return 2
     print(f"{len(samples)} samples under {out}; set fingerprint {replay.fingerprint(samples)[:16]}")
     if args.build_only:
         return 0
@@ -261,6 +266,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     lg = cmds.add_parser("ledger", help="summarise every verdict under the given directories")
     lg.add_argument("dirs", nargs="+")
     lg.add_argument("--csv", action="store_true")
+    lg.add_argument("--by", choices=("type", "family"), help="slice each group by the WMA's change types or the card's family")
     lg.set_defaults(func=_ledger)
 
     rs = cmds.add_parser("rescan", help="re-derive access / leak_suspected from the kept transcripts (after a fence change)")
@@ -273,6 +279,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     rp.add_argument("--side", choices=("train", "test"), default="train")
     rp.add_argument("--sample", type=int, help="random subset of (run, card) samples")
     rp.add_argument("--seed", type=int, default=0)
+    rp.add_argument("--agents", help="regex on the run id (split file) — keep only runs whose agent matches; "
+                                     "the sessions still carry only the opaque run_ref")
+    rp.add_argument("--split", help="split file mapping run ids to the corpus (default: splits/posttrainbench/<corpus>.yaml)")
     rp.add_argument("--backend", choices=("heuristic", "claude", "codex"), default="heuristic")
     rp.add_argument("--model")
     rp.add_argument("--effort", default="high",

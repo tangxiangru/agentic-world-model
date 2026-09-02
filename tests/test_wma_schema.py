@@ -94,13 +94,14 @@ class TestScore:
         s = schema.score(verdict(), self.truth())
         assert s == {"L0": "hit", "L1": "hit", "L2": "in_interval", "L3": "hit"}
 
-    def test_failed_run_misses_L0_and_L1(self) -> None:
+    def test_failed_run_misses_L0_and_leaves_L1_unscored(self) -> None:
+        """L1 is scored only on completed runs (spec §十一.9): a failed launch is L0's miss, not L1's."""
         s = schema.score(verdict(), self.truth(execution="failed", output_checkpoint=None, measurements=[]))
-        assert s["L0"] == "miss" and s["L1"] == "miss"
+        assert s["L0"] == "miss" and s["L1"] == "unscorable"
 
-    def test_killed_counts_as_ran_but_not_valid(self) -> None:
+    def test_killed_counts_as_ran_and_leaves_L1_unscored(self) -> None:
         s = schema.score(verdict(), self.truth(execution="killed", output_checkpoint=None, measurements=[]))
-        assert s["L0"] == "hit" and s["L1"] == "miss"
+        assert s["L0"] == "hit" and s["L1"] == "unscorable"
 
     def test_L2_above_below_unscorable(self) -> None:
         assert schema.score(verdict(), self.truth(delta=0.10))["L2"] == "above"
@@ -145,3 +146,57 @@ def test_flat_is_a_direction_a_baseline_card_can_have() -> None:
     assert schema.validate_verdict(v).ok
     v["levels"]["L2_effect"]["direction"] = "sideways"
     assert not schema.validate_verdict(v).ok
+
+
+# ---- measurement batch 2 (2026-09-02, spec §十一.9): types, completed-only L1, noise floor, baseline cards ----
+
+def test_change_types_must_look_like_the_taxonomy() -> None:
+    v = verdict()
+    v["change_types"] = ["C1b", "C2", "C12", "C18"]
+    assert schema.validate_verdict(v).ok
+    for bad in (["C19"], ["c2"], ["C1c"], "C2", ["decode"]):
+        v["change_types"] = bad
+        assert not schema.validate_verdict(v).ok, bad
+
+
+def test_noise_floor_follows_the_question_count() -> None:
+    """reference §2: gsm8k n=1319 0.45–1.6pp, n=150 1.3–3.3pp, n=20–50 ±10–15pp; aime2025 one question = 3.33pp."""
+    assert schema.noise_floor(1319) == 0.01
+    assert schema.noise_floor(150) == 0.03
+    assert schema.noise_floor(20) == 0.12
+    assert schema.noise_floor(30) == round(1 / 30, 4) or schema.noise_floor(30) >= 1 / 30
+    assert schema.noise_floor(None) is None
+
+
+def test_l1_is_scored_only_on_cards_that_completed() -> None:
+    """A killed run is the scientist's clock decision and a failed one is L0's miss: neither says whether the
+    proposal would have yielded a valid candidate."""
+    for execution in ("killed", "failed"):
+        assert schema.truth_levels({"execution": execution, "output_checkpoint": None, "measurements": []})["L1"] is None
+    assert schema.truth_levels({"execution": "completed", "output_checkpoint": "/x", "measurements": [{}]})["L1"] is True
+    assert schema.truth_levels({"execution": "completed", "output_checkpoint": None, "measurements": []})["L1"] is False
+
+
+def test_a_baseline_packaging_card_is_unscorable_at_l3_and_carries_its_family_and_n() -> None:
+    card = closed_card()
+    card["setup"]["method"]["family"] = "other"
+    card["setup"]["parent_checkpoint"] = {"path": "Qwen/Qwen3-1.7B-Base", "origin": "base_model", "hash": None}
+    card["setup"]["data"] = []
+    card["conclusion"]["decision"] = "reject"      # superseded, not unworthy
+    t = schema.truth_from_card(card)
+    assert t["baseline_packaging"] is True and t["family"] == "other" and t["n"] == 150
+    v = verdict()
+    v["levels"]["L3_worth_now"]["answer"] = "yes"
+    assert schema.score(v, t)["L3"] == "unscorable"
+    card["setup"]["data"] = [{"path": "/d.jsonl", "n_examples": 10}]
+    assert schema.truth_from_card(card)["baseline_packaging"] is False
+    assert schema.score(v, schema.truth_from_card(card))["L3"] == "miss"
+
+
+def test_skill_sha_covers_every_file_of_the_skill(tmp_path) -> None:
+    d = tmp_path / "wma"
+    d.mkdir()
+    (d / "SKILL.md").write_text("a")
+    one = schema.skill_sha(d)
+    (d / "change_types.md").write_text("b")
+    assert schema.skill_sha(d) != one and len(schema.skill_sha(d)) == 12

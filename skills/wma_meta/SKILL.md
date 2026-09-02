@@ -22,7 +22,8 @@ procedure; that spec holds the numbers.
 
 | in `skills/wma/` | how |
 |---|---|
-| `SKILL.md` — level definitions, basis rules, probe playbook, priors | edit; one change per round if you can; a prior that the ledger contradicts is replaced, not softened |
+| `SKILL.md` — the procedure, level definitions, basis rules | edit; one change per round if you can |
+| `change_types.md` — tiers, the type table, priors with their evidence grade, silent failures, noise floor | edit; a prior the ledger contradicts is replaced, not softened; a new number carries its grade; the manual is part of the skill hash |
 | `verdict.example.json` | keep it valid (`tests/test_wma_skill_files.py`) and representative of the current skill |
 | the heuristic backend (`awm/wma/backends.py`) | only to keep the baseline honest; it must stay a set of fixed, stated priors |
 
@@ -33,10 +34,11 @@ in `doc/spec/`.
 
 ## The loop (offline replay)
 
-1. **Fix the sample set.** The standard set is train side, `--sample 300 --seed 0`
-   (`/data2/gangda/hv/wma-replay/round-00/samples.jsonl`; set fingerprint in
-   `samples.sha`). Changing it needs a written reason; a new set gets a new
-   baseline run first.
+1. **Fix the sample set.** The standard set is the train side restricted to the
+   strong-agent runs, `--agents 'claude-(opus-5|fable-5|opus-4-8|opus-4-7)'`,
+   no sampling (313 cards; fingerprint in `samples.sha`). Changing it needs a
+   written reason; a new set gets a new baseline run first. The filter works on
+   the split file's run ids; the sessions never name the agent.
 2. **Name the variants.** A variant is a commit of `skills/wma/`; its
    `wma_skill` hash is what the ledger groups by. Baseline is the current
    skill; the heuristic backend is the floor every variant must beat. To compare
@@ -45,9 +47,10 @@ in `doc/spec/`.
    effort, mode) and the tagged files sit side by side.
 3. **Run.** One output directory per (variant, backend, model, effort, pass):
    ```bash
-   awm wma replay --corpus <corpus> --out <out>/round-NN-<label> --side train --sample 300 --seed 0 \
+   awm wma replay --corpus <corpus> --out <out>/round-NN-<label> --side train \
+       --agents 'claude-(opus-5|fable-5|opus-4-8|opus-4-7)' \
        --backend claude --model <model> --effort high --budget cpu=5,gpu=0,wall=8,turns=30 [--limit 20] [--jobs 4]
-   awm wma ledger <out>/round-NN-<label>
+   awm wma ledger <out>/round-NN-<label>            # add --by type or --by family to see where the skill acts
    ```
    Start every model-backed round with `--limit 20`: check the cost per
    verdict, the wall time, that the agent writes a valid file, and that
@@ -58,8 +61,11 @@ in `doc/spec/`.
    0.43). For L0 and L1 also the recall on the cards that failed or produced no
    valid candidate (`L0_recall_failed`, `L1_recall_invalid`) — an agent that
    always says yes already has the base rate; recall is where a skill shows.
-   For L2 the width and `n_L2_scorable` next to the coverage; for L3
-   `gpu_h_saved` against `gpu_h_wrongly_killed`. A level that moved is where the
+   For L2 the coverage next to `L2_width_over_noise` (width divided by the
+   noise floor of that card's evaluation size — a wide interval at n=20 is
+   honest, at n=1319 it is evasion) and `n_L2_scorable`; for L3 `gpu_h_saved`
+   against `gpu_h_wrongly_killed`. Then `--by type`: a change to the manual
+   should move the types it touched and nothing else. A level that moved is where the
    change acted; a level that did not is where the next change should look.
 5. **Read ten verdicts by hand** — five hits, five misses. The numbers say
    whether; the `basis` and `evidence` say why. A miss with a confident, well-cited
@@ -79,7 +85,7 @@ in `doc/spec/`.
   or `evidence`, which are the failure modes themselves.
 - Rounds are compared only when they differ in nothing but the skill: same
   sample set, same backend, same model, same effort, same budget.
-- A coverage gain that came with a width gain is not progress.
+- A coverage gain that came with a gain in `L2_width_over_noise` is not progress.
 - A verdict's own outcome does not go back into the skill as a rule ("card
   r-016546b4/exp-04 fails"); the skill learns kinds, not instances.
 - Cost is a result. Record `cost_usd_mean`, `cost_wall_min_mean` and the spend
