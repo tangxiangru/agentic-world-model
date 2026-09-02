@@ -146,6 +146,18 @@ def _bundle_status(repo_root: Path, batch: str, cell: str) -> dict[str, Any] | N
     return data if isinstance(data, dict) else None
 
 
+def _status_eligible(status: dict[str, Any]) -> bool:
+    """Whether a harvested result may drive a scientific decision.
+
+    ``eligible`` is additive to the original status schema.  Older bundles did
+    not carry it, so preserve their old meaning unless they explicitly carry a
+    quarantine marker.
+    """
+    if "eligible" in status:
+        return status.get("eligible") is True
+    return status.get("complete") is True and status.get("quarantined") is not True
+
+
 # ------------------------------------------------------------------ the plan
 
 @dataclass(frozen=True)
@@ -235,9 +247,9 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
             if any(s is None or s.get("job_id") != j["job_id"] for j, s in statuses):
                 actions.append(Action("wait", batch, "pilot finished; its harvest comes first"))
                 continue
-            if not all(s.get("complete") for _, s in statuses):
+            if not all(_status_eligible(s) for _, s in statuses):
                 actions.append(Action("blocked", batch,
-                                      "pilot did not validate; the planner decides what happens"))
+                                      "pilot did not validate as eligible; the planner decides what happens"))
                 continue
         actions.append(Action("submit", batch, "formal cells", manifest=entry["manifest"]))
     return actions
@@ -336,7 +348,10 @@ def harvest_job(
         "slurm_state": state,
         "result_dir": str(result_dir) if result_dir else None,
         "complete": False,
+        "eligible": False,
         "issues": [],
+        "quarantined": False,
+        "quarantine_reasons": [],
         "accuracy": None,
         "stderr": None,
         "judge_flags": [],
@@ -382,13 +397,17 @@ def harvest_job(
             provenance = ptb_results._read_json(result_dir / "runtime_provenance.json")
             actual_node = str((provenance.get("slurm") or {}).get("node", ""))
             if not actual_node:
-                status["issues"].append("runtime Slurm node is missing from provenance")
+                status["quarantine_reasons"].append(
+                    "runtime Slurm node is missing from provenance"
+                )
             elif actual_node not in expected_nodes:
-                status["issues"].append(
+                status["quarantine_reasons"].append(
                     f"runtime Slurm node {actual_node} is outside frozen site nodes "
                     f"{','.join(sorted(expected_nodes))}"
                 )
         status["complete"] = not status["issues"]
+        status["quarantined"] = bool(status["quarantine_reasons"])
+        status["eligible"] = status["complete"] and not status["quarantined"]
         status["judge_flags"] = ptb_results.judge_flags(result_dir)
     else:
         status["issues"] = ["result directory not found"]
@@ -552,7 +571,12 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
                                  job_id=str(action.job_id), job_name=action.job_name,
                                  state=action.state, slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm",
                                  expected_nodes=_receipt_expected_nodes(receipt_path))
-            verdict = "complete" if status["complete"] else f"incomplete ({len(status['issues'])} issue(s))"
+            if status["quarantined"]:
+                verdict = f"quarantined ({len(status['quarantine_reasons'])} reason(s))"
+            elif status["complete"]:
+                verdict = "complete"
+            else:
+                verdict = f"incomplete ({len(status['issues'])} issue(s))"
             flags = ",".join(status["judge_flags"]) or "clean"
             acc = "" if status["accuracy"] is None else f" acc={status['accuracy']:.4f}"
             line = f"harvest {action.batch}/{action.cell} job={action.job_id} {action.state}{acc} {verdict} {flags}"
@@ -590,9 +614,11 @@ def harvest_cli(args) -> int:
     status = harvest_job(Path(args.result_dir) if args.result_dir else None, out, batch=args.batch,
                          cell=args.cell, job_id=args.job, job_name=args.job_name, state=args.state,
                          slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm")
-    print(f"wrote {out / STATUS}: {'complete' if status['complete'] else 'incomplete'}, "
+    verdict = ("quarantined" if status["quarantined"] else
+               "complete" if status["complete"] else "incomplete")
+    print(f"wrote {out / STATUS}: {verdict}, "
           f"{len(status['skipped'])} file(s) listed but not copied")
-    return 0 if status["complete"] else 1
+    return 0 if status["eligible"] else 1
 
 
 def cancel_cli(args) -> int:

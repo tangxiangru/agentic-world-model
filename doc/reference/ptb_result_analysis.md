@@ -16,9 +16,17 @@ uv run awm ptb results experiments/posttrainbench/EXPERIMENT.yaml --task gsm8k
 uv run awm ptb results experiments/posttrainbench/EXPERIMENT.yaml --cell g02 --json
 ```
 
-The default prints only validated completed cells. `--all` additionally prints the latest
-incomplete attempt and its missing evidence. If a cell has several attempts, the report keeps the
-latest validated completion for analysis while separately retaining the latest attempt.
+The default prints validated completed cells, including any result that is visibly marked
+`QUARANTINED`. `--all` additionally prints the latest incomplete attempt and its missing evidence.
+If a cell has several attempts, the report prefers the latest eligible completion for analysis
+while separately retaining the latest attempt.
+
+Completion and eligibility are separate. A result can pass the canonical PTB validator and keep
+its score while being quarantined because runtime placement differs from the frozen receipt. Such
+a result is evidence, but it is excluded from `eligible`, `clean`, and `flagged` aggregates until
+the site owner decides the placement difference is immaterial. Its `status.json` preserves
+`complete: true`, sets `eligible: false` and `quarantined: true`, and records the placement fact in
+`quarantine_reasons`; validator defects remain in `issues` and make `complete: false`.
 
 ## Resolve one job or cell
 
@@ -51,8 +59,10 @@ model/API, and PTB lookup flags are stronger validity failures.
 
 ## Analysis order
 
-1. Establish coverage: complete cells / intended cells and which cells remain incomplete.
-2. Separate clean completed results from judge-flagged completed results.
+1. Establish coverage: complete cells / intended cells, eligible completions, quarantined
+   completions, and which cells remain incomplete.
+2. Separate clean completed results from judge-flagged completed results; never put quarantined
+   scores into either aggregate by default.
 3. Compare scores only within the same benchmark and official evaluation contract.
 4. For AIME, report both `correct/30` and accuracy; a one-question change is 3.33 points.
 5. Use matched model/profile/context contrasts before interpreting isolated score maxima.

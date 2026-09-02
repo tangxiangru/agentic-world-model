@@ -132,6 +132,7 @@ def test_pilot_first_gates_the_formal_submission(repo, tmp_path: Path) -> None:
     assert blocked.kind == "blocked" and "did not validate" in blocked.detail
 
     status["complete"] = True
+    status["eligible"] = True
     (root / "results/ptb/ep-r01/p01r1/status.json").write_text(json.dumps(status))
     (formal,) = ops.plan([entry], root)
     assert (formal.kind, formal.pilot) == ("submit", False)
@@ -268,7 +269,7 @@ def _fake_result(tmp_path: Path) -> Path:
     return result
 
 
-def test_harvest_rejects_a_runtime_node_outside_the_frozen_site(
+def test_harvest_quarantines_a_runtime_node_outside_the_frozen_site(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(ops, "audit_result", lambda _result_dir: [])
@@ -286,8 +287,11 @@ def test_harvest_rejects_a_runtime_node_outside_the_frozen_site(
         expected_nodes={"owned-node-0", "owned-node-1"},
     )
 
-    assert status["complete"] is False
-    assert status["issues"] == [
+    assert status["complete"] is True
+    assert status["eligible"] is False
+    assert status["quarantined"] is True
+    assert status["issues"] == []
+    assert status["quarantine_reasons"] == [
         "runtime Slurm node spill-node is outside frozen site nodes owned-node-0,owned-node-1"
     ]
 
@@ -302,6 +306,7 @@ def test_harvest_keeps_the_readable_part_and_lists_the_rest(tmp_path: Path, monk
     status = ops.harvest_job(result, out, batch="ep-r01", cell="p01r1", job_id="555",
                              job_name="job.name", state="COMPLETED", slurm_log_dir=logs)
     assert status["accuracy"] == 0.8125 and status["complete"] is True
+    assert status["eligible"] is True and status["quarantined"] is False
     assert status["judge_flags"] == ["general_anomaly"] and status["awm_sha"] == "abc123"
     assert (out / "metrics.json").is_file() and (out / "judgement_general.json").is_file()
     assert (out / "final_eval_1.txt").is_file()
