@@ -120,3 +120,42 @@ def test_close_refuses_a_plan_edited_after_lock(session, capsys) -> None:
 
 def test_unknown_card_id_is_a_usage_error(session) -> None:
     assert main(["exp_protocol", "check", "--dir", str(session), "exp-99"]) == 2
+
+
+# ---- review findings (2026-09-01) --------------------------------------------
+
+def test_relocking_needs_a_reason_and_leaves_a_trace(session, capsys) -> None:
+    root = session
+    d = str(root)
+    main(["exp_protocol", "new", "--dir", d])
+    card_path = lineage.cards_dir(root) / "exp-01.yaml"
+    fill_plan(card_path, root)
+    assert main(["exp_protocol", "lock", "--dir", d, "exp-01"]) == 0
+    card = schema.load_card(card_path)
+    card["hypothesis"]["claim"] = "a story that fits the result"
+    schema.dump_card(card_path, card)
+    assert main(["exp_protocol", "lock", "--dir", d, "exp-01"]) == 1
+    assert "--relock" in capsys.readouterr().out
+    assert main(["exp_protocol", "lock", "--dir", d, "exp-01", "--relock", "typo in the claim"]) == 0
+    info = json.loads((lineage.cards_dir(root) / "exp-01.lock.json").read_text())
+    assert info["relocked_from"][0]["reason"] == "typo in the claim"
+    fill_result(card_path, root)
+    assert main(["exp_protocol", "close", "--dir", d, "exp-01"]) == 0
+    assert "re-locked 1 time" in capsys.readouterr().out
+
+
+def test_an_override_lets_a_failing_check_through_and_is_recorded(session, capsys) -> None:
+    root = session
+    d = str(root)
+    main(["exp_protocol", "new", "--dir", d])
+    card_path = lineage.cards_dir(root) / "exp-01.yaml"
+    fill_plan(card_path, root)
+    card = schema.load_card(card_path)
+    card["setup"]["data"][0]["n_examples"] = 19
+    schema.dump_card(card_path, card)
+    assert main(["exp_protocol", "lock", "--dir", d, "exp-01", "--override", "no_such_check=why"]) == 2
+    assert main(["exp_protocol", "lock", "--dir", d, "exp-01",
+                 "--override", "data_n_examples_match=one row is a header line"]) == 0
+    info = json.loads((lineage.cards_dir(root) / "exp-01.lock.json").read_text())
+    assert info["overrides"] == {"data_n_examples_match": "one row is a header line"}
+    assert "overridden" in capsys.readouterr().out

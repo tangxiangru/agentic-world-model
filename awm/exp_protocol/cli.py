@@ -81,9 +81,27 @@ def _preflight(args: argparse.Namespace) -> int:
     return 0 if report["summary"]["fail"] == 0 else 1
 
 
+def _parse_overrides(raw: list[str] | None) -> dict[str, str] | None:
+    """``--override check_id=reason`` pairs; None on a malformed or unknown check id (printed)."""
+    out: dict[str, str] = {}
+    for item in raw or []:
+        check_id, sep, reason = item.partition("=")
+        if not sep or not reason.strip():
+            print(f"--override needs check_id=reason, got {item!r}")
+            return None
+        if check_id not in preflight.CHECKS:
+            print(f"--override names no such check: {check_id!r} (known: {', '.join(preflight.CHECKS)})")
+            return None
+        out[check_id] = reason.strip()
+    return out
+
+
 def _lock(args: argparse.Namespace) -> int:
     path = _card_path(args)
     if path is None:
+        return 2
+    overrides = _parse_overrides(args.override)
+    if overrides is None:
         return 2
     card = schema.load_card(path)
     plan = schema.validate_plan(card, Path(args.dir))
@@ -93,11 +111,24 @@ def _lock(args: argparse.Namespace) -> int:
         print("not locked: fix the errors above")
         return 1
     report = _run_preflight(args, card, path)
-    if report["summary"]["fail"]:
-        print("not locked: preflight failed")
+    failing = [r["check"] for r in report["results"] if r["status"] == "fail"]
+    blocking = [c for c in failing if c not in overrides]
+    for c in failing:
+        if c in overrides:
+            print(f"overridden: {c} — {overrides[c]}")
+    if blocking:
+        print("not locked: preflight failed on " + ", ".join(blocking)
+              + " (a wrong check can be overridden with --override check_id=reason; the reason is recorded)")
         return 1
-    info = lock.write_lock(path, card, report["summary"])
+    try:
+        info = lock.write_lock(path, card, report["summary"], relock_reason=args.relock, overrides=overrides)
+    except lock.LockExists:
+        print(f"not locked: {lock.lock_path(path)} already exists. Re-locking after a change needs "
+              "--relock \"<reason>\"; the previous hash is kept in the lock file")
+        return 1
     print(f"locked {card['card_id']} at {info['locked_at']} (plan {info['plan_sha256'][:12]})")
+    if info["relocked_from"]:
+        print(f"re-locked {len(info['relocked_from'])} time(s); previous hashes kept")
     return 0
 
 
@@ -114,6 +145,10 @@ def _close(args: argparse.Namespace) -> int:
     if not (result.ok and integrity.ok):
         print("not closed")
         return 1
+    info = lock.read_lock(path) or {}
+    if info.get("relocked_from"):
+        n = len(info["relocked_from"])
+        print(f"note: this card was re-locked {n} time{'s' if n != 1 else ''} before the run; reasons are in the lock file")
     out = lineage.write_index(Path(args.dir))
     print(f"closed {card['card_id']}; index at {out}")
     return 0
@@ -181,7 +216,11 @@ def register(sub: argparse._SubParsersAction) -> None:
     n.set_defaults(func=_new)
     with_dir("check", "validate sections 0-4 and print what is still missing").set_defaults(func=_check)
     with_dir("preflight", "run the pre-flight checks; write exp-NN.preflight.json").set_defaults(func=_preflight)
-    with_dir("lock", "check + preflight, then pin sections 0-4 and the script hash").set_defaults(func=_lock)
+    lk = with_dir("lock", "check + preflight, then pin sections 0-4, the script, and the data")
+    lk.add_argument("--relock", metavar="REASON", help="lock again after a change; the previous hash is kept")
+    lk.add_argument("--override", action="append", metavar="CHECK=REASON",
+                    help="let a failing preflight check through; recorded in the lock (repeatable)")
+    lk.set_defaults(func=_lock)
     with_dir("close", "validate sections 5-6, re-check the lock, rebuild the index").set_defaults(func=_close)
     with_dir("index", "rebuild memory/index.md and list starting points", card=False).set_defaults(func=_index)
     with_dir("chain", "print the parent chain back to the base model").set_defaults(func=_chain)
