@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T16:46:53Z'
+situation:
+  elapsed_h: 1.5
+  remaining_h: 8.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.5333, protocol_n: 150}
+  trigger: "Splitting exp-02's dev-150 completions by output style: the 90 that use GSM8K's terse '<<a*b=c>>' calculator notation score 0.444, the 60 verbose OpenMathInstruct-style ones score 0.667."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_probe.json, locator: "fewshot.terse_frac=0.063 vs dev-150 terse share 0.60; fewshot.terse_acc=0.421, fewshot.verbose_acc=0.701"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "conclusion.next_step"}
+    - {path: /home/ben/task/logs/2026-09-02T16-32-13+00-00_gsm8k_E4f8VpDbAoy6UsK8yMd5Fz.json, locator: "all 150 samples, split on whether the completion contains '<<'"}
+  alternatives_rejected:
+    - {option: "Continue training exp-02/final on the new mixture instead of restarting from base", reason: "exp-02 has the terse-on-GSM8K-questions habit already fitted; restarting from the base snapshot removes it by construction and makes the comparison against exp-02 attributable to the mixture rather than to a second LR schedule. 1.8 h fits the remaining budget."}
+    - {option: "Keep the raw GSM8K-train solutions but downweight them to x1", reason: "the probe shows the style is triggered by the question looking like real GSM8K; any weight on those pairs keeps the trigger alive, and OpenMathInstruct-2 already supplies ~4.7 verbose solutions for each of the same 7473 train problems"}
+    - {option: "Rejection-sampling fine-tuning on exp-02's own correct samples", reason: "on-policy data would inherit exp-02's terse habit on exactly the questions where it hurts. Fix the style first; RFT is the planned exp-04 on top of whichever checkpoint wins here."}
+    - {option: "Add OpenMathInstruct-2's MATH-derived rows for extra reasoning", reason: "still off-distribution for grade-school word problems, and the token budget is better spent on 125k in-distribution rows"}
+  pitfalls_hit:
+    - {what: "vllm 0.11.0 LLM.generate no longer takes prompt_token_ids=; it needs [{'prompt_token_ids': ids}]", cost_h: 0.1, fix: "fixed in probe.py and rft_sample.py"}
+    - {what: "A crashed probe left an orphan VLLM::EngineCore holding 66 GiB, so the retry failed on 'Free memory on device (14.12/79.19 GiB)'", cost_h: 0.1, fix: "kill the pid from nvidia-smi --query-compute-apps before relaunching anything on the GPU"}
+  smoke_runs:
+    - {command: [python, probe.py, --model, /home/ben/task/ckpts/exp-02/final, --out, analysis/exp-02_probe.json], outcome: "300 held-out OpenMathInstruct problems (none in exp-02's training file): 0.683 with the 10-shot prefix, 0.647 without, terse share only 0.063 - the prefix helps and is NOT what triggers the terse style"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v4_check.jsonl], outcome: "125427 documents scanned, 0 contaminated, exit 0"}
+problem:
+  statement: "exp-02 answers real GSM8K questions in the terse '<<a*b=c>>' style it learned from the 14.9k raw human GSM8K-train solutions in its mixture. That style uses ~half the reasoning tokens and scores 0.444 on dev-150 against 0.667 for the verbose style, and it is what 60% of dev-150 completions do."
+  evidence:
+    - {path: /home/ben/task/logs/2026-09-02T16-32-13+00-00_gsm8k_E4f8VpDbAoy6UsK8yMd5Fz.json, locator: "150 samples split on '<<' in the completion", observation: "terse n=90 acc 0.444 median 212 chars; verbose n=60 acc 0.667 median 423 chars"}
+    - {path: /home/ben/task/analysis/exp-02_probe.json, locator: "fewshot vs zeroshot", observation: "on held-out OpenMathInstruct problems the same checkpoint goes terse only 6% of the time and scores 0.683 - so the trigger is the GSM8K-looking question, not the 10-shot prefix"}
+    - {path: /home/ben/task/analysis/exp-02_failures.jsonl, locator: "first 6 failures", observation: "the terse failures are one-line arithmetic chains that skip a step, e.g. '700/2=350, 350/2=175, 175x2=350 ANSWER: 350' for gold 400"}
+  affected_share: 0.6
+  failure_examples:
+    - {id: dev-f1, source: /home/ben/task/analysis/exp-02_failures.jsonl, question: "bee hive: 700 bees, queen/baby/worker counts", gold: "400", model_output: "700/2=<<700/2=350>>350 | 350/2=175 | 175x2=350 | ANSWER: 350", failure: "terse chain, never re-reads what the question asked for"}
+    - {id: dev-f2, source: /home/ben/task/analysis/exp-02_failures.jsonl, question: "Patchy/Trixie kittens", gold: "40", model_output: "7*3=21 kittens | Trixie has 12 | 21+12=33 | ANSWER: 33", failure: "three-line terse solution, misses a whole quantity"}
+    - {id: dev-f3, source: /home/ben/task/analysis/exp-02_failures.jsonl, question: "hospital revenue per patient per year", gold: "10000", model_output: "chain of <<>> annotations ending ANSWER: 997517.5", failure: "terse arithmetic drift, non-integer answer"}
+    - {id: dev-f4, source: /home/ben/task/analysis/exp-02_failures.jsonl, question: "Henry's cookies, twice last year plus 15", gold: "50", model_output: "110+15=125, 125/2=62.5, 'he can't make half a cookie' ANSWER: 62.5", failure: "sets up the equation backwards and does not sanity-check"}
+  watch_set: null
+hypothesis:
+  claim: "Retraining from the base snapshot on 125k OpenMathInstruct-2-only targets - the same 7473 real GSM8K-train questions but paired with verbose 405B solutions instead of the terse human ones, plus 90k augmented problems, with every '<<' annotation filtered out of the targets - will raise dev-150 accuracy above exp-02's 0.5333."
+  mechanism: "The terse style is a learned mapping from 'this question looks like real GSM8K' to 'answer in three lines'. Its only source in exp-02's mixture was the 14.9k raw human solutions. Remove them and the same questions carry verbose step-by-step targets, so the mapping inverts: GSM8K-looking questions get the style that already scores 0.70 on the held-out probe. The 2.1x larger token budget is a second, independent lever."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+8 to +15 pts. If the 90 terse dev-150 items moved from 0.444 to the verbose rate of 0.667 and nothing else changed, that alone is +13 pts."
+  falsified_if: "dev-150 accuracy is at or below exp-02's 0.5333, or the share of dev-150 completions containing '<<' stays above 0.25 (the style did not move, so the diagnosis was wrong)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4.jsonl
+      source: "nvidia/OpenMathInstruct-2@469216e (train_1M + train_2M shards, problem_source in {gsm8k, augmented_gsm8k})"
+      n_examples: 125427
+      built_by: /home/ben/task/build_data_v4.py
+      build_command: [python, build_data_v4.py, --out, data/sft_v4.jsonl, --gsm8k-rows, '45000', --gsm8k-per-problem, '8', --aug-rows, '90000', --aug-per-problem, '2', --fewshot-frac, '0.09']
+      selection: "35427 rows on the original GSM8K TRAIN problems (up to 8 distinct 405B solutions each, ~4.7 realised) + 90000 augmented_gsm8k rows (up to 2 each). Filters: integer expected_answer, exactly one \\boxed (stripped), body 30-3000 chars, and the target must NOT contain '<<', '####' or 'ANSWER:' - the '<<' filter is the intervention. 9% of rows carry the grader's exact 10-shot prefix. No raw human GSM8K solutions. TRAIN split only."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 1, grad_accum: 4, max_seq_len: 3200, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, token_budget: 8192, adam_beta2: 0.95}
+    target_format: "verbose step-by-step solution, blank line, 'ANSWER: <integer>', then <end_of_turn>. Completion-only loss; prompt masked with -100."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_v4.jsonl, --out, /home/ben/task/ckpts/exp-03, --lr, '1e-5', --epochs, '1', --token-budget, '8192', --grad-accum, '4', --max-seq-len, '3200', --save-steps, '600']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 600
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test, deterministic order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.5333
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "share of dev-150 completions containing '<<' (the terse style), and accuracy within each style group - tests the mechanism rather than the score"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.93
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1200, step: 1200}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1800, step: 1800}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 2138}
+  training_summary: {final_loss: 0.2957, steps: 2138, notes: "6938 s wall, 3.25 s/step, 64.7M tokens, mean train_loss 0.2957 (exp-02: 0.345 on a different mixture, not comparable)"}
+  measurements:
+    - {metric: accuracy, value: 0.6133, n: 150, path: /home/ben/task/eval/exp-03_dev150.json, delta_vs_comparator: 0.08}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-03_style.json
+    notes: "Terse '<<' completions on dev-150: 90/150 for exp-02, 0/150 for exp-03. Median completion 302 -> 440 chars. All 150 verbose completions score 0.613, close to the 0.667 that exp-02's verbose subset scored - the style flipped exactly as predicted and took the score with it."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.5333 -> 0.6133 (+8.0 pts, stderr 0.040 each). The '<<' terse style is gone from 90/150 completions to 0/150, which is the mechanism the card predicted; removing the raw human GSM8K-train solutions was the operative change, with 2.1x more tokens as a second lever."
+  decision: adopt
+  next_step: "exp-04: rejection-sampling fine-tune from exp-03/final. The style problem is solved, so on-policy correct samples no longer risk re-teaching terseness; 58 dev-150 failures remain and they are reasoning errors, which is what RFT targets."

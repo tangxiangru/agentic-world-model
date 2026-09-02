@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T19:27:30Z'
+situation:
+  elapsed_h: 4.1
+  remaining_h: 5.9
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.6133, protocol_n: 150}
+  trigger: "exp-03's 58 remaining dev-150 failures are all verbose reasoning errors - misreading what the question asks, dividing by the wrong quantity - not format or style (analysis/exp-03_failures.jsonl, analysis/exp-03_style.json: 0/150 terse)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_style.json, locator: "terse_n=0, verbose_n=150, verbose_acc=0.613"}
+    - {path: /home/ben/task/analysis/exp-03_failures.jsonl, locator: "58 rows; 5 have non-integer model answers"}
+  alternatives_rejected:
+    - {option: "Retrain from base on v4 + the new data for 1 epoch", reason: "~3 h at the measured 3.25 s/step; only 5.9 h are left and that leaves no room for the final n=500 comparison and final_model verification"}
+    - {option: "Train on the 38k RFT rows alone", reason: "they cover 13974 questions the model already solves 90% of the time - sharpening only. Mixing 32k unseen augmented_gsm8k rows adds information the model has not seen at all"}
+    - {option: "A second RFT round at higher temperature to reach the unsolved 9.7% of questions", reason: "another ~30 min of sampling for a few thousand rows; the budget is better spent on one training run whose result can still be evaluated twice"}
+    - {option: "Checkpoint averaging over exp-03's checkpoint-600/1200/1800/final", reason: "cheap, but the intermediate checkpoints are at much higher LR and none of them has been scored; a soup of unmeasured parts is not something the remaining budget can debug"}
+  pitfalls_hit:
+    - {what: "RFT sampling took 34 min rather than the ~25 estimated: vllm counts n=6 as 6 prompts, so 15473 questions is 92838 scheduled prompts", cost_h: 0.15, fix: "size sampling runs by questions x k, not by questions"}
+  smoke_runs:
+    - {command: [python, rft_sample.py, --model, /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/data/rft_v1.jsonl, --k, '6', --temperature, '1.0', --max-tokens, '512', --max-per-question, '3', --omi2-questions, '8000'], outcome: "solved 13974/15473 questions (0.903) at T=1.0; wrote 38006 rows"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v5_check.jsonl], outcome: "70006 documents scanned, 0 contaminated, exit 0"}
+problem:
+  statement: "exp-03 scores 0.6133 on dev-150 and its 58 failures are reasoning errors inside well-formed verbose solutions: it sets up the wrong relation between quantities, then executes that wrong relation correctly. Nothing about format, style or termination is left to fix."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "natural_stop_frac=0.993, has_answer_frac=1.0, median_completion_chars=440", observation: "format is clean; 1 of 150 still runs to max_tokens"}
+    - {path: /home/ben/task/analysis/exp-03_failures.jsonl, locator: "rows 1-5", observation: "e.g. 'they each ate 45 rolls. On average they ate 45/2' -> 22.5 for gold 45; 'total 30 sq ft over 4 levels -> 7.5' for gold 60: the arithmetic is right, the relation is wrong"}
+    - {path: /home/ben/task/analysis/exp-03_style.json, locator: "terse_n=0", observation: "the exp-03 intervention is fully realised, so the remaining gap is reasoning quality"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: e3-f1, source: /home/ben/task/analysis/exp-03_failures.jsonl, question: "hospital daily profit", gold: "10000", model_output: "(100000-30000)-10000 = 60000 ... ANSWER: 60000", failure: "reads the wrong quantities out of the problem"}
+    - {id: e3-f2, source: /home/ben/task/analysis/exp-03_failures.jsonl, question: "Beatrice/Marcell rolls", gold: "45", model_output: "each ate 45 ... on average 45/2 ... ANSWER: 22.5", failure: "adds an averaging step the question never asked for"}
+    - {id: e3-f3, source: /home/ben/task/analysis/exp-03_failures.jsonl, question: "sandcastle level square footage", gold: "60", model_output: "total 30 sq ft / 4 levels = 7.5 ... ANSWER: 7.5", failure: "same shape: an unrequested average"}
+    - {id: e3-f4, source: /home/ben/task/analysis/exp-03_failures.jsonl, question: "Freda's tomatoes cooked into sauce", gold: "12", model_output: "6 + 6/2 = 9 ... ANSWER: 9", failure: "inverts a halving relation"}
+    - {id: e3-f5, source: /home/ben/task/analysis/exp-03_failures.jsonl, question: "boat taking on water per 10 feet", gold: "16", model_output: "64/10 = 6.4, round up to 7, 7x2 = 14 ... ANSWER: 14", failure: "rounds where the problem does not"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-03/final for one epoch on 70k rows - 38k on-policy rejection-sampled solutions the model itself produced and got right, plus 32k unseen augmented_gsm8k rows - at lr 5e-6 will raise dev-150 accuracy above exp-03's 0.6133."
+  mechanism: "Two independent effects. (1) RFT: training on its own correct samples concentrates probability mass on the reasoning paths that actually reach the right relation, which is the step exp-03 gets wrong; the wrong paths were filtered out by the answer check. (2) 32k augmented problems the model has never seen keep adding off-policy coverage, so the update is not purely a sharpening of what it already does."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 pts. RFT on a model that already solves 90% of its training questions is a sharpening step, and dev-150's stderr is 0.04, so an effect below +4 will not be separable at n=150 and will need the n=500 protocol."
+  falsified_if: "dev-150 accuracy is at or below exp-03's 0.6133, or the completions get materially shorter (median under 380 chars), which would mean the on-policy data collapsed the model back toward terseness."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v5.jsonl
+      source: "synthetic:self (exp-03 samples on GSM8K train + OpenMathInstruct-2 questions) + nvidia/OpenMathInstruct-2@469216e (augmented_gsm8k rows unused by exp-03)"
+      n_examples: 70006
+      built_by: /home/ben/task/rft_sample.py
+      build_command: [python, rft_sample.py, --model, /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/data/rft_v1.jsonl, --k, '6', --temperature, '1.0', --top-p, '0.95', --max-tokens, '512', --max-per-question, '3', --gsm8k-train, '1', --omi2-questions, '8000', --fewshot-frac, '0.09']
+      selection: "38006 RFT rows: 6 samples at T=1.0 for each of 7473 GSM8K TRAIN questions and 8000 OpenMathInstruct questions, keep only samples whose 'ANSWER: N' equals the reference answer, dedup identical bodies, up to 3 per question chosen at random (NOT shortest-first - exp-02 showed short solutions score worse). Plus 32006 augmented_gsm8k rows filtered exactly as in exp-03 and excluded from sft_v4. 9% of rows carry the grader's 10-shot prefix. No test item is read anywhere in this pipeline."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 1, grad_accum: 4, max_seq_len: 3200, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, token_budget: 8192, adam_beta2: 0.95}
+    target_format: "verbose step-by-step solution, blank line, 'ANSWER: <integer>', then <end_of_turn>. Completion-only loss; prompt masked with -100."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_v5.jsonl, --parent, /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/ckpts/exp-04, --lr, '5e-6', --epochs, '1', --token-budget, '8192', --grad-accum, '4', --max-seq-len, '3200', --save-steps, '600']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 600
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test, deterministic order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6133
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "median completion length and the share of completions containing '<<' - checks that on-policy data did not collapse the verbose style that exp-03 bought"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.05
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1173}
+  training_summary: {final_loss: 0.2525, steps: 1173, notes: "3791 s wall, 3.23 s/step, 37.6M tokens; mean train_loss 0.2525 against exp-03's 0.2957 on a different mixture"}
+  measurements:
+    - {metric: accuracy, value: 0.6533, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.04}
+  diagnostic_result:
+    value: 412.0
+    path: /home/ben/task/analysis/exp-04_style.json
+    notes: "median completion 412 chars (exp-03: 440), 0/150 completions contain '<<'. The verbose style survived the on-policy round; no collapse toward terseness."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.6133 -> 0.6533 (+4.0 pts). The style diagnostic held (0/150 terse, median 412 chars), so the gain is not a style artefact. +4.0 with stderr 0.039 on each arm is about 1 sigma of the difference: the direction matches the hypothesis but n=150 cannot separate it from noise on its own."
+  decision: adopt
+  next_step: "exp-05: continue from exp-04 on ~70k previously unused augmented_gsm8k rows. Data scaling is the lever with the clearest evidence in this batch (exp-02 -> exp-03 was +8.0 with 2.1x tokens and a style fix), and exp-04 remains the fallback incumbent. Then settle exp-04 vs exp-05 on the n=500 protocol before writing final_model."
