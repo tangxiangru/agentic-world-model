@@ -20,7 +20,7 @@ PTB 流程中工作。Round 00 不产生晋升结论，不运行 AIME2025。
 | base model | `google/gemma-3-4b-pt@cc012e0a6d0787b4adcc0fa2c4da74402494554d` |
 | scientist | `claude_vertex_high_awm` / `claude-opus-5[1m]` / `high` / 1M |
 | protocol SHA | `eaf50919ff5f79f15e33df7bb49f44ffebacfc64` |
-| PTB SHA | `f4ae55a8f2bbfb8809839b87248c8f9998015518` |
+| PTB SHA | `dcf5da031435c54e3680b6ec3f63e7e317efc13e` |
 | agent budget | 10 h per formal cell |
 | repeats | 16 formal cells，`replicate=1..16` |
 | canonical judges | official = Claude Opus 5 high / Vertex |
@@ -35,6 +35,13 @@ PTB 流程中工作。Round 00 不产生晋升结论，不运行 AIME2025。
 `p00r01` 先以 1 h pilot 验证完整 wiring。pilot 不计入 16 个 10 h formal repeats。
 operator 通过 `pilot: first` 提交；只有 pilot 被 PTB validator 接受后才提交 formal
 batch。planner 不运行 `sbatch`。
+
+原始 v1 pilot（job `90462`，PTB `f4ae55a`）虽然发现并读取了 skill，却在
+`check` / `lock` 前启动训练，因此只保留为 protocol-adherence 失败证据，绝不放行其
+formal cells。PTB PR #4 在 `claude_vertex_high_awm` 中增加条件式首步 bootstrap：只有
+安装了 exp_protocol 的 cell 才要求第一动作 invoke/read skill，并在训练或评估前成功
+lock；未安装 protocol 的 null control prompt 保持原样。Round 00 baseline 改由新的 v2
+batch 和新 pilot 验证该门。
 
 formal 16 cells 一旦 gate 打开便作为同一 immutable manifest 异步提交。后续分析不等待
 无关队列；但不得在本批结果出现前预造依赖 Round 00 结论的 candidate。

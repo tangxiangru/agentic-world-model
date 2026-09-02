@@ -61,11 +61,13 @@ pilot 若使用缩短预算，只验证接线，不计入正式重复。
    加入 launcher 白名单并补测试；
 5. PTB scaffold test、顶层 launcher/sandbox tests 与 `awm ptb check` 全部通过。
 
-**完成状态（2026-09-02）**：PTB PR #2 已合并为
-`f4ae55a8f2bbfb8809839b87248c8f9998015518`；high scaffold test、canonical judge
-profile test、顶层 allowlist test 与完整 CPU suite（622 passed、18 skipped）均通过。
-后续 manifest 必须使用该 commit 或包含它的后继 commit。这五项未完成时 queue 必须
-保持空的约束继续适用于任何未来替换 scaffold。
+**完成状态（2026-09-02）**：PTB PR #2 建立 high scaffold；首个 pilot 随后证明仅靠
+skill discovery 不能保证顺序。PTB PR #4 已合并为
+`dcf5da031435c54e3680b6ec3f63e7e317efc13e`，当 exp_protocol 被安装时会把
+invoke/read protocol 设为 scientist 第一动作，并要求训练/评估前成功 lock；同一
+scaffold 的 null-control 路径保持 PTB 原 prompt 不变。scaffold test、canonical judge
+profile test、顶层 allowlist test 与完整 CPU suite 均须通过。后续 manifest 必须使用
+该 commit 或包含它的后继 commit；任何未来替换 scaffold 仍受相同门约束。
 
 ## 三、Round 00：只测 baseline 分布
 
