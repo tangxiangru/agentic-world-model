@@ -30,23 +30,27 @@ scientist: `claude-opus-5[1m]`, high, 1M context · 10 h · one H100 per cell.
 
 ## Results
 
-No cell is terminal or validator-complete as of 2026-09-02 14:32 UTC. Slurm
+No cell is terminal or validator-complete as of 2026-09-02 18:48 UTC. Slurm
 has 16 first-wave cells RUNNING and 32 fixed-runtime cells PENDING; therefore
-there is no PTB score comparison or online ledger conclusion yet.
+there is no PTB score comparison or final online ledger conclusion yet. The
+closed-card observations below are provisional training-side evidence exposed
+to later, pre-launch WMA reviews; they are not terminal PTB results.
 
 ### Inflight WMA evidence
 
 - All eight WMA scientists invoked `exp_protocol` as their first tool action
   and all eight sidecars started with the frozen Opus 5 / high contract.
-- `w01r01`, `w01r02`, `w01r04`, `w01r07`, `w01r08` produced valid exp-01 and
-  exp-02 transcripts. The first verdicts used 28–32 of 40 turns, 5.1–7.2 min
-  of 15, and $1.46–$1.72 shadow cost. Isolation stayed within `/session`,
-  train-side `/history`, private skill and scratch.
+- Seven cells have now produced 25 valid verdict transcripts: `w01r01` (5),
+  `w01r02` (3), `w01r03` (3), `w01r04` (4), `w01r05` (3), `w01r07` (4), and
+  `w01r08` (3). The first verdicts used 28–32 of 40 turns, 5.1–7.2 min of 15,
+  and $1.46–$1.72 shadow cost. Isolation stayed within `/session`, train-side
+  `/history`, private skill and scratch.
 - `w01r03`, `w01r05`, `w01r06` pre-filled `result.execution: not_run`; the old
   runtime rejected exp-01 as post-hoc. This is infrastructure evidence, not a
-  WMA miss. It caused `bf87dfb` and the v2 buffer replacement. These cells stay
-  in the as-attached cohort and out of as-answered until a later card receives
-  a verdict.
+  WMA miss. It caused `bf87dfb` and the v2 buffer replacement. `w01r03` and
+  `w01r05` recovered and began receiving verdicts at exp-03; `w01r06` has not
+  produced a verdict. The rejected exp-01/02 requests remain in the as-attached
+  cohort and out of as-answered.
 
 ### First four known card outcomes (not terminal PTB results)
 
@@ -73,11 +77,46 @@ GSM8K-derived OpenMathInstruct-2 data with `<end_of_turn>` targets. Their WMA
 L2 delta intervals are 0.30–0.40 wide, about 10× the n=150 noise floor. Whether
 that width is earned remains open until the measured exp-02 deltas arrive.
 
+### Provisional closed-card ledger
+
+Later review transcripts expose the frozen result sections of earlier cards.
+Among cards with both a valid verdict and an observed comparator/result pair,
+the provisional L2 coverage is:
+
+| card family | scorable | in interval | miss side |
+|---|---:|---:|---|
+| exp-02 completion SFT | 5 | 3 | 2 above |
+| exp-03 decode/config | 3 | 2 | 1 below |
+| exp-04 follow-on SFT | 4 | 2 | 2 above |
+| **total** | **12** | **7 (58%)** | **4 above, 1 below** |
+
+The same 12 cards give provisional L0 and L1 hit rates of 11/12. The sole
+shared miss is `w01r07/exp-02`: WMA predicted that the launch would not run or
+produce a valid candidate, but it completed, scored 0.6533, and was adopted.
+These rates must be recomputed by `awm wma ledger` after collection; the table
+is an inflight audit, not a substitute for the frozen truth files.
+
+The miss direction matters for candidate selection. Four of five L2 misses
+are real improvements above the predicted upper bound. Even the existing
+0.30–0.40-wide exp-02 intervals cover only 3/5 outcomes. The competing proposal
+to cap interval width at a multiple of the n=150 noise floor is therefore
+falsified for this round; it would worsen coverage rather than calibration.
+
+Seven WMA-arm base-checks are now visible in later cards or indices, ranging
+from 0.0333 to 0.0867. Four independently exposed control-arm base-checks are
+also at the floor: 0.0400, 0.0533, 0.0650, and 0.0733. This passes the first
+cross-arm falsification check for a termination-floor prior. It also shows
+that `<= 0.07` must not be a hard upper cutoff: the useful prior is a low-score
+band of roughly 0.03–0.09, centred near or below 0.07, coupled to the cap-hit /
+missing-answer diagnostic. The second check—whether fixed-runtime v2 verdicts
+already learn that band without a manual entry—remains open.
+
 ## Decision
 
-Inconclusive. Runtime/isolation/procedure are supported for the five answered
-cells; skill calibration and PTB effect do not yet meet the evidence boundary.
-Keep skill v0.2 unchanged.
+Inconclusive. Runtime/isolation/procedure are supported for seven answered
+cells. The inflight ledger rejects the interval-width cap and strengthens the
+termination-floor candidate, but skill calibration and PTB effect do not yet
+meet the terminal evidence boundary. Keep skill v0.2 unchanged.
 
 The end-to-end conclusion requires at least eight validator-complete cells per
 arm. A skill candidate additionally requires closed-card ledger evidence and
@@ -106,9 +145,9 @@ Measurement-only changes already made and separately attributable:
 
 Primary proposed single change, not yet applied: add a C11/C12 manual prior
 that a pretrained non-instruct checkpoint evaluated through a chat template
-with end-anchored numeric grading should place its expected result at the
-termination floor (currently `<= 0.07`), and demand the cap-hit / missing-answer
-diagnostic.
+with end-anchored numeric grading should place its expected result in the
+termination-floor band (currently about 0.03–0.09, centred `<= 0.07`), and
+demand the cap-hit / missing-answer diagnostic.
 
 Pre-registered falsification:
 
@@ -117,7 +156,6 @@ Pre-registered falsification:
 2. If the v2 pre-change WMA exp-01 verdicts already centre on the floor, the
    entry adds no useful discipline.
 
-Competing candidate: cap L2 interval width at a multiple of the noise floor
-unless cited evidence earns more width. Choose it instead only if the exp-02
-deltas cluster narrowly inside the current 0.30–0.40-wide predictions; if the
-wide intervals are needed for coverage, the cap is falsified.
+The competing interval-width cap is now rejected by the provisional ledger:
+the wide exp-02 intervals were needed and still missed high twice. Re-open it
+only if the frozen ledger contradicts the 12-card inflight audit.
