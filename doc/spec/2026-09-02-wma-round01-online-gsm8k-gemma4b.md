@@ -174,7 +174,9 @@ setting,而不是同一 setting 的更多重复。落实:
   `run_index 4`,全局观测 25–28,私有 runtime 仍为 `34535c7`,skill hash 不变)。它承担
   runtime 修复的在线接受率 cohort;v2 的 26 份 transcript 在新 validator 下已 26/26
   重放通过。中间版本的 2+2 pair(`wma/ctl-x2-v3`,commit `afcb86a`)在 operator 提交前
-  就被本节替换,从未进过 Slurm。
+  就被本节替换,从未进过 Slurm。因为 `x4-v3` 的 r01..04 是暂存旧 x8 inventory 的
+  子集,替代 pair 在切换前保持 `want: cancelled` 且无 receipt,不能与旧 batch 同时提交。
+  若旧 r01..04 先启动,它们直接成为该 cohort,不再提交同 cell 的 x4 duplicate。
 - 43 个 RUNNING cell(首波 16 + v2 27)不动;5 个 ctl-c 重试 cell(90786–90790)不动。
   不能先落到“撤回后 5 + 8 = 13”的中间状态:13 虽在检查瞬间高于 8,但一波启动后会
   变成 0。旧 32 个 pending 是替代候选 submit-ready 前的安全库存。
@@ -230,9 +232,11 @@ manifest。
 候选的 skill 文本在 **WINDOW 05(首波 terminal validator 证据)之后**才 commit——这是
 与 operator 的约定,不因并行而提前;patch、manifest 草稿先在本地备好,证据一到即
 提交。旧 v3 的 32 个安全 PENDING 在此之前不撤;候选 16 cell 与 `w04/c04` 8 cell
-submit-ready 后,同一次 reconcile preview 才允许把旧 v3 标成取消并加入新任务。该
-切换后 PENDING 约 29(候选 16 + `w04/c04` 8 + ctl-c 重试 5),足以满足 guard,不会出现
-13→0 的空窗。cell id:`w06..w09`(`run_index 6..9`),不复用 `w05`。
+submit-ready 后,同一次 reconcile preview 才允许把旧 v3 标成取消并加入新任务。切换
+前还要按 receipt/job state 去重:旧 r01..04 若仍 PENDING,取消后激活 x4;若已启动则直接
+复用且 x4 保持不提交。无重复时切换后 PENDING 约 29(候选 16 + `w04/c04` 8 + ctl-c
+重试 5),足以满足 guard,不会出现 13→0 的空窗。cell id:`w06..w09`
+(`run_index 6..9`),不复用 `w05`。
 
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
