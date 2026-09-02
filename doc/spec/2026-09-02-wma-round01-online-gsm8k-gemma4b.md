@@ -182,6 +182,53 @@ setting,而不是同一 setting 的更多重复。落实:
 编造 setting。上文"目标 `PENDING ≈ 16`"从此按 repeats 4 解释:下限 8,补货单位是
 4+4 的配对 manifest。
 
+## 2026-09-02 21:3x UTC:用户选定容量去向——并行多个单改动候选(Round 02 的形状,预注册)
+
+被问到 repeats 4 之下 16 卡的剩余容量往哪放,用户选了**并行多个单改动候选**
+(而不是换任务的 breadth,也不是空着等单候选)。这改变了"一轮一处 skill 改动"的
+落实方式,但不改变归因原则:**每个候选 = v0.2 + 恰好一处 `skills/wma` 编辑**,各自
+独立与 v0.2 比;一轮只晋升一个编辑,落选的编辑若也通过,下一轮叠在新基线上再测。
+
+### 候选池(4 个上场,每个 4 cell = 一整波 16 卡)
+
+| 候选 | 唯一编辑 | 针对的证据 | 主指标(对 v0.2) | 预注册证伪 |
+|---|---|---|---|---|
+| **A `format-floor`** | 手册 §4 加一行"format floor, not capability"(收窄到诊断出地板后的**第一次**干预;上界锚定该 checkpoint 的已知能力与 C2 行的 headroom 份额;**不写 gemma 的具体分数**)+ SKILL.md L2 步一句交叉引用 | WINDOW 04 的 4/5 L2 落空都在区间上方,机制相同 | exp-01 预测落在地板带的比例;first-format-fix 卡的 L2 coverage | (i) ctl 基线不在地板 → 行错;(ii) v0.2 exp-01 已在带内 → 行冗余;(iii) 非地板 comparator 的卡 coverage 低于 v0.2 → 过度泛化,收窄 |
+| **A+B `format-floor + width-cap`** | A 之上再加:L2 区间宽于 §5 地板 3× 时须在 `basis` 引 precedent 或 probe,否则收到该类型先验的宽度 | WINDOW 03:exp-02 区间 0.30–0.40 宽 ≈ 10× 地板;WINDOW 04 判定宽度问题被位置误差支配,须在 A 之后再测 | 对 **A**(不是对 v0.2):`L2_width_over_noise` 下降且 L2 coverage 不低于 A 超过 A 自身 spread | coverage 掉 → B 在 A 之上仍不成立,撤 |
+| **C `probe-before-fail`** | L0/L1 答 `no` 必须有一条 `changed: L0|L1` 的 probe(static_check 证明失败路径会被走到,或 unit_test/dry_run 复现);没有则 confidence ≤ 0.5 且 note 标 `unprobed` | `w01r07/exp-02` 真 miss:Liger 不可 import → 误推 Trainer 会崩,没探 | L0/L1 的 false-`no` 率下降;recall 不劣化超过 0.05;每 verdict 的 probe 数上升 | recall 掉、或成本 > 1.5× v0.2 → 撤 |
+| **D `checkpoint-precondition`** | C3/C4 卡若计划只存 1 个 checkpoint(放弃 C5),`preconditions` 必须含 `save_steps` 计划(tier 3,标分钟),L3 由 `yes` 改 `defer` 并点名该前提 | 手册 C5 = 唯一严格单变量对照(±15 pp);WINDOW 05 要先看 transcript 里 C5 被建议/被采纳的比例 | C3/C4 verdict 含 checkpoint 前提的比例;scientist 端 `save_steps`/C5 卡的出现率对 ctl 与 v0.2;PTB 最终分不劣化 | 若 WINDOW 05 显示 C5 已被建议且采纳 ≥ 50 %,D 换成 **E `history-cite`**(C3/C4 的 L2 必须引 ≥1 条同类型同 n 的 history precedent 或写明"无") |
+
+选择规则(WINDOW 05 之前定死):A 与 A+B 固定上场;C、D/E 按 terminal 账本里各自
+针对的落空数排序,取两个。每个候选一个 commit,线性链
+`A → A+B → (撤 A+B,上 C) → (撤 C,上 D/E) → (head 回到 v0.2 + manifest + queue + 记录)`;
+每个 `wma.sha` 的 `git archive` 恰好是 v0.2 + 该候选,skill hash 各不相同,ledger 按
+`wma_skill` 分组即得四组;head 始终是当前基线。runtime 代码(`awm/wma`)四个候选
+一致(`34535c7` 之后无 runtime 改动),不允许候选夹带 runtime 变更。
+
+### 参照与 cohort
+
+- 同波 v0.2 参照:`w04r01..04`(runtime `34535c7`);合并参照:首波 8 + v2 16 的 v0.2
+  cell(as-attached)。PTB 护栏用 core-16 + `w04/c04`。
+- 不加新的 ctl cell:ctl 已有 8 + 16 + 4。
+- 每个候选 4 cell,每 cell 3–7 个 verdict,账本每组 ≈ 12–28 张卡;PTB 每组 n=4,只做
+  护栏,不做主结论。
+
+### 晋升规则(预注册)
+
+一个候选晋升为 v0.3 当且仅当:主指标对参照的改善超过参照自身 spread;L0/L1 recall
+不劣化超过 0.05;`n_leak_suspected` = 0;每 verdict 成本 ≤ 1.5× v0.2;PTB as-attached
+均值不低于 v0.2 超过 v0.2 的 spread。多个通过时取主指标增益最大者;其余通过者下一轮
+叠在 v0.3 上重测(归因仍是每次晋升一个编辑)。都不通过 → v0.2 不动,按各自证伪条款
+收窄或撤。
+
+### 时间与队列
+
+候选的 skill 文本在 **WINDOW 05(首波 terminal validator 证据)之后**才 commit——这是
+与 operator 的约定,不因并行而提前;patch、manifest 草稿先在本地备好,证据一到即
+提交。首波 ≈ 00:00 UTC 释放 16 卡时 PENDING = 13(`w04/c04` 各 4 + ctl-c 重试 5),约
+3 卡空到候选进队(≈ 01:30–02:30 UTC);候选 16 cell 进队后 PENDING ≈ 29,足够到
+09-03 的第二波。cell id:`w06..w09`(`run_index 6..9`),不复用已撤回的 `w05`。
+
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
 1. **不走 pilot。** manifest 不带 `pilot` 块,queue entry 一律 `pilot: null`,直接以
