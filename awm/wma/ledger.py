@@ -29,7 +29,7 @@ from . import schema
 def truth_for(verdict_path: Path) -> tuple[Path | None, dict[str, Any]]:
     """Where this verdict's outcome is, and what it says. (None, empty truth) when there is none yet."""
     verdict_path = Path(verdict_path)
-    card = verdict_path.with_name(verdict_path.name.replace(".verdict.json", ".yaml"))
+    card = schema.card_path_for(verdict_path)
     candidates = [card]
     # replay layout: .../<out>/<run>/<card>/memory/cards/<card>.verdict.json
     try:
@@ -57,7 +57,7 @@ SUMMARY_COLUMNS = ("wma_skill", "backend", "mode", "n", "n_reconciled", "L0_hit"
 def rows(dirs: list[Path]) -> list[dict[str, Any]]:
     out = []
     for d in dirs:
-        for p in sorted(Path(d).rglob("exp-*.verdict.json")):
+        for p in sorted(Path(d).rglob("exp-*.verdict*.json")):
             try:
                 v = schema.load_verdict(p)
             except ValueError:

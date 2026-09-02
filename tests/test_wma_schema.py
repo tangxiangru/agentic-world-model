@@ -126,3 +126,13 @@ class TestScore:
         before = copy.deepcopy(v)
         schema.score(v, self.truth())
         assert v == before
+
+
+def test_verdict_path_with_and_without_a_tag(tmp_path) -> None:
+    card = tmp_path / "exp-01.yaml"
+    assert schema.verdict_path(card).name == "exp-01.verdict.json"
+    assert schema.verdict_path(card, tag="opus").name == "exp-01.verdict.opus.json"
+    with pytest.raises(ValueError):
+        schema.verdict_path(card, tag="bad tag!")
+    assert schema.card_path_for(tmp_path / "exp-01.verdict.opus.json") == card
+    assert schema.card_path_for(tmp_path / "exp-01.verdict.json") == card

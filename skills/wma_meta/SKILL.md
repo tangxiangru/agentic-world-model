@@ -32,7 +32,10 @@ separate decision recorded in `doc/spec/`.
    written reason; a new set gets a new baseline run first.
 2. **Name the variants.** A variant is a commit of `skills/wma/`; its
    `wma_skill` hash is what the ledger groups by. Baseline is the current
-   skill; the heuristic backend is the floor every variant must beat.
+   skill; the heuristic backend is the floor every variant must beat. To compare
+   *agents* (backend or model) on the same skill, review the same cards with a
+   `--tag` per agent: the ledger separates them by (skill, backend, mode) and the
+   tagged files sit side by side.
 3. **Run.** One output directory per (variant, backend, model):
    ```bash
    awm wma replay --corpus <corpus> --out <out>/round-NN-<label> --side train --sample 300 --seed 0 \

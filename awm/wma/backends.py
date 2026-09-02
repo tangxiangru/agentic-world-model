@@ -74,7 +74,8 @@ class HeuristicBackend(Backend):
         elapsed = get(card, "situation.elapsed_h") or 0.0
         n_data = sum(int(d.get("n_examples") or 0) for d in (get(card, "setup.data") or []) if isinstance(d, dict))
         v = schema.empty_verdict(brief.card_id)
-        v.update({"backend": self.name, "mode": brief.mode, "issued_at": now()})
+        # The priors do not read the skill; the ledger must not attribute them to a skill version.
+        v.update({"backend": self.name, "mode": brief.mode, "issued_at": now(), "wma_skill": "heuristic-priors"})
         v["evidence"] = [{"id": "e1", "path": str(brief.card_path), "locator": "setup.method / situation",
                           "note": f"family={family}, elapsed_h={elapsed}, n_examples={n_data}"}]
         if family in TRAINING:

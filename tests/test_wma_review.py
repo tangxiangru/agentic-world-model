@@ -28,7 +28,23 @@ def test_review_writes_a_stamped_verdict_beside_the_card(tmp_path, skill) -> Non
     v = review.review(s, "exp-01", backends.HeuristicBackend(), mode="offline", skill_dir=skill)
     path = schema.verdict_path(s / "memory" / "cards" / "exp-01.yaml")
     assert path.is_file() and schema.load_verdict(path) == v
-    assert v["wma_skill"] == schema.skill_sha(skill) and v["backend"] == "heuristic" and v["mode"] == "offline"
+    assert v["wma_skill"] == "heuristic-priors" and v["backend"] == "heuristic" and v["mode"] == "offline"
+
+
+def test_review_stamps_the_skill_hash_when_the_backend_leaves_it_blank(tmp_path, skill) -> None:
+    from awm.wma import backends
+
+    class Blank(backends.Backend):
+        name = "blank"
+
+        def run(self, brief):
+            v = schema.empty_verdict(brief.card_id)
+            v["levels"]["L0_runs"]["answer"] = "yes"
+            schema.dump_verdict(brief.verdict_path, v)
+
+    s = session_with(tmp_path, plan_card())
+    v = review.review(s, "exp-01", Blank(), mode="offline", skill_dir=skill)
+    assert v["wma_skill"] == schema.skill_sha(skill) and v["backend"] == "blank"
 
 
 def test_review_refuses_a_card_that_already_has_a_result(tmp_path, skill) -> None:

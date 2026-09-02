@@ -82,8 +82,9 @@ truth 的位置由规则决定:**在线 = verdict 旁边那张卡**;**离线回�
 
 ### 调用方式
 
-- **pull**:`awm wma review --dir DIR exp-NN [--budget cpu=,gpu=,wall=] [--mode offline|online]`。
-- **自动**:exp_protocol `lock` 成功后触发一次,**非阻塞**:先返回"仅历史"的即时裁决(秒级),探测完成后更新同一文件(分钟级)。scientist 可以在任一时刻继续。这需要 exp_protocol 留一个钩子(见第七节)。
+- **pull,且只有 pull**:`awm wma review --dir DIR exp-NN [exp-MM ...] --background [--tag T] [--budget ...] [--mode ...]`。scientist 知道它的唯一途径是 `skills/exp_protocol/SKILL.md` 里的第 4b 步(方案 B);没有代码钩子。
+- **非阻塞是硬要求**:`--background` 脱离前台立即返回,裁决写到卡片旁边;`awm wma status` 看进度。时间是 PostTrainBench 的核心约束,scientist **永远不等它**——到了要启动的时候裁决还没来,就直接启动。
+- **批量并行**:一次调用多张卡,并行评、给排序;`--tag` 让不同的 WMA agent(后端 / 模型)对同一张卡各出一份 `exp-NN.verdict.<tag>.json`,账本按 (skill, backend, mode) 分开。
 - **对账**:不需要调用。`close` 写完卡片,`ledger` 读时就能算。
 
 ## 三、两条路径
@@ -185,7 +186,7 @@ rollout:WMA 对一批方案出裁决 ──► 方案的结果(卡片)──► 
 | 能优化的 skill 部分 | 判断层、证据使用、裁决格式、初始启发式 | 探测手册、预算分配、两阶段时机、建议措辞 |
 | 对账延迟 | 即时 | 小时级 |
 | 主要指标 | 各层校准、排序 vs 查表基线、失败卡召回 | 省下的 GPU 小时、探测信息价值、采纳率 |
-| 基础设施 | 回放器(时间截断的样本构造)+ `awm wma review/ledger` | exp_protocol 的 lock 钩子 + H100 发射器 + `exp_protocol_meta` 的循环 |
+| 基础设施 | 回放器(时间截断的样本构造)+ `awm wma review/ledger` | exp_protocol skill 的第 4b 步(无代码钩子)+ H100 发射器 + `exp_protocol_meta` 的循环 |
 
 ### 4.4 从离线到在线的门槛
 
@@ -224,9 +225,9 @@ rollout:WMA 对一批方案出裁决 ──► 方案的结果(卡片)──► 
 
 ## 七、与 exp_protocol 及 evolve 分支的接口
 
-WMA 线**只读** card、**只写** `exp-NN.verdict.json`,写一次不再改。exp_protocol 那边只需要**一个**可选钩子、一行调用、失败不阻塞:`lock` 成功后,若 `awm wma` 可用则 `awm wma review --dir DIR exp-NN --mode online`(后台)。对账不需要钩子——`close` 写完卡片,`ledger` 读时就能算。
+WMA 线**只读** card、**只写** `exp-NN.verdict[.tag].json`,写一次不再改。**exp_protocol 的代码里没有任何 WMA 相关内容**;scientist 与 WMA 的全部交互是 `skills/exp_protocol/SKILL.md` 的第 4b 步——lock 之后后台运行 `awm wma review`。对账也不需要钩子——`close` 写完卡片,`ledger` 读时就能算。
 
-离线回放阶段连这个钩子也不需要——回放器自己调 review。钩子等到 4.4 的门槛过了再和 evolve 分支协调加入。
+**分支分工**:这一句 4b 以及任何 WMA-aware 的规程改动都落在 WMA 线(主线上的 `gangda_wma_*`);`gangda_exp_protocol_evolve` 是"没有 WMA 时纯规程能做多好"的消融研究,它的 `skills/exp_protocol/` 不提 WMA。
 
 ## 八、研发顺序
 

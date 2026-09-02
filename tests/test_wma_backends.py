@@ -28,7 +28,7 @@ def test_heuristic_writes_a_valid_verdict_for_a_training_card(tmp_path) -> None:
     backends.HeuristicBackend().run(b)
     v = schema.load_verdict(b.verdict_path)
     assert schema.validate_verdict(v).ok, schema.validate_verdict(v).render()
-    assert v["backend"] == "heuristic" and v["mode"] == "offline"
+    assert v["backend"] == "heuristic" and v["mode"] == "offline" and v["wma_skill"] == "heuristic-priors"
     assert v["levels"]["L2_effect"]["interval"][0] <= v["levels"]["L2_effect"]["interval"][1]
     assert v["levels"]["L0_runs"]["basis"] and v["evidence"]
 

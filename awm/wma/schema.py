@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +28,27 @@ RAN = ("completed", "killed")
 WORTH = {"adopt": True, "reject": False, "abandon_line": False}
 
 
-def verdict_path(card_path: Path) -> Path:
+TAG_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+VERDICT_FILE_RE = re.compile(r"^(exp-\d+)\.verdict(?:\.([A-Za-z0-9_-]+))?\.json$")
+
+
+def verdict_path(card_path: Path, tag: str | None = None) -> Path:
+    """``exp-NN.verdict.json``, or ``exp-NN.verdict.<tag>.json`` when several agents review one card."""
     card_path = Path(card_path)
+    if tag is not None:
+        if not TAG_RE.match(tag):
+            raise ValueError(f"tag must match {TAG_RE.pattern}, got {tag!r}")
+        return card_path.with_name(f"{card_path.stem}.verdict.{tag}.json")
     return card_path.with_name(card_path.stem + ".verdict.json")
+
+
+def card_path_for(verdict_path: Path) -> Path:
+    """The card a verdict file belongs to, tagged or not."""
+    verdict_path = Path(verdict_path)
+    m = VERDICT_FILE_RE.match(verdict_path.name)
+    if not m:
+        raise ValueError(f"{verdict_path.name} is not a verdict file name")
+    return verdict_path.with_name(m.group(1) + ".yaml")
 
 
 def load_verdict(path: Path) -> dict[str, Any]:

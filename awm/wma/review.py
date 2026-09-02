@@ -10,6 +10,7 @@ its own instructions from where it stands.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -29,18 +30,30 @@ def default_skill_dir() -> Path:
     return Path(env) if env else paths.REPO_ROOT / "skills" / "wma"
 
 
+_PREPARE_LOCK = threading.Lock()
+
+
 def prepare_session(session_dir: Path, skill_dir: Path) -> Path:
-    """``<session>/skills/wma`` → the skill, so the agent can read SKILL.md relative to cwd."""
+    """``<session>/skills/wma`` → the skill, so the agent can read SKILL.md relative to cwd.
+
+    Safe to call concurrently: parallel reviews of several cards share one session.
+    """
     link = Path(session_dir) / "skills" / "wma"
-    link.parent.mkdir(parents=True, exist_ok=True)
     target = Path(skill_dir).resolve()
-    if link.is_symlink():
-        if Path(os.readlink(link)).resolve() == target:
-            return link
-        link.unlink()
-    elif link.exists():
-        raise ReviewError(f"{link} exists and is not a symlink; refusing to replace it")
-    os.symlink(target, link)
+    with _PREPARE_LOCK:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink():
+            if Path(os.readlink(link)).resolve() == target:
+                return link
+            link.unlink()
+        elif link.exists():
+            raise ReviewError(f"{link} exists and is not a symlink; refusing to replace it")
+        try:
+            os.symlink(target, link)
+        except FileExistsError:
+            # another process got there first; accept it if it points where we want
+            if not (link.is_symlink() and Path(os.readlink(link)).resolve() == target):
+                raise
     return link
 
 
@@ -72,11 +85,11 @@ Do not look for the card's result anywhere; you are estimating it.
 
 
 def make_brief(session_dir: Path, card_id: str, *, mode: str, budget: Budget, model: str | None,
-               skill_dir: Path, history_dir: Path | None = None) -> Brief:
+               skill_dir: Path, history_dir: Path | None = None, tag: str | None = None) -> Brief:
     session_dir = Path(session_dir)
     card_path = session_dir / "memory" / "cards" / f"{card_id}.yaml"
     brief = Brief(card_id=card_id, session_dir=session_dir, card_path=card_path,
-                  verdict_path=schema.verdict_path(card_path), skill_dir=Path(skill_dir), mode=mode,
+                  verdict_path=schema.verdict_path(card_path, tag=tag), skill_dir=Path(skill_dir), mode=mode,
                   budget=budget, model=model, prompt="", history_dir=history_dir)
     brief.prompt = build_prompt(brief)
     return brief
@@ -84,12 +97,15 @@ def make_brief(session_dir: Path, card_id: str, *, mode: str, budget: Budget, mo
 
 def review(session_dir: Path, card_id: str, backend: Backend, *, mode: str = "offline",
            budget: Budget | None = None, model: str | None = None, skill_dir: Path | None = None,
-           history_dir: Path | None = None, force: bool = False) -> dict[str, Any]:
+           history_dir: Path | None = None, force: bool = False, tag: str | None = None) -> dict[str, Any]:
     if mode not in schema.MODES:
         raise ReviewError(f"mode must be one of {schema.MODES}")
     skill_dir = Path(skill_dir) if skill_dir else default_skill_dir()
-    brief = make_brief(session_dir, card_id, mode=mode, budget=budget or Budget(), model=model,
-                       skill_dir=skill_dir, history_dir=history_dir)
+    try:
+        brief = make_brief(session_dir, card_id, mode=mode, budget=budget or Budget(), model=model,
+                           skill_dir=skill_dir, history_dir=history_dir, tag=tag)
+    except ValueError as exc:
+        raise ReviewError(str(exc)) from exc
     if not brief.card_path.is_file():
         raise ReviewError(f"no such card: {brief.card_path}")
     card = migrate_v1(load_card(brief.card_path))

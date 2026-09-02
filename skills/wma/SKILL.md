@@ -34,9 +34,12 @@ one, you have found a leak — do not use it, say so in `evidence`.
 
 ## What you write
 
-Exactly one file, at the path the task names: `memory/cards/exp-NN.verdict.json`,
+Exactly one file, at the path the task names: `memory/cards/exp-NN.verdict.json`
+(or `exp-NN.verdict.<tag>.json` when several agents review the same card),
 shaped like `skills/wma/verdict.example.json` (schema `awm-wma-verdict-v1`).
-Nothing else. If you run out of budget, write what you have.
+Nothing else. If you run out of budget, write what you have. Other cards may be
+under review at the same time; each verdict stands on its own — do not read or
+wait for another verdict in progress.
 
 ## The four levels
 

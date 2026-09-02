@@ -98,3 +98,15 @@ def test_csv_and_render(tmp_path) -> None:
     summary = ledger.summarize(ledger.rows([tmp_path]))
     assert ledger.to_csv(summary).splitlines()[0].startswith("wma_skill,backend,mode,n,")
     assert "AAAA" in ledger.render(summary)
+
+
+def test_tagged_verdicts_resolve_to_the_same_card(tmp_path) -> None:
+    card_path = tmp_path / "memory" / "cards" / "exp-01.yaml"
+    cards.dump_card(card_path, closed_card())
+    for tag in ("opus", "codex"):
+        v = copy.deepcopy(verdict())
+        v["backend"] = tag
+        schema.dump_verdict(schema.verdict_path(card_path, tag=tag), v)
+    rows = ledger.rows([tmp_path])
+    assert len(rows) == 2 and all(r["reconciled"] and r["scored"]["L0"] == "hit" for r in rows)
+    assert {r["backend"] for r in rows} == {"opus", "codex"}

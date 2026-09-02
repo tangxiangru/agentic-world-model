@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -83,3 +84,62 @@ def test_review_reports_usage_errors(session, capsys) -> None:
 def test_review_with_an_unknown_backend_is_a_usage_error(session) -> None:
     with pytest.raises(SystemExit):
         main(["wma", "review", "--dir", str(session), "exp-01", "--backend", "oracle"])
+
+
+# ---- non-blocking, batch, tagged (2026-09-02) ---------------------------------
+
+
+def _more_cards(session, ids):
+    p0 = lineage.cards_dir(session) / "exp-01.yaml"
+    base = cards.load_card(p0)
+    for cid in ids:
+        c = json.loads(json.dumps(base))
+        c["card_id"] = cid
+        cards.dump_card(lineage.cards_dir(session) / f"{cid}.yaml", c)
+
+
+def test_several_cards_are_reviewed_in_one_call_and_ranked(session, capsys) -> None:
+    _more_cards(session, ["exp-02", "exp-03"])
+    d = str(session)
+    assert main(["wma", "review", "--dir", d, "exp-01", "exp-02", "exp-03", "--backend", "heuristic", "--jobs", "3"]) == 0
+    for cid in ("exp-01", "exp-02", "exp-03"):
+        assert schema.verdict_path(lineage.cards_dir(session) / f"{cid}.yaml").is_file()
+    out = capsys.readouterr().out
+    assert out.count("worth running now") == 3 and "ranking" in out
+
+
+def test_background_review_returns_at_once_and_the_verdict_arrives_later(session, capsys) -> None:
+    d = str(session)
+    assert main(["wma", "review", "--dir", d, "exp-01", "--backend", "heuristic", "--background"]) == 0
+    out = capsys.readouterr().out
+    assert "background" in out
+    vp = schema.verdict_path(lineage.cards_dir(session) / "exp-01.yaml")
+    for _ in range(100):
+        if vp.is_file():
+            break
+        time.sleep(0.1)
+    assert vp.is_file(), "the detached review never wrote the verdict"
+    assert main(["wma", "status", "--dir", d]) == 0
+    assert "exp-01" in capsys.readouterr().out
+
+
+def test_a_tag_lets_two_agents_review_the_same_card(session, capsys) -> None:
+    d = str(session)
+    assert main(["wma", "review", "--dir", d, "exp-01", "--backend", "heuristic", "--tag", "a"]) == 0
+    assert main(["wma", "review", "--dir", d, "exp-01", "--backend", "heuristic", "--tag", "b"]) == 0
+    cdir = lineage.cards_dir(session)
+    assert (cdir / "exp-01.verdict.a.json").is_file() and (cdir / "exp-01.verdict.b.json").is_file()
+    from awm.wma import ledger
+    rows = ledger.rows([session])
+    assert len(rows) == 2 and all(r["card_id"] == "exp-01" for r in rows)
+    assert main(["wma", "review", "--dir", d, "exp-01", "--backend", "heuristic", "--tag", "bad tag!"]) == 2
+
+
+def test_status_reports_pending_and_done(session, capsys) -> None:
+    _more_cards(session, ["exp-02"])
+    d = str(session)
+    main(["wma", "review", "--dir", d, "exp-01", "--backend", "heuristic"])
+    capsys.readouterr()
+    assert main(["wma", "status", "--dir", d]) == 0
+    out = capsys.readouterr().out
+    assert "exp-01" in out and "exp-02" in out and "no verdict" in out
