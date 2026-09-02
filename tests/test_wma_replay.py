@@ -211,3 +211,24 @@ def test_a_parallel_pass_reviews_every_sample_once(corpus, tmp_path, skill) -> N
     counts = replay.run_replay(tmp_path / "r2", backends.HeuristicBackend(), budget=backends.Budget(wall_min=1),
                                jobs=4, limit=2)
     assert counts == {"reviewed": 2, "skipped": 0, "errors": 0}
+
+
+def test_a_sample_whose_verdict_was_rejected_is_pending_again_on_the_next_pass(corpus, tmp_path, skill) -> None:
+    out = tmp_path / "replay"
+    replay.build_samples(corpus, out, side="train", sample=2, seed=1)
+
+    class Sloppy(backends.Backend):
+        """Writes a verdict the schema rejects, the way a real agent did on 2026-09-02 (direction 'flat'
+        before it was allowed): the file must not count as done."""
+        name = "sloppy"
+
+        def run(self, brief):
+            v = schema.empty_verdict(brief.card_id)
+            v["levels"]["L2_effect"]["direction"] = "sideways"
+            schema.dump_verdict(brief.verdict_path, v)
+            raise backends.BackendError("sloppy: invalid verdict")
+
+    counts = replay.run_replay(out, Sloppy(), budget=backends.Budget(wall_min=1))
+    assert counts["errors"] == 2
+    again = replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1))
+    assert again["reviewed"] == 2 and again["skipped"] == 0

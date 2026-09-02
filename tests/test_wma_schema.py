@@ -136,3 +136,12 @@ def test_verdict_path_with_and_without_a_tag(tmp_path) -> None:
         schema.verdict_path(card, tag="bad tag!")
     assert schema.card_path_for(tmp_path / "exp-01.verdict.opus.json") == card
     assert schema.card_path_for(tmp_path / "exp-01.verdict.json") == card
+
+
+def test_flat_is_a_direction_a_baseline_card_can_have() -> None:
+    """A packaging/baseline card (copy the base model, evaluate) expects no change: direction flat."""
+    v = verdict()
+    v["levels"]["L2_effect"]["direction"] = "flat"
+    assert schema.validate_verdict(v).ok
+    v["levels"]["L2_effect"]["direction"] = "sideways"
+    assert not schema.validate_verdict(v).ok

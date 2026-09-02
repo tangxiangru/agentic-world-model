@@ -196,8 +196,12 @@ def _status(args: argparse.Namespace) -> int:
 def _ledger(args: argparse.Namespace) -> int:
     from . import ledger
 
-    summary = ledger.summarize(ledger.rows([Path(d) for d in args.dirs]))
+    dirs = [Path(d) for d in args.dirs]
+    summary = ledger.summarize(ledger.rows(dirs))
     print(ledger.to_csv(summary) if args.csv else ledger.render(summary), end="" if args.csv else "\n")
+    rej = ledger.rejected(dirs)
+    if rej["n"] and not args.csv:
+        print(f"rejected (not verdicts, still paid for): {rej['n']} file(s), usd {rej['cost_usd_sum']}")
     return 0
 
 

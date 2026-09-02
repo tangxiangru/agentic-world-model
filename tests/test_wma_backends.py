@@ -238,3 +238,33 @@ def test_a_backend_without_model_or_effort_stamps_neither(tmp_path) -> None:
     backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b)
     v = schema.load_verdict(b.verdict_path)
     assert "model" not in v and "effort" not in v
+
+
+# ---- an invalid verdict is moved aside with what it cost; the harness's fields are never the agent's (2026-09-02) ----
+
+def test_an_invalid_verdict_is_moved_aside_with_its_measured_cost_so_the_sample_can_be_retried(tmp_path) -> None:
+    b = brief(tmp_path)
+    bad = json.loads(good_verdict_json())
+    bad["levels"]["L2_effect"]["direction"] = "sideways"
+    exe = fake_executable(tmp_path, f"cat > /dev/null\nmkdir -p $(dirname '{b.verdict_path}')\n"
+                                    f"cat > '{b.verdict_path}' <<'J'\n{json.dumps(bad)}\nJ\n"
+                                    f"cat <<'S'\n{stream_events(result_event(0.31, 9))}S\n")
+    with pytest.raises(backends.BackendError, match="direction"):
+        backends.CommandBackend("fake", [str(exe)], "m-1", effort="high", transcript="stream-json").run(b)
+    assert not b.verdict_path.exists(), "an invalid verdict must not block a retry"
+    rejected = b.verdict_path.with_name(b.verdict_path.name + ".rejected")
+    r = json.loads(rejected.read_text())
+    assert r["rejected"]["cost"]["usd"] == 0.31 and "direction" in r["rejected"]["reason"]
+    assert r["verdict"]["levels"]["L2_effect"]["direction"] == "sideways"
+    assert r["rejected"]["model"] == "m-1" and r["rejected"]["effort"] == "high"
+
+
+def test_unparseable_output_is_moved_aside_too(tmp_path) -> None:
+    b = brief(tmp_path)
+    exe = fake_executable(tmp_path, f"cat > /dev/null\nmkdir -p $(dirname '{b.verdict_path}')\n"
+                                    f"echo 'not json' > '{b.verdict_path}'\n")
+    with pytest.raises(backends.BackendError, match="invalid verdict JSON"):
+        backends.CommandBackend("fake", [str(exe)]).run(b)
+    assert not b.verdict_path.exists()
+    r = json.loads(b.verdict_path.with_name(b.verdict_path.name + ".rejected").read_text())
+    assert r["raw"].startswith("not json")

@@ -117,19 +117,25 @@ def review(session_dir: Path, card_id: str, backend: Backend, *, mode: str = "of
     try:
         backend.run(brief)
     except BackendError as exc:
+        if brief.verdict_path.exists():        # a backend that raised but left a file: not a verdict
+            schema.reject_verdict(brief.verdict_path, str(exc), backend=backend.name)
         raise ReviewError(str(exc)) from exc
     v = schema.load_verdict(brief.verdict_path)
     report = schema.validate_verdict(v)
     if not report.ok:
+        schema.reject_verdict(brief.verdict_path, report.render(), backend=backend.name)
         raise ReviewError("backend left an invalid verdict:\n" + report.render())
-    v["wma_skill"] = v.get("wma_skill") or schema.skill_sha(skill_dir)
-    v["backend"] = v.get("backend") or backend.name
-    v["mode"] = v.get("mode") or mode
-    if model and not v.get("model"):
+    # The harness knows these; whatever the agent wrote there (the first real verdict copied the example
+    # file's placeholders) is replaced. The heuristic backend's own skill stamp is the one exception.
+    if backend.reads_skill:
+        v["wma_skill"] = schema.skill_sha(skill_dir)
+    v["backend"] = backend.name
+    v["mode"] = mode
+    if model:
         v["model"] = model
-    if effort and not v.get("effort"):
+    if effort:
         v["effort"] = effort
-    v["issued_at"] = v.get("issued_at") or now()
+    v["issued_at"] = now()
     v["card_id"] = card_id
     schema.dump_verdict(brief.verdict_path, v)
     return v

@@ -19,6 +19,7 @@ agent's own estimate.
 from __future__ import annotations
 
 import csv
+import json
 import io
 from collections import defaultdict
 from pathlib import Path
@@ -84,6 +85,22 @@ def rows(dirs: list[Path]) -> list[dict[str, Any]]:
                 "leak": bool(v.get("leak_suspected")),
             })
     return out
+
+
+def rejected(dirs: list[Path]) -> dict[str, Any]:
+    """Verdict files the harness moved aside (invalid JSON or schema): not verdicts, but paid for."""
+    n, usd = 0, 0.0
+    for d in dirs:
+        for p in Path(d).rglob(f"exp-*.verdict*.json{schema.REJECTED_SUFFIX}*"):
+            try:
+                body = json.loads(p.read_text())
+            except ValueError:
+                continue
+            n += 1
+            cost = (body.get("rejected") or {}).get("cost") or {}
+            if isinstance(cost.get("usd"), (int, float)):
+                usd += float(cost["usd"])
+    return {"n": n, "cost_usd_sum": round(usd, 4)}
 
 
 def _rate(values: list[str], hit: tuple[str, ...]) -> float | str:

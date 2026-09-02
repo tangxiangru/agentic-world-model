@@ -23,6 +23,10 @@ L3_ANSWERS = ("yes", "no", "defer")
 MODES = ("offline", "online")
 PROBE_KINDS = ("static_check", "unit_test", "data_probe", "dry_run", "sample_probe")
 CHANGED = ("L0", "L1", "L2", "L3", "none")
+#: L2 direction: flat is for a card that expects no change (a packaging or baseline card).
+DIRECTIONS = (None, "higher", "lower", "flat")
+#: An unusable verdict is moved to <verdict>.rejected (never *.json, so the ledger ignores it).
+REJECTED_SUFFIX = ".rejected"
 #: L0 = "did it run": a run killed by the deadline ran; a failed or never-launched one did not.
 RAN = ("completed", "killed")
 WORTH = {"adopt": True, "reject": False, "abandon_line": False}
@@ -59,6 +63,29 @@ def dump_verdict(path: Path, verdict: dict[str, Any]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(verdict, indent=2) + "\n")
+
+
+def reject_verdict(path: Path, reason: str, **measured: Any) -> Path:
+    """Move an unusable verdict file aside so the card counts as unreviewed, keeping the text and what it cost.
+
+    A rejected file is not a verdict: the ledger never reads it, a replay pass retries the sample, and the
+    round's spend can still be added up from it.
+    """
+    path = Path(path)
+    target = path.with_name(path.name + REJECTED_SUFFIX)
+    n = 1
+    while target.exists():
+        target = path.with_name(f"{path.name}{REJECTED_SUFFIX}.{n}")
+        n += 1
+    raw = path.read_text()
+    try:
+        body: dict[str, Any] = {"verdict": json.loads(raw)}
+    except ValueError:
+        body = {"raw": raw}
+    body["rejected"] = {"reason": reason, "at": now(), **measured}
+    target.write_text(json.dumps(body, indent=2) + "\n")
+    path.unlink()
+    return target
 
 
 def skill_sha(skill_dir: Path) -> str:
@@ -123,8 +150,8 @@ def validate_verdict(v: dict[str, Any]) -> Report:
             if iv is not None and not (isinstance(iv, list) and len(iv) == 2 and all(_num(x) for x in iv)
                                        and iv[0] <= iv[1]):
                 r.error(f"{where}.interval", "must be [lo, hi] with lo <= hi, or null")
-            if lv.get("direction") not in (None, "higher", "lower"):
-                r.error(f"{where}.direction", "must be higher | lower | null")
+            if lv.get("direction") not in DIRECTIONS:
+                r.error(f"{where}.direction", "must be higher | lower | flat | null")
         elif name == "L3_worth_now":
             if lv.get("answer") not in L3_ANSWERS:
                 r.error(f"{where}.answer", f"must be one of {L3_ANSWERS}")

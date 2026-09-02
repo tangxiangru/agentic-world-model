@@ -159,3 +159,16 @@ def test_recall_is_measured_on_the_cards_that_failed_or_yielded_no_candidate(tmp
     assert s["L1_recall_invalid"] == round(2 / 3, 3)   # exp-01, exp-03 caught; exp-02 missed
     assert s["L0_hit"] == 0.6 and s["L1_hit"] == 0.6
     assert s["n_scored"] == 5 and s["n_L2_scorable"] == 2   # only the two completed cards carry a delta
+
+
+def test_rejected_files_are_not_verdicts_but_their_spend_is_counted(tmp_path) -> None:
+    write(tmp_path, "exp-01", "AAAA")
+    card_path = tmp_path / "memory" / "cards" / "exp-02.yaml"
+    cards.dump_card(card_path, plan_card() | {"card_id": "exp-02"})
+    bad = schema.verdict_path(card_path)
+    schema.dump_verdict(bad, {**schema.empty_verdict("exp-02"), "levels": {}})
+    schema.reject_verdict(bad, "levels: required", cost={"usd": 0.7, "turns": 3}, wall_min=2.0)
+    schema.reject_verdict(schema.dump_verdict(bad, {"x": 1}) or bad, "invalid verdict JSON", cost={"usd": 0.2})
+    assert len(ledger.rows([tmp_path])) == 1
+    r = ledger.rejected([tmp_path])
+    assert r == {"n": 2, "cost_usd_sum": 0.9}

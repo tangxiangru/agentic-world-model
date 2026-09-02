@@ -300,5 +300,11 @@ docs 仍由发射器拒绝。
    指纹都是 `509ba0772ffc4fab`。
 4. `review.py::build_prompt` 在本阶段冻结;改它等于换测量。
 5. 不做:查表基线不补进回放器;设计文档 §4.4 的门槛改为对 heuristic 地板。
+6. **已做**(round-01 第一份真裁决暴露的三件事):`L2_effect.direction` 允许 `flat`
+   (打包 / baseline 卡预期无变化;打分只用区间,不受影响);无效的 verdict 文件移到
+   `exp-NN.verdict.json.rejected`(带测得的成本与栅栏结果),样本回到待审,账本不读它
+   但 `awm wma ledger` 汇报其数量与花费;`wma_skill`、`backend`、`mode`、`model`、
+   `effort`、`issued_at`、`card_id` 一律由 harness 按实际写入,agent 自填的值不算数
+   (第一份裁决把示例文件里的占位符原样抄了进去)。
 
 完成这些门只表示可以发射 round-01,不表示 candidate 可以晋升。

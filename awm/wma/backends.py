@@ -59,6 +59,9 @@ class Brief:
 
 class Backend:
     name = "base"
+    #: whether the backend reads skills/wma — if so the verdict's wma_skill is the skill's hash, whatever
+    #: the agent wrote there; the heuristic backend keeps its own stamp.
+    reads_skill = True
 
     def run(self, brief: Brief) -> None:  # pragma: no cover - interface
         raise NotImplementedError
@@ -73,6 +76,7 @@ class HeuristicBackend(Backend):
     """Fixed priors, stated as such. Beat this before believing a skill."""
 
     name = "heuristic"
+    reads_skill = False
 
     def run(self, brief: Brief) -> None:
         card = load_card(brief.card_path)
@@ -248,27 +252,37 @@ class CommandBackend(Backend):
         if not brief.verdict_path.is_file():
             tail = (proc.stdout or "")[-500:] + (proc.stderr or "")[-500:]
             raise BackendError(f"{self.name}: no verdict written to {brief.verdict_path} (exit {proc.returncode}); {tail!r}")
+        # What the run measurably was — kept even when the file the agent wrote is unusable.
+        measured: dict[str, Any] = {"backend": self.name, "wall_min": wall_min}
+        if self.model:
+            measured["model"] = self.model
+        if self.effort:
+            measured["effort"] = self.effort
+        if self.transcript == "stream-json":
+            cost, access = scan_transcript(proc.stdout or "", brief)
+            measured.update({"cost": cost, "access": access, "leak_suspected": bool(access["outside"])})
         try:
             v = schema.load_verdict(brief.verdict_path)
         except ValueError as exc:
+            schema.reject_verdict(brief.verdict_path, f"invalid verdict JSON: {exc}", **measured)
             raise BackendError(f"{self.name}: invalid verdict JSON: {exc}") from exc
         report = schema.validate_verdict(v)
         if not report.ok:
+            schema.reject_verdict(brief.verdict_path, report.render(), **measured)
             raise BackendError(f"{self.name}: invalid verdict:\n{report.render()}")
-        if not v.get("backend"):
-            v["backend"] = self.name
+        v["backend"] = self.name
         if self.model:
             v["model"] = self.model
         if self.effort:
             v["effort"] = self.effort
         if self.transcript == "stream-json":
-            cost, access = scan_transcript(proc.stdout or "", brief)
             v.setdefault("cost", {})
-            v["cost"].update(cost)
-            v["cost"]["wall_min"] = wall_min          # measured beats self-reported
-            v["access"] = access
-            if access["outside"]:
+            v["cost"].update(measured["cost"])
+            v["access"] = measured["access"]
+            if measured["leak_suspected"]:
                 v["leak_suspected"] = True
+        v.setdefault("cost", {})
+        v["cost"]["wall_min"] = wall_min          # measured beats self-reported
         schema.dump_verdict(brief.verdict_path, v)
 
 

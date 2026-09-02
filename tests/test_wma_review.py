@@ -101,3 +101,26 @@ def test_review_stamps_model_and_effort_when_the_backend_leaves_them_blank(tmp_p
     v2 = review.review(session_with(tmp_path / "b", plan_card()), "exp-01", backends.HeuristicBackend(),
                        mode="offline", skill_dir=skill)
     assert "model" not in v2 and "effort" not in v2
+
+
+def test_harness_fields_are_measured_not_copied_from_the_agent(tmp_path, skill) -> None:
+    """The first real verdict copied wma_skill, backend and issued_at from the example file. The harness knows
+    these; what the agent wrote is overwritten."""
+    class Copier(backends.Backend):
+        name = "copier"
+
+        def run(self, brief):
+            v = schema.empty_verdict(brief.card_id)
+            v.update({"wma_skill": "skills/wma/SKILL.md", "backend": "claude-opus-5", "mode": "online",
+                      "issued_at": "2026-09-02T00:00:00Z", "model": "made-up", "effort": "max", "card_id": "exp-99"})
+            schema.dump_verdict(brief.verdict_path, v)
+
+    s = session_with(tmp_path, plan_card())
+    v = review.review(s, "exp-01", Copier(), mode="offline", skill_dir=skill, model="m-1", effort="high")
+    assert v["wma_skill"] == schema.skill_sha(skill) and v["backend"] == "copier" and v["mode"] == "offline"
+    assert v["model"] == "m-1" and v["effort"] == "high" and v["card_id"] == "exp-01"
+    assert v["issued_at"] != "2026-09-02T00:00:00Z"
+    # the heuristic backend does not read the skill; its own stamp stays
+    v2 = review.review(session_with(tmp_path / "h", plan_card()), "exp-01", backends.HeuristicBackend(),
+                       mode="offline", skill_dir=skill)
+    assert v2["wma_skill"] == "heuristic-priors"
