@@ -194,6 +194,36 @@ Measurement-only changes already made and separately attributable:
   L2/L3. Decode comparisons with a real comparator path remain scorable. This
   reconciles the mechanical ledger with the pre-registered 12-card audit and
   changes no verdict or skill bytes.
+- `2b6bfeb` plus retry receipt: cancel only unsafe legacy v2 PENDING jobs
+  `90633..90637` (`c03r04..08`) after confirming each was still PENDING, then
+  requeue the same five cells as `90786..90790`. Every retry passed the held
+  route gate and remains PENDING with
+  `ReqNodeList=slurm2-a3nodesetondem-[2-3]`; 32 safe v3 jobs stayed queued, so
+  the operation never approached the eight-job floor.
+
+### Terminal disposition for out-of-scope v2 jobs
+
+The 27 already-running v2 jobs with `ReqNodeList=(null)` are never cancelled
+by this round. Their terminal state is handled per cell, not by blanket policy:
+
+1. Resolve receipt → cell → manifest → spec → result directory, harvest with
+   `--all`, and run the PTB validator. Slurm completion alone is not a result.
+2. A validator-complete result is preserved and analysed *as run* with its
+   actual node provenance. Placement noncompliance is reported explicitly and
+   the cell is kept separate from the canonical owned-node view until hardware
+   and runtime equivalence are audited; it is never silently substituted.
+3. A failed/killed/incomplete result caused by infrastructure or routing is not
+   a scientific negative. Exclude it from the primary paired denominator.
+4. Requeue the exact cell through the held-route gate only when its missing
+   arm is still needed for the pre-registered pair/minimum-n decision. If an
+   independently specified safe extension already supplies adequate evidence,
+   record the failure without duplicating it. Retry and original are never
+   counted twice.
+
+Monitoring is now every 30 minutes. The hard requirement is at least eight
+safe PENDING jobs; the operational guard fires below 24 and replenishes to at
+least 32. With at most 16 owned GPUs starting one wave between checks, this
+keeps an eight-job reserve without high-frequency polling.
 
 ## Evidence
 
