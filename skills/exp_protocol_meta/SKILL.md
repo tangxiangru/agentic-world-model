@@ -33,8 +33,8 @@ itself are a separate, human decision.
    PostTrainBench is large; one cell per variant decides nothing.
 4. **Held-out task.** One task is never used for iteration; it is run only to
    confirm a change generalises before it becomes the baseline.
-5. **Launch.** A scientist cell uses the `claude_vertex_max_awm` scaffold and
-   declares, in its manifest cell, an `awm` block: the variant's commit
+5. **Launch.** Each scientist cell in this line uses the `claude_vertex_high_awm`
+   scaffold and declares, in its manifest cell, an `awm` block: the variant's commit
    (`sha`), `paths` = the six entries of `EXP_PROTOCOL_SHIP` in
    `awm/ptb_experiments.py` (the CLI, `awm/exp_protocol`, `skills/exp_protocol`
    and nothing else), and `setup: "--exp-protocol --tool claude"`. The
