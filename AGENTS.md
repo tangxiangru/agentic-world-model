@@ -52,6 +52,9 @@ Skills for agents working in this repository live in `skills/<name>/SKILL.md`
 - `skills/wma/SKILL.md` — the world-model agent: given an experiment card's pre-launch
   sections, estimate what the run will do and write `exp-NN.verdict.json`. Invoked by
   `awm wma review`; iterated offline by `awm wma replay` over the historical card corpus.
+- `skills/wma_meta/SKILL.md` — how the world-model agent itself is iterated: replay a round,
+  read the ledger per level, change one thing in `skills/wma/`, record why. For the
+  iteration agent only; the WMA never reads it while producing a verdict.
 
 Codex: read the SKILL.md directly, or link a skill into `~/.codex/skills/`:
 `ln -s "$(pwd)/skills/exp_protocol_meta" ~/.codex/skills/exp_protocol_meta`.

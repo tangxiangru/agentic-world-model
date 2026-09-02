@@ -26,3 +26,13 @@ def test_repo_symlink_and_agents_md() -> None:
     link = paths.REPO_ROOT / ".claude" / "skills" / "wma"
     assert link.is_symlink() and (link / "SKILL.md").is_file()
     assert "skills/wma/SKILL.md" in (paths.REPO_ROOT / "AGENTS.md").read_text()
+
+
+def test_meta_skill_exists_and_names_the_loop() -> None:
+    text = (paths.REPO_ROOT / "skills" / "wma_meta" / "SKILL.md").read_text()
+    assert text.startswith("---\nname: wma_meta\n")
+    for needle in ("awm wma replay", "awm wma ledger", "--limit 20", "test side", "one change", "width"):
+        assert needle in text, needle
+    link = paths.REPO_ROOT / ".claude" / "skills" / "wma_meta"
+    assert link.is_symlink() and (link / "SKILL.md").is_file()
+    assert "skills/wma_meta/SKILL.md" in (paths.REPO_ROOT / "AGENTS.md").read_text()
