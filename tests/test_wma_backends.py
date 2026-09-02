@@ -399,3 +399,20 @@ def test_rescan_rederives_access_from_the_kept_transcript_and_touches_nothing_el
     assert changed == {"scanned": 1, "changed": 1}
     assert after["access"] == {"files": 1, "outside": []} and "leak_suspected" not in after
     assert after["levels"] == before_levels and after["cost"]["usd"] == 0.5
+
+
+def test_the_agents_own_scratch_under_the_temp_dir_is_inside_the_fence(tmp_path, monkeypatch) -> None:
+    """Agents park grep output in /tmp and read it back (24-verdict pass: /tmp/dc.txt, /tmp/q4b.txt). Their own
+    scratch is not a leak; the sidecar grants the same scratch root explicitly."""
+    import tempfile
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(scratch))
+    (scratch / "dc.txt").write_text("history/r-y/exp-01.yaml\n")
+    b = brief(tmp_path)
+    exe = streaming_fake(tmp_path, b, stream_events(
+        tool_use("Bash", command=f"grep -Rl decode history/ > {scratch}/dc.txt; wc -l {scratch}/dc.txt"),
+        result_event()))
+    backends.CommandBackend("fake", [str(exe)], transcript="stream-json").run(b)
+    assert schema.load_verdict(b.verdict_path)["access"]["outside"] == []

@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -152,6 +153,11 @@ def _fence(brief: Brief) -> list[Path]:
     and the CLI's own spill directory for this session."""
     roots = [Path(os.path.abspath(brief.session_dir)), Path(os.path.abspath(brief.skill_dir)),
              cli_project_dir(brief.session_dir)]
+    # The agent's own scratch (grep output parked in /tmp and read back) is not a leak — unless the
+    # session itself lives under the temp dir (tests, odd layouts), where its truth would be too.
+    scratch = Path(os.path.abspath(tempfile.gettempdir()))
+    if not Path(os.path.abspath(brief.session_dir)).is_relative_to(scratch):
+        roots.append(scratch)
     try:
         roots.append(Path(brief.skill_dir).resolve())
     except OSError:
