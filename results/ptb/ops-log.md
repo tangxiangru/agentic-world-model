@@ -29,3 +29,4 @@
 - 2026-09-02T21:04:47+00:00 submit exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1 (held): 8 job(s) 90813,90814,90815,90816,90817,90818,90819,90820 -> results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/formal-2026-09-02T210446.182614+0000.json
 - 2026-09-02T21:05:12+00:00 blocked submit exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8-v1: formal source freeze requires clean top-level and PTB worktrees
 - 2026-09-02T21:05:14+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-x8-v1/c00r06 job=90472 COMPLETED acc=0.7832 complete clean
+- 2026-09-02T21:08:24+00:00 submit exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8-v1 (held): 8 job(s) 90823,90824,90825,90826,90827,90828,90829,90830 -> results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8-v1/formal-2026-09-02T210823.064737+0000.json
