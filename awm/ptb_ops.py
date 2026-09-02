@@ -568,6 +568,7 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
         _log(repo_root, line)
         written.append(line)
         submits = []
+    submit_outcomes: list[tuple[Action, Path | None, ptb.ExperimentError | None]] = []
     for action in submits:
         manifest = ptb.load_manifest(repo_root / str(action.manifest))
         try:
@@ -575,14 +576,23 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
                 manifest, pilot=action.pilot, keep_held=action.keep_held
             )
         except ptb.ExperimentError as exc:
+            submit_outcomes.append((action, None, exc))
+        else:
+            submit_outcomes.append((action, Path(receipt_path), None))
+    # Do not dirty the source tree until every source-frozen submit has run.
+    # Copying the first receipt or writing its blocked.md inside the loop would
+    # make the second otherwise-independent submit fail its clean-tree gate.
+    for action, receipt_path, error in submit_outcomes:
+        if error is not None:
             blocked = repo_root / RESULTS_ROOT / action.batch / "blocked.md"
             blocked.parent.mkdir(parents=True, exist_ok=True)
-            blocked.write_text(f"# {action.batch}: submission blocked\n\n{_now()}\n\n```\n{exc}\n```\n",
+            blocked.write_text(f"# {action.batch}: submission blocked\n\n{_now()}\n\n```\n{error}\n```\n",
                                encoding="utf-8")
-            line = f"blocked submit {action.batch}{' (pilot)' if action.pilot else ''}: {str(exc).splitlines()[0]}"
+            line = f"blocked submit {action.batch}{' (pilot)' if action.pilot else ''}: {str(error).splitlines()[0]}"
             _log(repo_root, line)
             written.append(line)
             continue
+        assert receipt_path is not None
         dst = repo_root / RESULTS_ROOT / action.batch / Path(receipt_path).name
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(receipt_path, dst)

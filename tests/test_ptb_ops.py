@@ -278,6 +278,44 @@ def test_ownership_failure_allows_only_a_registered_held_buffer(
     assert receipt["state"] == "held"
 
 
+def test_multiple_held_submits_finish_before_any_receipt_dirties_the_tree(
+    repo, tmp_path: Path, monkeypatch
+) -> None:
+    root, _states = repo
+    second_manifest = root / "experiments" / "posttrainbench" / "ep-r02.yaml"
+    second_manifest.write_text(yaml.safe_dump(_small_manifest("ep-r02"), sort_keys=False))
+    entries = [
+        {**ENTRY, "want": "held", "why": "first buffer"},
+        {
+            **ENTRY,
+            "manifest": "experiments/posttrainbench/ep-r02.yaml",
+            "want": "held",
+            "why": "second buffer",
+        },
+    ]
+    tracked_seen: list[list[Path]] = []
+
+    def fake_submit(manifest, *, pilot=False, cell_ids=None, keep_held=False):
+        tracked_seen.append(list((root / "results" / "ptb").glob("*/*.json")))
+        job = "420" if manifest["batch_id"] == "ep-r01" else "421"
+        return _receipt(
+            tmp_path / "vol",
+            manifest["batch_id"],
+            "formal",
+            [("p01r1", job)],
+            state="held",
+        )
+
+    monkeypatch.setattr(ops, "submit_batch", fake_submit)
+
+    lines = ops.apply(ops.plan(entries, root), root)
+
+    assert tracked_seen == [[], []]
+    assert sum(" (held): 1 job(s)" in line for line in lines) == 2
+    assert (root / "results/ptb/ep-r01/formal-2026-09-02T000000.json").is_file()
+    assert (root / "results/ptb/ep-r02/formal-2026-09-02T000000.json").is_file()
+
+
 def test_a_launcher_refusal_is_written_down(repo, monkeypatch) -> None:
     root, _ = repo
 
