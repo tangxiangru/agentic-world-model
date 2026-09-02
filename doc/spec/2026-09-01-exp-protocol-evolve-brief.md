@@ -6,9 +6,9 @@
 
 ## 一、你是谁,负责什么
 
-- **分支** `gangda_exp_protocol_evolve`,worktree `/data/gangda/worktrees/agentic-world-model_exp-protocol-evolve`。PR 目标是 **`gangda_trial_0828`**;**永远不要主动 PR 或 merge 到 `main`**。
+- **分支** `gangda_exp_protocol_evolve`,worktree `/data/gangda/worktrees/agentic-world-model_exp-protocol-evolve`。PR 目标是 **`gangda-dev`**(2026-09-02 由 `gangda_trial_0828` 改名);**永远不要主动 PR 或 merge 到 `main`**。
 - **负责两件事**:(1) 让 `exp_protocol_meta` 描述的自迭代循环真正在 H100 上跑起来,并据此改进 `skills/exp_protocol/`;(2) 下面第三节的两个接线决策。
-- **不负责**:WMA policy 的设计与实现——那是主线 `gangda_trial_0828` 上另一个 agent 的事。两条线通过 experiment card 交换信息,各自独立迭代(定义文档第五节)。
+- **不负责**:WMA policy 的设计与实现——那是主线 `gangda-dev` 上另一个 agent 的事。两条线通过 experiment card 交换信息,各自独立迭代(定义文档第五节)。
 - **用户会直接和你对话**。每个需要拍板的决策,先给方案、利弊、推荐,再动手。
 
 ## 二、上手必读(按顺序,约 40 分钟)
@@ -39,7 +39,7 @@
 
 ### C2 · meta 循环第一轮的参数
 
-- **baseline** = 合并后 `gangda_trial_0828` 上 `skills/exp_protocol/` 的 commit(`git log -1 --format=%h -- skills/exp_protocol`)。
+- **baseline** = 合并后 `gangda-dev` 上 `skills/exp_protocol/` 的 commit(`git log -1 --format=%h -- skills/exp_protocol`)。
 - **第一轮建议只跑 baseline**,≥3 个 seed,先拿到基线分布(`accuracy` 的方差、`pitfalls_cost_h`、`fields_filled`),再谈候选变体;或者 baseline vs 一个最小变体。给用户选。
 - **任务与 held-out**:提方案——例如 gsm8k 迭代、aime2025 held-out(两者都在 `APPROVED_TASKS` 里);base model 从 `APPROVED_BASE_MODELS` 选一个固定;scientist 用 `APPROVED_AGENT_SETUPS` 里的一个固定。
 - `PTB_NUM_HOURS`、cell 数、预算——按 `AGENTS.md` 的队列规则和用户给的额度。
@@ -58,7 +58,7 @@
 - **先对齐再动手**:每个决策点先给用户方案与推荐;用户批准后再改代码。
 - **TDD**;规程线的一切机制必须能在 CPU 上端到端测试;不引入状态机、不引入等待训练的命令、不引入需要 LLM 才能执行的规则。
 - 提交风格:英文陈述句标题 + 说明为什么的正文;trailer `Co-Authored-By: Claude Code <noreply@anthropic.com>`。
-- PR base **`gangda_trial_0828`**;绝不 `main`。
+- PR base **`gangda-dev`**;绝不 `main`。
 - worktree 一律放 `/data`(根盘 93% 满)。
 - 推送用 HTTPS + `gh`(账号 Hydrapse);本机默认 SSH key 是另一个账号,无写权限。
 - 若要改 PTB fork:feature 分支 → PR 到 fork 的补丁分支 → 合并 → 更新 submodule 指针。
