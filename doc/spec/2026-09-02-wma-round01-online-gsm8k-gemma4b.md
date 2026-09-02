@@ -157,28 +157,30 @@ job 已在 RUNNING,不动。我在同一时间写的替代 manifest `ctl-c-x5-v2
 在跑,时间上晚于配对——分析时按 `wma_skill` 合并,并在 core-16 / all-32 / all-48 之外
 单列"配对同波"的敏感性口径。
 
-## 2026-09-02 21:0x UTC:用户把 repeats 定为 2,撤回八 cell 的 v3 扩展
+## 2026-09-02 21:1x UTC:用户把 repeats 定为 4,撤回八 cell 的 v3 扩展
 
-用户看过五个批次 × 两臂共 80 cell 的清单后决定:**`repeats: 8` 太多,从现在起每个
-manifest 都是 `replication: {settings: 1, repeats: 2}`**;GPU 容量用来跑不同的
+用户看过五个批次 × 两臂共 80 cell 的清单后决定:**`repeats: 8` 太多;先说 2,随即
+因为同设置的方差大改为 4——从现在起每个 manifest 都是
+`replication: {settings: 1, repeats: 4}`**(每个候选 4 个 cell);GPU 容量用来跑不同的
 setting,而不是同一 setting 的更多重复。落实:
 
 - 四个八 cell 的 v3 manifest(`wma/ctl-b-x8-v3`、`wma/ctl-c-x8-v3`,jobs 90676–90707)
   在全部 PENDING、一个都没启动时 `want: cancelled`;它们从未产生结果,预注册的
   core-16 / all-32 / all-48 三个 cohort 不含它们,不受影响。
-- 同一 setting 只保留一对 2+2:`wma-x2-v3` / `ctl-x2-v3`(`w04r01..02` / `c04r01..02`,
-  `run_index 4`,全局观测 25–26,私有 runtime 仍为 `34535c7`,skill hash 不变)。它承担
+- 同一 setting 只保留一对 4+4:`wma-x4-v3` / `ctl-x4-v3`(`w04r01..04` / `c04r01..04`,
+  `run_index 4`,全局观测 25–28,私有 runtime 仍为 `34535c7`,skill hash 不变)。它承担
   runtime 修复的在线接受率 cohort;v2 的 26 份 transcript 在新 validator 下已 26/26
-  重放通过,2 个 cell 足够做在线核对。
+  重放通过。中间版本的 2+2 pair(`wma/ctl-x2-v3`,commit `afcb86a`)在 operator 提交前
+  就被本节替换,从未进过 Slurm。
 - 43 个 RUNNING cell(首波 16 + v2 27)不动;5 个 ctl-c 重试 cell(90786–90790)不动。
-  撤回后安全 PENDING = 5 + 4 = 9,仍高于 operator 的下限 8。
+  撤回后安全 PENDING = 5 + 8 = 13,高于 operator 的下限 8。
 
-**对"16 卡永远用满"的影响(明说)**:首波 ≈ 00:00 UTC 释放 16 卡时只有 9 个 PENDING,
-在 Round 02 的 manifest 排进来之前会有约 7 卡空 1–2 h。要在 repeats 2 下填满 16 卡,
-只能靠更多**不同的 setting**,而"一轮一处 skill 改动"的协作规则只给一个候选;由
-用户决定容量的去向(并行多个单改动候选、各 2+2;或换任务/模型的 breadth),Fable 不
-自行编造 setting。上文"目标 `PENDING ≈ 16`"从此按 repeats 2 解释:下限 8,补货到
-一整波(16)之前,补货单位是 2+2 的配对 manifest。
+**对"16 卡永远用满"的影响(明说)**:首波 ≈ 00:00 UTC 释放 16 卡时只有 13 个 PENDING,
+在 Round 02 的 manifest 排进来之前会有约 3 卡空 1–2 h。要在 repeats 4 下填满 16 卡,
+一波 = 4 个 setting;"一轮一处 skill 改动"的协作规则只给一个候选,其余容量的去向
+(并行多个单改动候选、各 4+4;或换任务/模型的 breadth)由用户决定,Fable 不自行
+编造 setting。上文"目标 `PENDING ≈ 16`"从此按 repeats 4 解释:下限 8,补货单位是
+4+4 的配对 manifest。
 
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 

@@ -318,12 +318,13 @@ manifest 同时排队,见 `doc/spec/2026-09-02-wma-round01-online-gsm8k-gemma4b.
 sidecar 的冒烟由第一波的 8 个 wma cell 承担。Fable 以 commit 落实 manifest 与
 `queue.yaml`,仍不跑 `sbatch` / `scancel` / `reconcile --apply`,不写 `results/ptb`。
 
-**用户指令(2026-09-02 21:0x UTC,复制设定)**:每个 manifest `replication:
-{settings: 1, repeats: 2}`,不再是 8。理由是用户的判断:同一 setting 8 次重复太多,
-容量应给不同的 setting。已在跑的 8 重复批次(首波与 v2)按原样跑完并按原 cohort 报告;
-尚未启动的八 cell v3 扩展已撤回、以 2+2 重排(round-01 在线 spec 同日 21:0x 一节)。
-此后任何新 manifest(含 Round 02 的候选与 held-out)都按 2+2 配对写;要多于 2 个
-观测,写成多个不同 setting 的 manifest,而不是加 repeats。
+**用户指令(2026-09-02 21:1x UTC,复制设定)**:每个 manifest `replication:
+{settings: 1, repeats: 4}`——每个候选 4 个 cell,不再是 8(用户先说 2,因同设置方差大
+改为 4)。理由是用户的判断:同一 setting 8 次重复太多,容量应给不同的 setting;2 又
+不够压方差。已在跑的 8 重复批次(首波与 v2)按原样跑完并按原 cohort 报告;尚未启动
+的八 cell v3 扩展已撤回、以 4+4 重排(round-01 在线 spec 同日 21:1x 一节)。此后任何
+新 manifest(含 Round 02 的候选与 held-out)都按 4+4 配对写;要多于 4 个观测,写成多个
+不同 setting 的 manifest,而不是加 repeats。
 
 ## 十一、本 spec 登记的测量侧改动
 
