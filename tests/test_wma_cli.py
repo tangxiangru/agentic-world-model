@@ -51,7 +51,10 @@ def test_review_close_reconcile_ledger(session, capsys) -> None:
     d = str(session)
     assert main(["wma", "review", "--dir", d, "exp-01", "--backend", "heuristic"]) == 0
     vp = schema.verdict_path(lineage.cards_dir(session) / "exp-01.yaml")
-    assert vp.is_file() and "L3_worth_now" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert vp.is_file()
+    assert out.splitlines()[0].startswith("exp-01: worth running now = ")   # the scientist's one line comes first
+    assert "levels:" in out                                                  # the decomposition stays secondary
 
     p = lineage.cards_dir(session) / "exp-01.yaml"
     card = cards.load_card(p)

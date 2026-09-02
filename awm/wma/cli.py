@@ -26,7 +26,6 @@ def _budget(spec: str | None):
 
 
 def _review(args: argparse.Namespace) -> int:
-    from . import schema
     from .backends import get_backend
     from .review import ReviewError, review
 
@@ -43,15 +42,20 @@ def _review(args: argparse.Namespace) -> int:
         print(f"not reviewed: {exc}")
         return 2 if "no such card" in str(exc) else 1
     lv = v["levels"]
-    print(f"verdict for {v['card_id']} ({v['backend']}, skill {v['wma_skill']}, {v['mode']}):")
-    for name in schema.LEVELS:
-        entry = lv[name]
-        ans = entry.get("answer", entry.get("interval"))
-        print(f"  {name:13} {ans!s:14} conf={entry.get('confidence')}")
+    l3 = lv["L3_worth_now"]
+    by_id = {e.get("id"): e for e in v.get("evidence") or [] if isinstance(e, dict)}
+    why = "; ".join(str(by_id[b].get("note") or by_id[b].get("path")) for b in l3.get("basis") or [] if b in by_id)
+    # The scientist's interface is one line; the four levels are the ledger's and stay in the file.
+    print(f"{v['card_id']}: worth running now = {l3['answer']} (confidence {l3.get('confidence')})"
+          + (f" — {why}" if why else ""))
     if v["suggestions"]["preconditions"]:
         print("  verify first: " + "; ".join(v["suggestions"]["preconditions"]))
     if v["suggestions"]["cheaper_variants"]:
         print("  cheaper: " + "; ".join(v["suggestions"]["cheaper_variants"]))
+    l2 = lv["L2_effect"]
+    print(f"  (levels: runs={lv['L0_runs']['answer']} valid={lv['L1_valid']['answer']} "
+          f"effect={l2.get('interval')} @{l2.get('confidence')}; {v['backend']}, skill {v['wma_skill']}, {v['mode']}; "
+          f"full verdict beside the card)")
     return 0
 
 
