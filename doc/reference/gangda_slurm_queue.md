@@ -16,9 +16,12 @@ evidence.
 
 The split is non-borrowing: an idle GPU in one subqueue is not available to the other. Each
 line's PTB `.env` names both `POST_TRAIN_BENCH_SLURM_SUBQUEUE` and the matching two-node
-`POST_TRAIN_BENCH_SLURM_NODELIST`; `awm ptb check` rejects a mismatch. Existing legacy jobs
-are never cancelled or moved during a split and may temporarily consume capacity on the nodes
-where Slurm already placed them.
+`POST_TRAIN_BENCH_SLURM_NODELIST`; `awm ptb check` rejects a mismatch. The queue monitor also
+checks every registered allocated job's actual node and the sum of its GPU requests. A job that
+runs outside its subqueue nodes, or registered running GPU requests above `gpu_limit`, makes the
+view say `OWNERSHIP FAIL` even when the owned nodes themselves still show `GPUS 16/16`.
+Existing running jobs are never cancelled or moved automatically; an ownership failure stops new
+submissions and requires an operator investigation.
 
 ## Current operations
 
@@ -38,7 +41,9 @@ resource currently held by another registered job.
 The default view shows the total `gangda` allocation and both subqueue capacities. A
 `--subqueue NAME` view limits nodes and receipt sources to that line. Its GPU count is physical
 allocation on the subqueue's nodes, so a pre-split legacy job is still visible in the capacity
-number even when its historical receipt has no subqueue tag.
+number even when its historical receipt has no subqueue tag. `registered_running_gpus` is the
+independent receipt-backed demand count; it is what detects spillover or oversubscription that a
+physical-node-only total would hide.
 
 ## Failures
 

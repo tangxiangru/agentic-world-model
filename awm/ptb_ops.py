@@ -30,9 +30,8 @@ from typing import Any
 
 import yaml
 
-from awm import paths
+from awm import paths, ptb_results, slurm_queue
 from awm import ptb_experiments as ptb
-from awm import ptb_results
 
 QUEUE_PATH = Path("experiments/posttrainbench/queue.yaml")
 RESULTS_ROOT = Path("results/ptb")
@@ -66,6 +65,7 @@ job_state = ptb._job_state
 result_for_job = ptb.result_for_job
 audit_result = ptb.audit_result
 submit_batch = ptb.submit
+ownership_snapshot = slurm_queue.collect_snapshot
 
 
 class OpsError(ValueError):
@@ -307,6 +307,7 @@ def harvest_job(
     job_name: str | None = None,
     state: str | None = None,
     slurm_log_dir: Path | None = None,
+    expected_nodes: set[str] | None = None,
 ) -> dict[str, Any]:
     """Copy the small, readable part of one cell's result into ``out_dir``; write status.json.
 
@@ -377,6 +378,16 @@ def harvest_job(
             status["accuracy"] = metrics["accuracy"]
             status["stderr"] = metrics.get("stderr")
         status["issues"] = audit_result(result_dir)
+        if expected_nodes:
+            provenance = ptb_results._read_json(result_dir / "runtime_provenance.json")
+            actual_node = str((provenance.get("slurm") or {}).get("node", ""))
+            if not actual_node:
+                status["issues"].append("runtime Slurm node is missing from provenance")
+            elif actual_node not in expected_nodes:
+                status["issues"].append(
+                    f"runtime Slurm node {actual_node} is outside frozen site nodes "
+                    f"{','.join(sorted(expected_nodes))}"
+                )
         status["complete"] = not status["issues"]
         status["judge_flags"] = ptb_results.judge_flags(result_dir)
     else:
@@ -427,6 +438,47 @@ def _worktree_dirty(repo_root: Path) -> str:
                           capture_output=True, check=False).stdout.strip()
 
 
+def _submission_ownership_issue() -> str | None:
+    registry = ptb.read_ptb_env().get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
+    if not registry:
+        return None
+    try:
+        snapshot = ownership_snapshot(Path(registry))
+    except (OSError, slurm_queue.QueueError) as exc:
+        return f"cannot inspect ownership registry: {exc}"
+    if snapshot.get("ownership_ok"):
+        return None
+    parts = []
+    for key, label in (
+        ("unknown_jobs", "unknown job(s)"),
+        ("name_mismatches", "name mismatch(es)"),
+        ("placement_violations", "placement violation(s)"),
+        ("capacity_violations", "capacity violation(s)"),
+    ):
+        if snapshot.get(key):
+            parts.append(f"{len(snapshot[key])} {label}")
+    return "OWNERSHIP FAIL: " + (", ".join(parts) or "see gangda-slurm-queue")
+
+
+def _receipt_expected_nodes(receipt_path: Path) -> set[str]:
+    receipt = ptb.load_receipt(receipt_path)
+    nodelist = str((receipt.get("site") or {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", ""))
+    if not nodelist:
+        return set()
+    result = subprocess.run(
+        ["scontrol", "show", "hostnames", nodelist],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise OpsError(
+            f"cannot expand frozen Slurm nodelist {nodelist}: "
+            f"{result.stderr.strip() or 'scontrol failed'}"
+        )
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
 def _log(repo_root: Path, line: str) -> None:
     log = repo_root / RESULTS_ROOT / OPS_LOG
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -446,6 +498,11 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
     written: list[str] = []
     submits = [a for a in actions if a.kind == "submit"]
     others = [a for a in actions if a.kind not in ("submit", "wait", "blocked")]
+    if submits and (ownership_issue := _submission_ownership_issue()):
+        line = f"blocked submit: {ownership_issue}"
+        _log(repo_root, line)
+        written.append(line)
+        submits = []
     if submits and (dirty := _worktree_dirty(repo_root)):
         line = f"blocked submit: the worktree is not clean; commit first\n    {dirty.splitlines()[0]} ..."
         _log(repo_root, line)
@@ -490,9 +547,11 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
         elif action.kind == "harvest":
             result_dir = result_for_job(str(action.job_id))
             out_dir = repo_root / RESULTS_ROOT / action.batch / str(action.cell)
+            receipt_path = repo_root / RESULTS_ROOT / action.batch / str(action.receipt)
             status = harvest_job(result_dir, out_dir, batch=action.batch, cell=str(action.cell),
                                  job_id=str(action.job_id), job_name=action.job_name,
-                                 state=action.state, slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm")
+                                 state=action.state, slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm",
+                                 expected_nodes=_receipt_expected_nodes(receipt_path))
             verdict = "complete" if status["complete"] else f"incomplete ({len(status['issues'])} issue(s))"
             flags = ",".join(status["judge_flags"]) or "clean"
             acc = "" if status["accuracy"] is None else f" acc={status['accuracy']:.4f}"

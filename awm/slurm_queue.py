@@ -29,6 +29,7 @@ DEFAULT_SUBQUEUES = {
     },
 }
 ACTIVE_STATES = {"RUNNING", "PENDING", "CONFIGURING", "COMPLETING", "SUSPENDED"}
+ALLOCATED_STATES = ACTIVE_STATES - {"PENDING"}
 FAILURE_STATES = {"FAILED", "OUT_OF_MEMORY", "TIMEOUT", "NODE_FAIL", "BOOT_FAIL"}
 
 
@@ -311,13 +312,23 @@ def _command(command: list[str]) -> str:
 
 
 def _live_jobs() -> dict[str, dict[str, str]]:
-    output = _command(["squeue", "-h", "-o", "%i|%T|%R|%N|%j|%M|%u|%P"])
+    output = _command(["squeue", "-h", "-o", "%i|%T|%R|%N|%j|%M|%u|%P|%b"])
     rows = {}
     for line in output.splitlines():
-        parts = line.split("|", 7)
-        if len(parts) != 8:
+        parts = line.split("|", 8)
+        if len(parts) not in (8, 9):
             continue
-        job_id, state, reason, nodes, name, elapsed, user, partition = parts
+        job_id, state, reason, nodes, name, elapsed, user, partition = parts[:8]
+        tres_per_node = parts[8] if len(parts) == 9 else ""
+        gpus = 1
+        if tres_per_node:
+            gpus = 0
+            for item in tres_per_node.split(","):
+                if item.startswith(("gpu:", "gres/gpu:")):
+                    try:
+                        gpus += int(item.rsplit(":", 1)[1])
+                    except ValueError:
+                        pass
         rows[job_id] = {
             "job_id": job_id,
             "state": state,
@@ -327,6 +338,9 @@ def _live_jobs() -> dict[str, dict[str, str]]:
             "elapsed": elapsed,
             "user": user,
             "partition": partition,
+            # Gangda PTB cells are one-GPU jobs.  The eight-field fallback keeps
+            # snapshots compatible with older/mock squeue output.
+            "gpus": gpus,
         }
     return rows
 
@@ -457,8 +471,44 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
     node_status = _node_status(nodes, gpus_per_node)
     node_by_name = {node["node"]: node for node in node_status}
     subqueues = []
+    placement_violations: list[dict[str, Any]] = []
+    capacity_violations: list[dict[str, Any]] = []
     for name, config in registry["subqueues"].items():
         subqueue_nodes = [node_by_name[node] for node in config["nodes"]]
+        allowed_nodes = set(config["nodes"])
+        allocated_jobs = [
+            job
+            for source in sources
+            if source["subqueue"] == name
+            for job in source["jobs"]
+            if _state_key(job.get("state")) in ALLOCATED_STATES
+        ]
+        registered_running_gpus = sum(int(job.get("gpus", 1)) for job in allocated_jobs)
+        for job in allocated_jobs:
+            actual_nodes = {
+                part
+                for part in str(job.get("nodes", "")).split(",")
+                if part and part not in {"-", "(null)", "N/A"}
+            }
+            outside = sorted(actual_nodes - allowed_nodes)
+            if outside:
+                placement_violations.append(
+                    {
+                        "job_id": job["job_id"],
+                        "subqueue": name,
+                        "expected_nodes": sorted(allowed_nodes),
+                        "actual_nodes": sorted(actual_nodes),
+                        "outside_nodes": outside,
+                    }
+                )
+        if registered_running_gpus > config["gpu_limit"]:
+            capacity_violations.append(
+                {
+                    "subqueue": name,
+                    "registered_running_gpus": registered_running_gpus,
+                    "gpu_limit": config["gpu_limit"],
+                }
+            )
         subqueues.append(
             {
                 "name": name,
@@ -470,6 +520,7 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
                 "active_registered": sum(
                     source["active"] for source in sources if source["subqueue"] == name
                 ),
+                "registered_running_gpus": registered_running_gpus,
             }
         )
     snapshot = {
@@ -479,9 +530,13 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
         "queue_name": registry.get("queue_name", "gangda"),
         "owner": registry.get("owner", ""),
         "scope": scope,
-        "ownership_ok": not unknown and not name_mismatches,
+        "ownership_ok": not (
+            unknown or name_mismatches or placement_violations or capacity_violations
+        ),
         "unknown_jobs": sorted(unknown, key=lambda item: item["job_id"]),
         "name_mismatches": name_mismatches,
+        "placement_violations": placement_violations,
+        "capacity_violations": capacity_violations,
         "nodes": node_status,
         "gpus_allocated": sum(node["gpus_allocated"] for node in node_status),
         "gpus_total": sum(node["gpus_total"] for node in node_status),
@@ -522,11 +577,29 @@ def select_subqueue(snapshot: dict[str, Any], name: str) -> dict[str, Any]:
     view["sources"] = [
         source for source in snapshot["sources"] if source.get("subqueue") == name
     ]
+    selected_job_ids = {
+        str(job["job_id"]) for source in view["sources"] for job in source.get("jobs", [])
+    }
     view["unknown_jobs"] = [
         job
         for job in snapshot["unknown_jobs"]
         if {part for part in job.get("nodes", "").split(",") if part} & node_names
     ]
+    view["name_mismatches"] = [
+        item for item in snapshot["name_mismatches"] if str(item["job_id"]) in selected_job_ids
+    ]
+    view["placement_violations"] = [
+        item for item in snapshot.get("placement_violations", []) if item["subqueue"] == name
+    ]
+    view["capacity_violations"] = [
+        item for item in snapshot.get("capacity_violations", []) if item["subqueue"] == name
+    ]
+    view["ownership_ok"] = not (
+        view["unknown_jobs"]
+        or view["name_mismatches"]
+        or view["placement_violations"]
+        or view["capacity_violations"]
+    )
     return view
 
 
@@ -558,7 +631,8 @@ def render_snapshot(
             nodes = ",".join(node["node"] for node in item["nodes"])
             lines.append(
                 f"  {item['name']}: GPUS {item['gpus_allocated']}/{item['gpus_total']} "
-                f"allocated registered_active={item['active_registered']} nodes={nodes}"
+                f"allocated registered_active={item['active_registered']} "
+                f"registered_running_gpus={item['registered_running_gpus']} nodes={nodes}"
             )
     for node in snapshot["nodes"]:
         lines.append(
@@ -592,6 +666,21 @@ def render_snapshot(
             lines.append(
                 f"  {mismatch['job_id']} expected={mismatch['expected']} "
                 f"actual={mismatch['actual']}"
+            )
+    if snapshot.get("placement_violations"):
+        lines.append("PLACEMENT VIOLATIONS")
+        for violation in snapshot["placement_violations"]:
+            lines.append(
+                f"  {violation['job_id']} subqueue={violation['subqueue']} "
+                f"expected={','.join(violation['expected_nodes'])} "
+                f"actual={','.join(violation['actual_nodes'])}"
+            )
+    if snapshot.get("capacity_violations"):
+        lines.append("CAPACITY VIOLATIONS")
+        for violation in snapshot["capacity_violations"]:
+            lines.append(
+                f"  {violation['subqueue']} registered_running_gpus="
+                f"{violation['registered_running_gpus']} gpu_limit={violation['gpu_limit']}"
             )
     return "\n".join(lines) + "\n"
 
@@ -660,7 +749,12 @@ def render_failures(snapshot: dict[str, Any], *, include_resolved: bool = False)
         f"updated={snapshot['updated_at']}",
         f"QUEUE {snapshot.get('queue_name', 'gangda')} FAILURES",
     ]
-    if snapshot["unknown_jobs"] or snapshot["name_mismatches"]:
+    if (
+        snapshot["unknown_jobs"]
+        or snapshot["name_mismatches"]
+        or snapshot.get("placement_violations")
+        or snapshot.get("capacity_violations")
+    ):
         lines.append("OWNERSHIP FAIL")
     if not failures:
         lines.append("NO UNRESOLVED FAILURES")

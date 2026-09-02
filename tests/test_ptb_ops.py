@@ -50,6 +50,7 @@ def repo(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(ops, "result_for_job", lambda job_id: None)
     monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
     monkeypatch.setattr(ops, "_worktree_dirty", lambda repo_root: "")
+    monkeypatch.setattr(ops, "_submission_ownership_issue", lambda: None)
     return root, states
 
 
@@ -213,6 +214,18 @@ def test_a_dirty_worktree_blocks_submits_but_not_harvests(repo, tmp_path: Path, 
     assert lines[0].startswith("blocked submit: the worktree is not clean")
 
 
+def test_ownership_failure_blocks_submits(repo, monkeypatch) -> None:
+    root, _states = repo
+    monkeypatch.setattr(
+        ops, "_submission_ownership_issue", lambda: "OWNERSHIP FAIL: 1 placement violation(s)"
+    )
+    monkeypatch.setattr(ops, "submit_batch", lambda *a, **k: pytest.fail("must not submit"))
+
+    lines = ops.apply(ops.plan([ENTRY], root), root)
+
+    assert lines == ["blocked submit: OWNERSHIP FAIL: 1 placement violation(s)"]
+
+
 def test_a_launcher_refusal_is_written_down(repo, monkeypatch) -> None:
     root, _ = repo
 
@@ -253,6 +266,30 @@ def _fake_result(tmp_path: Path) -> Path:
     (task / "skills" / "exp_protocol" / "SKILL.md").write_text("skill\n")
     (task / ".claude" / "skills" / "exp_protocol").symlink_to("../../skills/exp_protocol")
     return result
+
+
+def test_harvest_rejects_a_runtime_node_outside_the_frozen_site(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(ops, "audit_result", lambda _result_dir: [])
+    result = _fake_result(tmp_path)
+    (result / "runtime_provenance.json").write_text(
+        '{"experiment": {"cell_id": "p01r1"}, "slurm": {"node": "spill-node"}}'
+    )
+
+    status = ops.harvest_job(
+        result,
+        tmp_path / "bundle",
+        batch="batch",
+        cell="p01r1",
+        job_id="555",
+        expected_nodes={"owned-node-0", "owned-node-1"},
+    )
+
+    assert status["complete"] is False
+    assert status["issues"] == [
+        "runtime Slurm node spill-node is outside frozen site nodes owned-node-0,owned-node-1"
+    ]
 
 
 def test_harvest_keeps_the_readable_part_and_lists_the_rest(tmp_path: Path, monkeypatch) -> None:
