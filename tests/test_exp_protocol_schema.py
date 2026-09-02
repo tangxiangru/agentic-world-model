@@ -119,3 +119,14 @@ class TestHashAndIo:
         assert card["card_id"] == "exp-07"
         assert all(s in card for s in schema.PLAN_SECTIONS)
         assert not schema.validate_plan(card).ok
+
+
+# ---- review findings (2026-09-01) --------------------------------------------
+
+class TestMeasurementTypes:
+    def test_measurement_value_and_n_must_be_numbers(self) -> None:
+        card = closed_card()
+        card["result"]["measurements"][0]["value"] = "0.41"
+        card["result"]["measurements"][0]["n"] = "one fifty"
+        fields = {p.field for p in schema.validate_result(card).errors}
+        assert {"result.measurements[0].value", "result.measurements[0].n"} <= fields

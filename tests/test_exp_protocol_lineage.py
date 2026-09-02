@@ -68,3 +68,40 @@ def test_starting_points_distinguish_checkpoint_level_from_recipe_level(session)
     assert set(points) == {"exp-01", "exp-03"}            # adopted only
     assert points["exp-01"]["level"] == "checkpoint"      # dir exists
     assert points["exp-03"]["level"] == "recipe"          # dir gone: rerun the chain
+
+
+# ---- review findings (2026-09-01) --------------------------------------------
+
+def test_a_missing_origin_is_unknown_not_base_model(session) -> None:
+    """I7: a v1 corpus card without origin must not be given a base_model parent it never claimed."""
+    cards = lineage.load_cards(lineage.cards_dir(session))
+    del cards["exp-04"]["setup"]["parent_checkpoint"]["origin"]
+    assert lineage.chain(cards, "exp-04") == ["exp-04", "unknown"]
+
+
+def test_a_non_string_origin_does_not_crash(session) -> None:
+    cards = lineage.load_cards(lineage.cards_dir(session))
+    cards["exp-04"]["setup"]["parent_checkpoint"]["origin"] = {"path": "x"}
+    out = lineage.chain(cards, "exp-04")
+    assert out[0] == "exp-04" and out[-1].startswith("invalid:")
+
+
+def test_an_unreadable_card_is_skipped_and_reported(session) -> None:
+    """I8: one truncated file must not take index/close/collect down with it."""
+    bad = lineage.cards_dir(session) / "exp-05.yaml"
+    bad.write_text("just a string\n")
+    problems: list = []
+    cards = lineage.load_cards(lineage.cards_dir(session), problems=problems)
+    assert set(cards) == {"exp-01", "exp-02", "exp-03", "exp-04"}
+    assert len(problems) == 1 and problems[0][0] == bad
+    text = lineage.write_index(session).read_text()
+    assert "exp-05.yaml" in text and "unreadable" in text.lower()
+
+
+def test_index_rows_carry_relock_counts(session) -> None:
+    cards_directory = lineage.cards_dir(session)
+    card = schema.load_card(cards_directory / "exp-01.yaml")
+    card["hypothesis"]["claim"] = "changed"
+    lock.write_lock(cards_directory / "exp-01.yaml", card, {}, relock_reason="typo")
+    rows = {r["card_id"]: r for r in lineage.index_rows(lineage.load_cards(cards_directory), cards_directory)}
+    assert rows["exp-01"]["relocks"] == 1 and rows["exp-02"]["relocks"] == 0

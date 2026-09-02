@@ -19,8 +19,14 @@ from .lock import read_lock
 from .questions import REQUIRED
 from .schema import get
 
-COLUMNS = ("session", "accuracy", "n_cards", "n_closed", "n_locked", "n_locked_open",
-           "preflight_fail", "pitfalls_hit", "pitfalls_cost_h", "adopted", "fields_filled")
+COLUMNS = ("session", "accuracy", "n_cards", "n_unreadable", "n_closed", "n_locked", "n_locked_open",
+           "n_relocked", "n_overrides", "preflight_fail", "pitfalls_hit", "pitfalls_cost_h", "adopted",
+           "fields_filled")
+
+
+def _label(session: Path) -> str:
+    """PostTrainBench session dirs are all named ``task``; the cell is the parent directory."""
+    return f"{session.parent.name}/{session.name}" if session.name == "task" else session.name
 
 
 def _accuracy(session: Path) -> float | str:
@@ -45,8 +51,9 @@ def collect(session_dirs: list[Path]) -> list[dict[str, Any]]:
     for s in session_dirs:
         s = Path(s)
         cdir = cards_dir(s)
-        cards = load_cards(cdir) if cdir.is_dir() else {}
-        n_closed = n_locked = n_locked_open = fails = hits = adopted = 0
+        problems: list[tuple[Path, str]] = []
+        cards = load_cards(cdir, problems=problems) if cdir.is_dir() else {}
+        n_closed = n_locked = n_locked_open = fails = hits = adopted = n_relocked = n_overrides = 0
         cost = 0.0
         filled: list[float] = []
         for card in cards.values():
@@ -57,6 +64,9 @@ def collect(session_dirs: list[Path]) -> list[dict[str, Any]]:
             n_locked_open += (info is not None and not closed)
             if info:
                 fails += int((info.get("preflight") or {}).get("fail", 0) or 0)
+                n_relocked += bool(info.get("relocked_from"))
+                n_overrides += len(info.get("overrides") or {})
+                n_overrides += sum(len(h.get("overrides") or {}) for h in info.get("relocked_from") or [])
             for hit in get(card, "situation.pitfalls_hit") or []:
                 if isinstance(hit, dict):
                     hits += 1
@@ -65,8 +75,10 @@ def collect(session_dirs: list[Path]) -> list[dict[str, Any]]:
             adopted += get(card, "conclusion.decision") == "adopt"
             filled.append(_filled(card))
         rows.append({
-            "session": s.name, "accuracy": _accuracy(s), "n_cards": len(cards),
+            "session": _label(s), "accuracy": _accuracy(s), "n_cards": len(cards),
+            "n_unreadable": len(problems),
             "n_closed": n_closed, "n_locked": n_locked, "n_locked_open": n_locked_open,
+            "n_relocked": n_relocked, "n_overrides": n_overrides,
             "preflight_fail": fails, "pitfalls_hit": hits, "pitfalls_cost_h": cost,
             "adopted": adopted,
             "fields_filled": round(sum(filled) / len(filled), 3) if filled else "",

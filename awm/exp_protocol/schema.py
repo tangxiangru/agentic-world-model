@@ -318,6 +318,11 @@ def validate_result(card: dict[str, Any]) -> Report:
         for key in ("metric", "value", "n", "path"):
             if not isinstance(m, dict) or m.get(key) is None:
                 r.error(f"result.measurements[{i}].{key}", "required")
+        if isinstance(m, dict):
+            if m.get("value") is not None and not _is_num(m["value"]):
+                r.error(f"result.measurements[{i}].value", "must be a number")
+            if m.get("n") is not None and not (isinstance(m["n"], int) and not isinstance(m["n"], bool)):
+                r.error(f"result.measurements[{i}].n", "must be an integer")
     for i, ck in enumerate(get(card, "result.checkpoints_kept") or []):
         if not isinstance(ck, dict) or not ck.get("path"):
             r.error(f"result.checkpoints_kept[{i}]", "needs path")

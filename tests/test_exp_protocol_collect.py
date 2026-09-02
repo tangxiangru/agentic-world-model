@@ -53,3 +53,26 @@ def test_csv_has_the_columns_in_order(tmp_path) -> None:
     s.mkdir()
     text = collect.to_csv(collect.collect([s]))
     assert text.splitlines()[0] == ",".join(collect.COLUMNS)
+
+
+# ---- review findings (2026-09-01) --------------------------------------------
+
+def test_a_posttrainbench_task_dir_is_labelled_by_its_cell(tmp_path) -> None:
+    """I3: every PTB session dir is named `task`; the row must still say which cell it is."""
+    s = tmp_path / "gsm8k_gemma_17138223" / "task"
+    schema.dump_card(s / "memory" / "cards" / "exp-01.yaml", plan_card())
+    assert collect.collect([s])[0]["session"] == "gsm8k_gemma_17138223/task"
+
+
+def test_relocks_overrides_and_unreadable_cards_are_counted(tmp_path) -> None:
+    s = tmp_path / "s"
+    cards = s / "memory" / "cards"
+    c = plan_card()
+    schema.dump_card(cards / "exp-01.yaml", c)
+    lock.write_lock(cards / "exp-01.yaml", c, {"fail": 1}, overrides={"max_seq_len_headroom": "code rows"})
+    c["hypothesis"]["claim"] = "changed"
+    lock.write_lock(cards / "exp-01.yaml", c, {}, relock_reason="typo")
+    (cards / "exp-02.yaml").write_text("- not a card\n")
+    r = collect.collect([s])[0]
+    assert r["n_cards"] == 1 and r["n_unreadable"] == 1
+    assert r["n_relocked"] == 1 and r["n_overrides"] == 1

@@ -77,7 +77,7 @@ def write_lock(card_path: Path, card: dict[str, Any], preflight_summary: dict[st
             raise LockExists(f"{lock_path(card_path)} exists; re-lock only with a reason")
         history = list(previous.get("relocked_from") or [])
         history.append({"plan_sha256": previous.get("plan_sha256"), "locked_at": previous.get("locked_at"),
-                        "reason": relock_reason})
+                        "overrides": dict(previous.get("overrides") or {}), "reason": relock_reason})
     info = {
         "schema_version": LOCK_SCHEMA,
         "card_id": card.get("card_id"),
