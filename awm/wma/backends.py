@@ -14,8 +14,12 @@ leave a valid verdict file behind. Two kinds:
 
 from __future__ import annotations
 
+import json
+import os
+import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,6 +38,7 @@ class Budget:
     cpu_min: float = 10
     gpu_min: float = 0
     wall_min: float = 15
+    max_turns: int = 40
 
 
 @dataclass
@@ -102,15 +107,91 @@ class HeuristicBackend(Backend):
 
 # --------------------------------------------------------------- command
 
+#: Tool inputs that name a file the agent read or touched; Bash is scanned separately.
+PATH_INPUTS = ("file_path", "path", "pattern", "notebook_path")
+FILE_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead", "LS")
+#: Tokens in a shell command that look like paths: absolute, or climbing out of cwd.
+SHELL_PATH_RE = re.compile(r"(?:^|[\s=\"'(])((?:/|\.\./)[^\s\"'();|&<>]+)")
+
+
+def _inside(path: str, roots: list[Path], cwd: Path) -> bool:
+    """Lexical containment: no symlink resolution, so ``history/<run>/x`` counts as inside ``history``."""
+    p = Path(os.path.abspath(os.path.join(cwd, path)))
+    return any(p == r or r in p.parents for r in roots)
+
+
+def _fence(brief: Brief) -> list[Path]:
+    """Where the agent may read: the session, the skill, the history link and what it points at."""
+    roots = [Path(os.path.abspath(brief.session_dir)), Path(os.path.abspath(brief.skill_dir))]
+    try:
+        roots.append(Path(brief.skill_dir).resolve())
+    except OSError:
+        pass
+    if brief.history_dir:
+        h = Path(brief.history_dir)
+        roots.append(Path(os.path.abspath(h)))
+        try:
+            roots.append(h.resolve())
+            for entry in h.iterdir():
+                roots.append(entry.resolve())
+        except OSError:
+            pass
+    return roots
+
+
+def scan_transcript(stdout: str, brief: Brief) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read a Claude Code stream-json transcript: measured cost, and every path the agent touched."""
+    cost: dict[str, Any] = {}
+    files = 0
+    outside: list[str] = []
+    roots = _fence(brief)
+    cwd = Path(brief.session_dir)
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") == "result":
+            if isinstance(ev.get("total_cost_usd"), (int, float)):
+                cost["usd"] = round(float(ev["total_cost_usd"]), 4)
+            if isinstance(ev.get("num_turns"), int):
+                cost["turns"] = ev["num_turns"]
+            continue
+        content = (ev.get("message") or {}).get("content") if ev.get("type") == "assistant" else None
+        for block in content or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name, inp = block.get("name"), block.get("input") or {}
+            if name in FILE_TOOLS:
+                files += 1
+                for key in PATH_INPUTS:
+                    val = inp.get(key)
+                    if isinstance(val, str) and val and not _inside(val, roots, cwd):
+                        outside.append(val)
+            elif name == "Bash":
+                cmd = str(inp.get("command") or "")
+                if any(not _inside(tok, roots, cwd) for tok in SHELL_PATH_RE.findall(cmd)):
+                    outside.append(f"bash: {cmd}")
+    return cost, {"files": files, "outside": outside}
+
+
 class CommandBackend(Backend):
     """Run an agent CLI in the session directory; it must write the verdict file."""
 
-    def __init__(self, name: str, argv_template: list[str], model: str | None = None) -> None:
+    def __init__(self, name: str, argv_template: list[str], model: str | None = None, *,
+                 transcript: str | None = None, history_flag: str | None = None,
+                 max_turns_flag: str | None = None) -> None:
         self.name = name
         self.argv_template = list(argv_template)
         self.model = model
+        self.transcript = transcript          # "stream-json" → stdout is parsed for cost and file access
+        self.history_flag = history_flag      # e.g. --add-dir: lets the agent read the history link's target
+        self.max_turns_flag = max_turns_flag  # e.g. --max-turns: a hard stop on top of the wall budget
 
-    def argv(self) -> list[str]:
+    def argv(self, brief: Brief | None = None) -> list[str]:
         out = []
         for a in self.argv_template:
             if "{model}" in a:
@@ -121,19 +202,26 @@ class CommandBackend(Backend):
         if not self.model:
             # drop a dangling "--model" flag whose value was skipped
             out = [a for i, a in enumerate(out) if not (a == "--model" and (i + 1 >= len(out) or out[i + 1].startswith("-")))]
+        if brief is not None:
+            if self.history_flag and brief.history_dir:
+                out += [self.history_flag, str(Path(brief.history_dir).resolve())]
+            if self.max_turns_flag and brief.budget.max_turns:
+                out += [self.max_turns_flag, str(int(brief.budget.max_turns))]
         return out
 
     def run(self, brief: Brief) -> None:
-        argv = self.argv()
+        argv = self.argv(brief)
         if shutil.which(argv[0]) is None and not Path(argv[0]).exists():
             raise BackendError(f"{self.name}: executable not found: {argv[0]}")
         if brief.verdict_path.exists():
             brief.verdict_path.unlink()
+        started = time.monotonic()
         try:
             proc = subprocess.run(argv, input=brief.prompt, text=True, cwd=str(brief.session_dir),
                                   capture_output=True, timeout=max(1.0, brief.budget.wall_min * 60))
         except subprocess.TimeoutExpired as exc:
             raise BackendError(f"{self.name}: timed out after {brief.budget.wall_min} min") from exc
+        wall_min = round((time.monotonic() - started) / 60, 6)
         if not brief.verdict_path.is_file():
             tail = (proc.stdout or "")[-500:] + (proc.stderr or "")[-500:]
             raise BackendError(f"{self.name}: no verdict written to {brief.verdict_path} (exit {proc.returncode}); {tail!r}")
@@ -146,13 +234,25 @@ class CommandBackend(Backend):
             raise BackendError(f"{self.name}: invalid verdict:\n{report.render()}")
         if not v.get("backend"):
             v["backend"] = self.name
+        if self.transcript == "stream-json":
+            cost, access = scan_transcript(proc.stdout or "", brief)
+            v.setdefault("cost", {})
+            v["cost"].update(cost)
+            v["cost"]["wall_min"] = wall_min          # measured beats self-reported
+            v["access"] = access
+            if access["outside"]:
+                v["leak_suspected"] = True
         schema.dump_verdict(brief.verdict_path, v)
 
 
 BACKENDS: dict[str, Any] = {
     "heuristic": lambda model: HeuristicBackend(),
+    # stream-json (which needs --verbose in print mode) gives the measured cost and every tool call,
+    # so the ledger's cost is real and a read outside the fence is caught, not trusted away.
     "claude": lambda model: CommandBackend(
-        "claude", ["claude", "--print", "--model", "{model}", "--dangerously-skip-permissions"], model),
+        "claude", ["claude", "--print", "--verbose", "--output-format", "stream-json",
+                   "--model", "{model}", "--dangerously-skip-permissions"], model,
+        transcript="stream-json", history_flag="--add-dir", max_turns_flag="--max-turns"),
     "codex": lambda model: CommandBackend(
         "codex", ["codex", "exec", "--skip-git-repo-check", "--yolo", "--model", "{model}"], model),
 }

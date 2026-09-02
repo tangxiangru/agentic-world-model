@@ -9,8 +9,11 @@ the truth card the replayer kept outside the session, found by layout:
 ``<out>/_truth/<run>/<card>.yaml``.
 
 One row per verdict; one summary line per (skill, backend, mode). Rates
-exclude unscorable levels. Coverage of the effect interval is reported
-next to the mean interval width, so it cannot be bought by widening.
+exclude unscorable levels and verdicts flagged ``leak_suspected`` (the
+backend saw the agent read outside its fence). Coverage of the effect
+interval is reported next to the mean interval width, so it cannot be
+bought by widening; cost is the backend's measured figure, not the
+agent's own estimate.
 """
 
 from __future__ import annotations
@@ -49,9 +52,9 @@ def truth_for(verdict_path: Path) -> tuple[Path | None, dict[str, Any]]:
             return c, t
     return None, schema.truth_from_card({})
 
-SUMMARY_COLUMNS = ("wma_skill", "backend", "mode", "n", "n_reconciled", "L0_hit", "L1_hit", "L2_coverage",
-                   "L2_width_mean", "L3_hit", "gpu_h_saved", "gpu_h_wrongly_killed", "cost_cpu_min_mean",
-                   "cost_wall_min_mean")
+SUMMARY_COLUMNS = ("wma_skill", "backend", "mode", "n", "n_reconciled", "n_leak_suspected", "L0_hit", "L1_hit",
+                   "L2_coverage", "L2_width_mean", "L3_hit", "gpu_h_saved", "gpu_h_wrongly_killed",
+                   "cost_usd_sum", "cost_usd_mean", "cost_wall_min_mean")
 
 
 def rows(dirs: list[Path]) -> list[dict[str, Any]]:
@@ -75,6 +78,7 @@ def rows(dirs: list[Path]) -> list[dict[str, Any]]:
                 "scored": scored,
                 "actual": {k: truth.get(k) for k in ("execution", "decision", "wall_h", "delta")},
                 "cost": v.get("cost") or {},
+                "leak": bool(v.get("leak_suspected")),
             })
     return out
 
@@ -96,20 +100,26 @@ def summarize(all_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         groups[(r["wma_skill"], r["backend"], r["mode"])].append(r)
     out = []
     for (skill, backend, mode), rs in sorted(groups.items()):
-        rec = [r for r in rs if r["reconciled"]]
+        # A verdict that read outside the fence may have seen its own answer: it costs money and
+        # counts in n, but it says nothing about the skill, so it stays out of every rate.
+        clean = [r for r in rs if not r["leak"]]
+        rec = [r for r in clean if r["reconciled"]]
+        usd = [float(r["cost"]["usd"]) for r in rs if isinstance(r["cost"].get("usd"), (int, float))]
         saved = sum(float(r["actual"].get("wall_h") or 0) for r in rec
                     if r["L3_answer"] in ("no", "defer") and r["actual"].get("decision") in ("reject", "abandon_line"))
         killed = sum(float(r["actual"].get("wall_h") or 0) for r in rec
                      if r["L3_answer"] in ("no", "defer") and r["actual"].get("decision") == "adopt")
         out.append({
             "wma_skill": skill, "backend": backend, "mode": mode, "n": len(rs), "n_reconciled": len(rec),
+            "n_leak_suspected": len(rs) - len(clean),
             "L0_hit": _rate([r["scored"].get("L0", "unscorable") for r in rec], ("hit",)),
             "L1_hit": _rate([r["scored"].get("L1", "unscorable") for r in rec], ("hit",)),
             "L2_coverage": _rate([r["scored"].get("L2", "unscorable") for r in rec], ("in_interval",)),
             "L2_width_mean": _mean([r["L2_width"] for r in rs if r["L2_width"] is not None]),
             "L3_hit": _rate([r["scored"].get("L3", "unscorable") for r in rec], ("hit",)),
             "gpu_h_saved": round(saved, 3), "gpu_h_wrongly_killed": round(killed, 3),
-            "cost_cpu_min_mean": _mean([float(r["cost"].get("cpu_min") or 0) for r in rs]),
+            "cost_usd_sum": round(sum(usd), 4) if usd else "",
+            "cost_usd_mean": _mean(usd),
             "cost_wall_min_mean": _mean([float(r["cost"].get("wall_min") or 0) for r in rs]),
         })
     return out

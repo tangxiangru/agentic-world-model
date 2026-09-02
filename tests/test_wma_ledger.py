@@ -110,3 +110,19 @@ def test_tagged_verdicts_resolve_to_the_same_card(tmp_path) -> None:
     rows = ledger.rows([tmp_path])
     assert len(rows) == 2 and all(r["reconciled"] and r["scored"]["L0"] == "hit" for r in rows)
     assert {r["backend"] for r in rows} == {"opus", "codex"}
+
+
+def test_measured_cost_is_summed_and_suspected_leaks_are_kept_out_of_the_rates(tmp_path) -> None:
+    for cid, usd, leak in (("exp-01", 0.5, False), ("exp-02", 0.7, False), ("exp-03", 0.9, True)):
+        write(tmp_path, cid, "AAAA", execution="failed", decision="reject")   # every verdict says yes → L0 miss
+        vp = schema.verdict_path(tmp_path / "memory" / "cards" / f"{cid}.yaml")
+        v = schema.load_verdict(vp)
+        v["cost"]["usd"] = usd
+        if leak:
+            v["leak_suspected"] = True
+            v["access"] = {"files": 4, "outside": ["/somewhere/_truth/x.yaml"]}
+        schema.dump_verdict(vp, v)
+    s = ledger.summarize(ledger.rows([tmp_path]))[0]
+    assert s["n"] == 3 and s["n_leak_suspected"] == 1 and s["n_reconciled"] == 2
+    assert s["cost_usd_sum"] == 2.1 and s["cost_usd_mean"] == 0.7
+    assert s["L0_hit"] == 0.0          # computed over the two clean rows only
