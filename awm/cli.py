@@ -602,8 +602,10 @@ def build_parser() -> argparse.ArgumentParser:
         receipt_command.set_defaults(func=_ptb)
 
     from awm.exp_protocol import cli as exp_protocol_cli
+    from awm.wma import cli as wma_cli
 
     exp_protocol_cli.register(sub)
+    wma_cli.register(sub)
     return p
 
 
