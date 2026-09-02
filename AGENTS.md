@@ -27,6 +27,11 @@
   individual jobs with `gangda-slurm-queue show JOB_ID`, then follow receipt -> cell -> manifest ->
   spec -> result directory. Preserve these paths in reports. The full workflow is
   `doc/reference/ptb_result_analysis.md`.
+- PostTrainBench remote ownership is fixed: `fork` is
+  `https://github.com/tangxiangru/PostTrainBench.git` for the AWM branch, and `upstream` is the
+  official `https://github.com/aisa-group/PostTrainBench.git` for fetch/rebase. Do not configure
+  `DeepCommit-ai/PostTrainBench` as upstream. `.gitmodules` intentionally clones the fork because
+  the pinned AWM commits are not part of official upstream.
 - Scope routine operations and reporting to the `gangda` registry, receipt-backed PTB batches, and
   `slurm2-a3nodesetondem-[0-3]`. AWM full is an external queue: do not monitor, modify, submit,
   cancel, analyze, or report it unless the user explicitly names it in a later request. Never

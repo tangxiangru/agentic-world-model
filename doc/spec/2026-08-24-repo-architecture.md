@@ -32,12 +32,14 @@
 
 | 上游 | 是否 fork | 理由 |
 |---|---|---|
-| PostTrainBench | **已 fork** → `DeepCommit-ai/PostTrainBench`,分支 `awm-patches`(2026-08-28 由 `hv-patches` 改名;建于上游 `3ed1d32`,内容暂与上游逐字节相同) | 原生运行,必须在其树内改四处(裁判的 ChatGPT-Pro 登录预检、`check_cuda.py` 的 H100 字符串、AIME `endswith` 评分 bug #44、评测与 agent 镜像的 transformers 版本不一致 #65),且我们的 agent 垫片要落在它的 `agents/hv/` |
+| PostTrainBench | **已 fork** → `tangxiangru/PostTrainBench`,当前 AWM 分支 `awm/slurm-gres-claude-profiles`;官方 upstream 为 `aisa-group/PostTrainBench` | 原生运行,必须在其树内维护 Slurm GRES、H100/local-SSD runtime、agent profiles、AIME scorer 与完整 provenance/validator 合同 |
 | AIRS-Bench | 否 | 只读:adapter 读 `metadata.yaml` / `project_description.md` / `evaluate.py`,生成的 task 目录落在**我们**仓库;从不改其树。将来若要打评分器补丁再 fork |
 | Speedrun(PI) | 否(也不做 submodule) | 只拷两个文件;缺失的 runner 由我们自己写在 `tasks/speedrun_pi/` |
 | Harbor | 否 | pip 依赖。除非 Phase 1 验出 0.22.0 的 GPU 直通有问题需要打补丁 |
 
-submodule 的 `origin` 指向 fork、`upstream` 指向原仓,同步上游用 `git -C third_party/PostTrainBench fetch upstream && git rebase upstream/main`。
+submodule 的 `fork` 指向 `tangxiangru/PostTrainBench` 并承载私有 AWM 分支，`upstream` 指向官方
+`aisa-group/PostTrainBench`。`.gitmodules` 必须克隆 fork，确保固定的 AWM commit 可检出；同步官方用
+`git -C third_party/PostTrainBench fetch upstream`，不能把 `DeepCommit-ai/PostTrainBench` 当作 upstream。
 
 **D7 数据全放 `/data/hv/`**(本机根分区已 95% 满),仓库里不放任何轨迹;测试样本例外(截断到几十个事件)。
 
