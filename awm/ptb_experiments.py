@@ -918,6 +918,52 @@ def _release_command(ptb_env: dict[str, str], job_ids: str) -> list[str]:
     return command
 
 
+def held_job_routing_issues(job_ids: list[str], ptb_env: dict[str, str]) -> list[str]:
+    """Verify scheduler routing while formal jobs are still held.
+
+    A receipt records operator intent. This checks that Slurm retained the
+    requested node boundary before any task can start outside its subqueue.
+    """
+    expected_spec = ptb_env.get("POST_TRAIN_BENCH_SLURM_NODELIST", "")
+    if not expected_spec:
+        return []  # legacy callers; site_issues() requires this for subqueues
+
+    def expand(spec: str) -> set[str] | None:
+        result = subprocess.run(
+            ["scontrol", "show", "hostnames", spec],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            return None
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+    expected = expand(expected_spec)
+    if not expected:
+        return [f"cannot expand requested Slurm nodelist {expected_spec}"]
+
+    issues: list[str] = []
+    for job_id in job_ids:
+        result = subprocess.run(
+            ["scontrol", "show", "job", job_id, "-o"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            issues.append(f"job {job_id}: cannot read held Slurm route: {result.stderr.strip()}")
+            continue
+        match = re.search(r"(?:^|\s)ReqNodeList=([^\s]+)", result.stdout)
+        requested = match.group(1) if match else ""
+        actual = None if requested in ("", "(null)") else expand(requested)
+        if actual != expected:
+            issues.append(
+                f"job {job_id}: held ReqNodeList={requested or '<missing>'}, expected {expected_spec}"
+            )
+    return issues
+
+
 def _git(repo: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
 
@@ -1183,6 +1229,22 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
             ) from exc
     if not pilot:
         job_ids = ",".join(job["job_id"] for job in receipt["jobs"])
+        routing_issues = held_job_routing_issues(
+            [job["job_id"] for job in receipt["jobs"]], ptb_env
+        )
+        if routing_issues:
+            receipt["state"] = "routing_verification_failed"
+            receipt["failure"] = {
+                "reason": "all formal jobs remain held because the scheduler route did not match the subqueue",
+                "issues": routing_issues,
+            }
+            output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+            raise ExperimentError(
+                "formal jobs were submitted but remain held; routing verification failed: "
+                + "; ".join(routing_issues)
+                + f" (receipt: {output})"
+            )
+        receipt["routing_verified_at"] = datetime.now(timezone.utc).isoformat()
         release = subprocess.run(
             _release_command(ptb_env, job_ids), text=True, capture_output=True, check=False
         )

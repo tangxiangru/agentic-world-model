@@ -572,6 +572,27 @@ def test_root_owned_allocations_are_released_through_sudo() -> None:
     assert ptb._release_command({}, "10,11") == ["scontrol", "release", "10,11"]
 
 
+def test_held_job_routing_verifies_expanded_nodelist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outputs = {
+        ("scontrol", "show", "hostnames", "node-[2-3]"): "node-2\nnode-3\n",
+        ("scontrol", "show", "hostnames", "node-2,node-3"): "node-2\nnode-3\n",
+        ("scontrol", "show", "job", "10", "-o"): "JobId=10 JobState=PENDING ReqNodeList=node-2,node-3\n",
+        ("scontrol", "show", "job", "11", "-o"): "JobId=11 JobState=PENDING ReqNodeList=(null)\n",
+    }
+
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, outputs[tuple(command)], "")
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+    env = {"POST_TRAIN_BENCH_SLURM_NODELIST": "node-[2-3]"}
+    assert ptb.held_job_routing_issues(["10"], env) == []
+    assert ptb.held_job_routing_issues(["11"], env) == [
+        "job 11: held ReqNodeList=(null), expected node-[2-3]"
+    ]
+
+
 def test_site_gate_accepts_the_exp_protocol_two_node_subqueue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

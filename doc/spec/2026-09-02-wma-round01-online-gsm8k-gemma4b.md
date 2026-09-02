@@ -117,6 +117,35 @@ verdict 的 cell)。首波三个被拒答的 cell 属于前者、不属于后者
 `not_run` 仍会得到 verdict,以收割后的 `.wma/responses` 为准。账本按 `wma_skill`
 (hash 不变)合并 v1 首波与 v2 缓冲。
 
+## 2026-09-02 19:08 UTC:probe-basis 修复与独立 v3 扩展
+
+首波产生 26 个 review transcript,旧 validator 接受 21 个、把 5 个移到
+`.rejected`。五者都至少有一个 `levels.*.basis` 引用了该 verdict 已记录的
+`probes[].id`;旧 schema 只允许 `evidence[].id`,尽管 probe 的设计就是记录它改变了哪一层。
+`34535c7` 把合法集合放宽为 `evidence[].id ∪ probes[].id`;预测、scorer、prompt、
+`skills/wma/` 与 skill hash `176f0a464986` 均不变。26 个 transcript payload 在新
+validator 下 26/26 通过;另有 leak flag 的 verdict 在 clean ledger 中仍照常排除。
+
+修复完成前,v2 已有 26 个 job 启动、6 个仍 PENDING,所以它们不撤回,也不把 v3 伪装成
+替代结果。新增两个各 8+8 的独立配对扩展:
+
+| manifest pair | cells | `run_index` | 全局观测 | 私有 runtime |
+|---|---|---:|---|---|
+| `wma-b-x8-v3` / `ctl-b-x8-v3` | `w04r01..08` / `c04r01..08` | 4 | 25–32 | WMA=`34535c7`;control 无 sidecar |
+| `wma-c-x8-v3` / `ctl-c-x8-v3` | `w05r01..08` / `c05r01..08` | 5 | 33–40 | 同上 |
+
+公共 scientist checkout 仍为 `e8a8599`;task、model revision、Opus 5 high、1M context、
+10 h、容器与 judge 逐字段不变。v3 的 ledger 单列 runtime 接受率,再与 v2 合并
+scientific prediction;PTB as-attached 仍按 WMA/control 配对报告。
+
+同时发现 receipt 虽记录正确的
+`POST_TRAIN_BENCH_SLURM_NODELIST=slurm2-a3nodesetondem-[2-3]`,部分已启动 v2 job 的
+Slurm `ReqNodeList` 却变成 `(null)` 并落到 scope 外节点。RUNNING job 按用户边界不取消。
+从本 checkpoint 起,formal job 全部先以 HOLD 提交;ownership registration 后、atomic
+release 前逐 job 反查 Slurm `ReqNodeList`,展开后的节点集合必须与 subqueue 完全相同。
+为空、查询失败或集合不等时整批保持 HOLD 并写
+`routing_verification_failed`,不得运行。这是 receipt 意图之外的 scheduler-state gate。
+
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
 1. **不走 pilot。** manifest 不带 `pilot` 块,queue entry 一律 `pilot: null`,直接以
