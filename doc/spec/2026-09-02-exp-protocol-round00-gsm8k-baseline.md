@@ -63,7 +63,7 @@ x8 batch 成对，只用于提高方差/规程执行率估计精度并维持至�
 formal 16 cells 一旦 gate 打开便作为同一 immutable manifest 异步提交。后续分析不等待
 无关队列；但不得在本批结果出现前预造依赖 Round 00 结论的 candidate。
 
-### Strict-site 补跑（held，2026-09-02 21:10 UTC 追加）
+### Strict-site 补跑（held，2026-09-02 20:56 UTC 追加）
 
 p00r08（job 90482）因会话结束杀掉训练而 FAILED；p00r11–p00r16 与整个 baseline-b 波在 Slurm 中
 丢失 `ReqNodeList`，跑在冻结节点之外，只进 sensitivity。

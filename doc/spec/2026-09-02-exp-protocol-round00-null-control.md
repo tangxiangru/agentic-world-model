@@ -51,7 +51,7 @@ candidate 对 baseline 的比较都在"装了规程"这个前提内进行；如�
 合同保持一致且仍不安装 protocol。前两批 16 个 control 是不可替换的 core set；第三批
 不能替换其中失败或低分的 cell。报告同时展示 core-16 与 all-24。
 
-## 第四批：strict-site 补跑（held，2026-09-02 21:10 UTC 追加）
+## 第四批：strict-site 补跑（held，2026-09-02 20:56 UTC 追加）
 
 nullctl-b（`c01r01..c01r08`，jobs 90491–90498）在 Slurm 中丢失了 `ReqNodeList`，全部跑在冻结的
 `slurm2-a3nodesetondem-[0-1]` 之外；它们照常收割，但按 placement quarantine 只进 sensitivity，
