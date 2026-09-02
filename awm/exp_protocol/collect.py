@@ -19,9 +19,9 @@ from .lock import read_lock
 from .questions import REQUIRED
 from .schema import get
 
-COLUMNS = ("session", "accuracy", "n_cards", "n_unreadable", "n_closed", "n_locked", "n_locked_open",
-           "n_relocked", "n_overrides", "preflight_fail", "pitfalls_hit", "pitfalls_cost_h", "adopted",
-           "fields_filled")
+COLUMNS = ("session", "accuracy", "hours_used", "n_cards", "n_unreadable", "n_closed", "n_locked",
+           "n_locked_open", "n_relocked", "n_overrides", "preflight_fail", "pitfalls_hit",
+           "pitfalls_cost_h", "adopted", "fields_filled")
 
 
 def _label(session: Path) -> str:
@@ -38,6 +38,24 @@ def _accuracy(session: Path) -> float | str:
                 continue
             if isinstance(payload, dict) and isinstance(payload.get("accuracy"), (int, float)):
                 return payload["accuracy"]
+    return ""
+
+
+def _hours_used(session: Path) -> float | str:
+    """Wall-clock the scientist used, from PostTrainBench's ``time_taken.txt`` (``HH:MM:SS``).
+
+    Round 00, cell p00r05, stopped at 6.3 of 10 h with "all work is complete"; a
+    cell that ends early, by choice or by losing its session, is invisible to the
+    card counts, so the hours go beside the score.
+    """
+    for candidate in (session / "time_taken.txt", session.parent / "time_taken.txt"):
+        if candidate.is_file():
+            try:
+                parts = candidate.read_text().strip().split(":")
+                h, m, sec = (int(float(x)) for x in parts[-3:])
+            except (OSError, ValueError):
+                continue
+            return round(h + m / 60 + sec / 3600, 2)
     return ""
 
 
@@ -75,7 +93,8 @@ def collect(session_dirs: list[Path]) -> list[dict[str, Any]]:
             adopted += get(card, "conclusion.decision") == "adopt"
             filled.append(_filled(card))
         rows.append({
-            "session": _label(s), "accuracy": _accuracy(s), "n_cards": len(cards),
+            "session": _label(s), "accuracy": _accuracy(s), "hours_used": _hours_used(s),
+            "n_cards": len(cards),
             "n_unreadable": len(problems),
             "n_closed": n_closed, "n_locked": n_locked, "n_locked_open": n_locked_open,
             "n_relocked": n_relocked, "n_overrides": n_overrides,
