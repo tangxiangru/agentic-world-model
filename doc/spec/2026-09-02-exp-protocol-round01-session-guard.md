@@ -47,3 +47,26 @@ pilot 90463/90464 也以更小的规模丢过后台进程（Bash 工具超时连
 - 分数：accuracy mean/stderr 相对 baseline；不得低于 baseline mean 0.03 以上。
 - 风险：hook 把没有 run 的 scientist 困住（上限 12 次）；若出现，记录并降低上限或改提示。
 - 与 Round 00 相同的 validator/judge 门；排除按 receipt 顺序列出。
+
+## Spillover 后的 strict-site replacement buffer
+
+首波 8 个 guard jobs `90647–90654` 在 Slurm 中丢失 `ReqNodeList`，全部运行到冻结的
+`slurm2-a3nodesetondem-[0-1]` 之外。它们正常收割但标为 placement quarantine，只进入
+sensitivity，不能成为 primary 或晋升证据。
+
+用户把持续队列下限更新为 **8 个 held pending cells**。Manifest
+`exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2.yaml` 逐字段复用本候选，仅使用新
+batch/cell identity 与 `run_index: 2`，作为 strict-site replacements。队列状态先设为
+`want: held`：提交、登记 receipt，但保持 `PENDING(JobHeldUser)`。只有同时满足以下条件才可
+把队列项改为 `want: submitted` 并 release：
+
+1. `gangda_exp-protocol-evolve` 为 `OWNERSHIP OK`；
+2. 每个 held job 仍为 `PENDING(JobHeldUser)`；
+3. Slurm 中的 `ReqNodeList` 展开后仍逐节点等于 receipt 冻结节点；
+4. 原生两节点 reservation/partition 或等价的 16-GPU 隔离已经恢复，不能只相信一次性的
+   `ReqNodeList` 检查。
+
+任何失败、取消、超时或错误终结的首波/补跑 cell 都要收割。validator-complete 的
+placement-only 结果保留在 sensitivity；不完整结果作为 truncated/failed evidence。是否再补
+取决于 primary 每个 variant 至少两个有效重复和 matched-arm 平衡，补跑永远使用新的 immutable
+manifest/receipt。

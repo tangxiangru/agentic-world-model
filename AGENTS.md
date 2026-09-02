@@ -17,6 +17,16 @@
   the next batch. If it is genuinely required, prepare and queue every independent job first.
 - Treat queued jobs as useful work: they may start on currently free GPUs and naturally backfill
   as allocations become available.
+- For `gangda_exp-protocol-evolve`, maintain a floor of eight independently specified, validated
+  cells as Slurm `PENDING(JobHeldUser)`, not ordinary runnable pending jobs. An ownership failure
+  never releases them. Release requires `OWNERSHIP OK`, a per-job `ReqNodeList` match to the frozen
+  receipt, and restored native two-node isolation; replenish the held buffer before it falls below
+  eight whenever scientifically valid downstream work is available.
+- Harvest every spillover job even when it is failed, cancelled, timed out, or otherwise terminated
+  incorrectly. Placement-only validator-complete results are sensitivity evidence, never primary;
+  incomplete attempts remain failed/truncated evidence. Requeue with a new immutable manifest and
+  receipt when required for two valid repeats, a matched-arm comparison, or a strict-site promotion
+  decision.
 - Never reclaim capacity by cancelling jobs outside the exact receipt/job IDs authorized for the
   current experiment.
 - Use `/rmeng_data/robtang/slurm-queue/registry.json` as the cross-CLI ownership authority for the

@@ -65,6 +65,7 @@ job_state = ptb._job_state
 result_for_job = ptb.result_for_job
 audit_result = ptb.audit_result
 submit_batch = ptb.submit
+release_batch = ptb.release_held
 ownership_snapshot = slurm_queue.collect_snapshot
 
 
@@ -103,10 +104,12 @@ def load_queue(path: Path, repo_root: Path) -> list[dict[str, Any]]:
         if manifest in seen:
             raise OpsError(f"{where}: manifest {manifest} is listed twice")
         seen.add(manifest)
-        if entry.get("want") not in ("submitted", "cancelled"):
-            raise OpsError(f"{where}: want must be submitted or cancelled")
+        if entry.get("want") not in ("submitted", "held", "cancelled"):
+            raise OpsError(f"{where}: want must be submitted, held, or cancelled")
         if entry.get("pilot") not in (None, "first"):
             raise OpsError(f"{where}: pilot must be absent or 'first'")
+        if entry.get("want") == "held" and entry.get("pilot") is not None:
+            raise OpsError(f"{where}: a held buffer cannot use a pilot")
         why = entry.get("why")
         if not isinstance(why, str) or not why.strip():
             raise OpsError(f"{where}: why must say, in one line, why this entry is here")
@@ -162,13 +165,14 @@ def _status_eligible(status: dict[str, Any]) -> bool:
 
 @dataclass(frozen=True)
 class Action:
-    kind: str  # submit | copy_receipt | cancel | harvest | wait | blocked
+    kind: str  # submit | release | copy_receipt | cancel | harvest | wait | blocked
     batch: str
     detail: str
     cell: str | None = None
     job_id: str | None = None
     manifest: str | None = None
     pilot: bool = False
+    keep_held: bool = False
     receipt: str | None = None  # receipt file name within the batch, or a source path for copy_receipt
     job_name: str | None = None
     state: str | None = None
@@ -177,7 +181,8 @@ class Action:
         where = f"{self.batch}/{self.cell}" if self.cell else self.batch
         job = f" job={self.job_id}" if self.job_id else ""
         pilot = " (pilot)" if self.pilot else ""
-        return f"{self.kind} {where}{job}{pilot}: {self.detail}"
+        held = " (held)" if self.keep_held else ""
+        return f"{self.kind} {where}{job}{pilot}{held}: {self.detail}"
 
 
 def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
@@ -198,7 +203,7 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
             for job in receipt["jobs"]:
                 states.setdefault(job["job_id"], job_state(job["job_id"]))
         for name, receipt in receipts:
-            if receipt.get("state") != "submitted":
+            if receipt.get("state") not in ("submitted", "held"):
                 failure = receipt.get("failure") or {}
                 actions.append(Action(
                     "blocked", batch,
@@ -229,7 +234,38 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
                             f"{state}; a cell that has started is never cancelled by the operator",
                             cell=job["cell_id"], job_id=job["job_id"], state=state))
             continue
-        if any(_receipt_kind(name).startswith("formal") for name, _ in receipts):
+        formal_receipts = [
+            (name, receipt)
+            for name, receipt in receipts
+            if _receipt_kind(name).startswith("formal")
+        ]
+        if formal_receipts:
+            held_receipts = [
+                (name, receipt)
+                for name, receipt in formal_receipts
+                if receipt.get("state") == "held"
+            ]
+            if entry["want"] == "submitted" and held_receipts:
+                name, _ = held_receipts[-1]
+                actions.append(
+                    Action(
+                        "release",
+                        batch,
+                        "ownership and frozen placement must pass before release",
+                        receipt=name,
+                    )
+                )
+            continue
+        if entry["want"] == "held":
+            actions.append(
+                Action(
+                    "submit",
+                    batch,
+                    "maintain the user-required held pending buffer",
+                    manifest=entry["manifest"],
+                    keep_held=True,
+                )
+            )
             continue
         if entry.get("pilot") == "first":
             pilots = [(name, r) for name, r in receipts if _receipt_kind(name) == "pilot"]
@@ -516,12 +552,17 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
     """
     written: list[str] = []
     submits = [a for a in actions if a.kind == "submit"]
-    others = [a for a in actions if a.kind not in ("submit", "wait", "blocked")]
-    if submits and (ownership_issue := _submission_ownership_issue()):
+    runnable_submits = [a for a in submits if not a.keep_held]
+    held_submits = [a for a in submits if a.keep_held]
+    releases = [a for a in actions if a.kind == "release"]
+    others = [a for a in actions if a.kind not in ("submit", "release", "wait", "blocked")]
+    if (runnable_submits or releases) and (ownership_issue := _submission_ownership_issue()):
         line = f"blocked submit: {ownership_issue}"
         _log(repo_root, line)
         written.append(line)
-        submits = []
+        runnable_submits = []
+        releases = []
+    submits = held_submits + runnable_submits
     if submits and (dirty := _worktree_dirty(repo_root)):
         line = f"blocked submit: the worktree is not clean; commit first\n    {dirty.splitlines()[0]} ..."
         _log(repo_root, line)
@@ -530,7 +571,9 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
     for action in submits:
         manifest = ptb.load_manifest(repo_root / str(action.manifest))
         try:
-            receipt_path = submit_batch(manifest, pilot=action.pilot)
+            receipt_path = submit_batch(
+                manifest, pilot=action.pilot, keep_held=action.keep_held
+            )
         except ptb.ExperimentError as exc:
             blocked = repo_root / RESULTS_ROOT / action.batch / "blocked.md"
             blocked.parent.mkdir(parents=True, exist_ok=True)
@@ -544,8 +587,28 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(receipt_path, dst)
         jobs = ptb.load_receipt(dst)["jobs"]
-        line = (f"submit {action.batch}{' (pilot)' if action.pilot else ''}: "
+        line = (f"submit {action.batch}"
+                f"{' (pilot)' if action.pilot else ''}"
+                f"{' (held)' if action.keep_held else ''}: "
                 f"{len(jobs)} job(s) {','.join(j['job_id'] for j in jobs)} -> {dst.relative_to(repo_root)}")
+        _log(repo_root, line)
+        written.append(line)
+    for action in releases:
+        source = paths.data_root() / "ptb" / "batches" / action.batch / str(action.receipt)
+        tracked = repo_root / RESULTS_ROOT / action.batch / str(action.receipt)
+        receipt_path = source if source.is_file() else tracked
+        try:
+            receipt = release_batch(receipt_path)
+        except ptb.ExperimentError as exc:
+            line = f"blocked release {action.batch}: {str(exc).splitlines()[0]}"
+        else:
+            tracked.parent.mkdir(parents=True, exist_ok=True)
+            if receipt_path != tracked:
+                shutil.copy2(receipt_path, tracked)
+            line = (
+                f"release {action.batch}: {len(receipt['jobs'])} held job(s) "
+                f"{','.join(str(job['job_id']) for job in receipt['jobs'])}"
+            )
         _log(repo_root, line)
         written.append(line)
     for action in others:

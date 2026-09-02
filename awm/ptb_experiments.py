@@ -1051,9 +1051,17 @@ def submit_context_smokes(data: dict[str, Any], cell_ids: list[str]) -> list[dic
     return jobs
 
 
-def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | None = None) -> Path:
+def submit(
+    data: dict[str, Any],
+    *,
+    pilot: bool = False,
+    cell_ids: list[str] | None = None,
+    keep_held: bool = False,
+) -> Path:
     if pilot and cell_ids:
         raise ExperimentError("pilot and explicit retry cells are mutually exclusive")
+    if pilot and keep_held:
+        raise ExperimentError("a pilot cannot be kept held; held buffers are formal cells")
     snapshot = source_snapshot()
     assert_source_ownership(data, snapshot)
     selected_cell_ids = _pilot_cell_ids(data) if pilot else cell_ids
@@ -1208,6 +1216,10 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
             raise ExperimentError(
                 f"{disposition}; ownership registration failed: {exc} (receipt: {output})"
             ) from exc
+    if keep_held:
+        receipt["held_at"] = datetime.now(timezone.utc).isoformat()
+        output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        return output
     if not pilot:
         job_ids = ",".join(job["job_id"] for job in receipt["jobs"])
         release = subprocess.run(
@@ -1228,6 +1240,120 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
     receipt["state"] = "submitted"
     output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     return output
+
+
+def _expanded_nodes(nodelist: str) -> set[str]:
+    if not nodelist or nodelist == "(null)":
+        return set()
+    result = subprocess.run(
+        ["scontrol", "show", "hostnames", nodelist],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise ExperimentError(
+            f"cannot expand Slurm nodelist {nodelist}: "
+            f"{result.stderr.strip() or 'scontrol failed'}"
+        )
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def release_held(receipt_path: Path) -> dict[str, Any]:
+    """Release one registered held receipt after ownership and placement revalidation."""
+    receipt_path = Path(receipt_path)
+    receipt = load_receipt(receipt_path)
+    if receipt.get("state") != "held":
+        raise ExperimentError(
+            f"receipt {receipt_path} is {receipt.get('state')!r}, expected 'held'"
+        )
+    ptb_env = read_ptb_env()
+    registry_path = ptb_env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
+    if not registry_path:
+        raise ExperimentError("held release requires the Slurm ownership registry")
+    try:
+        from awm import slurm_queue
+
+        snapshot = slurm_queue.collect_snapshot(Path(registry_path))
+    except (OSError, slurm_queue.QueueError) as exc:
+        raise ExperimentError(f"cannot inspect ownership before held release: {exc}") from exc
+    if not snapshot.get("ownership_ok"):
+        raise ExperimentError("OWNERSHIP FAIL: held jobs remain held")
+
+    frozen_nodelist = str(
+        (receipt.get("site") or {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", "")
+    )
+    frozen_nodes = _expanded_nodes(frozen_nodelist)
+    if not frozen_nodes:
+        raise ExperimentError("held receipt has no frozen Slurm nodes")
+    reservation = str(
+        (receipt.get("site") or {}).get("POST_TRAIN_BENCH_SLURM_RESERVATION", "")
+    )
+    if not reservation:
+        raise ExperimentError("held receipt has no frozen Slurm reservation")
+    reservation_result = subprocess.run(
+        ["scontrol", "show", "reservation", reservation, "-o"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if reservation_result.returncode:
+        raise ExperimentError(
+            f"cannot inspect frozen reservation {reservation}: "
+            f"{reservation_result.stderr.strip() or 'scontrol failed'}"
+        )
+    reservation_nodes_match = re.search(r"\bNodes=(\S+)", reservation_result.stdout)
+    reservation_nodes = _expanded_nodes(
+        reservation_nodes_match.group(1) if reservation_nodes_match else ""
+    )
+    if reservation_nodes != frozen_nodes:
+        raise ExperimentError(
+            f"reservation {reservation} is not native two-node isolation: "
+            f"{','.join(sorted(reservation_nodes)) or '(none)'} vs frozen "
+            f"{','.join(sorted(frozen_nodes))}"
+        )
+    for job in receipt["jobs"]:
+        job_id = str(job["job_id"])
+        if _job_state(job_id) != "PENDING":
+            raise ExperimentError(f"held job {job_id} is not PENDING; refusing release")
+        result = subprocess.run(
+            ["scontrol", "show", "job", job_id, "-o"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            raise ExperimentError(
+                f"cannot inspect held job {job_id}: {result.stderr.strip() or 'scontrol failed'}"
+            )
+        reason = re.search(r"\bReason=(\S+)", result.stdout)
+        requested = re.search(r"\bReqNodeList=(\S+)", result.stdout)
+        if not reason or reason.group(1) != "JobHeldUser":
+            raise ExperimentError(
+                f"held job {job_id} reason is "
+                f"{reason.group(1) if reason else 'missing'}, expected JobHeldUser"
+            )
+        actual_nodes = _expanded_nodes(requested.group(1) if requested else "")
+        if actual_nodes != frozen_nodes:
+            raise ExperimentError(
+                f"held job {job_id} ReqNodeList differs from frozen receipt: "
+                f"{','.join(sorted(actual_nodes)) or '(null)'} vs "
+                f"{','.join(sorted(frozen_nodes))}"
+            )
+
+    job_ids = ",".join(str(job["job_id"]) for job in receipt["jobs"])
+    release = subprocess.run(
+        _release_command(ptb_env, job_ids), text=True, capture_output=True, check=False
+    )
+    if release.returncode:
+        raise ExperimentError(
+            f"held jobs remain held; release failed: {release.stderr.strip() or 'scontrol failed'}"
+        )
+    receipt.pop("_path", None)
+    receipt["state"] = "submitted"
+    receipt["released_at"] = datetime.now(timezone.utc).isoformat()
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    return receipt
 
 
 def audit_result(result_dir: Path) -> list[str]:

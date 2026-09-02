@@ -238,6 +238,13 @@ def _ptb(args: argparse.Namespace) -> int:
     from awm import ptb_experiments as ptb
 
     try:
+        if args.cmd == "release":
+            receipt = ptb.release_held(args.receipt)
+            print(
+                f"released {len(receipt['jobs'])} held job(s): "
+                f"{','.join(str(job['job_id']) for job in receipt['jobs'])}"
+            )
+            return 0
         manifest = ptb.load_manifest(args.manifest)
         if args.cmd == "results":
             import json
@@ -271,7 +278,7 @@ def _ptb(args: argparse.Namespace) -> int:
                 print(f"{cell_id}: {command}")
             return 0
         if args.cmd == "submit":
-            receipt = ptb.submit(manifest, pilot=args.pilot)
+            receipt = ptb.submit(manifest, pilot=args.pilot, keep_held=args.keep_held)
             print(receipt)
             return 0
         if args.cmd == "retry":
@@ -586,6 +593,12 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
         if command_name in ("dry-run", "submit"):
             command.add_argument("--pilot", action="store_true")
+        if command_name == "submit":
+            command.add_argument(
+                "--keep-held",
+                action="store_true",
+                help="register formal jobs but leave them PENDING(JobHeldUser)",
+            )
         if command_name == "check":
             command.add_argument("--local-only", action="store_true")
             command.add_argument(
@@ -613,6 +626,11 @@ def build_parser() -> argparse.ArgumentParser:
     retry.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
     retry.add_argument("--cell", action="append", required=True)
     retry.set_defaults(func=_ptb)
+    release = eps.add_parser(
+        "release", help="release one held formal receipt after ownership and placement checks"
+    )
+    release.add_argument("receipt", type=Path)
+    release.set_defaults(func=_ptb)
     audit = eps.add_parser("audit")
     audit.add_argument("result_dir", type=Path)
     audit.add_argument("--manifest", type=Path, default=default_manifest)

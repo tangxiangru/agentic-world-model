@@ -164,9 +164,10 @@ AIME2025 只回答“GSM8K 上看到的 protocol 改善是否泛化”。candida
 
 异步循环是硬要求：
 
-1. exp-protocol subqueue 的利用率目标是有可运行工作时 `RUNNING=16`。调度库存
-   `RUNNING + PENDING` 不低于 16；当独立、已验证的工作足够时，额外保持最多一整波
-   `PENDING≈16`。不得为了字面 pending 数量提前编造依赖未完成结果的实验。
+1. exp-protocol subqueue 的利用率目标是有可运行工作时 `RUNNING=16`。用户最新指定调度
+   库存下限为 **8 个 held pending cells**：必须是独立、已冻结且科学上需要的工作，状态为
+   `PENDING(JobHeldUser)`，不是会在 ownership 异常时自行启动的普通 pending。不得为了字面
+   pending 数量提前编造依赖未完成结果的实验。
 2. planner 对独立、已验证、可安全运行的 manifest 立即 commit/push，并更新
    `experiments/posttrainbench/queue.yaml`；不等待不相关的长尾 job。
 3. operator 每 10–15 分钟运行
@@ -251,6 +252,10 @@ launcher 必须把这些路径从指定 SHA materialize 到共享
 本线 GPU 额度固定为 `G=16`，由 `gangda_exp-protocol-evolve` subqueue 的
 `slurm2-a3nodesetondem-[0-1]` 硬隔离。planner 保持足够的独立、安全 cells 已提交或
 排队以使用该额度，但不跨到 WMA 节点，也不通过取消其他实验抢占容量。
+
+2026-09-02 spillover 后，`ReqNodeList` 不再视为充分的硬隔离证据。至少 8 个库存 cells 以
+Slurm user hold 提交并登记；只有 `OWNERSHIP OK`、逐 job 冻结节点复核通过且原生 reservation /
+partition / QoS 隔离恢复后才 release。
 
 开始 Round 00 前必须全部满足：
 

@@ -86,6 +86,7 @@ def test_queue_is_validated(repo) -> None:
         ({**ENTRY, "manifest": "/etc/passwd"}, "committed experiments"),
         ({**ENTRY, "why": ""}, "why must say"),
         ({**ENTRY, "pilot": "later"}, "pilot must be"),
+        ({**ENTRY, "want": "held", "pilot": "first"}, "held buffer cannot use a pilot"),
     ):
         with pytest.raises(ops.OpsError, match=message):
             ops.load_queue(_queue(root, bad), root)
@@ -108,6 +109,25 @@ def test_an_entry_without_a_receipt_is_submitted(repo) -> None:
     (actions,) = ops.plan([ENTRY], root)
     assert (actions.kind, actions.batch, actions.pilot, actions.manifest) == (
         "submit", "ep-r01", False, ENTRY["manifest"])
+
+
+def test_a_held_entry_submits_once_then_waits_for_an_explicit_release(
+    repo, tmp_path: Path
+) -> None:
+    root, states = repo
+    held_entry = {**ENTRY, "want": "held", "why": "eight-cell safety buffer"}
+    (submit,) = ops.plan([held_entry], root)
+    assert submit.kind == "submit" and submit.keep_held is True
+
+    _receipt(tmp_path / "vol", "ep-r01", "formal", [("p01r1", "111")], state="held")
+    states["111"] = "PENDING"
+    actions = ops.plan([held_entry], root)
+    assert [action.kind for action in actions] == ["copy_receipt"]
+    ops.apply(actions, root)
+    assert ops.plan([held_entry], root) == []
+
+    (release,) = ops.plan([ENTRY], root)
+    assert release.kind == "release" and release.receipt.startswith("formal-")
 
 
 def test_pilot_first_gates_the_formal_submission(repo, tmp_path: Path) -> None:
@@ -192,14 +212,15 @@ def test_apply_submits_through_the_launcher_and_tracks_the_receipt(repo, tmp_pat
     root, _states = repo
     submitted: list[tuple[str, bool]] = []
 
-    def fake_submit(manifest, *, pilot=False, cell_ids=None):
-        submitted.append((manifest["batch_id"], pilot))
+    def fake_submit(manifest, *, pilot=False, cell_ids=None, keep_held=False):
+        submitted.append((manifest["batch_id"], pilot, keep_held))
         return _receipt(tmp_path / "vol", manifest["batch_id"], "pilot" if pilot else "formal",
-                        [("p01r1", "401")] if pilot else [("p01r1", "402"), ("p01r2", "403")])
+                        [("p01r1", "401")] if pilot else [("p01r1", "402"), ("p01r2", "403")],
+                        state="held" if keep_held else "submitted")
 
     monkeypatch.setattr(ops, "submit_batch", fake_submit)
     lines = ops.apply(ops.plan([ENTRY], root), root)
-    assert submitted == [("ep-r01", False)]
+    assert submitted == [("ep-r01", False, False)]
     assert (root / "results/ptb/ep-r01/formal-2026-09-02T000000.json").is_file()
     assert lines[0].startswith("submit ep-r01: 2 job(s) 402,403")
     log = (root / "results/ptb/ops-log.md").read_text()
@@ -227,10 +248,40 @@ def test_ownership_failure_blocks_submits(repo, monkeypatch) -> None:
     assert lines == ["blocked submit: OWNERSHIP FAIL: 1 placement violation(s)"]
 
 
+def test_ownership_failure_allows_only_a_registered_held_buffer(
+    repo, tmp_path: Path, monkeypatch
+) -> None:
+    root, _states = repo
+    held_entry = {**ENTRY, "want": "held", "why": "eight-cell safety buffer"}
+    submitted: list[bool] = []
+
+    def fake_submit(manifest, *, pilot=False, cell_ids=None, keep_held=False):
+        submitted.append(keep_held)
+        return _receipt(
+            tmp_path / "vol",
+            manifest["batch_id"],
+            "formal",
+            [("p01r1", "410"), ("p01r2", "411")],
+            state="held",
+        )
+
+    monkeypatch.setattr(
+        ops, "_submission_ownership_issue", lambda: "OWNERSHIP FAIL: placement violation(s)"
+    )
+    monkeypatch.setattr(ops, "submit_batch", fake_submit)
+
+    lines = ops.apply(ops.plan([held_entry], root), root)
+
+    assert submitted == [True]
+    assert lines[0].startswith("submit ep-r01 (held): 2 job(s)")
+    receipt = json.loads((root / "results/ptb/ep-r01/formal-2026-09-02T000000.json").read_text())
+    assert receipt["state"] == "held"
+
+
 def test_a_launcher_refusal_is_written_down(repo, monkeypatch) -> None:
     root, _ = repo
 
-    def refuse(manifest, *, pilot=False, cell_ids=None):
+    def refuse(manifest, *, pilot=False, cell_ids=None, keep_held=False):
         raise ptb.ExperimentError("submission gates failed:\n- missing container: x.sif")
 
     monkeypatch.setattr(ops, "submit_batch", refuse)

@@ -259,8 +259,11 @@ def test_receipt_validation(tmp_path: Path) -> None:
     assert ptb.load_receipt(receipt)["jobs"][0]["cell_id"] == "b06"
 
 
-def test_formal_submit_holds_all_jobs_before_one_release(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("keep_held", "expected_state"), [(False, "submitted"), (True, "held")]
+)
+def test_formal_submit_holds_all_jobs_before_optional_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, keep_held: bool, expected_state: str
 ) -> None:
     data = ptb.load_manifest(DUAL_MANIFEST)
     cell_ids = [
@@ -325,18 +328,26 @@ def test_formal_submit_holds_all_jobs_before_one_release(
         return subprocess.CompletedProcess(command, 0, f"Submitted Slurm job {job_id}\n", "")
 
     monkeypatch.setattr(ptb.subprocess, "run", fake_run)
-    receipt_path = ptb.submit(data)
+    receipt_path = ptb.submit(data, keep_held=keep_held)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
 
     submitted = [command for command in commands if command[0] == "fake-submit"]
     assert len(submitted) == 32
     assert all("--hold" in command for command in submitted)
-    assert commands[-1] == (
-        "scontrol",
-        "release",
-        ",".join(str(job_id) for job_id in range(9001, 9033)),
-    )
-    assert receipt["state"] == "submitted"
+    releases = [command for command in commands if command[:2] == ("scontrol", "release")]
+    if keep_held:
+        assert releases == []
+        assert "held_at" in receipt and "released_at" not in receipt
+    else:
+        assert releases == [
+            (
+                "scontrol",
+                "release",
+                ",".join(str(job_id) for job_id in range(9001, 9033)),
+            )
+        ]
+        assert "released_at" in receipt
+    assert receipt["state"] == expected_state
     assert receipt["ownership"] == data["ownership"]
     assert receipt["source"]["top_branch"] == "gangda_trial_0828"
     assert len(receipt["jobs"]) == 32
@@ -417,6 +428,163 @@ def test_root_owned_allocations_are_released_through_sudo() -> None:
         "10,11",
     ]
     assert ptb._release_command({}, "10,11") == ["scontrol", "release", "10,11"]
+
+
+def test_held_receipt_release_revalidates_ownership_and_frozen_nodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from awm import slurm_queue
+
+    receipt_path = tmp_path / "formal.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "state": "held",
+                "site": {
+                    "POST_TRAIN_BENCH_SLURM_NODELIST": "owned-[0-1]",
+                    "POST_TRAIN_BENCH_SLURM_RESERVATION": "strict-two-node",
+                },
+                "jobs": [
+                    {"cell_id": "g01", "job_id": "10", "job_name": "branch.g01"},
+                    {"cell_id": "g02", "job_id": "11", "job_name": "branch.g02"},
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {"POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(tmp_path / "registry")},
+    )
+    monkeypatch.setattr(slurm_queue, "collect_snapshot", lambda _path: {"ownership_ok": True})
+    monkeypatch.setattr(ptb, "_job_state", lambda _job: "PENDING")
+    released: list[str] = []
+
+    def fake_run(command, **_kwargs):
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            return subprocess.CompletedProcess(command, 0, "owned-0\nowned-1\n", "")
+        if command[:3] == ["scontrol", "show", "job"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                f"JobId={command[3]} JobState=PENDING Reason=JobHeldUser "
+                "ReqNodeList=owned-[0-1]\n",
+                "",
+            )
+        if command[:3] == ["scontrol", "show", "reservation"]:
+            return subprocess.CompletedProcess(
+                command, 0, "ReservationName=strict-two-node Nodes=owned-[0-1]\n", ""
+            )
+        if command[:2] == ["scontrol", "release"]:
+            released.append(command[2])
+            return subprocess.CompletedProcess(command, 0, "", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+
+    receipt = ptb.release_held(receipt_path)
+
+    assert released == ["10,11"]
+    assert receipt["state"] == "submitted" and "released_at" in receipt
+    assert json.loads(receipt_path.read_text())["state"] == "submitted"
+
+
+def test_held_receipt_release_refuses_reqnodelist_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from awm import slurm_queue
+
+    receipt_path = tmp_path / "formal.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "state": "held",
+                "site": {
+                    "POST_TRAIN_BENCH_SLURM_NODELIST": "owned-[0-1]",
+                    "POST_TRAIN_BENCH_SLURM_RESERVATION": "strict-two-node",
+                },
+                "jobs": [{"cell_id": "g01", "job_id": "10", "job_name": "branch.g01"}],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {"POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(tmp_path / "registry")},
+    )
+    monkeypatch.setattr(slurm_queue, "collect_snapshot", lambda _path: {"ownership_ok": True})
+    monkeypatch.setattr(ptb, "_job_state", lambda _job: "PENDING")
+
+    def fake_run(command, **_kwargs):
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            output = "" if command[3] == "(null)" else "owned-0\nowned-1\n"
+            return subprocess.CompletedProcess(command, 0, output, "")
+        if command[:3] == ["scontrol", "show", "job"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "JobId=10 JobState=PENDING Reason=JobHeldUser ReqNodeList=(null)\n",
+                "",
+            )
+        if command[:3] == ["scontrol", "show", "reservation"]:
+            return subprocess.CompletedProcess(
+                command, 0, "ReservationName=strict-two-node Nodes=owned-[0-1]\n", ""
+            )
+        raise AssertionError("release must not run")
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+
+    with pytest.raises(ptb.ExperimentError, match="ReqNodeList differs"):
+        ptb.release_held(receipt_path)
+    assert json.loads(receipt_path.read_text())["state"] == "held"
+
+
+def test_held_receipt_release_refuses_a_shared_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from awm import slurm_queue
+
+    receipt_path = tmp_path / "formal.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "state": "held",
+                "site": {
+                    "POST_TRAIN_BENCH_SLURM_NODELIST": "owned-[0-1]",
+                    "POST_TRAIN_BENCH_SLURM_RESERVATION": "shared",
+                },
+                "jobs": [{"cell_id": "g01", "job_id": "10", "job_name": "branch.g01"}],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {"POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(tmp_path / "registry")},
+    )
+    monkeypatch.setattr(slurm_queue, "collect_snapshot", lambda _path: {"ownership_ok": True})
+
+    def fake_run(command, **_kwargs):
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            output = (
+                "owned-0\nowned-1\nextra-0\n"
+                if command[3] == "owned-[0-1],extra-0"
+                else "owned-0\nowned-1\n"
+            )
+            return subprocess.CompletedProcess(command, 0, output, "")
+        if command[:3] == ["scontrol", "show", "reservation"]:
+            return subprocess.CompletedProcess(
+                command, 0, "ReservationName=shared Nodes=owned-[0-1],extra-0\n", ""
+            )
+        raise AssertionError("job inspection and release must not run")
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+
+    with pytest.raises(ptb.ExperimentError, match="not native two-node isolation"):
+        ptb.release_held(receipt_path)
 
 
 def test_site_gate_accepts_the_exp_protocol_two_node_subqueue(
