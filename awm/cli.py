@@ -601,6 +601,10 @@ def build_parser() -> argparse.ArgumentParser:
         receipt_command.add_argument("--manifest", type=Path, default=default_manifest)
         receipt_command.set_defaults(func=_ptb)
 
+    from awm import ptb_ops
+
+    ptb_ops.register(eps)
+
     from awm.exp_protocol import cli as exp_protocol_cli
 
     exp_protocol_cli.register(sub)
