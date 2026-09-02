@@ -1,0 +1,136 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T13:03:18Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.6
+  remaining_h: 9.4
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.06, protocol_n: 150}
+  trigger: "exp-01 showed the base checkpoint scores 0.060/150 purely because it never stops: 465/500 dev500 completions do contain an 'ANSWER:' line, but the mean completion is 2821 characters of invented follow-up problems, so the grader's last-number rule reads a hallucinated number."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/base_dev500.json, locator: "records[*].outputs[0]", observation: "answer given early, then the model keeps generating new problems"}
+    - {path: /home/ben/task/memory/cards/exp-01.yaml, locator: "result.diagnostic_result", observation: "dev500 0.022, official150 0.060"}
+  alternatives_rejected:
+    - {option: "Few-shot prompt engineering only, no training", reason: "the eval prompt is fixed by evaluate.py and templates/; nothing about the prompt can be changed, only the weights"}
+    - {option: "LoRA instead of full fine-tuning", reason: "the base model has to learn a new output contract as well as math; full FT of the 3.88B text tower fits in 80GB with token-budget batching, so there is no reason to accept the LoRA capacity limit"}
+    - {option: "Train on MATH-heavy data (OMI2 math / augmented_math)", reason: "the benchmark is grade-school arithmetic word problems; LaTeX-heavy MATH solutions would pull the output style away from the target distribution. Held back as a later variable."}
+    - {option: "Put the fixed 10-shot system message in every training row", reason: "about 1700 extra prompt tokens per row, roughly 6x the compute, for a prefix the model only has to tolerate rather than learn; measured as a diagnostic instead"}
+  pitfalls_hit:
+    - {what: "OOM at bs32 x 1024 without gradient checkpointing, then again at bs16 x 1024 with group_by_length", cost_h: 0.2, fix: "Gemma-3's 262k vocab makes the loss logits (bf16 plus an fp32 copy) the peak memory term; replaced fixed-row batching with a 10240 padded-token budget per microbatch"}
+    - {what: "uv pip install liger-kernel filled the 64MB root overlay (No space left on device) and broke transformers imports mid-install", cost_h: 0.1, fix: "uninstalled liger-kernel, verified transformers and peft import again, no further installs into /"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_v1.jsonl, --out, /tmp/smoke, --max-rows, '2048', --epochs, '1'], outcome: "ran to completion, loss 0.49 -> 0.40, saved and reloaded"}
+    - {command: [python, scripts/train_sft.py, --data, data/sft_v1.jsonl, --dry-run], outcome: "rendering verified token-for-token against tokenizer.apply_chat_template(templates/gemma3.jinja); p50 302, p99 654, max 1024, 0.19 percent truncated"}
+    - {command: [python, scripts/train_sft.py, --data, data/sft_v1.jsonl, --max-rows, '24576', --token-budget, '10240'], outcome: "31.3 rows per microbatch, no OOM at 73GB peak; killed by my own 600s timeout, used only to size the real run"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The base checkpoint has no output contract: it does not terminate with <end_of_turn> and it does not put the final answer last, so the grader reads a number from text the model generated after it had already answered. Its actual arithmetic ability is untested because nearly every item fails on format."
+  evidence:
+    - {path: /home/ben/task/eval/base_dev500.json, locator: "summary.accuracy=0.022; records[*].outputs[0]", observation: "465 of 500 emit 'ANSWER:' somewhere but mean completion length is 2821 chars"}
+    - {path: /home/ben/task/eval/base_official150.json, locator: "accuracy", observation: "0.060 on the official protocol"}
+  affected_share: 0.93
+  failure_examples:
+    - {id: train-4530, source: /home/ben/task/data/dev500.jsonl, question: "The result from the 40-item Statistics exam Marion and Ella took already came out. Ella got 4 incorrect answers while Marion got 6 more than half the score of Ella. What is Marion's score?", gold: "24", model_output: "... ANSWER: 16 // then: 'Solve the following math problem step by step' and a fresh invented problem, continuing to the token limit", failure: "wrong answer AND no termination; the grader reads a number from the invented follow-up"}
+    - {id: train-1183, source: /home/ben/task/data/dev500.jsonl, question: "Stephen made 10 round trips up and down a 40,000 foot tall mountain. If he reached 3/4 of the mountain's height on each of his trips, calculate the total distance he covered.", gold: "600000", model_output: "... ANSWER: 30000 // then: 'A farmer has 100 acres of land ...' and on to the token limit", failure: "same failure mode: no termination, answer not last"}
+    - {id: train-6924, source: /home/ben/task/data/dev500.jsonl, question: "A third of the contestants at a singing competition are female, and the rest are male. If there are 18 contestants in total, how many of them are male?", gold: "12", model_output: "18 / 3 = 6 of them are female. 18 - 6 = 12 of them are male. // ANSWER: 12 // then 'Solve the following math problem step by step...' and a new invented problem", failure: "the reasoning and the answer are both CORRECT and it is still scored wrong, because the model does not stop and the last number in the completion comes from the invented follow-up"}
+  watch_set:
+    path: /home/ben/task/data/dev500.jsonl
+    n: 500
+    selection: "the 489 dev500 items the base model fails, which is essentially the whole held-out set; re-scored as a whole after training"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Full supervised fine-tuning on 116,971 GSM8K-style chain-of-thought examples, each target ending in a single 'ANSWER: N' line followed by <end_of_turn>, increases official150 accuracy relative to the base model, and the increase comes mostly from removing the non-termination failure rather than from new arithmetic ability."
+  mechanism: "Two things are taught at once. (a) The output contract: the target format puts the final integer last and terminates on token 106, which is in the snapshot's generation_config eos list, so vLLM stops there and the grader's last-number rule reads the intended number. (b) Grade-school multi-step arithmetic: 110k of the rows are Llama-3.1-405B solutions to GSM8K train problems and to augmented variants of them (nvidia/OpenMathInstruct-2), the same problem distribution as the benchmark. Prompts are rendered zero-shot while the grader prepends a fixed 10-shot system message; the diagnostic measures both renderings so the size of that mismatch is known rather than assumed."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+40 to +65 points on official150; published gemma-3-4b-it reaches the high 80s on GSM8K, so 0.60-0.80 is the plausible band for one SFT pass"
+  falsified_if: "official150 accuracy is below 0.30, or the dev500 diagnostic shows more than 10 percent of completions still failing to terminate before the token limit"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "openai/gsm8k train + nvidia/OpenMathInstruct-2 train_1M (gsm8k, augmented_gsm8k)"
+      n_examples: 116971
+      built_by: /home/ben/task/scripts/build_sft.py
+      build_command: [python, scripts/build_sft.py, --out, data/sft_v1.jsonl, --omi-max, '110000', --omi-per-problem, '2']
+      selection: "gsm8k train minus the 500 dev items (6973 rows, calculator <<..>> annotations stripped); OMI2 rows whose problem_source is gsm8k or augmented_gsm8k, integer answers only, at most 2 solutions per problem, solution under 4000 chars, dev500 questions excluded; each source dataset's own answer announcement ('The final answer is', trailing boxed line) is removed so exactly one answer marker remains; exact (prompt, completion) duplicates dropped"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler"
+    peft: "none - full fine-tune of the 3.88B text tower; the 419.8M vision tower and projector are frozen"
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 31, grad_accum: 4, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "chain of thought, blank line, then a final line 'ANSWER: <integer>' with nothing after it, then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v1.jsonl, --out, ckpts/exp-02, --epochs, '2', --lr, '1e-5', --grad-accum, '4', --max-len, '1024', --token-budget, '10240', --save-steps, '900']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 900
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --json-output-file, '{out}']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.06
+    path: /home/ben/task/eval/base_official150.json
+  diagnostic:
+    what: "dev500 under scripts/fast_eval.py in two renderings, with the eval's 10-shot system message (--fewshot 10) and without it (--fewshot 0), plus the share of completions that terminate before the token limit"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.24
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-900, step: 900}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1800, step: 1800}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1864, step: 1864}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 1864}
+  training_summary: {final_loss: 0.2768, steps: 1864, notes: "train_loss 0.3088 over 2 epochs, train_runtime 8049s; loss fell 0.49 -> 0.28 with no instability; 3727 microbatches/epoch at 31.4 rows each"}
+  measurements:
+    - {metric: accuracy, value: 0.367, n: 150, path: /home/ben/task/eval/exp02_final_official150.json, delta_vs_comparator: 0.307}
+  diagnostic_result:
+    value: 0.45
+    path: /home/ben/task/eval/exp02_final_dev500_fs10.json
+    notes: "dev500 with the eval's 10-shot system message = 0.450; the SAME checkpoint on the SAME items with no system message = 0.752 (eval/exp02_final_dev500_fs0.json). The 10-shot prefix costs 30.2 points. Mechanism is visible in the outputs: with the prefix, 380/500 completions imitate the demonstrations' <<48/2=24>> calculator annotations (0/500 do so without it) and 28.4% keep generating a NEW invented problem after their own 'ANSWER: N' line, so the grader's last-number rule reads the wrong number even when the answer was right. Only 3/500 fail to emit an ANSWER line at all, and nothing is truncated at the token limit. Checkpoint-900 (1 epoch) scores 0.308 on the same dev500/fs10 protocol, so the second epoch is worth +14.2 points."
+  watch_set_result: {fixed: 219, still_failing: 270, regressions: 5, path: /home/ben/task/eval/exp02_final_dev500_fs10.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "official150 0.060 -> 0.367 (+30.7) and 219 of the 489 failed dev500 items are fixed, so the intervention worked and the output contract is largely learned. But the diagnostic contradicts the assumption behind the training format: the fixed 10-shot system message the grader always prepends costs 30.2 points (dev500 0.752 without it, 0.450 with it), because the model trained on zero-shot prompts falls back to imitating the demonstrations and does not stop after its own answer."
+  decision: adopt
+  next_step: "exp-03: continue training exp-02/final on rows whose prompt carries a few-shot prefix in the eval's exact demonstration format (shot count varied, demos drawn from GSM8K train items outside dev500), so the model learns to terminate after its own ANSWER line with demonstrations in context. The headroom is the 30.2-point gap between the fs0 and fs10 numbers. Note for later cards: dev500/fs10 (0.450) reads about 8 points above official150 (0.367), so treat dev500 as a ranking signal, not as an estimate of the official number."

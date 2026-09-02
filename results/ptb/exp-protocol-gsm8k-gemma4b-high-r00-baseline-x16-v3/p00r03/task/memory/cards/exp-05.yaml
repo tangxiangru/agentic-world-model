@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T19:12:46Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.9
+  remaining_h: 3.1
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.6667, protocol_n: 150}
+  trigger: "exp-04's two checkpoints and exp-03 are indistinguishable on dev500 (0.760 all three, n=500) but spread over 6 points on official150 (0.667 / 0.673 / 0.727, n=150, stderr 0.038). One of those two measurements has to be believed to decide what goes in final_model, and neither has the power to settle it."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.measurements, result.diagnostic_result", observation: "official150 0.673 (2 epochs) and 0.727 (1 epoch) against dev500/fs10 0.760 for both and for exp-03"}
+    - {path: /home/ben/task/eval/exp04_ck260_official150.json, locator: "stderr", observation: "0.0365 - a 6-point gap is well inside 2 standard errors"}
+  alternatives_rejected:
+    - {option: "Ship exp-04/checkpoint-260 because it has the highest official150 number", reason: "picking the maximum of three noisy n=150 readings is selection on noise; the expected score of the winner is below its measured score"}
+    - {option: "Ship exp-03/final because exp-04's hypothesis was contradicted", reason: "a contradicted hypothesis means RFT did not deliver the predicted gain, not that its checkpoints are worse; dev500 says all three are equal, so the tie needs breaking on evidence rather than on the previous verdict"}
+    - {option: "Break the tie on dev500 with more items", reason: "dev500 already has 500 items and reads a fixed ~9 points above official150 (0.760 vs 0.667 for exp-03, 0.450 vs 0.367 for exp-02); adding held-out train items measures the wrong distribution more precisely"}
+    - {option: "Train something else with the remaining 3.1 hours", reason: "a new training run plus evaluation does not fit with enough margin to verify final_model loads; deciding correctly between three checkpoints already in hand is worth more than a fourth rushed one"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Three candidate checkpoints have to be ranked and only one can be shipped, but the two measurements available disagree: dev500 (n=500, held-out GSM8K train items) says they are identical, official150 (n=150, benchmark items) spreads them over 6 points with a 3.8-point standard error."
+  evidence:
+    - {path: /home/ben/task/eval/exp03_final_official150.json, locator: "accuracy, stderr", observation: "0.6667 +/- 0.0386"}
+    - {path: /home/ben/task/eval/exp04_final_official150.json, locator: "accuracy, stderr", observation: "0.6733 +/- 0.0384"}
+    - {path: /home/ben/task/eval/exp04_ck260_official150.json, locator: "accuracy, stderr", observation: "0.7267 +/- 0.0365"}
+    - {path: /home/ben/task/eval/exp04_final_dev500_fs10.json, locator: "summary.accuracy", observation: "0.760, identical to exp-03's and to checkpoint-260's on the same 500 items"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/dev500.jsonl
+    n: 500
+    selection: "unchanged held-out GSM8K train items; carried forward only as a sanity check that the winner has not regressed off-benchmark"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Re-scoring the three candidates on 500 benchmark items instead of 150 shrinks the standard error from 0.038 to about 0.020 and shows the three to be closer together than the n=150 readings suggest; the ranking under the n=500 protocol, not the n=150 one, is what final_model should be chosen on."
+  mechanism: "official150 and official500 measure the same quantity, and 500 items resolve differences of about 4 points where 150 items resolve about 8. The 6-point official150 spread against a flat dev500 is the signature of sampling noise on a small item pool, so the n=500 numbers should regress toward each other. If instead checkpoint-260 keeps a clear lead at n=500, the effect is real and dev500's flatness is the train/test distribution difference talking."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "all three within about 3 points of each other at n=500; no candidate below 0.63"
+  falsified_if: "the three candidates still differ by more than 6 points at n=500, which would mean the n=150 spread was real signal and dev500 is not measuring what the benchmark measures"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev500.jsonl
+      source: local
+      n_examples: 500
+      built_by: /home/ben/task/scripts/build_dev.py
+      build_command: [python, scripts/build_dev.py]
+      selection: "held-out GSM8K train items; nothing is trained in this card, so this file is carried only as the sanity-check set"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "vllm 0.11.0 / inspect_ai"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 0}
+    target_format: "n/a - nothing is trained in this card"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/select_final.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/select_final.sh
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --json-output-file, '{out}']
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-03
+    value: null
+    path: null
+  diagnostic:
+    what: "whether the n=500 ranking agrees with the n=150 ranking; the winner is the checkpoint copied into final_model and then loaded once on CPU with transformers to prove the grader can read it"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 400}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-260, step: 260}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 508}
+    - {path: /home/ben/task/final_model, step: 260}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.708, n: 500, path: /home/ben/task/eval/exp04_ck260_official500.json, delta_vs_comparator: 0.024}
+    - {metric: accuracy, value: 0.690, n: 500, path: /home/ben/task/eval/exp04_final_official500.json, delta_vs_comparator: 0.006}
+    - {metric: accuracy, value: 0.684, n: 500, path: /home/ben/task/eval/exp03_final_official500.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.698, n: 500, path: /home/ben/task/eval/final_model_official500.json, delta_vs_comparator: 0.014}
+  diagnostic_result:
+    value: 0.698
+    path: /home/ben/task/eval/final_model_official500.json
+    notes: "The n=500 ranking keeps the n=150 order (checkpoint-260 > exp-04/final > exp-03/final) but the spread collapses from 6.0 points to 2.4, exactly as predicted, and every gap is inside one combined standard error (0.029). Re-scoring the SAME weights from the final_model/ copy gives 0.698 against 0.708 from the ckpts path, so run-to-run variation under vLLM batching is about 1 point on its own - a further reason not to read the 2.4-point spread as a real ordering. final_model/ loads on CPU with transformers (4.30B params, architectures Gemma3ForConditionalGeneration, <end_of_turn> = 106) and scores under evaluate.py from a fresh process."
+  watch_set_result: {fixed: 0, still_failing: 120, regressions: 0, path: /home/ben/task/eval/exp04_final_dev500_fs10.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "At n=500 the three candidates sit at 0.684 / 0.708 / 0.690, a 2.4-point spread against 6.0 at n=150, all inside one combined standard error - the n=150 spread was noise. exp-04/checkpoint-260 has the best point estimate under both protocols and equals the others on dev500, so it ships; the honest statement is that the three are tied and the tiebreak is a point estimate, not a demonstrated difference."
+  decision: adopt
+  next_step: "final_model/ now holds exp-04/checkpoint-260 (0.698 at n=500 measured from the shipped copy, 0.708 from the source checkpoint). Remaining time goes to exp-06: 20k fresh few-shot-prefixed rows from OpenMathInstruct-2's train_2M split, which is the only substantial pool of gsm8k-style data no card has touched, continued from checkpoint-260. Swap final_model only if it wins at n=500."

@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-02T19:48:59Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.4
+  remaining_h: 2.6
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/checkpoint-260
+    score: {metric: accuracy, value: 0.708, protocol_n: 500}
+  trigger: "exp-04 showed self-generated data is exhausted as a lever (dev500 flat at 0.760, official500 +2.4 inside one standard error), but OpenMathInstruct-2's train_2M split holds 282,276 gsm8k-sourced rows of which no card has used any - 24,000 fresh rows were extractable after excluding everything exp-02/03/04 saw."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/build_v3.log, locator: "whole file", observation: "140371 rows already used; 282276 gsm8k-sourced rows in train_2M; 24000 fresh rows written"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion", observation: "RFT rejected: dev500 0.760 -> 0.760 with 26 fixed and 26 broken"}
+  alternatives_rejected:
+    - {option: "A second, larger RFT round with proper stop strings", reason: "round one moved dev500 by exactly zero on 500 items; a better-executed version of a null result is the wrong bet with 2.6 hours left, and the sampling alone costs 40 minutes"}
+    - {option: "Weight averaging (model soup) of exp-03/final, exp-04/checkpoint-260 and exp-04/final", reason: "cheap and often worth a point, but the three lie on one sequential training trajectory rather than being independent runs, so the soup is an interpolation along that path; kept as the fallback if this run does not finish in time"}
+    - {option: "Two epochs on the fresh rows", reason: "one epoch is 55 minutes and two would not leave room to evaluate at n=500 and re-verify final_model; exp-04 also showed the 2-epoch checkpoint below the 1-epoch one"}
+    - {option: "Start from exp-03/final rather than the RFT checkpoint", reason: "checkpoint-260 is the incumbent on both official protocols; continuing from it keeps whatever the RFT pass contributed"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_v3_decon_input.jsonl], outcome: "20000 documents scanned, 0 contaminated"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent gets 29.2% of the benchmark's 500-item slice wrong, and the two levers tried so far are spent: the format fix is complete (dev500 fs10 0.760 vs fs0 0.770) and self-training added nothing. What has not been tried is simply more distinct supervised data of the same kind that produced the original jump."
+  evidence:
+    - {path: /home/ben/task/eval/exp04_ck260_official500.json, locator: "accuracy", observation: "0.708 - 146 of 500 benchmark items wrong"}
+    - {path: /home/ben/task/eval/exp04_final_dev500_fs10.json, locator: "summary.accuracy", observation: "0.760 on held-out train items, unchanged by RFT"}
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "n_correct == 0", observation: "2584 of 9473 sampled questions were not solved in 4 attempts - problems the model cannot currently reach at all, which only new supervision can address"}
+  affected_share: 0.29
+  failure_examples:
+    - {id: rft-q-0correct, source: /home/ben/task/analysis/rft_stats.json, question: "(any of the 2584 questions where 4 samples at T=1.0 all missed)", gold: "(gold from the source dataset)", model_output: "4 distinct wrong chains", failure: "no correct chain is reachable by sampling, so only new external supervision can teach it"}
+    - {id: dev500-shooting-stars, source: /home/ben/task/data/dev500.jsonl, question: "Bridget counted 14 shooting stars ... How many more shooting stars did Sam count than the average number counted by the three of them?", gold: "2", model_output: "summed 14 + 12 + 16 as 32 in an otherwise correct chain", failure: "intermediate arithmetic slip"}
+    - {id: dev500-residual, source: /home/ben/task/eval/exp04_final_dev500_fs10.json, question: "(the 94 dev500 items wrong for both exp-03 and exp-04)", gold: "(various)", model_output: "wrong relation set up, or a slip mid-chain; format is correct throughout", failure: "the stable residual - not format, not decoding luck"}
+  watch_set:
+    path: /home/ben/task/data/dev500.jsonl
+    n: 500
+    selection: "the 120 dev500 items the incumbent answers incorrectly under the official 10-shot rendering"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "One epoch over 20,000 previously unused OpenMathInstruct-2 rows from the train_2M split, rendered with the same 75/25 few-shot-prefixed split as exp-03, increases official500 accuracy relative to the incumbent's 0.708."
+  mechanism: "exp-02's 30-point jump came from this exact data distribution, and the model has never seen these particular problems or solutions. The 2584 questions it could not solve in 4 attempts are evidence of genuinely missing coverage rather than inconsistent decoding, and new distinct problems are the only thing that addresses missing coverage. Keeping the prefixed/plain split identical to exp-03 means the format behaviour is refreshed, not disturbed."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +4 points on official500; the corpus is a sixth the size of exp-02's, so this is a diminishing-returns increment, not a repeat of the original jump"
+  falsified_if: "official500 is at or below 0.708, or dev500/fs10 falls below 0.760, or the fs10-minus-fs0 gap on dev500 reopens beyond 3 points"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/checkpoint-260
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3_mix.jsonl
+      source: "nvidia/OpenMathInstruct-2 train_2M (gsm8k, augmented_gsm8k) + demonstrations from openai/gsm8k train"
+      n_examples: 20000
+      built_by: /home/ben/task/scripts/build_fewshot_mix.py
+      build_command: [python, scripts/build_fewshot_mix.py, --src, data/sft_v3.jsonl, --out, data/sft_v3_mix.jsonl, --n-prefixed, '15000', --n-plain, '5000', --seed, '5']
+      selection: "24000 rows from train_2M whose (question, completion) pair appears in neither sft_v1 nor sft_v2, integer answers only, at most 2 per problem, solution under 4000 chars, dev500 questions excluded, source answer announcement stripped; 20000 of them taken, 15000 given a 4/6/8/10-shot demonstration block from the same 2000-item GSM8K-train pool as exp-03, 5000 left bare"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler"
+    peft: "none - full fine-tune of the 3.88B text tower; the 419.8M vision tower and projector are frozen"
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 6, grad_accum: 8, max_seq_len: 3072, scheduler: cosine, warmup: 0.05, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "chain of thought, blank line, then a final line 'ANSWER: <integer>' with nothing after it, then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v3_mix.jsonl, --model, ckpts/exp-04/checkpoint-260, --out, ckpts/exp-06, --epochs, '1', --lr, '5e-6', --grad-accum, '8', --max-len, '3072', --token-budget, '10240', --warmup, '0.05', --save-steps, '200']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 200
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --json-output-file, '{out}']
+    dev_set: "official --limit 500"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.708
+    path: /home/ben/task/eval/exp04_ck260_official500.json
+  diagnostic:
+    what: "dev500 with and without the eval's 10-shot system message, to check the format fix survived the extra epoch"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.92
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-200, step: 200}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-400, step: 400}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-402, step: 402}
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 402}
+  training_summary: {final_loss: null, steps: 402, notes: "train_loss 0.2923 over 1 epoch, train_runtime 3325s; loss above exp-04's 0.2318, consistent with these rows being new to the model"}
+  measurements:
+    - {metric: accuracy, value: 0.674, n: 500, path: /home/ben/task/eval/exp06_final_official500.json, delta_vs_comparator: -0.034}
+  diagnostic_result:
+    value: 0.758
+    path: /home/ben/task/eval/exp06_final_dev500_fs10.json
+    notes: "dev500/fs10 0.758 against the incumbent's 0.760 and dev500/fs0 0.766 against 0.780, so the format fix survived (gap 0.8 points, well inside the 3-point limit) but nothing was gained. Item churn against exp-04/final is symmetric again: 25 fixed, 26 broken. The third distinct data source in a row that moves dev500 by less than its own noise."
+  watch_set_result: {fixed: 25, still_failing: 95, regressions: 26, path: /home/ben/task/eval/exp06_final_dev500_fs10.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "official500 0.708 -> 0.674 (-3.4) and dev500/fs10 0.760 -> 0.758: 20,000 genuinely unseen OpenMathInstruct-2 rows bought nothing and may have cost a little. The falsification condition written before the run ('official500 at or below 0.708') is met. Combined with exp-04, this says the model is saturated on this data distribution - exp-02's two epochs over 117k rows already extracted what OpenMathInstruct-2's gsm8k subsets have to give a 4B model."
+  decision: reject
+  next_step: "final_model/ keeps exp-04/checkpoint-260, unchanged and already verified (loads on CPU, 0.698 under evaluate.py --limit 500 from the shipped copy). Anyone continuing from here should look past more of the same supervision: the residual 29% is items where 4 samples at T=1.0 all miss, which needs either a stronger teacher signal (process supervision, verifier-guided search) or a genuinely different problem distribution, not more OpenMathInstruct-2."
