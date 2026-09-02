@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import pwd
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,6 +38,30 @@ APPROVED_AGENT_SETUPS = (
     ("claude_vertex_xhigh", "claude-opus-5[1m]", "xhigh", 1_000_000),
     ("claude_vertex_high", "claude-opus-5[1m]", "high", 1_000_000),
     ("claude_vertex_max_200k", "claude-opus-5", "max", 200_000),
+    # claude_vertex_max plus a read-only checkout of this repository at AWM_MOUNT and
+    # `awm sandbox setup` before the prompt; the cell's `awm` block says what it ships.
+    ("claude_vertex_max_awm", "claude-opus-5[1m]", "max", 1_000_000),
+)
+
+#: Where an `_awm` scaffold expects the checkout inside the sandbox.
+AWM_MOUNT = "/home/ben/awm"
+#: Trees a scientist must never see; no `awm.paths` entry may ship or contain them.
+#: Listing a parent (`awm`, `skills`) is rejected too, so a study ships subtrees by name.
+AWM_FORBIDDEN_TREES = (
+    "skills/exp_protocol_meta",
+    "skills/wma",
+    "skills/wma_meta",
+    "awm/wma",
+    "doc",
+)
+#: What a cell of the experiment-protocol line ships: the CLI, the protocol, nothing else.
+EXP_PROTOCOL_SHIP = (
+    "awm/__init__.py",
+    "awm/cli.py",
+    "awm/paths.py",
+    "awm/sandbox.py",
+    "awm/exp_protocol",
+    "skills/exp_protocol",
 )
 
 
@@ -46,6 +74,8 @@ class Launch:
     cell_id: str
     command: tuple[str, ...]
     environment: dict[str, str]
+    #: {sha, paths, dir, digest} of the checkout an `_awm` cell ships; None otherwise.
+    checkout: dict[str, Any] | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -79,7 +109,248 @@ def load_manifest(filename: Path) -> dict[str, Any]:
     return data
 
 
+def _check_awm_path(cell_id: str, path: str) -> None:
+    parts = path.split("/")
+    if not path or path.startswith("/") or any(part in ("", ".", "..") for part in parts):
+        raise ExperimentError(
+            f"cell {cell_id}: awm.paths entry {path!r} must be a relative path inside the repository"
+        )
+    for tree in AWM_FORBIDDEN_TREES:
+        if path == tree or tree.startswith(path + "/") or path.startswith(tree + "/"):
+            raise ExperimentError(
+                f"cell {cell_id}: awm.paths entry {path!r} would ship {tree}, "
+                "which a scientist must not see"
+            )
+
+
+def _validate_awm_block(cell_id: str, agent: Any, block: Any) -> None:
+    """An `_awm` scaffold needs to be told what to ship; any other scaffold would ignore it."""
+    wants = str(agent).endswith("_awm")
+    if block is None:
+        if wants:
+            raise ExperimentError(
+                f"cell {cell_id} uses the {agent} scaffold and must declare an awm block "
+                "(sha, paths, setup)"
+            )
+        return
+    if not wants:
+        raise ExperimentError(
+            f"cell {cell_id} declares an awm block but the {agent} scaffold would ignore it"
+        )
+    if not isinstance(block, dict):
+        raise ExperimentError(f"cell {cell_id}: awm must be a mapping with sha, paths, setup")
+    sha = str(block.get("sha", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ExperimentError(
+            f"cell {cell_id}: awm.sha must be a full commit id (40 hex characters), not {sha!r}"
+        )
+    shipped = block.get("paths")
+    if (
+        not isinstance(shipped, list)
+        or not shipped
+        or not all(isinstance(path, str) for path in shipped)
+    ):
+        raise ExperimentError(
+            f"cell {cell_id}: awm.paths must be a non-empty list of repository paths"
+        )
+    for path in shipped:
+        _check_awm_path(cell_id, path)
+    setup = block.get("setup")
+    if not isinstance(setup, str) or not setup.strip() or "\n" in setup:
+        raise ExperimentError(
+            f"cell {cell_id}: awm.setup must be one line of arguments for `awm sandbox setup`"
+        )
+
+
+def _git_has_commit(sha: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=paths.REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _awm_issues(cell_id: str, block: dict[str, Any]) -> list[str]:
+    """What `check` can say about a cell's checkout before anything is materialised."""
+    sha = str(block.get("sha", ""))
+    if not _git_has_commit(sha):
+        return [f"cell {cell_id}: awm commit {sha} is not in this repository (git fetch origin first)"]
+    issues = []
+    for path in block.get("paths") or []:
+        listed = subprocess.run(
+            ["git", "ls-tree", "--name-only", sha, "--", path],
+            cwd=paths.REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if not listed:
+            issues.append(f"cell {cell_id}: awm path {path!r} does not exist at commit {sha[:12]}")
+    return issues
+
+
+def _tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for file in sorted(p for p in root.rglob("*") if p.is_file()):
+        digest.update(str(file.relative_to(root)).encode())
+        digest.update(b"\0")
+        digest.update(_sha256(file).encode())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
+    """``git archive`` the given paths of ``sha`` onto the data volume, once per (sha, paths).
+
+    The directory is what the scaffold sees at AWM_MOUNT, read-only. A marker
+    file records the commit, the paths and a content digest; a directory whose
+    marker matches is reused, so dry-run, submit and a retry all bind the same
+    bytes. The forbidden trees are checked again on the extracted files.
+    """
+    for path in shipped:
+        _check_awm_path("<checkout>", path)
+    root = paths.data_root() / "ptb" / "awm-checkouts"
+    key = hashlib.sha256("\n".join(shipped).encode()).hexdigest()[:12]
+    target = root / f"{sha}-{key}"
+    marker_name = ".awm-checkout.json"
+
+    def _existing() -> dict[str, Any] | None:
+        marker = target / marker_name
+        if not marker.is_file():
+            return None
+        try:
+            info = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if info.get("sha") == sha and info.get("paths") == list(shipped) and info.get("complete"):
+            return {"sha": sha, "paths": list(shipped), "dir": str(target), "digest": info["digest"]}
+        return None
+
+    if (found := _existing()) is not None:
+        return found
+    if target.exists():
+        shutil.rmtree(target)  # a stale or half-written directory
+    if not _git_has_commit(sha):
+        raise ExperimentError(f"awm commit {sha} is not in this repository; git fetch origin first")
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", sha, "--", *shipped],
+        cwd=paths.REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if archive.returncode:
+        raise ExperimentError(
+            f"git archive {sha[:12]} failed: {archive.stderr.decode(errors='replace').strip()}"
+        )
+    root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{sha[:12]}-", dir=root))
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(staging, filter="data")
+            else:  # Python < 3.12
+                tar.extractall(staging)
+        for tree in AWM_FORBIDDEN_TREES:
+            if (staging / tree).exists():
+                raise ExperimentError(f"archive of {sha[:12]} contains {tree}; refusing to ship it")
+        digest = _tree_digest(staging)
+        marker = {
+            "sha": sha,
+            "paths": list(shipped),
+            "digest": digest,
+            "complete": True,
+            "materialized_at": datetime.now(timezone.utc).isoformat(),
+        }
+        (staging / marker_name).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
+        try:
+            os.rename(staging, target)
+        except OSError:
+            if (found := _existing()) is not None:  # someone else won the race with the same bytes
+                shutil.rmtree(staging, ignore_errors=True)
+                return found
+            raise
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return {"sha": sha, "paths": list(shipped), "dir": str(target), "digest": digest}
+
+
+def _batch_tasks(contract: dict[str, Any]) -> tuple[str, ...]:
+    if "tasks" in contract:
+        if contract.get("task") is not None:
+            raise ExperimentError("contract.task must be absent when contract.tasks is given")
+        tasks = tuple(contract.get("tasks") or ())
+    else:
+        tasks = (contract.get("task"),)
+    if (
+        not tasks
+        or len(set(tasks)) != len(tasks)
+        or any(task not in APPROVED_TASKS for task in tasks)
+    ):
+        raise ExperimentError(
+            f"the batch's tasks must be a non-empty subset of {list(APPROVED_TASKS)!r}"
+        )
+    return tasks
+
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _validate_replication(
+    replication: Any, cells: list[dict[str, Any]], settings: list[tuple[Any, ...]]
+) -> None:
+    """``contract.replication`` describes the batch's own shape; the cells must match it."""
+    if not isinstance(replication, dict):
+        raise ExperimentError("contract.replication must be a mapping")
+    n_settings = replication.get("settings")
+    repeats = replication.get("repeats")
+    if not _positive_int(n_settings) or not _positive_int(repeats):
+        raise ExperimentError(
+            "contract.replication must give positive integer settings and repeats"
+        )
+    counts = Counter(settings)
+    if len(counts) != n_settings or set(counts.values()) != {repeats}:
+        raise ExperimentError(
+            f"replication batch must contain {n_settings} unique settings "
+            f"repeated exactly {repeats} times"
+        )
+    per_task = replication.get("settings_per_task")
+    if per_task is not None:
+        by_task = Counter(setting[0] for setting in counts)
+        if any(count != per_task for count in by_task.values()):
+            raise ExperimentError(
+                f"replication batch must select exactly {per_task} settings per task"
+            )
+    expected_replicates = set(range(1, repeats + 1))
+    for setting in counts:
+        replicates = [
+            cell.get("replicate")
+            for cell, cell_setting in zip(cells, settings, strict=True)
+            if cell_setting == setting
+        ]
+        if set(replicates) != expected_replicates or len(replicates) != repeats:
+            raise ExperimentError(
+                f"each replicated setting must carry replicates 1..{repeats}, once each"
+            )
+
+
 def validate_manifest(data: dict[str, Any]) -> None:
+    """A batch is any non-empty set of cells drawn from the approved setting space.
+
+    Each cell is checked on its own: an approved task, an approved agent setup,
+    a base model the contract pins. The launcher does not insist on a shape for
+    the whole. The full 4x4 matrix of the first batch and the 16x2 replication of
+    the second were decisions about those batches; a protocol-iteration round of
+    two repeats of one setting goes through the same launcher, receipts, and
+    registry. The contract constants (budget, containers, provider route, CLI
+    version, judge profile) stay frozen so results remain comparable.
+    """
     if data.get("schema_version") != 1:
         raise ExperimentError("schema_version must be 1")
     ownership = data.get("ownership") or {}
@@ -90,16 +361,7 @@ def validate_manifest(data: dict[str, Any]) -> None:
     if not spec.startswith("doc/spec/") or not (paths.REPO_ROOT / spec).is_file():
         raise ExperimentError("ownership.spec must name an existing committed spec under doc/spec")
     contract = data.get("contract") or {}
-    if "tasks" in contract:
-        tasks = tuple(contract.get("tasks") or ())
-        if contract.get("task") is not None or tasks != APPROVED_TASKS:
-            raise ExperimentError(
-                f"contract.tasks must be {list(APPROVED_TASKS)!r} and contract.task must be absent"
-            )
-    else:
-        tasks = (contract.get("task"),)
-        if tasks != ("gsm8k",):
-            raise ExperimentError("contract.task must be 'gsm8k' for a single-task batch")
+    tasks = _batch_tasks(contract)
     expected = {
         "agent_budget_hours": 10,
         "gpus": 1,
@@ -116,12 +378,8 @@ def validate_manifest(data: dict[str, Any]) -> None:
     for key, value in expected.items():
         if contract.get(key) != value:
             raise ExperimentError(f"contract.{key} must be {value!r}")
-    run_index = contract.get("run_index")
-    if len(tasks) == 1:
-        if run_index != 1:
-            raise ExperimentError("contract.run_index must be 1 for the original single-task batch")
-    elif not isinstance(run_index, int) or run_index < 2:
-        raise ExperimentError("contract.run_index must be at least 2 for a dual-task retry")
+    if not _positive_int(contract.get("run_index")):
+        raise ExperimentError("contract.run_index must be a positive integer")
     if contract.get("agent_auth") != {
         "provider": "vertex",
         "project": "sercan-v1",
@@ -129,8 +387,14 @@ def validate_manifest(data: dict[str, Any]) -> None:
     }:
         raise ExperimentError("contract.agent_auth must freeze the approved Vertex route")
     base_models = contract.get("base_models") or {}
-    if set(base_models) != set(APPROVED_BASE_MODELS):
-        raise ExperimentError("contract.base_models must pin the four approved starting models")
+    if (
+        not isinstance(base_models, dict)
+        or not base_models
+        or any(model not in APPROVED_BASE_MODELS for model in base_models)
+    ):
+        raise ExperimentError(
+            "contract.base_models may only pin the approved starting models, and must pin at least one"
+        )
     for model, metadata in base_models.items():
         if not isinstance(metadata, dict) or not re.fullmatch(
             r"[0-9a-f]{40}", str(metadata.get("revision", ""))
@@ -152,76 +416,53 @@ def validate_manifest(data: dict[str, Any]) -> None:
         raise ExperimentError("contract must pin the official judge container SHA-256")
 
     cells = data.get("cells")
-    expected_cell_count = len(tasks) * len(APPROVED_AGENT_SETUPS) * len(APPROVED_BASE_MODELS)
-    if not isinstance(cells, list) or len(cells) != expected_cell_count:
-        raise ExperimentError(f"the formal batch must contain exactly {expected_cell_count} cells")
+    if not isinstance(cells, list) or not cells or not all(isinstance(c, dict) for c in cells):
+        raise ExperimentError("the batch must contain at least one cell")
     ids = [str(cell.get("id")) for cell in cells]
-    if len(set(ids)) != expected_cell_count:
+    if len(set(ids)) != len(ids):
         raise ExperimentError("cell ids must be unique")
-    actual_settings = [
-        (
-            _cell_task(contract, cell),
+    approved_setups = set(APPROVED_AGENT_SETUPS)
+    settings: list[tuple[Any, ...]] = []
+    for cell, cell_id in zip(cells, ids, strict=True):
+        task = _cell_task(contract, cell)
+        if task not in tasks:
+            raise ExperimentError(
+                f"cell {cell_id} names task {task!r}, not one of the batch's tasks {list(tasks)!r}"
+            )
+        setup = (
             cell.get("agent"),
             cell.get("agent_model"),
             cell.get("effort"),
             cell.get("context_tokens"),
-            cell.get("base_model"),
         )
-        for cell in cells
-    ]
-    expected_matrix = {
-        (task, agent, model, effort, context_tokens, base)
-        for task in tasks
-        for agent, model, effort, context_tokens in APPROVED_AGENT_SETUPS
-        for base in APPROVED_BASE_MODELS
-    }
+        if setup not in approved_setups:
+            raise ExperimentError(f"cell {cell_id} is not an approved agent setup: {setup!r}")
+        base = cell.get("base_model")
+        if base not in base_models:
+            raise ExperimentError(
+                f"cell {cell_id} uses base model {base!r}, which contract.base_models does not pin"
+            )
+        _validate_awm_block(cell_id, cell.get("agent"), cell.get("awm"))
+        settings.append((task, *setup, base))
     replication = contract.get("replication")
-    if replication is None:
-        if set(actual_settings) != expected_matrix:
-            raise ExperimentError(
-                "cells do not match the approved task x 4x4 setup/base-model matrix"
-            )
-    else:
-        expected_replication = {"settings": 16, "repeats": 2, "settings_per_task": 8}
-        if replication != expected_replication:
-            raise ExperimentError(f"contract.replication must be {expected_replication!r}")
-        counts = Counter(actual_settings)
-        if any(setting not in expected_matrix for setting in counts):
-            raise ExperimentError("replication cells must come from the approved full matrix")
-        if len(counts) != 16 or set(counts.values()) != {2}:
-            raise ExperimentError(
-                "replication batch must contain 16 unique settings repeated exactly twice"
-            )
-        settings_by_task = Counter(setting[0] for setting in counts)
-        if settings_by_task != Counter({task: 8 for task in tasks}):
-            raise ExperimentError("replication batch must select exactly 8 settings per task")
-        for cell in cells:
-            if cell.get("replicate") not in (1, 2):
-                raise ExperimentError("every replication cell must declare replicate 1 or 2")
-        for setting in counts:
-            replicates = {
-                cell["replicate"]
-                for cell, cell_setting in zip(cells, actual_settings, strict=True)
-                if cell_setting == setting
-            }
-            if replicates != {1, 2}:
-                raise ExperimentError("each selected setting must contain replicates 1 and 2")
-    pilot = data.get("pilot") or {}
-    pilot_cells = _pilot_cell_ids(data)
-    if (
-        not pilot_cells
-        or any(cell_id not in ids for cell_id in pilot_cells)
-        or len(set(pilot_cells)) != len(tasks)
-        or {_cell_task(contract, _cell(data, cell_id)) for cell_id in pilot_cells} != set(tasks)
-        or pilot.get("agent_budget_hours") != 1
-    ):
-        raise ExperimentError("pilot must select one 1h formal cell from each task")
+    if replication is not None:
+        _validate_replication(replication, cells, settings)
+    pilot = data.get("pilot")
+    if pilot is not None:
+        pilot_cells = _pilot_cell_ids(data)
+        if (
+            not pilot_cells
+            or len(set(pilot_cells)) != len(pilot_cells)
+            or any(cell_id not in ids for cell_id in pilot_cells)
+        ):
+            raise ExperimentError("pilot must name existing, distinct cells of this batch")
+        if pilot.get("agent_budget_hours") != 1:
+            raise ExperimentError("pilot.agent_budget_hours must be 1")
     records = data.get("context_validation") or {}
-    for _, _, model, effort, _, _ in actual_settings:
+    for _, _, model, effort, _, _ in settings:
         profile = f"{model}:{effort}"
         if profile not in records:
             raise ExperimentError(f"missing context-validation path for {profile}")
-
 
 def _cell(data: dict[str, Any], cell_id: str) -> dict[str, Any]:
     try:
@@ -279,6 +520,8 @@ def build_launches(
     purpose: str | None = None,
 ) -> list[Launch]:
     contract = data["contract"]
+    if pilot and not _pilot_cell_ids(data):
+        raise ExperimentError("the manifest declares no pilot cell")
     selected = (
         [_cell(data, cell_id) for cell_id in _pilot_cell_ids(data)]
         if pilot
@@ -348,7 +591,15 @@ def build_launches(
         }
         if record.is_file():
             environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"] = _sha256(record)
-        launches.append(Launch(cell["id"], command, environment))
+        checkout = None
+        if cell.get("awm"):
+            checkout = materialize_awm_checkout(cell["awm"]["sha"], cell["awm"]["paths"])
+            # Read on the host by run_task.sh: one read-only bind for the agent sandbox.
+            environment["POST_TRAIN_BENCH_EXTRA_BINDS"] = f"{checkout['dir']}:{AWM_MOUNT}:ro"
+            # Forwarded into the sandbox by the scaffold's env_passthrough.txt.
+            environment["AWM_SANDBOX_SETUP"] = cell["awm"]["setup"]
+            environment["AWM_CHECKOUT_SHA"] = cell["awm"]["sha"]
+        launches.append(Launch(cell["id"], command, environment, checkout))
     if len({launch.cell_id for launch in launches}) != len(launches):
         raise ExperimentError("launch result ids are not unique")
     return launches
@@ -378,6 +629,8 @@ def local_issues(
             elif not _is_git_tracked(PTB_ROOT, relative):
                 issues.append(f"untracked PTB task asset cannot enter frozen source: {relative}")
     for cell in selected_cells:
+        if cell.get("awm"):
+            issues.extend(_awm_issues(str(cell["id"]), cell["awm"]))
         for name in ("solve.sh", "api_keys.json", "profile.env"):
             relative = f"agents/{cell['agent']}/{name}"
             if not (PTB_ROOT / relative).is_file():
@@ -730,6 +983,9 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
                 "sha256": launch.environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"],
             }
             for launch in launches
+        },
+        "awm_checkouts": {
+            launch.cell_id: launch.checkout for launch in launches if launch.checkout
         },
         "site": {
             key: ptb_env.get(key, "")

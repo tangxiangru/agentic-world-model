@@ -316,6 +316,13 @@ def _ptb(args: argparse.Namespace) -> int:
     raise AssertionError(args.cmd)
 
 
+def _ptb_ops(args: argparse.Namespace) -> int:
+    from awm import ptb_ops
+
+    return {"reconcile": ptb_ops.reconcile_cli, "harvest": ptb_ops.harvest_cli,
+            "cancel": ptb_ops.cancel_cli}[args.op](args)
+
+
 def _slurm_queue(args: argparse.Namespace) -> int:
     import json
     import time
@@ -601,11 +608,36 @@ def build_parser() -> argparse.ArgumentParser:
         receipt_command.add_argument("--manifest", type=Path, default=default_manifest)
         receipt_command.set_defaults(func=_ptb)
 
+    # Operator commands (doc/reference/ptb_operator_runbook.md). Parsed here, imported
+    # only when run: a scientist sandbox ships awm/cli.py but not the operator's module.
+    rc = eps.add_parser("reconcile", help="what the queue says should happen now; --apply does it")
+    rc.add_argument("--queue", type=Path, default=Path("experiments/posttrainbench/queue.yaml"))
+    rc.add_argument("--apply", action="store_true")
+    rc.set_defaults(func=_ptb_ops, op="reconcile")
+    hv = eps.add_parser("harvest", help="bundle one cell's result under results/ptb/")
+    hv.add_argument("result_dir", nargs="?", default=None)
+    hv.add_argument("--batch", required=True)
+    hv.add_argument("--cell", required=True)
+    hv.add_argument("--job", required=True)
+    hv.add_argument("--job-name")
+    hv.add_argument("--state")
+    hv.add_argument("--out")
+    hv.set_defaults(func=_ptb_ops, op="harvest")
+    cn = eps.add_parser("cancel", help="scancel one PENDING job named in a tracked receipt")
+    cn.add_argument("--receipt", type=Path, required=True)
+    cn.add_argument("--cell", required=True)
+    cn.add_argument("--reason", required=True)
+    cn.set_defaults(func=_ptb_ops, op="cancel")
+
     from awm.exp_protocol import cli as exp_protocol_cli
     from awm.wma import cli as wma_cli
 
     exp_protocol_cli.register(sub)
     wma_cli.register(sub)
+
+    from awm import sandbox
+
+    sandbox.register(sub)
     return p
 
 

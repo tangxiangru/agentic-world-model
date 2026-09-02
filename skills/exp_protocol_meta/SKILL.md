@@ -33,15 +33,23 @@ itself are a separate, human decision.
    PostTrainBench is large; one cell per variant decides nothing.
 4. **Held-out task.** One task is never used for iteration; it is run only to
    confirm a change generalises before it becomes the baseline.
-5. **Launch.** Every scientist cell must run
-   `awm exp_protocol install --target /home/ben/task --tool <claude|codex>`
-   before the prompt is handed to the agent, with `AWM_EXP_PROTOCOL_DIR`
-   pointing at the variant's checkout of `skills/exp_protocol`. Use the
-   committed batch launcher (`awm ptb`, manifests under
-   `experiments/posttrainbench/`); do not hand-craft sbatch files.
-6. **Collect.** When the cells finish:
+5. **Launch.** A scientist cell uses the `claude_vertex_max_awm` scaffold and
+   declares, in its manifest cell, an `awm` block: the variant's commit
+   (`sha`), `paths` = the six entries of `EXP_PROTOCOL_SHIP` in
+   `awm/ptb_experiments.py` (the CLI, `awm/exp_protocol`, `skills/exp_protocol`
+   and nothing else), and `setup: "--exp-protocol --tool claude"`. The
+   launcher ships exactly those paths of that commit into the sandbox,
+   read-only, and the scaffold runs `awm sandbox setup` before the prompt.
+   The meta skill, the docs, and anything of the world-model agent
+   (`awm/wma`, `skills/wma*`) can never be shipped: the launcher refuses
+   them by name, and refuses `awm` or `skills` wholesale. Use the committed batch launcher (`awm ptb`, manifests
+   under `experiments/posttrainbench/`) and the queue file the operator
+   reconciles (`doc/reference/ptb_operator_runbook.md`); do not hand-craft
+   sbatch files or run `sbatch` yourself.
+6. **Collect.** Results come back as bundles the operator commits under
+   `results/ptb/<batch>/<cell>/`:
    ```bash
-   awm exp_protocol collect <result>/<cell>/task ... --csv > round-NN.csv
+   awm exp_protocol collect results/ptb/<batch>/*/task --csv > round-NN.csv
    ```
    `metrics.md` defines each column and what a move in it means.
 7. **Analyse.** Per variant: mean and range of `accuracy`; sum of

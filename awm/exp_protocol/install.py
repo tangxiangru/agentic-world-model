@@ -1,8 +1,10 @@
 """Put the scientist skill where the scientist's tool will find it.
 
-Claude Code discovers ``.claude/skills/<name>/SKILL.md``; Codex reads
-``AGENTS.md``. The skill itself lives once, at ``skills/exp_protocol/``;
-the rest is a symlink and a marked block. The meta skill is never copied:
+Claude Code discovers ``.claude/skills/<name>/SKILL.md`` and reads
+``CLAUDE.md``; Codex reads ``AGENTS.md``. The skill itself lives once, at
+``skills/exp_protocol/``; the rest is a symlink and one marked block in each
+tool's instruction file, so the protocol is pointed at explicitly and not left
+to whether the tool decides to open the skill. The meta skill is never copied:
 a scientist must not read how it is being iterated on.
 """
 
@@ -10,6 +12,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 from pathlib import Path
 
 from .preflight import skill_dir
@@ -31,7 +34,19 @@ class InstallError(ValueError):
     pass
 
 
-def _agents_md(path: Path) -> Path:
+def _make_writable(root: Path) -> None:
+    if not root.is_dir():
+        return
+    for path in (root, *root.rglob("*")):
+        if path.is_symlink():
+            continue
+        try:
+            path.chmod(path.stat().st_mode | stat.S_IWUSR)
+        except OSError:
+            pass
+
+
+def _pointer_block(path: Path) -> Path:
     existing = path.read_text() if path.is_file() else ""
     if BEGIN in existing and END in existing:
         head, rest = existing.split(BEGIN, 1)
@@ -60,7 +75,10 @@ def install(target: Path, tool: str = "both") -> list[Path]:
     if dst.is_symlink():
         dst.unlink()  # a link to somewhere else is not the skill; the real files go here
     # Merge-copy: the skill's files are refreshed, anything the scientist added alongside them stays.
+    _make_writable(dst)  # a previous copy from a read-only source would refuse the refresh
     shutil.copytree(src, dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # The copy belongs to the scientist, whatever mode the source had (a read-only mount, say).
+    _make_writable(dst)
     written.append(dst)
 
     if tool in ("claude", "both"):
@@ -72,7 +90,8 @@ def install(target: Path, tool: str = "both") -> list[Path]:
             shutil.rmtree(link)
         os.symlink("../../skills/exp_protocol", link)
         written.append(link)
+        written.append(_pointer_block(target / "CLAUDE.md"))
 
     if tool in ("codex", "both"):
-        written.append(_agents_md(target / "AGENTS.md"))
+        written.append(_pointer_block(target / "AGENTS.md"))
     return written
