@@ -11,6 +11,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOL = REPO / "tools" / "exp_protocol_cell_read.py"
 BUNDLE = REPO / "results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r05"
 RELOCKED_BUNDLE = REPO / "results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r07"
+INLINE_LOCK_BUNDLE = REPO / "results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r09"
 
 
 def _load():
@@ -67,4 +68,17 @@ def test_a_close_time_relock_does_not_turn_the_original_launch_into_a_violation(
     ).stdout
     assert "exp-05:" in out
     assert "launch 17:12:36Z AFTER lock 17:12:32Z" in out
+    assert "lock_before_launch=5/5" in out
+
+
+@pytest.mark.skipif(not INLINE_LOCK_BUNDLE.exists(), reason="the p00r09 bundle is not checked out")
+def test_an_inline_lock_then_launch_is_ordered_by_shell_semantics():
+    out = subprocess.run(
+        [sys.executable, str(TOOL), str(INLINE_LOCK_BUNDLE)],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert "exp-07:" in out
+    assert "AFTER inline lock" in out
     assert "lock_before_launch=5/5" in out

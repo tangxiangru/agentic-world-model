@@ -166,11 +166,26 @@ def main(bundle):
                     if t is not None:
                         prior_locks = [lock_time for lock_time in lock_times if lock_time <= t]
                         effective_lock = max(prior_locks) if prior_locks else min(lock_times)
-                        hit = (t, cmd, effective_lock)
+                        inline_lock = re.search(
+                            rf"\bawm\s+exp_protocol\s+lock\b[^;\n]*\b{re.escape(cid)}\b",
+                            cmd,
+                        )
+                        lock_precedes_launch = bool(
+                            inline_lock
+                            and invokes_key
+                            and inline_lock.start() < invokes_key.start()
+                        )
+                        hit = (t, cmd, effective_lock, lock_precedes_launch)
                         break
             if hit:
-                ok = hit[0] >= hit[2]
-                lbl = f"launch {hit[0]:%H:%M:%S}Z {'AFTER' if ok else 'BEFORE'} lock {hit[2]:%H:%M:%S}Z"
+                ok = hit[3] or hit[0] >= hit[2]
+                if hit[3]:
+                    lbl = (
+                        f"launch {hit[0]:%H:%M:%S}Z AFTER inline lock command "
+                        f"(lock recorded {hit[2]:%H:%M:%S}Z)"
+                    )
+                else:
+                    lbl = f"launch {hit[0]:%H:%M:%S}Z {'AFTER' if ok else 'BEFORE'} lock {hit[2]:%H:%M:%S}Z"
                 lbl_results.append(ok)
             else:
                 lbl = f"launch not found (key={key}, out={out_key})"
