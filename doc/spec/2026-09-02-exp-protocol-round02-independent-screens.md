@@ -28,7 +28,7 @@ planner 的要求先回退再添加：每个候选 commit 的规程树与 guard 
 | C | `SKILL.md` 规则 2 加一段：n 必须承载所声称的差距，交付决定不得少于 500 题（A、B 不在树内） | `7f117a0` | `beef82de` | `…-r02-c-eval-n-x4`，`n02r01–04` |
 | 漂移对 | 无改动，guard 本身 | `4ae3d87` | `189319d6` | `…-r02-guard-drift-x2`，`g02r01–02`，`run_index: 3` |
 
-commit `97081ef` 把分支 head 的规程树还原为 guard 树；三个候选只存在于各自的 commit 中，
+commit `6853a14` 把分支 head 的规程树还原为 guard 树；三个候选只存在于各自的 commit 中，
 manifest 以 `awm.sha` + `awm.protocol_tree` 冻结，operator 从指定 sha materialize。
 `exp_protocol_meta` 未改动。
 
