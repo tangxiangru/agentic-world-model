@@ -1,7 +1,7 @@
 # WMA Round 01(在线):baseline skill v0.2 对无 WMA 对照,GSM8K / gemma-3-4b-pt
 
 **日期**:2026-09-02
-**状态**:生效;第一轮在线批次,四个 immutable manifest 同时排队
+**状态**:生效;第一轮在线批次,六个 immutable manifest 异步排队
 **line**:`gangda_wma_evolve`
 **subqueue**:`gangda_wma_evolve`(`slurm2-a3nodesetondem-[2-3]`,16 GPU)
 **基础合同**:`doc/spec/2026-09-02-wma-gsm8k-gemma4b-iteration-basis.md`(§二 B、§九)
@@ -65,7 +65,7 @@ ls "$dest/train" | wc -l      # 143 个 r-xxxxxxxx 目录,没有 test
 目录一到就自动提交;`ctl` 臂不受影响。receipt 的 `environment` 里会留下
 `POST_TRAIN_BENCH_WMA_HISTORY`,分析时核对它就是这条路径。
 
-## 四个 immutable batch,一次排队
+## 六个 immutable batch,异步排队
 
 | manifest | 臂 | cells | `run_index` | 全局观测 |
 |---|---|---|---|---|
@@ -73,15 +73,19 @@ ls "$dest/train" | wc -l      # 143 个 r-xxxxxxxx 目录,没有 test
 | `wma-gsm8k-gemma4b-high-r01-ctl-x8` | ctl | `c01r01..c01r08` | 1 | ctl 1–8 |
 | `wma-gsm8k-gemma4b-high-r01-wma-b-x8` | wma | `w02r01..w02r08` | 2 | wma 9–16 |
 | `wma-gsm8k-gemma4b-high-r01-ctl-b-x8` | ctl | `c02r01..c02r08` | 2 | ctl 9–16 |
+| `wma-gsm8k-gemma4b-high-r01-wma-c-x8` | wma | `w03r01..w03r08` | 3 | wma 17–24 |
+| `wma-gsm8k-gemma4b-high-r01-ctl-c-x8` | ctl | `c03r01..c03r08` | 3 | ctl 17–24 |
 
-每个 manifest 内 `replicate: 1..8`(schema 要求),`run_index` 区分两个 immutable batch。
-队列顺序就是上表:第一波 8 wma + 8 ctl 占满 16 卡,后两项是待排缓冲,任何 cell 结束
-就有下一个顶上。四批都不依赖任何结果,提交时没有任何 formal 分数被观察过。前两批
-是不可替换的 core-16(两臂各 8);后两批是配对的 precision extension,不能替换 core
-里失败或低分的 cell。报告同时给 core-16 与 all-32。
+每个 manifest 内 `replicate: 1..8`(schema 要求),`run_index` 区分三个 immutable batch。
+队列顺序就是上表:第一波 8 wma + 8 ctl 占满 16 卡,后四项是待排缓冲,任何 cell 结束
+就有下一个顶上。六批都不依赖任何结果。前四批提交时没有 formal 分数被观察过；
+`-c` 两批于 2026-09-02 14:07 UTC 冻结，当时第一波仍全部 RUNNING、四个 manifest 的
+`complete=0`，所以也不是结果驱动的追加。前两批是不可替换的 core-16(两臂各 8)；
+后四批是两组配对 precision extension，不能替换 core 里失败或低分的 cell。报告依次给
+core-16、all-32 与 all-48 sensitivity，任何结论都不按分数选择 cohort。
 
-`-b` 两批的 `replicate` 在汇总时对应各臂的全局 9–16;两批合并的前提是 receipt 指向
-同一 PTB commit(`2af3ccd`)与同一 judge 容器。
+`-b` / `-c` 两批的 `replicate` 在汇总时分别对应各臂的全局 9–16 / 17–24；合并的前提是
+receipt 指向同一 PTB commit(`62203e4`)与同一 judge 容器。
 
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
