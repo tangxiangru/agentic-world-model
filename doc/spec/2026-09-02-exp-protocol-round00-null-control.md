@@ -37,8 +37,9 @@ candidate 对 baseline 的比较都在"装了规程"这个前提内进行；如�
 
 ## 第二批（2026-09-02 12:40 UTC 追加）
 
-`exp-protocol-gsm8k-gemma4b-high-r00-nullctl-b-x8`：合同逐字段相同的第二个 immutable batch，
-cells `c01r01..c01r08`，即零点的第 9–16 个重复。它排在 v3 baseline 之后作为待排缓冲：第一波
+`exp-protocol-gsm8k-gemma4b-high-r00-nullctl-b-x8`：执行合同相同的第二个 immutable batch，
+`run_index: 2`，cells `c01r01..c01r08` 在本 manifest 内仍用 schema 要求的
+`replicate: 1..8`，汇总时对应零点的全局第 9–16 个观测。它排在 v3 baseline 之后作为待排缓冲：第一波
 （8 对照 + 8 baseline）结束后，剩余 8 个 baseline 与这 8 个对照一起填满第二波，对照与 baseline
 各达 16 个。它不依赖任何结果；分析时两批对照合并，前提是 receipt 指向同一 PTB commit。
 
