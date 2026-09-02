@@ -33,6 +33,8 @@ scientist；它并行运行受不同 protocol commit 约束的 scientist cells�
 | context | 1,000,000 tokens |
 | agent time | `PTB_NUM_HOURS=10` |
 | cell resources | 1 H100、16 CPU、128 GiB RAM、400 GiB scratch |
+| canonical judges | `official` profile = Claude Opus 5 high through Vertex |
+| judge container | `opus_5.sif` @ `35f287e7b17d62ab44cd95db26dfeeac166943daed5f7b557b008bae51acc759` |
 | minimum repeats | 每个 task × protocol variant 至少 2 个正式、独立、有效 cell |
 | initial baseline | `9680574019311c98b0171c3df8d81f2294a21244`（短 SHA `9680574`） |
 

@@ -39,6 +39,10 @@
    本线随后把 `POST_TRAIN_BENCH_SLURM_SUBQUEUE` 设为
    `gangda_exp-protocol-evolve`，并把 `POST_TRAIN_BENCH_SLURM_NODELIST` 设为
    `slurm2-a3nodesetondem-[0-1]`。两者不匹配时 `awm ptb check` 必须失败。
+   canonical judge 同步设为 `POST_TRAIN_BENCH_JUDGE_PROFILE=official`、
+   `POST_TRAIN_BENCH_JUDGE_AUTH_MODE=vertex`、容器 `opus_5.sif` 与 SHA-256
+   `35f287e7b17d62ab44cd95db26dfeeac166943daed5f7b557b008bae51acc759`。不要保留
+   旧的 `chatgpt + gpt_5_5.sif` 显式覆盖。
 5. **确认 GitHub 推送能力**,操作员每轮都要 push 到 `tangxiangru/agentic-world-model`:
    ```bash
    gh auth status
