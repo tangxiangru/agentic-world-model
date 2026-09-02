@@ -63,6 +63,16 @@ x8 batch 成对，只用于提高方差/规程执行率估计精度并维持至�
 formal 16 cells 一旦 gate 打开便作为同一 immutable manifest 异步提交。后续分析不等待
 无关队列；但不得在本批结果出现前预造依赖 Round 00 结论的 candidate。
 
+### Strict-site 补跑（held，2026-09-02 21:10 UTC 追加）
+
+p00r08（job 90482）因会话结束杀掉训练而 FAILED；p00r11–p00r16 与整个 baseline-b 波在 Slurm 中
+丢失 `ReqNodeList`，跑在冻结节点之外，只进 sensitivity。
+`exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8`（batch id `…-v1`）逐字段复用 baseline-b
+的合同（protocol tree `08674f2c`、awm `eaf5091`、setup `--exp-protocol --tool claude`），只换标识：
+cells `p00s01..p00s08`、`run_index: 3`（1 = core x16，2 = baseline-b）。以 `want: held` 提交并登记，
+保持 `PENDING(JobHeldUser)`；放行门见 `doc/spec/2026-09-02-exp-protocol-round01-session-guard.md`。
+它为 Round 01 的 strict guard 补跑提供同样大小的 strict comparator；不替换 core-16 中任何已终结的观测。
+
 ## 收割与分析门
 
 所有 cells 都照常收割，失败也保留。用于统计的 cell 必须同时：

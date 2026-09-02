@@ -51,6 +51,18 @@ candidate 对 baseline 的比较都在"装了规程"这个前提内进行；如�
 合同保持一致且仍不安装 protocol。前两批 16 个 control 是不可替换的 core set；第三批
 不能替换其中失败或低分的 cell。报告同时展示 core-16 与 all-24。
 
+## 第四批：strict-site 补跑（held，2026-09-02 21:10 UTC 追加）
+
+nullctl-b（`c01r01..c01r08`，jobs 90491–90498）在 Slurm 中丢失了 `ReqNodeList`，全部跑在冻结的
+`slurm2-a3nodesetondem-[0-1]` 之外；它们照常收割，但按 placement quarantine 只进 sensitivity，
+不进 primary。`exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8`（batch id `…-v1`）逐字段
+复用 nullctl-b 的合同，只换标识：cells `c01s01..c01s08`、`run_index: 4`（1 = nullctl，2 = nullctl-b，
+3 = 已取消的 nullctl-c；提交过的 run_index 不复用）。它以 `want: held` 提交并登记，保持
+`PENDING(JobHeldUser)`，只有通过 `doc/spec/2026-09-02-exp-protocol-round01-session-guard.md` 的
+放行门（`OWNERSHIP OK`、逐 job `ReqNodeList` 与 receipt 一致、原生两节点隔离恢复）才可 release。
+它的作用是让零点在 primary 口径下至少保有 8 个有效 cell，即使首波对照再有 truncated；
+不替换 core set 里任何已终结的观测，报告继续同时给出 core 与 all。
+
 ## 分析
 
 对照与 baseline 用同一套指标：accuracy 的 mean / range / stderr。规程指标
