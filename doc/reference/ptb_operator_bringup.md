@@ -10,7 +10,7 @@
 
 1. **建 worktree**,与主线 checkout 分开,放在数据盘上:
    ```bash
-   cd <主线 checkout>            # 已在跑 gangda_trial_0828 批次的那个目录
+   cd <主线 checkout>            # 主线 `gangda-dev` 的那个目录,历史批次是以它的旧名 `gangda_trial_0828` 提交的
    git fetch origin
    git worktree add /data/<user>/worktrees/agentic-world-model_exp-protocol-evolve gangda_exp_protocol_evolve
    cd /data/<user>/worktrees/agentic-world-model_exp-protocol-evolve
