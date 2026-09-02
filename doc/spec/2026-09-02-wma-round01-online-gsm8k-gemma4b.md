@@ -179,6 +179,13 @@ setting,而不是同一 setting 的更多重复。落实:
   `staged` 在 reconcile 中不产生 Slurm action;若意外发现 receipt 则 fail-closed `blocked`,
   必须由 operator 明确选择 `submitted` 或 `cancelled` 后才能继续。
   若旧 r01..04 先启动,它们直接成为该 cohort,不再提交同 cell 的 x4 duplicate。
+
+22:10 UTC 条件发生变化:27 个 v2 job 被 Slurm 自动 requeue 后全部带正确 owned-node
+`ReqNodeList`,safe PENDING 增至 60。此时旧 `w04r01..05` 已启动,所以复用
+`w04/c04 r01..04` 为 repeats-4 baseline、`w04r05` 单列 sensitivity;从 tracked receipt
+精确取消仍 PENDING 的 `w04r06..08`、`c04r05..08`、全部 `w05/c05` 共 23 job。
+取消后 16/16 owned GPU 仍占用、safe PENDING=36;未触碰 RUNNING。两个 x4 duplicate
+从 `staged` 改为 `cancelled`(从未有 receipt,从未提交)。
 - 43 个 RUNNING cell(首波 16 + v2 27)不动;5 个 ctl-c 重试 cell(90786–90790)不动。
   不能先落到“撤回后 5 + 8 = 13”的中间状态:13 虽在检查瞬间高于 8,但一波启动后会
   变成 0。旧 32 个 pending 是替代候选 submit-ready 前的安全库存。

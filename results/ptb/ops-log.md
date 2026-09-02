@@ -264,3 +264,7 @@
 - 2026-09-02T22:12:27+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-b-x8-v3/w04r03 job=90678 RUNNING: sidecar: log empty; 0 transcript(s); solve_out 108 lines
 - 2026-09-02T22:12:27+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-b-x8-v3/w04r04 job=90679 RUNNING: sidecar: log empty; 0 transcript(s); solve_out 81 lines
 - 2026-09-02T22:12:28+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-b-x8-v3/w04r05 job=90680 RUNNING: no sidecar log; 0 transcript(s); solve_out None lines
+- 2026-09-02T22:15:54+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-b-x8-v3/w04r06..08 jobs=90681..90683 (PENDING): user-set repeats=4; r01..05 had started, so r05 is sensitivity-only and no RUNNING cell was touched
+- 2026-09-02T22:15:55+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r05..08 jobs=90688..90691 (PENDING): retain c04r01..04 as the matched four-cell control
+- 2026-09-02T22:15:57+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v3/w05r01..08 jobs=90692..90699 (PENDING): redundant same-setting inventory after repaired v2 routing restored the safe queue guard
+- 2026-09-02T22:16:00+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v3/c05r01..08 jobs=90700..90707 (PENDING): paired redundant inventory; post-action safe PENDING=36

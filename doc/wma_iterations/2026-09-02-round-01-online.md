@@ -267,15 +267,15 @@ The 22:10 check found 60 PENDING jobs. All 60 had the exact owned-node
 number and missed the 27 repaired v2 jobs. Future checks count every pending
 receipt job by live `ReqNodeList`, never by submission era or job-id threshold.
 
-The repeats-4 redesign must preserve that invariant during the transition.
-The 32 routed v3 jobs remain submitted safety inventory until all Round 02
-replacement manifests are frozen and submit-ready. Cancellation and replacement
-are one previewed cutover leaving at least 24 safe PENDING jobs; the operator
-must not apply the proposed intermediate state of 13. If an inventory job starts
-first, it finishes naturally and is analysed in its actual cohort. The staged
-x4 replacement reuses the old x8 batches' r01..04 cell ids, so it stays
-`want: staged` until cutover; this state cannot submit and fails closed if a
-receipt appears. Any old cell that starts is reused, never duplicated.
+The repeats-4 redesign preserved that invariant during the transition. Once the
+27 v2 jobs were safely requeued, the operator reused old `w04/c04 r01..04` as
+the four-cell baseline and withdrew the never-submitted x4 duplicates. Five WMA
+cells (`w04r01..05`) had already started, so r05 finishes naturally and is
+sensitivity-only. Exact tracked-receipt cancellation removed only still-PENDING
+redundancy: `w04r06..08`, `c04r05..08`, and every `w05/c05 r01..08` (23 jobs,
+90681–90683 and 90688–90707 with the gaps corresponding to retained cells).
+Post-action state was 16/16 owned GPUs allocated and 36 safely routed PENDING
+jobs. No RUNNING job or other queue was touched.
 
 ## Evidence
 
