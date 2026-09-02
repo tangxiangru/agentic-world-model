@@ -209,6 +209,34 @@ def test_apply_submits_through_the_launcher_and_tracks_the_receipt(repo, tmp_pat
     assert ops.plan([ENTRY], root) == []
 
 
+def test_one_round_submits_every_manifest_before_any_receipt_lands(repo, tmp_path: Path, monkeypatch) -> None:
+    """The launcher freezes the source only from a clean tree. Copying the first receipt into
+    results/ before submitting the second manifest blocked the second (round 01, 2026-09-02);
+    now every submit runs first, and a superseded blocked.md goes away with its receipt."""
+    root, _ = repo
+    second = root / "experiments" / "posttrainbench" / "ep-r02.yaml"
+    second.write_text(yaml.safe_dump(_small_manifest("ep-r02"), sort_keys=False))
+    entry2 = {"manifest": "experiments/posttrainbench/ep-r02.yaml", "want": "submitted", "why": "buffer"}
+    (root / "results/ptb/ep-r02").mkdir(parents=True)
+    (root / "results/ptb/ep-r02/blocked.md").write_text("# ep-r02: submission blocked\n")
+    counter = iter(range(500, 600))
+
+    def fake_submit(manifest, *, pilot=False, cell_ids=None):
+        # the launcher's gate: anything already copied under results/ makes the tree dirty
+        if list((root / "results" / "ptb").rglob("formal-*.json")):
+            raise ptb.ExperimentError("formal source freeze requires clean top-level and PTB worktrees")
+        return _receipt(tmp_path / "vol", manifest["batch_id"], "formal",
+                        [("p01r1", str(next(counter))), ("p01r2", str(next(counter)))])
+
+    monkeypatch.setattr(ops, "submit_batch", fake_submit)
+    lines = ops.apply(ops.plan([ENTRY, entry2], root), root)
+    assert [line.split(":")[0] for line in lines] == ["submit ep-r01", "submit ep-r02"]
+    assert (root / "results/ptb/ep-r01/formal-2026-09-02T000000.json").is_file()
+    assert (root / "results/ptb/ep-r02/formal-2026-09-02T000000.json").is_file()
+    assert not (root / "results/ptb/ep-r02/blocked.md").exists()
+    assert ops.plan([ENTRY, entry2], root) == []
+
+
 def test_a_dirty_worktree_blocks_submits_but_not_harvests(repo, tmp_path: Path, monkeypatch) -> None:
     root, states = repo
     monkeypatch.setattr(ops, "_worktree_dirty", lambda repo_root: "?? results/ptb/x")

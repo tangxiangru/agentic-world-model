@@ -555,22 +555,34 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
         _log(repo_root, line)
         written.append(line)
         submits = []
+    # Every submit runs before anything is written under results/: the launcher freezes
+    # the source only from a clean tree, and copying the first receipt in would have
+    # blocked the second manifest of the same round (seen 2026-09-02, round 01).
+    submitted: list[tuple[Action, Path]] = []
+    blocked_lines: list[str] = []
     for action in submits:
         manifest = ptb.load_manifest(repo_root / str(action.manifest))
         try:
             receipt_path = submit_batch(manifest, pilot=action.pilot)
         except ptb.ExperimentError as exc:
+            blocked_lines.append(f"blocked submit {action.batch}{' (pilot)' if action.pilot else ''}: "
+                                 f"{str(exc).splitlines()[0]}")
             blocked = repo_root / RESULTS_ROOT / action.batch / "blocked.md"
             blocked.parent.mkdir(parents=True, exist_ok=True)
             blocked.write_text(f"# {action.batch}: submission blocked\n\n{_now()}\n\n```\n{exc}\n```\n",
                                encoding="utf-8")
-            line = f"blocked submit {action.batch}{' (pilot)' if action.pilot else ''}: {str(exc).splitlines()[0]}"
-            _log(repo_root, line)
-            written.append(line)
             continue
-        dst = repo_root / RESULTS_ROOT / action.batch / Path(receipt_path).name
+        submitted.append((action, Path(receipt_path)))
+    for line in blocked_lines:
+        _log(repo_root, line)
+        written.append(line)
+    for action, receipt_path in submitted:
+        dst = repo_root / RESULTS_ROOT / action.batch / receipt_path.name
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(receipt_path, dst)
+        stale = dst.parent / "blocked.md"
+        if stale.is_file():
+            stale.unlink()  # an earlier round's refusal, now superseded by the receipt
         jobs = ptb.load_receipt(dst)["jobs"]
         line = (f"submit {action.batch}{' (pilot)' if action.pilot else ''}: "
                 f"{len(jobs)} job(s) {','.join(j['job_id'] for j in jobs)} -> {dst.relative_to(repo_root)}")
