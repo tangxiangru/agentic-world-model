@@ -195,3 +195,19 @@ def test_a_plain_backend_without_a_transcript_still_works(tmp_path) -> None:
     backends.CommandBackend("fake", [str(exe)]).run(b)
     v = schema.load_verdict(b.verdict_path)
     assert "usd" not in v["cost"] and "access" not in v
+
+
+def test_add_dir_also_covers_where_the_history_links_point(tmp_path) -> None:
+    """history/<run> are symlinks into the corpus; Claude Code resolves them, so the corpus side must be allowed too."""
+    corpus_train = tmp_path / "corpus" / "train"
+    (corpus_train / "r-a").mkdir(parents=True)
+    (corpus_train / "r-b").mkdir()
+    hist = tmp_path / "hist"
+    hist.mkdir()
+    os.symlink(corpus_train / "r-a", hist / "r-a")
+    os.symlink(corpus_train / "r-b", hist / "r-b")
+    b = brief(tmp_path)
+    b.history_dir = hist
+    argv = backends.get_backend("claude", model="m").argv(b)
+    dirs = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
+    assert dirs == [str(hist.resolve()), str(corpus_train.resolve())]

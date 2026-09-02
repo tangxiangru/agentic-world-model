@@ -23,9 +23,12 @@ def _budget(spec: str | None):
         if not item:
             continue
         key, sep, val = item.partition("=")
-        if not sep or key not in ("cpu", "gpu", "wall"):
-            raise ValueError(f"--budget expects cpu=,gpu=,wall= (minutes), got {item!r}")
-        setattr(b, f"{key}_min", float(val))
+        if not sep or key not in ("cpu", "gpu", "wall", "turns"):
+            raise ValueError(f"--budget expects cpu=,gpu=,wall= (minutes) and turns=, got {item!r}")
+        if key == "turns":
+            b.max_turns = int(val)
+        else:
+            setattr(b, f"{key}_min", float(val))
     return b
 
 
@@ -226,7 +229,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     r.add_argument("--backend", choices=("heuristic", "claude", "codex"), default="heuristic")
     r.add_argument("--model")
     r.add_argument("--mode", choices=("offline", "online"), default="online")
-    r.add_argument("--budget", help="cpu=,gpu=,wall= in minutes")
+    r.add_argument("--budget", help="cpu=,gpu=,wall= in minutes, turns= for the agent")
     r.add_argument("--history", help="read-only directory of other runs' cards")
     r.add_argument("--tag", help="name this verdict (exp-NN.verdict.<tag>.json) so several agents can review one card")
     r.add_argument("--jobs", type=int, default=4, help="how many cards to review concurrently")
@@ -252,7 +255,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     rp.add_argument("--seed", type=int, default=0)
     rp.add_argument("--backend", choices=("heuristic", "claude", "codex"), default="heuristic")
     rp.add_argument("--model")
-    rp.add_argument("--budget", help="cpu=,gpu=,wall= in minutes")
+    rp.add_argument("--budget", help="cpu=,gpu=,wall= in minutes, turns= for the agent")
     rp.add_argument("--limit", type=int, help="review at most this many samples this invocation")
     rp.add_argument("--build-only", action="store_true", help="build the sessions, review nothing")
     rp.set_defaults(func=_replay)

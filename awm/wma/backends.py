@@ -139,6 +139,20 @@ def _fence(brief: Brief) -> list[Path]:
     return roots
 
 
+def history_dirs(history: Path) -> list[Path]:
+    """The history link's target, then each distinct parent of what its entries point at (the corpus side)."""
+    out: list[Path] = []
+    try:
+        out.append(history.resolve())
+        for entry in sorted(history.iterdir()):
+            parent = entry.resolve().parent
+            if parent not in out:
+                out.append(parent)
+    except OSError:
+        pass
+    return out
+
+
 def scan_transcript(stdout: str, brief: Brief) -> tuple[dict[str, Any], dict[str, Any]]:
     """Read a Claude Code stream-json transcript: measured cost, and every path the agent touched."""
     cost: dict[str, Any] = {}
@@ -204,7 +218,8 @@ class CommandBackend(Backend):
             out = [a for i, a in enumerate(out) if not (a == "--model" and (i + 1 >= len(out) or out[i + 1].startswith("-")))]
         if brief is not None:
             if self.history_flag and brief.history_dir:
-                out += [self.history_flag, str(Path(brief.history_dir).resolve())]
+                for d in history_dirs(Path(brief.history_dir)):
+                    out += [self.history_flag, str(d)]
             if self.max_turns_flag and brief.budget.max_turns:
                 out += [self.max_turns_flag, str(int(brief.budget.max_turns))]
         return out

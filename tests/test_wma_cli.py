@@ -156,3 +156,11 @@ def test_the_cli_builds_and_serves_the_protocol_without_the_wma_package(monkeypa
     with pytest.raises(SystemExit):
         parser.parse_args(["wma", "status", "--dir", "x"])
     assert parser.parse_args(["exp_protocol", "index", "--dir", "x"]).cmd == "index"
+
+
+def test_budget_accepts_turns() -> None:
+    from awm.wma.cli import _budget
+    b = _budget("wall=8,turns=25")
+    assert b.wall_min == 8 and b.max_turns == 25
+    with pytest.raises(ValueError):
+        _budget("steps=3")
