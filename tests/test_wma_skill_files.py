@@ -18,8 +18,20 @@ def test_skill_md_names_the_levels_the_file_and_the_offline_rule() -> None:
     text = (review.default_skill_dir() / "SKILL.md").read_text()
     assert text.startswith("---\nname: wma\n")
     assert re.search(r"^description: .+", text, re.MULTILINE)
-    for needle in schema.LEVELS + ("verdict.json", "static_check", "Offline mode", "Not a new direction"):
+    for needle in schema.LEVELS + ("verdict.json", "static_check", "Offline mode", "Not a new direction",
+                                   "change_types", "noise floor", "change_types.md"):
         assert needle in text, needle
+
+
+def test_the_manual_is_part_of_the_skill_and_names_every_change_type() -> None:
+    manual = review.default_skill_dir() / "change_types.md"
+    text = manual.read_text()
+    for t in [f"C{i}" for i in range(2, 19)] + ["C1a", "C1b"]:
+        assert f"**{t}**" in text, t
+    for needle in ("tier", "noise floor", "controlled", "max_model_len", "modules_to_save", "--limit"):
+        assert needle in text, needle
+    example = schema.load_verdict(review.default_skill_dir() / "verdict.example.json")
+    assert example["change_types"] and schema.validate_verdict(example).ok
 
 
 def test_repo_symlink_and_agents_md() -> None:
