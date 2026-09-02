@@ -312,7 +312,9 @@ def _ptb(args: argparse.Namespace) -> int:
             print(output)
             return 0
         if args.cmd == "recover-judges":
-            output = ptb.submit_official_judge_recovery(ptb.load_receipt(args.receipt))
+            output = ptb.submit_official_judge_recovery(
+                ptb.load_receipt(args.receipt), cell_ids=args.cell
+            )
             print(output)
             return 0
     except ptb.ExperimentError as exc:
@@ -625,6 +627,8 @@ def build_parser() -> argparse.ArgumentParser:
         receipt_command = eps.add_parser(command_name)
         receipt_command.add_argument("receipt", type=Path)
         receipt_command.add_argument("--manifest", type=Path, default=default_manifest)
+        if command_name == "recover-judges":
+            receipt_command.add_argument("--cell", action="append")
         receipt_command.set_defaults(func=_ptb)
 
     # Operator commands (doc/reference/ptb_operator_runbook.md). Parsed here, imported

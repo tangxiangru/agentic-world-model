@@ -280,6 +280,22 @@ def test_official_judge_recovery_selects_only_judge_only_failures(
     assert skipped == {"g02r1": ["missing or empty: metrics.json"]}
 
 
+def test_official_judge_recovery_rejects_a_requested_non_candidate(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ptb,
+        "official_judge_recovery_candidates",
+        lambda _receipt: (
+            [{"cell_id": "g01r1", "source_job_id": "101", "result_dir": "/result"}],
+            {},
+        ),
+    )
+
+    with pytest.raises(ptb.ExperimentError, match="not judge-only recovery candidates"):
+        ptb.submit_official_judge_recovery(
+            {"jobs": []}, cell_ids=["g02r1"]
+        )
+
+
 def test_official_judge_recovery_registers_held_jobs_before_release(
     tmp_path: Path, monkeypatch
 ) -> None:

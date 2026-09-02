@@ -1449,10 +1449,23 @@ def official_judge_recovery_candidates(
     return candidates, skipped
 
 
-def submit_official_judge_recovery(receipt: dict[str, Any]) -> Path:
+def submit_official_judge_recovery(
+    receipt: dict[str, Any], *, cell_ids: list[str] | None = None
+) -> Path:
     """Resume judge-only work with receipt-backed, held Slurm submissions."""
 
     candidates, skipped = official_judge_recovery_candidates(receipt)
+    if cell_ids:
+        requested = set(cell_ids)
+        if len(requested) != len(cell_ids):
+            raise ExperimentError("official judge recovery cell ids must be distinct")
+        available = {candidate["cell_id"]: candidate for candidate in candidates}
+        missing = sorted(requested - set(available))
+        if missing:
+            raise ExperimentError(
+                "requested cells are not judge-only recovery candidates: " + ", ".join(missing)
+            )
+        candidates = [available[cell_id] for cell_id in cell_ids]
     if not candidates:
         details = [f"{cell}: {', '.join(issues)}" for cell, issues in skipped.items()]
         raise ExperimentError(
@@ -1544,6 +1557,7 @@ def submit_official_judge_recovery(receipt: dict[str, Any]) -> Path:
             "subqueue": subqueue,
         },
         "skipped": skipped,
+        "selected_cells": [candidate["cell_id"] for candidate in candidates],
         "jobs": [],
     }
     output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
