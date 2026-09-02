@@ -42,3 +42,8 @@
 - 2026-09-02T22:10:38+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r02 job=90476 COMPLETED acc=0.7763 complete clean
 - 2026-09-02T22:30:27+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r06 job=90480 COMPLETED acc=0.7210 complete clean
 - 2026-09-02T22:50:26+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r07 job=90481 COMPLETED acc=0.7074 complete clean
+- 2026-09-02T23:19:55+00:00 submit exp-protocol-gsm8k-gemma4b-high-r02-a-decode-x4-v1 (held): 4 job(s) 90845,90846,90847,90848 -> results/ptb/exp-protocol-gsm8k-gemma4b-high-r02-a-decode-x4-v1/formal-2026-09-02T231840.376479+0000.json
+- 2026-09-02T23:19:55+00:00 submit exp-protocol-gsm8k-gemma4b-high-r02-b-vllm-sampling-x4-v1 (held): 4 job(s) 90849,90850,90851,90852 -> results/ptb/exp-protocol-gsm8k-gemma4b-high-r02-b-vllm-sampling-x4-v1/formal-2026-09-02T231905.895672+0000.json
+- 2026-09-02T23:19:56+00:00 submit exp-protocol-gsm8k-gemma4b-high-r02-c-eval-n-x4-v1 (held): 4 job(s) 90853,90854,90855,90856 -> results/ptb/exp-protocol-gsm8k-gemma4b-high-r02-c-eval-n-x4-v1/formal-2026-09-02T231931.496201+0000.json
+- 2026-09-02T23:19:56+00:00 submit exp-protocol-gsm8k-gemma4b-high-r02-guard-drift-x2-v1 (held): 2 job(s) 90857,90858 -> results/ptb/exp-protocol-gsm8k-gemma4b-high-r02-guard-drift-x2-v1/formal-2026-09-02T231955.566601+0000.json
+- 2026-09-02T23:19:58+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r09 job=90483 COMPLETED acc=0.6308 complete clean
