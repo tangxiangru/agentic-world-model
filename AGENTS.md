@@ -33,3 +33,23 @@
   jobs by GRES; never use the `a3` partition's whole-node `OverSubscribe=EXCLUSIVE` behavior for
   these studies. AWM full is an external queue and must not be registered in the `gangda`
   ownership registry; its own receipts remain under `wm-study-runtime`.
+
+# Skills
+
+Skills for agents working in this repository live in `skills/<name>/SKILL.md`
+(Agent Skills format; the same files serve Claude Code and Codex).
+
+- `skills/exp_protocol/SKILL.md` — the experiment protocol a scientist follows
+  when training or evaluating a model. Installed into a scientist's task
+  directory with `awm exp_protocol install --target <dir> --tool <claude|codex|both>`.
+- `skills/exp_protocol_meta/SKILL.md` — how the protocol itself is iterated on
+  the GPU cluster. For the iteration agent only; never installed for a scientist.
+  Both skills are visible in this checkout; the separation is enforced where it
+  matters, by `awm exp_protocol install`, which refuses to copy the meta skill.
+
+Codex: read the SKILL.md directly, or link a skill into `~/.codex/skills/`:
+`ln -s "$(pwd)/skills/exp_protocol_meta" ~/.codex/skills/exp_protocol_meta`.
+Claude Code discovers the same skills through the symlinks in `.claude/skills/`.
+
+The boundary between the protocol and the world-model policy is defined in
+`doc/reference/exp_protocol_and_wma_policy.md`.
