@@ -343,6 +343,7 @@ def test_reconcile_cli_prints_the_plan_without_apply(repo, monkeypatch, capsys) 
     assert main(["ptb", "reconcile"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("would submit ep-r01")
+    assert "awm.ptb_ops" in __import__("sys").modules  # imported only now, by the handler
     _queue(root)
     assert main(["ptb", "reconcile"]) == 0
     assert "nothing to do" in capsys.readouterr().out

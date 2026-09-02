@@ -494,7 +494,7 @@ def _awm_manifest() -> dict:
         cell["agent"] = "claude_vertex_max_awm"
         cell["awm"] = {
             "sha": sha,
-            "paths": ["awm", "skills/exp_protocol"],
+            "paths": list(ptb.EXP_PROTOCOL_SHIP),
             "setup": "--exp-protocol --tool claude",
         }
     return data
@@ -516,9 +516,11 @@ def test_an_awm_cell_ships_its_checkout_read_only(tmp_path: Path, monkeypatch) -
     assert (checkout / "skills" / "exp_protocol" / "SKILL.md").is_file()
     assert not (checkout / "skills" / "exp_protocol_meta").exists()
     assert not (checkout / "doc").exists()
+    assert not (checkout / "awm" / "ptb_ops.py").exists()
+    assert not (checkout / "awm" / "traj").exists()
     assert first.checkout == {
         "sha": sha,
-        "paths": ["awm", "skills/exp_protocol"],
+        "paths": list(ptb.EXP_PROTOCOL_SHIP),
         "dir": str(checkout),
         "digest": first.checkout["digest"],
     }
@@ -549,9 +551,10 @@ def test_an_awm_cell_needs_its_block_and_a_plain_cell_must_not_have_one() -> Non
 
 @pytest.mark.parametrize(
     "paths",
-    [["skills"], ["doc"], ["."], ["../awm"], ["/awm"], ["skills/exp_protocol_meta"], [], ["awm", ""]],
+    [["skills"], ["doc"], ["."], ["../awm"], ["/awm"], ["skills/exp_protocol_meta"], [], ["awm", ""],
+     ["awm"], ["awm/wma"], ["skills/wma"], ["skills/wma_meta"], ["awm/wma/estimator.py"]],
 )
-def test_awm_paths_may_not_reach_the_meta_skill_or_the_docs(paths: list[str]) -> None:
+def test_awm_paths_may_not_reach_the_meta_skill_the_wma_or_the_docs(paths: list[str]) -> None:
     data = _awm_manifest()
     data["cells"][0]["awm"]["paths"] = paths
     with pytest.raises(ptb.ExperimentError, match="awm.paths"):
@@ -571,11 +574,11 @@ def test_awm_sha_and_setup_are_checked() -> None:
 
 def test_awm_issues_name_a_missing_commit_or_path() -> None:
     sha = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD")
-    good = {"sha": sha, "paths": ["awm", "skills/exp_protocol"], "setup": "--exp-protocol"}
+    good = {"sha": sha, "paths": list(ptb.EXP_PROTOCOL_SHIP), "setup": "--exp-protocol"}
     assert ptb._awm_issues("p01r1", good) == []
     missing_commit = good | {"sha": "f" * 40}
     assert any("not in this repository" in issue for issue in ptb._awm_issues("p01r1", missing_commit))
-    missing_path = good | {"paths": ["awm", "skills/no_such_skill"]}
+    missing_path = good | {"paths": ["awm/cli.py", "skills/no_such_skill"]}
     assert any("skills/no_such_skill" in issue for issue in ptb._awm_issues("p01r1", missing_path))
 
 
@@ -584,12 +587,14 @@ def test_materialising_a_checkout_is_idempotent_and_refuses_the_meta_skill(
 ) -> None:
     monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path)
     sha = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD")
-    first = ptb.materialize_awm_checkout(sha, ["awm", "skills/exp_protocol"])
+    first = ptb.materialize_awm_checkout(sha, list(ptb.EXP_PROTOCOL_SHIP))
     stamp = (Path(first["dir"]) / ".awm-checkout.json").stat().st_mtime_ns
-    second = ptb.materialize_awm_checkout(sha, ["awm", "skills/exp_protocol"])
+    second = ptb.materialize_awm_checkout(sha, list(ptb.EXP_PROTOCOL_SHIP))
     assert second == first
     assert (Path(first["dir"]) / ".awm-checkout.json").stat().st_mtime_ns == stamp
     with pytest.raises(ptb.ExperimentError, match="exp_protocol_meta"):
         ptb.materialize_awm_checkout(sha, ["skills"])
+    with pytest.raises(ptb.ExperimentError, match="awm/wma"):
+        ptb.materialize_awm_checkout(sha, ["awm"])
     with pytest.raises(ptb.ExperimentError, match="not in this repository"):
-        ptb.materialize_awm_checkout("f" * 40, ["awm"])
+        ptb.materialize_awm_checkout("f" * 40, ["awm/cli.py"])

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,7 +23,7 @@ from awm import ptb_experiments as ptb
 from awm.exp_protocol import lineage
 from test_exp_protocol_cli import fill_plan, fill_result, write_jsonl
 
-SHIPPED = ["awm", "skills/exp_protocol"]
+SHIPPED = list(ptb.EXP_PROTOCOL_SHIP)
 
 
 def _sandbox_env(checkout: Path) -> dict[str, str]:
@@ -32,7 +33,29 @@ def _sandbox_env(checkout: Path) -> dict[str, str]:
         if k not in ("AWM_EXP_PROTOCOL_DIR", "AWM_DATA_ROOT", "PYTHONPATH")
     }
     env["PYTHONPATH"] = str(checkout)
+    # As in the PTB container. Without it an editable install of awm in the user
+    # site quietly supplies any module the checkout lacks, and the test cannot see
+    # that the shipped set is incomplete.
+    env["PYTHONNOUSERSITE"] = "1"
     return env
+
+
+def _ship_working_tree(paths_to_ship: list[str], into: Path) -> Path:
+    """The shipped set, copied from the working tree: the test checks the code as it is now.
+
+    The launcher's own git-archive path is covered by test_ptb_experiments; a
+    test that archived HEAD would pass or fail on the last commit, not on the
+    edit being made.
+    """
+    for rel in paths_to_ship:
+        src = paths.REPO_ROOT / rel
+        dst = into / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        else:
+            shutil.copy2(src, dst)
+    return into
 
 
 def _awm(checkout: Path, task: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -47,10 +70,9 @@ def _awm(checkout: Path, task: Path, *args: str) -> subprocess.CompletedProcess[
 
 
 @pytest.fixture
-def cell(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path / "vol")
+def cell(tmp_path: Path):
     sha = ptb._git(paths.REPO_ROOT, "rev-parse", "HEAD")
-    checkout = Path(ptb.materialize_awm_checkout(sha, SHIPPED)["dir"])
+    checkout = _ship_working_tree(SHIPPED, tmp_path / "home" / "ben" / "awm")
     task = tmp_path / "home" / "ben" / "task"
     task.mkdir(parents=True)
     return sha, checkout, task
@@ -61,6 +83,9 @@ def test_the_scientist_sees_the_protocol_and_nothing_about_its_iteration(cell) -
     assert not (checkout / "skills" / "exp_protocol_meta").exists()
     assert not (checkout / "doc").exists()
     assert not list(checkout.rglob("*exp_protocol_meta*"))
+    assert not list(checkout.rglob("*wma*"))
+    assert sorted(p.name for p in (checkout / "awm").iterdir()) == [
+        "__init__.py", "cli.py", "exp_protocol", "paths.py", "sandbox.py"]
 
     done = _awm(checkout, task, "sandbox", "setup", "--target", str(task), "--sha", sha,
                 "--exp-protocol", "--tool", "claude")
