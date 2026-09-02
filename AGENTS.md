@@ -49,6 +49,9 @@ Skills for agents working in this repository live in `skills/<name>/SKILL.md`
   the GPU cluster. For the iteration agent only; never installed for a scientist.
   Both skills are visible in this checkout; the separation is enforced where it
   matters, by `awm exp_protocol install`, which refuses to copy the meta skill.
+- `skills/wma/SKILL.md` — the world-model agent: given an experiment card's pre-launch
+  sections, estimate what the run will do and write `exp-NN.verdict.json`. Invoked by
+  `awm wma review`; iterated offline by `awm wma replay` over the historical card corpus.
 
 Codex: read the SKILL.md directly, or link a skill into `~/.codex/skills/`:
 `ln -s "$(pwd)/skills/exp_protocol_meta" ~/.codex/skills/exp_protocol_meta`.
