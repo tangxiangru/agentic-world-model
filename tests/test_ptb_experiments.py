@@ -32,7 +32,9 @@ def test_manifest_is_exact_approved_matrix() -> None:
     )
     assert all(launch.environment["POST_TRAIN_BENCH_SKIP_CLI_UPDATE"] == "1" for launch in launches)
     assert all(
-        launch.environment["HF_HOME"] == str(paths.REPO_ROOT / "data/ptb/hf") for launch in launches
+        Path(launch.environment["HF_HOME"]).resolve()
+        == (paths.REPO_ROOT / "data/ptb/hf").resolve()
+        for launch in launches
     )
     assert all(
         launch.command[launch.command.index("--run-branch") + 1] == "gangda_trial_0828"
