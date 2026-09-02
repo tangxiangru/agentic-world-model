@@ -161,12 +161,44 @@ single-policy change and evaluate the prior through first-format-fix SFT L2
 coverage, diagnostic use, and manual exp-01 absolute-estimate audit. Adding an
 absolute prediction slot in the same round would confound the policy change.
 
+## First terminal window (2026-09-02 22:1x UTC)
+
+Reconcile harvested five validator-complete, judge-clean cells through their
+frozen manifests:
+
+| arm | cells | n | accuracy mean | range | sampling stderr |
+|---|---|---:|---:|---:|---:|
+| WMA v0.2 | `w01r03`, `w01r05` | 2 | 0.7657 | 0.7339–0.7976 | 0.0318 |
+| no-WMA control | `c01r01`, `c01r02`, `c01r08` | 3 | 0.7599 | 0.7218–0.7885 | 0.0198 |
+
+The unpaired mean difference is +0.0058 for WMA. No replicate index is complete
+in both arms yet, so this is a provisional distribution only, not a treatment
+effect. Every harvested cell has an empty validator issue list and empty judge
+flags; result provenance remains under the corresponding
+`results/ptb/wma-gsm8k-gemma4b-high-r01-{wma,ctl}-x8-v1/` cell directory.
+
+The terminal WMA ledger over the two harvested WMA cells is:
+
+- skill `176f0a464986`, `claude-opus-5`, high, online;
+- 7 verdicts, 5 scored, 2 leak-suspected and excluded from scored levels;
+- L0 hit 1.00, L1 hit 1.00, L2 coverage 0.60 at `n_L2_scorable=5`;
+- mean L2 width 0.1186, width/noise 3.9524, L3 hit 0.80;
+- `gpu_h_saved=0`, `gpu_h_wrongly_killed=0`;
+- cost $13.2224 total, $1.8889/verdict, mean 5.5262 wall minutes.
+
+Both leak flags are exp-04 verdicts whose retained transcript reports an
+outside-workspace shell probe. They stay excluded unless a separately justified
+measurement rescan proves the fence classification wrong. This partial window
+does not cross the pre-registered eight-clean-cells-per-arm boundary.
+
 ## Decision
 
-Inconclusive. Runtime/isolation/procedure are supported for seven answered
-cells. The inflight ledger rejects the interval-width cap and strengthens the
-termination-floor candidate, but skill calibration and PTB effect do not yet
-meet the terminal evidence boundary. Keep skill v0.2 unchanged.
+Inconclusive. Runtime/isolation/procedure are supported by the inflight corpus
+and five clean terminal cells. The provisional PTB difference is unpaired and
+too small relative to run spread; the terminal ledger remains only five scored
+verdicts. The evidence still rejects the interval-width cap and strengthens the
+termination-floor candidate, but does not meet the promotion boundary. Keep
+skill v0.2 unchanged.
 
 The end-to-end conclusion requires at least eight validator-complete cells per
 arm. A skill candidate additionally requires closed-card ledger evidence and
@@ -188,7 +220,7 @@ Measurement-only changes already made and separately attributable:
   release. Existing v2 receipts recorded the right subqueue but some running
   jobs now show `ReqNodeList=(null)` outside the four-node scope; those RUNNING
   jobs were not cancelled. All 32 v3 jobs passed both held and post-release
-  checks and remain PENDING on `slurm2-a3nodesetondem-[2-3]`.
+  checks; the first five later backfilled only onto owned nodes.
 - `82cf601` (Fable): score a first self-measurement on whether its reading
   exists at L1, and leave its self-delta and next-step decision unscorable at
   L2/L3. Decode comparisons with a real comparator path remain scorable. This
@@ -201,10 +233,15 @@ Measurement-only changes already made and separately attributable:
   `ReqNodeList=slurm2-a3nodesetondem-[2-3]`; 32 safe v3 jobs stayed queued, so
   the operation never approached the eight-job floor.
 
-### Terminal disposition for out-of-scope v2 jobs
+### Disposition for the initially out-of-scope v2 attempt
 
-The 27 already-running v2 jobs with `ReqNodeList=(null)` are never cancelled
-by this round. Their terminal state is handled per cell, not by blanket policy:
+The 27 v2 jobs that had been running with `ReqNodeList=(null)` outside the
+subqueue were automatically requeued by Slurm at 21:49–21:50 UTC. At the 22:10
+check every job was `PENDING`, `Restarts=1`, with repaired
+`ReqNodeList=slurm2-a3nodesetondem-[2-3]`; none was cancelled or manually
+resubmitted. They are now safe pending inventory and may run only on owned
+nodes. Any artifacts from their first placement, and their eventual terminal
+state, are still handled per cell rather than by blanket policy:
 
 1. Resolve receipt → cell → manifest → spec → result directory, harvest with
    `--all`, and run the PTB validator. Slurm completion alone is not a result.
@@ -224,6 +261,11 @@ Monitoring is now every 30 minutes. The hard requirement is at least eight
 safe PENDING jobs; the operational guard fires below 24 and replenishes to at
 least 32. With at most 16 owned GPUs starting one wave between checks, this
 keeps an eight-job reserve without high-frequency polling.
+
+The 22:10 check found 60 PENDING jobs. All 60 had the exact owned-node
+`ReqNodeList`; the earlier monitor reported 33 only because it filtered by job
+number and missed the 27 repaired v2 jobs. Future checks count every pending
+receipt job by live `ReqNodeList`, never by submission era or job-id threshold.
 
 The repeats-4 redesign must preserve that invariant during the transition.
 The 32 routed v3 jobs remain submitted safety inventory until all Round 02

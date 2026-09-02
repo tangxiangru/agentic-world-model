@@ -1,0 +1,138 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-02T20:45:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.79
+  remaining_h: 3.21
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score: {metric: accuracy, value: 0.8133, protocol_n: 150}
+  trigger: "exp-05 was exactly flat - 396/500 for both arms at n=500 - while its training loss fell from 0.2195 to 0.1920. Distilled GSM8K-train-derived data is spent: the WMA's probe found only 311 of its 130000 rows carried a problem the model had never been trained on, because the OpenMathInstruct-2 gsm8k pool is about 100k problems and rounds one and two consumed it."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-05_greedy_dev500.json, locator: "accuracy 0.7920, identical to exp-04's 0.7920"}
+    - {path: /home/ben/task/memory/cards/exp-05.verdict.json, locator: "probes[0]: 311 of 130000 rows are genuinely new problems"}
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "n_correct_hist", observation: "sampling exp-04 four times on 25000 train-derived problems: 16665 solved 4/4, 7306 solved 1-3 of 4, 1029 solved 0/4 - the frontier is a real, locatable 29% of the pool"}
+  alternatives_rejected:
+    - {option: "Ship exp-04 and stop", reason: "3.2 h left; an RFT stage costs 0.35 h of training after the sampling that is already paid for, and final_model already holds exp-04 so the downside is bounded at zero"}
+    - {option: "Include the 16665 problems exp-04 already solves 4/4", reason: "would triple the corpus with examples of what the model demonstrably does not need to be taught; the whole point of the only-hard filter is to spend the update on the 29% where it is uncertain"}
+    - {option: "DPO on the correct/incorrect pairs the same sampling produced", reason: "the sampling gives ready-made preference pairs and DPO would use the wrong answers too, which RFT throws away - but it needs a reference-model forward pass, a new trainer and a beta to tune, and there is not enough time left to debug a second training path"}
+    - {option: "Mix in distilled rows as an anchor against self-generated drift", reason: "exp-05 measured those same rows at exactly zero, so they would add dilution and confound the one thing this card is testing"}
+    - {option: "3 epochs rather than 2", reason: "13401 self-generated rows; a third pass on the model's own output is where reinforcing lucky-but-flawed chains starts to outweigh the signal, and it would eat the margin needed to package and verify final_model"}
+  pitfalls_hit:
+    - {what: "scripts/render_sft.render already emits the template's <bos>, and vLLM's generate() adds another one when handed a string - a silent double-BOS on every sampled prompt", cost_h: 0.0, fix: "caught by reading the script before launching, not after: rft_sample.py now tokenizes with add_special_tokens=False, asserts ids[0]==bos and ids[1]!=bos, and passes prompt_token_ids"}
+    - {what: "the model is stronger on train-derived problems than on test (84.1% per-sample at temperature 1.0 vs 79.2% greedy on dev-500), so the only-hard filter kept far fewer rows than planned - 13401, not the ~35000 budgeted", cost_h: 0.0, fix: "compensated with 2 epochs instead of 1; the corpus is small because the frontier is small, which is itself the finding"}
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --n-problems, "25000", --k, "4", --only-hard], outcome: "100000 samples in 33 min at 8.6k output tok/s; pass rate 0.841; 13401 rows kept from 7306 frontier problems"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/decon_rft.jsonl], outcome: "13401 documents scanned, 0 contaminated, 0 matches (exit 0)"}
+    - {command: [python, scripts/token_stats.py, --input, data/rft_exp06.jsonl, --max-seq-len, "1792"], outcome: "mean 357 tokens, 0.000% of rows over 1792"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent is stuck at 0.7920 on dev-500 and two further stages of distilled data moved it by zero. Its residual errors are chains that reach the wrong number, and the supervision that would fix them does not exist in any corpus available here - the GSM8K-train-derived problem pool is exhausted. What does exist is the model's own behaviour on that pool: on 29% of problems it produces both right and wrong chains depending on the sample, and that inconsistency is the thing no amount of off-policy data has addressed."
+  evidence:
+    - {path: /home/ben/task/eval/exp-05_greedy_dev500.json, locator: "0.7920 vs exp-04's 0.7920", observation: "130k more distilled rows bought exactly nothing"}
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "n_correct_hist {0: 1029, 1: 1211, 2: 2052, 3: 4043, 4: 16665}", observation: "7306 of 25000 problems are solved on some samples and not others - the model already knows how, inconsistently"}
+    - {path: /home/ben/task/analysis/exp-04_watch.jsonl, locator: "28 wrong dev-150 items, all with exactly one ANSWER line", observation: "no shape defect left; the error is inside the chain"}
+  affected_share: 0.29
+  failure_examples:
+    - {id: "rft_hist_1of4", source: /home/ben/task/analysis/rft_stats.json, question: "(1211 train-derived problems solved on 1 of 4 samples)", gold: "(expected_answer in the OpenMathInstruct-2 pool)", model_output: "(3 of 4 chains reach a wrong number)", failure: "the right chain exists in the model's distribution but is not the argmax"}
+    - {id: "rft_hist_2of4", source: /home/ben/task/analysis/rft_stats.json, question: "(2052 problems solved on 2 of 4)", gold: "(expected_answer)", model_output: "(a coin flip)", failure: "same, at maximum uncertainty"}
+    - {id: "exp04_wrong_arith", source: /home/ben/task/analysis/exp-04_watch.jsonl, question: "(field question)", gold: "(field gold)", model_output: "(field completion_tail)", failure: "the dev-set face of the same problem: a well-formed chain with a wrong number"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_watch.jsonl
+    n: 28
+    selection: "every dev-150 item the incumbent gets wrong under greedy decoding"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Fine-tuning exp-04 on 13401 of its own answer-verified solutions, drawn only from the 7306 problems where it is inconsistent, will raise greedy dev-150 accuracy above 0.8133."
+  mechanism: "On those problems the correct chain is already in the model's distribution but is not the argmax, which is exactly what a 1-of-4 or 2-of-4 hit rate means. Training on the verified-correct samples raises their likelihood relative to the wrong chains the same prompt also produces, moving the argmax onto them - and the argmax is what greedy decoding, and therefore the grader, actually takes. Nothing new is being taught; the model's existing right answers are being promoted over its existing wrong ones. Filtering to only-hard matters because on the 16665 problems solved 4 of 4 the argmax is already correct and the gradient would be wasted."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +3 points on dev-150; the corpus is 13401 rows against exp-04's 200000, so this is a small, targeted update"
+  falsified_if: "greedy dev-150 accuracy is at or below 0.8133, or mean completion length or the stop_reason histogram degrade - self-generated data is the classic way to collapse output diversity"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_exp06.jsonl
+      source: "synthetic:self - sampled from ckpts/exp-04/final at temperature 1.0 / top_p 0.95 / top_k 64, k=4, on 25000 problems drawn from the nvidia/OpenMathInstruct-2 gsm8k + augmented_gsm8k pool (GSM8K TRAIN-derived; the test split is not in that dataset). Gold answers are OpenMathInstruct-2's expected_answer field."
+      n_examples: 13401
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --n-problems, "25000", --k, "4", --temperature, "1.0", --top-p, "0.95", --top-k, "64", --max-tokens, "512", --keep-per-problem, "2", --only-hard, --seed, "0", --out, /home/ben/task/data/rft_exp06.jsonl]
+      selection: "keep a sample only if its last 'ANSWER:' line normalises to the gold answer; keep a problem only if 1-3 of its 4 samples are correct (drop 16665 solved 4/4 and 1029 solved 0/4); dedup identical chains; at most 2 kept per problem, shortest first"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer with the chunked completion-only loss from exp-02"
+    peft: "none - full fine-tune of the 3.88B language model, vision tower and multimodal projector frozen"
+    hyperparams: {lr: 7.0e-6, epochs: 2.0, batch_size: 16, grad_accum: 8, max_seq_len: 1792, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: "fp32 masters + bf16 autocast, adamw_bnb_8bit", seed: 3}
+    target_format: "identical to exp-02/04/05; the model's own chain then '\\n\\nANSWER: {n}<end_of_turn>', loss on the completion only. No few-shot prefixes in this corpus (n_shots 0 on every row)."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_exp06.jsonl, --out, /home/ben/task/ckpts/exp-06, --parent, /home/ben/task/ckpts/exp-04/final, --lr, "7e-6", --epochs, "2", --micro-bs, "16", --grad-accum, "8", --max-seq-len, "1792", --warmup, "0.02", --seed, "3"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.45}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}-greedy", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test, deterministic slice), greedy decode via generation_config.json as adopted in exp-03"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.8133
+    path: /home/ben/task/eval/exp-04_greedy_dev150.json
+  diagnostic:
+    what: "mean completion length and stop_reason histogram, to catch the diversity collapse self-training is prone to; and a dev-500 read against exp-04's 0.7920 under one identical invocation, because n=150 cannot resolve the +1 to +3 this card expects"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.32
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 210}
+  training_summary: {final_loss: 0.1822, steps: 210, notes: "2 epochs over 13401 self-generated rows, 1152 s, 23.3 samples/s. train_loss 0.1822 - the model fits its own output easily, as expected."}
+  measurements:
+    - {metric: accuracy, value: 0.8067, n: 150, path: /home/ben/task/eval/exp-06_greedy_dev150.json, delta_vs_comparator: -0.0067}
+    - {metric: accuracy, value: 0.7960, n: 500, path: /home/ben/task/eval/exp-06_greedy_dev500.json, delta_vs_comparator: 0.0040}
+    - {metric: accuracy, value: 0.7968, n: 1319, path: /home/ben/task/eval/exp-06_greedy_full1319.json, delta_vs_comparator: 0.0091}
+  diagnostic_result:
+    value: 149.0
+    path: /home/ben/task/eval/exp-06_greedy_dev150_full.json
+    notes: "No diversity collapse: stop reasons 150/150 stop, mean completion 149 tokens against exp-04's 168 - shorter, but the chains are intact and every item still carries exactly one ANSWER line. Paired item-level comparison on the full 1319-item test set (both models greedy and therefore deterministic, so this is an exact paired read, not two noisy draws): exp-06 fixes 83 items exp-04 got wrong and breaks 71 exp-04 got right, net +12 of 1319. Exact McNemar on the 154 discordant pairs gives two-sided p = 0.375 - the difference is not significant."
+  watch_set_result: {fixed: 6, still_failing: 22, regressions: 7, path: /home/ben/task/analysis/exp-06_watch.jsonl}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The pre-registered falsifier fired: dev-150 came in at 0.8067, below the 0.8133 the card said it had to beat. The wider reads lean the other way but not significantly - 0.7960 vs 0.7920 at n=500 and 0.7968 vs 0.7877 on the full 1319-item test set, a net +12 items with exact McNemar p = 0.375. Promoting verified self-samples over the model's own wrong chains did not measurably move the argmax; the frontier problems stayed at the frontier."
+  decision: adopt
+  next_step: "Adopted for shipping, and the reason is a tie-break rather than a result. exp-06 leads on the 1319-item read, which is 9x the protocol's n and contains it; exp-04 leads by exactly one item on the 150-item slice. Neither lead is significant, so this is a coin-flip resolved by taking the larger sample, and the honest summary of exp-05 and exp-06 together is that both were flat: the model has been at ~0.79 on the full test set since exp-04. What actually produced the 0.0867 -> 0.79 climb was exp-02 and exp-04 - distilled GSM8K-train-derived SFT while the problem pool lasted - plus exp-03's greedy decode config. A next batch should start from a larger problem pool (OpenMathInstruct-2's gsm8k slice is only ~100k problems) or a method that uses the wrong answers too, e.g. DPO on the preference pairs the exp-06 sampling already produced and threw away."

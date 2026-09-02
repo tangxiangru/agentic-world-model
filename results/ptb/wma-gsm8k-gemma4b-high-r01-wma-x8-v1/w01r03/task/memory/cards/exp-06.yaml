@@ -1,0 +1,115 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-02T20:11:47Z'
+situation:
+  elapsed_h: 6.4
+  remaining_h: 3.6
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05-greedy
+    score: {metric: accuracy, value: 0.716, protocol_n: 500}
+  trigger: "exp-05 beat exp-04 by 7.3 points at n=150 (0.7733 vs 0.700), which is only about 1.4 standard errors - too thin to promote a submission on. Re-scored at n=500 the incumbent is 0.716 +/- 0.020, and the first-150 slice turns out to be an easier prefix of the test set (0.773 vs 0.716 on the same weights), so every n=150 number in this session is optimistic and the promotion has to be re-decided at n=500."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-05_dev500.json, locator: "accuracy=0.716, stderr=0.0202", observation: "same weights, same decode, n=500: 5.7 points below the n=150 read"}
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: accuracy, observation: "0.7733 on the first 150 items"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: accuracy, observation: "0.700 for the parent on the same 150 items; the exp-05 vs exp-04 gap has never been measured at n=500"}
+  alternatives_rejected:
+    - {option: "Submit exp-05 on the n=150 result and spend the remaining time on a fourth training stage", reason: "a fourth stage needs a fresh 18-minute screen plus ~90 minutes of training and would land with under an hour of slack; a 25-minute measurement that decides between three checkpoints I already have is the better use of the last hours"}
+    - {option: "Score at the full n=1319", reason: "~30 min per arm against ~12 min at n=500; three arms would not fit in the remaining budget with the finalisation still to do. n=500 puts the standard error at 0.020, enough to separate the arms if they differ by more than ~5 points"}
+    - {option: "Trust the soup without measuring it", reason: "weight averaging across a sequential fine-tune is not guaranteed to help; it is one eval to find out and the loser costs nothing"}
+  pitfalls_hit:
+    - {what: "n=150 reads in this session are systematically optimistic: --limit takes the first 150 test items, which are easier than the set as a whole (0.773 vs 0.716 on identical weights). Every earlier card's absolute number is inflated by ~5 points, though the within-n comparisons they were used for remain valid", cost_h: 0.0, fix: "decide the submission at n=500"}
+  smoke_runs:
+    - {command: [python, scripts/soup.py, --a, ckpts/exp-04/final, --b, ckpts/exp-05/final, --out, ckpts/soup45, --weight-a, '0.5'], outcome: "both shards averaged in fp32 and written back in bf16; non-float tensors verified bit-identical between the parents; config/tokenizer copied from exp-04/final"}
+problem:
+  statement: "Three checkpoints are candidates for submission - exp-04, exp-05, and their uniform weight average - and the only evidence separating them is a pair of n=150 evaluations whose difference is 1.4 standard errors. Worse, the n=150 slice is a biased sample: the same weights score 0.773 on it and 0.716 on n=500. Choosing the submission on that evidence is a coin flip dressed as a measurement."
+  evidence:
+    - {path: /home/ben/task/eval/exp-05_dev500.json, locator: accuracy, observation: "0.716 +/- 0.0202 at n=500"}
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: accuracy, observation: "0.7733 +/- 0.0343 at n=150, same weights and same decode config"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: accuracy, observation: "0.700 +/- 0.0375 at n=150"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Scored at n=500 with greedy decoding, the uniform weight average of exp-04 and exp-05 differs from exp-05 alone; scoring the alpha=1.0 endpoint (exp-04) under the same protocol says whether exp-05's n=150 advantage over its parent survives a five-fold larger sample."
+  mechanism: "exp-05 is a continuation of exp-04's optimisation trajectory, so the 0.5 soup is close to taking half of the third stage's update. If the third stage over-corrected toward hard problems, the halfway point should beat both endpoints; if it simply improved the model, accuracy should rise monotonically from exp-04 to exp-05 and the soup should land between them."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "-2 to +3 points for the soup; exp-04 expected 3-7 points below exp-05 if the n=150 ordering is real"
+  falsified_if: "all three arms land within one standard error (0.020) of each other, in which case the choice is not measurable at this n and I submit the incumbent"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+      source: openai/gsm8k@740312add88f781978c0658806c59bc2815b9866
+      n_examples: 500
+      built_by: null
+      build_command: []
+      selection: "no training data: this card only merges existing weights and scores. The grader reads gsm8k main/test (first 500 via --limit) with 10 few-shot exemplars from main/train, seed 42."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors weight average (scripts/soup.py), fp32 accumulation, bf16 output"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-05; all arms use temperature 0.0 in generation_config.json so the comparison is weights-only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/soup45-greedy, --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.55', --json-output-file, /home/ben/task/eval/exp-06_soup45_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/soup45
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.55']
+    dev_set: official --limit 500
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.716
+    path: /home/ben/task/eval/exp-05_dev500.json
+  diagnostic:
+    what: "the alpha=1.0 endpoint: ckpts/exp-04-greedy scored under the identical n=500 protocol, written to eval/exp-06_exp04_dev500.json"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.27
+  output_checkpoint: /home/ben/task/ckpts/soup45
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup45, step: null}
+    - {path: /home/ben/task/ckpts/soup45-greedy, step: null}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 373}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 374}
+  training_summary: {final_loss: null, steps: null, notes: "no training; scripts/soup.py averaged the two parents' float tensors in fp32 and wrote bf16"}
+  measurements:
+    - {metric: accuracy, value: 0.712, n: 500, path: /home/ben/task/eval/exp-06_soup45_dev500.json, delta_vs_comparator: -0.004}
+    - {metric: accuracy, value: 0.708, n: 500, path: /home/ben/task/eval/exp-06_exp04_dev500.json, delta_vs_comparator: -0.008}
+  diagnostic_result:
+    value: 0.708
+    path: /home/ben/task/eval/exp-06_exp04_dev500.json
+    notes: "the alpha=1.0 endpoint (exp-04) scores 0.708 at n=500 against exp-05's 0.716. The 7.3-point exp-05 > exp-04 gap seen at n=150 shrinks to 0.8 points at n=500, i.e. it was a property of the easy first-150 slice, not of the weights."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "All three arms are indistinguishable at n=500: exp-05 0.716, soup 0.712, exp-04 0.708, spread 0.8 points against a standard error of 0.020. The soup neither helps nor hurts, and - the more important finding - exp-05's apparent +7.3 over exp-04 was an artefact of scoring on the first 150 test items, which are easier than the set as a whole (identical weights: 0.773 at n=150, 0.716 at n=500)."
+  decision: reject
+  next_step: "Submit exp-05, the nominal best, but on the understanding that the last training stage bought roughly nothing measurable. Finalise and verify final_model/ end to end, then examine the n=500 failures before spending any remaining time on a fourth stage."

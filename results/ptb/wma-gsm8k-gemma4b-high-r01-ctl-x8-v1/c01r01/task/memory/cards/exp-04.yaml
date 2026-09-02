@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T18:22:00Z'
+situation:
+  elapsed_h: 4.4
+  remaining_h: 5.6
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.78, protocol_n: 150}
+  trigger: "exp-02/exp-03 exhausted the format lever: max_tokens share is 0.00, every completion has exactly one ANSWER line, and greedy decoding is already in place. The remaining 33 dev-150 errors are reasoning, so the next lever has to change what the model computes, not how it is decoded."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_tags.json, locator: "summary", observation: "accuracy 0.78, max_tokens_share 0.0067, no_answer_line_share 0.0067, multi_answer_line_share 0.0"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "tail", observation: "pass@4 on 37473 held-out training-domain problems is 0.945 while single-sample greedy dev accuracy is 0.78: the model can reach the right answer far more often than its modal path does, which is exactly the gap rejection sampling converts into training signal"}
+  alternatives_rejected:
+    - {option: "Retrain from base on a bigger corpus for 3 epochs", reason: "2 epochs on 95k already cost 2.8 h; 5.6 h remain and that plan leaves no room for an eval, a fallback, or a mistake"}
+    - {option: "DPO / GRPO on correct-vs-incorrect samples", reason: "no preference or reward plumbing exists here and neither fits in the remaining budget; RFT extracts most of the same signal with the SFT machinery already validated in exp-02"}
+    - {option: "Train on the RFT rows alone", reason: "68k self-generated solutions with no anchor narrows the output distribution; 25k rows of the exp-02 corpus are mixed back in at the same weight to keep it anchored"}
+    - {option: "Keep only the hard problems (solved 1-3 of 4)", reason: "would have required re-running the 48-minute sampling pass to record per-problem counts alongside the rows; the max-2-per-problem cap already limits how much the 22055 always-solved problems can dominate"}
+  pitfalls_hit:
+    - {what: "vLLM expands SamplingParams(n=4) into 4 separate scheduled sequences, so the progress bar showed 149892 prompts, not 37473; sampling took 48 min rather than the ~25 min estimated from problem count", cost_h: 0.4, fix: "none needed, but budget generation by sequence count (problems x k), not problem count"}
+  smoke_runs:
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/rft_v1_decon.jsonl], outcome: "68269 documents scanned, 0 contaminated, 0 matches (logs/decon_rft.log)"}
+    - {command: [python, scripts/mix_v2.py], outcome: "rft=68269 sft=25000 total=93269 -> data/sft_v2.jsonl"}
+problem:
+  statement: "The incumbent's single greedy sample is wrong on 33 of 150 dev items, while the same weights solve 94.5% of comparable problems within 4 temperature-1 samples. The model's modal reasoning path is worse than its sampling distribution: it knows how to solve more problems than it reliably writes down."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_tags.json, locator: "summary.accuracy", observation: "0.78 greedy on dev-150"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "'n correct per problem' line", observation: "of 37473 problems: 2048 solved 0/4, 2581 1/4, 3937 2/4, 6852 3/4, 22055 4/4"}
+  affected_share: 0.22
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_watch.jsonl
+    n: 33
+    selection: "the 33 dev-150 items exp-03_greedy scored wrong; stable ids only (protocol rule 7)"
+hypothesis:
+  claim: "Continuing SFT from exp-02/final for one epoch on 68269 of the model's own answer-verified solutions mixed with 25000 rows of the exp-02 corpus shifts the greedy path toward the solutions that verify, raising dev-150 greedy accuracy above exp-03's 0.78."
+  mechanism: "Rejection sampling reweights the model's own output distribution onto the branches that end at the reference answer. Because the targets are on-policy - the model's own phrasing, its own arithmetic style - the update mostly moves probability mass between paths the model already writes, which is what makes the greedy argmax path move without needing new capability."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 pts"
+  falsified_if: "dev-150 greedy accuracy at or below exp-03's 0.78, or the max_tokens share rises above 2% (a sign the RFT round narrowed the distribution into repetition loops)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "synthetic:self (rejection samples from /home/ben/task/ckpts/exp-02/final) + derived:exp-02"
+      n_examples: 93269
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --out, data/rft_v1.jsonl, --n-omi, '30000', --k, '4']
+      selection: "37473 problems (all 7473 openai/gsm8k TRAIN questions plus 30000 OpenMathInstruct-2 gsm8k-sourced problems not in the train set), 4 samples each at T=1.0/top_p 0.95/top_k 64/max_tokens 512. A sample is kept only if it terminated on <end_of_turn>, contains 'ANSWER:' exactly once, and its final number equals the problem's reference answer; exact duplicates removed, shortest 2 per problem kept -> 68269 rows. Prompt-variant mixture re-applied at write time (88% zero-shot, 8% 1-4 gsm8k-TRAIN shots, 4% the grader's exact 10-shot system message). Mixed with a random 25000-row slice of data/sft_v1.jsonl. The GSM8K test split is never read."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "custom torch loop (scripts/train_sft.py) on transformers 4.57.3 + bitsandbytes 0.49.1"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 64, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 20, weight_decay: 0.0, precision: "fp32 master weights, bf16 autocast compute, AdamW8bit", seed: 1}
+    target_format: "unchanged from exp-02: CoT, blank line, 'ANSWER: <number>', <end_of_turn>; loss on target tokens only. save() now also writes a greedy generation_config.json (exp-03's finding) into every checkpoint."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v2.jsonl, --init, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-04, --cache, data/tok_v2.npz, --epochs, '1.0', --lr, '5e-6', --warmup, '20', --token-budget, '16384', --max-bs, '64', --accum, '4', --max-seq-len, '2560', --save-every-frac, '0.5', --seed, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.78
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "max_tokens share and median completion length - RFT on self-samples is the round most likely to collapse into repetition"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.28
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-325, step: 325}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 650}
+  training_summary: {final_loss: 0.1865, steps: 650, notes: "starts at loss 0.173 (the parent is already fitted to this distribution) and stays flat at 0.18-0.19 for the whole epoch; grad-norm ~1.0 throughout. A flat loss on on-policy data is expected, but it also means very little was learned."}
+  measurements:
+    - {metric: accuracy, value: 0.7533, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: -0.0267}
+    - {metric: accuracy, value: 0.7733, n: 150, path: /home/ben/task/eval/exp-04-ck325_dev150.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-04_tags.json
+    notes: "no collapse: max_tokens share 0.00, median completion 375 -> 341 chars, every completion still has exactly one ANSWER line. The half-epoch checkpoint scores 0.7733 and the full epoch 0.7533, so what movement there is trends down with more RFT."
+  watch_set_result: {fixed: 9, still_failing: 24, regressions: 13, path: /home/ben/task/analysis/exp-04_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 greedy 0.78 -> 0.7733 (half epoch) -> 0.7533 (full epoch): the RFT round did not raise accuracy, and the monotone trend with training length says this is drift, not just noise. 9 watch items fixed against 13 regressions is churn of the same size exp-03's decode change produced, i.e. the greedy path moved without getting better."
+  decision: reject
+  next_step: "Do not adopt exp-04. All three candidates (0.780 / 0.773 / 0.753) sit inside one dev-150 standard error (0.035), so the choice of final_model cannot be made at n=150; re-score the candidates at --limit 500 before committing. Likely cause of the null result: pass@4 was already 0.945, so 22055 of 37473 problems contributed only solutions the model already produces, and one epoch at lr 5e-6 on data it is already fitted to (starting loss 0.173) had almost nothing to teach."

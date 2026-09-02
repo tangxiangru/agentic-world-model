@@ -1,0 +1,123 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-02T14:01:16Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.15
+  remaining_h: 9.85
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Start of batch: no measured number exists for the starting checkpoint under the harness protocol, so no later card could have a comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty index, no prior cards"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and train immediately", reason: "protocol rule 2: every later card needs a comparator measured under the same protocol; without it no delta is interpretable"}
+    - {option: "Baseline at --limit 1319 (full test set)", reason: "would cost >1 h of the 10 h budget; --limit 150 is the harness default and is what later cards will use"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, -c, "render the eval prompt with templates/gemma3.jinja"], outcome: "prompt renders to 2183 tokens (2044-token 10-shot system message folded into the first user turn); generation starts after '<start_of_turn>model'; artifact at /home/ben/task/data/rendered_example.txt"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruction-tuned checkpoint. The harness serves it through templates/gemma3.jinja as a chat model and grades with match(location='end', numeric=True), which reads the LAST numeric word of the completion. A pt checkpoint has never been trained to stop at <end_of_turn> nor to end on an 'ANSWER: N' line, so an unknown but probably large share of its failures are termination/format failures rather than reasoning failures. Nobody has measured either number."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L27-35,L77", observation: "prompt demands a final line 'ANSWER: $ANSWER'; scorer is match(numeric=True), whose default location is 'end'"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py, locator: "match_str, location=='end' branch", observation: "the completion is split on whitespace, reversed, and the first numeric word wins - i.e. the last number anywhere in the completion is the graded answer"}
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json, locator: "whole file", observation: "eos_token_id [1,106]; do_sample true, top_k 64, top_p 0.95, no temperature - so vLLM serves at temperature 1.0 with those truncations (ModelConfig.get_diff_sampling_param)"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-01_watch.jsonl
+    n: 150
+    selection: "written after the run: every dev-150 item the base model gets wrong, with its completion, so later cards can re-check them"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Measured under the harness protocol, the base pt checkpoint's graded GSM8K accuracy is depressed by output-shape failures (no 'ANSWER:' line, or generation that runs past the answer and leaves a different number last) rather than only by wrong arithmetic."
+  mechanism: "A pretrained LM continues text. Given a 10-shot prefix it will imitate the shots but has never been trained to emit <end_of_turn>, so it keeps going with further question/answer pairs. The 'last number in the completion' scorer then reads a number from that continuation instead of from the intended answer."
+  expected_effect:
+    metric: accuracy
+    direction: lower
+    against: base_model
+    magnitude: "graded accuracy at least 10 points below the share of samples whose FIRST 'ANSWER:' line carries the gold number"
+  falsified_if: "graded accuracy is within 3 points of the share of completions whose first 'ANSWER:' line carries the gold number - i.e. termination/format costs essentially nothing"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/fewshot_system.txt
+      source: "openai/gsm8k main train split (the 10 few-shot exemplars inspect_evals builds with shuffle seed 42); no training happens in this card - this file is the prompt prefix the eval sends"
+      n_examples: 10
+      built_by: /home/ben/task/scripts/render_prompt.py
+      build_command: [python, scripts/render_prompt.py]
+      selection: "exactly what inspect_evals.gsm8k builds: hf_dataset(openai/gsm8k, train, shuffle=True, seed=42, limit=10) rendered by sample_to_fewshot"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - measurement only, no training"
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, /home/ben/task/eval/exp-01_base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test, deterministic slice)"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of completions whose FIRST 'ANSWER:' line carries the gold number (format-blind reasoning accuracy), plus the share of completions that hit max_tokens without stopping"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.07
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.0867, n: 150, path: /home/ben/task/eval/exp-01_base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.1267
+    path: /home/ben/task/eval/exp-01_base_dev150_full.json
+    notes: "graded 13/150 = 0.0867; first-'ANSWER:'-line correct 19/150 = 0.1267; shape costs 4.0 points. 75/150 completions hit max_tokens (mean 2338 completion tokens, max 4000) - the model answers and then invents further question/answer pairs until the cap, so the 'last number' scorer reads a number from the continuation. 28 of the 137 wrong items emit no parseable 'ANSWER:' line at all. stderr 0.023."
+  watch_set_result: {fixed: 0, still_failing: 137, regressions: 0, path: /home/ben/task/analysis/exp-01_watch.jsonl}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "Baseline is 0.0867 at n=150. The termination mechanism is real and visible - half the completions run to the 4000-token cap emitting extra Q/A pairs - but it only accounts for 4.0 of the missing points, not the >=10 the card claimed. Format-blind accuracy is 0.1267, so the base pt checkpoint's reasoning under this prompt is itself the dominant problem."
+  decision: iterate
+  next_step: "exp-02: full SFT on GSM8K-style chain-of-thought data rendered through the grader's own template and terminated with <end_of_turn>. That fixes termination and reasoning in one intervention; the 0.0867/n=150 number here is the comparator."

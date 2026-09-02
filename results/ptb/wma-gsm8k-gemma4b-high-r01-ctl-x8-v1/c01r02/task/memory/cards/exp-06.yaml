@@ -1,0 +1,135 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-02T21:08:13Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.2
+  remaining_h: 2.8
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.7733, protocol_n: 150}
+  trigger: "Three candidate checkpoints are separated by less than one stderr at n=150 - exp-05 0.7733, exp-03 0.7533, exp-04 0.7400, stderr ~0.035 each - and exactly one of them has to be copied into final_model. Selecting on a 3-item difference is selecting on noise."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "accuracy 0.7733, stderr 0.0343"}
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: "accuracy 0.7533, stderr 0.0353"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy 0.7400, stderr 0.0359"}
+  alternatives_rejected:
+    - {option: "Ship exp-05 on the n=150 numbers and spend the remaining 2.8 h on another training run", reason: "any training run I can still fit (~35 min plus a 10 min eval) would be measured on the same n=150 and would land inside the same noise band, so it could not be shown to be better than what I already have. Spending the time on a measurement that CAN separate the candidates is worth more than an unmeasurable candidate."}
+    - {option: "Score all three at n=500", reason: "three runs is ~55 min and leaves no margin for the final_model copy plus verification. exp-04 is the lowest of the three AND is exp-05's own parent, so it is dominated: drop it and score the two leaders."}
+    - {option: "n=1000 or the full 1319-item test split", reason: "~35-45 min per model; two of those does not fit in 2.8 h with the finalisation work still to do"}
+    - {option: "Average the three n=150 runs and pick the mean", reason: "they are different models, not repeats; there is nothing to average"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The selection of final_model is currently unresolved: the three candidates lie within one standard error of each other on the 150-item dev protocol, so the ranking observed there is not reliable enough to choose on."
+  evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "rows exp-03 / exp-04 / exp-05", observation: "0.7533, 0.7400, 0.7733 - a 3.3-point spread against a per-run stderr of ~0.035"}
+    - {path: /home/ben/task/analysis/exp-05_failure_tags.json, locator: "watch_set_vs_exp04", observation: "12 fixed / 7 regressions against its own parent - churn of the same magnitude as the score gap"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-05_watch.jsonl
+    n: 34
+    selection: "the 34 of 150 dev items the incumbent exp-05 got wrong, recorded as inspect sample ids only (rule 7)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Scoring exp-05/final and exp-02-greedy over 500 items instead of 150 separates them: the stderr falls from ~0.035 to ~0.019, so a real 2-point gap becomes visible where at n=150 it is not. I expect exp-05 to come out at or above exp-02-greedy, because RFT added an on-policy signal that nothing in exp-02 had."
+  mechanism: "Nothing about the models changes; only the measurement does. Binomial stderr scales as 1/sqrt(n), so tripling the item count cuts the interval by ~1.8x. The 500-item prefix of the unshuffled test split strictly contains the 150 used so far, so the two protocols cannot disagree about those items - the extra 350 are new evidence."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "0 to +4 points at n=500; the point of the card is the interval, not the mean"}
+  falsified_if: "exp-05 scores below exp-02-greedy at n=500 by more than one n=500 stderr (~0.019), which would say the RFT gain seen at n=150 was noise and exp-02-greedy should be shipped instead."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/eval_fewshot_pool.jsonl
+      source: "hf:openai/gsm8k config main split TRAIN - the 10 items the grader puts in the system message"
+      n_examples: 10
+      built_by: null
+      build_command: []
+      selection: "nothing is trained in this card; it is a two-model measurement. This entry records the only dataset the run reads, as prompt context inside the grader."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect-ai + vllm 0.11.0 via evaluate.py (unmodified)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, -c, "bash run_eval.sh exp-06-rft ckpts/exp-05/final 500 && bash run_eval.sh exp-06-sft1 ckpts/exp-02-greedy 500"]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_eval.sh
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/logs/exp-06_eval.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 500 (inspect_evals/gsm8k test split, first 500 items, unshuffled) - a superset of the 150 used by exp-01..exp-05"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: null
+    path: null
+  diagnostic:
+    what: "no-ANSWER-line rate and max-token-cap rate on 500 items rather than 150 - the format counters have been 0/150 for three cards, and 500 items is the first chance to see a rate below 1/150"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.45
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 560}
+    - {path: /home/ben/task/ckpts/exp-02-greedy, step: 1420}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1395}
+    - {path: /home/ben/task/final_model, step: 560}
+  training_summary: {final_loss: null, steps: null, notes: "no training; two evaluations of existing checkpoints"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 500, path: /home/ben/task/eval/exp-06-rft_dev500.json, delta_vs_comparator: 0.014}
+    - {metric: accuracy, value: 0.706, n: 500, path: /home/ben/task/eval/exp-06-sft1_dev500.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.7667, n: 150, path: /home/ben/task/eval/final_model_dev150.json, delta_vs_comparator: 0.0134}
+  diagnostic_result:
+    value: 0.008
+    path: /home/ben/task/analysis/exp-06-rft_failure_tags.json
+    notes: "exp-05 at n=500: no-ANSWER-line 0.008 (4/500), max-token cap 0.008, mean completion 445.7 chars. exp-02-greedy at n=500: 0.012 / 0.012 / 497.1. Both format counters are real but tiny, and the RFT model is the tidier of the two on every one of them - the 0/150 readings of the last three cards were simply below the resolution of n=150."
+  watch_set_result: {fixed: 109, still_failing: 35, regressions: null, path: /home/ben/task/analysis/exp-06-rft_failure_tags.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: |
+    At n=500 the stderr fell to ~0.020 as predicted and exp-05 leads exp-02-greedy 0.7200 vs
+    0.7060 (+1.4). That is still inside one stderr, so the honest statement is that the two are
+    not separated even at n=500 - but exp-05 leads in the same direction at both n=150 (+2.0)
+    and n=500 (+1.4), and is cleaner on every format counter, so it is the defensible choice.
+    Note both models score lower on 500 items than on the 150-item prefix (0.720 vs 0.773 and
+    0.706 vs 0.753): items 151-500 are harder than the prefix, which is a warning that the
+    n=150 numbers in exp-01..exp-05 are all optimistic as absolute estimates. They remain valid
+    as relative comparisons because every card used the same 150 items.
+  decision: adopt
+  next_step: "ckpts/exp-05/final copied to final_model and re-scored there from a cold process: 0.7667 at n=150, all verify_final.py checks pass (loads on CPU with transformers, routes to templates/gemma3.jinja, greedy generation_config, <end_of_turn>=106 in the eos list). If more time existed: a second RFT round seeded from exp-05 - but generation alone measured 75 min, so it did not fit."

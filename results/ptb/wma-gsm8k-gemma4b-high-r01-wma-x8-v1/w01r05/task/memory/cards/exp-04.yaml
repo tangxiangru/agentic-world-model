@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T16:05:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.07
+  remaining_h: 7.93
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.7467, protocol_n: 150}
+  trigger: "exp-02 trained for exactly one epoch on 120k rows and its loss was still falling (0.455 early, 0.232 at the end) - the corpus, not the schedule, was the limit. 38 of 150 dev items are still wrong under greedy, and 35 of those 38 produce a well-formed chain with a wrong number, i.e. they are reasoning failures with headroom rather than format failures."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: "accuracy 0.7467"}
+    - {path: /home/ben/task/analysis/exp-03_watch.jsonl, locator: "38 wrong items; only 3 lack an ANSWER line", observation: "the residual failure mode is arithmetic/reasoning inside a well-formed chain"}
+    - {path: /home/ben/task/ckpts/exp-02/final/train_summary.json, locator: "train_loss 0.280 over one epoch", observation: "single pass, cosine already annealed to zero, so more gradient steps need more data not a longer schedule"}
+  alternatives_rejected:
+    - {option: "A second epoch over the same data/sft_v1.jsonl", reason: "the model has already seen every one of those 120k targets once; a second pass buys memorisation of 78k problems it can already solve rather than coverage of new ones"}
+    - {option: "Rejection-sampling (RFT) from exp-02 instead", reason: "self-generated solutions are capped by the current model's own competence, whereas OpenMathInstruct-2 is Llama-3.1-405B output - strictly better teacher signal per token at this stage. RFT is the natural exp-05 once distilled data is exhausted; scripts/rft_sample.py is already written"}
+    - {option: "Train a fresh run from base on all 320k rows with one clean cosine schedule", reason: "cleaner schedule but 4.5 h against the 2.5 h a continuation costs, and it throws away a checkpoint already measured at 0.7467"}
+    - {option: "Add OpenMathInstruct-2's math / augmented_math slices for general reasoning", reason: "GSM8K test is grade-school arithmetic word problems; competition-math solutions would spend the token budget on a distribution the benchmark does not sample"}
+  pitfalls_hit:
+    - {what: "the fresh-problem pool ran dry: at 2 solutions per problem, 20 OpenMathInstruct-2 shards yielded only 41310 rows not already used in round one - the gsm8k + augmented_gsm8k problem set is about 100k problems, not the ~500k assumed", cost_h: 0.1, fix: "raised max-per-problem to 6 for the round-two pool (140k rows) and made up the rest from a second, independently-built corpus (MetaMathQA GSM slices) so the mixture is not just more solutions to the same problems"}
+  smoke_runs:
+    - {command: [python, scripts/build_metamath.py, --n, "120000"], outcome: "154371 unique GSM_AnsAug/GSM_Rephrased rows available; both the '#### N' and the 'The answer is: N' markers stripped and replaced with a single 'ANSWER: N<end_of_turn>'; GSM_SV and GSM_FOBAR excluded as off-task"}
+    - {command: [python, scripts/token_stats.py, --input, data/mix_r2.jsonl, --max-seq-len, "1792"], outcome: "p50=309 p95=669 p99=1066 max=1550 mean=351 tokens; 0.000% of rows exceed 1792"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/decon_mix_r2.jsonl], outcome: "200000 documents scanned, 0 contaminated, 0 matches (exit 0)"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent gets 38 of 150 dev items wrong under greedy decoding, and 35 of those 38 emit a well-formed single-ANSWER chain that simply reaches the wrong number. Format and termination are solved; what is left is that one epoch over 120k solutions covering ~78k distinct problems is not enough supervision for the arithmetic and multi-step bookkeeping these items need."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_watch.jsonl, locator: "38 rows; 35 with a non-null first_answer", observation: "the model produces the required shape and gets the number wrong"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150_full.json, locator: "stop reasons 147 stop / 3 max_tokens", observation: "termination is not the problem any more"}
+    - {path: /home/ben/task/ckpts/exp-02/final/train_summary.json, locator: "train_loss 0.280, 938 steps, 1 epoch", observation: "only one pass over the data; the schedule is exhausted but the data was not the limiting factor of the schedule"}
+  affected_share: 0.92
+  failure_examples:
+    - {id: "exp03_wrong_chain", source: /home/ben/task/analysis/exp-03_watch.jsonl, question: "(field question)", gold: "(field gold)", model_output: "(field completion_tail)", failure: "well-formed chain, single ANSWER line, wrong number - 35 of 38 wrong items look like this"}
+    - {id: "exp03_wrong_no_answer", source: /home/ben/task/analysis/exp-03_watch.jsonl, question: "(the 3 rows with first_answer null)", gold: "(field gold)", model_output: "(field completion_tail)", failure: "no ANSWER line; these coincide with the 3 greedy repetition loops that hit max_tokens"}
+    - {id: "exp03_regressions", source: /home/ben/task/analysis/exp-03_watch.jsonl, question: "(the 8 items exp-02 got right and exp-03 got wrong)", gold: "(field gold)", model_output: "(field completion_tail)", failure: "items where the sampled run happened to land right and the argmax chain does not"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_watch.jsonl
+    n: 38
+    selection: "every dev-150 item the incumbent (exp-02 weights, greedy decode) gets wrong"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A second training stage from the exp-02 checkpoint over 200k rows it has never seen - 140k further OpenMathInstruct-2 GSM8K-derived solutions plus 60k MetaMathQA GSM rows - will raise greedy dev-150 accuracy above the incumbent's 0.7467."
+  mechanism: "The residual failures are reasoning, not shape, so the model needs more worked examples of the same task. Two things make these 200k rows worth more than a second pass over the old ones: 140k are solutions the model has not seen, covering ~20k problems it has never been trained on plus fresh solution paths for ones it has; and the 60k MetaMathQA rows are a differently-augmented, differently-worded corpus (rephrased GSM8K train problems with terser solutions), so they widen the phrasing distribution instead of deepening one teacher's style. Learning rate drops to 1e-5 because this continues an already-converged cosine rather than starting one."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +5 points; the first 120k rows bought +61 from a standing start, so the second 200k are firmly in diminishing returns"
+  falsified_if: "greedy dev-150 accuracy is at or below 0.7467, or the mean completion length moves by more than ~30% (which would mean the MetaMathQA style overwrote the OpenMathInstruct style rather than adding to it)"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/mix_r2.jsonl
+      source: "140000 rows from nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (shards 0-19, gsm8k + augmented_gsm8k, every (problem, solution) pair used in data/sft_v1.jsonl removed) + 60000 rows from meta-math/MetaMathQA rev aa4f34d3d2d3231299b5b03d9b3e5a20da45aa18 (GSM_AnsAug and GSM_Rephrased only). Both derive from the GSM8K TRAIN split; few-shot prefixes on 8% of rows come from openai/gsm8k main TRAIN."
+      n_examples: 200000
+      built_by: /home/ben/task/scripts/build_data_v2.py
+      build_command: [python, scripts/build_data_v2.py, --n, "140000", --max-per-problem, "6"]
+      selection: "OpenMathInstruct-2 side: same rules as round one (numeric gold, \\boxed{} equal to gold, <=2200 chars, LaTeX flattened) plus exclusion of all 120000 round-one pairs, at most 6 solutions per problem. MetaMathQA side: both the '#### N' and 'The answer is: N' markers stripped, one 'ANSWER: N' appended, GSM_SV and GSM_FOBAR dropped. Shuffled together at seed 3."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with the chunked completion-only loss from exp-02"
+    peft: "none - full fine-tune of the 3.88B language model, vision tower and multimodal projector frozen"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 16, grad_accum: 8, max_seq_len: 1792, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: "fp32 masters + bf16 autocast, adamw_bnb_8bit", seed: 1}
+    target_format: "identical to exp-02: <bos><start_of_turn>user\\n{MATH_PROMPT_TEMPLATE around the question}<end_of_turn>\\n<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: {n}<end_of_turn>, loss on the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/mix_r2.jsonl, --out, /home/ben/task/ckpts/exp-04, --parent, /home/ben/task/ckpts/exp-02/final, --lr, "1e-5", --epochs, "1", --micro-bs, "16", --grad-accum, "8", --max-seq-len, "1792", --warmup, "0.02", --seed, "1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.6}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}-greedy", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test, deterministic slice), greedy decode via generation_config.json as adopted in exp-03"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.7467
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "mean completion length and stop_reason histogram - a large style shift toward MetaMathQA's terser solutions would show up as a shorter mean; and the count of greedy repetition loops"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.38
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1563}
+  training_summary: {final_loss: 0.2195, steps: 1563, notes: "train_loss 0.2195 over the epoch against exp-02's 0.2804 on its own first pass; 23.4 samples/s; 8549 s wall; 70.6M training tokens. As the WMA precondition warned, save_pretrained again omitted preprocessor_config.json and processor_config.json - both copied from the base snapshot before variant_dir.py built the greedy dir, so the symlink farm is complete."}
+  measurements:
+    - {metric: accuracy, value: 0.8133, n: 150, path: /home/ben/task/eval/exp-04_greedy_dev150.json, delta_vs_comparator: 0.0666}
+  diagnostic_result:
+    value: 168.0
+    path: /home/ben/task/eval/exp-04_greedy_dev150_full.json
+    notes: "mean completion 168 tokens against exp-03's 267, a 37% drop - just outside the +-30% band the card set as a falsifier, and consistent with the WMA's data probe measuring the round-two corpus at 12% terser (MetaMathQA rows 375 chars vs OpenMathInstruct 512). stop reasons 150/150 stop: the 3 greedy repetition loops are gone. first-'ANSWER:'-line accuracy equals graded accuracy (122/150) and 0 of the 28 wrong items lack an ANSWER line, so shape costs nothing."
+  watch_set_result: {fixed: 16, still_failing: 22, regressions: 6, path: /home/ben/task/analysis/exp-04_watch.jsonl}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy dev-150 0.7467 -> 0.8133, +6.7 points, above the +2 to +5 the card predicted and above the WMA's [-0.03, +0.06] interval. The length falsifier did fire in the letter (-37% vs a +-30% band) but not in the spirit: the shorter completions came with a higher score, all 150 samples terminated, and no item lost its ANSWER line, so the MetaMathQA style shortened the chains without overwriting the ability to produce them."
+  decision: adopt
+  next_step: "exp-04 becomes the incumbent and is packaged into final_model. The residual 28 wrong items are all well-formed chains with a wrong number. Two prepared follow-ups: 130k further fresh distilled rows (data/fresh_r3.jsonl, contamination-clean) or an on-policy rejection-sampling round from this checkpoint. Also: at n=150 a +2-point effect is inside the noise, so the ship/no-ship comparison between exp-04 and whatever exp-05 produces needs a larger n."

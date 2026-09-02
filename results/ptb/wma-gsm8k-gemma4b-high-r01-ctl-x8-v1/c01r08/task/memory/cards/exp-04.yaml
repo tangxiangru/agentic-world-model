@@ -1,0 +1,206 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T17:52:13Z'
+situation:
+  elapsed_h: 3.9
+  remaining_h: 6.1
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score:
+      metric: accuracy
+      value: 0.69333
+      protocol_n: 150
+  trigger: Every eval so far printed 'Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator' in the vLLM server log, and the recorded model request contains only max_tokens. The base snapshot's generation_config.json carries do_sample true, top_k 64, top_p 0.95 - so every number measured so far, including exp-02's 0.693, came from temperature-1.0 sampling rather than greedy decoding.
+  trigger_evidence:
+  - path: /home/ben/task/logs/exp-02_eval.log
+    locator: line containing 'Default sampling parameters have been overridden by the model's Hugging Face generation config'
+  - path: /home/ben/task/logs/2026-09-02T15-51-02+00-00_gsm8k_4Zqda5qxdB9NhCjcQun9Nq.json
+    locator: samples[0].events model event, call.request
+    observation_note: request carries only model and max_tokens; no temperature, top_p or top_k
+  - path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json
+    locator: do_sample true, top_k 64, top_p 0.95
+  alternatives_rejected:
+  - option: another SFT data round
+    reason: exp-03 bought 113k further problems for 1.9 GPU-hours and moved dev-150 by -0.7 points; the data lever is measured flat
+  - option: pass a temperature through evaluate.py
+    reason: rule 5 forbids modifying evaluate.py, and it would not transfer to the final grading run; the decode default has to live in the model directory, where it is part of what final_model ships
+  - option: go straight to RFT with the sampled decode default
+    reason: if greedy is worth several points, every later comparison should be made under it; measuring it first costs one eval and changes what the RFT card is optimising
+  pitfalls_hit:
+  - what: three cards' worth of numbers were measured under a decode configuration I had not checked, because the harness never states it and the model directory silently supplies it
+    cost_h: 0.0
+    fix: read the vLLM server banner and the recorded request; the comparison in this card is like-for-like because both arms are the same weights
+  smoke_runs:
+  - command:
+    - cp
+    - -r
+    - ckpts/exp-02/final
+    - ckpts/exp-04-greedy
+    outcome: identical weights, generation_config.json rewritten to do_sample false / temperature 0.0 and top_k/top_p removed
+problem:
+  statement: The grader sends no sampling parameters, so vLLM falls back to the model directory's generation_config.json, which the base snapshot ships as do_sample=true / top_k=64 / top_p=0.95. Every GSM8K answer scored so far was therefore a single temperature-1.0 sample of a chain of thought whose correctness depends on getting a long arithmetic sequence right, which is exactly the setting where sampling noise costs accuracy against greedy decoding.
+  evidence:
+  - path: /home/ben/task/logs/exp-02_eval.log
+    locator: vLLM startup banner
+    observation: '''Default sampling parameters have been overridden by the model''s Hugging Face generation config'''
+  - path: /home/ben/task/analysis/exp-02_taxonomy.json
+    locator: tally
+    observation: all 46 failures are wrong_number, i.e. a well-formed chain that reaches a wrong value - the failure class sampling noise produces
+  - path: /home/ben/task/analysis/exp-03_taxonomy.json
+    locator: tally
+    observation: '47 wrong_number after 113k more training problems: the residual is not obviously knowledge-limited'
+  affected_share: 0.313
+  failure_examples:
+  - id: exp-02 dev-150 wrong_number bucket
+    source: /home/ben/task/analysis/exp-02_taxonomy.json
+    question: (official gsm8k test items; ids in the taxonomy file, text not reproduced - rule 7)
+    gold: various
+    model_output: 'well-formed chain of thought ending in ''ANSWER: n'' with n wrong'
+    failure: 46 items, single temperature-1.0 sample
+  - id: exp-03 dev-150 wrong_number bucket
+    source: /home/ben/task/analysis/exp-03_taxonomy.json
+    question: (official gsm8k test items; ids in the taxonomy file, text not reproduced - rule 7)
+    gold: various
+    model_output: 'well-formed chain of thought ending in ''ANSWER: n'' with n wrong'
+    failure: 47 items, unchanged by 113k more training problems
+  - id: decode configuration itself
+    source: /home/ben/task/logs/exp-02_eval.log
+    question: n/a - configuration, not an item
+    gold: greedy
+    model_output: temperature 1.0, top_p 0.95, top_k 64
+    failure: the served default comes from the base snapshot and was never chosen
+  watch_set:
+    path: /home/ben/task/data/dev_train300.jsonl
+    n: 300
+    selection: 300 GSM8K TRAIN items (idx 7173-7472), held out of every training file, disjoint from the grader's 10 few-shot exemplars, contamination-checked clean. No benchmark test item is used.
+hypothesis:
+  claim: Serving exp-02's weights with generation_config.json set to do_sample=false / temperature=0.0 will raise dev-150 accuracy above the 0.693 the same weights scored under the snapshot's sampled default.
+  mechanism: A GSM8K answer is correct only if a whole chain of arithmetic steps is correct. Under temperature 1.0 with top_p 0.95 every token in that chain is a fresh draw from the tail, so the per-answer error compounds; greedy decoding takes the mode at every step and removes that noise. Nothing about the weights changes, so any difference is decode noise alone.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: +2 to +6 points
+  falsified_if: dev-150 accuracy under greedy is at or below 0.693, or the probe shows greedy at or below sampled on the 300 held-out train items.
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/dev_train300.jsonl
+    source: openai/gsm8k
+    n_examples: 300
+    built_by: /home/ben/task/scripts/build_dev.py
+    build_command:
+    - python
+    - scripts/build_dev.py
+    selection: the held-out probe set; this card trains nothing, the file is what the diagnostic reads
+    contamination_check: passed
+    mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 served by inspect_ai; generation_config.json in the model directory
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: 4000
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: 42
+    target_format: 'unchanged from exp-02: chain of thought then a single ''ANSWER: <number>'' line, terminated by <end_of_turn>'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - evaluate.py
+    - --model-path
+    - ckpts/exp-04-greedy
+    - --limit
+    - '150'
+    - --max-connections
+    - '16'
+    - --json-output-file
+    - /home/ben/task/eval/exp-04_greedy_dev150.json
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.4
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '150'
+    - --max-connections
+    - '16'
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.69333
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: 'scripts/probe.py on the 300 held-out GSM8K-train items, sweeping greedy vs sampled crossed with the grader''s 10-shot prefix present vs absent, for both exp-02/final and exp-03/final. Answers two things one eval cannot: whether the decode effect reproduces on a second item set, and whether the 8% few-shot share in training was enough for the prefix the grader always sends.'
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.42
+  output_checkpoint: /home/ben/task/ckpts/exp-04-greedy
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-04-greedy
+    step: 568
+  - path: /home/ben/task/ckpts/exp-03-greedy
+    step: 1042
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: 'no training: exp-02''s weights byte-identical, only generation_config.json changed'
+  measurements:
+  - metric: accuracy
+    value: 0.76
+    n: 150
+    path: /home/ben/task/eval/exp-04_greedy_dev150.json
+    delta_vs_comparator: 0.06667
+  - metric: accuracy
+    value: 0.74
+    n: 150
+    path: /home/ben/task/eval/exp-04_exp03greedy_dev150.json
+    delta_vs_comparator: 0.04667
+  diagnostic_result:
+    value: 0.8
+    path: /home/ben/task/analysis/probe_exp02.json
+    notes: 'probe n=300 held-out gsm8k-train items. exp-02: greedy_few 0.8000, sample_few 0.7567, greedy_zero 0.7967, sample_zero 0.7467. exp-03: greedy_few 0.8133, sample_few 0.7533, greedy_zero 0.8267, sample_zero 0.7267 (analysis/probe_exp03.json). Greedy beats sampling by 4.3 to 10.0 points in all four model x prefix cells, so the decode effect reproduces on a second item set. The grader''s 10-shot prefix is worth roughly nothing either way (exp-02 0.800 few vs 0.797 zero; exp-03 0.813 few vs 0.827 zero), so the 8% few-shot share in the training mix was sufficient and does not need raising.'
+  watch_set_result:
+    fixed: 13
+    still_failing: 60
+    regressions: null
+    path: /home/ben/task/analysis/probe_exp02.json
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: 'Same weights, decode default changed from the snapshot''s do_sample/top_p 0.95/top_k 64 to temperature 0.0: dev-150 0.693 -> 0.760 (+6.7 points), and the probe reproduces it on 300 different items in all four cells (+4.3 to +10.0). Three cards of scores had been measured under a decode configuration inherited from the base snapshot rather than chosen.'
+  decision: adopt
+  next_step: 'Greedy generation_config.json ships with every candidate from here, including final_model. exp-02 greedy 0.760 vs exp-03 greedy 0.740 on dev-150 while the n=300 probe has exp-03 marginally ahead (0.813 vs 0.800): the two checkpoints are indistinguishable, so exp-05 does rejection-sampling fine-tuning from exp-02/final, the one that leads under the scoring protocol.'
