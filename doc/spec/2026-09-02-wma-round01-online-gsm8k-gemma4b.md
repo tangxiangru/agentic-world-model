@@ -87,6 +87,36 @@ core-16、all-32 与 all-48 sensitivity，任何结论都不按分数选择 coho
 `-b` / `-c` 两批的 `replicate` 在汇总时分别对应各臂的全局 9–16 / 17–24；合并的前提是
 receipt 指向同一 PTB commit(`62203e4`)与同一 judge 容器。
 
+## 2026-09-02 14:2x UTC:撤回 v1 缓冲,以 v2 重排
+
+首波 8 个 wma cell 里有 3 个(`w01r03`、`w01r05`、`w01r06`,jobs 90558/90560/90561)的
+scientist 在 lock 前后把 `result.execution: not_run` 预填进卡片——这是 schema 合法的
+pre-launch sentinel——而 `e8a8599` 冻结的私有 runtime 把任何非空 execution 当作已观察到
+的结果,拒答 "already has a result"。这三个 cell 的 exp-01 因此没有 verdict;operator 在
+`bf87dfb` 修了 guard(基础合同 §十一 第 12 条,只改 runtime,不改 prompt / schema /
+scorer / skill / 语料),skill hash 仍是 `176f0a464986`。
+
+按用户指令第 3 条,四个尚未开始的缓冲批次(`-b`、`-c`,32 个 PENDING job)全部撤回,
+以 v2 重排:
+
+| v1(撤回,全部 PENDING) | v2 | 改动 |
+|---|---|---|
+| `wma-b-x8-v1` jobs 90572–90579 | `wma-b-x8-v2` | `wma.sha` → `bf87dfb`;其余逐字节相同 |
+| `ctl-b-x8-v1` jobs 90580–90587 | `ctl-b-x8-v2` | 无改动;只为与 wma-b-v2 同时入队 |
+| `wma-c-x8-v1` jobs 90588–90595 | `wma-c-x8-v2` | `wma.sha` → `bf87dfb` |
+| `ctl-c-x8-v1` jobs 90596–90603 | `ctl-c-x8-v2` | 无改动;同上 |
+
+ctl 也重排是为了保住配对:Slurm 按提交先后出队,只撤 wma 会让第二波变成 16 个对照、
+第三波 16 个 WMA。v2 的公共 digest 与 v1、与首波完全相同(`63aef0f1a9da…`);wma 臂私有
+digest 由 `8c3d40a84716…` 变为 `f79c75a6c3a8…`,差异只有 `review.py` 的 guard。观测槽位
+(各臂 9–16、17–24)与 `run_index` 不变。RUNNING 的首波不动。
+
+**分析规则(现在声明,不等分数)**:wma 臂报告两种口径——**as attached**(装了 sidecar
+的全部 cell,主口径,对应"WMA 存在本身"的问题)与 **as answered**(至少一张卡拿到
+verdict 的 cell)。首波三个被拒答的 cell 属于前者、不属于后者;它们的后续卡片若不再预填
+`not_run` 仍会得到 verdict,以收割后的 `.wma/responses` 为准。账本按 `wma_skill`
+(hash 不变)合并 v1 首波与 v2 缓冲。
+
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
 1. **不走 pilot。** manifest 不带 `pilot` 块,queue entry 一律 `pilot: null`,直接以
