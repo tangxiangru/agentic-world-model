@@ -26,3 +26,6 @@
 - 2026-09-02T15:30:23+00:00 cancel exp-protocol-gsm8k-gemma4b-high-r00-nullctl-c-x8-v1/c02r08 job=90515 (PENDING): Round 01 candidate takes its place (user directive - replace pending lower-value work); the zero point keeps 16 observations (nullctl + nullctl-b). Pending cells only; a running cell finishes.
 - 2026-09-02T19:09:51+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r05 job=90479 COMPLETED acc=0.7043 complete clean
 - 2026-09-02T20:42:22+00:00 submit exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2 (held): 8 job(s) 90791,90792,90793,90794,90795,90796,90797,90798 -> results/ptb/exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2/formal-2026-09-02T204221.237369+0000.json
+- 2026-09-02T21:04:47+00:00 submit exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1 (held): 8 job(s) 90813,90814,90815,90816,90817,90818,90819,90820 -> results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/formal-2026-09-02T210446.182614+0000.json
+- 2026-09-02T21:05:12+00:00 blocked submit exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8-v1: formal source freeze requires clean top-level and PTB worktrees
+- 2026-09-02T21:05:14+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-x8-v1/c00r06 job=90472 COMPLETED acc=0.7832 complete clean
