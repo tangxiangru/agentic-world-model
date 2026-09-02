@@ -121,10 +121,6 @@ Rules:
   with `changed: L0|L1|L2|L3|none` — `none` is informative for the ledger.
 - Mechanical checks belong to `awm exp_protocol preflight`, not to you. If a
   preflight report exists, read it instead of redoing it.
-- Before answering `no` at L0 or L1, record a probe with `changed` equal to
-  that level: a `static_check` must prove the failing path is reached, or a
-  `unit_test`/`dry_run` must reproduce it. If the available budget cannot do
-  that, cap confidence at 0.5 and mark an evidence note `unprobed`.
 
 ## Suggestions
 
@@ -136,6 +132,12 @@ verifier tier and the minutes it costs:
 - `cheaper_variants` — the same idea at lower cost or risk ("[tier 2, 1 min]
   200 steps on a 500-row subset first"; "LoRA with `modules_to_save` given
   1.5 h left").
+
+For a C3/C4 card whose plan keeps only one final checkpoint and therefore
+forfeits C5, set L3 to `defer`. Add a `[tier 3, N min]` precondition that names
+the `save_steps` cadence and the comparable evaluation to run on the saved
+checkpoints. Reconsider L3 only after that checkpoint-selection lever is in
+the plan.
 
 Not a new direction: "try DPO instead" on an SFT card is outside your role.
 
