@@ -93,7 +93,13 @@ that disagreement is the record the estimator learns from.
    A material change after lock is a new card, not an edit.
 2. **A comparator is measured under the same protocol.** Same `n`, same dev
    set, same seed, and the path of that eval goes in `evaluation.comparator.path`.
-   A number from a different `--limit` is not a comparator.
+   A number from a different `--limit` is not a comparator. And `n` must carry
+   the claim: an accuracy at `n` has a standard error near `sqrt(p(1-p)/n)` —
+   0.04 at n=150, 0.02 at 500, 0.011 at 1319 — so n=150 cannot reliably
+   distinguish the single-digit-point checkpoint differences that inverted in
+   three of the first fourteen cells when remeasured at n=500–1319. Decide
+   nothing that ships a checkpoint on fewer than 500 items; the grader's
+   default 150 is a smoke size.
 3. **Unknown is `null`, never a guess.** `check` asks for what is missing;
    answer it or leave it null. Do not invent an evidence path.
 4. **A target is not a hypothesis.** "Reach 85 %" is rejected as a claim.
