@@ -880,6 +880,7 @@ def test_online_wma_contract_is_fixed_and_requires_an_awm_scientist(tmp_path: Pa
         ptb.validate_manifest(data)
     cell["wma"]["effort"] = "high"
     cell["agent"] = "claude_vertex_high"
+    cell["effort"] = "high"
     del cell["awm"]
     with pytest.raises(ptb.ExperimentError, match="requires an _awm scientist"):
         ptb.validate_manifest(data)
