@@ -127,6 +127,13 @@ def _check_awm_path(cell_id: str, path: str) -> None:
             )
 
 
+def _ships_protocol(shipped: list[str] | tuple[str, ...]) -> bool:
+    return any(
+        path == PROTOCOL_TREE_PATH or path.startswith(PROTOCOL_TREE_PATH + "/")
+        for path in shipped
+    )
+
+
 def _validate_awm_block(cell_id: str, agent: Any, block: Any) -> None:
     """An `_awm` scaffold needs to be told what to ship; any other scaffold would ignore it."""
     wants = str(agent).endswith("_awm")
@@ -165,6 +172,11 @@ def _validate_awm_block(cell_id: str, agent: Any, block: Any) -> None:
             f"cell {cell_id}: awm.setup must be one line of arguments for `awm sandbox setup`"
         )
     tree = block.get("protocol_tree")
+    if not _ships_protocol(shipped) and tree is not None:
+        raise ExperimentError(
+            f"cell {cell_id}: awm.protocol_tree was declared but awm.paths does not ship "
+            f"{PROTOCOL_TREE_PATH}"
+        )
     if tree is not None and not re.fullmatch(r"[0-9a-f]{40}", str(tree)):
         raise ExperimentError(
             f"cell {cell_id}: awm.protocol_tree must be the full git tree id of "
@@ -202,6 +214,11 @@ def _awm_issues(cell_id: str, block: dict[str, Any]) -> list[str]:
         if not listed:
             issues.append(f"cell {cell_id}: awm path {path!r} does not exist at commit {sha[:12]}")
     declared = block.get("protocol_tree")
+    if _ships_protocol(block.get("paths") or []) and not declared:
+        issues.append(
+            f"cell {cell_id}: awm.protocol_tree must declare the full git tree id of "
+            f"{PROTOCOL_TREE_PATH} at awm.sha"
+        )
     if declared:
         actual = protocol_tree_at(sha)
         if actual != declared:
@@ -257,6 +274,7 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
     key = hashlib.sha256("\n".join(shipped).encode()).hexdigest()[:12]
     target = root / f"{sha}-{key}"
     marker_name = ".awm-checkout.json"
+    expected_protocol_tree = protocol_tree_at(sha) if _ships_protocol(shipped) else None
 
     def _existing() -> dict[str, Any] | None:
         marker = target / marker_name
@@ -266,7 +284,12 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
             info = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        if info.get("sha") == sha and info.get("paths") == list(shipped) and info.get("complete"):
+        if (
+            info.get("sha") == sha
+            and info.get("paths") == list(shipped)
+            and info.get("complete")
+            and info.get("protocol_tree") == expected_protocol_tree
+        ):
             return {
                 "sha": sha,
                 "paths": list(shipped),
@@ -304,7 +327,7 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
             if (staging / tree).exists():
                 raise ExperimentError(f"archive of {sha[:12]} contains {tree}; refusing to ship it")
         digest = _tree_digest(staging)
-        protocol_tree = protocol_tree_at(sha) if (staging / PROTOCOL_TREE_PATH).is_dir() else None
+        protocol_tree = expected_protocol_tree
         marker = {
             "sha": sha,
             "paths": list(shipped),

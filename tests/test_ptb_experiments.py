@@ -688,6 +688,9 @@ def _awm_manifest() -> dict:
             "sha": sha,
             "paths": list(ptb.EXP_PROTOCOL_SHIP),
             "setup": "--exp-protocol --tool claude",
+            "protocol_tree": ptb._git(
+                ptb.paths.REPO_ROOT, "rev-parse", "HEAD:skills/exp_protocol"
+            ),
         }
     return data
 
@@ -767,7 +770,12 @@ def test_awm_sha_and_setup_are_checked() -> None:
 
 def test_awm_issues_name_a_missing_commit_or_path() -> None:
     sha = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD")
-    good = {"sha": sha, "paths": list(ptb.EXP_PROTOCOL_SHIP), "setup": "--exp-protocol"}
+    good = {
+        "sha": sha,
+        "paths": list(ptb.EXP_PROTOCOL_SHIP),
+        "setup": "--exp-protocol",
+        "protocol_tree": ptb.protocol_tree_at(sha),
+    }
     assert ptb._awm_issues("p01r1", good) == []
     missing_commit = good | {"sha": "f" * 40}
     assert any("not in this repository" in issue for issue in ptb._awm_issues("p01r1", missing_commit))
@@ -816,6 +824,12 @@ def test_awm_protocol_tree_names_the_variant_the_cell_ships(tmp_path: Path, monk
     other = good | {"protocol_tree": "e" * 40}
     assert any("protocol_tree" in issue for issue in ptb._awm_issues("p01r1", other))
     data = _awm_manifest()
+    del data["cells"][0]["awm"]["protocol_tree"]
+    assert any(
+        "protocol_tree must declare" in issue
+        for issue in ptb._awm_issues("p01r1", data["cells"][0]["awm"])
+    )
+    data = _awm_manifest()
     data["cells"][0]["awm"]["protocol_tree"] = tree[:7]
     with pytest.raises(ptb.ExperimentError, match="protocol_tree"):
         ptb.validate_manifest(data)
@@ -828,3 +842,20 @@ def test_awm_protocol_tree_names_the_variant_the_cell_ships(tmp_path: Path, monk
     assert marker["protocol_tree"] == tree
     assert ptb.materialize_awm_checkout(sha, list(ptb.EXP_PROTOCOL_SHIP))["protocol_tree"] == tree
     assert ptb.materialize_awm_checkout(sha, ["awm/cli.py"])["protocol_tree"] is None
+
+
+def test_a_stale_checkout_without_protocol_tree_is_rebuilt(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path)
+    sha = ptb._git(ptb.paths.REPO_ROOT, "rev-parse", "HEAD")
+    shipped = list(ptb.EXP_PROTOCOL_SHIP)
+    first = ptb.materialize_awm_checkout(sha, shipped)
+    marker = Path(first["dir"]) / ".awm-checkout.json"
+    stale = json.loads(marker.read_text())
+    stale.pop("protocol_tree")
+    marker.write_text(json.dumps(stale) + "\n")
+
+    rebuilt = ptb.materialize_awm_checkout(sha, shipped)
+
+    expected = ptb.protocol_tree_at(sha)
+    assert rebuilt["protocol_tree"] == expected
+    assert json.loads(marker.read_text())["protocol_tree"] == expected

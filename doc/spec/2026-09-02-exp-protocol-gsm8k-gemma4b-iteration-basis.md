@@ -196,7 +196,8 @@ Fable 单独写一次跨轮 meta retrospective；只有至少两个 rounds 重�
 ### 用户指令（2026-09-02 12:20 UTC，覆盖本节与 Round 00 spec 中与之冲突的条款）
 
 1. **不走 pilot。** manifest 直接以 formal cells 发射；queue entry 一律 `pilot: null`。
-   已经跑起来的两个 1 h pilot 只作证据保留，不计入 formal。
+   已经跑起来的三个 1 h pilot（v1 baseline、null control、v2 bootstrap）只作证据保留，
+   不计入 formal。
 2. **16 卡必须始终用满，不许空着。** 只要有独立、已验证的 manifest，就立即排进 queue；
    queue 里永远保留待排的 cells。
 3. **全部启动，边跑边分析。** 分析异步进行，不等批次跑完；发现某个设计不成立，

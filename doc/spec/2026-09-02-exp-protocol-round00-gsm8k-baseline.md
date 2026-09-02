@@ -43,8 +43,13 @@ batch。planner 不运行 `sbatch`。
 `check` / `lock` 前启动训练，因此只保留为 protocol-adherence 失败证据，绝不放行其
 formal cells。PTB PR #4 在 `claude_vertex_high_awm` 中增加条件式首步 bootstrap：只有
 安装了 exp_protocol 的 cell 才要求第一动作 invoke/read skill，并在训练或评估前成功
-lock；未安装 protocol 的 null control prompt 保持原样。Round 00 baseline 改由新的 v2
-batch 和新 pilot 验证该门。
+lock；未安装 protocol 的 null control prompt 保持原样。v2 pilot（job `90464`）用于
+留下 bootstrap 行为证据，但其 receipt 暴露了缺失的 `awm.protocol_tree`；它同样不放
+formal。job `90464` 的 live trace 已证明修复生效：Claude 初始化后的第一个 tool call
+就是 `Skill(exp_protocol)`，随后完整载入 skill。最终 Round 00 baseline 使用 v3 batch：
+manifest 显式声明并由 `awm ptb check` 核验 protocol tree，checkout 的旧 marker 若缺少
+tree 也会被重建。根据保持 16 GPU 有独立工作排队的指令，这份已验证 v3 直接提交 formal，
+不再重复 wiring pilot。
 
 formal 16 cells 一旦 gate 打开便作为同一 immutable manifest 异步提交。后续分析不等待
 无关队列；但不得在本批结果出现前预造依赖 Round 00 结论的 candidate。
