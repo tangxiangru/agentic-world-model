@@ -116,3 +116,9 @@ is compared against: n ≥ 1000 → 0.01; 500–999 → 0.02; 150–499 → 0.03
 these. A card whose evaluation is n=20 cannot resolve anything under 5 pp; a
 plan that will decide on a smaller gap needs a C18 repeat or a larger n as a
 precondition — say so in the suggestions.
+
+An L2 interval wider than **3× this noise floor** must cite, in its `basis`,
+either a same-type precedent at comparable `n` or a probe that changed L2.
+Without that evidence, contract the interval to the evidence-graded effect
+prior for the classified type around the card's checked anchor; uncertainty is
+not a license to span unrelated mechanisms.
