@@ -5,11 +5,28 @@ scientific task identity. The receipt-backed registry is
 `/rmeng_data/robtang/slurm-queue/registry.json`; Unix users and node placement are not ownership
 evidence.
 
+## Subqueues and hard capacity
+
+`gangda` is split by node, so Slurm itself enforces each line's 16-GPU ceiling:
+
+| subqueue | branch | nodes | GPUs |
+|---|---|---|---:|
+| `gangda_exp-protocol-evolve` | `gangda_exp_protocol_evolve` | `slurm2-a3nodesetondem-[0-1]` | 16 |
+| `gangda_wma_evolve` | `gangda_wma_evolve` | `slurm2-a3nodesetondem-[2-3]` | 16 |
+
+The split is non-borrowing: an idle GPU in one subqueue is not available to the other. Each
+line's PTB `.env` names both `POST_TRAIN_BENCH_SLURM_SUBQUEUE` and the matching two-node
+`POST_TRAIN_BENCH_SLURM_NODELIST`; `awm ptb check` rejects a mismatch. Existing legacy jobs
+are never cancelled or moved during a split and may temporarily consume capacity on the nodes
+where Slurm already placed them.
+
 ## Current operations
 
 ```bash
 gangda-slurm-queue
 gangda-slurm-queue --summary
+gangda-slurm-queue --subqueue gangda_exp-protocol-evolve --summary
+gangda-slurm-queue --subqueue gangda_wma_evolve --summary
 gangda-slurm-queue --watch 5
 ```
 
@@ -17,6 +34,11 @@ The default view contains only `RUNNING`, `PENDING`, `CONFIGURING`, `COMPLETING`
 jobs. `GPUS N/32 allocated` is a Slurm allocation count, not instantaneous GPU utilization.
 `node=-` means a pending job has no allocation. `reason=(Resources)` means it is waiting for a
 resource currently held by another registered job.
+
+The default view shows the total `gangda` allocation and both subqueue capacities. A
+`--subqueue NAME` view limits nodes and receipt sources to that line. Its GPU count is physical
+allocation on the subqueue's nodes, so a pre-split legacy job is still visible in the capacity
+number even when its historical receipt has no subqueue tag.
 
 ## Failures
 

@@ -29,6 +29,9 @@
    cp <主线 checkout>/third_party/PostTrainBench/.env third_party/PostTrainBench/.env
    chmod 600 third_party/PostTrainBench/.env
    ```
+   本线随后把 `POST_TRAIN_BENCH_SLURM_SUBQUEUE` 设为
+   `gangda_exp-protocol-evolve`，并把 `POST_TRAIN_BENCH_SLURM_NODELIST` 设为
+   `slurm2-a3nodesetondem-[0-1]`。两者不匹配时 `awm ptb check` 必须失败。
 5. **确认 GitHub 推送能力**,操作员每轮都要 push 到 `tangxiangru/agentic-world-model`:
    ```bash
    gh auth status
@@ -57,7 +60,7 @@
 | 项 | 怎么得到 |
 |---|---|
 | worktree 绝对路径、`data` 软链指向、`df` 显示的文件系统 | 第 1、3 步 |
-| `.env` 里的非密值:`HF_HOME`、`POST_TRAIN_BENCH_RESULTS_DIR`、`POST_TRAIN_BENCH_CONTAINERS_DIR`、`POST_TRAIN_BENCH_SLURM_PARTITION`、`POST_TRAIN_BENCH_SLURM_NODELIST`、`POST_TRAIN_BENCH_SLURM_RESERVATION`、`POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY`、`POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT` | `grep -E '^(HF_HOME\|POST_TRAIN_BENCH_(RESULTS_DIR\|CONTAINERS_DIR\|SLURM_))' third_party/PostTrainBench/.env` |
+| `.env` 里的非密值:`HF_HOME`、`POST_TRAIN_BENCH_RESULTS_DIR`、`POST_TRAIN_BENCH_CONTAINERS_DIR`、`POST_TRAIN_BENCH_SLURM_SUBQUEUE`、`POST_TRAIN_BENCH_SLURM_PARTITION`、`POST_TRAIN_BENCH_SLURM_NODELIST`、`POST_TRAIN_BENCH_SLURM_RESERVATION`、`POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY`、`POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT` | `grep -E '^(HF_HOME\|POST_TRAIN_BENCH_(RESULTS_DIR\|CONTAINERS_DIR\|SLURM_))' third_party/PostTrainBench/.env` |
 | `data/ptb/context-validation/claude-opus-5-1m-max.json` 是否存在 | `ls -la data/ptb/context-validation/` |
 | 第 6、7、8 步的完整输出 | 原样粘贴 |
 | 当前队列负载 | `gangda-slurm-queue --summary` 的输出 |

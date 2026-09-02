@@ -15,6 +15,10 @@
   membership, or node placement is never
   sufficient ownership evidence. Query with `/rmeng_data/robtang/bin/awm-slurm-queue`; treat
   `OWNERSHIP FAIL` as an immediate investigation condition.
+- The `gangda` queue is hard-split into two non-borrowing 16-GPU subqueues:
+  `gangda_exp-protocol-evolve` owns `slurm2-a3nodesetondem-[0-1]`, and
+  `gangda_wma_evolve` owns `slurm2-a3nodesetondem-[2-3]`. New receipts inherit a subqueue from
+  their branch. Do not route a line onto the other subqueue's nodes.
 - Use the queue views according to their distinct purpose:
   - `gangda-slurm-queue` or `current --watch 5` shows only active and pending operations.
   - `gangda-slurm-queue failures` shows unresolved failures; `--include-resolved` is audit-only.
