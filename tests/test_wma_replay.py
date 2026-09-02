@@ -170,3 +170,16 @@ def test_reconcile_all_rescores_existing_verdicts_against_rewritten_truth(corpus
     assert counts == {"reconciled": 6, "missing": 0}
     rows = {(r["path"].split("/")[-5], r["card_id"]): r for r in ledger.rows([out])}
     assert rows[("r-aaaa", "exp-02")]["scored"]["L2"] != "unscorable"
+
+
+def test_an_interrupted_session_build_is_completed_on_the_next_build(corpus, tmp_path, skill) -> None:
+    """A build killed mid-session left a directory with the earlier cards only; the rerun must finish it."""
+    out = tmp_path / "replay"
+    samples = replay.build_samples(corpus, out, side="train")
+    s = next(x for x in samples if x.run_ref == "r-aaaa" and x.card_id == "exp-03")
+    (s.session_dir / "memory" / "cards" / "exp-03.yaml").unlink()
+    (s.session_dir / "memory" / "index.md").unlink()
+    (s.session_dir / "history").unlink()
+    replay.build_samples(corpus, out, side="train")
+    assert (s.session_dir / "memory" / "cards" / "exp-03.yaml").is_file()
+    assert (s.session_dir / "memory" / "index.md").is_file() and (s.session_dir / "history").is_symlink()

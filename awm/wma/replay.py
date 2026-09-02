@@ -128,14 +128,17 @@ def _build_session(out: Path, run_ref: str, cards: list[dict[str, Any]], k: int,
     session = out / run_ref / card_id
     truth = out / "_truth" / run_ref / f"{card_id}.yaml"
     dump_card(truth, truth_card(cards, k))  # truth is derived from the corpus; rewriting it is always safe
-    if session.is_dir():
-        return session, truth  # never rebuild: a verdict may already be there
     cdir = session / "memory" / "cards"
+    link = session / "history"
+    complete = (cdir / f"{card_id}.yaml").is_file() and (session / "memory" / "index.md").is_file() and link.is_symlink()
+    if complete:
+        return session, truth  # a verdict may already be there; never touch a finished session
+    # Either a fresh session or one an interrupted build left half-written: (re)write the cards
+    # and the index, link the history. Verdict files, if any, are not among what is written.
     for card in cards[: k - 1]:
         dump_card(cdir / f"{card['card_id']}.yaml", _strip(card, STRIP_ALWAYS))
     dump_card(cdir / f"{card_id}.yaml", _strip(cards[k - 1], STRIP_FROM_K))
     lineage.write_index(session)
-    link = session / "history"
     if not link.is_symlink():
         os.symlink(hist.resolve(), link)
     return session, truth
