@@ -46,14 +46,15 @@
 | held-out 集 | test 侧 `--sample 200 --seed 0`,第一次晋升前构建一次(`heldout-00`),之后不变;若 round-01 计价后全量 450 张装得进一轮预算,构建时改为全量并在此处改数 |
 | mode | `offline`;探测只有 `static_check` / `data_probe` |
 | 地板 | `heuristic` 后端(`wma_skill: heuristic-priors`),round-00 已测 |
-| 后端 / 模型 | `claude` / `claude-opus-5`;离线与在线同一个模型 |
-| effort | `high`,由后端显式传 `--effort`(CLI 默认值就是 `high`),盖进 verdict;不继承本机 settings 的默认值(现为 `xhigh`) |
+| 后端 / 模型 | `claude` / `claude-fable-5-1`;离线与在线同一个模型(2026-09-02 由 `claude-opus-5` 改,改在花钱之前;opus-5/high 只跑了接线验证) |
+| effort | `medium`,由后端显式传 `--effort`(CLI 默认值是 `high`,replay 命令必须写 `--effort medium`),盖进 verdict;不继承本机 settings 的默认值(现为 `xhigh`) |
 | 预算 | `cpu=5,gpu=0,wall=8,turns=30` |
 | 每变体 pass 数 | baseline 2 个完整 pass;candidate 1 个;目标层的差距落在 baseline 两 pass 之差以内时补第 2 个 |
 | initial baseline | `skills/wma` v0 修掉过时措辞、放平语气后的 commit `971ab3b`(`SKILL.md` sha `116b98b07d1a`);round-01 记录里再抄一遍 |
 
 - 一个 out 目录 = 一个 (variant, backend, model, effort, pass),命名
-  `round-NN-<label>` 与 `round-NN-<label>-b`。账本按 (wma_skill, backend, model, effort,
+  `round-NN-a` / `round-NN-b`(baseline 的两个 pass)与 `round-NN-<label>`(candidate)。
+  `round-01/` 只装 opus-5/high 的接线验证,不是一个 pass。账本按 (wma_skill, backend, model, effort,
   mode) 分组;同一变体的两个 pass 目录放进同一次 `awm wma ledger` 调用得到合并估计,
   分开调用得到 `spread_L`。
 - 一个 pass 的 300 条 verdict 必须出自同一个 `skills/wma` commit。pilot(`--limit 1`、
@@ -73,7 +74,7 @@
 | minimum repeats | 每个 task × variant 至少 2 个正式、独立、有效 cell |
 | scaffold | `claude_vertex_high_awm`——消融线的 high-effort 门也是本线的门 |
 | scientist 规程 | `skills/exp_protocol` 固定在本线的一个 commit(含第 4b 步),整个在线阶段不变 |
-| WMA backend / model / effort | `claude` / `claude-opus-5`(与离线相同)/ `high` |
+| WMA backend / model / effort | `claude` / `claude-fable-5-1`(与离线相同)/ `medium` |
 | WMA mode / 预算 | `online`;`cpu=10,gpu=0,wall=15,turns=40` 【待定:第一轮是否开放 `gpu_min`】 |
 | WMA history | train 侧语料只读挂载进 cell 【需要发射器支持,见第九节】 |
 | 变体 | `skills/wma` 的 commit;scientist、规程、任务、模型、时长、资源全部相同 |
@@ -260,8 +261,10 @@ docs 仍由发射器拒绝。
 
 ## 十、预算与启动门
 
-**离线**:本 spec 不自行花钱。每轮 API 上限 `$B` 由用户在 round record 里批准;
-`--limit 20` 计价后超出 `$B` 的 pass 不跑。
+**离线**:本 spec 不自行花钱。本机的 `claude` CLI 走 claude.ai OAuth(Max 订阅),
+verdict 里的 `cost.usd` 是 CLI 报的**影子价**,不是账单——它用来比变体之间的相对成本,
+真正的约束是订阅的用量窗口。每轮的用量上限 `$B`(影子价计)由用户在 round record 里
+批准;`--limit 20` 计价后超出 `$B` 的 pass 不跑。
 
 开始 round-01 前必须全部满足:
 
