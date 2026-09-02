@@ -13,6 +13,12 @@ locks, and preflight reports in each scientist's `memory/cards/`.
 | `n_closed` / `n_cards` | how much of the work was recorded end to end | up |
 | `adopted` | cards whose decision was adopt | context, not a target |
 | `fields_filled` | share of required fields non-empty, averaged over cards | up; a field that stays empty across variants is either unanswerable or badly asked |
+| `n_relocked` | cards locked more than once (`--relock`) | down; each one has a reason in its lock file — read them |
+| `n_overrides` | pre-flight checks let through with `--override`, current and re-lock history | a check overridden in many cells is a check that is wrong for that data: fix the check |
+| `n_unreadable` | `exp-NN.yaml` files that could not be parsed | zero; a non-zero count is a card written under time pressure and lost |
+
+`session` is the directory name, except that a PostTrainBench session dir is
+always `task`, so it is labelled `<cell>/task` with the parent's name.
 
 Not in `collect` yet, worth adding when the trajectory conversion is wired in:
 wall-clock spent training vs idle (from `awm traj spans`), and the number of

@@ -47,8 +47,8 @@ Seven sections. **0–4 are written before the launch command runs; 5–6 after.
 awm exp_protocol index --dir {dir}          # 1. read memory/index.md and the starting points first
 awm exp_protocol new --dir {dir}            # 2. writes exp-NN.yaml with every required field empty, prints the questions
 #    edit sections 0-4
-awm exp_protocol check --dir {dir} exp-NN   # 3. repeat until it prints "ok" and no questions
-awm exp_protocol lock  --dir {dir} exp-NN   # 4. runs preflight; refuses on any FAIL; pins sections 0-4 and the script
+awm exp_protocol check --dir {dir} exp-NN   # 3. repeat until no ERROR lines and no questions; "ok (N warnings, advisory)" is ok
+awm exp_protocol lock  --dir {dir} exp-NN   # 4. runs preflight; refuses on any FAIL; pins sections 0-4, the script, and the data
 #    launch your command exactly as written in setup.command.argv
 #    keep checkpoints as setup.checkpoints says
 #    evaluate the output under evaluation.protocol; fill sections 5-6
@@ -57,6 +57,12 @@ awm exp_protocol close --dir {dir} exp-NN   # 5. validates 5-6, re-checks the lo
 
 `awm exp_protocol preflight --dir {dir} exp-NN` can be run on its own any time.
 Read its reminders: they are the pitfalls no check can catch for you.
+
+Two escape hatches, both recorded in the lock file where the meta loop counts
+them: `lock --relock "<reason>"` when you must change sections 0–4 after a
+lock (the previous hash is kept), and `lock --override <check>="<reason>"`
+when a pre-flight check is wrong for your data (say why). Neither is free:
+a re-lock or an override without a real reason is what the record will show.
 
 ## The rules
 
@@ -90,7 +96,11 @@ Read its reminders: they are the pitfalls no check can catch for you.
 clean-looking wrong answer. Each names the preflight check that catches it,
 or says `check: null` when only you can. Declare `setup.method.stop_token`,
 `setup.method.answer_marker`, and `hyperparams.max_seq_len` so the checks can
-run against your data; undeclared is a WARN, not a pass.
+run against your data; undeclared is a WARN, not a pass. The data checks read
+the first 500 rows of each jsonl file and look for the target under
+`completion`, `target`, `output`, `response`, then `messages[-1].content`,
+then `text` / `answer`; if your field is named differently the check SKIPs
+and says so — rename the field or check by hand.
 
 When you lose time to something not in the list, record it in the next card's
 `situation.pitfalls_hit`. That is how the list grows.

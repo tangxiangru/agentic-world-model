@@ -36,7 +36,7 @@ scientist 做实验时必须遵守的工程纪律、实验记录的标准,以及
 
 ### 职责
 
-1. **纪律**。假设、设置、评估方式先于结果存在;比较对象在同一协议下测量;先于结果写下的部分不可事后修改;失败和中止的实验同样留下记录。
+1. **纪律**。假设、设置、评估方式先于结果存在;比较对象在同一协议下测量;先于结果写下的部分不可无痕修改(锁在 scientist 自己的目录里,是痕迹不是屏障);失败和中止的实验同样留下记录。
 2. **记录**。每个实验一张 experiment card:问题、假设、设置、评估、结果、结论,**以及处境**——剩余预算、已排除的备选、触发这次实验的观察、之前踩过的坑。处境是本规程与常见"论文格式"记录的关键区别:保真的对象是决策发生时的状态,不只是动作和结论。
 3. **理解实验**。card 与谱系索引要让另一个读者——失忆后的 scientist、同任务的另一个 agent、事后的人——只凭记录回答三个问题:在验证什么、怎么重跑、当时处于什么处境。
 4. **谱系与起始点**。每张 card 记录父 checkpoint,卡链可回溯到 base model;我们自己跑的 run 按规程保存 checkpoint,使后续探索能从任意历史节点续跑。历史语料中的 run 没有 checkpoint,起始点只能是配方级的重跑,规程需如实标注。
@@ -99,7 +99,7 @@ scientist 做实验时必须遵守的工程纪律、实验记录的标准,以及
 ## 六、研发顺序
 
 0. 本文档。
-1. **exp_protocol**:skill、card schema、薄工具。本地做 smoke test 调通代码,实验在 H100 服务器上跑。 实现:`awm/exp_protocol/`、`skills/exp_protocol/`;card v2 的字段说明见 `doc/spec/2026-09-01-exp-protocol-card-v2.md`。
+1. **exp_protocol**:skill、card schema、薄工具。本地做 smoke test 调通代码,实验在 H100 服务器上跑。实现:`awm/exp_protocol/`、`skills/exp_protocol/`;card v2 的字段说明见 `doc/spec/2026-09-01-exp-protocol-card-v2.md`。
 2. **exp_protocol_meta**:给迭代 agent 的 skill(`skills/exp_protocol_meta/`)——在 H100 上并行跑规程的多个变体,提取指标,分析,修改规程,并记录每次修改的依据。scientist 不读这份 skill。
 3. **WMA policy**:在 1、2 稳定后再定义细节。
 

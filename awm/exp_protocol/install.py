@@ -37,6 +37,10 @@ def _agents_md(path: Path) -> Path:
         head, rest = existing.split(BEGIN, 1)
         _, tail = rest.split(END, 1)
         text = head + AGENTS_BLOCK.rstrip("\n") + tail
+    elif BEGIN in existing:
+        # A truncated block: everything from the dangling marker on was ours; replace it.
+        head, _ = existing.split(BEGIN, 1)
+        text = head + AGENTS_BLOCK
     else:
         text = (existing.rstrip("\n") + "\n\n" if existing.strip() else "") + AGENTS_BLOCK
     path.write_text(text if text.endswith("\n") else text + "\n")
@@ -53,9 +57,10 @@ def install(target: Path, tool: str = "both") -> list[Path]:
     written: list[Path] = []
 
     dst = target / "skills" / "exp_protocol"
-    if dst.exists():
-        shutil.rmtree(dst)
-    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    if dst.is_symlink():
+        dst.unlink()  # a link to somewhere else is not the skill; the real files go here
+    # Merge-copy: the skill's files are refreshed, anything the scientist added alongside them stays.
+    shutil.copytree(src, dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     written.append(dst)
 
     if tool in ("claude", "both"):

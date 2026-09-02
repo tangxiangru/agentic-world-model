@@ -1,4 +1,9 @@
-"""``awm exp_protocol``: the protocol as commands. Each one reads files, checks, writes a record, exits."""
+"""``awm exp_protocol``: the protocol as commands. Each one reads files, checks, writes a record, exits.
+
+``register`` needs only argparse; the package's modules are imported inside
+the handlers, like the other ``awm`` command groups, so building the parser
+never pays for — or fails on — code the invoked command does not use.
+"""
 
 from __future__ import annotations
 
@@ -7,14 +12,13 @@ import json
 import re
 from pathlib import Path
 
-from . import collect as collect_mod
-from . import lineage, lock, preflight, questions, schema
-
 CARD_FILE_RE = re.compile(r"^exp-(\d+)\.yaml$")
 
 
 def _cards_dir(args: argparse.Namespace) -> Path:
-    return lineage.cards_dir(Path(args.dir))
+    from .lineage import cards_dir
+
+    return cards_dir(Path(args.dir))
 
 
 def _card_path(args: argparse.Namespace) -> Path | None:
@@ -31,7 +35,9 @@ def _next_id(cards_directory: Path) -> str:
 
 
 def _print_questions(card: dict) -> None:
-    missing = questions.missing_fields(card)
+    from .questions import missing_fields
+
+    missing = missing_fields(card)
     if missing:
         print("fill in, in this order:")
         for field_, q in missing:
@@ -41,6 +47,8 @@ def _print_questions(card: dict) -> None:
 # ----------------------------------------------------------------- commands
 
 def _new(args: argparse.Namespace) -> int:
+    from . import schema
+
     cdir = _cards_dir(args)
     cdir.mkdir(parents=True, exist_ok=True)
     card_id = args.id or _next_id(cdir)
@@ -56,6 +64,8 @@ def _new(args: argparse.Namespace) -> int:
 
 
 def _check(args: argparse.Namespace) -> int:
+    from . import schema
+
     path = _card_path(args)
     if path is None:
         return 2
@@ -67,6 +77,8 @@ def _check(args: argparse.Namespace) -> int:
 
 
 def _run_preflight(args: argparse.Namespace, card: dict, path: Path) -> dict:
+    from . import lock, preflight
+
     report = preflight.run_preflight(card, Path(args.dir))
     lock.preflight_path(path).write_text(json.dumps(report, indent=2) + "\n")
     print(preflight.render(report))
@@ -74,6 +86,8 @@ def _run_preflight(args: argparse.Namespace, card: dict, path: Path) -> dict:
 
 
 def _preflight(args: argparse.Namespace) -> int:
+    from . import schema
+
     path = _card_path(args)
     if path is None:
         return 2
@@ -83,20 +97,24 @@ def _preflight(args: argparse.Namespace) -> int:
 
 def _parse_overrides(raw: list[str] | None) -> dict[str, str] | None:
     """``--override check_id=reason`` pairs; None on a malformed or unknown check id (printed)."""
+    from .preflight import CHECKS
+
     out: dict[str, str] = {}
     for item in raw or []:
         check_id, sep, reason = item.partition("=")
         if not sep or not reason.strip():
             print(f"--override needs check_id=reason, got {item!r}")
             return None
-        if check_id not in preflight.CHECKS:
-            print(f"--override names no such check: {check_id!r} (known: {', '.join(preflight.CHECKS)})")
+        if check_id not in CHECKS:
+            print(f"--override names no such check: {check_id!r} (known: {', '.join(CHECKS)})")
             return None
         out[check_id] = reason.strip()
     return out
 
 
 def _lock(args: argparse.Namespace) -> int:
+    from . import lock, schema
+
     path = _card_path(args)
     if path is None:
         return 2
@@ -133,6 +151,8 @@ def _lock(args: argparse.Namespace) -> int:
 
 
 def _close(args: argparse.Namespace) -> int:
+    from . import lineage, lock, schema
+
     path = _card_path(args)
     if path is None:
         return 2
@@ -155,6 +175,8 @@ def _close(args: argparse.Namespace) -> int:
 
 
 def _index(args: argparse.Namespace) -> int:
+    from . import lineage
+
     out = lineage.write_index(Path(args.dir))
     print(f"wrote {out}")
     cards = lineage.load_cards(_cards_dir(args))
@@ -165,6 +187,8 @@ def _index(args: argparse.Namespace) -> int:
 
 
 def _chain(args: argparse.Namespace) -> int:
+    from . import lineage
+
     cards = lineage.load_cards(_cards_dir(args))
     if args.card_id not in cards:
         print(f"no such card: {args.card_id}")
@@ -174,6 +198,8 @@ def _chain(args: argparse.Namespace) -> int:
 
 
 def _collect(args: argparse.Namespace) -> int:
+    from . import collect as collect_mod
+
     rows = collect_mod.collect([Path(d) for d in args.dirs])
     if args.csv:
         print(collect_mod.to_csv(rows), end="")

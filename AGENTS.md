@@ -38,6 +38,8 @@ Skills for agents working in this repository live in `skills/<name>/SKILL.md`
   directory with `awm exp_protocol install --target <dir> --tool <claude|codex|both>`.
 - `skills/exp_protocol_meta/SKILL.md` — how the protocol itself is iterated on
   the GPU cluster. For the iteration agent only; never installed for a scientist.
+  Both skills are visible in this checkout; the separation is enforced where it
+  matters, by `awm exp_protocol install`, which refuses to copy the meta skill.
 
 Codex: read the SKILL.md directly, or link a skill into `~/.codex/skills/`:
 `ln -s "$(pwd)/skills/exp_protocol_meta" ~/.codex/skills/exp_protocol_meta`.

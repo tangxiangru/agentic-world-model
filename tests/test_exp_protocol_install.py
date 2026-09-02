@@ -48,3 +48,29 @@ def test_refuses_to_install_the_meta_skill(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("AWM_EXP_PROTOCOL_DIR", str(meta))
     with pytest.raises(install.InstallError):
         install.install(tmp_path / "task", "both")
+
+
+# ---- review findings (2026-09-01) --------------------------------------------
+
+def test_a_file_the_scientist_wrote_under_the_skill_dir_survives_reinstall(tmp_path) -> None:
+    install.install(tmp_path, "both")
+    notes = tmp_path / "skills" / "exp_protocol" / "my_notes.md"
+    notes.write_text("keep\n")
+    install.install(tmp_path, "both")
+    assert notes.read_text() == "keep\n"
+
+
+def test_a_symlinked_skill_dir_is_replaced_not_crashed(tmp_path) -> None:
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "skills" / "exp_protocol").symlink_to(tmp_path / "elsewhere")
+    install.install(tmp_path, "both")
+    assert not (tmp_path / "skills" / "exp_protocol").is_symlink()
+    assert (tmp_path / "skills" / "exp_protocol" / "SKILL.md").is_file()
+
+
+def test_a_dangling_begin_marker_is_repaired(tmp_path) -> None:
+    (tmp_path / "AGENTS.md").write_text("# Task\n\nkeep me\n\n" + install.BEGIN + "\ntruncated\n")
+    install.install(tmp_path, "both")
+    text = (tmp_path / "AGENTS.md").read_text()
+    assert text.count(install.BEGIN) == 1 and text.count(install.END) == 1 and "keep me" in text

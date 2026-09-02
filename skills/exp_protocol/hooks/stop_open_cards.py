@@ -3,14 +3,52 @@
 
 Standard library only. The session dir is AWM_SESSION_DIR, else the hook's cwd.
 Optional; not installed by default. Does nothing for Codex.
+
+"Closed" means the card has a top-level ``conclusion:`` section whose own
+``decision:`` key carries a real value — not null, not empty, not a template
+placeholder such as ``adopt | reject | iterate | abandon_line``. The scan is
+indentation-aware so a ``decision:`` inside prose or a nested mapping does
+not count. A card that cannot be read at all is treated as open.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
+
+PLACEHOLDER = re.compile(r"[|<>]")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def card_is_closed(text: str) -> bool:
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.rstrip() != "conclusion:":
+            continue
+        for nxt in lines[i + 1:]:
+            if not nxt.strip() or nxt.lstrip().startswith("#"):
+                continue
+            if _indent(nxt) == 0:
+                return False  # the section ended without a decision
+            m = re.match(r"^(\s+)decision:\s*(.*?)\s*(#.*)?$", nxt)
+            if m and _indent(nxt) == _indent_of_first_child(lines, i):
+                value = m.group(2).strip().strip("'\"")
+                return bool(value) and value not in ("null", "~") and not PLACEHOLDER.search(value)
+        return False
+    return False
+
+
+def _indent_of_first_child(lines: list[str], section_index: int) -> int:
+    for nxt in lines[section_index + 1:]:
+        if nxt.strip() and not nxt.lstrip().startswith("#"):
+            return _indent(nxt)
+    return -1
 
 
 def open_locked_cards(session: Path) -> list[str]:
@@ -22,11 +60,13 @@ def open_locked_cards(session: Path) -> list[str]:
         card = cards / (lock.name.replace(".lock.json", ".yaml"))
         if not card.is_file():
             continue
-        text = card.read_text()
-        # A closed card has a conclusion with a decision; a flat scan is enough.
-        if "\nconclusion:" in text and "decision:" in text.split("\nconclusion:", 1)[1]:
+        try:
+            text = card.read_text()
+        except OSError:
+            out.append(card.stem)
             continue
-        out.append(card.stem)
+        if not card_is_closed(text):
+            out.append(card.stem)
     return out
 
 

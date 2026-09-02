@@ -46,7 +46,8 @@ itself are a separate, human decision.
    `metrics.md` defines each column and what a move in it means.
 7. **Analyse.** Per variant: mean and range of `accuracy`; sum of
    `pitfalls_cost_h`; `n_locked_open` (cards started and abandoned);
-   `fields_filled`. Read three cards per variant by hand — the numbers say
+   `fields_filled`; `n_overrides` (a check overridden in many cells is a
+   check to fix, not a scientist to blame). Read three cards per variant by hand — the numbers say
    whether, the cards say why.
 8. **Decide one change.** The change must be traceable to something you saw:
    a pitfall that cost hours and has no check; a rule scientists skipped; a

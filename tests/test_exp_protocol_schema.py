@@ -130,3 +130,53 @@ class TestMeasurementTypes:
         card["result"]["measurements"][0]["n"] = "one fifty"
         fields = {p.field for p in schema.validate_result(card).errors}
         assert {"result.measurements[0].value", "result.measurements[0].n"} <= fields
+
+
+class TestV1Compat:
+    def v1_card(self) -> dict:
+        """A filled card in the six-section corpus format (jerry-dev card v1)."""
+        return {
+            "schema_version": "awm-experiment-card-v1", "card_id": "exp-02", "created_at": "2026-08-30T00:00:00Z",
+            "elapsed_h": 2.5,
+            "problem": {"statement": "slips", "evidence": [], "affected_share": None, "failure_examples": [],
+                        "watch_set": None},
+            "hypothesis": {"claim": "sft cuts slips", "mechanism": None,
+                           "expected_effect": {"metric": "accuracy", "direction": "higher", "against": "base_model",
+                                               "magnitude": None}, "falsified_if": None},
+            "setup": {"parent_checkpoint": {"path": "google/gemma-3-4b-pt", "origin": "base_model", "hash": None},
+                      "base_model": "google/gemma-3-4b-pt",
+                      "data": [{"path": "/home/ben/task/d.jsonl", "source": "synthetic:self", "n_examples": 100,
+                                "built_by": None, "build_command": [], "selection": "x",
+                                "contamination_check": "passed", "mixture_weight": 1.0}],
+                      "method": {"family": "sft", "framework": "trl", "peft": "none", "hyperparams": {"lr": 1e-5},
+                                 "target_format": "x"},
+                      "command": {"argv": ["python", "t.py"], "cwd": "/home/ben/task", "script": "/home/ben/task/t.py",
+                                  "env": {}, "log": "/home/ben/task/l.log"},
+                      "resume_argv": ["python", "t.py", "--resume_from_checkpoint", "{checkpoint}"],
+                      "output_dir": "/home/ben/task/ckpts/exp-02",
+                      "progress": {"unit": "optimizer_step", "total": 300},
+                      "budget": {"gpu": "H100", "planned_h": 1.0}},
+            "evaluation": {"protocol": {"command": [], "dev_set": "official --limit 150", "n": 150, "seed": 0},
+                           "comparator": {"ref": "base_model", "value": 0.33, "path": "/home/ben/task/e.json"},
+                           "diagnostic": {"what": None, "items": None, "n": None, "metric": "accuracy",
+                                          "direction": "higher"}},
+        }
+
+    def test_migrate_v1_moves_elapsed_h_and_leaves_exactly_the_v2_gaps(self) -> None:
+        card = schema.migrate_v1(self.v1_card())
+        assert card["schema_version"] == schema.CARD_SCHEMA
+        assert "elapsed_h" not in card and card["situation"]["elapsed_h"] == 2.5
+        gaps = sorted(p.field for p in schema.validate_plan(card).errors)
+        assert gaps == ["setup.checkpoints.keep", "situation.trigger"]
+
+    def test_migrate_is_a_no_op_on_a_v2_card(self) -> None:
+        card = plan_card()
+        assert schema.migrate_v1(card) == plan_card()
+
+
+def test_render_says_ok_with_warnings_when_there_are_no_errors() -> None:
+    """I10: the skill tells the scientist to loop until "ok"; warnings must not hide it."""
+    r = schema.validate_plan(plan_card())
+    assert r.ok and r.warnings
+    text = r.render()
+    assert text.splitlines()[-1].startswith("ok")

@@ -73,7 +73,10 @@ class Report:
 
     def render(self) -> str:
         lines = [f"{p.severity.upper():7} {p.field}: {p.message}" for p in self.problems]
-        return "\n".join(lines) if lines else "ok"
+        if self.ok:
+            n = len(self.warnings)
+            lines.append(f"ok ({n} warning{'s' if n != 1 else ''}, advisory)" if n else "ok")
+        return "\n".join(lines)
 
 
 def now() -> str:
@@ -147,6 +150,25 @@ def minimal_card(card_id: str, created_at: str | None = None) -> dict[str, Any]:
                        "comparator": {"ref": None, "value": None, "path": None},
                        "diagnostic": None},
     }
+
+
+def migrate_v1(card: dict[str, Any]) -> dict[str, Any]:
+    """A six-section corpus card (v1) as far toward v2 as a machine can take it.
+
+    Moves the top-level ``elapsed_h`` into a new ``situation`` section and bumps
+    ``schema_version``; nothing else is invented. ``validate_plan`` will still
+    ask for what v2 added and v1 never had: ``situation.trigger`` and
+    ``setup.checkpoints.keep``. A v2 card is returned unchanged.
+    """
+    if card.get("schema_version") == CARD_SCHEMA:
+        return card
+    out = dict(card)
+    out["schema_version"] = CARD_SCHEMA
+    situation = dict(out.get("situation") or {})
+    if "elapsed_h" in out:
+        situation.setdefault("elapsed_h", out.pop("elapsed_h"))
+    out["situation"] = situation
+    return out
 
 
 # ----------------------------------------------------------------- helpers
