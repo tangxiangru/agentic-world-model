@@ -68,3 +68,55 @@
 - 2026-09-02T14:11:08+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r06 job=90569 RUNNING: no sidecar log; 0 transcript(s); solve_out 148 lines
 - 2026-09-02T14:11:09+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r07 job=90570 RUNNING: no sidecar log; 0 transcript(s); solve_out 166 lines
 - 2026-09-02T14:11:09+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r08 job=90571 RUNNING: no sidecar log; 0 transcript(s); solve_out 166 lines
+- 2026-09-02T14:28:24+00:00 submit wma-gsm8k-gemma4b-high-r01-wma-b-x8-v2: 8 job(s) 90606,90607,90608,90609,90610,90611,90612,90613 -> results/ptb/wma-gsm8k-gemma4b-high-r01-wma-b-x8-v2/formal-2026-09-02T142711.672417+0000.json
+- 2026-09-02T14:28:24+00:00 submit wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v2: 8 job(s) 90614,90615,90616,90617,90618,90619,90620,90621 -> results/ptb/wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v2/formal-2026-09-02T142736.004480+0000.json
+- 2026-09-02T14:28:24+00:00 submit wma-gsm8k-gemma4b-high-r01-wma-c-x8-v2: 8 job(s) 90622,90623,90624,90625,90626,90627,90628,90629 -> results/ptb/wma-gsm8k-gemma4b-high-r01-wma-c-x8-v2/formal-2026-09-02T142759.525478+0000.json
+- 2026-09-02T14:28:24+00:00 submit wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v2: 8 job(s) 90630,90631,90632,90633,90634,90635,90636,90637 -> results/ptb/wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v2/formal-2026-09-02T142822.865161+0000.json
+- 2026-09-02T14:28:24+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-x8-v1/w01r01 job=90556 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 320 lines
+- 2026-09-02T14:28:24+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-x8-v1/w01r02 job=90557 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 341 lines
+- 2026-09-02T14:28:24+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-x8-v1/w01r03 job=90558 RUNNING: sidecar: log empty; 0 transcript(s); solve_out 295 lines
+- 2026-09-02T14:28:25+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-x8-v1/w01r04 job=90559 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 316 lines
+- 2026-09-02T14:28:25+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-x8-v1/w01r05 job=90560 RUNNING: sidecar: log empty; 0 transcript(s); solve_out 319 lines
+- 2026-09-02T14:28:25+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-x8-v1/w01r06 job=90561 RUNNING: sidecar: log empty; 0 transcript(s); solve_out 287 lines
+- 2026-09-02T14:28:25+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-x8-v1/w01r07 job=90562 RUNNING: sidecar: log empty; 1 transcript(s); solve_out 325 lines
+- 2026-09-02T14:28:25+00:00 peek wma-gsm8k-gemma4b-high-r01-wma-x8-v1/w01r08 job=90563 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 303 lines
+- 2026-09-02T14:28:25+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r01 job=90564 RUNNING: no sidecar log; 0 transcript(s); solve_out 284 lines
+- 2026-09-02T14:28:26+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r02 job=90565 RUNNING: no sidecar log; 0 transcript(s); solve_out 302 lines
+- 2026-09-02T14:28:26+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r03 job=90566 RUNNING: no sidecar log; 0 transcript(s); solve_out 287 lines
+- 2026-09-02T14:28:26+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r04 job=90567 RUNNING: no sidecar log; 0 transcript(s); solve_out 271 lines
+- 2026-09-02T14:28:26+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r05 job=90568 RUNNING: no sidecar log; 0 transcript(s); solve_out 306 lines
+- 2026-09-02T14:28:26+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r06 job=90569 RUNNING: no sidecar log; 0 transcript(s); solve_out 273 lines
+- 2026-09-02T14:28:26+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r07 job=90570 RUNNING: no sidecar log; 0 transcript(s); solve_out 290 lines
+- 2026-09-02T14:28:26+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-x8-v1/c01r08 job=90571 RUNNING: no sidecar log; 0 transcript(s); solve_out 233 lines
+- 2026-09-02T14:28:26+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-b-x8-v1/w02r01 job=90572 (PENDING): Withdrawn while all PENDING (14:2x UTC); the frozen private runtime at e8a8599 rejects not_run pre-filled cards (spec §十一 12), re-queued as wma-b-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:26+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-b-x8-v1/w02r02 job=90573 (PENDING): Withdrawn while all PENDING (14:2x UTC); the frozen private runtime at e8a8599 rejects not_run pre-filled cards (spec §十一 12), re-queued as wma-b-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:26+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-b-x8-v1/w02r03 job=90574 (PENDING): Withdrawn while all PENDING (14:2x UTC); the frozen private runtime at e8a8599 rejects not_run pre-filled cards (spec §十一 12), re-queued as wma-b-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-b-x8-v1/w02r04 job=90575 (PENDING): Withdrawn while all PENDING (14:2x UTC); the frozen private runtime at e8a8599 rejects not_run pre-filled cards (spec §十一 12), re-queued as wma-b-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-b-x8-v1/w02r05 job=90576 (PENDING): Withdrawn while all PENDING (14:2x UTC); the frozen private runtime at e8a8599 rejects not_run pre-filled cards (spec §十一 12), re-queued as wma-b-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-b-x8-v1/w02r06 job=90577 (PENDING): Withdrawn while all PENDING (14:2x UTC); the frozen private runtime at e8a8599 rejects not_run pre-filled cards (spec §十一 12), re-queued as wma-b-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-b-x8-v1/w02r07 job=90578 (PENDING): Withdrawn while all PENDING (14:2x UTC); the frozen private runtime at e8a8599 rejects not_run pre-filled cards (spec §十一 12), re-queued as wma-b-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-b-x8-v1/w02r08 job=90579 (PENDING): Withdrawn while all PENDING (14:2x UTC); the frozen private runtime at e8a8599 rejects not_run pre-filled cards (spec §十一 12), re-queued as wma-b-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v1/c02r01 job=90580 (PENDING): Withdrawn while all PENDING so the re-queued second wave stays 8 wma + 8 ctl; contract unchanged, re-queued as ctl-b-x8-v2.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v1/c02r02 job=90581 (PENDING): Withdrawn while all PENDING so the re-queued second wave stays 8 wma + 8 ctl; contract unchanged, re-queued as ctl-b-x8-v2.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v1/c02r03 job=90582 (PENDING): Withdrawn while all PENDING so the re-queued second wave stays 8 wma + 8 ctl; contract unchanged, re-queued as ctl-b-x8-v2.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v1/c02r04 job=90583 (PENDING): Withdrawn while all PENDING so the re-queued second wave stays 8 wma + 8 ctl; contract unchanged, re-queued as ctl-b-x8-v2.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v1/c02r05 job=90584 (PENDING): Withdrawn while all PENDING so the re-queued second wave stays 8 wma + 8 ctl; contract unchanged, re-queued as ctl-b-x8-v2.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v1/c02r06 job=90585 (PENDING): Withdrawn while all PENDING so the re-queued second wave stays 8 wma + 8 ctl; contract unchanged, re-queued as ctl-b-x8-v2.
+- 2026-09-02T14:28:27+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v1/c02r07 job=90586 (PENDING): Withdrawn while all PENDING so the re-queued second wave stays 8 wma + 8 ctl; contract unchanged, re-queued as ctl-b-x8-v2.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v1/c02r08 job=90587 (PENDING): Withdrawn while all PENDING so the re-queued second wave stays 8 wma + 8 ctl; contract unchanged, re-queued as ctl-b-x8-v2.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v1/w03r01 job=90588 (PENDING): Withdrawn while all PENDING for the same runtime reason as wma-b-x8; re-queued as wma-c-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v1/w03r02 job=90589 (PENDING): Withdrawn while all PENDING for the same runtime reason as wma-b-x8; re-queued as wma-c-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v1/w03r03 job=90590 (PENDING): Withdrawn while all PENDING for the same runtime reason as wma-b-x8; re-queued as wma-c-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v1/w03r04 job=90591 (PENDING): Withdrawn while all PENDING for the same runtime reason as wma-b-x8; re-queued as wma-c-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v1/w03r05 job=90592 (PENDING): Withdrawn while all PENDING for the same runtime reason as wma-b-x8; re-queued as wma-c-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v1/w03r06 job=90593 (PENDING): Withdrawn while all PENDING for the same runtime reason as wma-b-x8; re-queued as wma-c-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v1/w03r07 job=90594 (PENDING): Withdrawn while all PENDING for the same runtime reason as wma-b-x8; re-queued as wma-c-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v1/w03r08 job=90595 (PENDING): Withdrawn while all PENDING for the same runtime reason as wma-b-x8; re-queued as wma-c-x8-v2 on bf87dfb.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v1/c03r01 job=90596 (PENDING): Withdrawn while all PENDING to keep the third wave paired; contract unchanged, re-queued as ctl-c-x8-v2.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v1/c03r02 job=90597 (PENDING): Withdrawn while all PENDING to keep the third wave paired; contract unchanged, re-queued as ctl-c-x8-v2.
+- 2026-09-02T14:28:28+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v1/c03r03 job=90598 (PENDING): Withdrawn while all PENDING to keep the third wave paired; contract unchanged, re-queued as ctl-c-x8-v2.
+- 2026-09-02T14:28:29+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v1/c03r04 job=90599 (PENDING): Withdrawn while all PENDING to keep the third wave paired; contract unchanged, re-queued as ctl-c-x8-v2.
+- 2026-09-02T14:28:29+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v1/c03r05 job=90600 (PENDING): Withdrawn while all PENDING to keep the third wave paired; contract unchanged, re-queued as ctl-c-x8-v2.
+- 2026-09-02T14:28:29+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v1/c03r06 job=90601 (PENDING): Withdrawn while all PENDING to keep the third wave paired; contract unchanged, re-queued as ctl-c-x8-v2.
+- 2026-09-02T14:28:29+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v1/c03r07 job=90602 (PENDING): Withdrawn while all PENDING to keep the third wave paired; contract unchanged, re-queued as ctl-c-x8-v2.
+- 2026-09-02T14:28:29+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v1/c03r08 job=90603 (PENDING): Withdrawn while all PENDING to keep the third wave paired; contract unchanged, re-queued as ctl-c-x8-v2.
