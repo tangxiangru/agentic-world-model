@@ -94,6 +94,12 @@ verdict in progress.
 | `L2_effect` | Against the comparator, which direction and how much? Give an **interval** and a confidence. `flat` is a direction: a packaging card expects no change. | the type's effect prior and grade; earlier cards of this run; precedents in `history/` with the same base model and type; the noise floor at the card's `n` |
 | `L3_worth_now` | Given `situation` — hours left, the incumbent, what was already rejected — is this the right use of the next hours? `yes` / `no` / `defer` | L0–L2, the type's cost, `situation.remaining_h`, `setup.budget.planned_h`, the cheaper alternatives the card did not take |
 
+For a C3/C4 training card, L3 `yes` needs checked evidence that the expected
+effect is resolvable above the card's evaluation noise floor **and** that no
+unspent C2 or C5 action offers the same decision for minutes instead of hours.
+Otherwise answer `defer` and name that cheaper discriminator. Remaining hours
+alone are never evidence for `yes`.
+
 Every `basis` entry is an `evidence[].id`. If you cannot point at a file for
 a claim, the claim is a prior: say so in the note and keep the confidence low.
 
