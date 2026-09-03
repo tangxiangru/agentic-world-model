@@ -32,7 +32,7 @@ read what the cards cannot say; the reviewer reports carry them per cell.
 | `protocol_hours` | tool time in `awm exp_protocol`, card edits, reading the skill | down without `fields_filled` dropping |
 | `waiting_hours` | raw tool time in sleep/tail/pgrep loops, sometimes including foreground evaluation | context only; not post-exit idle and not comparable until composite calls are separated |
 | `post_exit_idle_h` | cumulative non-overlapping time per cell after the producing process exits and before the next useful action, excluding overlapping productive work | down against the predeclared per-cell threshold; report uncertain timestamp bounds and per-event maxima separately |
-| `lock_before_launch` | training launches after their card's lock, from trace timestamps | up to all/all; `collect` cannot see ordering |
+| `lock_before_launch` | card-matched training launches after their lock, from trace timestamps | up to all matched/matched; not an exhaustive command audit, and `collect` cannot see ordering |
 | `greedy_shipped` | a greedy or measured `generation_config` written for `final_model` | verify the measured choice; Round 00's large gains are historical observations, not a universal benefit for every artifact |
 | `rl_used` / `rft_tried` | on-policy RL or rejection sampling attempted, and the card's verdict | context, not a target: the protocol does not say what to run |
 | `largest_eval_n` | the biggest evaluation behind a shipping decision | up to ≥500; rankings at 150–300 inverted at 500–1319 |
@@ -70,6 +70,13 @@ Measurement checks from window 03:
   Before calling a violation unavoidable, check the alternatives actually
   available to the scientist, including documented reasoned overrides.
   See the [g01s07 ordering/cost audit](../../doc/exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/g01s07-ordering-cost-audit.md).
+- Check the launch counter's denominator before asserting universal compliance:
+  the cell-reader matches the first training command for a card's script/output
+  and omits unmatched launches. Audit GPU smoke/probes, retries and evaluations
+  separately; a later `smoke_runs` entry is not a pre-launch lock, and a small
+  run's label does not override the user's required ordering. Preserve the
+  original matched ratio rather than silently expanding its denominator.
+  See the [two-cell launch-scope audit](../../doc/exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/launch-scope-audit.md).
 - Keep exact cohort IDs in denominators. Window 03's three new guard cells
   include two old identities and only one of the prescribed strict eight.
   An explicit tie-break after a null paired test is not a proven gain, but

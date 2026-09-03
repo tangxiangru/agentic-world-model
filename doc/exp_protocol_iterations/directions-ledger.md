@@ -33,6 +33,7 @@
 | 23 | **结束时按『最后一次运行的配置』而非『最小可改变决策的运行』定价剩余时间** | p00r11 exp-09（说 ~1 h，自身 RFT 周期 22 min）、p00r13 exp-06（2.2 h = 两 epoch）、p00r12 exp-09（余 3:05）、p00r15；w01 p00r05（余 3.7 h）、p00r10 | protocol ≥1.8 h 未用 6/14，control 1/10；按晚期边际收益约值 1 分 | **排队（P4，规则 8 措辞；在 D 与 A 的小时读数之后）** | 目标：余 ≥1.5 h 且无进程的 cell ≤1/4，且最后一次 `alternatives_rejected` 引用实测成本；是 #16 framing 的具体化 |
 | 24 | **Serving/evaluation contract 与重复读数（P5 调查）** | W03 g01r01 full n=1319 的32-vs-2 mismatch；g01r02重复150分歧；c01r07同100题但并发/显存一起变 | 重复波动成立；并发唯一因果未证实，且与 C 重叠 | **排队调查，未构建或登记 screen** | 先核对 matched n/weights/decode/memory，再判断独立单项 pitfall 是否值得4-cell screen；不强制所有卡两遍全量 |
 | 25 | **开发评测通过但官方 full scorer 失败** | p00r16 /90490九次数字 scorer 异常，无 metrics.json | scientist正常完成、judge-clean不等于validator-complete；n=500的0.712不是官方分数 | **观察 / harness failure evidence，非 protocol 候选** | 不盲目第十次重跑；recovery需新冻结合同，不能静默改评分器或填分 |
+| 26 | **GPU smoke 与锁卡覆盖范围冲突** | strict g01s01/90791、g01s07/90797 的原始smoke训练早于exp-02创建/锁定 | cell-reader仅匹配卡片主训练首条命令，3/3不能覆盖所有GPU执行；冻结模板称smoke非实验，与仓库训练/评估前锁卡要求冲突 | **待主审设计，未构建/登记** | 全部GPU训练/评估的scope不能靠smoke标签豁免；先完整launch审计与单项spec，不改原PTB分数或偷换guard-specific safety判据 |
 
 ## 二、决策日志
 
@@ -60,6 +61,7 @@
 | 09-03 Window03 | **关闭本地8-new-clean窗口，不改冻结protocol tree、不cancel、不promote；D/B/C第一波，A/H后续，E条件held，P5仅调查** | 照抄synthesis改E/P1；因零overrides判H饱和；P2/P3叠成rider；用混合3个guard判strict8 | 主审读完整synthesis、两臂最好/最差、三张卡及P1专项日志；E已有PID，P1原始日志收窄反例；C/H/E指标在未开跑前澄清。原始helper输出保留，接受/拒绝理由单列 | window03-local/planner-decision.md；P1 audit；round02 spec §八；meta metrics |
 | 09-03 20:00 | **strict cohort 8/8 validator-clean；用g01s03/g01s08明确失败界限保留E，准备单项E v2，不走G/P1替代** | 等最后3份报告才判断已无法反转的条件；按原“可能饱和”撤E | 两个单次保守下界已>0.15h，最多6/8可pass；这不替代完整strict safety review。90820越界导致真实OWNERSHIP FAIL，新Slurm提交/放行停止；33 held保留 | E2 process-wait spec；strict addendum launch；placement-violation-90820 audit |
 | 09-03 E v2 construction | **冻结 `c6f11d8` / `ceb68549` 及新4-cell manifest，恢复guard基线；不登记、不release、不cancel** | 继续运行旧E的stale-tail判死文本；把生命周期修订叠到其他候选 | 独立forward review发现跨shell退出结果与旧artifact归属缺口，三处同步澄清；34测试与AST/YAML/六路径差异验证通过。代码准备与Slurm所有权门分离 | round-02-e2-prelaunch；E2 spec；e-wait-on-process-x4-v2 manifest |
+| 09-03 strict launch-scope audit | **保留matched training指标但撤销其“所有命令合规”的外推；登记#26与meta统计盲区** | 忽略smoke；把card后补记录当预先锁定；直接改已冻结runtime | 两个raw trace确认真实GPU训练早于训练卡；helper按script/output匹配首条主训练，未计smoke/eval。既不豁免用户硬约束，也不把新合规问题混成session-end损失或改PTB成绩 | strict addendum/launch-scope-audit.md；meta metrics |
 
 ## 三、这份台账之外还没写下来的
 
