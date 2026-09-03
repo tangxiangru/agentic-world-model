@@ -6,10 +6,12 @@
 
 ## 触发
 
-`tools/exp_protocol_completion_monitor.py` 每 5 分钟只读一次指定 Slurm job 集合；达到 8 个 terminal
+`tools/exp_protocol_completion_monitor.py` 默认每 1 小时只读一次指定 Slurm job 集合；达到 8 个 terminal
 jobs 时写 `data/ptb/monitor/exp_protocol_goal.json` 并退出。terminal 只是唤醒信号，不是科学完成：
 planner 随后运行 `awm ptb reconcile --apply`、提交收割物，并以 PTB validator + receipt provenance
 数 clean cells。只有自上个 trace window 以来达到 8 个新 clean cells 才启动分析；不足则重启 monitor。
+小时级 cadence 是 planner 的批次唤醒节奏，不改变 cluster operator 自己的 reconcile 周期，也不允许
+把 terminal 当 clean；其目的是攒够一批再深入分析，而不是每几分钟重复查询 Slurm。
 
 项目 `.codex/hooks.json` 的 `SessionStart` hook 只在 goal resume/compact 时把 ready event 注入上下文。
 它不声称外部事件能主动创建一轮；持续 `/goal` 才是后台续跑机制。
@@ -40,3 +42,8 @@ Claude 只读 evidence 并输出报告建议，不 release/cancel job、不 push
    evidence gate，也不能把 control recipe 泄漏成 protocol 指令。
 5. 结果、session ids、planner 的接受/拒绝理由进入 `doc/exp_protocol_iterations/` 并提交；无需等待 PR
    上的任何 agent。
+6. 同一决策窗口审计全部 held block：新证据证明不再需要的实验按完整未启动 block 改成
+   `want: cancelled`，只允许 receipt 中列出的 PENDING job，绝不取消 RUNNING 或按结果挑 cell；取消后
+   合规 `PENDING(JobHeldUser)` 仍不得低于 8。
+7. 可复用的循环知识必须同步写回 `skills/exp_protocol_meta/`；具体实验方向、反证和状态写入
+   directions ledger 与 round record，不能只存在 Claude session/log 中。

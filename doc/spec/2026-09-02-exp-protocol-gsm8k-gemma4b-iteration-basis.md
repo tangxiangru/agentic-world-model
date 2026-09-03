@@ -239,6 +239,17 @@ Fable 单独写一次跨轮 meta retrospective；只有至少两个 rounds 重�
    `tools/exp_protocol_cell_read.py`、`tools/exp_protocol_trace_timeline.py`。这是用户对循环本身的
    决定，因此在 Round 01/02 进行中修改 `exp_protocol_meta` 是被授权的；规程树（`skills/exp_protocol`）
    本身未因此改动。
+7. **（2026-09-03 约 11:30 UTC）planner completion monitor 改为小时级批次唤醒。** 默认
+   `--poll-seconds 3600`，继续以 8 个 terminal jobs 为唤醒阈值；terminal 后仍须 operator 收割、receipt
+   provenance、PTB validator 与 judge-clean 门，只有 8 个新 clean cells 才进入分析。operator 的
+   10–15 分钟 reconcile 是独立职责，不因 planner cadence 改变。
+8. **每个 analysis window 结束后深入读 trace；必要时增加 subagent。** 固定分组仍为每 reviewer
+   3–4 cells，并覆盖窗口全部 clean traces；若出现跨组歧义，追加 focused reviewer，再由 synthesis 排名
+   机制。可复用的 loop/review 知识写回 `skills/exp_protocol_meta/`，具体实验结论写 round record 与
+   directions ledger，不能只留在对话或 Claude 日志。
+9. **允许分析后删减无必要的 pending 实验。** 只能撤回完整、尚未启动的 block，只能取消其 immutable
+   receipt 列出的 PENDING job；不得取消 RUNNING、不得按结果挑 cell。撤回前后都要保证至少 8 个独立、
+   已验证、科学上仍需要的 `PENDING(JobHeldUser)` cells；若会跌破 floor，先准备并登记替代工作。
 
 ## 八、结果与 provenance
 

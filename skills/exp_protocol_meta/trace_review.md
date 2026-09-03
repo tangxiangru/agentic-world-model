@@ -41,11 +41,14 @@ Both read `results/ptb/<batch>/<cell>/` as the operator commits it:
 
 1. Split the clean cells into groups of three or four, one arm per group, and
    launch one reviewer subagent per group with the brief below. Use the
-   `trace-reviewer` agent definition (`.claude/agents/trace-reviewer.md`): it
-   runs at **high** effort, not max — the reading is mechanical and the brief
-   carries the judgement, and the user asked for that economy (2026-09-03).
-   Reviewers read only; they write `reports/<cell>.md` under the scratch
-   directory.
+   `trace-reviewer` agent definition (`.claude/agents/trace-reviewer.md`). For
+   this line the later local-analysis contract supersedes the earlier
+   high-effort economy: local Claude Code sessions use
+   `claude-opus-5[1m] --effort max`. Reviewers read only; they write
+   `reports/<cell>.md` under the scratch directory. If one group exposes a
+   cross-cell ambiguity that its assigned traces cannot settle, launch an
+   additional focused reviewer rather than compressing the issue into the
+   synthesis.
 2. When all reviewers are done, launch one synthesis subagent (the same
    `trace-reviewer` definition) over every report with the synthesis brief; it
    writes
@@ -56,6 +59,9 @@ Both read `results/ptb/<batch>/<cell>/` as the operator commits it:
    score guardrail; write the specs and the 4-cell screening manifests; update
    `doc/exp_protocol_iterations/directions-ledger.md` (every direction's
    status and the reason it changed; every decision with its alternatives).
+   Transfer reusable review or operating lessons into this meta skill or its
+   linked resources in the same decision window; do not leave them only in the
+   subagent reports.
 
 ## The brief (one reviewer, three or four cells)
 

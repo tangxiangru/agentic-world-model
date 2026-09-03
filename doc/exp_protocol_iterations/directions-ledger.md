@@ -53,6 +53,7 @@
 | 09-03 08:17 | **Fable 平行 window 02 review 落盘**（`2026-09-03-trace-review-round00-window02-fable.md` + 8 份 report）；同意本窗口不改 protocol；新增排队方向 #20–#23；向 planner 提出 A v2 指标饱和（baseline 5/5 greedy，改读『首个 post-SFT eval 到有测量依据的解码选择』的小时数）、E 在 baseline 已达标（5/5 idle <0.15 h）无法区分、D 按小时/cell 优先级应高于 A | 直接改 A/E 的 manifest；把 P1–P4 立即建 screen | 冻结的 screen 由 planner 定；held 池 52 已满，先把证据与指标问题写清 | 本行；PR #20 评论 |
 | 09-03 08:45 | **planner 接受 Fable 的 screen-design 更正，不改冻结 protocol tree**：A 改读首次 post-SFT eval→measured decode choice ≤0.5 h；第一可释放波改为 D/B/C；E 等 guard，≥7/8 已达标则启动前整块撤回并由 G/P1 中一个单项候选替代 | 保持 A 的饱和 greedy 指标；立即取消 E；重写 A/B/C/D/E/H protocol | A 的原指标和 E 的 target 在新 baseline 饱和；D 有 4/8、3.3 h 的可避免损失。guard 是 E 的同文本预注册样本，先读完比现在按窗口挑选更稳健；held/release gate 均不受影响 | round02 spec §七；Fable window 02 synthesis |
 | 09-03 09:17 | **关闭方向 #12：c00r06 与 batch1 g12 的 0.7832 不是配方复现** | 把同分当作同一 recipe/trajectory 的复现 | operator 比较两个集群结果包：一个是多阶段 SFT/RFT soup，一个是 SFT+620-step GRPO；只有 scalar 1033/1319 相同。official per-item log 未保留，逐题同一性不可验证 | c00r06 `REPORT.md`；batch1 g12 job 87250 `RESULTS.md` |
+| 09-03 11:30 | **meta loop 改为小时级批次监控；每窗口深入 trace review；允许整块撤回失去科学价值的 pending；可复用知识写回 meta skill** | 继续 5 分钟 planner 轮询；保留所有 held 以维持表面 backlog；只把结论留在 Claude/对话 | 用户明确要求监控不必过密、可一次攒够一批；分析后可删减不必要实验；必要时派 subagent 仔细读 trace；知识必须沉淀。receipt-only、PENDING-only、整块撤回与 held floor=8 保留安全边界 | iteration-basis §七 7–9；`skills/exp_protocol_meta/`；local Claude contract |
 
 ## 三、这份台账之外还没写下来的
 

@@ -76,24 +76,49 @@ directive of 2026-09-03, recorded in the iteration-basis spec §七 and in
    groups of three or four with a fixed brief and write one report per cell
    (`tools/exp_protocol_cell_read.py`, `tools/exp_protocol_trace_timeline.py`
    give them the facts and the hours); a synthesis subagent ranks the
-   explanations of the score difference and proposes candidates. Read the
-   synthesis and three cards per variant yourself — the numbers say whether,
-   the traces say why.
+   explanations of the score difference and proposes candidates. This is a
+   deep review, not a score-table checkpoint: add reviewer subagents whenever
+   a window is too large or heterogeneous for the fixed groups, and do not
+   stop until every clean trace is covered. Read the synthesis and three cards
+   per variant yourself — the numbers say whether, the traces say why.
 8. **Decide the candidates.** Each candidate is one item, traceable to at
    least two cells of the review: a pitfall that cost hours and has no entry;
    a rule scientists skipped; a field that stayed empty; a decision the other
    arm made and this arm did not. Declare the metric the 4-cell screen will
    read for it and the score guardrail. Write it up first (spec, ledger), then
-   make it. A losing candidate's pending cells are withdrawn; a winner earns
-   its second block.
+   make it. At the same decision point, audit every held block. Withdraw an
+   entire not-yet-started block when the new evidence makes it scientifically
+   unnecessary; never select individual cells by outcome, never cancel a
+   running job, and never cancel outside the immutable receipt's job IDs.
+   Replenish before the valid `PENDING(JobHeldUser)` floor falls below eight.
+   A losing candidate's pending cells are withdrawn; a winner earns its second
+   block.
 9. **Record.** Copy `iteration_record.template.md` to
    `doc/exp_protocol_iterations/<date>-round-NN.md`, fill every section, commit
    it with the change in the same commit; keep
    `doc/exp_protocol_iterations/directions-ledger.md` current — every direction
    with its status and what would change it, every decision with its
-   alternatives.
+   alternatives. Do not leave reusable knowledge only in chat, Claude logs, or
+   a one-off synthesis: durable loop/process lessons go into this meta skill or
+   its linked `trace_review.md`/`metrics.md`; experiment-specific findings and
+   hypotheses go into the directions ledger and round record.
 10. **Promote.** A change becomes the new baseline only after it holds on the
     held-out task.
+
+## Operational cadence
+
+- Use `tools/exp_protocol_completion_monitor.py` as a slow batch wake-up, with
+  a nominal one-hour poll (`--poll-seconds 3600`) and a threshold of eight
+  terminal jobs. The cluster-side operator may reconcile more often; do not
+  turn the planner into a minute-scale Slurm poller.
+- Terminal state only wakes the loop. Harvest every attempt, then count only
+  immutable-receipt, PTB-validator-complete, judge-clean cells toward the
+  eight-cell analysis window. If the window is still short, restart the hourly
+  monitor on the remaining relevant jobs.
+- Monitoring cadence does not weaken queue discipline: keep at least eight
+  independently specified, validated cells held as `PENDING(JobHeldUser)` and
+  release already-safe downstream work asynchronously when its scientific and
+  ownership gates are satisfied.
 
 ## Rules
 

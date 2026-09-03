@@ -80,7 +80,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--jobs", required=True, help="comma-separated Slurm job ids")
     parser.add_argument("--threshold", type=int, default=8)
-    parser.add_argument("--poll-seconds", type=int, default=300)
+    parser.add_argument("--poll-seconds", type=int, default=3600)
     parser.add_argument(
         "--state-file",
         type=Path,

@@ -36,9 +36,16 @@
   `doc/reference/exp_protocol_local_claude_analysis.md`. Claude is a read-only analysis helper;
   the Codex planner reads its reports and owns every experiment, protocol, queue, and git decision.
 - Keep the long-running Codex goal active and use `tools/exp_protocol_completion_monitor.py` as
-  the slow external-event detector. Its ready state is surfaced on resume/compaction by the
+  the slow external-event detector, normally at a one-hour polling cadence so terminal attempts
+  accumulate into analysis batches. Its ready state is surfaced on resume/compaction by the
   project SessionStart hook; Slurm terminal state only wakes the loop and never substitutes for
   receipt-backed PTB validation.
+- After every `exp_protocol` analysis window, perform the full trace review and use additional
+  reviewer subagents when cross-cell ambiguity remains. Prune whole not-yet-started pending blocks
+  that the evidence makes scientifically unnecessary, but only through their immutable receipt job
+  IDs, never cancel running work, and preserve at least eight validated `PENDING(JobHeldUser)`
+  cells. Persist reusable loop knowledge in `skills/exp_protocol_meta/`, not only in chat or Claude
+  logs.
 - Use `/rmeng_data/robtang/slurm-queue/registry.json` as the cross-CLI ownership authority for the
   four H100 nodes. The shared queue name is `gangda`. A shared Unix user, `root`, reservation
   membership, or node placement is never
