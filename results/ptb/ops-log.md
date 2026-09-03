@@ -83,3 +83,4 @@
 - 2026-09-03T06:42:37+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r15 job=90489 COMPLETED acc=0.7096 complete clean
 - 2026-09-03T06:46:27+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r13 job=90487 COMPLETED acc=0.7074 complete clean
 - 2026-09-03T07:12:43+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-b-x8-v1/c01r03 job=90493 COMPLETED acc=0.7786 complete clean
+- 2026-09-03T07:16:02+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-b-x8-v1/c01r01 job=90491 COMPLETED acc=0.7733 complete clean
