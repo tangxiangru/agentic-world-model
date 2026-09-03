@@ -59,6 +59,17 @@ Measurement checks from window 03:
 - Do not double-count an invalid-save run's post-exit waiting under both D
   and E when reporting total savings. Low GPU memory or an unchanged log
   alone is not proof that the producing process exited.
+- `pitfalls_cost_h` is a sum of card entries, not unique failure events. A
+  follow-up card may repeat its predecessor's crash cost. Preserve the raw
+  collect value; derive a separate event-deduplicated ledger with trace
+  intervals for failed compute, post-exit idle and repair. Removing duplicate
+  entries does not make the scientist's rounded estimate an exact duration.
+- A successful lock's `preflight_fail: 0` is not a history of all earlier
+  check attempts. Inspect failed checks in the trace and audit evaluation
+  launch ordering separately from the existing training-launch metric.
+  Before calling a violation unavoidable, check the alternatives actually
+  available to the scientist, including documented reasoned overrides.
+  See the [g01s07 ordering/cost audit](../../doc/exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/g01s07-ordering-cost-audit.md).
 - Keep exact cohort IDs in denominators. Window 03's three new guard cells
   include two old identities and only one of the prescribed strict eight.
   An explicit tie-break after a null paired test is not a proven gain, but
