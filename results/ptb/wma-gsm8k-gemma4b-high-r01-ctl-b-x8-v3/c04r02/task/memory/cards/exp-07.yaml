@@ -1,0 +1,157 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T05:20:00Z'
+situation:
+  elapsed_h: 5.3
+  remaining_h: 4.7
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.78, protocol_n: 150}
+  trigger: "exp-06 asked whether more verified solutions per problem help and died at 55% without
+    a measurement: transformers refuses to save a generation config with do_sample=false and
+    temperature=0.0, which is exactly the vLLM-greedy config exp-04 adopted and exp-05 wrote into
+    its checkpoint. The question is still open and 4.7 h remain."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-06.yaml
+      locator: "result.failure, conclusion"
+    - path: /home/ben/task/logs/exp-06.log
+      locator: "traceback at step 1200"
+  alternatives_rejected:
+    - option: "Rerun exp-06 unchanged on 70000 rows"
+      reason: "1.75 h of the 4.7 h left; 45000 rows keeps the same question and leaves room for a
+        rejection-sampling round and a lower-variance final selection"
+    - option: "Skip the continuation and go straight to rejection sampling"
+      reason: "the teacher data is verified and on disk; the model's own samples are weaker, and
+        exp-06 left its hypothesis untested rather than refuted"
+    - option: "Disable intermediate checkpointing to dodge the save path"
+      reason: "the same call runs at the end of training; the bug had to be fixed, not avoided"
+  pitfalls_hit:
+    - what: "transformers GenerationConfig.save_pretrained raises on do_sample=false with
+        temperature=0.0, so any run started from an exp-04-style greedy checkpoint dies at its
+        first save - after 56 min of training in exp-06"
+      cost_h: 0.95
+      fix: "hold do_sample=false with temperature unset in memory during training; write the vLLM
+        form (temperature=0.0) once in finalize_checkpoint after the last save"
+  smoke_runs:
+    - command: [python, -c, "GenerationConfig.from_pretrained(ckpts/exp-05/final).save_pretrained(tmp)"]
+      outcome: "reproduced the exp-06 ValueError on CPU in seconds; after setting temperature/top_k/
+        top_p to None the same save succeeds - the fix is verified without spending GPU time"
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_more_pool_dedup.contam.jsonl]
+      outcome: "0 of 196774 documents contaminated (logs/contam_more.log)"
+problem:
+  statement: "exp-05 misses 33 of 150 dev items: 4 are greedy run-ons that reach max_tokens with no
+    ANSWER line, the other 29 are wrong numbers inside a well-formed answer. The model has seen at
+    most two verified solutions per problem, while 196774 further verified solutions for the same
+    problems are unused."
+  evidence:
+    - path: /home/ben/task/analysis/exp-05_dev150_samples.jsonl
+      locator: "33 rows with correct=false"
+      observation: "146/150 well formed; 4 run-ons at max_tokens=4000; 29 well-formed wrong answers"
+    - path: /home/ben/task/eval/exp-05_dev150.json
+      locator: "accuracy"
+      observation: "0.78 after one epoch over 90000 rows"
+    - path: /home/ben/task/data/sft_more_pool_dedup.jsonl
+      locator: "196774 rows"
+      observation: "verified 405B solutions for the same problem pool, none sharing a completion with the exp-05 training file"
+  affected_share: 0.22
+  failure_examples:
+    - {id: e05-runon, source: /home/ben/task/analysis/exp-05_dev150_samples.jsonl,
+       question: "(candle profit item, gold 20)", gold: "20",
+       model_output: "... his net profit is $40 - 200 = -160$, but since he can sell the ... (4000 tokens, no ANSWER line)",
+       failure: "greedy semantic loop on 'However, since ...', guaranteed miss"}
+    - {id: e05-runon2, source: /home/ben/task/analysis/exp-05_dev150_samples.jsonl,
+       question: "(chips calories item, gold 48)", gold: "48",
+       model_output: "... you can eat 1250 / 250 = 5 servings ... (4000 tokens, no ANSWER line)",
+       failure: "same loop; the model keeps re-deriving instead of committing"}
+    - {id: e05-arith, source: /home/ben/task/analysis/exp-05_dev150_samples.jsonl,
+       question: "(one of the 29 well-formed misses)", gold: "(various)",
+       model_output: "(clean chain, one wrong intermediate value)", failure: "arithmetic or reading slip inside a correct plan"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing training from the exp-05 checkpoint on 45000 further verified 405B solutions
+    for the same problem pool, at a lower learning rate, raises dev-150 accuracy relative to exp-05
+    under the same greedy decode config."
+  mechanism: "Several distinct correct solutions per problem teach the problem-to-answer mapping
+    rather than one memorised surface form; this is the axis OpenMathInstruct-2's construction
+    scales, and the model has so far seen at most two solutions per problem."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-05, magnitude: "+1 to +3 points"}
+  falsified_if: "dev-150 accuracy is not above exp-05's 0.78"
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-05/final, origin: exp-05, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_more45k.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (full train shards 0-7, problem_source in {gsm8k, augmented_gsm8k}); few-shot prefixes from openai/gsm8k train split"
+      n_examples: 45000
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, data/sft_more_pool.jsonl, --n, '300000',
+        --max-per-problem, '3', --gsm8k-repeat, '0', --fewshot-frac, '0.2', --fewshot-max, '4',
+        --seed, '11', --shards, 'train-000*.parquet']
+      selection: "same filters as exp-05; rows whose completion already appears in
+        data/sft_main90k.jsonl and duplicate completions removed (236394 -> 196774); first 45000
+        lines of that shuffled file"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom prompt/completion collator (scripts/train_sft.py)"
+    peft: none
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 4, grad_accum: 8, max_seq_len: 1536,
+      scheduler: cosine, warmup: 0.02, weight_decay: 0.0,
+      precision: "fp32 weights + bf16 autocast, adamw_bnb_8bit", seed: 1}
+    target_format: "<start_of_turn>model\\n{rich step-by-step body}\\nANSWER: {number}<end_of_turn>; loss on completion tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-05/final, --data,
+      data/sft_more45k.jsonl, --out, /home/ben/task/ckpts/exp-07, --max-len, '1536', --lr, '7e-6',
+      --epochs, '1', --bs, '4', --grad-accum, '8', --warmup, '0.02', --seed, '1', --save-steps, '700']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints: {every_steps: 700, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 1.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '32', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: "official gsm8k test --limit 150 (first 150 items, dataset not shuffled)"
+    n: 150
+    seed: 42
+  comparator: {ref: exp-05, value: 0.78, path: /home/ben/task/eval/exp-05_dev150.json}
+  diagnostic:
+    what: "number of dev-150 completions that hit max_tokens with no ANSWER line (4 in exp-05)"
+    n: 150
+    metric: accuracy
+    direction: lower
+result:
+  execution: completed
+  wall_h: 1.13
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 1406}
+    - {path: /home/ben/task/ckpts/exp-07/checkpoint-1400, step: 1400}
+    - {path: /home/ben/task/ckpts/exp-07/checkpoint-700, step: 700}
+  training_summary: {final_loss: 0.258, steps: 1406, notes: "the step-700 save succeeded, so the
+    exp-06 generation-config bug is fixed"}
+  measurements:
+    - {metric: accuracy, value: 0.7667, n: 150, path: /home/ben/task/eval/exp-07_dev150.json, delta_vs_comparator: -0.0133}
+  diagnostic_result:
+    value: 5
+    path: /home/ben/task/analysis/exp-07_dev150_samples.jsonl
+    notes: "greedy run-ons 4 -> 5 of 150; mean output 282 -> 305 tokens; 145/150 well formed"
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.780 -> 0.767 (-1.3, inside the +/-3.4 stderr of either measurement, so at best
+    no effect). 45000 additional verified solutions for problems the model had already seen did not
+    help, and answers grew slightly longer with one more run-on."
+  decision: reject
+  next_step: "The teacher-data axis is saturated at this problem pool: exp-05 stays the incumbent.
+    Switch axis and try one rejection-sampling round on exp-05's own correct samples, which targets
+    the problems this model actually gets wrong."

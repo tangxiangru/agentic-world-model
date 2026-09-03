@@ -1,0 +1,129 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T04:22:37Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.6
+  remaining_h: 4.4
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/greedy
+    score: {metric: accuracy, value: 0.7733, protocol_n: 150}
+  trigger: "Resampling the 7473 gsm8k TRAIN questions from the new incumbent still leaves a large pass@k-minus-pass@1 gap: 6 draws at T=1 solve 95.96% of the questions at least once and 75.8% per sample, while the model scores 0.7733 on one greedy pass (analysis/exp-05_rft_stats.json). The on-policy rows already in sft_v2 were sampled from exp-03, a 0.72 model, so they are stale for this one."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-05_rft_stats.json, locator: "pass_at_k=0.9596, pass_rate_per_sample=0.7580, rows_written=16151"}
+    - {path: /home/ben/task/analysis/exp-04_greedy_diag.json, locator: "watch_set.still_failing=34, accuracy=0.7733"}
+    - {path: /home/ben/task/memory/cards/exp-04.verdict.json, locator: "suggestions.cheaper_variants[0]", observation: "the estimator's retrieved precedents put both n=150 RFT gains (+6.7, +12.7) on WARM starts and both from-base mixtures at a loss; exp-04 was a from-base mixture that won anyway, so the warm-start arm is the one still untested here"}
+  alternatives_rejected:
+    - {option: "Another from-base run on an even larger corpus", reason: "OMI2's gsm8k portion is exhausted at 70747 distinct problems and exp-04 already used all of them; a bigger from-base run would mostly add duplicate problems for 2+ h, and only ~4.4 h remain including the final confirmation reads"}
+    - {option: "Weight-averaging exp-02 and exp-04 (model soup)", reason: "cheap and sometimes worth a point or two, but the two parents differ in corpus AND in epoch schedule, and a soup produces no diagnostic - if it wins nothing is learned about why. Kept in reserve if this card fails and time remains"}
+    - {option: "DPO on the 10850 incorrect samples paired against correct ones", reason: "the pairs now exist, but a preference stage needs its own LR/beta tuning and there is no budget left for a tuning pass on top of the run itself"}
+    - {option: "Keep all correct chains per question rather than capping easy ones", reason: "questions the model answers 6/6 times contribute chains it already produces; capping them at 1 row and hard questions at 4 moves the corpus mass onto the failures without changing the sampling cost"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, gen_rft.py, --model, ckpts/exp-04/greedy, --k, '6', --easy-threshold, '0.85', --easy-cap, '1'], outcome: "44838 samples in ~11 min at 8.0k output tok/s; 33988 correct (0.758/sample), 7171/7473 questions solved at least once; the easy-cap rebalance cut 33988 correct samples to 16151 kept rows"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/decon_v4.jsonl], outcome: "37624 documents scanned, 0 contaminated, exit 0"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent gets 34 of the 150 dev items wrong, and they are not items it cannot do: on the training distribution it solves 96% of questions within 6 samples but only ~76% on any single sample, so a large share of its errors are the model failing to pick a chain it is capable of producing. Its own on-policy training signal is stale - the rejection-sampled rows it was trained on came from exp-03, a checkpoint 5.3 pts worse, and none of them were weighted toward the questions this model actually finds hard."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_rft_stats.json, locator: "pass_at_k=0.9596 vs pass_rate_per_sample=0.7580", observation: "a ~20-point gap between what the model can do in 6 tries and what it does in one"}
+    - {path: /home/ben/task/analysis/exp-04_greedy_diag.json, locator: "watch_set: fixed 108, still_failing 34, regressions 0", observation: "34 residual dev-150 failures, all terminated with a single ANSWER line and a wrong number"}
+    - {path: /home/ben/task/data/rft_raw.jsonl, locator: "27279 rows, generated from ckpts/exp-03/ep2_greedy", observation: "the on-policy rows inside sft_v2 came from the 0.72 checkpoint, not this one"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: watch-still-failing-1, source: /home/ben/task/analysis/exp-04_greedy_diag.json, question: "(dev-150 watch item still wrong after exp-04; benchmark text not copied to disk)", gold: "(id in analysis/exp-01_watch.jsonl)", model_output: "terminated, one ANSWER line, wrong number", failure: "greedy picks a chain that goes wrong; sampling finds a correct one on the training distribution"}
+    - {id: watch-still-failing-2, source: /home/ben/task/analysis/exp-04_greedy_diag.json, question: "(dev-150 watch item still wrong after exp-04)", gold: "(id in analysis/exp-01_watch.jsonl)", model_output: "terminated, one ANSWER line, wrong number", failure: "arithmetic slip inside an otherwise sound chain"}
+    - {id: train-unsolved, source: /home/ben/task/analysis/exp-05_rft_stats.json, question: "(one of the 302 gsm8k TRAIN questions not solved once in 6 samples)", gold: "(gsm8k train item)", model_output: "6/6 samples wrong", failure: "genuinely beyond the model - contributes no RFT row, which is why RFT alone cannot close the whole gap"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-01_watch.jsonl
+    n: 142
+    selection: "the dev-150 items the base model failed in exp-01, carried unchanged through every card in this batch"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing the incumbent for one epoch at a reduced learning rate on 16151 freshly rejection-sampled on-policy chains - mass-shifted onto the questions it gets wrong - mixed with 14000 held-out OMI2 rows and the 7473 original gsm8k train solutions as ballast, raises greedy dev-150 accuracy above the incumbent's 0.7733."
+  mechanism: "Training on chains this checkpoint itself produced and that were verified correct raises their probability under the greedy argmax path, which is exactly the pass@6-minus-pass@1 gap; because the corpus caps questions the model already answers 6/6 at one row and gives the hard ones up to four, the gradient mass sits on the failures rather than on what it already does. The warm start at lr 5e-6 is what makes it a sharpening pass rather than a retrain, and the 14000 OMI2 rows plus the original gsm8k solutions are ballast against narrowing onto 7473 questions."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+1 to +5 pts greedy on dev-150"}
+  falsified_if: "Greedy dev-150 is at or below 0.7733, i.e. a second on-policy round from the current checkpoint adds nothing over the stale round already baked into sft_v2 - in which case the RFT line is exhausted and exp-04 ships."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft2_mix.jsonl
+      source: "synthetic:self (derived:exp-04) + nvidia/OpenMathInstruct-2 (rev 469216e3f46f4dacf476b382e192485ea51a143e, shards 0-19) + openai/gsm8k main/train (rev 740312add88f781978c0658806c59bc2815b9866)"
+      n_examples: 37624
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/rft2_mix.jsonl, --shards, '20', --n-gsm8k-omi2, '12000', --max-per-problem, '2', --n-math-omi2, '2000', --gsm8k-train-repeat, '1', --extra, data/rft2_raw.jsonl, --seed, '3']
+      selection: "16151 rows from gen_rft.py sampling ckpts/exp-04/greedy at T=1.0/top-p 0.95, k=6 over the 7473 gsm8k TRAIN questions: kept only samples whose last number equals the gold answer and that carry exactly one ANSWER marker, deduped, then capped at 4 chains per question but only 1 for a question already answered correctly in >=85% of its 6 samples. Ballast: 12000 OMI2 gsm8k-derived rows (up to 2 solutions per problem, seed 3), 2000 OMI2 math rows, all 7473 original gsm8k train solutions. Same normalisation and the same 10% few-shot-prefix slice as sft_v1/sft_v2."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross-entropy"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 2688, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "<bos><start_of_turn>user\\n{grader's MATH_PROMPT_TEMPLATE around the question}<end_of_turn>\\n<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: <n><end_of_turn>\\n - loss on the model turn only; verify_template() asserts this against templates/gemma3.jinja byte for byte at startup"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, /home/ben/task/data/rft2_mix.jsonl, --out, /home/ben/task/ckpts/exp-05, --epochs, '1', --bs, '16', --grad-accum, '2', --lr, '5e-6', --max-seq-len, '2688']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last   # one epoch, one checkpoint; repackaged to bf16 + greedy as ckpts/exp-05/greedy
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150 (inspect_evals/gsm8k test split, first 150 samples, deterministic order)
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7733
+    path: /home/ben/task/eval/exp04_greedy_dev150.json
+  diagnostic:
+    what: "termination must hold at exp-04's level - share of completions ending on their 'ANSWER:' line (exp-04: 1.00) and share hitting the token cap (exp-04: 0.00); narrowing onto the 7473 rejection-sampled questions would show up as shorter, more templated chains and a drop in this share"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.60
+  output_checkpoint: /home/ben/task/ckpts/exp-05/greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-1176, step: 1176}
+    - {path: /home/ben/task/ckpts/exp-05/greedy, step: 1176}
+  training_summary: {final_loss: 0.2571, steps: 1176, notes: "train_runtime 2172 s, 17.3 samples/s. Loss 0.257 against exp-04's 0.307, as expected for a warm start on data half of which the parent generated itself - the run fit the corpus, it just did not transfer."}
+  measurements:
+    - {metric: accuracy, value: 0.7667, n: 150, path: /home/ben/task/eval/exp05_greedy_dev150.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 1.00
+    path: /home/ben/task/analysis/exp-05_greedy_diag.json
+    notes: "No narrowing pathology and no termination cost: 150/150 completions stop at a stop token and end on their 'ANSWER:' line, 0 hit the token cap, garbage screen 0/150 - identical to exp-04 on every one of those counts. The chains did get shorter, median 124 output tokens against exp-04's 135, which is the compression the on-policy corpus would predict; it simply did not come with more correct answers."
+  watch_set_result: {fixed: 107, still_failing: 35, regressions: 0, path: /home/ben/task/analysis/exp-05_greedy_diag.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Greedy dev-150 0.7733 -> 0.7667, one item worse, against a claim that required it to be higher - so the card is contradicted on its own falsified_if even though the two numbers are indistinguishable at n=150. The mechanism is contradicted too: the corpus was mass-shifted onto the questions the parent gets wrong and the model fit it (loss 0.257), yet it fixed 107 watch items where the parent fixed 108. A second on-policy round from a checkpoint that already trained on a first one adds nothing here."
+  decision: reject
+  next_step: "exp-06: exp-04 and exp-05 are 1 item apart on 150, which is far inside the noise, and one of them has to be shipped. Re-read both at n=500 under one protocol and ship the winner; that read is also the honest confirmation of the 0.7733 headline, which so far rests on a single 150-item sample."

@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T06:34:00Z'
+situation:
+  elapsed_h: 7.6
+  remaining_h: 2.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.704, protocol_n: 500}
+  trigger: "exp-07's 3-way soup landed at 0.700 (n=500), inside the range of its inputs. Its weakest input, exp-04, is the arm exp-04 itself measured at -1.3 points; dropping it from the average is the one variation left that costs 30 minutes and cannot touch the already-verified deliverable."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-07_soup3_dev500.json, locator: "accuracy=0.700"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev500.json, locator: "accuracy=0.704"}
+    - {path: /home/ben/task/eval/exp-05_greedy_dev500.json, locator: "accuracy=0.678"}
+    - {path: /home/ben/task/eval/final_model_dev150.json, locator: "accuracy=0.7067 - final_model verified end-to-end under the graded command"}
+  alternatives_rejected:
+    - {option: "Another training run", reason: "2.4h left; a train-and-evaluate cycle would consume all of it and leave nothing for closing out the batch"}
+    - {option: "A weight sweep over the mixing ratio", reason: "each ratio costs a 25-minute n=500 evaluation and there is time for exactly one"}
+    - {option: "Ship exp-05 because it won the graded 150", reason: "exp-06 measured that win against 350 further test items and 200 probe items and it did not survive either; three runs of the same exp-03 weights also read 0.6867 / 0.700 / 0.7067 on the graded 150, so a 2-4 point gap there is within engine-level nondeterminism"}
+  pitfalls_hit:
+    - {what: "vLLM greedy decoding is not bit-reproducible across runs: the same weights and the same 150 items read 0.6867, 0.700 and 0.7067 in three separate evaluations (continuous batching changes reduction order)", cost_h: 0.0, fix: "treat n=150 gaps under ~3 points as unresolvable and decide on n=500"}
+  smoke_runs:
+    - {command: [python, evaluate.py, --model-path, final_model, --limit, '150', --json-output-file, eval/final_model_dev150.json], outcome: "0.7067 - the deliverable path loads in a fresh vLLM process under the exact graded command"}
+problem:
+  statement: "Two of the three checkpoints in this batch are worth averaging (exp-02 at 0.704 and exp-05 at 0.678 on n=500, with complementary error sets); exp-07 averaged them together with exp-04, whose own card measured it as the weakest arm, and the result interpolated rather than improved."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_split.json, locator: "soup3_n500 vs exp-03_n500 vs exp-05_n500", observation: "soup3 0.700 sits between exp-03's 0.704 and exp-05's 0.678 on every slice measured"}
+    - {path: /home/ben/task/eval/exp-04_greedy_dev150.json, locator: "accuracy", observation: "exp-04 0.6733, the weakest of the three inputs on the graded set"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: soup3-interpolates, source: /home/ben/task/analysis/exp-06_split.json, question: "does averaging same-parent fine-tunes beat the best of them", gold: "> 0.704 at n=500", model_output: "0.700 at n=500, 0.680 on the graded 150, 0.680 on probe-200", failure: "the average landed inside the range of its inputs on all three slices"}
+  watch_set:
+    path: /home/ben/task/data/probe200.jsonl
+    n: 200
+    selection: "200 items held out (seed 0) from the openai/gsm8k TRAIN split; both inputs already scored on it"
+hypothesis:
+  claim: "A 50/50 weight average of exp-02/final and exp-05/final - dropping the weakest input of exp-07's soup - scores higher at n=500 than exp-03's 0.704."
+  mechanism: "The two inputs disagree about which items they solve (exp-05 wins the graded 150 by 2 points and loses the other 350 by 4.6), which is the condition under which averaging same-basin fine-tunes can beat both: the disagreement is run-specific and cancels, while the shared direction survives. exp-07 diluted that with a third arm that is worse on every slice."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+0 to +1.5 points at n=500"}
+  falsified_if: "the 2-way soup scores at or below 0.704 at n=500 - in which case final_model keeps exp-03's weights unchanged."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe200.jsonl
+      source: "openai/gsm8k:train held-out probe; evaluation input only, no training in this card"
+      n_examples: 200
+      built_by: null
+      build_command: [python, -c, "held-out split of openai/gsm8k train, seed 0"]
+      selection: "no training data - the card averages two existing sets of weights"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "soup.py: shard-wise fp32 accumulation of the safetensors, cast back to bf16, greedy generation_config written in"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged; both inputs were trained on the same prompt/target shape"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, soup.py, --src, ckpts/exp-02/final, ckpts/exp-05/final, --dst, ckpts/soup2]
+    cwd: /home/ben/task
+    script: /home/ben/task/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/soup2
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --json-output-file, '{out}']
+    dev_set: official --limit 500 (superset of the graded 150), evaluate.py defaults otherwise
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.704
+    path: /home/ben/task/eval/exp-03_greedy_dev500.json
+  diagnostic:
+    what: "accuracy on the graded 150 subset of the n=500 log, split by sample id, against exp-03's 0.700, exp-05's 0.720 and soup3's 0.680 measured the same way"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.5
+  output_checkpoint: /home/ben/task/ckpts/soup2
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup2, step: 0}
+    - {path: /home/ben/task/ckpts/soup3, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 50/50 shard-wise fp32 average of exp-02/final and exp-05/final"}
+  measurements:
+    - {metric: accuracy, value: 0.708, n: 500, path: /home/ben/task/eval/exp-08_soup2_dev500.json, delta_vs_comparator: 0.004}
+  diagnostic_result:
+    value: 0.68
+    path: /home/ben/task/analysis/exp-06_split.json
+    notes: "Split by sample id: soup2 reads 0.680 on the graded 150 and 0.720 on the other 350, against exp-03's 0.700/0.7057. probe-200 greedy is 0.680 vs the incumbent's 0.700 (analysis/exp-08_probe200.json), 99.5% clean stops. So the +0.4 at n=500 is two items and comes entirely from the 350 the grader will probably not use, while both other reads are 2 points down."
+  watch_set_result:
+    fixed: null
+    still_failing: 64
+    regressions: null
+    path: /home/ben/task/analysis/exp-08_probe200.json
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Dropping exp-04 from the soup moved n=500 from 0.700 to 0.708, just above the incumbent's 0.704 - two items - while the graded-150 subset and probe-200 both read 0.680 against the incumbent's 0.700. The pre-declared falsification threshold (<= 0.704 at n=500) was not strictly met, but one read up by 2 items and two reads down by 3-4 items is not an improvement, and it is well inside the +-2-point run-to-run spread measured for identical weights."
+  decision: reject
+  next_step: "Batch closed. final_model keeps exp-02/final's weights with the exp-03 greedy generation_config, verified end to end under the graded command at 0.7067 (eval/final_model_dev150.json) and measured at 0.704 on n=500. If this line is picked up again, the open questions are DPO on the correct/incorrect self-sample pairs the exp-05 sampling run already produced, and a single from-base run on the full 117k distilled corpus with one cosine schedule instead of two sequential ones."

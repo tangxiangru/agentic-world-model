@@ -1,0 +1,180 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T02:25:00Z'
+situation:
+  elapsed_h: 4.5
+  remaining_h: 5.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score:
+      metric: accuracy
+      value: 0.62
+      protocol_n: 150
+  trigger: 'exp-03 reached 0.62 and its remaining failures are now 56 wrong numbers and only 1
+    format failure. Every one of those 150 completions was sampled at temperature 1.0: nothing
+    in evaluate.py sets a decode parameter, so vLLM takes its defaults from the checkpoint own
+    generation_config.json, which still carries gemma-3-pt do_sample true / top_k 64 /
+    top_p 0.95 and no temperature.'
+  trigger_evidence:
+  - path: /home/ben/task/ckpts/exp-03/final/generation_config.json
+    locator: 'do_sample true, top_k 64, top_p 0.95, no temperature field'
+  - path: /home/ben/task/analysis/exp-03_tags.json
+    locator: 'counts.wrong_number=56, counts.format_or_stop=1'
+  alternatives_rejected:
+  - option: 'Leave the sampling config alone and spend the time on more training'
+    reason: 'This costs one eval and no training. Sampling at t=1.0 on a chain of thought
+      compounds: a single unlucky token in a multiplication corrupts the whole chain, and the
+      probes that produced 0.74-0.77 were all measured greedy.'
+  - option: 'Set temperature to 0.3 or 0.7 instead of 0'
+    reason: 'Only one completion is graded per item, so there is no self-consistency to buy
+      with sampling; the argmax path is the right one and needs no tuning.'
+  pitfalls_hit:
+  - what: 'do_sample false with temperature 0.0 can trip transformers GenerationConfig
+      validation on save; also do_sample is not a vLLM field, so temperature 0.0 is what
+      actually forces greedy (vllm ModelConfig.get_diff_sampling_param reads temperature,
+      top_k, top_p, min_p, repetition_penalty, max_new_tokens - not do_sample).'
+    cost_h: 0.0
+    fix: 'scripts/package_model.py writes temperature 0.0 and removes top_k/top_p; the file was
+      round-tripped through AutoConfig/AutoTokenizer on CPU with --verify before the eval.'
+  smoke_runs:
+  - command: [python, scripts/package_model.py, --src, ckpts/exp-03/final, --dst, /home/ben/task/final_model,
+      --decode, greedy, --verify]
+    outcome: 'VERIFY ok: Gemma3ForConditionalGeneration, 2 shards, 883 tensors, vocab 262145,
+      tokenizer maps <end_of_turn> to 106; generation_config now temperature 0.0, do_sample
+      false, eos_token_id [1, 106], top_k/top_p removed.'
+problem:
+  statement: 'The graded decode is inherited from the pretrained checkpoint, not chosen. Each
+    of the 150 graded completions is one temperature-1.0 sample from a ~300-token chain of
+    arithmetic; a single low-probability token anywhere in the chain changes the final number,
+    and only one completion per item is scored. exp-03 measures 0.62 sampled while the same
+    weights measure 0.74 greedy on the ten-shot probe.'
+  evidence:
+  - path: /home/ben/task/analysis/probe_exp03_final.json
+    locator: 'ten_shot.accuracy 0.74 at temperature 0.0 on 200 gsm8k train items'
+    observation: 'greedy ten-shot accuracy is 12 points above the sampled benchmark score, on
+      different items but the same prompt shape'
+  - path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py
+    locator: 'lines 233-234: params["temperature"] set only if config.temperature is not None'
+    observation: 'evaluate.py never sets temperature, so the request carries none and the vLLM
+      server falls back to the model generation_config'
+  affected_share: null
+  failure_examples:
+  - id: 'aggregate, exp-03 n=150'
+    source: /home/ben/task/analysis/exp-03_tags.json
+    question: '56 items answered with a well-formed ANSWER line and the wrong number'
+    gold: 'various'
+    model_output: 'single t=1.0 sample per item'
+    failure: 'wrong number with correct format; some share of these are sampling noise in the
+      chain rather than an inability to solve the item'
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_tags.json
+    n: 57
+    selection: 'the 57 items exp-03 got wrong at n=150 under sampled decode'
+hypothesis:
+  claim: 'Writing temperature 0.0 (and removing top_k/top_p) into the checkpoint
+    generation_config.json, changing no weights, will raise accuracy at n=150 against
+    exp-03 0.62.'
+  mechanism: 'vLLM takes its default SamplingParams from generation_config.json when the
+    request sets none; temperature 0.0 selects the greedy sampler, so the graded completion
+    becomes the argmax chain instead of one draw from a t=1.0 distribution over ~300 tokens.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: '+0.03 to +0.12'
+  falsified_if: 'Accuracy at n=150 is at or below exp-03 0.62.'
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/eval/README_no_training_data.txt
+    source: local
+    n_examples: 1
+    built_by: null
+    build_command: []
+    selection: 'decode-config card: no weights are touched and nothing is trained. The only
+      change is generation_config.json inside a copy of the exp-03 checkpoint.'
+    contamination_check: not_run
+    mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: 'vllm 0.11.0 default SamplingParams from generation_config.json'
+    peft: none
+    hyperparams:
+      temperature: 0.0
+      top_k: null
+      top_p: null
+      seed: 42
+    target_format: 'unchanged from exp-03'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/final_model, --limit, '150',
+      --max-connections, '8', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp04_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/final_model
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.2
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '8', --gpu-memory-utilization, '0.85']
+    dev_set: 'official inspect_evals/gsm8k test split --limit 150 (first 150, no shuffle)'
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.62
+    path: /home/ben/task/eval/exp03_dev150.json
+  diagnostic:
+    what: 'mean completion length and format/stop share under greedy vs sampled, same tagger'
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+  - {path: /home/ben/task/final_model, step: 469}
+  training_summary: {final_loss: null, steps: null, notes: 'no training; only
+    generation_config.json differs from ckpts/exp-03/final'}
+  measurements:
+  - metric: accuracy
+    value: 0.68
+    n: 150
+    path: /home/ben/task/eval/exp04_greedy_dev150.json
+    delta_vs_comparator: 0.06
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-04_tags.json
+    notes: 'format/stop failures 1 -> 0; mean completion length 319 -> 295 chars; correct
+      93 -> 102 of 150; all 48 remaining failures are wrong numbers with a well-formed ANSWER
+      line. The vLLM log shows the "Default sampling parameters have been overridden by the
+      model Hugging Face generation config" warning, confirming the file was read.'
+  watch_set_result: {fixed: 11, still_failing: 46, regressions: 2, path: /home/ben/task/analysis/exp-04_tags.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: '0.62 -> 0.68 at n=150 (+0.06, stderr 0.038) with identical weights; the only change
+    is temperature 0.0 in generation_config.json. 11 of the 57 items exp-03 missed are now
+    right and 2 that it got right are now wrong, which is what replacing one t=1.0 draw per
+    item by the argmax chain looks like.'
+  decision: adopt
+  next_step: 'All 48 remaining failures are wrong numbers, so the format work is finished and
+    the solver is the only thing left. Rejection-sampling fine-tuning: sample k solutions per
+    training question from this checkpoint, keep the ones whose ANSWER matches gold, and
+    continue training on them with the same k-shot prompt distribution so the exp-03 fix is not
+    undone.'

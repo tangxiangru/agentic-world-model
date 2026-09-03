@@ -1,0 +1,135 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T00:45:27Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.3
+  remaining_h: 6.7
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.5333, protocol_n: 150}
+  trigger: "exp-02's checkpoint reads 0.533 on the official dev-150 but 0.690 on the held-out gsm8k-train probe under forced greedy decoding. The gap is the decode config: the checkpoint ships do_sample:false and no temperature, and vLLM's get_diff_sampling_param only honours repetition_penalty/temperature/top_k/top_p/min_p/max_new_tokens, so do_sample is silently ignored and the eval decoded at the OpenAI default temperature 1.0 with no top_p or top_k truncation."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_watch.json, locator: "exp02_acc=0.690 (n=500, greedy)"}
+    - {path: /home/ben/task/eval/exp02_final_dev150.json, locator: "accuracy=0.5333 (n=150, checkpoint's own generation_config)"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py, locator: "L1344-1384 get_diff_sampling_param, available_params list", observation: "do_sample is not in the list vLLM reads from generation_config.json"}
+    - {path: /home/ben/task/evaluate.py, locator: "L74-96 inspect_eval(...) call", observation: "no temperature/top_p/top_k is passed, so the served checkpoint's generation_config is the only thing that sets them"}
+  alternatives_rejected:
+    - {option: "Go straight to the rejection-sampling card and fold the decode fix into it", reason: "that would bundle a decode change (C1a) with a data change (C3) in one launch and make the resulting delta uninterpretable; this card is a 6-minute eval that isolates it"}
+    - {option: "Set temperature 0.7 with top_p 0.95 instead of greedy", reason: "the benchmark scores a single sample, so there is no majority vote to recover the variance sampling costs; greedy is the variance-minimising read"}
+    - {option: "Also sweep checkpoint-1000 vs final on the official dev-150", reason: "already answered for free on the n=500 probe: 0.694 / 0.688 / 0.690 across steps 1000 / 2000 / 2009, a spread well inside noise, so there is no checkpoint to select"}
+  pitfalls_hit:
+    - {what: "wrote do_sample:false into the saved generation_config believing it would make vLLM decode greedily; vLLM ignores the field", cost_h: 0.0, fix: "write temperature: 0.0, which is in vLLM's available_params list; caught by reading vllm/config/model.py before spending another eval"}
+  smoke_runs:
+    - {command: [python, scripts/vllm_gen.py, --model, ckpts/exp-02/final, --input, data/dev_train500.jsonl, --temperature, '0.0', --fewshot], outcome: "0.690 at n=500 with temperature forced by the sampler rather than by generation_config - the number this card tries to reproduce through the harness"}
+    - {command: [ls, -la, ckpts/exp-03_greedy], outcome: "weights and tokenizer are symlinks to ckpts/exp-02/final; only generation_config.json is a real file, so the weights are provably identical to the comparator's"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent is being graded through a decode path nobody chose. Because evaluate.py sends no sampling parameters and the checkpoint's generation_config sets none that vLLM reads, every official eval of exp-02 samples at temperature 1.0 over a 262k-token vocabulary with no top_p or top_k truncation - the noisiest decode available - and loses roughly 16 points against the same weights read greedily."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_watch.json, locator: "exp02_acc=0.690, base_acc=0.022, n=500", observation: "greedy read of the same weights"}
+    - {path: /home/ben/task/eval/exp02_final_dev150.json, locator: "accuracy=0.5333", observation: "harness read of the same weights"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "whole file", observation: "do_sample:false and eos_token_id [1,106]; no temperature, top_p or top_k, so vLLM's diff_sampling_param is empty and the OpenAI default temperature 1.0 applies"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: probe-vs-harness, source: /home/ben/task/analysis/exp-02_watch.json, question: "(aggregate, not a single item)", gold: "n/a", model_output: "same weights: 0.690 greedy at n=500 vs 0.533 sampled at n=150", failure: "decode config, not the model"}
+    - {id: gencfg-ck1000, source: /home/ben/task/ckpts/exp-02/checkpoint-1000/generation_config.json, question: "(artifact inspection)", gold: "n/a", model_output: "Trainer's own intermediate checkpoints wrote do_sample:true, top_k:64, top_p:0.95 - a third decode config again different from both the base and final/", failure: "decode config drifts silently between artifacts of one run"}
+    - {id: base-decode, source: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json, question: "(artifact inspection)", gold: "n/a", model_output: "base ships do_sample:true, top_k:64, top_p:0.95 and no temperature, so the 0.06 baseline was read at temperature 1.0 truncated to top_k 64 / top_p 0.95", failure: "the baseline and the candidate were not decoded alike"}
+  watch_set:
+    path: /home/ben/task/data/dev_train500.jsonl
+    n: 500
+    selection: "500 gsm8k TRAIN problems held out of all training data; already scored 0.690 under forced greedy, which is the number this card expects the harness to reproduce"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Adding 'temperature': 0.0 to the served generation_config, with the weights bit-identical to exp-02's, raises official dev-150 accuracy above exp-02's 0.533."
+  mechanism: "vLLM builds its default SamplingParams from the six generation_config keys listed in get_diff_sampling_param; temperature is one of them and do_sample is not. Writing temperature 0.0 makes the harness decode greedily, which removes the sampling variance that currently lets a single unlucky token derail an otherwise correct chain - a failure mode with no upside here, because the benchmark scores one sample and cannot vote."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+10 to +20 points, bringing the harness read close to the 0.690 the same weights already give under forced greedy"}
+  falsified_if: "dev-150 accuracy is at or below exp-02's 0.533, or the completions still differ between two runs of the same prompt (which would mean temperature 0.0 did not reach the sampler)"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    # Nothing is trained. The only input is the held-out probe set, listed so the
+    # card records what the claim is checked against besides the official 150.
+    - path: /home/ben/task/data/dev_train500.jsonl
+      source: "openai/gsm8k rev 740312ad main/train, 500 problems held out by scripts/build_sft.py --holdout 500 --seed 0"
+      n_examples: 500
+      built_by: /home/ben/task/scripts/build_sft.py
+      build_command: [python, scripts/build_sft.py, --out, data/sft_v1.jsonl, --holdout, '500']
+      selection: "train-split problems excluded from every training file; never the benchmark test split"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 served by inspect-ai"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - no training. ckpts/exp-03_greedy symlinks every weight and tokenizer file from ckpts/exp-02/final and overrides only generation_config.json with {do_sample:false, temperature:0.0, eos_token_id:[1,106]}."
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03_greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 in dataset order, 10-shot with fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.5333
+    path: /home/ben/task/eval/exp02_final_dev150.json
+  diagnostic:
+    what: "median output tokens and the max_tokens share - greedy on a model trained to terminate should shorten completions and leave no unterminated samples"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.08
+  output_checkpoint: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03_greedy, step: 2009}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to ckpts/exp-02/final"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp03_greedy_dev150.json, delta_vs_comparator: 0.1867}
+  diagnostic_result:
+    value: 158.0
+    path: /home/ben/task/analysis/exp-03_diag.json
+    notes: "median output 154 -> 158 tokens, max 4000 -> 712, stop_reason max_tokens 2/150 -> 0/150, ANSWER-line share 0.987 -> 1.000. Every completion now terminates."
+  watch_set_result:
+    fixed: 0
+    still_failing: 152
+    regressions: 0
+    path: /home/ben/task/analysis/exp-02_watch.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Same weights, one added key: dev-150 0.533 -> 0.720 (+18.7), and the harness read now agrees with the n=500 forced-greedy probe (0.690) to within its noise. The unterminated tail and the 4000-token outliers disappear entirely (max output 712 tokens)."
+  decision: adopt
+  next_step: "Every future checkpoint must ship temperature: 0.0 in generation_config.json - do_sample is not read by vLLM. The watch_set is unchanged by this card by construction (it was already scored under forced greedy), so the remaining 152/500 failures are real reasoning errors, not decode noise: exp-04 attacks them with rejection-sampling fine-tuning on the model's own correct solutions."

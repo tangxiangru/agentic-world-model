@@ -1,0 +1,176 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T01:03:49Z'
+situation:
+  elapsed_h: 3.6
+  remaining_h: 6.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score:
+      metric: accuracy
+      value: 0.6867
+      protocol_n: 150
+  trigger: "exp-02's 47 dev-150 errors are 44 reasoning/arithmetic errors and only 3 format failures, so format work is finished and the remaining headroom is reasoning quality."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-02_samples.jsonl
+      locator: "47 rows with correct=false; 44 of them have has_answer_marker=true"
+    - path: /home/ben/task/eval/exp-02_dev150.json
+      locator: "accuracy 0.6866666666666666"
+  alternatives_rejected:
+    - option: "Second epoch of sft_v1 at lower LR"
+      reason: "same off-policy Llama-405B-written solutions again; the model's loss is already 0.29 on them, so the gradient left is small"
+    - option: "Rebuild the SFT set with 4 solutions per problem instead of 2 and retrain from base"
+      reason: "OpenMathInstruct-2 only contains ~87k distinct augmented_gsm8k problems (verified: shards 16 and 24 contributed 961 problems not already in the pool), so extra rows add solution copies, not problem coverage, and a from-base rerun costs 2.5h of the 6.7h left"
+    - option: "DPO on correct-vs-incorrect sample pairs"
+      reason: "needs the same sampling run as RFT plus a second training mode to debug; RFT gets the same on-policy signal with the trainer already validated in exp-02"
+    - option: "Train the RFT rows alone, without mixing SFT rows back in"
+      reason: "RFT rows cover only the problems the model can already sometimes solve; training on them alone narrows the distribution. 40k sft_v1 rows are mixed back as a rehearsal set"
+  pitfalls_hit:
+    - what: "rft_sample.py crashed 11431 problems into the write loop: a sampled answer parsed to a float larger than the float64 range, and norm() called int(inf) -> OverflowError. The vLLM generations for the other 33569 problems were already in memory and were lost with the process; the engine also had to be killed by PID because it kept 66GB of the GPU after the parent died."
+      cost_h: 0.6
+      fix: "norm() now returns a sentinel for nan/inf/|x|>1e15 and catches OverflowError; the 33482 rows written before the crash were kept as data/rft_part1.jsonl and a second sampling pass covers 20000 of the uncovered problems"
+    - what: "First exp-03 launch died at step 400/456 (33 min in) inside Trainer's checkpoint save. exp-02/final carries the greedy generation_config.json vLLM needs (do_sample false + temperature 0.0 + top_k -1); transformers' GenerationConfig.validate() refuses to SAVE that combination, so every checkpoint write from a continuation run raises ValueError. checkpoint-400 contains only config.json, no weights."
+      cost_h: 0.7
+      fix: "train_sft.py now installs a valid GenerationConfig on the model right after loading and writes the greedy file back by hand after training, which is also how exp-02 got away with it (its parent was the base snapshot, whose generation_config is valid)."
+  smoke_runs:
+    - command: [python, quick_eval.py, --model, /home/ben/task/ckpts/exp-02/final, --limit, '600', --fewshot, '10']
+      outcome: "0.800 on the private 600-item dev set with the harness's exact 10-shot prefix, 0.808 with no prefix: the prefix is neutral for this checkpoint, so no more few-shot anchoring rows are needed"
+problem:
+  statement: "exp-02 answers in the right format but reasons wrongly on 31% of dev-150. The errors are ordinary chains that go off the rails -- a wrong quantity picked from the problem, an unjustified division, or a repetition loop -- not formatting. The training data it learned from is entirely off-policy: solutions written by Llama-3.1-405B, in a style and at a competence level that is not the model's own."
+  evidence:
+    - path: /home/ben/task/analysis/exp-02_samples.jsonl
+      locator: "47 rows with correct=false"
+      observation: "44/47 have a well-formed single ANSWER line and a plausible-looking but wrong chain; 3 are repetition loops that hit the 4000-token cap"
+    - path: /home/ben/task/eval/exp-02_privdev600_10shot.json
+      locator: "accuracy 0.8, no_answer_marker 0.0033"
+      observation: "on 600 held-out problems the format failure rate is 0.3%, so essentially all remaining loss is reasoning"
+  affected_share: 0.94
+  failure_examples:
+    - id: exp02-wrong-avg-sqft
+      source: /home/ben/task/analysis/exp-02_samples.jsonl
+      question: "(dev-150; four levels of a structure, top level 16 sq ft, each level half the one above, average square footage per level)"
+      gold: '60'
+      model_output: "16 + 8 + 4 + 2 = 30; 30 / 4 = 7.5 ... ANSWER: 7.5"
+      failure: "misread which level is the reference; arithmetic within the wrong model of the problem"
+    - id: exp02-wrong-tomato-cans
+      source: /home/ben/task/analysis/exp-02_samples.jsonl
+      question: "(dev-150; cans of tomatoes, volume halves when cooked, 32 ounces of sauce)"
+      gold: '12'
+      model_output: "32 / 2 = 16; 16 / 3 = 5.33 ... 'we can't use a fraction of a can' ... ANSWER: 5"
+      failure: "wrong direction of the halving, then rounds away the inconsistency instead of rechecking"
+    - id: exp02-repetition-loop
+      source: /home/ben/task/analysis/exp-02_samples.jsonl
+      question: "(dev-150; boat taking on 2 litres of water per 10 feet rowed)"
+      gold: '16'
+      model_output: "'Since the boat was taking on water for 16 seconds ... 16/60 = 0.2666 minutes' repeated verbatim until the 4000-token cap; no ANSWER line"
+      failure: "degenerate repetition; one of the 3 remaining format failures"
+    - id: exp02-wrong-bee-algebra
+      source: /home/ben/task/analysis/exp-02_samples.jsonl
+      question: "(dev-150; 700 bees, twice as many workers as babies, twice as many babies as queens)"
+      gold: '400'
+      model_output: "sets up W=2B, B=2Q, Q=700-(W+B), then substitutes inconsistently and never reaches an ANSWER line"
+      failure: "algebra it cannot close; runs to the token cap"
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-02 on its own verified-correct samples (rejection-sampling fine-tuning), mixed with a rehearsal slice of the original SFT data, raises dev-150 accuracy above exp-02's 0.687."
+  mechanism: "The RFT rows are on-policy: they are chains this checkpoint actually produces, filtered to the ones that reach the reference answer. Upweighting its own successful trajectories sharpens the distribution towards the reasoning paths that work and away from the near-miss chains that produce the 44 reasoning errors, without importing a foreign solution style. Selection favours problems with an intermediate pass rate -- a problem solved on all 4 samples carries little gradient, one solved on none contributes no rows at all -- so the kept rows concentrate on hard-but-solvable items."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+0.02 to +0.06; published RFT rounds on GSM8K move a 4B-class model a few points"
+  falsified_if: "dev-150 accuracy is below exp-02's 0.687, or the private 600-item dev accuracy is below exp-02's 0.800."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "synthetic:self (samples from /home/ben/task/ckpts/exp-02/final) + derived:exp-02 (rehearsal slice of data/sft_v1.jsonl)"
+      n_examples: 78347
+      built_by: /home/ben/task/mix_rft.py
+      build_command: [python, mix_rft.py, --rft, data/rft_all.jsonl, --sft, data/sft_v1.jsonl, --out, data/rft_mix_v1.jsonl, --sft-rows, '40000', --keep-easy, '1', --keep-hard, '2']
+      selection: "exp-02 sampled k=4 solutions at temperature 1.0 / top_p 0.95 / max 640 tokens for problems drawn from the same non-test pool used in exp-02 (OpenMathInstruct-2 gsm8k + augmented_gsm8k problems and the openai/gsm8k TRAIN split). A sample is kept only if its single 'ANSWER: N' equals the reference answer; the body is then re-terminated with one canonical 'ANSWER: N<end_of_turn>'. Exact-text duplicates per problem are dropped and the shorter derivations are preferred. Per problem, 1 row is kept when all 4 samples were correct and 2 when only some were. 40000 rows of the original sft_v1 are mixed back as rehearsal. No gsm8k TEST item is used as a problem, a seed, or a reference at any stage."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross-entropy"
+    peft: "none - full fine-tune of the 3.88B language tower, vision tower frozen"
+    hyperparams:
+      lr: 5.0e-6
+      epochs: 1.0
+      batch_size: 1
+      grad_accum: 4
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      token_budget_per_microbatch: 16384
+    target_format: "identical to exp-02: chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the completion only. Half the exp-02 learning rate because this is a second pass over overlapping problems."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/rft_mix_v1.jsonl, --out, /home/ben/task/ckpts/exp-03, --model, /home/ben/task/ckpts/exp-02/final, --lr, '5e-6', --epochs, '1', --accum, '4', --max-seq-len, '2560', --token-budget, '16384', --save-steps, '400', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 400
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.0
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.6866666666666666
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "private 600-item dev set (MetaMathQA GSM_Rephrased, contamination-checked, disjoint from all training problems), scored offline with the harness's scorer and its exact 10-shot prefix; exp-02 measured 0.800 there"
+    n: 600
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.65
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 456}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-456, step: 456}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-400, step: 400}
+  training_summary:
+    final_loss: 0.277
+    steps: 456
+    notes: "78171 of 78347 rows kept (0.225% over max_seq_len), p50 320 tokens, p95 563, max 2559. 2339s wall, 33.4 rows/s. train_loss 0.274 (exp-02 finished at 0.320 on harder, off-policy targets; the drop is mostly that the model's own filtered samples are easier to predict than Llama-405B prose). The first attempt at this run died at step 400 in Trainer's checkpoint save -- see situation.pitfalls_hit -- and was relaunched from scratch after the fix."
+  measurements:
+    - metric: accuracy
+      value: 0.7066666666666667
+      n: 150
+      path: /home/ben/task/eval/exp-03_dev150.json
+      delta_vs_comparator: 0.02
+  diagnostic_result:
+    value: 0.8
+    path: /home/ben/task/eval/exp-03_privdev600_10shot.json
+    notes: "0.800 on the private 600-item dev, exactly exp-02's number (stderr 0.016), so the dev-150 gain is not reproduced on an independent, 4x larger sample. Item-level pairing on the same dev-150 items: 14 previously-wrong items fixed, 11 previously-right items broken -- a net +3 of 150 from a lot of churn, which is what a null effect plus sampling noise looks like. Format did improve slightly: 149/150 completions carry an ANSWER line, versus 147/150 for exp-02."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "RFT on 38347 of the model's own verified-correct samples plus 40000 rehearsal rows moved dev-150 0.687 -> 0.707 and the private 600-item dev 0.800 -> 0.800. The +0.02 is 0.5 stderr and the item-level churn (14 fixed, 11 broken) is symmetric, so this round is not distinguishable from no effect."
+  decision: adopt
+  next_step: "exp-04: average exp-02 and exp-03 in weight space. Two near-equal checkpoints in the same basin is the case a soup is for, and it costs 10 minutes of CPU rather than another training round."

@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T22:24:23Z'
+situation:
+  elapsed_h: 0.5
+  remaining_h: 9.5
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0733, protocol_n: 150}
+  trigger: "exp-01's baseline was a temperature-1.0 sampling read - the base checkpoint's generation_config.json carries do_sample=true, top_k=64, top_p=0.95 and no temperature field, so vLLM sampled. Every checkpoint I train will ship a generation_config I control, so unless the base is also measured under the decode I intend to ship, exp-01's 0.0733 confounds 'training helped' with 'greedy helped'."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-01.verdict.json, locator: "suggestions.preconditions[2]", observation: "a Trainer-saved checkpoint that decodes greedily against a sampled baseline is not a comparison"}
+    - {path: /home/ben/task/eval/base_dev150_full.json, locator: "samples[*].output.choices[0]", observation: "68 of 150 completions ran to max_tokens under sampling"}
+  alternatives_rejected:
+    - {option: "Skip this and compare the SFT model straight against exp-01's 0.0733", reason: "the SFT delta will be tens of points so the confound would not flip that decision, but the same confound recurs on every later small delta; 8 minutes now fixes it for the whole batch"}
+    - {option: "Ship the trained model with the base sampling config so no control is needed", reason: "greedy is strictly better for a single-sample arithmetic benchmark; the right move is to ship greedy and measure the base the same way"}
+    - {option: "Re-run exp-01 at --max-connections 2 to rule out a concurrency artefact", reason: "already ruled out by inspection - 0 of 150 completions in eval/base_dev150_full.json start with the '!' garbage prefix the corpus associates with over-concurrency"}
+  pitfalls_hit:
+    - {what: "First training smoke run OOMed at per-device batch 32 - Gemma3's 262k-vocab logits are upcast to float32 in modeling_gemma3.py, 41.7 GiB for one micro-batch", cost_h: 0.1, fix: "installed liger-kernel 0.8.2 (fused linear cross entropy, no logits materialisation) and dropped to per-device batch 24"}
+    - {what: "Disabling gradient checkpointing to go faster OOMed at per-device batch 16", cost_h: 0.05, fix: "kept gradient checkpointing on; 17.9 samples/s measured"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_r1.jsonl, --out, ckpts/smoke, --limit, '20000', --max-steps, '15', --bs, '8', --accum, '8'], outcome: "15 steps in 61 s, 15.7 samples/s, loss 0.46; the train-vs-grade render assertion passed"}
+    - {command: [python, scripts/train_sft.py, --data, data/sft_r1.jsonl, --out, ckpts/smoke2, --limit, '20000', --max-steps, '15', --bs, '24', --accum, '3'], outcome: "with liger: 17.9 samples/s, loss 0.458, fits in 80 GB"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/sft_r1_decon_input.jsonl], outcome: "167476 documents scanned, 0 contaminated, 0 matches"}
+problem:
+  statement: "The only measured number for the base checkpoint (exp-01, 0.0733) was produced under temperature-1.0 sampling, while every checkpoint this batch produces will ship a generation_config I write. The size of the decode-only effect on this benchmark is unknown, so the comparator for all later cards is not measured under the decode those cards will use."
+  evidence:
+    - {path: /home/ben/task/eval/base_dev150_full.json, locator: "samples[*].output.choices[0].stop_reason", observation: "68 of 150 hit max_tokens=4000; under sampling the model drifts into self-invented follow-up problems and the last-number scorer reads one of those"}
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "whole file", observation: "stopped 82/150, contains 'ANSWER:' 140/150, both 77/150"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Serving the identical base weights with do_sample=false instead of the shipped sampling config changes accuracy on the 150-item dev protocol, and the size of that change is what must be subtracted from any later SFT delta before the delta is attributed to training."
+  mechanism: "Greedy removes the per-token noise that lets a pretrained model drift out of the few-shot pattern mid-answer, so both the termination rate and accuracy should rise; on a model that mostly fails by never stopping it may instead just make the non-termination deterministic."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+0 to +8 pts over exp-01's 0.0733"
+  falsified_if: "greedy accuracy lands within +/-1 pt of 0.0733 with an unchanged termination count, which would mean decode config is not a confound here and later cards may compare directly against exp-01"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/base_greedy
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/base_greedy/generation_config.json
+      source: "local - the base snapshot's generation_config with do_sample/top_k/top_p replaced by do_sample=false; every weight and tokenizer file in the directory is a symlink to the immutable snapshot blob"
+      n_examples: 1
+      built_by: null
+      build_command: [ln, -sf, '<snapshot files>', /home/ben/task/ckpts/base_greedy/]
+      selection: "identical weights; only the decode config differs"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 via inspect_ai
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - no training; the intervention is generation_config.do_sample=false"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/base_greedy, --limit, '150', --json-output-file, /home/ben/task/eval/base_greedy_dev150.json, --max-connections, '16', --gpu-memory-utilization, '0.85']
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-02_base_greedy.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.15
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.0733
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "number of the 150 completions that terminate on a stop token rather than hitting max_tokens=4000"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.09
+  output_checkpoint: /home/ben/task/ckpts/base_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/base_greedy, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.02, n: 150, path: /home/ben/task/eval/base_greedy_dev150.json, delta_vs_comparator: -0.0533}
+  diagnostic_result:
+    value: 136
+    path: /home/ben/task/analysis/exp-02_diag.json
+    notes: "termination rose 82/150 -> 136/150 but 'ANSWER:' presence collapsed 140/150 -> 84/150 and accuracy fell 0.0733 -> 0.02."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The run did not test what the card claimed. Inspecting eval/base_greedy_dev150_full.json shows completions of pure unicode garbage ('ისი...\\n\\nANSWER: 191'), which is not greedy output. vLLM builds its default SamplingParams from generation_config.json and reads temperature/top_p/top_k/repetition_penalty; it has no notion of `do_sample`. Deleting top_k=64 and top_p=0.95 and writing do_sample=false therefore did not select greedy - it removed the truncation and left temperature at vLLM's 1.0 default, i.e. unrestricted sampling over the full 262k vocab. Accuracy 0.02 measures that, not greedy."
+  decision: reject
+  next_step: "exp-03 repeats the control with the decode asked for by name: generation_config {temperature: 0.0}. The same bug was live in scripts/train_sft.py's save path (it wrote do_sample=false and dropped top_k/top_p) and is fixed there - without exp-03 the final submitted model would have shipped a config that makes vLLM sample from the untruncated tail."

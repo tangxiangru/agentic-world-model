@@ -1,0 +1,135 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T05:33:17Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.7
+  remaining_h: 3.3
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7400, protocol_n: 500}
+  trigger: "Three candidates now sit inside 0.8 pp on dev-500 - exp-04 0.7400, exp-07 soup 0.7360, exp-05 0.7320 - against a ~2.0 pp stderr, and one of them has to ship. No training run fits in the 3.3 h left with slack to verify its own result, so the remaining budget buys items, not weights."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-04_greedy_dev500.json, locator: "accuracy=0.740, stderr=0.0196"}
+    - {path: /home/ben/task/eval/exp07_soup_dev500.json, locator: "accuracy=0.736, stderr=0.0197"}
+    - {path: /home/ben/task/memory/index.md, locator: "exp-04 through exp-07 rows"}
+  alternatives_rejected:
+    - {option: "One more from-base training run (~2 h) on a corpus mixing both RFT rounds", reason: "it would finish with ~30 min left - not enough to read it at n=500 and still re-verify whatever ends up in final_model/; and its expected gain is small, since exp-05 already showed the round-2 on-policy rows add nothing on top of round 1"}
+    - {option: "Two epochs on sft_v2 (the corpus that produced the winner)", reason: "3.8 h at the measured 16.8 samples/s - it does not fit, and exp-02 measured the second epoch over its corpus at exactly +0.0"}
+    - {option: "Read only the shipped model on the full split and skip the soup", reason: "halves the cost but forgoes the actual decision: on 500 items the soup is 2 items behind, which is not a reason to prefer either"}
+    - {option: "Stop and ship on the n=500 evidence", reason: "the budget is otherwise idle and a full-split read is the one thing left that can change the answer; it also produces the honest headline number for a batch whose other reads were all partial splits"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [md5sum, final_model/model-00001-of-00002.safetensors, ckpts/exp-04/greedy/model-00001-of-00002.safetensors], outcome: "identical digests - final_model/ is byte-for-byte the exp-04 greedy package, so reading final_model/ by its own path reads the shipped artifact"}
+    - {command: [python, -c, "Gemma3ForConditionalGeneration.from_pretrained('final_model')"], outcome: "loads on CPU in bf16, 4.30B params, <end_of_turn> resolves to id 106; evaluate.py's model_type() falls through the path check and reads config.json, selecting templates/gemma3.jinja"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The ship decision is being made on 500 of the split's 1319 items, and the three candidates are separated by 2 to 4 items. Every headline in this batch is also a partial-split number: dev-150 said 0.7733 for the model that dev-500 says is 0.7400, so the reported figure has been drifting down as n grows and nothing yet pins what the shipped checkpoint actually scores."
+  evidence:
+    - {path: /home/ben/task/eval/exp04_greedy_dev150.json, locator: "accuracy=0.7733", observation: "the n=150 read of the shipped weights"}
+    - {path: /home/ben/task/eval/exp-04_greedy_dev500.json, locator: "accuracy=0.7400", observation: "the same weights, 3.3 pts lower on 500 items - inside the n=150 interval, but a different number to report"}
+    - {path: /home/ben/task/analysis/exp-06_paired.json, locator: "exp04_only_correct=40, exp05_only_correct=36", observation: "the candidates' disagreements split almost evenly, so ranking them needs more items rather than more analysis"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: exp04-only-correct, source: /home/ben/task/analysis/exp-06_paired.json, question: "(one of the 40 dev-500 items exp-04 gets right and exp-05 does not; benchmark text not copied to disk)", gold: "(gsm8k test item)", model_output: "runner-up wrong, incumbent right", failure: "a disagreement that currently decides the ranking on 500 items"}
+    - {id: exp05-only-correct, source: /home/ben/task/analysis/exp-06_paired.json, question: "(one of the 36 dev-500 items exp-05 gets right and exp-04 does not)", gold: "(gsm8k test item)", model_output: "incumbent wrong, runner-up right", failure: "the mirror case - 4 items separate the two"}
+    - {id: neither-correct, source: /home/ben/task/analysis/exp-06_paired.json, question: "(one of the 94 dev-500 items no candidate solves)", gold: "(gsm8k test item)", model_output: "all candidates wrong", failure: "the irreducible residual - unaffected by which candidate ships"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-01_watch.jsonl
+    n: 142
+    selection: "the dev-150 items the base model failed in exp-01, carried unchanged through every card in this batch; at n=1319 they are a subset of the items read"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Reading both candidates on all 1319 test items either separates them by more than the read's stderr - in which case the winner ships - or shows them equivalent, and in both cases it replaces the batch's partial-split headline with a full-split number for the artifact actually sitting in final_model/."
+  mechanism: "A measurement, not an intervention: weights and decode config are untouched. n=1319 cuts the binomial stderr at p~0.74 from 2.0 pp to 1.2 pp, and because greedy decoding is deterministic and both models see the same items, the comparison is paired - it turns on the items where they disagree. Reading final_model/ by its own path additionally exercises the loader path the grader uses, including evaluate.py's model_type() fallback to config.json for a directory whose name carries no model hint."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "no intervention; expect both candidates within 1-2 pts of their dev-500 values, i.e. 0.72-0.76"}
+  falsified_if: "Either read fails to complete or final_model/ fails to load, or the full-split accuracies fall outside the dev-500 confidence intervals of the same checkpoints - which would mean the first 500 items are not representative and every comparison in this batch was made on an unrepresentative slice."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-04
+    hash: "md5 703f473e1b91fd7a21a380f1c3795c40 (shard 1 of 2); identical to ckpts/exp-04/greedy"
+  base_model: google/gemma-3-4b-pt
+  data:
+    # measurement-only card: no training data. The only input is the benchmark itself,
+    # loaded read-only by the grader's task definition.
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      source: openai/gsm8k
+      n_examples: 1319
+      built_by: null
+      build_command: []
+      selection: "the whole official gsm8k test split (--limit -1); read by the grader only, never by a trainer"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect_ai 0.1.dev3780 + vllm 0.11.0
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - measurement only; both checkpoints carry the greedy generation_config adopted in exp-03"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_exp08.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_exp08.sh
+    env: {}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all   # final_model/ stays as exp-04 unless the soup wins by more than the read's stderr
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '-1', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official gsm8k test split, all 1319 items (--limit -1)
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.7400
+    path: /home/ben/task/eval/exp-04_greedy_dev500.json
+    # the comparator was read at n=500; this card re-reads the same weights at n=1319 and
+    # that read becomes the number the batch reports.
+  diagnostic:
+    what: "termination over the whole split - share of completions ending on their 'ANSWER:' line and share hitting the token cap (0.994 / 0.006 for exp-04 at n=500, 1.00 / 0.00 for the soup) - plus the garbage-prefix screen for --max-connections 16 over 1319 items rather than 500"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.72
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 3547}
+    - {path: /home/ben/task/ckpts/exp-04/greedy, step: 3547}
+    - {path: /home/ben/task/ckpts/exp-07/soup, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training - two full-split reads of existing weights"}
+  measurements:
+    - {metric: accuracy, value: 0.7346, n: 1319, path: /home/ben/task/eval/final_model_full.json, delta_vs_comparator: -0.0053}
+    - {metric: accuracy, value: 0.7354, n: 1319, path: /home/ben/task/eval/exp07_soup_full.json, delta_vs_comparator: -0.0046}
+  diagnostic_result:
+    value: 0.9955
+    path: /home/ben/task/analysis/exp-08_final_model_full_diag.json
+    notes: "final_model/ loaded and ran end to end from its own path, which is the loader path the grader uses - evaluate.py's model_type() fell through to config.json and selected templates/gemma3.jinja as intended. Termination over the whole split: 0.9955 of completions end on their 'ANSWER:' line and 6 of 1319 (0.0045) hit the token cap; the soup reads 0.9932 and 9 of 1319. Garbage-prefix screen 0/1319 for both, so --max-connections 16 is clean at full size. Median completion 136 tokens (soup 124)."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-08_paired.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "Over all 1319 items final_model/ (exp-04) scores 0.7346 +/- 0.0122 and the soup 0.7354 +/- 0.0122 - one item apart, with the paired split 78 exclusive wins to 891 both-correct against 79 exclusive wins the other way. The two are the same model as far as this benchmark can tell, so the pre-declared rule applies and the incumbent stays. Both full-split values sit inside the dev-500 intervals of the same weights (0.7400 and 0.7360), confirming the partial splits used throughout the batch were representative; the honest headline is 0.735, not the 0.7733 the first 150 items suggested."
+  decision: adopt
+  next_step: "Ship final_model/ as exp-04 (verified byte-identical to ckpts/exp-04/greedy and read end to end from its own path at 0.7346 on the full split). If this line is picked up again, the untested axis is more compute on the wide corpus - every card here spent ~115k samples, and 2 epochs over sft_v2 (3.8 h) was the one option that never fit; the exhausted axes are epochs on a narrow corpus (exp-02, +0.0), a second on-policy round (exp-05, -0.7), and weight averaging (exp-07, -0.4)."

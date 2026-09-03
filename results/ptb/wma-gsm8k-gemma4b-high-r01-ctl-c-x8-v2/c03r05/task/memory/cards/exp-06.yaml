@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T04:29:08Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.9
+  remaining_h: 4.1
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.71333, protocol_n: 150}
+  trigger: "exp-02 and exp-03 score identically on the protocol (0.71333 both) yet disagree on 51 of the 300 holdout items - exp-03 fixes 30 that exp-02 gets wrong and breaks 21 that exp-02 gets right, for a net of only +9. Two fine-tunes of the same base whose errors are that decorrelated are the textbook case for a weight average."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: result.watch_set_result, observation: "fixed 30, regressed 21, 51 wrong for both, on the same 300 items"}
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: accuracy, observation: "0.71333"}
+    - {path: /home/ben/task/eval/exp-03_final_dev150.json, locator: accuracy, observation: "0.71333"}
+  alternatives_rejected:
+    - {option: "Ensemble / self-consistency over several samples", reason: "the grader scores one greedy completion per item; there is nowhere to put a vote"}
+    - {option: "Weighted soup with a tuned mixing coefficient", reason: "each coefficient costs a probe run; with 4.1 h left and exp-05 occupying the GPU, only the uniform average is affordable"}
+    - {option: "Souping exp-05 in as well", reason: "exp-05 is still training; if it lands well it is a candidate in its own right, and a 3-way soup costs another build plus probe"}
+  pitfalls_hit:
+    - {what: "make_soup.py hit the same GenerationConfig(do_sample=False, temperature=0.0) serialisation failure as exp-04, because its parents are our own artifacts", cost_h: 0.07, fix: "install a valid GenerationConfig on the merged model before save_pretrained, then write the greedy generation_config.json explicitly"}
+    - {what: "exp-03's watch_set_result fixed/regressions were written from a visual estimate (22/13) instead of computed; recomputing gives 30/21", cost_h: 0.0, fix: "corrected in exp-03's card with a dated note; compute churn from the two probe files, never estimate it"}
+  smoke_runs:
+    - {command: [python, make_soup.py, --models, ckpts/exp-02/final, ckpts/exp-03/final, --out, ckpts/soup23], outcome: "13 files written; fp32 average cast back to bf16; tokenizer.json copied byte-for-byte from the base snapshot"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Neither full fine-tune dominates. On the 300-item train holdout exp-03 leads 0.760 to 0.730, but it gets there by fixing 30 items and breaking 21: 17% of the probe set is decided by which of two nearly equally good models is asked. That churn is variance in the fine-tuning trajectory rather than knowledge either model lacks, and it is what a weight average is supposed to cancel."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_holdout_fs1.json, locator: "items whose correct flag differs from exp-02_holdout_fs1.json", observation: "30 fixed, 21 regressed, 51 wrong for both, out of 300"}
+    - {path: /home/ben/task/analysis/exp-02_holdout_fs1.json, locator: summary.accuracy, observation: "0.730"}
+  affected_share: 0.17
+  failure_examples:
+    - {id: churn-21, source: /home/ben/task/analysis/exp-02_holdout_fs1.json, question: "21 holdout items exp-02 answers correctly and exp-03 does not", gold: "various", model_output: "exp-03 emits a different, wrong chain", failure: "trajectory variance, not missing capability"}
+    - {id: churn-30, source: /home/ben/task/analysis/exp-03_holdout_fs1.json, question: "30 holdout items exp-03 answers correctly and exp-02 does not", gold: "various", model_output: "exp-02 emits a different, wrong chain", failure: "trajectory variance in the other direction"}
+    - {id: shared-51, source: /home/ben/task/analysis/exp-03_holdout_fs1.json, question: "51 holdout items both models get wrong", gold: "various", model_output: "both emit well-formed chains with wrong numbers", failure: "genuine capability gap; a soup cannot help here"}
+  watch_set:
+    path: /home/ben/task/data/dev_train_holdout.jsonl
+    n: 300
+    selection: "300 GSM8K *train* items (seed 12345) held out of every training file; no benchmark test item - protocol rule 7"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A uniform weight average of ckpts/exp-02/final and ckpts/exp-03/final scores higher on the 300-item train-holdout probe than the better of its two parents (exp-03's 0.760), and does not fall below 0.713 on the 150-item protocol."
+  mechanism: "Both are full fine-tunes from the same base snapshot with the same objective, prompt format and target shape, so they lie in one loss basin and their weights are averageable. Their errors are substantially decorrelated (51 of 300 items flip one way or the other). Averaging keeps the directions both trajectories agree on and cancels the trajectory-specific noise that produces those flips."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0 to +3 points on the 300-item probe; a null result is a realistic outcome"
+  falsified_if: "The 300-item probe is at or below exp-03's 0.760, or the merged model degrades termination (unterminated completions above exp-03's 4/300)."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4.jsonl
+      source: "no new data: the merge consumes ckpts/exp-02/final (trained on data/sft_v1.jsonl) and ckpts/exp-03/final (trained on this file). Listed for provenance only."
+      n_examples: 184867
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --shards, '20', --per-problem, '2', --max-omi, '160000', --out, data/sft_v3.jsonl]
+      selection: "unchanged from exp-03; no training happens in this card"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "torch state-dict average in fp32, cast back to bf16 (make_soup.py)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: 2816, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged; the merged artifact is saved with eos=<end_of_turn>, the base snapshot's tokenizer.json, and the greedy generation_config.json"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, make_soup.py, --models, ckpts/exp-02/final, ckpts/exp-03/final, --out, ckpts/soup23]
+    cwd: /home/ben/task
+    script: /home/ben/task/make_soup.py
+    env: {}
+    log: /home/ben/task/logs/soup23.log
+  output_dir: /home/ben/task/ckpts/soup23
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.35}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, unshuffled)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.71333
+    path: /home/ben/task/eval/exp-03_final_dev150.json
+  diagnostic:
+    what: "accuracy on the 300-item GSM8K-train holdout probe with the grader's 10-shot prefix (eval_local.py --fewshot 1), against exp-03's 0.760 and exp-02's 0.730; this is the decision metric because n=150 cannot resolve a 3-point effect"
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/soup23
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup23, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; uniform fp32 average of the two parents' state dicts, cast to bf16, saved with the base tokenizer.json and the greedy generation_config.json"}
+  measurements:
+    - {metric: accuracy, value: 0.71333, n: 150, path: /home/ben/task/eval/soup23_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.74667
+    path: /home/ben/task/analysis/soup23_holdout_fs1.json
+    notes: "300-item train-holdout probe 0.7467: above exp-02's 0.730 but below exp-03's 0.760. The soup lands between its parents rather than above them. Unterminated 1/300 against exp-03's 4/300, so the merge does damp the repetition loops."
+  watch_set_result: {fixed: 16, still_failing: 76, regressions: 20, path: /home/ben/task/analysis/soup23_holdout_fs1.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The soup scores 0.7467 on the probe, below the better parent's 0.760, so the pre-registered threshold is not met; on the protocol it ties everything else at 0.71333. Against exp-03 it still fixes 16 and breaks 20 of the 300 probe items, so averaging did not cancel the churn, it produced a third model with churn of its own. The merged weights are healthy - it loads, terminates 299/300, and is the joint-best on termination - so the null is about accuracy, not about the merge being broken."
+  decision: reject
+  next_step: "exp-03 stays the incumbent. soup23 is carried into exp-07 as the second candidate for the n=500 comparison, since its probe score is within noise of exp-03's and it terminates more reliably."

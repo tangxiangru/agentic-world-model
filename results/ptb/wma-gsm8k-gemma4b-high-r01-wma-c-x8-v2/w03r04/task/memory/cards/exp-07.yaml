@@ -1,0 +1,113 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T05:52:50Z'
+situation:
+  elapsed_h: 7.0
+  remaining_h: 3.0
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.704, protocol_n: 500}
+  trigger: "exp-06 settled the selection but left two trained children of the same parent on disk with complementary error sets: exp-04 (more distilled data) is 0.685 on probe-200 and 0.6733 on dev-150, exp-05 (RFT) is 0.655 on probe-200 and 0.7267 on dev-150, and the parent exp-02 sits between them on both. Averaging weights of fine-tunes from a shared initialisation is the one remaining intervention that costs 8 minutes of CPU rather than an hour of GPU."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-06_split.json, locator: "exp-03_n500 vs exp-05_n500"}
+    - {path: /home/ben/task/eval/exp-04_greedy_dev150.json, locator: "accuracy=0.6733"}
+    - {path: /home/ben/task/eval/exp-05_greedy_dev150.json, locator: "accuracy=0.7267"}
+  alternatives_rejected:
+    - {option: "A fourth training run (DPO, or RFT mixed with distilled rows)", reason: "3.0h left; a train-plus-evaluate cycle is 1.5-2h and would leave no margin to package and verify final_model, which is the one deliverable that cannot slip"}
+    - {option: "Souping only the two children (exp-04, exp-05) without the parent", reason: "the parent is the best single model on the wide read; leaving it out of the average discards the arm that is actually winning"}
+    - {option: "Interpolation search over mixing weights", reason: "each weight setting costs a 25-minute n=500 evaluation; there is time for one soup, so it is the uniform one"}
+  pitfalls_hit:
+    - {what: "The inspect JSON log does not preserve dataset order, so 'the first 150 rows of the n=500 log' are not the graded 150; a first pass at exp-06's diagnostic compared the wrong item sets and showed a spurious 13-point swing", cost_h: 0.05, fix: "split by sample id against the ids in the n=150 log"}
+  smoke_runs: []
+problem:
+  statement: "The three checkpoints trained in this batch disagree about which items they get right: on the graded 150 exp-05 leads by 2-4 points, on the other 350 test items and on probe-200 the parent leads by 4-5. No single one of them is best everywhere, and the batch has to ship one set of weights."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_split.json, locator: "graded150 vs other350", observation: "exp-05 0.720/0.660, exp-03 0.700/0.7057 - the ordering flips between the two slices"}
+    - {path: /home/ben/task/analysis/exp-04_probe200.json, locator: "accuracy", observation: "exp-04 0.685, between exp-05's 0.655 and exp-03's 0.700"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: slice-flip, source: /home/ben/task/analysis/exp-06_split.json, question: "which of three same-parent checkpoints generalises best", gold: "the one with the highest n=500 accuracy", model_output: "exp-03 0.704, exp-05 0.678, exp-04 unmeasured at n=500", failure: "each candidate wins on some slice; none dominates"}
+  watch_set:
+    path: /home/ben/task/data/probe200.jsonl
+    n: 200
+    selection: "200 items held out (seed 0) from the openai/gsm8k TRAIN split; all three inputs already scored on it"
+hypothesis:
+  claim: "A uniform weight average of exp-02/final, exp-04/final and exp-05/final scores higher at n=500 than the best of its three inputs (exp-03's 0.704)."
+  mechanism: "exp-04 and exp-05 are both full fine-tunes started from exp-02/final and trained for one short cosine cycle each, so all three sets of weights lie in one basin and their average is a valid model rather than a broken interpolation. Averaging cancels the run-specific component of each update - the part that made exp-05 win one slice and lose another - and keeps the component the runs agree on."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+0 to +2 points at n=500; a soup that merely matches 0.704 is not worth adopting"}
+  falsified_if: "the soup scores at or below 0.704 at n=500, or it fails to load / stops emitting well-formed ANSWER lines (which would mean the three sets of weights were not in one basin after all)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe200.jsonl
+      source: "openai/gsm8k:train held-out probe; evaluation input only, no training in this card"
+      n_examples: 200
+      built_by: null
+      build_command: [python, -c, "held-out split of openai/gsm8k train, seed 0"]
+      selection: "no training data - the card averages three existing sets of weights"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "soup.py: shard-wise fp32 accumulation of the safetensors, cast back to bf16, greedy generation_config written in"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged; all three inputs were trained on the same prompt/target shape"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, soup.py, --src, ckpts/exp-02/final, ckpts/exp-04/final, ckpts/exp-05/final, --dst, ckpts/soup3]
+    cwd: /home/ben/task
+    script: /home/ben/task/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/soup3
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --json-output-file, '{out}']
+    dev_set: official --limit 500 (superset of the graded 150), evaluate.py defaults otherwise
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.704
+    path: /home/ben/task/eval/exp-03_greedy_dev500.json
+  diagnostic:
+    what: "accuracy on the graded 150 subset of the n=500 log, split by sample id, against exp-03's 0.700 and exp-05's 0.720 measured the same way"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.55
+  output_checkpoint: /home/ben/task/ckpts/soup3
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup3, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; shard-wise fp32 average of three bf16 checkpoints, 883 tensors, ~2 min CPU"}
+  measurements:
+    - {metric: accuracy, value: 0.7, n: 500, path: /home/ben/task/eval/exp-07_soup3_dev500.json, delta_vs_comparator: -0.004}
+  diagnostic_result:
+    value: 0.68
+    path: /home/ben/task/analysis/exp-06_split.json
+    notes: "On the graded 150 subset of its own n=500 log the soup reads 0.680, below exp-03's 0.700 and exp-05's 0.720 measured the same way; on the other 350 it reads 0.7086 against exp-03's 0.7057. probe-200 greedy is 0.680 (analysis/exp-07_probe200.json), between exp-03's 0.700 and exp-05's 0.655. The soup is a valid model - 98.5% clean stops - it is just an interpolation of its inputs' scores, not an improvement on them."
+  watch_set_result:
+    fixed: null
+    still_failing: 64
+    regressions: null
+    path: /home/ben/task/analysis/exp-07_probe200.json
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "The uniform 3-way soup scores 0.700 at n=500 against the incumbent's 0.704, and 0.680 on both the graded-150 subset and probe-200. Averaging produced a working model whose accuracy lands inside the range of its inputs on every slice rather than above them; the run-specific components it cancelled were not the ones costing accuracy."
+  decision: reject
+  next_step: "Stop experimenting: final_model keeps exp-03's weights (exp-02/final + greedy generation_config), the best model measured on the widest read available (0.704 at n=500, 0.6867 at the graded n=150, 0.700 on probe-200). Verify the deliverable end to end and close the batch."

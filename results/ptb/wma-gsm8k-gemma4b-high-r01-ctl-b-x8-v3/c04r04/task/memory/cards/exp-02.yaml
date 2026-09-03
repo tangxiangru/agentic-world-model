@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T22:53:21Z'
+situation:
+  elapsed_h: 0.25
+  remaining_h: 9.75
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0867, protocol_n: 150}
+  trigger: "exp-01 diagnostic: 66 of 150 base completions never emit <end_of_turn> and run on past their own ANSWER line, so the grader's last-number rule scores the tail (0.087) instead of the model's actual first answer (0.173)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "did_not_stop=66, first_answer_line_accuracy=0.1733, scored_accuracy=0.0867"}
+    - {path: /home/ben/task/eval/exp-01_base_dev150_samples.json, locator: "samples[1]: emits 'ANSWER: 14.08' then invents three more problems"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full fine-tune", reason: "4B fp32 master weights + 8-bit Adam fits in 80 GB (smoke run); full FT is the stronger baseline and costs the same wall-clock here"}
+    - {option: "Train on GSM8K train CoT alone (7.5k rows)", reason: "too small to move a 4B base model far; OpenMathInstruct-2 supplies 321k gsm8k-derived rows with verified final answers at no extra cost"}
+    - {option: "MetaMathQA", reason: "its bodies carry gsm8k's own '#### n' marker alongside a boxed answer - the double_answer_format pitfall; OpenMathInstruct-2 has one boxed answer per solution and a separate expected_answer field"}
+    - {option: "Include the grader's 10-shot system prefix in training prompts", reason: "~1700 extra prompt tokens per row roughly doubles the run; deferred to a later card if the eval shows a prefix mismatch"}
+  pitfalls_hit:
+    - {what: "per_device_batch_size 16 OOMs at max_len 768 (262k-vocab logits dominate memory)", cost_h: 0.05, fix: "bs 8 x accum 4, same effective batch 32"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/omi2_gsm8k.jsonl, --max-steps, '20', --bs, '8', --accum, '4'], outcome: "20 steps in 44 s (1.9 s/step), loss 0.41, saved and exited 0"}
+    - {command: [python, train_sft.py, --dry-run, --data, data/omi2_gsm8k.jsonl], outcome: "rendered prompt byte-identical to grader template (sha1 3f7731dd), targets end 'ANSWER: 8' + <end_of_turn>, token len p50 319 / max 768, 129 of 99371 rows dropped for length"}
+problem:
+  statement: "The base checkpoint does not stop: 44% of dev-150 completions run past their answer to the 4000-token cap, and the grader's last-number-in-output rule then reads a number from the run-on tail. It also has no habit of putting the final number on an 'ANSWER: n' line."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "whole file", observation: "did_not_stop 66/150; no_answer_marker 15/150; scored 0.0867 vs first-ANSWER-line 0.1733"}
+    - {path: /home/ben/task/eval/exp-01_base_dev150_samples.json, locator: "samples[1]", observation: "correct-looking chain, ANSWER line emitted, then three invented follow-up problems; last number in output is unrelated"}
+  affected_share: 0.44
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Completion-only SFT on 99k gsm8k-derived CoT solutions whose targets end in 'ANSWER: <n>' followed by <end_of_turn> will raise dev-150 accuracy above the base checkpoint's 0.0867, mostly by making the model terminate at its answer."
+  mechanism: "Every training target ends with the exact terminator the grading template stops on, and the last number of every target is the answer on an ANSWER line; loss is taken on the target only, so the model learns to stop there. The solutions are correct-answer-verified chains, so the reasoning should improve too, not only the format."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+30 to +50 points; format failures should go to ~0 and a 4B pt model's gsm8k ability once instructable is around 40-60%"
+  falsified_if: "dev-150 accuracy at or below 0.0867, or more than 5% of completions still fail to emit <end_of_turn>"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/omi2_gsm8k.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (shards 0-3 of 32), rows with problem_source in {gsm8k, augmented_gsm8k}"
+      n_examples: 99371
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/omi2_gsm8k.jsonl]
+      selection: "numeric expected_answer only; solution <= 2000 chars; <= 4 solutions per original gsm8k problem and <= 1 per augmented problem; drop rows containing '####' or 'ANSWER:' or LaTeX display blocks; boxed answer unwrapped; shuffled seed 0"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom completion-only collator (train_sft.py)"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 8, grad_accum: 4, max_seq_len: 768, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights, bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "solution body (boxed unwrapped), then a final line 'ANSWER: <n>', then <end_of_turn>; prompt is the grader's MATH_PROMPT_TEMPLATE rendered through templates/gemma3.jinja with add_generation_prompt"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/omi2_gsm8k.jsonl, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --output-dir, /home/ben/task/ckpts/exp-02, --max-len, '768', --bs, '8', --accum, '4', --lr, '1e-5', --epochs, '1', --save-steps, '1550']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 1550
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0867
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic:
+    what: "share of dev-150 completions that stop cleanly (stop_reason == stop) and contain exactly one 'ANSWER:' line"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.57
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final_bf16
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1550, step: 1550}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-3100, step: 3100}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 3102}
+    - {path: /home/ben/task/ckpts/exp-02/final_bf16, step: 3102}
+  training_summary: {final_loss: 0.2778, steps: 3102, notes: "train_loss is the epoch mean; last logged window 0.26-0.29, grad_norm ~1.2, no spikes. 1.81 s/step, 1.56 h wall."}
+  measurements:
+    - {metric: accuracy, value: 0.6667, n: 150, path: /home/ben/task/eval/exp-02_final_dev150.json, delta_vs_comparator: 0.58}
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-02_final_diag.json
+    notes: "clean-format share 0.993 (was 0.36 for base): 0/150 completions fail to stop (base 66/150), 1/150 lacks an ANSWER line. first_answer_line_accuracy == scored accuracy == 0.6667, i.e. the grader now reads exactly the number the model intends."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.0867 -> 0.6667 (+58.0 pts, stderr 0.039). The mechanism is confirmed by the diagnostic: non-stopping went 66/150 -> 0/150 and the gap between the model's own first answer and the graded last number closed completely."
+  decision: adopt
+  next_step: "exp-03: the grader sends no temperature, so vLLM falls back to the model's generation_config (do_sample, top_k 64, top_p 0.95, temperature 1.0). Test greedy decoding as a model-side decode config."

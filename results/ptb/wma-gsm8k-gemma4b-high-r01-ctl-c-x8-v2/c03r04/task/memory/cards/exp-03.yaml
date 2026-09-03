@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T01:37:39Z'
+situation:
+  elapsed_h: 2.95
+  remaining_h: 7.05
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.69333, protocol_n: 150}
+  trigger: "The graded request carries only max_tokens (eval/base_dev150_log.json: samples[0].events[model].call.request has no temperature/top_p), so vLLM falls back to the checkpoint's own generation_config.json, which the base snapshot ships as do_sample=true, top_k=64, top_p=0.95 - i.e. every graded answer is one temperature-1.0 sample, not the argmax chain."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/base_dev150_log.json, locator: "samples[0].events[?event=model].call.request", observation: "request = {tools, tool_choice, extra_headers, model, max_tokens} only"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample/top_k/top_p", observation: "inherited from the base snapshot: do_sample true, top_k 64, top_p 0.95, no temperature -> vLLM default 1.0"}
+  alternatives_rejected:
+    - {option: "Pass a temperature through evaluate.py", reason: "rule 5 forbids modifying evaluate.py; the decode default has to live in the model artefact"}
+    - {option: "Self-consistency / majority voting over k samples", reason: "the grader issues exactly one completion per item; there is nowhere to aggregate"}
+    - {option: "Leave sampling on and spend the time on more training instead", reason: "this costs one 6-minute eval and, if it wins, every later card inherits the gain; the RFT card is queued right behind it"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "exp-02 is graded on a single temperature-1.0 nucleus sample per problem. For a 4B model whose chains run 6-12 arithmetic steps, sampling noise turns correct argmax chains into wrong ones; 46 of 150 dev items are currently wrong and an unknown share of those are sampling accidents rather than capability failures."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_final_diag.json, locator: "accuracy=0.69333, format_compliance_rate=1.0", observation: "format is fully solved, so every remaining loss is chain content - exactly what decode temperature perturbs"}
+    - {path: /home/ben/task/eval/base_dev150_log.json, locator: "samples[0].events[?event=model].call.request", observation: "no sampling parameters are sent by the grader, so generation_config.json decides"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Setting the checkpoint's generation_config.json to greedy decoding (do_sample false, temperature 0.0, top_k 1, top_p 1.0), with the weights byte-identical to exp-02/final, changes dev-150 accuracy relative to exp-02's 0.69333 under the same protocol, in the upward direction."
+  mechanism: "vLLM's default sampling params come from the served model's generation_config.json whenever the request omits them. Replacing top_k 64 / top_p 0.95 / T=1.0 with argmax removes per-token sampling noise from a ~200-token arithmetic chain, where one unlucky digit token loses the whole item."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +8 points"
+  falsified_if: "dev-150 accuracy is at or below exp-02's 0.69333, or the per-item scores are identical to the sampled run (which would mean generation_config.json is not read and the intervention never took effect)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: nvidia/OpenMathInstruct-2 @ 469216e3f46f4dacf476b382e192485ea51a143e (problem_source in {gsm8k, augmented_gsm8k})
+      n_examples: 75000
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v2.jsonl, --n,
+        '75000', --fewshot-frac, '0.12', --max-per-problem, '2', --seed, '1']
+      selection: "no training happens in this card; this is the data that produced the parent checkpoint, listed so the lineage is complete"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 default sampling params read from generation_config.json
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null,
+      scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "unchanged from exp-02; only the decode defaults differ"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/final_greedy,
+      --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file,
+      /home/ben/task/eval/exp03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.2
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.69333
+    path: /home/ben/task/eval/exp02_final_dev150.json
+  diagnostic:
+    what: "count of dev-150 items whose scored correctness changes between the sampled and greedy runs, split into fixed and broken; zero changes would mean generation_config.json was ignored"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 1885}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to exp-02/final, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.7, n: 150, path: /home/ben/task/eval/exp03_greedy_dev150.json, delta_vs_comparator: 0.00667}
+  diagnostic_result:
+    value: 25.0
+    path: /home/ben/task/analysis/exp-03_delta.json
+    notes: "0/150 completions identical to the sampled run, so generation_config.json is definitely read by vLLM. 13 items fixed, 12 items broken, net +1. Greedy also introduced 3 repetition loops that ran to the 4000-token cap (sampled run had 0), dropping format compliance 150/150 -> 147/150."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "Greedy scores 0.700 vs 0.6933 sampled: +0.67 points against a 3.8-point stderr, i.e. indistinguishable. The mechanism is real (every completion changed; 13 fixed) but it is offset almost exactly by 12 new failures, 3 of which are greedy repetition loops that hit the token cap."
+  decision: iterate
+  next_step: "Adopt greedy as the artefact's decode default anyway - it costs nothing, it is not worse, and it makes every remaining comparison deterministic. exp-04 (RFT) is measured against this card's 0.700 under the same greedy config. Re-test the decode choice at n=500 at the end if time allows, since n=150 cannot resolve a 1-point difference."

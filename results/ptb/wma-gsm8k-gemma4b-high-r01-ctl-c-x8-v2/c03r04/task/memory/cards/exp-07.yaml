@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T04:40:42Z'
+situation:
+  elapsed_h: 6.3
+  remaining_h: 3.7
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final_greedy
+    score: {metric: accuracy, value: 0.724, protocol_n: 500}
+  trigger: "exp-06 scored the three candidates at n=500 (0.710 / 0.724 / 0.714) and still could not separate them: every pairwise McNemar p is between 0.50 and 0.90 across 60-79 discordant items per pair (analysis/exp-06_shootout.json). The n=500 arms took ~8 minutes each, not the ~18 assumed, so the whole 1319-item split now fits in the remaining time."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-06_shootout.json, locator: "scores, exactly_one_arm_correct", observation: "1.4-point spread, 46 items where exactly one arm is right"}
+    - {path: /home/ben/task/logs/exp-06.log, locator: "three arms completed in ~25 min wall", observation: "~8 min per 500-item arm including model load, so ~20 min per 1319-item arm"}
+  alternatives_rejected:
+    - {option: "Ship the n=500 argmax (exp-04) and stop", reason: "already done as a safe default - final_model/ holds exp-04 with greedy decode right now. This card can only improve the choice, and it cannot leave the batch without an artefact"}
+    - {option: "Spend the 3.7h on a fourth training run instead", reason: "the shortest useful run is ~1.5-2h and would land with under an hour to measure and package it; exp-04 (rft) and exp-05 (merge) both came back flat, so the prior is poor and the downside is shipping something unmeasured"}
+    - {option: "Bootstrap confidence intervals on the existing n=500 logs", reason: "resampling the same 500 items cannot add information those 500 items do not contain; the 819 unmeasured items can"}
+  pitfalls_hit:
+    - {what: "editing scripts/run_shootout.sh in place would have broken exp-06's locked script hash", cost_h: 0.0, fix: "restored it byte-for-byte and put the n=1319 variant in scripts/run_shootout_full.sh"}
+  smoke_runs: []
+problem:
+  statement: "final_model/ must hold one of three checkpoints whose measured accuracies differ by 1.4 points at n=500, a gap the data cannot distinguish from zero (McNemar p ~ 0.50). Roughly a fifth of items flip between any two arms, so a wrong pick is a real possibility rather than a rounding concern."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_shootout.json, locator: "exp02 vs exp04: 36 vs 43 discordant, z=0.68", observation: "the leader's margin is 7 items out of the 79 that disagree"}
+    - {path: /home/ben/task/eval/exp06_exp04_dev500.json, locator: stderr, observation: "0.0200 at n=500 against a 0.014 spread between best and worst"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Scoring the three candidates on the entire 1319-item test split under one protocol ranks them on 2.6x the evidence available at n=500, so the arm written to final_model/ is the argmax of the most powerful measurement this batch can afford rather than of a 7-item margin."
+  mechanism: "Greedy decoding makes each arm's score a deterministic function of its weights and the item set, so the only variance left is which items get scored. Going from 500 to 1319 items cuts the standard error from 2.0 to about 1.2 points and adds 819 observations no previous card has seen; the paired McNemar test also gains power in proportion to the number of discordant items."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "no directional prediction: this card measures rather than intervenes. All three arms should land within a point or two of their n=500 values"
+  falsified_if: "the three n=1319 scores fall inside a 1-point band with every pairwise McNemar p above 0.3, in which case the ranking is still unresolved and final_model/ keeps exp-04/final_greedy - the current incumbent and the n=500 argmax - unchanged"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "synthetic:self (exp-02/final sampled on nvidia/OpenMathInstruct-2 @ 469216e3f46f4dacf476b382e192485ea51a143e gsm8k problems) plus a 15000-row replay slice of data/sft_v2.jsonl"
+      n_examples: 52951
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final,
+        --out, data/rft_raw.jsonl, --n-problems, '34000', --k, '4', --temp, '1.0',
+        --top-p, '0.95', --max-tokens, '640', --max-keep-per-problem, '2', --fewshot-frac,
+        '0.12', --skip-file, data/sft_v2.jsonl, --seed, '7', --gpu-mem, '0.9']
+      selection: "nothing is trained in this card; this is the data behind the incumbent arm, listed so the lineage is complete"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: other
+    framework: inspect-ai + vllm 0.11.0, three arms under one protocol
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null,
+      scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "unchanged; all three arms share the exp-02 target format and the greedy generation_config"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [bash, scripts/run_shootout_full.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_shootout_full.sh
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.1
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections,
+      '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 1319 (the whole test split)
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: null
+    path: null
+  diagnostic:
+    what: "pairwise McNemar over the 1319 paired items for each of the three pairs, plus the count of items exactly one arm answers correctly"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.62
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 1885}
+    - {path: /home/ben/task/ckpts/exp-04/final_greedy, step: 1305}
+    - {path: /home/ben/task/ckpts/soup_0202_04, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "measurement card; no gradient step"}
+  measurements:
+    - {metric: accuracy, value: 0.70660, n: 1319, path: /home/ben/task/eval/exp07_exp04_dev1319.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.70660, n: 1319, path: /home/ben/task/eval/exp07_soup_dev1319.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.69826, n: 1319, path: /home/ben/task/eval/exp07_exp02_dev1319.json, delta_vs_comparator: -0.00834}
+  diagnostic_result:
+    value: 128.0
+    path: /home/ben/task/analysis/exp-07_shootout_full.json
+    notes: "exp-04 and soup both get exactly 932/1319 right yet disagree on 162 items. exp-02 vs exp-04: 104 vs 115 discordant, z=0.68, p=0.50. exp-02 vs soup: 77 vs 88, p=0.44. exp-04 vs soup: 81 vs 81, p=1.00. 789 items all three get right, 257 all three get wrong, 128 exactly one gets right."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "On the whole 1319-item split the arms score 0.6983 / 0.7066 / 0.7066, an 0.83-point spread with every pairwise McNemar p above 0.43 despite 162-219 discordant items per pair. Tripling n again did cut the standard error as predicted (2.0 -> 1.25) but the three checkpoints really are the same model to within the resolution of the benchmark itself."
+  decision: adopt
+  next_step: "The pre-registered fallback fires: spread under 1 point, all p above 0.3, so final_model/ keeps exp-04/final_greedy - the argmax at both n=500 and n=1319, tied with the soup at n=1319 and ahead of it at n=500. Remaining work is verification only: run evaluate.py against final_model/ with the grader's own default arguments from a fresh process."

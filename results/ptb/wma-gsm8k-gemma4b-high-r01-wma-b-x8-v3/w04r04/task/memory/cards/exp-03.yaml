@@ -1,0 +1,109 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T22:31:51Z'
+situation:
+  elapsed_h: 0.6
+  remaining_h: 9.4
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0733, protocol_n: 150}
+  trigger: "exp-02 tried to grade the base weights greedily by writing do_sample=false into generation_config.json and scored 0.02; the completions turned out to be unicode garbage, because vLLM ignores do_sample and I had deleted top_k/top_p, leaving temperature at its 1.0 default. The greedy control has therefore not been run, and the mechanism I intend to ship the final model with is unverified."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/base_greedy_dev150_full.json, locator: "samples[0].output.choices[0].message.content", observation: "'ისიستქსƬአՏнйƤ...' then 'ANSWER: 191' - untruncated tail sampling, not greedy"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "conclusion", observation: "verdict contradicted; the intervention that ran was not the intervention declared"}
+  alternatives_rejected:
+    - {option: "Skip the control and go straight to the SFT run", reason: "the SFT model will ship a generation_config I write; if temperature:0.0 also fails to select greedy I would find out only after the deadline, on the submitted model"}
+    - {option: "Verify with --limit 20 to save 3 minutes", reason: "a number at a different --limit is not a comparator (protocol rule 2), and the run is only ~5 minutes at n=150 anyway"}
+  pitfalls_hit:
+    - {what: "generation_config do_sample=false does not reach vLLM; deleting top_k/top_p alongside it silently widened sampling to the full 262k vocab and produced garbage that still scored a valid-looking 0.02", cost_h: 0.1, fix: "ask for the decode by name: {\"temperature\": 0.0}; same fix applied to the save path in scripts/train_sft.py"}
+  smoke_runs: []
+problem:
+  statement: "It is not established that a generation_config written by me can make this harness decode greedily. exp-02's attempt produced tail-sampled garbage while still returning a plausible accuracy, so the failure is silent; every checkpoint this batch produces depends on getting this right."
+  evidence:
+    - {path: /home/ben/task/eval/base_greedy_dev150_full.json, locator: "samples[*].output.choices[0].message.content", observation: "unicode-garbage completions at a nominal 'greedy' setting; 136/150 terminated but only 84/150 contained 'ANSWER:'"}
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "whole file", observation: "stopped 136, has_answer_marker 84, n 150"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Writing {\"temperature\": 0.0} into generation_config.json makes vLLM decode the identical base weights greedily, which will show up as coherent English completions instead of exp-02's unicode garbage and as an accuracy that is a real read of the base model under greedy decoding."
+  mechanism: "vLLM's default SamplingParams are built from the named fields of generation_config.json (temperature, top_p, top_k, repetition_penalty); temperature 0 is the documented way to request greedy, whereas do_sample is a transformers-only field that vLLM never looks at."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "well above exp-02's 0.02; relative to exp-01's sampled 0.0733 the direction is genuinely unknown, since greedy can lock a pretrained model into a repetition loop"
+  falsified_if: "the completions are still unicode garbage, or accuracy stays at ~0.02, which would mean generation_config is not the lever and the decode must be controlled some other way before anything is submitted"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/base_greedy
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/base_greedy/generation_config.json
+      source: "local - base snapshot generation_config with do_sample/top_k/top_p removed and temperature 0.0 added; all weight and tokenizer files are symlinks to the immutable snapshot blobs"
+      n_examples: 1
+      built_by: null
+      build_command: [python, -c, 'json edit of generation_config.json']
+      selection: "identical weights; only the decode config differs"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 via inspect_ai
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - no training; the intervention is generation_config.temperature=0.0"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/base_greedy, --limit, '150', --json-output-file, /home/ben/task/eval/base_t0_dev150.json, --max-connections, '16', --gpu-memory-utilization, '0.85']
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03_base_t0.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.12
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.02
+    path: /home/ben/task/eval/base_greedy_dev150.json
+  diagnostic:
+    what: "share of the 150 completions that are coherent ASCII English (>=90% of characters in the printable-ASCII range) - the direct test of whether greedy was actually selected"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.09
+  output_checkpoint: /home/ben/task/ckpts/base_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/base_greedy, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.0267, n: 150, path: /home/ben/task/eval/base_t0_dev150.json, delta_vs_comparator: 0.0067}
+  diagnostic_result:
+    value: 147
+    path: /home/ben/task/analysis/exp-03_diag.json
+    notes: "147/150 completions are coherent printable ASCII (exp-02: garbage), so temperature 0.0 in generation_config.json does reach vLLM and does select greedy. 139/150 contain 'ANSWER:' but 0/150 terminate: greedy locks the base model into answering and then restating the harness prompt for a new invented problem, forever, until the 4000-token cap."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "temperature:0.0 in generation_config.json is the working lever - completions went from unicode garbage (exp-02) to 147/150 coherent English. Greedy scores 0.0267, *below* the shipped sampling config's 0.0733, because greedy makes the non-termination deterministic: 0/150 completions stop, against 82/150 under sampling."
+  decision: adopt
+  next_step: "The decode mechanism is verified and will be used for every trained checkpoint. It is not a win on its own - the base model's problem is that it never emits <end_of_turn>. exp-04 trains that in. Comparator for exp-04 stays exp-01's 0.0733, the higher of the two base readings."

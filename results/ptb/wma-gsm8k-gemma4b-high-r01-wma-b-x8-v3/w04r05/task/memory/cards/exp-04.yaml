@@ -1,0 +1,138 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T01:45:42Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.6
+  remaining_h: 6.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "The incumbent's remaining errors are reasoning errors, not format or decode errors: 152 of the 500 held-out gsm8k-train probes still fail under greedy while every completion terminates and 100% end on an ANSWER line. Sampling the incumbent 4x at T=1.0 over 40,000 training problems gives pass@1 0.649 but pass@4 0.864 - it can reach 86% of these problems, it just does not reach them on the first try."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "pass_at_k=0.86435, pass_count_histogram", observation: "5426/40000 never solved, 5067 solved 1/4, 5787 solved 2/4, 8000 solved 3/4, 15720 solved 4/4"}
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "ends_with_answer_line=1.0, stop_reasons={'stop':150}", observation: "no format or termination headroom is left"}
+    - {path: /home/ben/task/analysis/exp-02_watch.json, locator: "still_failing=152, n=500"}
+  alternatives_rejected:
+    - {option: "A second epoch on data/sft_v1.jsonl", reason: "the n=500 probe is flat across steps 1000/2000/2009 (0.694/0.688/0.690), so that corpus is saturated; more of it buys nothing"}
+    - {option: "DPO on correct/incorrect pairs from the same 160k generations", reason: "the pairs exist, but DPO needs a reference-model forward pass and its own hyperparameter search; RFT reuses the SFT script unchanged, and with 6.4 h left the cheaper reliable lever wins"}
+    - {option: "Retrain from base on sft_v1 + RFT combined", reason: "~2.7 h against 6.4 h left; do the cheap continue first and only spend the big run if RFT is shown to pay"}
+    - {option: "Keep all 4 correct samples per problem", reason: "that re-teaches the 15720 problems already solved 4/4 and drowns the 5067 solved only 1/4; the builder keeps 1 solution at pass=4 and 2 at pass<4"}
+  pitfalls_hit:
+    - {what: "vllm_gen at n=4 over 40k problems took 47 min against the 35 min planned; output throughput plateaued at ~8.6k tok/s", cost_h: 0.2, fix: "none needed - size the next sampling round from the measured rate rather than a guess"}
+  smoke_runs:
+    - {command: [python, scripts/build_rft.py, --samples, data/rft_samples.jsonl, --out, data/rft_v1.jsonl, --anchor, data/sft_v1.jsonl, --n-anchor, '20000'], outcome: "48186 RFT rows from 34574 solved problems + 20000 anchor rows = 68186; mix rft_pass1 5067 / pass2 11458 / pass3 15941 / pass4 15720"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/rft_v1_docs.jsonl], outcome: "68186 documents scanned, 0 contaminated, 0 matches"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent solves a problem on its first attempt 22 points less often than it can solve it at all. Its single greedy sample lands on a wrong chain for 152 of 500 held-out training problems, yet 4 samples at T=1.0 find a correct chain for 86% of a 40,000-problem pool. The gap is the unreliability of the first chain, not missing capability."
+  evidence:
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "pass_at_k=0.86435 against first_sample_accuracy=0.649 in logs/rft_sample.log", observation: "21.5 points of headroom between pass@1 and pass@4"}
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "pass_count_histogram['1']=5067, ['2']=5787", observation: "10854 problems are solved by only 1 or 2 of 4 samples - the unreliable middle the corpus should lean toward"}
+    - {path: /home/ben/task/analysis/exp-02_watch.json, locator: "still_failing=152, regressions=3", observation: "the residual on the held-out train probe after the format fix"}
+  affected_share: 0.215
+  failure_examples:
+    - {id: rft-hist-0, source: /home/ben/task/analysis/rft_stats.json, question: "(aggregate over 5426 problems)", gold: "n/a", model_output: "0 of 4 samples correct", failure: "beyond current reach; contributes no RFT rows and bounds the achievable gain"}
+    - {id: rft-hist-1, source: /home/ben/task/analysis/rft_stats.json, question: "(aggregate over 5067 problems)", gold: "n/a", model_output: "1 of 4 samples correct", failure: "the right chain exists at 25% mass; greedy usually misses it"}
+    - {id: rft-hist-2, source: /home/ben/task/analysis/rft_stats.json, question: "(aggregate over 5787 problems)", gold: "n/a", model_output: "2 of 4 samples correct", failure: "coin-flip reliability"}
+    - {id: rft-hist-3, source: /home/ben/task/analysis/rft_stats.json, question: "(aggregate over 8000 problems)", gold: "n/a", model_output: "3 of 4 samples correct", failure: "mostly right; one chain in four goes wrong"}
+  watch_set:
+    path: /home/ben/task/data/dev_train500.jsonl
+    n: 500
+    selection: "the same 500 held-out gsm8k-train problems used since exp-02; the incumbent scores 0.690 on them under greedy, with 152 still failing"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing SFT from ckpts/exp-02/final on 48,186 of the incumbent's own correct solutions - weighted toward problems it solves only 1 or 2 times in 4 - plus a 20,000-row anchor slice of the original corpus raises official dev-150 accuracy above exp-03's 0.720 and cuts the 152 still-failing watch-set items."
+  mechanism: "Rejection sampling makes the training distribution on-policy: every target is a chain this model can actually produce, so the update sharpens probability mass already near the correct chain instead of importing a foreign solution style. Weighting toward pass=1 and pass=2 problems concentrates the update where first-sample failure is most likely, which is exactly the pass@1-to-pass@4 gap. The anchor slice keeps the answer format and register from drifting under a narrower self-generated distribution."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+2 to +6 points on dev-150; bounded above because the corpus cannot teach the 5426 problems no sample solved"}
+  falsified_if: "dev-150 accuracy is at or below exp-03's 0.720, or the watch set's still_failing count does not drop below 152"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: "synthetic:self (ckpts/exp-02/final sampled at T=1.0 top_p=0.95 n=4 over data/rft_pool.jsonl) + 20000 anchor rows from data/sft_v1.jsonl"
+      n_examples: 68186
+      built_by: /home/ben/task/scripts/build_rft.py
+      build_command: [python, scripts/build_rft.py, --samples, data/rft_samples.jsonl, --out, data/rft_v1.jsonl, --anchor, data/sft_v1.jsonl, --n-anchor, '20000']
+      selection: "keep only samples the grader would score correct AND that finished on a stop token; 1 solution per problem when all 4 were correct, 2 when fewer; deduped on the sequence of numbers the solution computes, preferring the shortest. Questions come from data/rft_pool.jsonl (70331 distinct OMI-2 gsm8k-derived problems with integer answers, dev_train500 excluded). 15% of rows carry a k-shot system prefix (k~U{2,8}) built from gsm8k train gold."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE"
+    peft: "none"
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 24, grad_accum: 3, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02: prompt from scripts/common.render_prompt (byte-for-byte templates/gemma3.jinja), loss on the completion only, target '<self-generated chain>\\n\\nANSWER: <int><end_of_turn>\\n'. The chain already has that shape because exp-02's model produced it, so nothing is rewritten. Rows over 2048 tokens are dropped, never truncated."
+    stop_token: "<end_of_turn>"
+    answer_marker: null
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_v1.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-04, --bs, '24', --grad-accum, '3', --lr, '7e-6', --epochs, '1', --max-seq-len, '2048', --save-steps, '500', --attn, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 500
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 in dataset order, 10-shot with fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.72
+    path: /home/ben/task/eval/exp03_greedy_dev150.json
+  diagnostic:
+    what: "greedy accuracy on the 500 held-out gsm8k-train problems (scripts/vllm_gen.py --temperature 0.0 --fewshot), the same quantity read at n=500 instead of n=150; incumbent 0.690"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.89
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 943}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-500, step: 500}
+  training_summary:
+    final_loss: 0.2609
+    steps: 943
+    notes: "67853 of 68186 rows kept (333 dropped over 2048 tokens, 0.49%); total_flos 6.88e17; save_full wrote temperature 0.0 into final/generation_config.json, so this checkpoint is decoded greedily without a manual patch. checkpoint-500 inherited the parent's config (do_sample:false, no temperature) and had to be patched by hand before probing."
+  measurements:
+    - {metric: accuracy, value: 0.68, n: 150, path: /home/ben/task/eval/exp04_final_dev150.json, delta_vs_comparator: -0.04}
+  diagnostic_result:
+    value: 0.718
+    path: /home/ben/task/analysis/exp-04_watch.json
+    notes: "n=500 held-out gsm8k-train probe, greedy: 0.690 -> 0.718 (+2.8, SE ~2.0). checkpoint-500 reads 0.714, so the trajectory is flat after step 500. The n=150 official read moved the other way (0.720 -> 0.680, SE ~3.8): the two reads disagree inside their noise and n=150 cannot resolve an effect of this size."
+  watch_set_result:
+    fixed: 45
+    still_failing: 110
+    regressions: 31
+    path: /home/ben/task/analysis/exp-04_watch.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "RFT moved the n=500 held-out train probe 0.690 -> 0.718 (+2.8, 45 items fixed against 31 regressions) but the official n=150 read moved 0.720 -> 0.680 (-4.0). Both moves are about one standard error of their own protocol, so at these sample sizes the card cannot say which model is better. The mechanism claim - that on-policy correct chains sharpen first-sample reliability - is supported by the probe and by the pass@1 0.649 / pass@4 0.864 gap that motivated it, but the size is at most a few points, not enough for n=150 to see."
+  decision: iterate
+  next_step: "The decision this card was supposed to make needs a bigger ruler. exp-05 scores exp-03_greedy and exp-04/final head to head at --limit 500 (SE ~2.0 pp instead of ~3.8) and adopts the winner as final_model. Do not pick on the n=150 numbers already in hand - 0.72 vs 0.68 at n=150 is inside noise, and the 45-fixed/31-regressed split on the probe says the two models are genuinely close rather than one dominating."

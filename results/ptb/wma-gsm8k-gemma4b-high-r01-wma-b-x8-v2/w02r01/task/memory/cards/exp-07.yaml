@@ -1,0 +1,129 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T05:20:38Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.5
+  remaining_h: 3.5
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/greedy
+    score: {metric: accuracy, value: 0.7400, protocol_n: 500}
+  trigger: "exp-06's paired view: over 500 items exp-04 and exp-05 agree on 424 and disagree on 76, splitting them 40/36. Two checkpoints that make largely non-overlapping errors on a quarter of the split are the textbook case where their weight average beats both, and exp-05 is a warm-started continuation of exp-04 so the two sit on one trajectory."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-06_paired.json, locator: "paired_n=500, exp04_only_correct=40, exp05_only_correct=36"}
+    - {path: /home/ben/task/eval/exp-04_greedy_dev500.json, locator: "accuracy=0.740, stderr=0.0196"}
+    - {path: /home/ben/task/eval/exp-05_greedy_dev500.json, locator: "accuracy=0.732, stderr=0.0198"}
+  alternatives_rejected:
+    - {option: "Stop here and ship exp-04", reason: "the soup weights are already built on disk (built on CPU while exp-06 held the GPU), so the only remaining cost is one 500-item read; stopping saves ~15 min out of 3.5 h and forgoes the last cheap candidate"}
+    - {option: "Souping exp-02 into the average as well", reason: "exp-02 trained on a different corpus from a different schedule and scores 5.3 pts lower; averaging a distinctly worse and differently-trained checkpoint in is the case where soups fail"}
+    - {option: "Searching the interpolation coefficient (0.25/0.5/0.75)", reason: "each point costs a full 500-item read and the remaining budget must also cover final verification; the uniform average is the one point with a prior behind it"}
+    - {option: "Starting another training run in the remaining 3.5 h", reason: "a from-base run is ~2 h plus ~15 min to read it, which would finish with no slack to re-verify final_model/ - and OMI2's gsm8k portion is already exhausted, so there is no new data for it to train on"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, merge_ckpts.py, --ckpts, ckpts/exp-04/final, ckpts/exp-05/final, --out, ckpts/exp-07/soup], outcome: "ran on CPU while the GPU was busy with exp-06; parameter sets matched, wrote bf16 weights + tokenizer + processor configs + greedy generation_config"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Both surviving checkpoints leave about a quarter of the split to chance. Over the 500 items exp-04 and exp-05 disagree on 76 and each is exclusively right on roughly half of those (40 vs 36), so ~7.6% of the benchmark is decided by which of two near-equivalent chains a given checkpoint happens to prefer. Shipping either one throws away the ~36 items the other gets right."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_paired.json, locator: "both=330, exp04_only=40, exp05_only=36 of 500", observation: "94 items neither gets right; the 76 disagreements are the addressable part"}
+    - {path: /home/ben/task/eval/exp-04_greedy_dev500.json, locator: "accuracy=0.740", observation: "the incumbent"}
+    - {path: /home/ben/task/analysis/exp-06_exp-05_dev500_diag.json, locator: "output_tokens_p50=118 vs exp-04's 137", observation: "exp-05 produces systematically shorter chains, i.e. the two differ in behaviour, not only in noise"}
+  affected_share: 0.152
+  failure_examples:
+    - {id: exp04-only-correct, source: /home/ben/task/analysis/exp-06_paired.json, question: "(one of the 40 dev-500 items exp-04 gets right and exp-05 does not; benchmark text not copied to disk)", gold: "(gsm8k test item)", model_output: "exp-05: terminated, one ANSWER line, wrong number", failure: "lost if exp-05 ships"}
+    - {id: exp05-only-correct, source: /home/ben/task/analysis/exp-06_paired.json, question: "(one of the 36 dev-500 items exp-05 gets right and exp-04 does not)", gold: "(gsm8k test item)", model_output: "exp-04: terminated, one ANSWER line, wrong number", failure: "lost if exp-04 ships - the items this card is trying to recover"}
+    - {id: neither-correct, source: /home/ben/task/analysis/exp-06_paired.json, question: "(one of the 94 dev-500 items neither candidate gets right)", gold: "(gsm8k test item)", model_output: "both wrong", failure: "out of reach of a merge - a soup cannot recover an item both parents fail"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-01_watch.jsonl
+    n: 142
+    selection: "the dev-150 items the base model failed in exp-01, carried unchanged through every card in this batch (this card's protocol is n=500, so the watch set is a subset of the items read)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "The uniform parameter average of exp-04 and exp-05 scores higher on dev-500 than exp-04's 0.7400."
+  mechanism: "exp-05 was warm-started from exp-04, so the two are points on one optimisation trajectory and no permutation alignment is needed for their weights to be averaged meaningfully. Averaging along a trajectory lands in a flatter part of the basin: errors the two parents make independently - the 76 items they disagree on - are the ones a mean can fix, because the average keeps the features both agree on and damps the ones only one of them committed to."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "+0 to +3 pts on dev-500; a soup of two same-basin checkpoints rarely loses but often gains little"}
+  falsified_if: "dev-500 accuracy is at or below 0.7400, i.e. the average is no better than its better parent - in which case exp-04 ships unchanged."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    # merge card: no training data is read. The only input is the benchmark itself,
+    # loaded read-only by the grader's task definition.
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      source: openai/gsm8k
+      n_examples: 500
+      built_by: null
+      build_command: []
+      selection: "official gsm8k test split, first 500 samples via --limit 500; read by the grader only, never by a trainer"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "torch state-dict mean in fp32, cast to bf16 (merge_ckpts.py)"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "0.5 * exp-04/final + 0.5 * exp-05/final over every parameter; shipped with the same greedy generation_config, tokenizer and processor configs the other candidates carry"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_exp07.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_exp07.sh
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: all   # ckpts/exp-07/soup; replaces final_model/ only if it clears 0.7400 by more than the read's stderr
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 500 (inspect_evals/gsm8k test split, first 500 samples, deterministic order)
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.7400
+    path: /home/ben/task/eval/exp-04_greedy_dev500.json
+  diagnostic:
+    what: "a merge can break generation even when the parents are fine: share of completions ending on their 'ANSWER:' line and share hitting the token cap, both 0.994 / 0.006 for the parents, plus the median completion length (exp-04 137, exp-05 118 tokens)"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.22
+  output_checkpoint: /home/ben/task/ckpts/exp-07/soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/soup, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training - a parameter-space mean of two existing checkpoints"}
+  measurements:
+    - {metric: accuracy, value: 0.7360, n: 500, path: /home/ben/task/eval/exp07_soup_dev500.json, delta_vs_comparator: -0.0040}
+  diagnostic_result:
+    value: 1.00
+    path: /home/ben/task/analysis/exp-07_soup_dev500_diag.json
+    notes: "The merge did not break generation - it improved on both parents there. 500/500 completions stop at a stop token and end on their 'ANSWER:' line, 0 hit the token cap, against 0.994/0.006 for exp-04 and exp-05 alike; garbage screen 0/500. Median completion 122 tokens, between exp-05's 118 and exp-04's 137, exactly what averaging two behaviours predicts - which is also the reason to believe the average landed where it was supposed to and simply did not pay off in accuracy."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-07_soup_dev500_diag.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The soup reads 0.7360 on dev-500 against exp-04's 0.7400 - below its better parent and above its worse one (exp-05, 0.7320), i.e. it interpolated the accuracy as well as the behaviour instead of beating both. The mechanism is contradicted specifically: the 76 items the parents disagreed on were the target, and averaging did not convert them."
+  decision: reject
+  next_step: "exp-04 ships. Three candidates now sit within 0.8 pp on dev-500 (0.7400 / 0.7360 / 0.7320) and none of the remaining budget can separate them by training; spend it instead on a full-split read of the top two so the ship decision rests on 1319 items rather than 500."

@@ -1,0 +1,113 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T02:17:38Z'
+situation:
+  elapsed_h: 3.42
+  remaining_h: 6.58
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6133, protocol_n: 150}
+  trigger: "exp-02's saved generation_config.json still carries the base checkpoint's do_sample=true / top_k=64 / top_p=0.95 and names no temperature, and vLLM's ModelConfig.get_diff_sampling_param() feeds exactly those fields to the server as defaults - so every graded completion so far was sampled at temperature 1.0, not decoded greedily."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-800/generation_config.json, locator: "do_sample/top_k/top_p, no temperature", observation: "inherited verbatim from the base snapshot by trainer.save_model"}
+    - {path: /home/ben/task/logs/2026-09-02T22-59-17+00-00_gsm8k_gwNpPiZxNrDjC3c9CF3bwF.json, locator: "eval.model_generate_config", observation: "inspect-ai passes only timeout/max_connections/max_tokens; it never sets temperature, so the server default of 1.0 stands"}
+  alternatives_rejected:
+    - {option: "Change the decode settings in evaluate.py", reason: "rule 5 forbids touching evaluate.py; generation_config.json is part of the model artifact and is the intended place for a model's recommended decoding"}
+    - {option: "Go straight to rejection sampling and skip this", reason: "this costs one 12-minute eval and no training; rejection sampling costs ~2h. If greedy is worth points, the RFT round should be sampled from and compared against the better decode setting anyway"}
+    - {option: "Tune a low non-zero temperature (0.2-0.4) instead of greedy", reason: "the grader scores one sample with no self-consistency vote, so there is no variance to exploit and the argmax path is the right target; greedy also makes the graded run reproducible"}
+  pitfalls_hit:
+    - {what: "transformers' Trainer silently rewrote eos_token_id from [1,106] to [1,1,106] when aligning the tokenizer with the model config; harmless here because 106 survives, but it is the eos_mismatch pitfall one edit away", cost_h: 0.0, fix: "exp-03's generation_config.json states eos_token_id [1,106] explicitly instead of inheriting it"}
+  smoke_runs:
+    - {command: [python, -c, "GenerationConfig.from_pretrained('ckpts/exp-03-greedy').to_diff_dict()"], outcome: "{'cache_implementation':'hybrid','temperature':0.0,'pad_token_id':0,'bos_token_id':2,'eos_token_id':[1,106],...} - temperature 0.0 survives to_diff_dict and top_k/top_p have dropped out, which is exactly the dict vLLM reads"}
+problem:
+  statement: "exp-02 is being graded with stochastic decoding it never asked for. The checkpoint inherits the pretrained snapshot's sampling recommendation (top_k=64, top_p=0.95, no temperature), vLLM promotes those to server defaults, and the OpenAI-compatible endpoint's own default temperature of 1.0 fills the gap. Every one of the 150 graded answers is therefore a temperature-1.0 sample from a model scored on a single attempt, which both costs accuracy and makes the score irreproducible."
+  evidence:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-800/generation_config.json, locator: "whole file", observation: "do_sample true, top_k 64, top_p 0.95, temperature absent"}
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy 0.6133, stderr 0.0399", observation: "the measured number is one draw from a sampling distribution, not the model's argmax behaviour"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/dev300.jsonl
+    n: 300
+    selection: "300 items sampled (seed 7) from the gsm8k TRAIN split and held out of the SFT corpus (596 matching rows dropped); used for diagnosis so that no analysis touches the benchmark's test items."
+hypothesis:
+  claim: "Declaring temperature 0.0 in the checkpoint's generation_config.json, with the weights byte-identical to exp-02, will raise dev-150 accuracy relative to exp-02's 0.6133."
+  mechanism: "GSM8K is scored on one attempt with no self-consistency vote, so any deviation from the argmax path is pure downside: a single unlucky token inside a chain of arithmetic propagates to the final line the matcher reads. Sampling at temperature 1.0 with top_p 0.95 admits exactly those deviations; greedy decoding removes them."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +8 points"
+  falsified_if: "dev-150 accuracy at or below exp-02's 0.6133."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_exp02.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, shards 0-13 of 32, problem_source in {gsm8k, augmented_gsm8k}"
+      n_examples: 110000
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, prepare_data.py, --out, data/sft_gsm.jsonl, --target, '200000', --max-per-problem, '2', --fewshot-share, '0.08']
+      selection: "Provenance of the parent checkpoint only - mixture_weight 0.0. exp-03 fits nothing: the safetensors in ckpts/exp-03-greedy are symlinks to exp-02's, and the only changed bytes are generation_config.json."
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 via inspect-ai; generation_config.json read by ModelConfig.get_diff_sampling_param()"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: 3072, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02: reasoning, then a single final 'ANSWER: n' line, then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03-greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03_eval.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test split, deterministic order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6133
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "share of completions stopping on <end_of_turn> (exp-02: 150/150) - greedy decoding must not introduce repetition loops that run to the token cap"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.22
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 2208}
+  training_summary: {final_loss: null, steps: null, notes: "no training: weights are symlinks to exp-02/final; only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.1134}
+  diagnostic_result:
+    value: 0.9733
+    path: /home/ben/task/analysis/exp-03_diagnostic.json
+    notes: "146/150 stop on <end_of_turn>; 4 now run to the 4000-token cap, the repetition loops greedy decoding is prone to and sampling used to break out of. Item-level: 26 of exp-02's failures fixed, 9 of its successes lost - a real gain, not a reshuffle, but the 9 regressions are partly sampling noise in the exp-02 comparator itself."
+  watch_set_result: {fixed: 26, still_failing: 41, regressions: 9, path: /home/ben/task/analysis/exp-03_dev150_items.jsonl}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.6133 -> 0.7267 (+11.3 points) with byte-identical weights; the whole difference is temperature 1.0 sampling versus greedy decoding. The mechanism holds: on a single-attempt benchmark every departure from the argmax path is downside, and 26 previously-failed items came back."
+  decision: adopt
+  next_step: "Greedy is now the decode setting for every later card and for final_model. Cost: 4/150 completions hit repetition loops that sampling used to escape - worth watching but far cheaper than the 11 points. Next: on-policy rejection sampling from this checkpoint over the 41,771 gsm8k-derived problems it has never seen, with teacher solutions for the ones it cannot solve."
+

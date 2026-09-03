@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T06:58:21Z'
+situation:
+  elapsed_h: 8.05
+  remaining_h: 1.95
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/hf
+    score: {metric: accuracy, value: 0.7733, protocol_n: 150}
+  trigger: "Three independent fine-tunes of the same base now exist (exp-02 on sft_v1, exp-04 on sft_v2, exp-05 = RFT continuation of exp-04) and one of them has to ship. Uniform weight averaging of independent fine-tunes of a shared initialisation is close to free - ckpts/soup24/hf is already built - and the whole selection costs one merge plus four evaluations."
+  trigger_evidence:
+    - path: /home/ben/task/eval/exp05_dev150.json
+      locator: "accuracy 0.7733"
+    - path: /home/ben/task/eval/exp04_dev150.json
+      locator: "accuracy 0.7267"
+    - path: /home/ben/task/memory/index.md
+      locator: "exp-02 0.7267 greedy, exp-04 0.7267, exp-05 0.7733"
+  alternatives_rejected:
+    - option: "Ship exp-05 without checking the soups"
+      reason: "exp-02 and exp-04 are independent draws from the same initialisation on overlapping data, exactly the setting where a uniform soup tends to beat its members; 30 minutes to find out is affordable and the fallback is exp-05 either way."
+    - option: "A second RFT round from exp-05"
+      reason: "sampling alone took 45 min and training an epoch takes another 60; there is not 1.8 h left."
+    - option: "Score the candidates at --limit 500 for a tighter estimate"
+      reason: "would be better statistics but 15 min per candidate; instead each candidate is scored on BOTH dev-150 and the 250-item held-out probe, which is 400 items of evidence per candidate at a quarter of the cost."
+  pitfalls_hit:
+    - what: "exp-05's first launch trained a full epoch (1.0 h) and then lost it: trainer.save_model raised because the parent's greedy generation_config (do_sample False with temperature 0.0/top_k 0) fails GenerationConfig.validate(strict=True) at save time."
+      cost_h: 1.0
+      fix: "scripts/train_sft.py now resets model.generation_config to a valid sampling config immediately after loading and validates it before a single step runs; finalize_model.py still writes the greedy config at the end. Recorded in exp-05's re-lock."
+  smoke_runs: []
+problem:
+  statement: "Selection risk: dev-150 has a standard error near 0.035, so the 4.7-point gap between exp-05 and exp-04 is barely two standard errors and exp-02 vs exp-04 was unresolvable at this n. Picking the checkpoint that ships on one 150-item number risks shipping the luckier model rather than the better one, and no soup has been measured at all."
+  evidence:
+    - path: /home/ben/task/eval/exp04_dev150.json
+      locator: "accuracy 0.7267, stderr 0.0365"
+      observation: "exp-02 and exp-04 tie exactly at 0.7267 on dev-150 while differing by 5.2 points on the 250-item probe - dev-150 alone cannot rank checkpoints this close."
+    - path: /home/ben/task/analysis/exp04_probe_summary.json
+      locator: "fixed_by_exp04 34, regressed 21"
+      observation: "the two models disagree on 55 of 250 probe items, so their difference is real even where the benchmark slice shows none."
+  affected_share: 1.0
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe250.jsonl
+    n: 250
+    selection: "the same 250 held-out gsm8k TRAIN questions used since exp-03, excluded from every training corpus including the RFT question set."
+hypothesis:
+  claim: "At least one uniform weight average - soup24 (exp-02 + exp-04) or soup245 (exp-02 + exp-04 + exp-05) - scores higher than exp-05's 0.7733 on greedy dev-150 under the identical protocol; if none does, exp-05 ships."
+  mechanism: "exp-02 and exp-04 are separate fine-tunes of one initialisation on overlapping data, so they sit in the same loss basin with partly independent errors; averaging their weights cancels the idiosyncratic part of each update the way an ensemble would, at no inference cost. exp-05 is a low-LR continuation of exp-04 rather than an independent draw, so including it in a soup should help less - which is why both soups are measured."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "0 to +3 points; a soup that loses to its own members would mean the checkpoints are not in a shared basin"
+  falsified_if: "both soups score <= 0.7733 on greedy dev-150 and <= exp-05's probe250 accuracy."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/hf
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe250.jsonl
+      source: "derived:exp-02 - 250 gsm8k TRAIN questions held out of every training file"
+      n_examples: 250
+      built_by: /home/ben/task/scripts/gen_vllm.py
+      build_command: [bash, scripts/run_exp06.sh]
+      selection: "DIAGNOSTIC INPUT ONLY - this card trains nothing; the only weight operation is a uniform average of existing checkpoints. No benchmark test item is involved."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors shard-wise uniform average (scripts/soup.py), fp32"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: fp32, seed: 0}
+    target_format: "unchanged: chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_exp06.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_exp06.sh
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/soup245
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.5
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --max-tokens, "4000", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7733
+    path: /home/ben/task/eval/exp05_dev150.json
+  diagnostic:
+    what: "probe250 greedy accuracy for exp-05, soup24 and soup245 (exp-02 = 0.744, exp-04 = 0.796)"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.5
+  output_checkpoint: /home/ben/task/ckpts/exp-05/hf
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/hf, step: 731}
+    - {path: /home/ben/task/ckpts/soup24/hf, step: null}
+    - {path: /home/ben/task/ckpts/soup245/hf, step: null}
+    - {path: /home/ben/task/final_model, step: 731}
+  training_summary: {final_loss: null, steps: null, notes: "no training; two uniform weight averages built with scripts/soup.py (exp-02+exp-04, exp-02+exp-04+exp-05)"}
+  measurements:
+    - {metric: accuracy, value: 0.76, n: 150, path: /home/ben/task/eval/exp06_soup24_dev150.json, delta_vs_comparator: -0.0133}
+    - {metric: accuracy, value: 0.76, n: 150, path: /home/ben/task/eval/exp06_soup245_dev150.json, delta_vs_comparator: -0.0133}
+    - {metric: accuracy, value: 0.7667, n: 150, path: /home/ben/task/eval/final_model_dev150.json, delta_vs_comparator: -0.0066}
+    - {metric: accuracy, value: 0.7667, n: 150, path: /home/ben/task/eval/final_model_defaults.json, delta_vs_comparator: -0.0066}
+  diagnostic_result:
+    value: 0.82
+    path: /home/ben/task/analysis/exp06_selection.json
+    notes: "probe250 greedy: exp-05 0.820, soup24 0.812, soup245 0.808 (exp-04 0.796, exp-02 0.744). Pooling each candidate's 150 benchmark items with its 250 probe items: exp-05 0.8025, soup24 0.7925, soup245 0.7900. exp-05 leads on both measurements separately and pooled. The last measurement is the ship check: final_model/, loaded cold by the grader's vLLM from a fresh process, scores 0.7667 against 0.7733 for the identical weights at ckpts/exp-05/hf - the same +-0.7 point batching nondeterminism seen between the two greedy runs in exp-03, not a packaging error. Post-close addendum: final_model/ was saved with the Trainer's fp32 master weights (17.2 GB), which vLLM's dtype=auto would have loaded in fp32 - at evaluate.py's DEFAULT --gpu-memory-utilization 0.3 (24 GB) that leaves almost no KV cache. scripts/to_bf16.py cast it to bfloat16 (8.6 GB, matching the base checkpoint and the bf16 autocast it was trained under) and it was re-scored with evaluate.py's defaults verbatim (limit 150, max-connections 2, max-tokens 4000, gpu-memory-utilization 0.3): 0.7667, unchanged."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp06_selection.json}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Neither soup beat its best member: soup24 and soup245 both score 0.760 on greedy dev-150 against exp-05's 0.7733, and both sit below exp-05 on the 250-item probe too (0.812 and 0.808 vs 0.820). Averaging exp-02 into the mix pulls the result toward the weaker corpus rather than cancelling independent errors - which fits, since exp-02 is 5 points behind exp-04 on the probe and the soup lands between them."
+  decision: reject
+  next_step: "exp-05 ships. final_model/ is scripts/finalize_model.py --src ckpts/exp-05/final --greedy: merged weights, tokenizer and processor side-cars, and a greedy generation_config; it was loaded cold by the grader and scored 0.7667 on dev-150. With more time the next card is a second RFT round from exp-05 (the pass@4 gap should be re-measured first - it was 13.2 points at exp-04)."

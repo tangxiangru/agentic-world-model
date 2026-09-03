@@ -300,6 +300,19 @@ jobs. No RUNNING job or other queue was touched.
 - Runtime diagnosis and replacement contract:
   `doc/spec/2026-09-02-wma-round01-online-gsm8k-gemma4b.md`.
 
+### Runtime-fixed w04/c04 sensitivity block (2026-09-03 08:4x UTC)
+
+The retained repeats-4 subset completed under the old advisory-review public
+protocol. Primary paired cells `r01..04` were validator-complete and judge-clean:
+WMA mean 0.7432 (SE 0.0268), control mean 0.7635 (SE 0.0174), paired delta
+-0.0203 with paired SE 0.0435 (2/4 positive; range -0.1403–+0.0660). The extra
+`w04r05=0.6922` remains sensitivity-only. This block neither rescues nor
+materially changes the core Round 01 conclusion: effect uncertainty dominates.
+
+Its WMA ledger has 16 verdicts, 10 scored, 6 leak-suspected, L0/L1 1.0,
+L2 coverage 0.60 at n=5, width/noise 7.19, L3 0.75, and zero GPU hours saved or
+wrongly killed. It is not pooled with lock-gated Round 02.
+
 ## Next round
 
 Primary proposed single change, not yet applied: add a C11/C12 manual prior

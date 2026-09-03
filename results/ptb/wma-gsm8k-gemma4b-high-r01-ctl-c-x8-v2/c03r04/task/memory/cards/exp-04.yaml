@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T02:24:49Z'
+situation:
+  elapsed_h: 3.7
+  remaining_h: 6.3
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.7, protocol_n: 150}
+  trigger: "exp-02 removed the format failure completely (150/150 well-formed answer lines) but 45-46 of 150 dev items are still wrong, and exp-03 showed the residue is not decode noise: swapping sampling for greedy fixed 13 and broke 12. The remaining loss is the content of the chain."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_final_diag.json, locator: "accuracy=0.69333, format_compliance_rate=1.0, hit_max_tokens=0"}
+    - {path: /home/ben/task/analysis/exp-03_delta.json, locator: "fixed=13, broke=12", observation: "decode temperature is not what is costing the remaining items"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "'solved at least once: 20764/25763 = 0.806'", observation: "with 4 samples the exp-02 model solves 80.6% of unseen gsm8k-style problems, far above its 69% single-shot rate: the capability is there but not reliably on the first sample"}
+  alternatives_rejected:
+    - {option: "Train longer / more OpenMathInstruct-2 data from the base model", reason: "off-policy data from a 405B teacher; exp-02 already fit it to loss 0.25 and the 11-point gap between pass@4 (0.806) and pass@1 (0.69) says the problem is reliability, not missing knowledge"}
+    - {option: "DPO on correct-vs-incorrect sample pairs", reason: "would need a preference-pair build plus a second trainer inside the remaining 6h; RFT reuses the SFT trainer unchanged and the same 4 samples per problem"}
+    - {option: "Train from the base model on SFT+RFT combined", reason: "110k rows x 2 epochs is ~3.5h, over budget; continuing from exp-02/final at a lower LR costs 1.7h"}
+    - {option: "RFT on pure self-generated data with no replay", reason: "one epoch of self-distillation with no anchor narrows style and can undo exp-02's format discipline; 15k rows of the original SFT mixture are replayed alongside"}
+  pitfalls_hit:
+    - {what: "OpenMathInstruct-2 shards repeat problems: shards 6-19 added almost no new ones, so --n-problems 34000 yielded only 25763 unseen problems after excluding everything used in sft_v2", cost_h: 0.0, fix: "accepted the smaller pool; 25763 problems x 4 samples still produced 37951 verified rows"}
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/rft_raw_check.jsonl], outcome: "37951 documents scanned, 0 contaminated, 0 matches"}
+problem:
+  statement: "exp-02 solves 80.6% of unseen gsm8k-style problems when allowed 4 samples but only 69-70% on the single sample the grader takes. Its first-sample chain is unreliable: the model knows a correct route to most of these problems but does not put enough probability mass on it."
+  evidence:
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "solved at least once: 20764/25763 = 0.806", observation: "pass@4 0.806 vs graded pass@1 0.693-0.700 on comparable gsm8k-style problems: an 11-point reliability gap"}
+    - {path: /home/ben/task/analysis/exp-03_delta.json, locator: "fixed=13, broke=12, identical_completions=0", observation: "the residue is not fixable by changing the decode rule"}
+  affected_share: 0.3
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-02's training on its own verified-correct samples (37951 rows over 20764 previously unseen problems, plus 15000 replayed SFT rows) shifts probability mass onto chains the model already reaches only occasionally, and raises dev-150 accuracy over exp-03's 0.700 under the same greedy protocol."
+  mechanism: "Rejection sampling keeps only chains this model actually produced and that reach the reference answer, so every gradient step reinforces a route already inside its distribution instead of imitating a 405B teacher's phrasing. That converts pass@4 mass into pass@1 mass, which is exactly the 11-point gap measured above. The 15k replayed SFT rows anchor the format and style so the self-distillation does not narrow them."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 points"
+  falsified_if: "dev-150 accuracy at neither checkpoint (step 652 or final) exceeds exp-03's 0.700, or format compliance falls below 0.97"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "synthetic:self (exp-02/final sampled on nvidia/OpenMathInstruct-2 @ 469216e3f46f4dacf476b382e192485ea51a143e gsm8k/augmented_gsm8k problems) mixed with a 15000-row replay slice of data/sft_v2.jsonl"
+      n_examples: 52951
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final,
+        --out, data/rft_raw.jsonl, --n-problems, '34000', --k, '4', --temp, '1.0',
+        --top-p, '0.95', --max-tokens, '640', --max-keep-per-problem, '2', --fewshot-frac,
+        '0.12', --skip-file, data/sft_v2.jsonl, --seed, '7', --gpu-mem, '0.9']
+      selection: "problems used in sft_v2 excluded by md5 of the question; 4 samples per problem at T=1.0/top_p=0.95; a sample is kept only if its final 'ANSWER: <n>' line parses and equals the reference answer and it contains exactly one 'ANSWER:'; exact duplicates dropped, then the 2 shortest correct chains per problem kept; rendered through templates/gemma3.jinja with 12% carrying the grader's 10-shot system prefix; 15000 rows of sft_v2 shuffled in as replay"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer with a custom sparse-LM-head completion-only loss
+    peft: none
+    hyperparams: {lr: 7.0e-06, epochs: 2, batch_size: 1, grad_accum: 4, max_seq_len: 3072,
+      scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02: chain of thought, blank line, 'ANSWER: <n>' as the final line, then the stop token"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_mix_v1.jsonl, --out, /home/ben/task/ckpts/exp-04,
+      --parent, /home/ben/task/ckpts/exp-02/final, --epochs, '2', --lr, '7e-6', --accum,
+      '4', --token-budget, '14336', --max-rows-per-batch, '32', --save-steps, '652',
+      --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 652
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.8
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7
+    path: /home/ben/task/eval/exp03_greedy_dev150.json
+  diagnostic:
+    what: "share of the 150 completions ending in a well-formed 'ANSWER: <number>' line and share hitting the 4000-token cap, to confirm the self-distillation did not narrow or destabilise the output format"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.62
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-652, step: 652}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1304, step: 1304}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1305, step: 1305}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1305}
+  training_summary:
+    final_loss: 0.2081
+    steps: 1305
+    notes: "train_loss 0.2167 over the run, from exp-02's 0.2456 endpoint. 5824 s wall, peak 67.8 GB, 29.6M tokens per epoch over 2 epochs."
+  measurements:
+    - {metric: accuracy, value: 0.69333, n: 150, path: /home/ben/task/eval/exp04_final_greedy_dev150.json, delta_vs_comparator: -0.00667}
+    - {metric: accuracy, value: 0.66, n: 150, path: /home/ben/task/eval/exp04_c652_greedy_dev150.json, delta_vs_comparator: -0.04}
+  diagnostic_result:
+    value: 0.99333
+    path: /home/ben/task/analysis/exp-04_final_diag.json
+    notes: "149/150 well-formed answer lines, 1 token-cap overrun: the replay slice did its job, the format did not degrade. But the accuracy did not move."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Two epochs of RFT scored 0.6933 and one epoch 0.6600, against exp-03's 0.7000 under the identical greedy protocol: no gain, and the one-epoch checkpoint is 4 points worse. The pass@4-to-pass@1 gap did not convert. Reinforcing chains the model already samples 80% of the time apparently adds little the exp-02 SFT had not already extracted from the same problem distribution."
+  decision: reject
+  next_step: "Stop training and spend the remaining GPU time on discrimination instead: at n=150 the stderr is 3.8 points and 0.693 / 0.700 / 0.693 are one measurement. exp-05 tries the one remaining near-free intervention (weight-averaging exp-02/final and exp-04/final), then the surviving candidates are re-scored at n=500 before final_model is written."

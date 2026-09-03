@@ -1,0 +1,154 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T06:45:00Z'
+situation:
+  elapsed_h: 6.75
+  remaining_h: 3.25
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.78, protocol_n: 150}
+  trigger: "exp-07 added 45000 further verified teacher solutions for problems the model had already
+    seen and dev-150 went 0.780 -> 0.767: the teacher-data axis is saturated on this problem pool,
+    so the remaining 3.25 h are better spent on a different axis."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-07.yaml
+      locator: "result.measurements, conclusion"
+    - path: /home/ben/task/analysis/exp-05_dev150_samples.jsonl
+      locator: "33 rows with correct=false"
+  alternatives_rejected:
+    - option: "Another teacher-data continuation with the remaining 150k solutions"
+      reason: "exp-07 measured that axis flat to slightly negative"
+    - option: "DPO or GRPO on preference pairs"
+      reason: "no pair-building or RL code is written and ~1.2 h of GPU is left after the card; a
+        first RL attempt at that budget is a coin flip"
+    - option: "Spend the remaining time only on a lower-variance selection eval"
+      reason: "exp-05 and exp-07 are 1.3 points apart with 3.4-point stderr, so the selection is
+        worth at most ~1 point; a training round on a new axis has more upside and the selection
+        eval still fits afterwards"
+    - option: "Sample at temperature 0.7 instead of 1.0 for the rejection round"
+      reason: "temperature 1.0 with top_p 0.95 gives the diversity that makes rejection sampling
+        worth doing; the graded model still decodes greedily"
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-05/final, --pool,
+        data/sft_pool.jsonl, --out, data/rft_exp08.jsonl, --n-questions, '16000', --k, '4']
+      outcome: "data construction, 26 min on the H100: 48918 of 64000 samples correct (0.764);
+        questions by number of correct samples 0:1161, 1:1329, 2:1742, 3:2967, 4:8801; 16859 rows kept"
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/rft_exp08.contam.jsonl]
+      outcome: "0 of 16859 documents contaminated (logs/contam_rft.log)" 
+problem:
+  statement: "The incumbent's 33 dev-150 misses are wrong numbers inside well-formed answers plus 4
+    greedy run-ons. Its training data was written by a much larger teacher, so nothing in it is
+    conditioned on which problems this 4B model actually finds hard, and nothing is in this model's
+    own distribution."
+  evidence:
+    - path: /home/ben/task/analysis/exp-05_dev150_samples.jsonl
+      locator: "33 rows with correct=false"
+      observation: "29 well-formed wrong answers, 4 max_tokens run-ons"
+    - path: /home/ben/task/memory/cards/exp-07.yaml
+      locator: "result.measurements"
+      observation: "more teacher solutions for the same problems: -1.3 points"
+  affected_share: 0.22
+  failure_examples:
+    - {id: e05-runon, source: /home/ben/task/analysis/exp-05_dev150_samples.jsonl,
+       question: "(candle profit item, gold 20)", gold: "20",
+       model_output: "(4000 tokens looping on 'However, since ...', no ANSWER line)",
+       failure: "greedy loop; the model never commits to an answer"}
+    - {id: e05-runon2, source: /home/ben/task/analysis/exp-05_dev150_samples.jsonl,
+       question: "(chips calories item, gold 48)", gold: "48",
+       model_output: "(4000 tokens, no ANSWER line)", failure: "same loop"}
+    - {id: e05-arith, source: /home/ben/task/analysis/exp-05_dev150_samples.jsonl,
+       question: "(one of the 29 well-formed misses)", gold: "(various)",
+       model_output: "(clean chain, one wrong intermediate value)", failure: "arithmetic or reading slip"}
+  watch_set: null
+hypothesis:
+  claim: "One round of rejection-sampling fine-tuning - sampling four solutions per training problem
+    from the incumbent, keeping only those whose final number equals the gold answer, and
+    down-weighting problems it already solves four times out of four - raises dev-150 accuracy
+    relative to exp-05 under the same greedy decode config."
+  mechanism: "The kept solutions are in the model's own distribution and are concentrated on
+    problems it solves only sometimes, so the gradient reinforces the reasoning paths that already
+    work for this model rather than a larger model's style; the filter guarantees every target ends
+    at the right number, and short-solution preference discourages the rambling that produces
+    run-ons."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-05, magnitude: "+1 to +4 points"}
+  falsified_if: "dev-150 accuracy is not above exp-05's 0.78"
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-05/final, origin: exp-05, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_exp08.jsonl
+      source: "synthetic:self (ckpts/exp-05/final) on questions and gold answers from
+        nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e gsm8k/augmented_gsm8k
+        training problems"
+      n_examples: 16859
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-05/final,
+        --pool, data/sft_pool.jsonl, --out, data/rft_exp08.jsonl, --n-questions, '16000', --k, '4',
+        --keep, '2', --keep-easy-prob, '0.34', --temperature, '1.0', --max-tokens, '640', --seed, '0']
+      selection: "keep a sample only if its last number equals the gold answer and it contains
+        exactly one 'ANSWER:'; dedup identical samples; prefer the two shortest; skip 66% of
+        questions solved 4/4; zero-shot prompts only"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "vllm 0.11.0 offline sampling + transformers 4.57.3 Trainer (scripts/train_sft.py)"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 4, grad_accum: 8, max_seq_len: 1536,
+      scheduler: cosine, warmup: 0.02, weight_decay: 0.0,
+      precision: "fp32 weights + bf16 autocast, adamw_bnb_8bit", seed: 2}
+    target_format: "<start_of_turn>model\\n{self-generated body}\\nANSWER: {number}<end_of_turn>; loss on completion tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-05/final, --data,
+      data/rft_exp08.jsonl, --out, /home/ben/task/ckpts/exp-08, --max-len, '1536', --lr, '5e-6',
+      --epochs, '1', --bs, '4', --grad-accum, '8', --warmup, '0.02', --seed, '2']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/exp-08
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 1.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '32', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: "official gsm8k test --limit 150 (first 150 items, dataset not shuffled)"
+    n: 150
+    seed: 42
+  comparator: {ref: exp-05, value: 0.78, path: /home/ben/task/eval/exp-05_dev150.json}
+  diagnostic:
+    what: "number of dev-150 completions that hit max_tokens with no ANSWER line (4 in exp-05)"
+    n: 150
+    metric: accuracy
+    direction: lower
+result:
+  execution: completed
+  wall_h: 0.78
+  output_checkpoint: /home/ben/task/ckpts/exp-08/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08/final, step: 527}
+  training_summary: {final_loss: 0.2035, steps: 527, notes: "26 min of vLLM sampling to build the
+    data plus 20 min of training"}
+  measurements:
+    - {metric: accuracy, value: 0.7933, n: 150, path: /home/ben/task/eval/exp-08_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 3
+    path: /home/ben/task/analysis/exp-08_dev150_samples.jsonl
+    notes: "greedy run-ons 4 -> 3 of 150 and mean output 282 -> 237 tokens, the shortening the
+      short-solution preference was meant to produce; 147/150 well formed"
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.780 -> 0.793 (+1.3) with answers 16% shorter and one fewer run-on. The
+    accuracy gain is inside the +/-3.3 stderr of a 150-item eval, so it is directional only; the
+    length and run-on changes are the mechanism showing up as predicted."
+  decision: adopt
+  next_step: "Separate the two candidates with a lower-variance eval before choosing final_model:
+    score exp-05 and exp-08 on 500 items under one protocol."

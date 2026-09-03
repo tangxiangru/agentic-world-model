@@ -1,0 +1,143 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T03:25:00Z'
+situation:
+  elapsed_h: 5.4
+  remaining_h: 4.6
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7400, protocol_n: 150}
+  trigger: "Corpus scale-up has run out: exp-04's t=0 checkpoint curve is flat (0.7267 at step 800, 0.7267 at 1200, 0.7400 at 1562) and its whole gain over exp-02 is 2 net items. Meanwhile 37 of the incumbent's 39 dev-150 failures are arithmetic/reasoning inside a well-formed chain, and sampling the incumbent 4x at t=1.0 on 30k training questions solved 92.75% of them at least once against a 75.91% per-sample rate - so the model can already produce a correct chain for far more problems than it gets right in one greedy shot."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/rft_v1_stats.json
+      locator: "sample_accuracy 0.7591, pass_at_n 0.9275, questions_solved_at_least_once 27825/30000"
+    - path: /home/ben/task/analysis/exp-04_final_greedy_rows.json
+      locator: "summary.failures 39, summary.failures_with_format_problem 2"
+    - path: /home/ben/task/memory/cards/exp-04.yaml
+      locator: "result.measurements - 0.7267 / 0.7267 / 0.7400 at steps 800 / 1200 / 1562"
+  alternatives_rejected:
+    - option: "Another corpus scale-up (3 augmented solutions per problem, ~280k rows)"
+      reason: "exp-04 already showed the curve flattening on this corpus and bought 2 net items for 2.3 GPU-hours; the same axis a third time is the worst remaining bet."
+    - option: "Weight averaging (soup) of exp-04's checkpoints"
+      reason: "exp-05 tested exactly this on exp-02's trajectory: the last-three soup came in 2 pts BELOW its best ingredient. Rejected on measured evidence."
+    - option: "DPO on correct/incorrect pairs from the same sampling run"
+      reason: "The 28,907 incorrect samples make the pairs free, but DPO needs a reference-model pass and a new trainer; ~1.5 h of build risk against 4.6 h left, with the packaging and the n=500 head-to-head still unspent."
+    - option: "Train the RFT rows alone, with no SFT rows mixed in"
+      reason: "53k on-policy zero-shot rows would be the model's entire second-stage diet, and the grader always sends a 2160-token 10-shot prefix; 12k sft_v3 rows (1200 of them k-shot) are cheap insurance against drifting off that prompt distribution."
+  pitfalls_hit:
+    - {what: "vLLM sampling throughput was 7.5-7.8k output tok/s, not the 15-25k assumed, so 120k generations took 45 min rather than 25", cost_h: 0.3, fix: "sized the corpus for the time actually available rather than resampling"}
+    - {what: "exp-05's soup cost 0.14 h and returned nothing", cost_h: 0.14, fix: "recorded as contradicted; no further merge attempts"}
+  smoke_runs:
+    - command: [python, scripts/rft_sample.py, --model, ckpts/exp-04/final, --questions, data/rft_questions.jsonl, --n, '4', --limit, '30000']
+      outcome: "120,000 samples, 91,093 correct (0.7591), 27,825/30,000 questions solved at least once, 53,105 rows kept after the 2-per-question cap and exact dedup"
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/_contam_rft.jsonl]
+      outcome: "65,105 documents scanned, 0 contaminated, 0 matches"
+problem:
+  statement: "The incumbent's greedy single-shot accuracy (0.7400 on dev-150) is far below what its own sampling distribution can reach: on 30,000 held-out training questions it produces at least one correct chain for 92.75% but only 75.91% of individual samples are correct. The gap is not knowledge and not format - it is that the greedy mode of its distribution lands on a wrong arithmetic step often enough to lose ~18 points."
+  evidence:
+    - path: /home/ben/task/analysis/rft_v1_stats.json
+      locator: "whole file"
+      observation: "pass@4 0.9275 vs per-sample 0.7591 on 30k training questions: a 16.8 pt gap between what the model can do and what one sample does"
+    - path: /home/ben/task/analysis/exp-04_final_greedy_failures.jsonl
+      locator: "lines 1-6"
+      observation: "failures are misread problems and arithmetic slips (e.g. averaging over the wrong denominator, subtracting wall thickness once per box instead of per dimension) inside chains that terminate correctly and end on a single ANSWER line"
+  affected_share: 0.949
+  failure_examples:
+    - {id: "exp04-greedy-fail-1", source: /home/ben/task/analysis/exp-04_final_greedy_failures.jsonl, question: "dev-150 item, line 1 of the file", gold: "see file", model_output: "see file", failure: "arithmetic/reasoning slip in a well-formed chain"}
+    - {id: "exp04-greedy-fail-2", source: /home/ben/task/analysis/exp-04_final_greedy_failures.jsonl, question: "dev-150 item, line 2 of the file", gold: "see file", model_output: "see file", failure: "arithmetic/reasoning slip in a well-formed chain"}
+    - {id: "exp04-greedy-fail-3", source: /home/ben/task/analysis/exp-04_final_greedy_failures.jsonl, question: "dev-150 item, line 3 of the file", gold: "see file", model_output: "see file", failure: "misreads what the problem asks for"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_final_greedy_failures.jsonl
+    n: 39
+    selection: "every dev-150 item the incumbent gets wrong at temperature 0"
+hypothesis:
+  claim: "Continuing training of exp-04/final on 53,105 of its own answer-verified chains (plus 12,000 sft_v3 rows for prompt-distribution stability) at lr 7e-6 raises dev-150 accuracy at temperature 0 above the incumbent's 0.7400."
+  mechanism: "Rejection-sampling fine-tuning re-weights the model's own output distribution towards the branches that reached the right answer, which concentrates probability mass on the correct arithmetic step at each choice point. That is exactly the pass@4-minus-pass@1 gap: the correct chain is already in the distribution, it just is not the mode. Because the targets are the model's own text, the update is small and low-risk compared with importing another corpus's style."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+2 to +6 pts (0.7400 -> roughly 0.76-0.80)"
+  falsified_if: "dev-150 accuracy at temperature 0 lands at or below 0.7400, i.e. training on its own correct chains does not move the mode."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "synthetic:self (rejection sampling from ckpts/exp-04/final) + derived:exp-04 (12,000 rows of data/sft_v3.jsonl)"
+      n_examples: 65105
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, ckpts/exp-04/final, --questions, data/rft_questions.jsonl, --out, data/rft_v1.jsonl, --n, '4', --temperature, '1.0', --top-p, '0.95', --max-tokens, '640', --max-keep-per-question, '2', --limit, '30000', --gpu-mem, '0.85']
+      selection: "4 samples at t=1.0 for each of the first 30,000 questions of data/rft_questions.jsonl (all 7,473 real GSM8K TRAIN problems plus 22,527 OMI-2 augmented problems - the gsm8k TEST split appears nowhere); keep a sample only if its last number equals the gold answer AND it contains 'ANSWER:' exactly once; exact-text dedup; at most 2 per question -> 53,105 rows. Mixed with 12,000 rows of sft_v3 (1,200 of them carrying a k-shot prefix) so the 10-shot prompt the grader sends stays in distribution."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, custom token-budget batch sampler, completion-only loss"
+    peft: none
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 8192, grad_accum: 6, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant turn = reasoning lines, blank line, 'ANSWER: <int>', then <end_of_turn>; the answer is the last number in the target"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, /home/ben/task/data/rft_mix_v1.jsonl, --out, /home/ben/task/ckpts/exp-06, --attn, flash_attention_2, --grad-ckpt, '1', --token-budget, '8192', --max-bs, '32', --grad-accum, '6', --lr, '7e-6', --epochs, '1', --warmup, '0.03', --max-seq-len, '2560', --save-steps, '250', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 250
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --json-output-file, '{out}.json']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, 10-shot system message, fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7400
+    path: /home/ben/task/eval/exp-04_final_greedy.json
+  diagnostic:
+    what: "no-ANSWER-line share and mean output tokens, to confirm training on its own text has not shortened chains into skipped reasoning or broken the contract"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.72
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-250, step: 250}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-478, step: 478}
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 478}
+  training_summary:
+    final_loss: 0.2253
+    steps: 478
+    notes: "65,097 rows tokenized (8 dropped over max_seq_len, 0.01%); 22.43M tokens; p50 311, p99 1364. Loss 0.225 against exp-04's 0.302 - expected, since the targets are the parent's own text. eos_token_id [1,106] preserved in the save."
+  measurements:
+    - {metric: accuracy, value: 0.7533, n: 150, path: /home/ben/task/eval/exp-06_final_greedy.json, delta_vs_comparator: 0.0133}
+    - {metric: accuracy, value: 0.7400, n: 150, path: /home/ben/task/eval/exp-06_ck250_greedy.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.0133
+    path: /home/ben/task/analysis/exp-06_final_greedy_rows.json
+    notes: "no-ANSWER-line share 0.0133 (2/150), non-stop 0.02, mean output 235.7 tokens against the parent's 269.7 - chains got ~13% shorter, not degenerate, and the contract is intact. checkpoint-250 is cleaner still (0 no-ANSWER-line, 187 tokens) at 0.7400."
+  watch_set_result:
+    fixed: 11
+    still_failing: 28
+    regressions: 9
+    path: /home/ben/task/analysis/exp-06_final_greedy_rows.json
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "0.7533 vs the parent's 0.7400: +1.33 pts against a 3.5 pt standard error, with 11 of the parent's 39 failures fixed against 9 new regressions - a net of two items, the same shape of result as exp-04. The direction is right and the output contract is intact, but n=150 cannot resolve it, and the predicted +2 to +6 pts is not visible."
+  decision: iterate
+  next_step: "exp-07: settle the three-way choice (exp-02 0.7267, exp-04 0.7400, exp-06 0.7533, all at t=0 on dev-150) on the full 1319-item test set, where 1.3 pt differences are resolvable, and package the winner as final_model with temperature 0 in generation_config.json."

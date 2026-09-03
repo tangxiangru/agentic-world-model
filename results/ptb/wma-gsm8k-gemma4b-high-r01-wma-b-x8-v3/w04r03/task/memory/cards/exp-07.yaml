@@ -1,0 +1,107 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T04:41:00Z'
+situation:
+  elapsed_h: 6.7
+  remaining_h: 3.3
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.814, protocol_n: 500}
+  trigger: "exp-04's corpus was 150000 rows over 80442 problems, but only ~7.5k of those problems are actual GSM8K-train items - the other ~73k are OpenMathInstruct-2's augmentations, which are the model's dominant training distribution and are not the benchmark's distribution. The gap between the 300-item TRAIN probe (0.887) and dev-500 (0.814) is generalisation, not format."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/probe_exp04.json, locator: "0shot accuracy", observation: "0.887 on held-out GSM8K-TRAIN items vs 0.814 on the benchmark's own test items"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "setup.data[0].selection", observation: "150000 rows from 80442 distinct problems, i.e. the real gsm8k-train problems are ~9% of the problem pool"}
+  alternatives_rejected:
+    - {option: "Retrain from base on a larger corpus", reason: "2.6 h for the epoch plus 0.25 h eval plus repack against 3.3 h left - no margin, and the deliverable would be at risk if it overran"}
+    - {option: "Another self-generated RFT round", reason: "exp-05 did exactly that and lost 2 pts; its targets were the model's own outputs on problems it already solved 83% of the time"}
+    - {option: "Do nothing and keep exp-04", reason: "still the fallback - final_model already holds exp-04, verified under the harness's own default invocation at 0.8133 (n=150). This card only replaces it on a paired win"}
+  pitfalls_hit:
+    - {what: "exp-06's weight soups both scored below their best ingredient (0.782 and 0.802 vs 0.814), so averaging along this trajectory is not a free lever here", cost_h: 0.5, fix: "no fix - negative result"}
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/gsm_real_v1.jsonl], outcome: "65000 documents scanned, 0 contaminated"}
+problem:
+  statement: "The incumbent generalises 7 pts worse to GSM8K test items (0.814) than to held-out GSM8K TRAIN items (0.887), and its training mixture under-represents the benchmark's own problem distribution: solutions to real GSM8K-train problems were roughly 5% of the 162k rows, the rest being OpenMathInstruct-2 augmentations of them."
+  evidence:
+    - {path: /home/ben/task/analysis/probe_exp04.json, locator: "0shot", observation: "0.887 zero-shot on 300 held-out TRAIN items"}
+    - {path: /home/ben/task/eval/exp-04_final_dev500.json, locator: accuracy, observation: "0.814 on the benchmark"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-04 for one epoch on a mixture dominated by OpenMathInstruct-2 solutions to real GSM8K-TRAIN problems will raise dev-500 accuracy above exp-04's 0.814."
+  mechanism: "Up-weighting the benchmark's own problem distribution moves the model's inductive bias toward the phrasing, step count and arithmetic scale of real GSM8K items instead of the augmented variants that dominated exp-04. Unlike exp-05, the targets are off-policy solutions written by a much stronger model (Llama-3.1-405B-Instruct via OpenMathInstruct-2), up to 8 distinct ones per problem, so the round is not self-distillation onto what the model already produces - which is the specific way exp-05 regressed."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "0 to +3 pts on dev-500"}
+  falsified_if: "dev-500 accuracy at or below exp-04's 0.814, or the paired item-level net (fixed minus broken on the same 500 items) is <= 0."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm_real_v1.jsonl
+      source: "nvidia/OpenMathInstruct-2 @ 469216e3f46f4dacf476b382e192485ea51a143e (shards 0-9 of 32)"
+      n_examples: 65000
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v1.jsonl]
+      selection: "rows with problem_source == 'gsm8k' exactly - i.e. OpenMathInstruct-2 solutions to the real GSM8K TRAIN questions - up to 8 distinct solutions per problem over 7416 problems (59079 available), subsampled to 50000, plus 15000 rows drawn at random from data/sft_v1.jsonl as ballast. Same cleaning as exp-04: boxed answers unwrapped, latex environments dropped, every target ends with exactly one final 'ANSWER: <n>' line. TRAIN split only."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer subclassed for liger 0.8.2 fused-linear cross-entropy"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 24, grad_accum: 3, max_seq_len: 1408, scheduler: "cosine_with_min_lr 0.1", warmup: 0.03, weight_decay: 0.0, precision: "fp32 master + bf16 autocast, adamw_bnb_8bit, beta2 0.95, clip 1.0", seed: 0}
+    target_format: "identical to exp-04"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft_exp07.py, --data, data/gsm_real_v1.jsonl, --out, /home/ben/task/ckpts/exp-07, --parent, /home/ben/task/ckpts/exp-04/final, --lr, "5e-6", --epochs, "1", --bsz, "24", --accum, "3", --max-len, "1408", --fewshot-frac, "0.03", --warmup-ratio, "0.03", --save-steps, "0", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft_exp07.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16"]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.814
+    path: /home/ben/task/eval/exp-04_final_dev500.json
+  diagnostic:
+    what: "paired item-level comparison against exp-04 on the same 500 items: fixed minus broken"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.99
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 894}
+  training_summary: {final_loss: 0.21, steps: 894, notes: "train_runtime 3554 s, mean train_loss 0.2256; 64354 rows kept of 65000, 21.99M tokens"}
+  measurements:
+    - {metric: accuracy, value: 0.784, n: 500, path: /home/ben/task/eval/exp-07_final_dev500.json, delta_vs_comparator: -0.030}
+  diagnostic_result:
+    value: -15
+    path: /home/ben/task/analysis/exp-07_paired.json
+    notes: "paired on the same 500 items against exp-04: 28 fixed, 43 broken, net -15"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-500 0.814 -> 0.784, net -15 items paired. Up-weighting the benchmark's own problem distribution did not close the train-probe/test gap; it cost 3 pts. Together with exp-05 (-2 pts on self-generated GSM8K-train data) and exp-06 (-1.2 pts on weight averaging), three different second-stage interventions on this checkpoint all regressed, and all three narrowed the training distribution relative to exp-04's 80442-problem mixture."
+  decision: reject
+  next_step: "final_model stays on exp-04/final. The pattern across exp-05/06/07 is that the single broad-mixture epoch is a better point than anything reachable by a second stage on a narrower distribution at this budget; a further attempt should change exp-04's own recipe (more distinct problems, or a second epoch of the SAME 80k-problem mixture) rather than append a stage to its output."

@@ -1,0 +1,130 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T02:35:00Z'
+situation:
+  elapsed_h: 4.05
+  remaining_h: 5.95
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.78, protocol_n: 150}
+  trigger: "The incumbent still misses 33 of 150 dev items, and exp-02 used only 99k of the 321k gsm8k-derived rows available; nothing on-policy has been trained on yet - a rejection-sampling pass over the GSM8K *train* questions solves 16611 of 17473 of them, so 46k correct self-generated traces exist for free."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_rft_stats.json, locator: "q_solved 16611 / 17473, kept 46459 of 84838 samples"}
+    - {path: /home/ben/task/analysis/exp-03_greedy_diag.json, locator: "accuracy 0.78, clean_format_share 1.0"}
+  alternatives_rejected:
+    - {option: "Retrain from base on the union (99k + 40k + 46k) for 1 epoch", reason: "~2.9 h; leaves no room for a confirmation eval and a second iteration inside the 5.9 h left"}
+    - {option: "RFT data only, no fresh OpenMathInstruct rows", reason: "46k self-generated rows from 16.6k questions the model already solves risks narrowing the distribution; mixing in 40k unseen OMI2 rows keeps new problems in the stream"}
+    - {option: "Second epoch on exp-02's own 99k rows", reason: "no new information; the loss curve was still smooth at the end of epoch 1, so unseen rows are the better use of the same wall-clock"}
+  pitfalls_hit:
+    - {what: "First RFT generation pass discarded 48308 of 76838 samples as non-terminating: vLLM's offline SamplingParams does not inherit the generation_config eos list, so nothing stopped on <end_of_turn> and every sample ran to max_tokens", cost_h: 0.75, fix: "stop_token_ids=[1, 106] in SamplingParams; no_stop fell to 315/84838 and the same scope ran in a third of the time"}
+  smoke_runs:
+    - {command: [python, gen_rft.py, --model, ckpts/exp-02/final_bf16, --k-orig, '6', --n-aug, '8000'], outcome: "first pass, 17022 rows kept but 63% of samples discarded for non-termination; superseded by the fixed run, kept at data/rft_exp04_nostopfix.jsonl"}
+problem:
+  statement: "The incumbent's remaining 22% of dev failures are wrong reasoning or arithmetic, not format (clean_format_share is 1.0). It has been trained only on off-policy Llama-405B-written solutions for 99k rows, and never on its own correct traces or on the other two thirds of the available gsm8k-derived corpus."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_diag.json, locator: "clean_format_share 1.0, did_not_stop 0, accuracy 0.78", observation: "all remaining loss is content, not format"}
+    - {path: /home/ben/task/analysis/exp-04_rft_stats.json, locator: "wrong 16447 of 84838 samples", observation: "19% of on-policy samples on train questions reach a wrong answer, the same error class the dev set measures"}
+  affected_share: 0.22
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A second SFT stage from exp-02's weights on 46k correct self-generated traces mixed with 40k unseen OpenMathInstruct-2 rows will raise greedy dev-150 accuracy above the incumbent's 0.78."
+  mechanism: "Rejection sampling reweights the model's own distribution toward the chains that reach the right answer, which is exactly the failure class left; the 40k unseen off-policy rows supply new problems so the second stage adds information instead of only sharpening what it already believes."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +5 points"
+  falsified_if: "greedy dev-150 accuracy at or below 0.78"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/exp04_mix.jsonl
+      source: "derived:exp-02 (rejection sampling) + nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e"
+      n_examples: 86459
+      built_by: /home/ben/task/gen_rft.py
+      build_command: [python, gen_rft.py, --model, /home/ben/task/ckpts/exp-02/final_bf16, --out, /home/ben/task/data/rft_exp04.jsonl, --k-orig, '6', --k-aug, '4', --n-aug, '10000', --keep-per-question, '3', --temperature, '1.0', --top-p, '0.95', --max-tokens, '640']
+      selection: "shuffled concatenation (seed 0) of rft_exp04.jsonl and omi2_new40k.jsonl; this is the file the trainer reads"
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/rft_exp04.jsonl
+      source: "synthetic:self (exp-02 checkpoint, temperature 1.0, top_p 0.95, top_k 64, k=6 on 7473 GSM8K train questions and k=4 on 10000 OpenMathInstruct augmented-gsm8k problems)"
+      n_examples: 46459
+      built_by: /home/ben/task/gen_rft.py
+      build_command: [python, gen_rft.py, --model, /home/ben/task/ckpts/exp-02/final_bf16, --out, /home/ben/task/data/rft_exp04.jsonl, --k-orig, '6', --k-aug, '4', --n-aug, '10000', --keep-per-question, '3', --temperature, '1.0', --top-p, '0.95', --max-tokens, '640']
+      selection: "keep samples that stop on <end_of_turn>, contain exactly one ANSWER line, and whose answer equals the reference; dedup by normalised body; at most 3 per question. GSM8K test split never sampled."
+      contamination_check: passed
+      mixture_weight: 0.54
+    - path: /home/ben/task/data/omi2_new40k.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, gsm8k-derived rows not present in exp-02's training file"
+      n_examples: 40000
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/omi2_gsm8k_200k.jsonl, --max-per-problem-aug, '2', --max-per-problem-orig, '6', --max-rows, '220000']
+      selection: "rows of the 175k build whose (question, target) pair is absent from data/omi2_gsm8k.jsonl; first 40000 after shuffle seed 0"
+      contamination_check: passed
+      mixture_weight: 0.46
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, custom completion-only collator (train_sft.py)"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 8, grad_accum: 4, max_seq_len: 768, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights, bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "solution body, then a final line 'ANSWER: <n>', then <end_of_turn>; prompt is the grader's MATH_PROMPT_TEMPLATE rendered through templates/gemma3.jinja"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/exp04_mix.jsonl, --model, /home/ben/task/ckpts/exp-02/final, --output-dir, /home/ben/task/ckpts/exp-04, --max-len, '768', --bs, '8', --accum, '4', --lr, '5e-6', --epochs, '1', --save-steps, '1350']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 1350
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.5}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle); candidate packaged with generation_config temperature 0 (greedy), as adopted in exp-03"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.78
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "clean-format share and first-ANSWER-line accuracy (must stay at 1.0 / equal to accuracy: the second stage must not break termination)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.35
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1350, step: 1350}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2700, step: 2700}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2701}
+    - {path: /home/ben/task/ckpts/exp-04/final_greedy, step: 2701}
+  training_summary: {final_loss: 0.228, steps: 2701, notes: "epoch-mean loss 0.228 vs exp-02's 0.278, as expected for a warm start at lr 5e-6; grad_norm steady ~1.2-1.7, no spikes"}
+  measurements:
+    - {metric: accuracy, value: 0.7533, n: 150, path: /home/ben/task/eval/exp-04_greedy_dev150.json, delta_vs_comparator: -0.0267}
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-04_greedy_diag.json
+    notes: "format held: 0/150 non-stopping, first-ANSWER-line accuracy equals scored accuracy. Paired against exp-03 on the same 150 items (analysis/exp-04_paired.json): 12 items only exp-03 gets, 8 items only exp-04 gets, 20 discordant, binomial sd 2.24 - a 0.9-sigma difference."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Greedy dev-150 0.78 -> 0.7533 (-2.7 pts, stderr 3.5). The paired split is 12 vs 8 discordant items, 0.9 sigma: the second stage neither helped nor hurt measurably, so 150 items cannot separate the two candidates."
+  decision: iterate
+  next_step: "exp-05: rescore both candidates at n=500 under the same greedy protocol and ship whichever wins; 150 items is too coarse for a 2-3 point decision."
