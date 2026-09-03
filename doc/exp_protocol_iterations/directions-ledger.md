@@ -19,7 +19,7 @@
 | 9 | **`stop_token_consistent` 误报**（见 #17：代价以数据重写而非 override 出现）：脚本追加终止符时 check 读文件报 FAIL | pilot 90462/90464 各 override 一次 | v3 正式 cell 里 0 次 override（scientist 改为把终止符写进数据） | **搁置** | 证据消失；若某个 v3/guard cell 再 override，恢复为候选（修法：接受"由脚本追加"的声明并校验一条渲染样例） |
 | 10 | **bootstrap 文本进规程树**（现在由 PTB fork 的 solve.sh 前缀注入） | Round 00 设计时 | 与分数无关，是 meta 循环的可迭代性问题 | **排队（meta 回顾）** | 三轮后与 `exp_protocol_meta` 一起改；改法：`skills/exp_protocol/bootstrap.md` 由 `awm sandbox setup` 写入任务目录 |
 | 11 | **仪式直接代价** | Window 02 protocol work 0.136 h/cell，first real train 比 controls 早约 4 min | 直接时间不是 gap；cards 修复多次错误 selection | **观察，直接成本基本反证** | 不因分数删 ceremony；只在 A/C 后测间接 framing |
-| 12 | **对照 c00r06 与 batch 1 的 0.7832 完全相同** | c00r06 REPORT vs batch 1 结果包（在集群上） | 答对题数相同（1033/1319），配方是否相同未核 | **待核实** | operator 比对两份 REPORT 后写入记录 |
+| 12 | **对照 c00r06 与 batch 1 的 0.7832 完全相同** | c00r06 job 90472 REPORT vs batch 1 g12 job 87250 RESULTS/结果包 | 两者同为 1033/1319，但配方完全不同：g12 是 125k SFT + 28k few-shot pass + RFT/fresh-data 后三 checkpoint soup；c00r06 是 82k SFT + 三阶段 GRPO 620 steps | **已核实：不是配方复现；标量同分/独立收敛** | retained official bundle 无 1319-item per-item log，不能声称答对集合相同；不作为 protocol 候选，只保留为高方差/多路径同分证据 |
 | 13 | **GSM8K-train 人写解法的简洁风格拖分 ~22 点** | p00r10 exp-02/03、p00r03 exp-03（10-shot 前缀拷贝演示风格） | 数据配方发现，两个 cell 各自独立发现 | **观察（知识，非规程）** | 若再出现，作为 pitfalls 的"数据风格"条目候选；现在不加是因为规程不该规定训练数据 |
 | 14 | **greedy parent 使 Trainer save 失败** | ledger 原 7 cells；Window 02 直接补 p00r11、p00r14、c01r01、c01r03 | 本窗口 4/8、3.3 h；同根因、两臂；两窗口约 8.7 h，check 在四种配置上方向正确 | **筛选中：Round 02 D，第一可释放波**（`8332917`；held 91060–91063） | 错误小时数 0、check exercised、stock 零误报 |
 | 15 | **按时钟等而不是按进程等**：固定 `sleep 3000+` 错过已死的 run | p00r02（1.28 h 空转）、p00r07（1.2 h）；Window 02 baseline 5/5 已 <0.15 h | 规则文本仍是诱因，但当前 target 可能已饱和；先用同文本的 8-cell guard 判定是否还有可移动 baseline | **条件 held：Round 02 E**（`7832cb9`；91064–91067，不在释放波） | guard ≥7/8 达标则启动前整块撤回并由 G/P1 单项候选替代；否则最后运行，目标仍 <0.15 h/cell |
@@ -52,6 +52,7 @@
 | 09-03 08:12 | **Window 02 不改 protocol；A/B/C/D/E/H 保持冻结，C 加 paired/repeated screen observable，G/I 排队** | 立即改写 C；把 G/I 加第三波；按 recipe 差直接写数据/RL 规则 | 8-cell synthesis 无全新方向；现有 C 已覆盖 sub-SE paired 条件，先用 screen 检验。Recipe 差不是 protocol surface；held pool 52，无需扩波 | Window 02 synthesis、Round 00 Analysis window 02 decision |
 | 09-03 08:17 | **Fable 平行 window 02 review 落盘**（`2026-09-03-trace-review-round00-window02-fable.md` + 8 份 report）；同意本窗口不改 protocol；新增排队方向 #20–#23；向 planner 提出 A v2 指标饱和（baseline 5/5 greedy，改读『首个 post-SFT eval 到有测量依据的解码选择』的小时数）、E 在 baseline 已达标（5/5 idle <0.15 h）无法区分、D 按小时/cell 优先级应高于 A | 直接改 A/E 的 manifest；把 P1–P4 立即建 screen | 冻结的 screen 由 planner 定；held 池 52 已满，先把证据与指标问题写清 | 本行；PR #20 评论 |
 | 09-03 08:45 | **planner 接受 Fable 的 screen-design 更正，不改冻结 protocol tree**：A 改读首次 post-SFT eval→measured decode choice ≤0.5 h；第一可释放波改为 D/B/C；E 等 guard，≥7/8 已达标则启动前整块撤回并由 G/P1 中一个单项候选替代 | 保持 A 的饱和 greedy 指标；立即取消 E；重写 A/B/C/D/E/H protocol | A 的原指标和 E 的 target 在新 baseline 饱和；D 有 4/8、3.3 h 的可避免损失。guard 是 E 的同文本预注册样本，先读完比现在按窗口挑选更稳健；held/release gate 均不受影响 | round02 spec §七；Fable window 02 synthesis |
+| 09-03 09:17 | **关闭方向 #12：c00r06 与 batch1 g12 的 0.7832 不是配方复现** | 把同分当作同一 recipe/trajectory 的复现 | operator 比较两个集群结果包：一个是多阶段 SFT/RFT soup，一个是 SFT+620-step GRPO；只有 scalar 1033/1319 相同。official per-item log 未保留，逐题同一性不可验证 | c00r06 `REPORT.md`；batch1 g12 job 87250 `RESULTS.md` |
 
 ## 三、这份台账之外还没写下来的
 
