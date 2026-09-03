@@ -34,7 +34,7 @@
 | 24 | **Serving/evaluation contract 与重复读数（P5 调查）** | W03 g01r01 full n=1319 的32-vs-2 mismatch；g01r02重复150分歧；c01r07同100题但并发/显存一起变 | 重复波动成立；并发唯一因果未证实，且与 C 重叠 | **排队调查，未构建或登记 screen** | 先核对 matched n/weights/decode/memory，再判断独立单项 pitfall 是否值得4-cell screen；不强制所有卡两遍全量 |
 | 25 | **开发评测通过但官方 full scorer 失败** | p00r16 /90490九次数字 scorer 异常，无 metrics.json | scientist正常完成、judge-clean不等于validator-complete；n=500的0.712不是官方分数 | **观察 / harness failure evidence，非 protocol 候选** | 不盲目第十次重跑；recovery需新冻结合同，不能静默改评分器或填分 |
 | 26 | **GPU smoke 与锁卡覆盖范围冲突（J）** | strict g01s01/90791、g01s07/90797 的原始smoke训练早于exp-02创建/锁定 | card-matched计数漏掉probes；模板“非实验”标签与训练/评估前锁卡要求冲突 | **J `549e25a` / `7ae08ccf`已冻结，manifest已验证，未登记** | 仅rule1与模板注释；34测试、6场景forward review、local/full check通过；完整launch审计，固定floor0.673721；不叠#27 |
-| 27 | **卡内head-to-head的future comparator依赖（K）** | strict g01s02/03/06/07/08；override与pre-lock eval两类应对 | close未复查comparator，其他消费者只看conclusion；仅放宽preflight不够 | **K两阶段opt-in已实现并验证，待冻结manifest；未登记** | 严格验证实际n/metric与失败结案，结案凭据贯穿index/collect/hook且可移植；legacy不变；与J/H/E独立 |
+| 27 | **卡内head-to-head的future comparator依赖（K）** | strict g01s02/03/06/07/08；override与pre-lock eval两类应对 | close未复查comparator，其他消费者只看conclusion；仅放宽preflight不够 | **K `58a6992` / `ec7d5f2a`已冻结，4-cell manifest local/full check通过；未登记** | 严格验证实际n/metric与失败结案，结案凭据贯穿index/collect/hook且可移植；legacy不变；与J/H/E独立 |
 | 28 | **训练prompt与grader few-shot分布不匹配** | g01s08灾难性首轮与g01s01小幅残差；g01s04渲染差异 | 值得调查，但一个灾难例不足以支持统一prefix比例；已存在template相关指导 | **观察，暂不建screen** | 先区分渲染可达性、训练分布与配方效果；不以≥20%prefix作为规程正确性判据 |
 
 ## 二、决策日志
@@ -68,6 +68,8 @@
 | 09-03 J construction | **冻结J `549e25a` / `7ae08ccf`并恢复guard源树；不登记、不release** | 把comparator修订一起叠入；把全部GPU/纯数据生成边界顺带重定义；改写旧manifest | 六场景均正确执行已声明scope；两处文字干预足够，不新增schema或虚构示例锁。固定24-cell参考pool及score floor；34测试与两种manifest check通过 | J lock-scope spec；round-02-j-prelaunch；J immutable manifest |
 
 ## 三、这份台账之外还没写下来的
+
+K construction decision (09-03 22:54 UTC): freeze `58a6992` / `ec7d5f2a`, restore the guard host tree and freeze the four-cell manifest, **without scheduler registration or release**. The optional two-stage lifecycle must validate closure through every consumer; a preflight-only WARN was rejected. Candidate164 and PTB111 CPU tests, independent forward workflows, baseline-restoration128 tests and local/full manifest checks pass. Synthetic outcomes are not PTB or efficacy evidence. Verified/raw-count and historical-receipt interpretation is preserved in meta metrics under the user's knowledge-retention directive.29 held remain;90820 placement and11-node reservation still close the release gate. Details: [K prelaunch record](2026-09-03-round-02-k-prelaunch.md).
 
 - Round 01 与 Round 02 的结果记录（`<date>-round-01.md`、`-round-02.md`）在各自的 cell 落地后另起。
 - `exp_protocol_meta/iteration_record.template.md` 目前没有"方向台账"一节；三轮后的 meta 回顾时加上，并把 `metrics.md` 补上 `hours_used`、"greedy 是否交付"、"最大评估 n"三项。

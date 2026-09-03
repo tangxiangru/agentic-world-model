@@ -27,10 +27,6 @@ class LockExists(ValueError):
     """A lock is already there; re-locking needs a reason so the first hash survives."""
 
 
-class InvalidRelock(ValueError):
-    """An opted-in card cannot drop its deferred validation through a relock."""
-
-
 def lock_path(card_path: Path) -> Path:
     card_path = Path(card_path)
     return card_path.with_name(card_path.stem + ".lock.json")
@@ -75,10 +71,6 @@ def write_lock(card_path: Path, card: dict[str, Any], preflight_summary: dict[st
                relock_reason: str | None = None,
                overrides: dict[str, str] | None = None) -> dict[str, Any]:
     previous = read_lock(card_path)
-    from . import comparator
-
-    if previous and "deferred_comparator" in previous and not comparator.enabled(card):
-        raise InvalidRelock("cannot remove deferred comparator validation from this card; use a new card")
     history: list[dict[str, Any]] = []
     if previous is not None:
         if not relock_reason:
@@ -86,10 +78,6 @@ def write_lock(card_path: Path, card: dict[str, Any], preflight_summary: dict[st
         history = list(previous.get("relocked_from") or [])
         history.append({"plan_sha256": previous.get("plan_sha256"), "locked_at": previous.get("locked_at"),
                         "overrides": dict(previous.get("overrides") or {}), "reason": relock_reason})
-        if "deferred_comparator" in previous:
-            history[-1]["deferred_comparator"] = previous["deferred_comparator"]
-            if "deferred_close_sha256" in previous:
-                history[-1]["deferred_close_sha256"] = previous["deferred_close_sha256"]
     info = {
         "schema_version": LOCK_SCHEMA,
         "card_id": card.get("card_id"),
@@ -101,10 +89,6 @@ def write_lock(card_path: Path, card: dict[str, Any], preflight_summary: dict[st
         "overrides": dict(overrides or {}),
         "relocked_from": history,
     }
-    if comparator.enabled(card):
-        info["deferred_comparator"] = {
-            **comparator.declaration(card), "session_dir": str(Path(card_path).resolve().parents[2])
-        }
     lock_path(card_path).write_text(json.dumps(info, indent=2) + "\n")
     return info
 

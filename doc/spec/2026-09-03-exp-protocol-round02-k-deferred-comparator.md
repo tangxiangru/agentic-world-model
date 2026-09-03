@@ -1,8 +1,12 @@
 # Round02 K — an explicitly deferred comparator, verified at close
 
-Status: **implemented and CPU/independent-forward validated; awaiting immutable manifest; no receipt or launch**. Direction #27 from the strict-guard [planner decision](../exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/planner-decision.md). K is one coordinated optional comparator-lifecycle feature, baseline-relative and independent of J, H, C or E. Ownership/native-isolation gates remain closed.
+Status: **candidate and four-cell manifest frozen; local/full checks both0 issues; no receipt or launch**. Direction #27 from the strict-guard [planner decision](../exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/planner-decision.md). K is one coordinated optional comparator-lifecycle feature, baseline-relative and independent of J, H, C or E. Ownership/native-isolation gates remain closed.
 
 ## Evidence and the problem to solve
+
+Frozen candidate `58a6992b50378e39d59ec3ef72e988ca1988f855`, protocol tree `ec7d5f2ab9aecd9f8a7a3278c9a9a54b9777eacf`.
+Manifest: [four K cells](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r02-k-deferred-comparator-x4.yaml).
+The [prelaunch record](../exp_protocol_iterations/2026-09-03-round-02-k-prelaunch.md) and its raw independent reports were committed with the candidate. The operator's six shipped paths are restored byte-for-byte to guard drift `2f64581`; K-only code and tests remain recoverable in the frozen commit. Baseline regression after restoration:128 passed. Candidate protocol regression:164 passed; PTB regression:111 passed. No K receipt exists and no Slurm operation was performed.
 
 Five strict guard cells (g01s02/03/06/07/08) attempted within-card comparisons whose comparator file would be produced by that card. The current preflight requires the file before lock; scientists used recorded overrides or launched before locking. See the [source audit](../exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/g01s07-ordering-cost-audit.md) and synthesis Check4. This is a dependency conflict, not an unavoidable instruction to violate ordering: a reasoned override already exists.
 

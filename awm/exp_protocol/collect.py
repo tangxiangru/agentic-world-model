@@ -4,10 +4,6 @@ A session is a scientist's task directory (``{dir}/memory/cards``). The
 official score, if present, is ``metrics.json`` in that directory or its
 parent — the shape PostTrainBench writes. Everything else comes from the
 cards, their locks, and their preflight summaries.
-
-Conclusion-based columns stay raw for cross-variant comparison. The deferred
-columns report verified/failed/unverified receipt outcomes separately; a raw
-``n_closed`` or ``adopted`` count is not a verified deferred comparison.
 """
 
 from __future__ import annotations
@@ -18,7 +14,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import comparator
 from .lineage import cards_dir, load_cards
 from .lock import read_lock
 from .questions import REQUIRED
@@ -27,8 +22,6 @@ from .schema import get
 COLUMNS = ("session", "accuracy", "hours_used", "n_cards", "n_unreadable", "n_closed", "n_locked",
            "n_locked_open", "n_relocked", "n_overrides", "preflight_fail", "pitfalls_hit",
            "pitfalls_cost_h", "adopted", "fields_filled")
-DEFERRED_COLUMNS = ("n_deferred", "n_deferred_verified", "n_deferred_failed_closed", "n_deferred_unverified")
-COLUMNS += DEFERRED_COLUMNS
 
 
 def _label(session: Path) -> str:
@@ -80,20 +73,10 @@ def collect(session_dirs: list[Path]) -> list[dict[str, Any]]:
         cards = load_cards(cdir, problems=problems) if cdir.is_dir() else {}
         n_closed = n_locked = n_locked_open = fails = hits = adopted = n_relocked = n_overrides = 0
         cost = 0.0
-        deferred = dict.fromkeys(DEFERRED_COLUMNS, 0)
         filled: list[float] = []
         for card in cards.values():
             closed = bool(get(card, "conclusion.decision"))
             info = read_lock(Path(card["_path"]))
-            state = comparator.completion_state(Path(card["_path"]), card, info)
-            if state["required"]:
-                deferred["n_deferred"] += 1
-                if not state["valid"]:
-                    deferred["n_deferred_unverified"] += 1
-                elif state["outcome"] == "verified":
-                    deferred["n_deferred_verified"] += 1
-                else:
-                    deferred["n_deferred_failed_closed"] += 1
             n_closed += closed
             n_locked += info is not None
             n_locked_open += (info is not None and not closed)
@@ -118,7 +101,6 @@ def collect(session_dirs: list[Path]) -> list[dict[str, Any]]:
             "preflight_fail": fails, "pitfalls_hit": hits, "pitfalls_cost_h": cost,
             "adopted": adopted,
             "fields_filled": round(sum(filled) / len(filled), 3) if filled else "",
-            **deferred,
         })
     return rows
 

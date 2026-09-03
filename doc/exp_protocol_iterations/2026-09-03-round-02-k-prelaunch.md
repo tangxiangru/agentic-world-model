@@ -59,6 +59,10 @@ This checks comparator-file counts/metric and recorded target consistency, **not
 
 ## Next round
 
+Construction follow-up: frozen candidate `58a6992b50378e39d59ec3ef72e988ca1988f855`, tree `ec7d5f2ab9aecd9f8a7a3278c9a9a54b9777eacf`. The K manifest passes local and full checks with0 issues; its fixed contract/context and per-cell settings match J except candidate identity, IDs and descriptive provenance. All six host shipped paths match drift `2f64581` after restoration;128 baseline tests pass. Candidate-specific files/tests remain in the immutable candidate commit, not active on the restored host.
+
+Operational follow-up at22:54 UTC: live registry-backed queue shows29 `PENDING(JobHeldUser)`,17 running jobs and zero other pending reasons. Owned-node allocation is16/16 but registered demand is17/16;90820 remains outside the assigned nodes and OWNERSHIP FAIL persists. `robtang-ptb-a3` still spans11 nodes. Monitor PID2086813 is live with the unchanged hourly cadence and17 watched jobs; none of these17 is terminal in this check. This is a verified wait, not new clean evidence. No new receipt/submission/release/cancellation was performed.
+
 Freeze SHA/tree, restore the guard runtime and remove only candidate-specific source/tests from the operator tree (recoverable in K's immutable commit). Construct/check the four-cell manifest; full/local checks do not grant ownership or native isolation. For future K bundle analysis, select this frozen candidate's six-path reader, not the restored baseline collector: raw `n_closed` is not K's verified primary metric. Run its isolated-reader test from the frozen source to confirm import origin.
 
 The live hourly monitor PID2086813 was confirmed at22:47 UTC. Await eight new receipt-backed validator-clean cells before the next local Claude analysis window. OWNERSHIP FAIL and the11-node reservation still bar new submissions/releases; no running job is cancelled by this preparation.
