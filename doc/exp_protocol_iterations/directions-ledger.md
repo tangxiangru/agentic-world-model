@@ -34,7 +34,7 @@
 | 24 | **Serving/evaluation contract 与重复读数（P5 调查）** | W03 g01r01 full n=1319 的32-vs-2 mismatch；g01r02重复150分歧；c01r07同100题但并发/显存一起变 | 重复波动成立；并发唯一因果未证实，且与 C 重叠 | **排队调查，未构建或登记 screen** | 先核对 matched n/weights/decode/memory，再判断独立单项 pitfall 是否值得4-cell screen；不强制所有卡两遍全量 |
 | 25 | **开发评测通过但官方 full scorer 失败** | p00r16 /90490九次数字 scorer 异常，无 metrics.json | scientist正常完成、judge-clean不等于validator-complete；n=500的0.712不是官方分数 | **观察 / harness failure evidence，非 protocol 候选** | 不盲目第十次重跑；recovery需新冻结合同，不能静默改评分器或填分 |
 | 26 | **GPU smoke 与锁卡覆盖范围冲突（J）** | strict g01s01/90791、g01s07/90797 的原始smoke训练早于exp-02创建/锁定 | card-matched计数漏掉probes；模板“非实验”标签与训练/评估前锁卡要求冲突 | **J `549e25a` / `7ae08ccf`已冻结，manifest已验证，未登记** | 仅rule1与模板注释；34测试、6场景forward review、local/full check通过；完整launch审计，固定floor0.673721；不叠#27 |
-| 27 | **卡内head-to-head的future comparator依赖** | strict g01s02/03/06/07/08；override与pre-lock eval两类应对 | missing comparator是本卡将产生的输出；check造成冲突，但已有reasoned override，不能说违规不可避免 | **独立设计优先；未构建/登记** | prelaunch计划与postrun实测验证分离；不放过真实n/protocol mismatch，不和#26或H叠成一个候选 |
+| 27 | **卡内head-to-head的future comparator依赖（K）** | strict g01s02/03/06/07/08；override与pre-lock eval两类应对 | close未复查comparator，其他消费者只看conclusion；仅放宽preflight不够 | **K两阶段opt-in spec已写，未实现/登记** | 严格验证实际n/metric与失败结案，结案凭据贯穿index/collect/hook且可移植；legacy不变；与J/H/E独立 |
 | 28 | **训练prompt与grader few-shot分布不匹配** | g01s08灾难性首轮与g01s01小幅残差；g01s04渲染差异 | 值得调查，但一个灾难例不足以支持统一prefix比例；已存在template相关指导 | **观察，暂不建screen** | 先区分渲染可达性、训练分布与配方效果；不以≥20%prefix作为规程正确性判据 |
 
 ## 二、决策日志
