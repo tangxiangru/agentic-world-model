@@ -335,3 +335,7 @@
 - 2026-09-03T00:37:05+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v2/c02r06..08 jobs=90619..90621 (PENDING): matched trim; retain c02r05 as guard sensitivity
 - 2026-09-03T00:37:07+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v2/w03r01..03,r05..08 jobs=90622..90624,90626..90629 (PENDING): requeued redundant inventory; w03r04 remains RUNNING sensitivity-only
 - 2026-09-03T00:37:08+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v2/c03r01..03 jobs=90630..90632 (PENDING): running c03r04..08 remain sensitivity-only; post-action safe PENDING=25
+- 2026-09-03T01:47:57+00:00 cancel wma-gsm8k-gemma4b-high-r02-a-format-floor-x4/w06r01..04 jobs=90861..90864 (PENDING): obsolete advisory-review public checkout; replace with verdict-in-lock v2
+- 2026-09-03T01:47:58+00:00 cancel wma-gsm8k-gemma4b-high-r02-ab-format-floor-width-x4/w07r01..04 jobs=90865..90868 (PENDING): obsolete advisory-review public checkout; replace with verdict-in-lock v2
+- 2026-09-03T01:48:00+00:00 cancel wma-gsm8k-gemma4b-high-r02-c-probe-before-fail-x4/w08r01..04 jobs=90870..90873 (PENDING): obsolete advisory-review public checkout; replace with verdict-in-lock v2
+- 2026-09-03T01:48:01+00:00 cancel wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4/w09r01..04 jobs=90874..90877 (PENDING): obsolete advisory-review public checkout; replace with verdict-in-lock v2; safe PENDING temporarily 9

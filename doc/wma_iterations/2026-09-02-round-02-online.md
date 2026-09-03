@@ -114,3 +114,8 @@ them with:
 All six v2 manifests have four repeats and otherwise retain the frozen Round 02
 contract. The original candidate receipts never contribute to a result or
 denominator.
+
+At 01:47–01:48 UTC all 16 original jobs (`90861..90868`, `90870..90877`) were
+rechecked PENDING and cancelled by exact tracked receipt. None had started and
+no result was produced. Safe PENDING temporarily remained 9, above the hard
+floor of 8, while the committed v2 replacements waited for a clean-tree submit.
