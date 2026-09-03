@@ -19,18 +19,29 @@ cards and the scores say. The scientist never sees this file.
 | `card.template.yaml` fields | adding an optional field is fine; changing a required one bumps `schema_version` to v3 with a note in `doc/spec/` |
 
 You do not change `exp_protocol_meta` from inside a round. Changes to the loop
-itself are a separate, human decision.
+itself are a separate, human decision (this revision — the trace review by
+subagents, parallel single-item candidates, 4-cell screens — is the user's
+directive of 2026-09-03, recorded in the iteration-basis spec §七 and in
+`doc/exp_protocol_iterations/directions-ledger.md`).
 
 ## The loop
 
 1. **Pick the variants.** A variant is a commit of `skills/exp_protocol/` (plus
-   the preflight code it relies on). Name each by its short sha. Two or three per
-   round; one of them is always the current baseline.
+   the preflight code it relies on). Name each by its short sha. One of them is
+   always the current baseline; up to three single-item candidates may run
+   beside it in one wave, each exactly one item away from the baseline tree
+   (never stacked: on a linear branch, revert the previous candidate's change
+   before adding the next, and freeze each by `awm.sha` + `awm.protocol_tree`).
 2. **Fix everything else.** Same task, same base model, same scientist model and
    effort, same `PTB_NUM_HOURS`, across variants. The protocol is the only
    thing that differs between cells.
-3. **Seeds.** At least two cells per variant. Run-to-run variance on
-   PostTrainBench is large; one cell per variant decides nothing.
+3. **Seeds.** Two cells per variant is the floor below which a variant does not
+   count; the working sizes are a 4-cell screening block per candidate
+   (accuracy is a guardrail there — n=4 resolves about 0.06 — and the candidate
+   is read on the metric it was built to move) and a second 4-cell block for
+   a winner before any score claim. Run-to-run variance on PostTrainBench is
+   large: one cell per variant decides nothing, and the baseline pool keeps
+   growing by two cells per wave.
 4. **Held-out task.** One task is never used for iteration; it is run only to
    confirm a change generalises before it becomes the baseline.
 5. **Launch.** Each scientist cell in this line uses the `claude_vertex_high_awm`
@@ -60,14 +71,27 @@ itself are a separate, human decision.
 7. **Analyse.** Per variant: mean and range of `accuracy`; sum of
    `pitfalls_cost_h`; `n_locked_open` (cards started and abandoned);
    `fields_filled`; `n_overrides` (a check overridden in many cells is a
-   check to fix, not a scientist to blame). Read three cards per variant by hand — the numbers say
-   whether, the cards say why.
-8. **Decide one change.** The change must be traceable to something you saw:
-   a pitfall that cost hours and has no check; a rule scientists skipped; a
-   field that stayed empty. Write it up first, then make it.
+   check to fix, not a scientist to blame). Then run the **trace review**
+   (`trace_review.md`): reviewer subagents read every clean cell's trace in
+   groups of three or four with a fixed brief and write one report per cell
+   (`tools/exp_protocol_cell_read.py`, `tools/exp_protocol_trace_timeline.py`
+   give them the facts and the hours); a synthesis subagent ranks the
+   explanations of the score difference and proposes candidates. Read the
+   synthesis and three cards per variant yourself — the numbers say whether,
+   the traces say why.
+8. **Decide the candidates.** Each candidate is one item, traceable to at
+   least two cells of the review: a pitfall that cost hours and has no entry;
+   a rule scientists skipped; a field that stayed empty; a decision the other
+   arm made and this arm did not. Declare the metric the 4-cell screen will
+   read for it and the score guardrail. Write it up first (spec, ledger), then
+   make it. A losing candidate's pending cells are withdrawn; a winner earns
+   its second block.
 9. **Record.** Copy `iteration_record.template.md` to
    `doc/exp_protocol_iterations/<date>-round-NN.md`, fill every section, commit
-   it with the change in the same commit.
+   it with the change in the same commit; keep
+   `doc/exp_protocol_iterations/directions-ledger.md` current — every direction
+   with its status and what would change it, every decision with its
+   alternatives.
 10. **Promote.** A change becomes the new baseline only after it holds on the
     held-out task.
 

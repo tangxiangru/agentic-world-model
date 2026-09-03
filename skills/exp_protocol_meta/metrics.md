@@ -20,9 +20,22 @@ locks, and preflight reports in each scientist's `memory/cards/`.
 `session` is the directory name, except that a PostTrainBench session dir is
 always `task`, so it is labelled `<cell>/task` with the parent's name.
 
-Not in `collect` yet, worth adding when the trajectory conversion is wired in:
-wall-clock spent training vs idle (from `awm traj spans`), and the number of
-distinct experiments per hour.
+## From the trace review
+
+`tools/exp_protocol_cell_read.py` and `tools/exp_protocol_trace_timeline.py`
+read what the cards cannot say; the reviewer reports carry them per cell.
+
+| field | what it is | a good change moves it |
+|---|---|---|
+| `hours_used` | wall time of the scientist session (`time_taken.txt`, or first to last turn) | context; both arms stop 1–2 h early |
+| `hours_to_first_train_launch` | from the first turn to the first real training launch | down — Round 00 protocol cells took longer to launch than controls |
+| `protocol_hours` | tool time in `awm exp_protocol`, card edits, reading the skill | down without `fields_filled` dropping |
+| `waiting_hours` | tool time in sleep/tail/pgrep loops on running jobs | context; it is the training time seen from the trace |
+| `lock_before_launch` | training launches after their card's lock, from trace timestamps | up to all/all; `collect` cannot see ordering |
+| `greedy_shipped` | a greedy or measured `generation_config` written for `final_model` | up — 4/9 protocol vs 7/7 control in Round 00, worth 7–16 points per cell |
+| `rl_used` / `rft_tried` | on-policy RL or rejection sampling attempted, and the card's verdict | context, not a target: the protocol does not say what to run |
+| `largest_eval_n` | the biggest evaluation behind a shipping decision | up to ≥500; rankings at 150–300 inverted at 500–1319 |
+| `stop_reason` | the scientist's stated reason for ending, quoted | read it; an early stop with a run alive is a lost cell |
 
 ## Reading them together
 
