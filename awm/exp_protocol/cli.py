@@ -144,6 +144,9 @@ def _lock(args: argparse.Namespace) -> int:
         print(f"not locked: {lock.lock_path(path)} already exists. Re-locking after a change needs "
               "--relock \"<reason>\"; the previous hash is kept in the lock file")
         return 1
+    except lock.InvalidRelock as exc:
+        print(f"not locked: {exc}")
+        return 1
     print(f"locked {card['card_id']} at {info['locked_at']} (plan {info['plan_sha256'][:12]})")
     if info["relocked_from"]:
         print(f"re-locked {len(info['relocked_from'])} time(s); previous hashes kept")
@@ -151,7 +154,7 @@ def _lock(args: argparse.Namespace) -> int:
 
 
 def _close(args: argparse.Namespace) -> int:
-    from . import lineage, lock, schema
+    from . import comparator, lineage, lock, schema
 
     path = _card_path(args)
     if path is None:
@@ -166,6 +169,13 @@ def _close(args: argparse.Namespace) -> int:
         print("not closed")
         return 1
     info = lock.read_lock(path) or {}
+    if comparator.enabled(card) or "deferred_comparator" in info:
+        try:
+            proof = comparator.write_completion(path, card, info)
+        except (OSError, ValueError, ImportError, SyntaxError) as exc:
+            print(f"not closed: {exc}")
+            return 1
+        print(f"deferred comparator receipt: {proof['outcome']}")
     if info.get("relocked_from"):
         n = len(info["relocked_from"])
         print(f"note: this card was re-locked {n} time{'s' if n != 1 else ''} before the run; reasons are in the lock file")

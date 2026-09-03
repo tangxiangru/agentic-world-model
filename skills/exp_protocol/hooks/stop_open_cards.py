@@ -10,7 +10,7 @@ report back when the run finishes" and ended the turn; the run died with it and
 blocks the end of the turn, says why, and says how to wait. It blocks at most
 MAX_BLOCKS times per session (a counter in memory/.stop_hook.json), so a
 scientist that cannot close a card — the CLI broke, say — is not held forever;
-a card can always be closed by hand by filling `result` and `conclusion`.
+an ordinary card can be closed by hand by filling `result` and `conclusion`.
 
 Standard library only. The session dir is AWM_SESSION_DIR, else the hook's cwd.
 Installed by `awm sandbox setup --exp-protocol --stop-hook`. Does nothing for Codex.
@@ -20,19 +20,24 @@ Installed by `awm sandbox setup --exp-protocol --stop-hook`. Does nothing for Co
 placeholder such as ``adopt | reject | iterate | abandon_line``. The scan is
 indentation-aware so a ``decision:`` inside prose or a nested mapping does
 not count. A card that cannot be read at all is treated as open.
+An opted-in deferred comparator additionally requires its valid close receipt.
 """
 
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import re
 import sys
 from pathlib import Path
+from functools import lru_cache
 
 PLACEHOLDER = re.compile(r"[|<>]")
 MAX_BLOCKS = 12
 COUNTER = Path("memory") / ".stop_hook.json"
+MANUAL_CLOSE = ("If the CLI is broken, fill result and conclusion in the YAML by hand; "
+                "that closes it too. ")
 REASON = (
     "Locked cards without a conclusion: {cards}. Ending this turn ENDS THE SESSION: "
     "there is no next turn, and every background process you started dies with it, "
@@ -40,14 +45,33 @@ REASON = (
     "(`sleep 900; tail -n 3 <log>` repeated, or `while [ ! -f <out>/config.json ]; do "
     "sleep 300; done`; give the Bash call a long timeout), then evaluate, fill sections "
     "5-6 and run `awm exp_protocol close --dir <dir> <card>`. If the run is dead, record "
-    "it (result.execution: failed or killed) and close the card. If the CLI is broken, "
-    "fill result and conclusion in the YAML by hand; that closes it too. "
-    "(block {n} of {max})"
+    "it (result.execution: failed or killed) and close the card. "
+    + MANUAL_CLOSE + "(block {n} of {max})"
 )
 
 
 def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
+
+
+@lru_cache(maxsize=1)
+def _comparator_helper():
+    spec = importlib.util.spec_from_file_location(
+        "_hook_comparator_receipt", Path(__file__).with_name("comparator_receipt.py")
+    )
+    if spec is None or spec.loader is None:
+        raise OSError("comparator receipt helper is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _lock_info(path: Path) -> dict:
+    try:
+        info = json.loads(path.read_text())
+        return info if isinstance(info, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def card_is_closed(text: str) -> bool:
@@ -89,7 +113,14 @@ def open_locked_cards(session: Path) -> list[str]:
         except OSError:
             out.append(card.stem)
             continue
-        if not card_is_closed(text):
+        unresolved = not card_is_closed(text)
+        info = _lock_info(lock)
+        if "deferred_comparator" in info:
+            try:
+                unresolved = unresolved or not _comparator_helper().completion_state(card, info)["valid"]
+            except (OSError, ValueError, TypeError, ImportError, SyntaxError):
+                unresolved = True
+        if unresolved:
             out.append(card.stem)
     return out
 
@@ -122,9 +153,17 @@ def main() -> int:
     blocks = _blocks_so_far(session)
     if open_cards and blocks < MAX_BLOCKS:
         _record_block(session, blocks + 1)
+        reason = REASON.format(cards=", ".join(open_cards), n=blocks + 1, max=MAX_BLOCKS)
+        if any("deferred_comparator" in _lock_info(session / "memory" / "cards" / f"{c}.lock.json")
+               for c in open_cards):
+            reason = reason.replace(MANUAL_CLOSE, "")
+            reason = reason.replace("Locked cards without a conclusion:",
+                                    "Locked cards awaiting conclusion or verified comparator closure:")
+            reason += (" Deferred comparator cards need a valid close receipt; filling conclusion alone is not verification. "
+                       "Run close after producing valid evidence, or record an inconclusive, non-adopted failed experiment and close it.")
         print(json.dumps({
             "decision": "block",
-            "reason": REASON.format(cards=", ".join(open_cards), n=blocks + 1, max=MAX_BLOCKS),
+            "reason": reason,
         }))
     else:
         print("{}")

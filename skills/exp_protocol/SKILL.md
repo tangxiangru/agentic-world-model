@@ -94,6 +94,11 @@ that disagreement is the record the estimator learns from.
 2. **A comparator is measured under the same protocol.** Same `n`, same dev
    set, same seed, and the path of that eval goes in `evaluation.comparator.path`.
    A number from a different `--limit` is not a comparator.
+   If this card will produce its comparator, read `deferred-comparator.md`
+   before opting into `evaluation.comparator.defer_validation: true`.
+   Missing output is then deferred, not assumed valid: `close` verifies the
+   actual report and writes the required completion receipt. This does not
+   excuse a mismatched existing result or launching before the lock.
 3. **Unknown is `null`, never a guess.** `check` asks for what is missing;
    answer it or leave it null. Do not invent an evidence path.
 4. **A target is not a hypothesis.** "Reach 85 %" is rejected as a claim.
@@ -147,6 +152,8 @@ more, the card is doing too much: split it.
 `hooks/stop_open_cards.py` blocks the end of a turn while a locked card has no
 conclusion, up to twelve times, and each time says why (rule 9) and how to wait.
 It is installed into `.claude/settings.json` by `awm sandbox setup --exp-protocol
---stop-hook`. Closing the card releases it; if the CLI is unavailable, filling
-`result` and `conclusion.decision` in the YAML by hand counts as closed.
+--stop-hook`. Closing the card releases it; for ordinary cards, if the CLI is
+unavailable, filling `result` and `conclusion.decision` by hand counts as closed.
+Opted-in deferred comparators also need a valid close receipt; a populated
+conclusion alone does not resolve them (see `deferred-comparator.md`).
 Standard library only; does nothing for Codex.

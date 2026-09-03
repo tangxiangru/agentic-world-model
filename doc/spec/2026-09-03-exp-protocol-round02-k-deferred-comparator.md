@@ -1,6 +1,6 @@
 # Round02 K — an explicitly deferred comparator, verified at close
 
-Status: **specified; implementation and validation pending; no manifest or receipt**. Direction #27 from the strict-guard [planner decision](../exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/planner-decision.md). K is one coordinated optional comparator-lifecycle feature, baseline-relative and independent of J, H, C or E. Ownership/native-isolation gates remain closed.
+Status: **implemented and CPU/independent-forward validated; awaiting immutable manifest; no receipt or launch**. Direction #27 from the strict-guard [planner decision](../exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/planner-decision.md). K is one coordinated optional comparator-lifecycle feature, baseline-relative and independent of J, H, C or E. Ownership/native-isolation gates remain closed.
 
 ## Evidence and the problem to solve
 
@@ -39,15 +39,17 @@ Support a minimal actual-evaluation summary (`n` or `num_samples`, plus the name
 
 When a standard PTB accuracy/stderr summary omits n, preserve the successful raw evaluator report at the planned path or derive a minimal summary from its actual completed metadata, retaining the source log for audit. Do not edit the official grader or invent n to satisfy a check. Unknown/malformed/missing n or metric blocks successful closure. Dataset/seed/decode/model identity still require the existing manual same-protocol verification; K must state exactly what the machine checked and must not claim full protocol identity from n alone.
 
+Completed cards must also record a finite target measurement for the locked metric/n with an evidence path; known recorded target-count mismatch must not be certified. Other-n probes do not substitute for that measurement. This is record consistency, not an independent audit of the target file or an assertion of full experiment validity.
+
 ### Failed, killed or unrun experiment
 
 Such a card must still be closable without a nonexistent comparator: require an inconclusive verdict, a non-adopt decision, and an explicit failure reason for failed/killed execution (a reasoned summary for not_run). Preserve partial observations but do not certify a comparison or claim supported/contradicted/adopted success. This closes the failed experiment honestly; it is not a route to a “verified” comparison.
 
 ## Completion receipt and consumers
 
-Record the opt-in declaration in the lock so removing a YAML flag without a valid new plan cannot silently opt out. Preserve it in relock history when applicable; changing the validation contract after seeing an outcome is an audited mode change, not a successful K exposure.
+Record the opt-in declaration in the lock so removing a YAML flag cannot silently opt out. Once locked, the same card cannot drop this requirement via relock; use a new card for that contract change. Preserve declarations in relock history when applicable; changing a declared comparison after seeing its outcome remains an audited mode change, not a successful K exposure.
 
-For opt-in cards only, successful CLI close writes a small `exp-NN.comparator.json` receipt **after both result validation and lock integrity succeed**. It binds the card/plan hashes, lock identity, planned comparator path/n/metric, completion classification, observed n/value and comparator content hash when verified. No receipt is written for a refused close. A failed/inconclusive close gets a distinguishable failed/unverified-comparison receipt, never a verified metric certificate.
+For opt-in cards only, successful CLI close writes a small `exp-NN.comparator.json` receipt **after both result validation and lock integrity succeed**, then seals its content hash in an additive lock field without altering the frozen plan. It binds the card/plan hashes, lock identity, planned comparator path/n/metric, completion classification, observed n/value and comparator content hash when verified. A refused/interrupted close must not leave a usable sealed receipt. A failed/inconclusive close gets a distinguishable failed/unverified-comparison receipt, never a verified metric certificate.
 
 Use one standard-library-only receipt checker shared by the runtime API and hook, packaged with the hook so standalone installs work. It must reject missing, malformed, stale or mismatched receipts. A card changed after close invalidates its receipt; changing an available evidence file invalidates its hash. A matching receipt remains historical evidence when the original sandbox path is unavailable after harvest—report that distinction and do not pretend the raw file was re-read. Verify relocated retained artifacts when available. This is reproducibility evidence, not a security boundary against arbitrary filesystem tampering.
 

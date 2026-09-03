@@ -22,6 +22,16 @@ always `task`, so it is labelled `<cell>/task` with the parent's name.
 
 ## From the trace review
 
+Optional lifecycle variants may add verified-outcome columns while preserving
+the old conclusion-based counters. Do not reinterpret raw `n_closed`,
+`n_locked_open` or `adopted` as proof that a new validation step succeeded.
+Use the frozen candidate-capable reader on that candidate's bundles, check its
+import/source identity, and report raw, verified, failed-closed and unresolved
+outcomes separately. A portable historical receipt is not a fresh reading of
+an omitted artifact. K's [prelaunch validation](../../doc/exp_protocol_iterations/2026-09-03-round-02-k-prelaunch.md)
+demonstrates these consumer/measurement boundaries with synthetic fixtures;
+it is not evidence of a scientist or score improvement.
+
 `tools/exp_protocol_cell_read.py` and `tools/exp_protocol_trace_timeline.py`
 read what the cards cannot say; the reviewer reports carry them per cell.
 

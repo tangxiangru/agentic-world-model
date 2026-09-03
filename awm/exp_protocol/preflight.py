@@ -265,6 +265,11 @@ def max_seq_len_headroom(ctx: Context) -> CheckResult:
 @check("comparator_same_protocol", "the comparator's eval file exists and used the same n")
 def comparator_same_protocol(ctx: Context) -> CheckResult:
     comp = get(ctx.card, "evaluation.comparator") or {}
+    if isinstance(comp, dict) and comp.get("defer_validation") is True:
+        from .comparator import check_output
+
+        report = check_output(ctx.card, allow_missing=True)
+        return CheckResult("comparator_same_protocol", report["status"], report["detail"])
     path = comp.get("path") if isinstance(comp, dict) else None
     if not path:
         return CheckResult("comparator_same_protocol", "skip", "no comparator path")
