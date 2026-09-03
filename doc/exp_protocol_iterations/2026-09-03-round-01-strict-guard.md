@@ -63,6 +63,8 @@ No frozen scientist tree is changed by this decision. Reusable accounting and ob
 
 ## Next round and operational dependencies
 
+Latest handoff: [operator state and dependency graph](operator-state.md). J/#26 and K/#27 are now separately frozen and validated, as is E2; none is registered. The snapshots below retain the timing of the strict-cohort decision. The current graph includes held-buffer arithmetic across releases and replacements, not only a pre-release count.
+
 At20:55 UTC, current checker: physical16/16, **registered17/16**, job90820 on a forbidden node, native reservation11 nodes. C jobs91054–91057 were cancelled from PENDING at21:10:24; `sacct` records zero elapsed and no start. At21:15:27 the operator verified **29 live JobHeldUser jobs**, all four cancellation receipts/terminal bundles and no remaining actions for the C-only queue. See [withdrawal audit](../../results/ptb/c-screen-withdrawal-20260903T211024Z.json). No running work was touched;90820 remains RUNNING and requires a separate user decision. Monitor PID2086813 remains live at3600s cadence; its21:00:54 sample has0/17 terminal jobs.
 
 The first C reconcile missed terminal harvest because `_job_state` returned `CANCELLED by 0` verbatim. Fix `68253ee` normalizes Slurm decorations; the regression first reproduced the miss, then all111 PTB experiment/operations/results/gate/runtime tests passed. The C-only reconcile then harvested all four administrative withdrawals with null accuracy and `complete:false`; they add **zero** clean cells. Operator-only code changed, not the six shipped scientist paths.

@@ -127,6 +127,13 @@ directive of 2026-09-03, recorded in the iteration-basis spec §七 and in
 - A receipt's `state: held` records intent, not the current scheduler hold.
   Count the floor from live `JobHeldUser` reasons; investigate any external
   release that disagrees with the committed queue before a screen can start.
+- Recompute the held floor after every planned release/withdrawal. Replacing
+  an old four-cell block with a new four-cell receipt adds no net buffer; a
+  large current backlog can still be insufficient for the following wave.
+  Prepare justified independent work before that release, without inventing
+  filler or treating a checked manifest as an already-held receipt. The
+  [operator dependency view](../../doc/exp_protocol_iterations/operator-state.md)
+  records the current exact-ID arithmetic and prerequisites.
 - For local Claude dispatch and liveness checks, follow
   `doc/reference/exp_protocol_local_claude_analysis.md`: separate the prompt
   from variadic tool arguments and verify the same session in the same
