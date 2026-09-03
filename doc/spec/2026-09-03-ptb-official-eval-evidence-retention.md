@@ -1,6 +1,6 @@
 # Prospective official-evaluation evidence retention
 
-Status: **design and pinned-image source inspection only; not implemented, enabled or submitted**. This is operator/harness provenance work following the [P5 adjudication](../exp_protocol_iterations/trace-reviews/p5-serving-audit/planner-decision.md), not an `exp_protocol` candidate. Current PTB pin `dcf5da031435c54e3680b6ec3f63e7e317efc13e`, scientist six-path trees, receipts, queue and active jobs remain unchanged.
+Status: **isolated archive/index/compact CPU prototype tested; runtime/launcher/harvest integration not implemented or enabled**. This is operator/harness provenance work following the [P5 adjudication](../exp_protocol_iterations/trace-reviews/p5-serving-audit/planner-decision.md), not an `exp_protocol` candidate. Current PTB pin `dcf5da031435c54e3680b6ec3f63e7e317efc13e`, scientist six-path trees, receipts, queue and active jobs remain unchanged.
 
 ## Problem and verified source behavior
 
@@ -61,4 +61,6 @@ Operator `harvest` should recognize only this explicitly indexed official-eviden
 
 ## Decision and next action
 
-Adopt this as the **prospective design**, not a protocol intervention or a completed implementation. The next independent implementation unit is the stdlib archive/index/compact-evidence helper with CPU tests; then wire and test the real timeout/cleanup boundaries, then add the opt-in launcher/harvest contract. Freeze and audit all parts together before any future common-generation enablement. Current16-GPU subqueue operations,29 held jobs and the ownership/native-isolation blocker remain unchanged; the hourly monitor continues independently.
+The [isolated prototype record](../exp_protocol_iterations/2026-09-03-official-evidence-prototype.md) covers the first helper unit:43 helper tests, including a synthetic file test inside the pinned image, plus111 existing PTB and4 meta tests (158 passed). The helper refuses existing results without the future `experiment.official_log_retention` provenance marker; current provenance is untouched. Three original developer logs pass lossless archive/compact format replay. These checks do not prove the remaining orchestration or consumer integration.
+
+The archive/index/compact helper is the completed isolated unit; this is still **not a completed retention implementation**. Next wire and test the real timeout/cleanup boundaries and actual Inspect local sink, then add the opt-in launcher/harvest contract. Place one canonical helper in the future PTB source rather than keeping diverging copies. Freeze and audit all parts together before any common-generation enablement. Current16-GPU subqueue operations,29 held jobs and the ownership/native-isolation blocker remain unchanged; the hourly monitor continues independently.
