@@ -7,7 +7,8 @@ evidence.
 
 ## Subqueues and hard capacity
 
-`gangda` is split by node, so Slurm itself enforces each line's 16-GPU ceiling:
+The `gangda` contract is a hard, non-borrowing node split; native Slurm isolation and
+the frozen job constraints must enforce each line's 16-GPU ceiling:
 
 | subqueue | branch | nodes | GPUs |
 |---|---|---|---:|
@@ -44,6 +45,22 @@ allocation on the subqueue's nodes, so a pre-split legacy job is still visible i
 number even when its historical receipt has no subqueue tag. `registered_running_gpus` is the
 independent receipt-backed demand count; it is what detects spillover or oversubscription that a
 physical-node-only total would hide.
+
+### When a deployed wrapper disagrees with receipt evidence
+
+Check which checkout the wrapper resolves to. The registry remains the same ownership authority,
+but an older checker can omit registered-job placement and total-request checks. On 2026-09-03,
+the shared wrapper resolved to the other `agentic-world-model` checkout at `6d9f866` and printed
+`OWNERSHIP OK` for physical 16/16 while job 90820 ran outside its frozen nodes and registered
+requests totaled 17. The current operator checkout's
+`.venv/bin/awm slurm queue --subqueue gangda_exp-protocol-evolve --summary` correctly reported
+`OWNERSHIP FAIL` from the same registry. See
+[`90820` audit](../../results/ptb/placement-violation-90820-20260903T195038Z.json).
+
+Do not accept a stale summary over direct receipt/job evidence or release work while the
+disagreement is unresolved. Record the checker version and reconcile the shared deployment with
+its owner; do not silently redirect the cross-CLI wrapper to a different worktree. Running jobs
+are still never cancelled or moved automatically.
 
 ## Failures
 
