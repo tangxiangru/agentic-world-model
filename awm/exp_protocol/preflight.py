@@ -305,6 +305,35 @@ def parent_checkpoint_loadable(ctx: Context) -> CheckResult:
     return CheckResult("parent_checkpoint_loadable", "pass", f"{p} has config.json")
 
 
+GREEDY_INCOMPATIBLE = {"temperature": 1.0, "top_k": 50, "top_p": 1.0, "typical_p": 1.0, "min_p": None}
+
+
+@check("parent_generation_config_valid", "the parent's generation_config.json will survive a Trainer save")
+def parent_generation_config_valid(ctx: Context) -> CheckResult:
+    path = get(ctx.card, "setup.parent_checkpoint.path")
+    if not path or not str(path).startswith("/"):
+        return CheckResult("parent_generation_config_valid", "skip", "no local parent path")
+    p = Path(str(path)) / "generation_config.json"
+    if not p.is_file():
+        return CheckResult("parent_generation_config_valid", "skip", f"{p.name} absent; transformers will write a default")
+    try:
+        cfg = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return CheckResult("parent_generation_config_valid", "fail", f"{p} is not readable JSON: {exc}")
+    if not isinstance(cfg, dict) or cfg.get("do_sample", True):
+        return CheckResult("parent_generation_config_valid", "pass", f"{p.name} samples; nothing to validate")
+    offending = [k for k, default in GREEDY_INCOMPATIBLE.items()
+                 if k in cfg and cfg[k] is not None and cfg[k] != default]
+    if offending:
+        return CheckResult(
+            "parent_generation_config_valid", "fail",
+            f"{p} is greedy-patched ({', '.join(f'{k}={cfg[k]}' for k in offending)} with do_sample false): "
+            "transformers validates the generation config on every Trainer save and the run will die at its "
+            "first checkpoint (p00r02 exp-06, p00r07 exp-05). Train from a copy with a valid config, or set "
+            "model.generation_config before the first save, and write greedy into final_model/ only.")
+    return CheckResult("parent_generation_config_valid", "pass", f"{p.name} is greedy without sampling flags; saves will succeed")
+
+
 # --------------------------------------------------------------- catalogue
 
 def skill_dir() -> Path:

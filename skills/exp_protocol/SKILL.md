@@ -93,21 +93,7 @@ that disagreement is the record the estimator learns from.
    A material change after lock is a new card, not an edit.
 2. **A comparator is measured under the same protocol.** Same `n`, same dev
    set, same seed, and the path of that eval goes in `evaluation.comparator.path`.
-   A number from a different `--limit` is not a comparator. And `n` must carry
-   the claim: an accuracy at `n` has a standard error near `sqrt(p(1-p)/n)` —
-   0.04 at n=150, 0.02 at 500, 0.011 at 1319 — and `--limit N` scores the
-   *first* N items, which read 2–7 points above the full set (six cells of
-   both arms in Round 00), so a small-n number is biased upward as well as
-   noisy; rankings made at n=150–300 inverted at n=500–1319 in seven verdicts
-   of four cells. A full 1319-item `evaluate.py` run costs 3–10 minutes at
-   `--max-connections 32–64`; two cells priced it at 30 minutes and stopped
-   hours early on that. Write `falsified_if` at an `n` whose standard error is
-   below the delta you claim, or as a paired statistic on the same items; a
-   `contradicted` verdict on a delta inside one standard error describes
-   noise. Raising `n` mid-session is allowed and expected: re-score the
-   incumbent under the new protocol rather than keeping the first card's `n`
-   for every later card. Decide nothing that ships a checkpoint on fewer than
-   500 items; the grader's default 150 is a smoke size.
+   A number from a different `--limit` is not a comparator.
 3. **Unknown is `null`, never a guess.** `check` asks for what is missing;
    answer it or leave it null. Do not invent an evidence path.
 4. **A target is not a hypothesis.** "Reach 85 %" is rejected as a claim.
