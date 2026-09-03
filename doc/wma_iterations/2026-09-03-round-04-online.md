@@ -59,3 +59,20 @@ redundant repetitions or unsupported edits.
 
 - g-probe-scope: `e4402ffa6bca`; one new probe-scope rule; compared with v0.2 on byte-identical private runtime.
 - h-soup-ingredients: `a536a0af24d7`; replace only the time-short default clause in the C6 prior; compared with v0.2 on byte-identical private runtime.
+
+| Candidate | Immutable source | Skill hash | Cells |
+|---|---|---|---|
+| g-probe-scope | `125a434e6d73d067427911332663060fe2dce558` | `e4402ffa6bca` | w13r01..04 |
+| h-soup-ingredients | `7e69e5c549447fe12fb863352235e3dc38676014` | `a536a0af24d7` | w14r01..04 |
+
+The skill-file contract tests pass for each frozen candidate (6/6 each).
+`git diff ae46724 CANDIDATE --` on every non-skill WMA_PRIVATE_SHIP path is
+empty. The final operator head restores the current relock-history runtime
+and byte-identical v0.2 skill; candidates remain immutable manifest inputs.
+Full manifest/site checks and the reconcile preview precede submission.
+
+Both full `awm ptb check` calls returned zero issues. The reconcile preview
+contains exactly the two G/H submissions plus the existing 16 running-cell
+peeks; it contains no cancellation or harvest. The non-skill manifest contract
+matches the frozen baseline apart from experiment identifiers. The restored
+operator source and v0.2 skill are byte-identical to pre-archive commit 9fccdde.
