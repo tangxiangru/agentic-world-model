@@ -1,6 +1,6 @@
 # WMA online Round 04 — scoped probes and candidate selection
 
-Status: G/H design accepted for exploratory launch; archives/checks in progress.
+Status: launched. G/H each have four safely routed PENDING cells; no candidate result read.
 
 The frozen design and gates are in
 `doc/spec/2026-09-03-wma-round04-probe-selection.md`. Completed evidence and
@@ -76,3 +76,34 @@ contains exactly the two G/H submissions plus the existing 16 running-cell
 peeks; it contains no cancellation or harvest. The non-skill manifest contract
 matches the frozen baseline apart from experiment identifiers. The restored
 operator source and v0.2 skill are byte-identical to pre-archive commit 9fccdde.
+
+## Launch and post-release audit (2026-09-03 19:29–19:30 UTC)
+
+Reconcile submitted both independently specified candidates before copying
+receipts and updating the running-cell snapshots:
+
+- G: `w13r01..04`, jobs **91441..91444**; receipt
+  `results/ptb/wma-gsm8k-gemma4b-high-r04-g-probe-scope-x4/formal-2026-09-03T192916.640188+0000.json`.
+- H: `w14r01..04`, jobs **91445..91448**; receipt
+  `results/ptb/wma-gsm8k-gemma4b-high-r04-h-soup-ingredients-x4/formal-2026-09-03T192943.423015+0000.json`.
+
+The immutable manifests are the matching batch-name YAML files under
+`experiments/posttrainbench/`; both name the Round 04 spec. Their receipts
+freeze source commit `4874838` and the explicit variant SHAs above. Scientific
+result directories will be resolved through `awm ptb results` after the jobs
+run; no pending job is counted as a completed result.
+
+Both held-route gates passed. Direct post-release scontrol checks found all
+eight PENDING with `ReqNodeList=slurm2-a3nodesetondem-[2-3]`. The complete
+receipt/cell/manifest/spec and live-route evidence is
+`evidence/2026-09-03-w10/round04-launch-audit.json`. Registry ownership was OK;
+allocation stayed 16/16 and safe pending increased **17 → 25**. No job was
+cancelled. Only the two intended submissions and 16 snapshot updates occurred.
+
+No new valid PTB score arrived in this check: coverage remains 48 clean cells
+across different historical cohorts. Overall best is control c01r05 0.815770;
+best WMA is w01r05 0.797574. These are maxima, not matched treatment effects.
+The hourly completion hook remains alive; the 30-minute operator timer already
+queued the next continuation and suppressed a duplicate at 19:30. The shared
+event receives an executed handoff marker so later checks do not repeat this
+analysis or submit these immutable manifests again.
