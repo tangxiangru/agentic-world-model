@@ -1,6 +1,6 @@
 # exp_protocol Round 02：三个独立的 4-cell 筛选 + guard 漂移对
 
-**日期**：2026-09-02 23:07 UTC **状态**：待登记为 held **前置**：`doc/exp_protocol_iterations/2026-09-02-round-00.md` 的 Analysis window 01、`doc/spec/2026-09-02-exp-protocol-gsm8k-gemma4b-iteration-basis.md` §四（两段式）、planner 决定（PR #20 评论 5517615610）
+**日期**：2026-09-02 23:07 UTC **状态**：已登记 held，放行门关闭 **前置**：`doc/exp_protocol_iterations/2026-09-02-round-00.md` 的 Analysis window 01、`doc/spec/2026-09-02-exp-protocol-gsm8k-gemma4b-iteration-basis.md` §四（两段式）、planner 决定（PR #20 评论 5517615610）
 
 ## 一、依据
 
@@ -34,9 +34,10 @@ manifest 以 `awm.sha` + `awm.protocol_tree` 冻结，operator 从指定 sha mat
 
 ## 三、每个筛选读什么
 
-- **A**：目标指标 = 交付 greedy 或有测量依据的 `generation_config` 的 cell 数（Round 00 规程臂 4/7 →
-  期望 ≥ 3/4），从 trace 的 `do_sample: false` 写入与 `result` 记录读；附带看是否再有父 checkpoint 的
-  validator 失败。
+- **A**：最终交付 greedy / measured config 已在后续 guard baseline 5/5 饱和，不再作为主指标。主指标改为
+  首次 post-SFT 评估结束到基于 grader observable、同权重对照而确定 decode 配置的时间：4/4 ≤ 0.5 h；
+  次指标为这段时间之后仍在未测量 sampling 配置下判定的 decision card 数（每 cell ≤ 1）。仍记录最终
+  `generation_config`、grader observable 与父 checkpoint validator 失败，防止 candidate 只是更快写错配置。
 - **B**：目标指标 = RFT 卡 `pitfalls_hit` 中可归因于采样的小时数（Round 00 约 1 h/尝试 RFT 的 cell →
   期望 < 0.3），以及 RFT 卡的 verdict。
 - **C**：目标指标 = 每 cell 最大评估 n（inspect log 大小 ÷ 44 KB）≥ 500 的 cell 数 ≥ 3/4，且 trace
@@ -71,16 +72,18 @@ D、E、H 与漂移对 B 同样登记为 held，排在第一波之后。head 在
 
 | 筛选 | 改动（一项） | commit | protocol_tree | manifest / cells | 4 cell 里读什么 |
 |---|---|---|---|---|---|
-| A v2 | `decode_config_inherited` 改写：点名可核实的观察（vLLM 日志行 / 请求体只有 max_tokens）、反驳 trace 里记录的两个错误信念、自建评估器要复制请求体；父 checkpoint 陷阱扩到 5 个 cell | `f6cdccc` | `73083443` | `…-r02-a-decode-x4-v2`，`a02s01–04`，run_index 2 | greedy 或有测量依据的配置 ≥ 3/4；是否核实了评分器而不是只读文件 |
+| A v2 | `decode_config_inherited` 改写：点名可核实的观察（vLLM 日志行 / 请求体只有 max_tokens）、反驳 trace 里记录的两个错误信念、自建评估器要复制请求体；父 checkpoint 陷阱扩到 5 个 cell | `f6cdccc` | `73083443` | `…-r02-a-decode-x4-v2`，`a02s01–04`，run_index 2 | 首次 post-SFT eval → measured decode choice ≤0.5 h（4/4）；之后未测量 sampling decision card ≤1/cell；最终 config 与 grader observable 仅作正确性护栏 |
 | B v2 | `vllm_offline_prompt_and_stop` 改写：n>1 才丢 stop id 的机制、解析器 inf 崩溃、probe 打印 finish_reason；来源改为两臂都付出过（对照 5.0 h） | `9f294c3` | `2ca65d4d` | `…-r02-b-vllm-sampling-x4-v2`，`b02s01–04`，run_index 2 | RFT 卡里可归因于采样的小时数 < 0.3/cell |
 | C v2 | 规则 2 段落改写：`--limit N` 取前 N 题且前段偏易 2–7 点、全集评估 3–10 分钟、`falsified_if` 要在标准误小于所称差距的 n 上或用配对统计、允许中途提高 n 并重测 incumbent；示例卡改为 n=500；模板 `falsified_if` 行加注 | `57511f9` | `f528e150` | `…-r02-c-eval-n-x4-v2`，`n02s01–04`，run_index 2 | 每张卡 `evaluation.protocol.n` ≥ 500 的 cell ≥ 3/4；无被更大 n 推翻的 contradicted；无 n ≤ 200 的 falsified_if |
 | 漂移对 A v2 | guard tree；使用六候选构造后恢复的同代 AWM paths | `2f64581` | `189319d6` | `…-r02-guard-drift-a-x2-v2`，`g02v2r01–02`，run_index 5 | 并入 baseline 池；与 A/B/C 的 shipped paths 只差候选项 |
 | D | preflight 检查 `parent_generation_config_valid`（父 checkpoint 的 greedy 配置会让 Trainer 首次保存失败）+ 测试 + pitfalls 目录行 `greedy_parent_generation_config` | `8332917` | `7160d360` | `…-r02-d-parent-config-x4`，`d02r01–04` | 归因于 GenerationConfig-is-invalid 的小时数 = 0 且检查至少触发一次；对 stock 配置零 override |
-| E | 规则 9、Stop hook 文案、`run_dies_with_the_session` 三处的"怎么等"：等 PID 与变化的 tail，把评估链到 run 退出 | `7832cb9` | `58af0780` | `…-r02-e-wait-on-process-x4`，`e02r01–04` | run 死亡/退出到下一条命令之间的 GPU 空转 < 0.15 h/cell |
+| E | 规则 9、Stop hook 文案、`run_dies_with_the_session` 三处的"怎么等"：等 PID 与变化的 tail，把评估链到 run 退出 | `7832cb9` | `58af0780` | `…-r02-e-wait-on-process-x4`，`e02r01–04` | 条件候选：先读 Round 01 guard；若 ≥7/8 已 <0.15 h，则 target 饱和、释放前整块撤回 E；否则最后运行，读 run 死亡/退出到下一命令的空转 <0.15 h/cell |
 | H | `setup.data` 只在 family 训练目标文本时必填（schema、questions、模板注释） | `b52e5f2` | `88133acb` | `…-r02-h-eval-only-data-x4`，`h02r01–04` | 非训练卡上零伪造数据条目、零 `data_files_exist` override；`fields_filled` 不降 |
 | 漂移对 B | guard tree；使用六候选构造后恢复的同代 AWM paths，run_index 4 | `2f64581` | `189319d6` | `…-r02-guard-drift-b-x2`，`g03r01–02` | 并入 baseline 池；与 D/E/H 的 shipped paths 只差候选项 |
 
-波次：第一波 = A v2、B v2、C v2 + 漂移对 A（14）+ 2 机动；第二波 = D、E、H + 漂移对 B（14）+ 2 机动。
+原冻结波次为 A/B/C 与 D/E/H。Window 02 后的**放行顺序**调整为：第一可释放波 = D、B v2、C v2 +
+漂移对 A（14）+ 2 机动；第二波 = A v2、H、以及由当时证据在 G/P1 中只选一个单项候选 + 漂移对 B。
+E 保持 held 但不进入释放波，直到 Round 01 guard 的条件判定完成；若未饱和才作为最后一个 screen。
 D 是 A 推荐的修法所制造的陷阱的机械守卫，synthesis 建议 A 胜出后并入 A；作为独立筛选它回答的是
 检查是否误报、是否真的省下小时。
 
@@ -99,3 +102,22 @@ operator 于 2026-09-03 02:48 UTC 登记 held receipts（commit `3fd73fc`）：A
 排队未做（台账）：F `terse_target_style`（数据风格，规程不该规定训练数据，先观察）、G
 `trl_grpo_gemma_zero_gradient`（5/5 对照 GRPO cell 踩到；规程臂无 RL 卡，条目会测未验证的训练器这个
 信念是否挡住了 RL）、I `stop_token_consistent` 接受脚本追加的声明（3/9 cell 为它重写数据）。
+
+## 七、Window 02 的 Fable 平行审阅裁决（2026-09-03 08:45 UTC）
+
+Fable 的八份独立 cell 报告与 synthesis 在
+`doc/exp_protocol_iterations/2026-09-03-trace-review-round00-window02-fable.md`。planner 完整读取 synthesis
+后接受三个实验设计结论，但不改任何已冻结的 protocol tree：
+
+1. A 的原主指标已饱和：本窗口 baseline 5/5 最终都交付 greedy；真正有区分度的是首次 post-SFT eval
+   到 measured decode choice 的时间（p00r11 3.3 h，其余四个 ≤12 min）及期间错误判定的卡片数。因此只改
+   screen observable，不造 A v3。
+2. D 在本窗口覆盖 p00r11、p00r14、c01r01、c01r03 共 3.3 h；两窗口约 8.7 h，且 check 对安全/不安全
+   配置的方向由 trace 验证。D 提到第一可释放波，A 延后。
+3. E 的 `<0.15 h` 指标在本窗口 baseline 5/5 已达标。Round 01 guard 使用同一旧等待措辞，是预注册的
+   判定样本：若 ≥7/8 仍达标，E 没有可移动的 baseline，jobs 91064–91067 在启动前整块撤回，并由 G 或
+   P1（届时只选一个、先写 spec、单项树）替代；若不达标，E 保留但最后放行。当前不取消、不释放。
+
+B 的 weak sampled-stop 更正、C 的 repeated-read 证据、H 的 fake-data 证据和排队方向 P1–P4 均进入分析
+口径与方向台账；它们不重写本轮冻结候选。所有放行仍同时要求 clean Round 01 guard 与原生两节点隔离；
+截至本裁决节点 1 仍因 `SlurmdSpoolDir is full` drain，所以门保持关闭。AIME2025 仍只在晋升前运行。
