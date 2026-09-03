@@ -1,6 +1,6 @@
 # Round 02 · E 的条件替代候选:G 与 P1(单项、已构建、未排队)
 
-**日期**:2026-09-03 09:05 UTC **状态**:候选 commit 已在分支上,manifest 未建 **前置**:`doc/spec/2026-09-02-exp-protocol-round02-independent-screens.md` §七(planner 裁决 `5f3a69a`:若 Round 01 guard ≥7/8 的 cell 已满足 E 的 <0.15 h 目标,E 的 held 块 91064–91067 在启动前整块撤回,并由 G 或 P1 中**一个**独立单项候选替代)、`doc/exp_protocol_iterations/2026-09-03-trace-review-round00-window02-fable.md` §3–§4。
+**日期**:2026-09-03 08:50 UTC **状态**:候选 commit 已在分支上,manifest 未建 **前置**:`doc/spec/2026-09-02-exp-protocol-round02-independent-screens.md` §七(planner 裁决 `5f3a69a`:若 Round 01 guard ≥7/8 的 cell 已满足 E 的 <0.15 h 目标,E 的 held 块 91064–91067 在启动前整块撤回,并由 G 或 P1 中**一个**独立单项候选替代)、`doc/exp_protocol_iterations/2026-09-03-trace-review-round00-window02-fable.md` §3–§4。
 
 ## 一、为什么现在就构建
 
