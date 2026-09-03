@@ -94,12 +94,6 @@ verdict in progress.
 | `L2_effect` | Against the comparator, which direction and how much? Give an **interval** and a confidence. `flat` is a direction: a packaging card expects no change. | the type's effect prior and grade; earlier cards of this run; precedents in `history/` with the same base model and type; the noise floor at the card's `n` |
 | `L3_worth_now` | Given `situation` — hours left, the incumbent, what was already rejected — is this the right use of the next hours? `yes` / `no` / `defer` | L0–L2, the type's cost, `situation.remaining_h`, `setup.budget.planned_h`, the cheaper alternatives the card did not take |
 
-For a C3/C4 training card, L3 `yes` needs checked evidence that the expected
-effect is resolvable above the card's evaluation noise floor **and** that no
-unspent C2 or C5 action offers the same decision for minutes instead of hours.
-Otherwise answer `defer` and name that cheaper discriminator. Remaining hours
-alone are never evidence for `yes`.
-
 Every `basis` entry is an `evidence[].id`. If you cannot point at a file for
 a claim, the claim is a prior: say so in the note and keep the confidence low.
 
@@ -138,6 +132,12 @@ verifier tier and the minutes it costs:
 - `cheaper_variants` — the same idea at lower cost or risk ("[tier 2, 1 min]
   200 steps on a 500-row subset first"; "LoRA with `modules_to_save` given
   1.5 h left").
+
+The first precondition is the single highest-value action: give its tier and
+minutes, an explicit pass/fail observation, and which of L0–L3 it would change.
+Order any remaining suggestions after it. If no affordable action could change
+the verdict, leave `preconditions` empty rather than leading with generic
+advice — `lock` surfaces this first item to the scientist.
 
 Not a new direction: "try DPO instead" on an SFT card is outside your role.
 
