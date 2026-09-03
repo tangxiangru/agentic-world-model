@@ -88,6 +88,12 @@ D 是 A 推荐的修法所制造的陷阱的机械守卫，synthesis 建议 A �
 用 `2f64581` 的 drift A v2 替代；尚未登记的 drift B 也在登记前改为 `2f64581`。
 修正后的第一、二波共 8 份 manifest 均通过完整 site `awm ptb check`（0 issues）。
 
+operator 于 2026-09-03 02:48 UTC 登记 held receipts（commit `3fd73fc`）：A v2 jobs
+91046–91049，B v2 91050–91053，C v2 91054–91057，漂移对 A v2 91058–91059；D
+91060–91063，E 91064–91067，H 91068–91071，漂移对 B 91072–91073。28/28 均为
+`PENDING(JobHeldUser)`，`ReqNodeList=slurm2-a3nodesetondem-[0-1]`，ownership OK。旧 A/B/C v1
+与旧 drift A jobs 90845–90858 均从 PENDING 整块取消；无 RUNNING job 被触碰。
+
 排队未做（台账）：F `terse_target_style`（数据风格，规程不该规定训练数据，先观察）、G
 `trl_grpo_gemma_zero_gradient`（5/5 对照 GRPO cell 踩到；规程臂无 RL 卡，条目会测未验证的训练器这个
 信念是否挡住了 RL）、I `stop_token_consistent` 接受脚本追加的声明（3/9 cell 为它重写数据）。
