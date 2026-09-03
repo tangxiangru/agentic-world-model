@@ -47,3 +47,34 @@ nohup tools/wma-evolve-hook run --interval 3600 \
 Only one daemon can hold `daemon.lock`. To replace it, send `TERM` to the exact
 PID in `daemon.json`, confirm it stopped, and then start the new version. This
 process is not a Slurm job and does not own or cancel accelerator work.
+
+## Scheduled operator continuation
+
+Since 2026-09-03 the operator also has a 30-minute server cron entry. It calls
+`awm/wma_evolve_timer.py`, which uses the installed `codex queue` CLI to continue
+the existing operator task with `doc/reference/wma_evolve_timer_prompt.md`.
+The hourly hook still performs read-only Claude analysis; the operator task
+verifies reports, replenishes experiments, records results and commits/pushes
+validated changes. PR polling is not involved.
+
+The dispatcher changes no model, approval or sandbox settings. It holds a local
+lock and reads the local Codex queue database read-only to avoid adding a second
+message when this task already has queued input. A missing queue database,
+changed schema, wrong branch or unavailable app server prevents dispatch and is
+recorded, rather than starting an unrelated task. This uses server cron, not the
+desktop Scheduled interface; the server and the existing Codex app-server must
+remain available.
+
+Configuration, the last tick and cron logs live in
+`/rmeng_data/robtang/wma-evolve-hook/gangda_wma_evolve/timer/`:
+
+- `config.json`: enabled flag, exact task UUID, repo, CLI/socket/database paths,
+  and operator prompt path; no credentials.
+- `last_tick.json`: queued, skipped, disabled or error status.
+- `cron.log`: dispatcher output.
+- `crontab.before`: the user's crontab before installation.
+
+Use `crontab -l` to inspect the marked `gangda-wma-evolve-operator` entry.
+Set `enabled` to false in this timer's `config.json` to pause operator wakeups;
+remove only that marked cron entry to uninstall. This does not stop the separate
+read-only Claude completion hook. A paused or removed timer cancels no Slurm job.
