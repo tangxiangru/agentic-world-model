@@ -222,3 +222,29 @@ def test_blocking_review_cli_returns_at_once_on_the_control_arm(tmp_path: Path, 
     assert "no world-model agent is attached" in capsys.readouterr().out
     assert _client_main(["wma", "review", "--dir", str(session), "exp-01", "exp-02"]) == 2
     assert "batch several with --background" in capsys.readouterr().out
+
+
+def test_the_wait_heartbeat_reaches_a_redirected_log_while_the_wait_is_still_running(tmp_path: Path) -> None:
+    """w10r04 (2026-09-03) ran `nohup awm exp_protocol lock … > logs/lock.log &` and tailed the log: with a
+    block-buffered stdout the file stayed empty for the whole wait. Every progress line must land at once."""
+    import subprocess
+    import sys
+    import time as _time
+    session = _session(tmp_path)
+    log = tmp_path / "lock.log"
+    script = (
+        "import sys; from awm import wma_client\n"
+        f"wma_client.review_and_wait({str(session)!r}, 'exp-01', timeout_min=0.05, heartbeat_s=0.1, poll_s=0.02)\n"
+    )
+    with log.open("w") as handle:
+        proc = subprocess.Popen([sys.executable, "-c", script], stdout=handle, stderr=subprocess.STDOUT)
+        try:
+            deadline = _time.monotonic() + 2.0
+            seen = ""
+            while _time.monotonic() < deadline and "min elapsed" not in seen:
+                _time.sleep(0.1)
+                seen = log.read_text(encoding="utf-8")
+            assert proc.poll() is None, "the wait must still be running when the heartbeat is read"
+            assert "WMA review requested for exp-01" in seen and "min elapsed" in seen, seen
+        finally:
+            proc.wait(timeout=10)

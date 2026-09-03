@@ -10,6 +10,7 @@ repository or reads scientist identity. Run from the repo root with `.venv/bin/p
 | `uptake.py <batch>… --out D` | cards, locks, verdicts, `task/.wma/`, `solve_parsed.txt.gz` | `uptake.{json,md}` | per-card funnel: requested → response → delivered → **verdict before launch?** → read (lag) → uptake class; aggregates per cell and overall; since the blocking lock also `lock_wma_state` / `waited_s` from the lock file — *was the verdict in the loop* |
 | `verdicts.py <batch>… [--inflight] --out D` | verdicts (+ `.rejected`), cards, `wma_private/*.transcript.jsonl.gz` | `verdicts.{json,md}` | per-verdict rows and aggregates **by skill hash**: L0–L3 answers, interval width / noise floor, raw L2 coverage on closed cards with misses above/below, probes and `changed`, history citations on C3/C4, checkpoint suggestions, turns and cost — *calibration and cost per candidate* |
 | `timeline.py <cell>` | the same | stdout | one cell's lock → request → response → verdict → launch → read → run-end lines, for the hand-reading step |
+| `inflight_gate.py [glob]` | `<cell>.inflight/solve_out.tail` peeks of running cells | stdout | per cell: LOCK / GATE (wait, verdict line, failed/timeout) / LAUNCH in time order — the lock gate read while the wave runs; a 200-line window, not the cell |
 
 `rcalib.py` holds the readers (cards, locks, verdicts, queue records, the scientist transcript
 parser, launch/read detection, noise floor, Spearman).

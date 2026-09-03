@@ -27,6 +27,13 @@ NOT_ATTACHED = ("no world-model agent is attached to this cell; no verdict will 
 DEFAULT_WAIT_MIN = 20.0
 
 
+def say(line: str) -> None:
+    """Print one progress line and flush it. Scientists background the wait (`nohup awm exp_protocol
+    lock … > logs/lock.log &`) and tail the file; block-buffered stdout showed them an empty log for
+    the whole wait (w10r04, 2026-09-03)."""
+    print(line, flush=True)
+
+
 class NoSidecar(RuntimeError):
     """No sidecar opened a queue in this session: the control arm, or a sidecar that never started."""
 
@@ -137,7 +144,7 @@ def summarise_verdict(verdict: dict[str, Any]) -> str:
 
 def wait_for_verdict(session_dir: Path, card_id: str, request_id: str, *,
                      timeout_s: float = DEFAULT_WAIT_MIN * 60, poll_s: float = 5.0,
-                     heartbeat_s: float = 30.0, out: Callable[[str], None] = print,
+                     heartbeat_s: float = 30.0, out: Callable[[str], None] = say,
                      clock: Callable[[], float] = time.monotonic,
                      sleep: Callable[[float], None] = time.sleep,
                      prior_verdict: tuple[int, int] | None = None) -> dict[str, Any]:
@@ -170,7 +177,7 @@ def wait_for_verdict(session_dir: Path, card_id: str, request_id: str, *,
 
 
 def review_and_wait(session_dir: Path, card_id: str, *, timeout_min: float = DEFAULT_WAIT_MIN,
-                    out: Callable[[str], None] = print, **wait_kwargs: Any) -> dict[str, Any]:
+                    out: Callable[[str], None] = say, **wait_kwargs: Any) -> dict[str, Any]:
     """The blocking form of a review: enqueue one card, wait, print the verdict line. The result
     dict is what `lock` records; ``state`` is ``not_attached`` on the control arm."""
     session_dir = Path(session_dir).resolve()
