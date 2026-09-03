@@ -232,6 +232,13 @@ Fable 单独写一次跨轮 meta retrospective；只有至少两个 rounds 重�
    提案包含并行多个单一改动的 candidate；§四 把一波的组成定为 3 个 candidate + 2 个
    baseline + 2 个机动 slot。§四、§五据此修订，自 Round 02 起生效；已登记的 Round 00/01
    cells 不变。held pending 下限 8 个 = 两个 candidate 的筛选 block。
+6. **（2026-09-03 约 00:20 UTC）meta 循环必须像这次一样，用 subagent 批量读 trace，再提出下一轮改动；
+   全程自主执行，用户不在旁监督。** 落实为 `skills/exp_protocol_meta/trace_review.md`（reviewer 简报、
+   报告 schema、synthesis 简报）、`SKILL.md` 循环第 7–9 步的修订、`metrics.md` 的 trace 指标、
+   `iteration_record.template.md` 的 Trace review 与 Directions 两节，以及
+   `tools/exp_protocol_cell_read.py`、`tools/exp_protocol_trace_timeline.py`。这是用户对循环本身的
+   决定，因此在 Round 01/02 进行中修改 `exp_protocol_meta` 是被授权的；规程树（`skills/exp_protocol`）
+   本身未因此改动。
 
 ## 八、结果与 provenance
 

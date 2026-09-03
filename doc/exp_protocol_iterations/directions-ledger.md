@@ -36,6 +36,7 @@
 | 09-02 23:05 | **planner 否决阶梯，采用独立变体**（先回退再添加） | 阶梯 | B=A+B 相对基线是两项改动；A 失败会污染 B/C 的护栏 | PR 评论 5517615610、round02 spec §二 |
 | 09-02 23:20 | 取消 baseline-b（8 个 PENDING），Round 02 held 登记后 | 保留精度扩展 | 整块撤回不构成挑选；让 Round 02 早一波 | `696dc6b`/`3bb4a07` |
 | 09-02 23:45 | 候选 C 措辞由 planner 修正 | 我的原文 | "抛硬币"表述不可辩护 | `7f117a0`、`ca90b31` |
+| 09-03 00:20 | **meta 循环加入 subagent trace review**：每个分析窗口由 reviewer subagent 分组读全部 cell 的 trace、synthesis subagent 排名解释并提候选；`exp_protocol_meta` 据此修订（用户授权在轮中修改） | 继续由我手工逐 cell 读 | 用户要求 meta skill 像本次一样启动 subagent 批量分析 trace 再提出新一轮修改，全部自主执行；手工读 16 个 cell 不可持续，且 Round 00 证明数字说不出原因、trace 才说得出 | iteration-basis §七 第 6 条、`skills/exp_protocol_meta/trace_review.md`（`fe7895e`） |
 
 ## 三、这份台账之外还没写下来的
 
