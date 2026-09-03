@@ -140,3 +140,11 @@ Read every `reports/<cell>.md` and the round record's window. Produce:
 The synthesis is a document under `doc/exp_protocol_iterations/`; it is
 evidence, not a decision. The decision is yours and goes in the round record
 and the ledger.
+
+Before treating a report as candidate-design evidence, check the frozen
+candidate text, not just its short label: a suggestion to add PID checking is
+redundant if that commit already has it. Verify alleged counterexamples against
+the full predicate using retained logs as well as trace excerpts, and preserve
+any report corrections separately from the original helper output. Use
+`metrics.md` for composite-call timing, sample-count and cohort-denominator
+checks before feeding a number into a screen gate.

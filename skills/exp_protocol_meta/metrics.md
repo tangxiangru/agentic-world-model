@@ -7,13 +7,13 @@ locks, and preflight reports in each scientist's `memory/cards/`.
 |---|---|---|
 | `accuracy` | the official score from `metrics.json` (PostTrainBench writes `{"accuracy", "stderr"}` beside `task/`) | up, but only outside run-to-run noise (~0.01–0.03 on gsm8k) |
 | `pitfalls_cost_h` | hours the scientist itself attributed to trouble before launches (`situation.pitfalls_hit[].cost_h`, summed) | **down** — this is the protocol's own KPI: GPU hours not wasted |
-| `pitfalls_hit` | count of the above | down |
+| `pitfalls_hit` | count of card entries above, not distinct reviewer mechanisms | down |
 | `preflight_fail` | preflight failures recorded in locks (a lock is only written after preflight passes, so this counts re-runs) | down over rounds as the checks teach |
 | `n_locked_open` | cards locked and never closed | down — an abandoned card is a run whose outcome was lost |
 | `n_closed` / `n_cards` | how much of the work was recorded end to end | up |
 | `adopted` | cards whose decision was adopt | context, not a target |
 | `fields_filled` | share of required fields non-empty, averaged over cards | up; a field that stays empty across variants is either unanswerable or badly asked |
-| `n_relocked` | cards locked more than once (`--relock`) | down; each one has a reason in its lock file — read them |
+| `n_relocked` | cards locked more than once (`--relock`), not the number of relock events | inspect reasons; avoidable churn should fall, but a relock that correctly pins a repair is useful |
 | `n_overrides` | pre-flight checks let through with `--override`, current and re-lock history | a check overridden in many cells is a check that is wrong for that data: fix the check |
 | `n_unreadable` | `exp-NN.yaml` files that could not be parsed | zero; a non-zero count is a card written under time pressure and lost |
 
@@ -30,14 +30,39 @@ read what the cards cannot say; the reviewer reports carry them per cell.
 | `hours_used` | wall time of the scientist session (`time_taken.txt`, or first to last turn) | context; both arms stop 1–2 h early |
 | `hours_to_first_train_launch` | from the first turn to the first real training launch | down — Round 00 protocol cells took longer to launch than controls |
 | `protocol_hours` | tool time in `awm exp_protocol`, card edits, reading the skill | down without `fields_filled` dropping |
-| `waiting_hours` | tool time in sleep/tail/pgrep loops on running jobs | context; it is the training time seen from the trace |
+| `waiting_hours` | raw tool time in sleep/tail/pgrep loops, sometimes including foreground evaluation | context only; not post-exit idle and not comparable until composite calls are separated |
+| `post_exit_idle_h` | cumulative non-overlapping time per cell after the producing process exits and before the next useful action, excluding overlapping productive work | down against the predeclared per-cell threshold; report uncertain timestamp bounds and per-event maxima separately |
 | `lock_before_launch` | training launches after their card's lock, from trace timestamps | up to all/all; `collect` cannot see ordering |
-| `greedy_shipped` | a greedy or measured `generation_config` written for `final_model` | up — 4/9 protocol vs 7/7 control in Round 00, worth 7–16 points per cell |
+| `greedy_shipped` | a greedy or measured `generation_config` written for `final_model` | verify the measured choice; Round 00's large gains are historical observations, not a universal benefit for every artifact |
 | `rl_used` / `rft_tried` | on-policy RL or rejection sampling attempted, and the card's verdict | context, not a target: the protocol does not say what to run |
 | `largest_eval_n` | the biggest evaluation behind a shipping decision | up to ≥500; rankings at 150–300 inverted at 500–1319 |
 | `stop_reason` | the scientist's stated reason for ending, quoted | read it; an early stop with a run alive is a lost cell |
 
 ## Reading them together
+
+Measurement checks from window 03:
+
+- Prefer the actual inspect sample count/resolved evaluation record for `n`.
+  Log bytes / 44 KB is only a rough hint. For these GSM8K binary-accuracy
+  reports with the verified sample-SE convention, `p(1-p)/SE² + 1` can
+  cross-check n; do not generalize that formula to other estimators or treat
+  rounded scores as exact counts.
+- Split composite calls before attributing time: `lock; evaluate` is not all
+  paperwork, and `launch; sleep` is not all launch overhead. A mention of
+  `final_model` in a card or task title is not an artifact write.
+- Read retained training logs before declaring early loss unobservable.
+  Distinguish terminal logged loss from whole-run `train_loss`, and record
+  the logging cadence; missing individual steps are unknown, not guessed.
+- A counterexample must satisfy the candidate's full frozen predicate,
+  including sampled/trained parent identity and data composition. A mixed
+  teacher/self stage is not interchangeable with a self-only stage.
+- Do not double-count an invalid-save run's post-exit waiting under both D
+  and E when reporting total savings. Low GPU memory or an unchanged log
+  alone is not proof that the producing process exited.
+- Keep exact cohort IDs in denominators. Window 03's three new guard cells
+  include two old identities and only one of the prescribed strict eight.
+  An explicit tie-break after a null paired test is not a proven gain, but
+  choosing a tied artifact is not itself statistical misconduct.
 
 - `accuracy` flat, `pitfalls_cost_h` down: the protocol saved time that the
   scientist did not convert into score. Look at what it did with the hours.

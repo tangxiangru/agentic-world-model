@@ -121,3 +121,30 @@ Fable 的八份独立 cell 报告与 synthesis 在
 B 的 weak sampled-stop 更正、C 的 repeated-read 证据、H 的 fake-data 证据和排队方向 P1–P4 均进入分析
 口径与方向台账；它们不重写本轮冻结候选。所有放行仍同时要求 clean Round 01 guard 与原生两节点隔离；
 截至本裁决节点 1 仍因 `SlurmdSpoolDir is full` drain，所以门保持关闭。AIME2025 仍只在晋升前运行。
+
+## 八、Window 03 的 pre-launch 判读澄清（2026-09-03）
+
+planner 完整读取本地 Opus synthesis、两臂最好/最差报告，并核对三张 guard 卡、冻结 E/C 文本及
+P1 专项日志。裁决见 `doc/exp_protocol_iterations/trace-reviews/window03-local/planner-decision.md`。
+本节不改 A/B/C/D/E/H 的冻结 protocol tree 或 manifest，不 release、不 cancel；D/B/C 第一波不变。
+
+- A 的起点仍为首次 post-SFT eval 结束，终点为同权重 measured decode choice 完成；仅 source inspection
+  或开训前发现 override line 不替代测量。正确性/clamp 单列，不在本窗口轮换 primary 指标。
+- C 按 §三及冻结 `57511f9` 规则 2 判读：最终交付选择有 n≥500 的有效比较的 cell 至少 3/4，
+  并保留 uncertainty/reversal 判据。§六“每张卡 n≥500”的简写以此澄清：smoke 和足以承载大差距的
+  小 n 检查并非一概非法，逐卡 n 分布另报；仅跑过一个与交付无关的大 n eval 不算通过。样本数以实际
+  eval metadata 为准，不用 44 KB/file-size 估计作门槛。本口径在所有 C cells 尚未开跑时冻结，不根据其结果调整。
+- D 的 failed compute、修复时间、post-exit idle 分列；后者与 E 重叠，不叠加宣传总节省。未遇到
+  unsafe greedy parent 不等于证明 check 有效；check exercised 与 stock false-positive 判据不变。
+- E 的 <0.15 h/cell 是每 cell 累计 post-exit idle，不是单次最大值。报告互不重叠的退出→下一有用动作
+  区间、出处和时间不确定范围；有同时进行的有效工作不算 idle，边界估计不自动判 pass。只用
+  g01s01–08 判断 ≥7/8 条件，不能混入 g01r01/02 或 controls。若该 cohort 已有至少两个明确 fail，
+  ≥7/8 饱和已不可能，可先冻结“保留 E”的结论并说明其余 straggler 无法改变它；这不替代
+  Round 02 所需的完整 strict-guard safety gate。
+- 冻结 E 已有 `kill -0 <pid>`，因此不为“加 PID”重复建版本；其“unchanged tail means dead”强断言
+  被登记为误判风险。若 E 保留，在 release 前解决此风险；任何文本修订仍须新 immutable manifest/receipt。
+- H 同时计 fake files、non-applicable data entries 和 overrides；零 override 不等于没有 workaround，
+  但真实且适用的可选数据引用不被禁止。其余 required-field 完整性与字段分母另报，H tree 不变。
+- P1 不采用“所有 flat RFT 小时都可避免”口径。按冻结文本核对 parent、数据混合、终点/平均 loss、
+  前 20 optimizer steps 的实际日志及 matched score。专项审核未证实两个新 guard cell 都命中，
+  也未证明完整 P1 判据已被反例推翻；G/P1 仍不登记，等待 prescribed cohort 的证据。

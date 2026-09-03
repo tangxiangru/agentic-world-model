@@ -1,6 +1,6 @@
 # Trace review window 03 — local Claude — 2026-09-03
 
-Status: **all nine cell reports received; independent synthesis running; scientific decisions pending**. This is a frozen eight-new-clean window, not a claim that Round 01 or Round 02 is complete.
+Status: **analysis window closed; no frozen protocol-tree change, no cancellation, no promotion**. The independent synthesis and planner adjudication are complete. This is a frozen eight-new-clean window, not a claim that Round 01 or Round 02 is complete. Authoritative outcome: [planner decision](trace-reviews/window03-local/planner-decision.md); original [Opus synthesis](trace-reviews/window03-local/synthesis.raw.md) and [P1 predicate audit](trace-reviews/window03-local/p1-predicate-audit.md) remain separate.
 
 ## Frozen evidence and sessions
 
@@ -41,9 +41,9 @@ At 18:42:47 the operator restored user holds on exactly jobs 91046–91073 after
 
 ## Synthesis and planner decision
 
-The reports are preserved verbatim in [cells/](trace-reviews/window03-local/cells/) (eight NEW plus c01r03 calibration), with supplementary [reviewer notes](trace-reviews/window03-local/reviewer-notes/). Independent local Opus 5[1m] max synthesis session: `09a3ddd9-6e5a-4c03-9398-c7d83245c65e`. The planner has read the best/worst NEW guard reports (g01r02/g01r01) and control reports (c01r04/c01r05) in full.
+The reports are preserved verbatim in [cells/](trace-reviews/window03-local/cells/) (eight NEW plus c01r03 calibration), with supplementary [reviewer notes](trace-reviews/window03-local/reviewer-notes/). Independent local Opus 5[1m] max synthesis session `09a3ddd9-6e5a-4c03-9398-c7d83245c65e` has delivered; the planner read it in full, as well as the best/worst NEW guard reports (g01r02/g01r01) and control reports (c01r04/c01r05).
 
-Planner checks to resolve before decisions (original reports remain unedited): c01r04's stated +0.036 versus the v3 mean is an arithmetic error (0.792267 − 0.688563 = +0.103704); E's <0.15 h/cell target cannot be declared passed using a per-event maximum when the same report totals 0.25 h/cell (c01r05); g01r01's estimated 0.145 h is borderline, not a precise pass. `n_relocked` counts cards (one for g01r02), while the reviewer describes two relock events. Paired nonsignificance does not itself forbid shipping a tied artifact; distinguish an explicitly labelled tie-break from claiming a proven improvement. Concurrency is a hypothesis when n or other evaluation settings also differ, not an isolated causal effect.
+Planner checks resolved in the linked decision (original reports remain unedited): c01r04's stated +0.036 versus the v3 mean is an arithmetic error (0.792267 − 0.688563 = +0.103704); E's <0.15 h/cell target cannot be declared passed using a per-event maximum when the same report totals 0.25 h/cell (c01r05); g01r01's estimated 0.145 h is borderline, not a precise pass. `n_relocked` counts cards (one for g01r02), while the reviewer describes two relock events. Paired nonsignificance does not itself forbid shipping a tied artifact; distinguish an explicitly labelled tie-break from claiming a proven improvement. Concurrency is a hypothesis when n or other evaluation settings also differ, not an isolated causal effect.
 
 ### Planner's three-card read (guard variant)
 
@@ -57,4 +57,4 @@ Card collection for the three NEW guard cells is saved in [guard-collect.csv](tr
 
 The excluded baseline failure has a separate [p00r16 review](2026-09-03-p00r16-scorer-failure.md); its n=500 score is not an official result.
 
-Pending the independent synthesis output. Cell reports are saved, synthesis is dispatched, and the planner's best/worst report and three-card reads are complete. Still required before closing the window: read the full synthesis, resolve the metric checks above, adjudicate candidate observables and whole-block pending triage, and update the ledger. E's saturation condition is evaluated on the prescribed full strict-guard block, not on the three guard cells in this window. No AIME2025 work or baseline promotion is authorized by this interim report.
+The synthesis has been adjudicated, metric conventions clarified before C/E/H screens start, and the ledger updated. D/B/C remain first wave, A/H follow, E stays conditional held; G/P1 remain unregistered and P5 is an investigation, not a new screen. No pending block is withdrawn on this window's evidence. E uses the exact strict cohort (logical bounds may establish non-saturation early), never the mixed three guard cells in this window. This closes eight NEW cells; the four later strict clean cells remain outside the count and under independent addendum review. AIME2025 and baseline promotion remain untouched.
