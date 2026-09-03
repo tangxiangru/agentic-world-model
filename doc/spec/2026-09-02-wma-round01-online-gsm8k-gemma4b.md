@@ -247,6 +247,32 @@ submit-ready 后,同一次 reconcile preview 才允许把旧 v3 标成取消并�
 重试 5),足以满足 guard,不会出现 13→0 的空窗。cell id:`w06..w09`
 (`run_index 6..9`),不复用 `w05`。
 
+## 2026-09-03 00:3x UTC:用户对 Slurm 重排的 v2 cell 的决定——同样修到 repeats 4
+
+Slurm 于 09-02 21:49 把 27 个跑在 scope 外的 v2 job 全部杀掉并重排(`Restarts=1`,
+`ReqNodeList` 修复为 `[2-3]`),它们的 ~7 h 进度全部丢失,现在从零开始、且在 FIFO 里排在
+Round 02 的 16 个候选 cell 之前。用户被问到"这 32 个 v0.2 同设置的 8-repeat cell 怎么处理"
+后选择:**按索引修到 repeats 4——保留 `w02/c02 r01..04`,其余仍 PENDING 的撤回**(不按
+分数选,这些 cell 没有任何结果;规则与 v3 的 `w04r01..04`/`c04r01..04` 一致)。
+
+落实(job 状态按 09-02 23:34 UTC 的 peek):
+
+- 保留(PENDING,按索引):`w02r02..04`(90607–90609)、`c02r01..04`(90614–90617),
+  共 7;`w02r01`(90606)已在跑,归入同一组 → `w02/c02` 各 4 个。
+- 撤回(全部 PENDING、从未在本子队列上跑过):`w02r05..08`(90610–90613)、
+  `c02r05..08`(90618–90621)、`w03r01..03`(90622–90624)、`w03r05..08`(90626–90629)、
+  `c03r01..03`(90630–90632),共 **18** 个 job。
+- 已 RUNNING、不动、按 sensitivity-only 记录(同 `w04r05`):`w03r04`(90625)、
+  `c03r04..08`(90786–90790)。
+- 撤回后安全 PENDING = 7 + 16 候选 = 23。若 operator 的 ≥ 24 guard 必须严格成立,按同一
+  索引规则再保留最低索引的一对 `w02r05`/`c02r05`(90610/90618)→ 25;planner 两者都接受,
+  由 operator 在 preview 时定。
+- cohort 命名:core-16(首波)不变;"all-32 / all-48"改为 **all-24**(首波 + `w02/c02 r01..04`)
+  与 **all-32**(再加 `w04/c04 r01..04`);sensitivity-only cell 单列。
+
+`queue.yaml` 里四个 v2 entry 的 `want` 保持 `submitted`(各含 RUNNING 或保留的 cell),
+每 cell 的撤回意图写在 `why` 与本节;执行方式与 09-02 22:15 的按 receipt 精确取消相同。
+
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
 1. **不走 pilot。** manifest 不带 `pilot` 块,queue entry 一律 `pilot: null`,直接以
