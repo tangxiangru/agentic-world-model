@@ -1,58 +1,88 @@
-# PostTrainBench WMA study
+# PostTrainBench recorder study
 
-The study runs the ordinary PostTrainBench scientist and evaluator under a
-no-information baseline and three information conditions:
+A collection run. The ordinary PostTrainBench scientist explores with **no prior
+information of any kind** and registers every experiment it runs, by command, so
+that the run leaves behind a list of reproducible training recipes — one
+experiment card per launch — each of whose checkpoints earns the official
+test-set score after the run.
 
-| condition | scientist information | peer WMA | prompt |
+The point is coverage of recipe space, not convergence on known-good recipes.
+The earlier information conditions (C1–C3: raw prior trajectories, and a peer
+world-model agent over them) are retired from the launcher; their agent
+directories remain in the tree but `wm_pack.sbatch` refuses their specs.
+
+| condition | scientist information | registration | prompt |
 |---|---|---|---|
-| C0 | none | no | PTB only (plus the shared session-completion note) |
-| C1 | raw prior trajectories | no | PTB + prior-runs section |
-| C2 | raw prior trajectories | trajectory WMA | PTB + prior-runs + WMA sections |
-| C3 | none of the raw trajectories | retrieval WMA over cards | PTB + WMA section |
+| **r** (recorder) | none | `awm wm submit` before and after each experiment | PTB + "Experiment log" + completion note |
+| c0 (baseline) | none | none | PTB + completion note |
 
-All three prompts also state the Claude CLI lifecycle explicitly: a final
-assistant response ends the scientist session, so the scientist must keep
-polling active training/evaluation work and verify model weights before exit.
+## The matrix
 
-The matrix is two scientist models (`claude-opus-4-8`, `claude-opus-5`) ×
-three conditions × two information scopes (`train`, `train,test`) × two
-repetitions: 24 one-H100 cells. `rollout/study_matrix.py --format specs` emits
-the authoritative list. C0 is the no-prior-information baseline outside that
-cross: it has no corpus and therefore no scope factor, so it runs two scientist
-models × four repetitions = 8 cells (`--c0`), the same four runs per model that
-each other condition gets from 2 scopes × 2 repetitions. Its spec is
-`c0:<model>:<rep>`, its agent `claude_noprior_noawm` is byte-for-byte the C1
-agent apart from its header comment, and its prompt is PTB's prompt plus only
-the session-completion note every condition carries. Opus 4.6 is not in the matrix. The peer model defaults
-to `claude-opus-5` and can be selected with `AWM_WMA_MODEL`.
+`rollout/study_matrix.py --format specs` is the authoritative list. Every cell
+is one H100 for ten hours, and the matrix is balanced by construction:
+
+    2 scientists (claude-opus-4-8, claude-opus-5)
+  × 2 tasks      (gpqamain, healthbench)
+  × 2 base models (gemma3-4b = google/gemma-3-4b-pt, qwen3-4b = Qwen/Qwen3-4B-Base)
+  × N repetitions (--reps, default 2)          → 16 cells; --reps 4 → 32
+
+A spec names its cell completely: `r:<scientist>:<task>:<base>:<rep>`. The
+task and base are in the spec rather than the environment so the same wrapper
+launches the whole matrix. Opus 4.6 is not in the matrix.
+
+## What a recorder cell does
+
+`claude_recorder/solve.sh` is PTB's Claude baseline lifecycle plus
+`awm wm init --mode record --arm null` and a copy of `exp-card.template.yaml`
+into the task directory. No prior runs, no memory mount, no peer session — the
+no-past-trajectories condition holds at the infrastructure level, not just in
+the prompt (`awm wm init` forces `arm null` in record mode even if told
+otherwise).
+
+The prompt's "Experiment log" section (`input/wma_section.md`) tells the
+scientist to fill sections 1–4 of a card and run `awm wm submit` before each
+launch, and sections 5–6 after. `submit` validates the card against the
+sufficiency checklist in `awm/wm/record.py`, prints `missing`, snapshots the
+scripts the card names (scientists edit `train.py` in place), archives
+`result.output_checkpoint` under `wm/checkpoints/<card>/`, and appends to
+`wm/records.jsonl`. After the run, `apply_wm_checkpoint_eval.py` has PTB score
+every archived checkpoint with its own evaluator into
+`$EVAL_DIR/wm_metrics/<card>.json`, so a run of ten experiments yields ten
+labelled recipes rather than one.
 
 ## Baseline-equivalent execution
 
 PostTrainBench's `src/run_task.sh` owns sandbox setup, the scientist timeout,
-trace parsing, evaluation, and the result status. C1 uses the same Claude CLI
-arguments and update step as PTB's `claude_non_api` agent. C2/C3 add only the
-peer WMA process. There is no study-specific credential scanner, stream
-redactor, result-tree sanitizer, model/cache attester, final-model validator,
-or release gate in the execution path.
+trace parsing, evaluation, and the result status. The private checkout carries
+only mechanical bridges:
 
-The private PTB checkout has five small mechanical bridges for the two study
-agents:
-
-- `POST_TRAIN_BENCH_EXTRA_BINDS` mounts the selected prior corpus or card
-  memory read-only.
-- Only names listed in an agent's `env_passthrough.txt` are forwarded through
-  PTB's `--cleanenv`; these are the Vertex routing names and the WMA model
-  selection, not credential values.
-- The packaged WMA source is copied into `/home/ben/agent` for C2/C3. C1 has no
-  payload.
-- The generated prompt is copied to `task/instruction.md` for the two study
-  agents because long multiline prompt values can be truncated by Apptainer.
+- Only names listed in `agents/<agent>/env_passthrough.txt` are forwarded
+  through PTB's `--cleanenv`; these are the Vertex routing names, not
+  credential values.
+- The packaged awm source is copied into `/home/ben/agent` for the recorder
+  (it needs `awm wm submit` and the card template).
+- The generated prompt is copied to `task/instruction.md`, because long
+  multiline prompt values can be truncated by Apptainer.
 - PTB's stable results root is mounted at the identical absolute path in its
-  evaluation container, so the evaluator can open `final_model` on relocatable
-  unprivileged Apptainer installations.
+  evaluation container.
+- `wm/checkpoints` is copied out beside `final_model` and each archived
+  checkpoint gets one official evaluation.
 
-None of these bridges interprets credentials or model artifacts. PTB's own trace
-parsing and any sanitization it normally performs remain unchanged.
+None of these interprets credentials or model artifacts.
+
+## Site requirements the tasks add
+
+- **HealthBench is LLM-graded.** Its `evaluate.py` calls `gpt-5-mini` and
+  declares `OPENAI_API_KEY` in `required_api_keys`, so PTB provisions that key
+  into the sandbox (rule 9 forbids the scientist from using it) and the
+  post-run per-checkpoint evaluation grades every archived checkpoint the same
+  way — budget for it. `evaluate_openrouter.py` is the `OPENROUTER_API_KEY`
+  fallback. GPQA Main is objectively scored and needs no key.
+- PTB's trace judges expect a ChatGPT-subscription `auth.json`; set
+  `POST_TRAIN_BENCH_JUDGE_AUTH_MODE=skip` (or `apikey`) in the launch
+  environment if that is not available.
+- `Qwen/Qwen3-4B-Base` and `google/gemma-3-4b-pt` must be in the HF cache
+  (`containers/download_hf_cache/`).
 
 ## Prepare a private checkout
 
@@ -67,28 +97,18 @@ export AWM_REPO_COMMIT=<full committed harness SHA>
 bash rollout/setup.sh
 ```
 
-`setup.sh` copies the source PTB `.env` unchanged except for its results
-directory, installs the two agents and prompt templates, and packages the WMA
-code for C2/C3. Authentication, containers, caches, scheduler behavior, and
-evaluation settings therefore come from the same PTB site configuration as a
-baseline run. The optional offline corpus credential guard and unused strict
-LLM-arm implementation are excluded from the sandbox payload.
-
 ## Launch
 
 `wm_pack.sbatch` accepts one spec and calls PTB directly with `NUM_GPUS=1`.
-The untracked Slurm wrapper should request one H100 per invocation and choose
-the scope-matched `PRIOR_RUNS` or `WM_MEMORY` path.
+The untracked Slurm wrapper should request one H100 per invocation.
 
 ```bash
 HV_PTB_DIR=/path/to/new-private-ptb \
-PRIOR_RUNS=/path/to/train-priors \
 PTB_GPU_SLOTS="$CUDA_VISIBLE_DEVICES" \
-bash rollout/wm_pack.sbatch c1:claude-opus-4-8:train:1
+bash rollout/wm_pack.sbatch r:claude-opus-4-8:gpqamain:gemma3-4b:1
 ```
 
-For a smoke, set `AWM_STUDY_SMOKE=1` and `PTB_NUM_HOURS=1`; C2/C3 then use the
-smoke prompt. A smoke is considered WMA-valid only after its logs show the peer
-started and the scientist consulted it. That monitoring decision is external
-to PTB and cannot turn a completed baseline-compatible evaluation into a
-custom sanitizer failure.
+For a smoke, set `AWM_STUDY_SMOKE=1` and `PTB_NUM_HOURS=1`; the recorder then
+uses `prompt_record_smoke`, which asks for one registered minimal experiment
+end to end. A smoke is valid when `wm/records.jsonl` holds a card submitted
+before and after the launch and `wm/checkpoints/` holds its archive.

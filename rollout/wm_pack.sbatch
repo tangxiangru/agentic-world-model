@@ -4,7 +4,11 @@
 set -euo pipefail
 
 [ "$#" -eq 1 ] || {
-    echo "usage: wm_pack.sbatch <one c0/c1/c2/c3 study spec>" >&2
+    echo "usage: wm_pack.sbatch <one study spec>" >&2
+    echo "  r:<scientist>:<task>:<base>:<rep>   recorder cell: no prior information, experiments" >&2
+    echo "                                      registered by command (task and base are part of the spec)" >&2
+    echo "  c0:<scientist>:<rep>                 no-prior baseline without registration" >&2
+    echo "                                      (task/base from PTB_TASK / PTB_MODEL)" >&2
     exit 2
 }
 
@@ -31,58 +35,43 @@ case "${CONDITION}" in
         # No prior information at all: c0:<scientist>:<repetition>. Nothing is
         # mounted and there is no scope factor.
         REPETITION="${FIELD3}"
-        SCOPE=none
         [ -z "${FIELD4}${FIELD5}${EXTRA}" ] || { echo "invalid C0 spec (c0:<model>:<rep>): ${SPEC}" >&2; exit 2; }
         AGENT=claude_noprior_noawm
         AGENT_CONFIG="${SCIENTIST}"
         PROMPT_NAME=prompt_noprior
         BINDS=()
         ;;
-    c1)
-        SCOPE="${FIELD3}"
-        REPETITION="${FIELD4}"
-        [ -z "${FIELD5}${EXTRA}" ] || { echo "invalid C1 spec: ${SPEC}" >&2; exit 2; }
-        AGENT=claude_fulltraj_noawm
-        AGENT_CONFIG="${SCIENTIST}"
-        PROMPT_NAME=prompt_fulltraj
-        : "${PRIOR_RUNS:?C1 requires PRIOR_RUNS}"
-        [ -d "${PRIOR_RUNS}" ] || { echo "missing PRIOR_RUNS: ${PRIOR_RUNS}" >&2; exit 2; }
-        BINDS=("${PRIOR_RUNS}:/home/ben/prior_runs:ro")
-        ;;
-    c2|c3)
-        ARM="${FIELD3}"
-        SCOPE="${FIELD4}"
+    r)
+        # Recorder: r:<scientist>:<task>:<base>:<repetition>. The scientist gets
+        # no prior information of any kind and registers each experiment itself
+        # with `awm wm submit`; nothing historical is mounted and there is no
+        # peer session. The task and base model are part of the spec so that one
+        # string names the cell across the whole matrix.
+        TASK="${FIELD3}"
+        BASE_ALIAS="${FIELD4}"
         REPETITION="${FIELD5}"
-        [ -z "${EXTRA}" ] || { echo "invalid ${CONDITION^^} spec: ${SPEC}" >&2; exit 2; }
-        AGENT=claude_wm
-        AGENT_CONFIG="${SCIENTIST}:${ARM}:${SCOPE}"
-        if [ "${CONDITION}" = c2 ]; then
-            [ "${ARM}" = traj ] || { echo "C2 requires the traj arm" >&2; exit 2; }
-            : "${PRIOR_RUNS:?C2 requires PRIOR_RUNS}"
-            [ -d "${PRIOR_RUNS}" ] || { echo "missing PRIOR_RUNS: ${PRIOR_RUNS}" >&2; exit 2; }
-            BINDS=("${PRIOR_RUNS}:/home/ben/prior_runs:ro")
-            PROMPT_NAME=prompt_wm_fulltraj
-            [ "${SMOKE}" != 1 ] || PROMPT_NAME=prompt_wm_fulltraj_smoke
-        else
-            [ "${ARM}" = retrieval ] || { echo "C3 requires the retrieval arm" >&2; exit 2; }
-            : "${WM_MEMORY:?C3 requires WM_MEMORY}"
-            [ -d "${WM_MEMORY}" ] || { echo "missing WM_MEMORY: ${WM_MEMORY}" >&2; exit 2; }
-            BINDS=("${WM_MEMORY}:/home/ben/wm-memory:ro")
-            PROMPT_NAME=prompt_wm
-            [ "${SMOKE}" != 1 ] || PROMPT_NAME=prompt_wm_smoke
-        fi
+        [ -z "${EXTRA}" ] || { echo "invalid recorder spec (r:<model>:<task>:<base>:<rep>): ${SPEC}" >&2; exit 2; }
+        case "${TASK}" in
+            gsm8k|gpqamain|healthbench) ;;
+            *) echo "unsupported task in ${SPEC} (gsm8k, gpqamain, healthbench)" >&2; exit 2 ;;
+        esac
+        case "${BASE_ALIAS}" in
+            gemma3-4b) MODEL_TO_TRAIN=google/gemma-3-4b-pt ;;
+            qwen3-4b)  MODEL_TO_TRAIN=Qwen/Qwen3-4B-Base ;;
+            *) echo "unsupported base model in ${SPEC} (gemma3-4b, qwen3-4b)" >&2; exit 2 ;;
+        esac
+        AGENT=claude_recorder
+        AGENT_CONFIG="${SCIENTIST}"
+        PROMPT_NAME=prompt_record
+        [ "${SMOKE}" != 1 ] || PROMPT_NAME=prompt_record_smoke
+        BINDS=()
         ;;
-    *) echo "condition must be c0, c1, c2, or c3: ${SPEC}" >&2; exit 2 ;;
+    *) echo "condition must be r or c0: ${SPEC}" >&2; exit 2 ;;
 esac
 
-case "${SCOPE}" in
-    train|train,test) ;;
-    none) [ "${CONDITION}" = c0 ] || { echo "invalid scope: ${SCOPE}" >&2; exit 2; } ;;
-    *) echo "invalid scope: ${SCOPE}" >&2; exit 2 ;;
-esac
-case "${REPETITION}" in
-    1|2) ;;
-    3|4) [ "${CONDITION}" = c0 ] || { echo "invalid repetition: ${REPETITION}" >&2; exit 2; } ;;
+case "${CONDITION}:${REPETITION}" in
+    c0:[1-4]) ;;
+    r:[1-8]) ;;
     *) echo "invalid repetition: ${REPETITION}" >&2; exit 2 ;;
 esac
 
@@ -104,7 +93,7 @@ if [ -z "${POST_TRAIN_BENCH_VISIBLE_GPUS:-}" ]; then
     export POST_TRAIN_BENCH_VISIBLE_GPUS="${PTB_GPU_SLOTS:-${CUDA_VISIBLE_DEVICES:-}}"
 fi
 
-echo "study cell=${SPEC} ptb_id=${CELL_ID} gpu=${POST_TRAIN_BENCH_VISIBLE_GPUS:-scheduler-default}"
+echo "study cell=${SPEC} ptb_id=${CELL_ID} task=${TASK} base=${MODEL_TO_TRAIN} gpu=${POST_TRAIN_BENCH_VISIBLE_GPUS:-scheduler-default}"
 exec bash src/run_task.sh \
     "${TASK}" "${AGENT}" "${MODEL_TO_TRAIN}" "${CELL_ID}" \
     "${NUM_HOURS}" "${AGENT_CONFIG}" 1

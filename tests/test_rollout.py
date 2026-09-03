@@ -17,16 +17,64 @@ REPO = Path(__file__).resolve().parent.parent
 ROLLOUT = REPO / "rollout"
 
 
-def test_matrix_is_exactly_24_one_gpu_cells_without_opus_46() -> None:
-    cells = study_matrix.study_matrix()
-    assert len(cells) == 24
-    assert len({cell.spec for cell in cells}) == 24
-    assert {cell.scientist_model for cell in cells} == {
-        "claude-opus-4-8",
-        "claude-opus-5",
-    }
+def test_recorder_matrix_is_balanced_over_scientists_tasks_and_bases() -> None:
+    cells = study_matrix.recorder_matrix()
+    assert len(cells) == 16
+    assert len({cell.spec for cell in cells}) == 16
+    assert all(cell.condition == "r" for cell in cells)
+    by_model = {m: sum(c.scientist_model == m for c in cells) for m in ("claude-opus-4-8", "claude-opus-5")}
+    assert by_model == {"claude-opus-4-8": 8, "claude-opus-5": 8}
+    assert {cell.task for cell in cells} == {"gpqamain", "healthbench"}
+    assert {cell.base_alias for cell in cells} == {"gemma3-4b", "qwen3-4b"}
+    assert {cell.record()["base_model"] for cell in cells} == {"google/gemma-3-4b-pt", "Qwen/Qwen3-4B-Base"}
     assert all("claude-opus-4-6" not in cell.spec for cell in cells)
     assert all(cell.record()["num_hours"] == 10 for cell in cells)
+    assert all(cell.record()["prior_rollout_count"] == 0 for cell in cells)
+    assert len(study_matrix.recorder_matrix(4)) == 32
+    with pytest.raises(ValueError):
+        study_matrix.recorder_matrix(9)
+
+
+def test_recorder_prompt_is_ptb_plus_experiment_log_and_completion_only() -> None:
+    base = "before\n\n## Rules\n1. baseline\n"
+    prompt = build_prompts.ptb_record(base)
+    assert "## Experiment log" in prompt
+    assert "awm wm submit" in prompt
+    assert "## Prior runs" not in prompt
+    assert "/home/ben/prior_runs" not in prompt
+    assert "world-model agent" not in prompt.lower()
+    assert "## Session completion" in prompt
+    assert prompt.count("## Rules") == 1
+    smoke = build_prompts.smoke_prompt(prompt, build_prompts.RECORD_SMOKE_SECTION)
+    assert "## One-hour recorder smoke protocol" in smoke
+    assert "world-model agent" not in smoke.lower()
+
+
+def test_recorder_scientist_invocation_matches_ptb_claude_baseline() -> None:
+    solve = (ROLLOUT / "agents/claude_recorder/solve.sh").read_text()
+    for fragment in (
+        "bash /home/ben/update_agent_cli.sh claude",
+        'claude --print --verbose --model "$MODEL"',
+        "--output-format stream-json --thinking-display summarized",
+        "--dangerously-skip-permissions",
+        "python3 -m awm.cli wm init",
+        "--mode record",
+        "--arm null",
+    ):
+        assert fragment in solve
+    assert "prior_runs" not in solve
+    assert "wm-memory" not in solve
+    assert "SendMessage" not in solve
+    subprocess.run(["bash", "-n", str(ROLLOUT / "agents/claude_recorder/solve.sh")], check=True)
+
+
+def test_recorder_agent_forwards_exactly_what_c0_forwards() -> None:
+    rec = ROLLOUT / "agents/claude_recorder"
+    c0 = ROLLOUT / "agents/claude_noprior_noawm"
+    assert (rec / "api_keys.json").read_text() == (c0 / "api_keys.json").read_text()
+    rec_env = [l for l in (rec / "env_passthrough.txt").read_text().splitlines() if l and not l.startswith("#")]
+    c0_env = [l for l in (c0 / "env_passthrough.txt").read_text().splitlines() if l and not l.startswith("#")]
+    assert rec_env == c0_env
 
 
 def test_prompts_are_ptb_plus_only_the_declared_study_sections() -> None:
@@ -144,50 +192,29 @@ def _fake_ptb(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 @pytest.mark.parametrize(
-    ("spec", "input_name", "agent", "config", "prompt", "mount"),
+    ("spec", "config", "task", "base", "cell_id"),
     (
-        (
-            "c1:claude-opus-4-8:train:1",
-            "PRIOR_RUNS",
-            "claude_fulltraj_noawm",
-            "claude-opus-4-8",
-            "prompt_fulltraj",
-            "/home/ben/prior_runs:ro",
-        ),
-        (
-            "c2:claude-opus-5:traj:train,test:2",
-            "PRIOR_RUNS",
-            "claude_wm",
-            "claude-opus-5:traj:train,test",
-            "prompt_wm_fulltraj",
-            "/home/ben/prior_runs:ro",
-        ),
-        (
-            "c3:claude-opus-4-8:retrieval:train:1",
-            "WM_MEMORY",
-            "claude_wm",
-            "claude-opus-4-8:retrieval:train",
-            "prompt_wm",
-            "/home/ben/wm-memory:ro",
-        ),
+        ("r:claude-opus-4-8:gpqamain:gemma3-4b:1", "claude-opus-4-8", "gpqamain",
+         "google/gemma-3-4b-pt", "test_r_claude-opus-4-8_gpqamain_gemma3-4b_1"),
+        ("r:claude-opus-5:healthbench:qwen3-4b:2", "claude-opus-5", "healthbench",
+         "Qwen/Qwen3-4B-Base", "test_r_claude-opus-5_healthbench_qwen3-4b_2"),
     ),
 )
-def test_pack_calls_ptb_directly_with_one_gpu(
-    tmp_path: Path,
-    spec: str,
-    input_name: str,
-    agent: str,
-    config: str,
-    prompt: str,
-    mount: str,
+def test_recorder_pack_calls_ptb_directly_with_one_gpu_and_mounts_nothing(
+    tmp_path: Path, spec: str, config: str, task: str, base: str, cell_id: str,
 ) -> None:
     ptb, capture, env_capture = _fake_ptb(tmp_path)
-    study_input = tmp_path / "study-input"
-    study_input.mkdir()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
     env = {
         **os.environ,
         "HV_PTB_DIR": str(ptb),
-        input_name: str(study_input),
+        # Even if a corpus is lying around in the launch environment, a
+        # recorder cell must not mount it.
+        "PRIOR_RUNS": str(corpus),
+        "WM_MEMORY": str(corpus),
+        "PTB_TASK": "gsm8k",
+        "PTB_MODEL": "google/gemma-3-4b-pt",
         "CAPTURE_ARGS": str(capture),
         "CAPTURE_ENV": str(env_capture),
         "PTB_RUN_ID": "test",
@@ -195,20 +222,52 @@ def test_pack_calls_ptb_directly_with_one_gpu(
     }
     subprocess.run(
         ["bash", str(ROLLOUT / "wm_pack.sbatch"), spec],
-        cwd=REPO,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
+        cwd=REPO, env=env, check=True, capture_output=True, text=True,
     )
     args = capture.read_text().splitlines()
-    assert args[0:3] == ["gsm8k", agent, "google/gemma-3-4b-pt"]
+    assert args[0:3] == [task, "claude_recorder", base]
+    assert args[3] == cell_id
     assert args[4:] == ["10", config, "1"]
     forwarded = env_capture.read_text()
-    assert f"POST_TRAIN_BENCH_PROMPT={prompt}\n" in forwarded
-    assert mount in forwarded
+    assert "POST_TRAIN_BENCH_PROMPT=prompt_record\n" in forwarded
+    assert "POST_TRAIN_BENCH_EXTRA_BINDS=\n" in forwarded
+    assert "/home/ben/prior_runs" not in forwarded
+    assert "/home/ben/wm-memory" not in forwarded
     assert "NUM_GPUS=1\n" in forwarded
     assert "POST_TRAIN_BENCH_VISIBLE_GPUS=7\n" in forwarded
+
+
+def test_recorder_smoke_uses_the_recorder_smoke_prompt(tmp_path: Path) -> None:
+    ptb, capture, env_capture = _fake_ptb(tmp_path)
+    env = {**os.environ, "HV_PTB_DIR": str(ptb), "CAPTURE_ARGS": str(capture),
+           "CAPTURE_ENV": str(env_capture), "PTB_RUN_ID": "test", "PTB_GPU_SLOTS": "0",
+           "AWM_STUDY_SMOKE": "1", "PTB_NUM_HOURS": "1"}
+    subprocess.run(["bash", str(ROLLOUT / "wm_pack.sbatch"), "r:claude-opus-5:gpqamain:qwen3-4b:1"],
+                   cwd=REPO, env=env, check=True, capture_output=True, text=True)
+    assert capture.read_text().splitlines()[4] == "1"
+    assert "POST_TRAIN_BENCH_PROMPT=prompt_record_smoke\n" in env_capture.read_text()
+
+
+@pytest.mark.parametrize("bad", (
+    "r:claude-opus-5:gpqamain:gemma3-4b:9",      # repetition out of range
+    "r:claude-opus-5:bfcl:gemma3-4b:1",          # task outside the study
+    "r:claude-opus-5:gpqamain:llama3-8b:1",      # base outside the study
+    "r:claude-opus-5:gpqamain:gemma3-4b",        # missing repetition
+    "r:claude-opus-5:gpqamain:gemma3-4b:1:x",    # trailing field
+    "r:claude-opus-4-6:gpqamain:gemma3-4b:1",    # scientist outside the study
+    "c1:claude-opus-4-8:train:1",                # retired condition
+    "c2:claude-opus-5:traj:train,test:2",        # retired condition
+    "c3:claude-opus-4-8:retrieval:train:1",      # retired condition
+))
+def test_pack_rejects_retired_conditions_and_malformed_recorder_specs(tmp_path: Path, bad: str) -> None:
+    ptb, capture, env_capture = _fake_ptb(tmp_path)
+    env = {**os.environ, "HV_PTB_DIR": str(ptb), "CAPTURE_ARGS": str(capture),
+           "CAPTURE_ENV": str(env_capture), "PTB_RUN_ID": "test", "PTB_GPU_SLOTS": "0",
+           "PRIOR_RUNS": str(tmp_path), "WM_MEMORY": str(tmp_path)}
+    result = subprocess.run(["bash", str(ROLLOUT / "wm_pack.sbatch"), bad], cwd=REPO, env=env,
+                            capture_output=True, text=True)
+    assert result.returncode == 2
+    assert not capture.exists()
 
 
 def test_wm_checkpoint_eval_patch_is_mechanical_and_idempotent() -> None:
@@ -315,11 +374,9 @@ def test_c0_matrix_is_eight_cells_over_the_same_two_models() -> None:
     assert {cell.scientist_model for cell in cells} == {"claude-opus-4-8", "claude-opus-5"}
     assert {cell.repetition for cell in cells} == {1, 2, 3, 4}
     assert all(cell.spec == f"c0:{cell.scientist_model}:{cell.repetition}" for cell in cells)
-    assert all(cell.record()["prior_rollout_count"] == 0 for cell in cells)
     assert all(cell.record()["setting"] == "no_prior_information" for cell in cells)
-    # The 24-cell matrix is untouched by the baseline.
-    assert len(study_matrix.study_matrix()) == 24
-    assert not any(cell.condition == "c0" for cell in study_matrix.study_matrix())
+    # The recorder matrix is untouched by the baseline.
+    assert not any(cell.condition == "c0" for cell in study_matrix.recorder_matrix())
 
 
 def test_c0_pack_calls_ptb_with_no_binds_and_the_noprior_prompt(tmp_path: Path) -> None:
@@ -366,8 +423,9 @@ def test_c0_pack_rejects_scoped_or_out_of_range_specs(tmp_path: Path, bad: str) 
     assert not capture.exists()
 
 
-def test_setup_and_prompt_file_patch_cover_the_c0_agent() -> None:
+def test_setup_and_prompt_file_patch_cover_the_recorder_and_c0_agents() -> None:
     setup = (ROLLOUT / "setup.sh").read_text()
-    assert "for agent in claude_noprior_noawm claude_fulltraj_noawm claude_wm; do" in setup
+    assert "for agent in claude_recorder claude_noprior_noawm claude_fulltraj_noawm claude_wm; do" in setup
+    assert "for payload_agent in claude_recorder claude_wm; do" in setup
     patched = apply_prompt_file.apply('x\necho "$PROMPT" > "${EVAL_DIR}/prompt.txt"\ny\n')
-    assert "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm" in patched
+    assert "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder" in patched

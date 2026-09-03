@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Emit or validate the complete scientist x information study matrix."""
+"""Emit or validate the recorder study matrix.
+
+The collection run wants coverage of recipe space, not convergence on known-good
+recipes, so every cell is a *recorder* cell: the scientist gets no prior
+information of any kind and registers each experiment by command
+(``awm wm submit``). The matrix is balanced by construction — half the cells
+run each scientist model — over two PostTrainBench tasks, two base models, and
+N repetitions:
+
+    2 scientists x 2 tasks x 2 base models x N repetitions   (N = 2 -> 16 cells)
+
+Every cell is one H100 for ten hours. ``--format specs`` emits one
+``wm_pack.sbatch`` spec per line; ``--reps`` changes N.
+"""
 
 from __future__ import annotations
 
@@ -14,87 +27,85 @@ SCIENTIST_MODELS = (
     "claude-opus-4-8",
     "claude-opus-5",
 )
-CONDITIONS = ("c1", "c2", "c3")
-ARMS = {"c0": None, "c1": None, "c2": "traj", "c3": "retrieval"}
-# C0 is the no-prior-information baseline. It has no scope factor (there is no
-# corpus to scope), so four repetitions per scientist model give the same four
-# runs per model that every other condition gets from 2 scopes x 2 repetitions.
-NO_PRIOR_CONDITION = "c0"
-NO_PRIOR_SCOPE = "none"
-NO_PRIOR_REPETITIONS = (1, 2, 3, 4)
-SCOPES = ("train", "train,test")
-REPETITIONS = (1, 2)
-EXPECTED_CELL_COUNT = (
-    len(SCIENTIST_MODELS) * len(CONDITIONS) * len(SCOPES) * len(REPETITIONS)
-)
-BENCHMARK = "gsm8k"
-BASE_MODEL = "google/gemma-3-4b-pt"
+TASKS = ("gpqamain", "healthbench")
+# spec alias -> Hugging Face id, as PostTrainBench names its base models.
+BASE_MODELS = {
+    "gemma3-4b": "google/gemma-3-4b-pt",
+    "qwen3-4b": "Qwen/Qwen3-4B-Base",
+}
+RECORDER_CONDITION = "r"
+DEFAULT_REPETITIONS = 2
+MAX_REPETITIONS = 8          # wm_pack.sbatch accepts r:...:[1-8]
 NUM_HOURS = 10
+
+# C0 is the no-registration no-prior baseline kept for reference: gsm8k on
+# gemma, four repetitions per scientist, no scope factor.
+NO_PRIOR_CONDITION = "c0"
+NO_PRIOR_TASK = "gsm8k"
+NO_PRIOR_BASE = "gemma3-4b"
+NO_PRIOR_REPETITIONS = (1, 2, 3, 4)
 
 
 @dataclass(frozen=True)
 class Cell:
     condition: str
     scientist_model: str
-    scope: str
+    task: str
+    base_alias: str
     repetition: int
 
     @property
     def spec(self) -> str:
-        fields = [self.condition, self.scientist_model]
         if self.condition == NO_PRIOR_CONDITION:
-            fields.append(str(self.repetition))
-            return ":".join(fields)
-        if ARMS[self.condition] is not None:
-            fields.append(ARMS[self.condition])
-        fields.extend((self.scope, str(self.repetition)))
-        return ":".join(fields)
+            return ":".join((self.condition, self.scientist_model, str(self.repetition)))
+        return ":".join(
+            (self.condition, self.scientist_model, self.task, self.base_alias, str(self.repetition))
+        )
 
-    def record(self) -> dict[str, str | int]:
+    def record(self) -> dict[str, str | int | None]:
         return {
             **asdict(self),
-            "benchmark": BENCHMARK,
-            "base_model": BASE_MODEL,
+            "benchmark": self.task,
+            "base_model": BASE_MODELS[self.base_alias],
             "num_hours": NUM_HOURS,
-            "wma_arm": ARMS[self.condition],
-            "prior_rollout_count": (
-                0 if self.condition == NO_PRIOR_CONDITION
-                else 193 if self.scope == "train,test" else 143
-            ),
-            "includes_gemma_trajectories": self.scope == "train,test",
+            "wma_arm": None,
+            "prior_rollout_count": 0,
+            "includes_gemma_trajectories": False,
             "setting": {
-                "c0": "no_prior_information",
-                "c1": "raw_trajectories_no_wma",
-                "c2": "raw_trajectories_with_traj_wma",
-                "c3": "experiment_cards_with_retrieval_wma",
+                RECORDER_CONDITION: "no_prior_information_recorder",
+                NO_PRIOR_CONDITION: "no_prior_information",
             }[self.condition],
             "study_mode": "production",
             "spec": self.spec,
         }
 
 
-def study_matrix() -> tuple[Cell, ...]:
+def recorder_matrix(repetitions: int = DEFAULT_REPETITIONS) -> tuple[Cell, ...]:
+    """Scientists x tasks x base models x repetitions; half the cells per scientist."""
+    if not 1 <= repetitions <= MAX_REPETITIONS:
+        raise ValueError(f"repetitions must be 1..{MAX_REPETITIONS}, got {repetitions}")
     cells = tuple(
-        Cell(condition, model, scope, repetition)
-        for repetition in REPETITIONS
-        for scope in SCOPES
-        for condition in CONDITIONS
+        Cell(RECORDER_CONDITION, model, task, base, repetition)
+        for repetition in range(1, repetitions + 1)
+        for task in TASKS
+        for base in BASE_MODELS
         for model in SCIENTIST_MODELS
     )
+    expected = len(SCIENTIST_MODELS) * len(TASKS) * len(BASE_MODELS) * repetitions
+    per_model = Counter(cell.scientist_model for cell in cells)
     if (
-        len(cells) != EXPECTED_CELL_COUNT
+        len(cells) != expected
         or len({cell.spec for cell in cells}) != len(cells)
+        or len(set(per_model.values())) != 1
     ):
-        raise RuntimeError(
-            f"internal error: study matrix is not {EXPECTED_CELL_COUNT} unique cells"
-        )
+        raise RuntimeError(f"internal error: recorder matrix is not {expected} balanced unique cells")
     return cells
 
 
 def c0_matrix() -> tuple[Cell, ...]:
-    """The no-prior baseline: every scientist model x four repetitions, no scope."""
+    """The no-registration baseline: every scientist model x four repetitions."""
     cells = tuple(
-        Cell(NO_PRIOR_CONDITION, model, NO_PRIOR_SCOPE, repetition)
+        Cell(NO_PRIOR_CONDITION, model, NO_PRIOR_TASK, NO_PRIOR_BASE, repetition)
         for repetition in NO_PRIOR_REPETITIONS
         for model in SCIENTIST_MODELS
     )
@@ -122,7 +133,7 @@ def validate_specs(supplied: list[str], expected: tuple[Cell, ...]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--format",
         choices=("json", "specs"),
@@ -130,22 +141,28 @@ def main(argv: list[str] | None = None) -> int:
         help="JSON records (default), or one wm_pack.sbatch spec per line",
     )
     parser.add_argument(
+        "--reps",
+        type=int,
+        default=DEFAULT_REPETITIONS,
+        help=f"repetitions per (scientist, task, base) cell, 1..{MAX_REPETITIONS} (default {DEFAULT_REPETITIONS})",
+    )
+    parser.add_argument(
         "--validate",
         action="store_true",
-        help=(
-            "validate that the positional specs are exactly the "
-            f"{EXPECTED_CELL_COUNT}-cell matrix"
-        ),
+        help="validate that the positional specs are exactly the matrix",
     )
     parser.add_argument(
         "--c0",
         action="store_true",
-        help="emit or validate the C0 no-prior baseline cells instead of the 24-cell matrix",
+        help="emit or validate the C0 no-registration baseline cells instead",
     )
     parser.add_argument("spec", nargs="*", help="cell specs used with --validate")
     args = parser.parse_args(argv)
 
-    matrix = c0_matrix() if args.c0 else study_matrix()
+    try:
+        matrix = c0_matrix() if args.c0 else recorder_matrix(args.reps)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.validate:
         try:
             validate_specs(args.spec, matrix)

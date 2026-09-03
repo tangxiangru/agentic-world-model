@@ -1,8 +1,9 @@
 #!/bin/bash
-# Create a private PostTrainBench checkout for the WMA study. The checkout is
-# upstream PTB plus three agents, four prompt templates, two mechanical bind
-# hooks, one explicit environment allowlist, and one prompt-file bridge. No
-# study-specific release or credential gate is installed.
+# Create a private PostTrainBench checkout for the recorder study. The checkout
+# is upstream PTB plus the study agents, the prompt templates, two mechanical
+# bind hooks, the per-checkpoint evaluation hook, one explicit environment
+# allowlist, and one prompt-file bridge. No study-specific release or
+# credential gate is installed.
 set -euo pipefail
 
 : "${PTB_SOURCE_DIR:?set PTB_SOURCE_DIR to the PostTrainBench checkout}"
@@ -38,23 +39,26 @@ if [ -f "${SRC}/${TEST_DATA_REL}" ]; then
     install -D -m 0644 "${SRC}/${TEST_DATA_REL}" "${DST}/${TEST_DATA_REL}"
 fi
 
-for agent in claude_noprior_noawm claude_fulltraj_noawm claude_wm; do
+for agent in claude_recorder claude_noprior_noawm claude_fulltraj_noawm claude_wm; do
     install -d "${DST}/agents/${agent}"
     install -m 0755 "${HERE}/agents/${agent}/solve.sh" "${DST}/agents/${agent}/solve.sh"
     install -m 0644 "${HERE}/agents/${agent}/api_keys.json" "${DST}/agents/${agent}/api_keys.json"
     install -m 0644 "${HERE}/agents/${agent}/env_passthrough.txt" "${DST}/agents/${agent}/env_passthrough.txt"
 done
 
-# Only C2/C3 receive the WMA code. The narrow payload hook below copies this
+# The recorder (for `awm wm submit` and the card template) and the retired
+# C2/C3 agent receive the awm code. The narrow payload hook copies this
 # directory to /home/ben/agent inside those cells.
-PAYLOAD="${DST}/agents/claude_wm/payload/awm-src"
-install -d "${PAYLOAD}"
-git -C "${AWM_SOURCE_DIR}" archive --format=tar "${AWM_REPO_COMMIT}" awm input wma \
-    | tar -x -C "${PAYLOAD}" \
-        --exclude=awm/credential_guard.py \
-        --exclude=awm/wm/agents/llm.py \
-        --exclude=awm/wm/scratch_server.py
-printf '%s\n' "${AWM_REPO_COMMIT}" > "${PAYLOAD}/AWM_COMMIT"
+for payload_agent in claude_recorder claude_wm; do
+    PAYLOAD="${DST}/agents/${payload_agent}/payload/awm-src"
+    install -d "${PAYLOAD}"
+    git -C "${AWM_SOURCE_DIR}" archive --format=tar "${AWM_REPO_COMMIT}" awm input wma \
+        | tar -x -C "${PAYLOAD}" \
+            --exclude=awm/credential_guard.py \
+            --exclude=awm/wm/agents/llm.py \
+            --exclude=awm/wm/scratch_server.py
+    printf '%s\n' "${AWM_REPO_COMMIT}" > "${PAYLOAD}/AWM_COMMIT"
+done
 
 python3 "${HERE}/patches/apply_extra_binds.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_eval_results_bind.py" "${DST}/src/run_task.sh"

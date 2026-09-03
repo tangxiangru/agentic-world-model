@@ -4,13 +4,14 @@ Every prompt is PostTrainBench's own ``prompt.txt`` plus study sections
 inserted before ``## Rules`` — nothing else changes, so a cell differs from the
 corpus runs only by what was added:
 
-    prompt_noprior.txt       PTB prompt + nothing historical                    (C0: no prior runs, no WMA)
-    prompt_fulltraj.txt      PTB prompt + "Prior runs"                          (C1: raw files, no WMA)
-    prompt_wm.txt            PTB prompt + "The world-model agent"               (C3: WMA over memory)
-    prompt_wm_fulltraj.txt   PTB prompt + "Prior runs" + "The world-model agent" (C2: raw files + WMA)
+    prompt_record.txt        PTB prompt + "Experiment log"                      (recorder: no priors, cards by command)
+    prompt_noprior.txt       PTB prompt + nothing historical                    (C0: no prior runs, no registration)
+    prompt_fulltraj.txt      PTB prompt + "Prior runs"                          (C1, retired: raw files, no WMA)
+    prompt_wm.txt            PTB prompt + "Experiment log"                      (C3, retired)
+    prompt_wm_fulltraj.txt   PTB prompt + "Prior runs" + "Experiment log"       (C2, retired)
 
-The WMA section is ``input/wma_section.md`` (the source of truth). A normal
-review build also writes ``prompt_wm.txt`` to ``input/instruction.md``;
+The experiment-log section is ``input/wma_section.md`` (the source of truth). A
+normal review build also writes ``prompt_record.txt`` to ``input/instruction.md``;
 ``--no-review`` leaves the source tree untouched.
 ``get_prompt.py`` fills ``{model} {benchmark} {num_hours} ...`` by plain
 replacement, so the sections use those placeholders too. Run by
@@ -43,6 +44,11 @@ A final assistant response ends the current Claude invocation. Background tasks 
 
 """
 
+RECORD_SMOKE_SECTION = """## One-hour recorder smoke protocol
+This is a labelled integration smoke, not a production research cell. Exercise the complete registration path: implement one minimal experiment, fill sections 1-4 of its card and run `awm wm submit` before launching it, run one optimizer step from the assigned base model, evaluate, fill sections 5-6 and submit the same card again, leave a `final_model/`, and record what you shipped with `awm wm outcome`. The smoke tests mechanics, not model quality.
+
+"""
+
 SMOKE_SECTION = """## One-hour peer-session smoke protocol
 This is a labelled integration smoke, not a production research cell. Exercise the complete two-session path: message the world-model agent with one concrete plan before training, run one optimizer step from the assigned base model, evaluate and leave a `final_model/`, then tell the world-model agent what you shipped. The smoke tests mechanics, not model quality.
 
@@ -60,6 +66,11 @@ def _insert_before_rules(prompt: str, *sections: str) -> str:
 def ptb_noprior(ptb_prompt: str) -> str:
     """C0: the PTB prompt with no prior information; only the shared completion note."""
     return _insert_before_rules(ptb_prompt, SESSION_COMPLETION_SECTION)
+
+
+def ptb_record(ptb_prompt: str) -> str:
+    """Recorder: the PTB prompt plus the experiment-log section. No prior information."""
+    return _insert_before_rules(ptb_prompt, WMA_SECTION, SESSION_COMPLETION_SECTION)
 
 
 def ptb_fulltraj(ptb_prompt: str) -> str:
@@ -81,9 +92,9 @@ def wm_prompt(ptb_prompt: str, *, fulltraj: bool) -> str:
     return _insert_before_rules(ptb_prompt, WMA_SECTION, SESSION_COMPLETION_SECTION)
 
 
-def smoke_prompt(prompt: str) -> str:
+def smoke_prompt(prompt: str, section: str = SMOKE_SECTION) -> str:
     """Add a short integration-smoke directive without changing production prompts."""
-    return _insert_before_rules(prompt, SMOKE_SECTION)
+    return _insert_before_rules(prompt, section)
 
 
 def find_ptb_prompt(ptb: Path | None) -> Path:
@@ -110,9 +121,12 @@ def main() -> int:
     out_review = None if args.no_review else HERE / "prompts"
     if out_review:
         out_review.mkdir(exist_ok=True)
+    record = ptb_record(ptb_prompt)
     wm = wm_prompt(ptb_prompt, fulltraj=False)
     wm_fulltraj = wm_prompt(ptb_prompt, fulltraj=True)
     files = {
+        "prompt_record.txt": record,
+        "prompt_record_smoke.txt": smoke_prompt(record, RECORD_SMOKE_SECTION),
         "prompt_noprior.txt": ptb_noprior(ptb_prompt),
         "prompt_fulltraj.txt": ptb_fulltraj(ptb_prompt),
         "prompt_wm.txt": wm,
@@ -126,7 +140,7 @@ def main() -> int:
         if ptb:
             (ptb / "src" / "eval" / "general" / name).write_text(text)
     if out_review:
-        (ROOT / "input" / "instruction.md").write_text(files["prompt_wm.txt"])
+        (ROOT / "input" / "instruction.md").write_text(files["prompt_record.txt"])
     destinations = []
     if out_review:
         destinations.append(str(out_review))
