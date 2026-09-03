@@ -240,6 +240,36 @@ def test_a_cancelled_entry_cancels_pending_jobs_only(repo, tmp_path: Path, monke
     assert kinds == [("harvest", "p01r1"), ("wait", "p01r2")]
 
 
+def test_cancelled_by_user_is_harvested_after_recorded_withdrawal(
+    repo, tmp_path: Path, monkeypatch
+) -> None:
+    root, _states = repo
+    receipt_path = _receipt(
+        tmp_path / "vol", "ep-r01", "formal", [("p01r1", "91054")], state="held"
+    )
+    receipt = json.loads(receipt_path.read_text())
+    receipt["cancellations"] = [{"job_id": "91054", "state_before": "PENDING"}]
+    receipt_path.write_text(json.dumps(receipt))
+
+    def fake_run(command, **kwargs):
+        assert command[:4] == ["sacct", "-nX", "-j", "91054"]
+        return __import__("subprocess").CompletedProcess(command, 0, "CANCELLED by 0\n", "")
+
+    monkeypatch.setattr(ops, "job_state", ptb._job_state)
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+    entry = {**ENTRY, "want": "cancelled", "why": "whole unstarted block withdrawn"}
+    actions = ops.plan([entry], root)
+    assert [(a.kind, a.cell, a.state) for a in actions] == [
+        ("copy_receipt", None, None), ("harvest", "p01r1", "CANCELLED")
+    ]
+    ops.apply(actions, root)
+    status = json.loads((root / "results/ptb/ep-r01/p01r1/status.json").read_text())
+    assert status["slurm_state"] == "CANCELLED"
+    assert status["complete"] is False
+    assert status["issues"] == ["result directory not found"]
+    assert ops.plan([entry], root) == []
+
+
 def test_a_receipt_that_did_not_reach_submitted_blocks(repo, tmp_path: Path) -> None:
     root, _ = repo
     _receipt(tmp_path / "vol", "ep-r01", "formal", [], state="submission_failed")

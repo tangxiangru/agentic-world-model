@@ -18,6 +18,28 @@ ROUND00_MANIFEST = (
 )
 
 
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("CANCELLED by 0\n", "CANCELLED"),
+        ("CANCELLED+|\n", "CANCELLED"),
+        ("COMPLETED+\n", "COMPLETED"),
+        ("OUT_OF_MEMORY\n", "OUT_OF_MEMORY"),
+        ("  PENDING  |\n", "PENDING"),
+        ("RUNNING\nCOMPLETED\n", "RUNNING"),
+        ("\n|\n", "UNKNOWN"),
+        ("", "UNKNOWN"),
+    ],
+)
+def test_job_state_normalizes_sacct_decorations(monkeypatch, output, expected) -> None:
+    def fake_run(command, **kwargs):
+        assert command[:4] == ["sacct", "-nX", "-j", "91054"]
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+    assert ptb._job_state("91054") == expected
+
+
 def test_manifest_is_exact_approved_matrix() -> None:
     data = ptb.load_manifest(MANIFEST)
     assert data["ownership"] == {

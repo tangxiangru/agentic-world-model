@@ -1411,8 +1411,13 @@ def _job_state(job_id: str) -> str:
         capture_output=True,
         check=False,
     )
-    states = [line.strip().split("|")[0] for line in result.stdout.splitlines() if line.strip()]
-    return states[0] if states else "UNKNOWN"
+    for line in result.stdout.splitlines():
+        state = line.split("|", 1)[0].strip()
+        if state:
+            # sacct decorates states (e.g. "CANCELLED by 0" or "COMPLETED+").
+            # Operator gates and terminal harvesting need the canonical name.
+            return state.split()[0].rstrip("+")
+    return "UNKNOWN"
 
 
 def result_for_job(job_id: str) -> Path | None:
