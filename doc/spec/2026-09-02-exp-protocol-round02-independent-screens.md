@@ -59,7 +59,7 @@ held receipt 登记后，planner 批准把 `baseline-b`（8 个 requeue 后仍 P
 三个候选的证据表与判定写入 `doc/exp_protocol_iterations/2026-09-02-round-00.md` 的
 Analysis window 01；Round 02 的结果记录另起 `doc/exp_protocol_iterations/<date>-round-02.md`。
 
-## 六、trace review 之后的修订（2026-09-03 03:30 UTC）
+## 六、trace review 之后的修订（2026-09-03 02:27 UTC）
 
 `doc/exp_protocol_iterations/2026-09-03-trace-review-round00.md`（16 份 cell 报告的合成，报告存于
 `doc/exp_protocol_iterations/trace-reviews/round00/`）改写了 A、B、C 的措辞并给出了新候选。A/B/C 的 v1
@@ -72,14 +72,21 @@ D、E、H 与漂移对 B 同样登记为 held，排在第一波之后。head 在
 | A v2 | `decode_config_inherited` 改写：点名可核实的观察（vLLM 日志行 / 请求体只有 max_tokens）、反驳 trace 里记录的两个错误信念、自建评估器要复制请求体；父 checkpoint 陷阱扩到 5 个 cell | `f6cdccc` | `73083443` | `…-r02-a-decode-x4-v2`，`a02s01–04`，run_index 2 | greedy 或有测量依据的配置 ≥ 3/4；是否核实了评分器而不是只读文件 |
 | B v2 | `vllm_offline_prompt_and_stop` 改写：n>1 才丢 stop id 的机制、解析器 inf 崩溃、probe 打印 finish_reason；来源改为两臂都付出过（对照 5.0 h） | `9f294c3` | `2ca65d4d` | `…-r02-b-vllm-sampling-x4-v2`，`b02s01–04`，run_index 2 | RFT 卡里可归因于采样的小时数 < 0.3/cell |
 | C v2 | 规则 2 段落改写：`--limit N` 取前 N 题且前段偏易 2–7 点、全集评估 3–10 分钟、`falsified_if` 要在标准误小于所称差距的 n 上或用配对统计、允许中途提高 n 并重测 incumbent；示例卡改为 n=500；模板 `falsified_if` 行加注 | `57511f9` | `f528e150` | `…-r02-c-eval-n-x4-v2`，`n02s01–04`，run_index 2 | 每张卡 `evaluation.protocol.n` ≥ 500 的 cell ≥ 3/4；无被更大 n 推翻的 contradicted；无 n ≤ 200 的 falsified_if |
+| 漂移对 A v2 | guard tree；使用六候选构造后恢复的同代 AWM paths | `2f64581` | `189319d6` | `…-r02-guard-drift-a-x2-v2`，`g02v2r01–02`，run_index 5 | 并入 baseline 池；与 A/B/C 的 shipped paths 只差候选项 |
 | D | preflight 检查 `parent_generation_config_valid`（父 checkpoint 的 greedy 配置会让 Trainer 首次保存失败）+ 测试 + pitfalls 目录行 `greedy_parent_generation_config` | `8332917` | `7160d360` | `…-r02-d-parent-config-x4`，`d02r01–04` | 归因于 GenerationConfig-is-invalid 的小时数 = 0 且检查至少触发一次；对 stock 配置零 override |
 | E | 规则 9、Stop hook 文案、`run_dies_with_the_session` 三处的"怎么等"：等 PID 与变化的 tail，把评估链到 run 退出 | `7832cb9` | `58af0780` | `…-r02-e-wait-on-process-x4`，`e02r01–04` | run 死亡/退出到下一条命令之间的 GPU 空转 < 0.15 h/cell |
 | H | `setup.data` 只在 family 训练目标文本时必填（schema、questions、模板注释） | `b52e5f2` | `88133acb` | `…-r02-h-eval-only-data-x4`，`h02r01–04` | 非训练卡上零伪造数据条目、零 `data_files_exist` override；`fields_filled` 不降 |
-| 漂移对 B | guard 本身，run_index 4 | `4ae3d87` | `189319d6` | `…-r02-guard-drift-b-x2`，`g03r01–02` | 并入 baseline 池 |
+| 漂移对 B | guard tree；使用六候选构造后恢复的同代 AWM paths，run_index 4 | `2f64581` | `189319d6` | `…-r02-guard-drift-b-x2`，`g03r01–02` | 并入 baseline 池；与 D/E/H 的 shipped paths 只差候选项 |
 
 波次：第一波 = A v2、B v2、C v2 + 漂移对 A（14）+ 2 机动；第二波 = D、E、H + 漂移对 B（14）+ 2 机动。
 D 是 A 推荐的修法所制造的陷阱的机械守卫，synthesis 建议 A 胜出后并入 A；作为独立筛选它回答的是
 检查是否误报、是否真的省下小时。
+
+旧漂移对 A jobs 90857–90858 虽然 protocol tree 也是 `189319d6`，却冻结在旧 SHA `4ae3d87`；六个
+候选 commit 共同包含后来加入的非干预 `awm/exp_protocol/collect.py` 基础设施。单个 `awm ptb check`
+只能证明 manifest 自洽，不能证明变体间 shipped paths 相同。因此旧 pair 保持未启动并整块撤回，
+用 `2f64581` 的 drift A v2 替代；尚未登记的 drift B 也在登记前改为 `2f64581`。
+修正后的第一、二波共 8 份 manifest 均通过完整 site `awm ptb check`（0 issues）。
 
 排队未做（台账）：F `terse_target_style`（数据风格，规程不该规定训练数据，先观察）、G
 `trl_grpo_gemma_zero_gradient`（5/5 对照 GRPO cell 踩到；规程臂无 RL 卡，条目会测未验证的训练器这个

@@ -41,7 +41,8 @@
 | 09-02 23:20 | 取消 baseline-b（8 个 PENDING），Round 02 held 登记后 | 保留精度扩展 | 整块撤回不构成挑选；让 Round 02 早一波 | `696dc6b`/`3bb4a07` |
 | 09-02 23:45 | 候选 C 措辞由 planner 修正 | 我的原文 | "抛硬币"表述不可辩护 | `7f117a0`、`ca90b31` |
 | 09-03 00:20 | **meta 循环加入 subagent trace review**：每个分析窗口由 reviewer subagent 分组读全部 cell 的 trace、synthesis subagent 排名解释并提候选；`exp_protocol_meta` 据此修订（用户授权在轮中修改） | 继续由我手工逐 cell 读 | 用户要求 meta skill 像本次一样启动 subagent 批量分析 trace 再提出新一轮修改，全部自主执行；手工读 16 个 cell 不可持续，且 Round 00 证明数字说不出原因、trace 才说得出 | iteration-basis §七 第 6 条、`skills/exp_protocol_meta/trace_review.md`（`fe7895e`） |
-| 09-03 03:30 | **按 trace review 改写 A/B/C（v2，旧 held job 撤回），新增第二波 D、E、H + 漂移对 B，全部 held** | 保持 A/B/C v1 原样；把 D 并入 A；把 F/G 也排进第二波 | synthesis 的证据：A 的关键是怎么核实；B 的来源写错了；C 的示例卡本身在教 n=150；D 五个 cell 5.4 h；E 两个 cell 2.5 h 空转；H 7/9 伪造。F/G 是配方知识或针对信念的测试，证据面窄，先排队 | round02 spec §六、`2f64581` 前的六个 commit |
+| 09-03 02:27 | **按 trace review 改写 A/B/C（v2，旧 held job 撤回），新增第二波 D、E、H + 漂移对 B，全部 held** | 保持 A/B/C v1 原样；把 D 并入 A；把 F/G 也排进第二波 | synthesis 的证据：A 的关键是怎么核实；B 的来源写错了；C 的示例卡本身在教 n=150；D 五个 cell 5.4 h；E 两个 cell 2.5 h 空转；H 7/9 伪造。F/G 是配方知识或针对信念的测试，证据面窄，先排队 | round02 spec §六、`2f64581` 前的六个 commit |
+| 09-03 02:38 | **两个 drift pair 改 ship `2f64581`；已登记的旧 drift A 整块撤回并以 v2 替代** | 继续用 `4ae3d87`，只因 protocol_tree 相同 | 候选与 `2f64581` 的六个 shipped paths 仅差单项；与 `4ae3d87` 还差共同的 `awm/exp_protocol/collect.py` 基础设施。单 manifest check 不证明跨变体同代 | round02 spec §六、round-00 trace-review provenance addendum |
 
 ## 三、这份台账之外还没写下来的
 
