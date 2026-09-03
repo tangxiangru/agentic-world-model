@@ -115,6 +115,11 @@ directive of 2026-09-03, recorded in the iteration-basis spec §七 and in
   immutable-receipt, PTB-validator-complete, judge-clean cells toward the
   eight-cell analysis window. If the window is still short, restart the hourly
   monitor on the remaining relevant jobs.
+- After repairing operator state parsing, audit the full in-scope receipt queue
+  for historical terminals the old parser skipped, not only the triggering job.
+  Inspect available bundles before classifying them: a cancelled/requeued job
+  can retain incomplete spillover evidence. The [cancelled-job backfill](../../doc/exp_protocol_iterations/2026-09-03-cancelled-backfill.md)
+  recovered30 terminal records but added zero clean cells.
 - Monitoring cadence does not weaken queue discipline: keep at least eight
   independently specified, validated cells held as `PENDING(JobHeldUser)` and
   release already-safe downstream work asynchronously when its scientific and
