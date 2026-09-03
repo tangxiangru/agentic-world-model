@@ -164,6 +164,40 @@ were PENDING with `ReqNodeList=slurm2-a3nodesetondem-[2-3]`. Owned allocation
 remained 16/16 and safe PENDING rose from 9 to 33. Only these v2 receipts enter
 the Round 02 denominator.
 
+## Baseline/control extension preregistration (2026-09-03 18:0x UTC)
+
+At the hourly completion event, 16 new validator-clean cells became available:
+five old w02 WMA, five matched c02 control, all four w10 lock-gated baselines,
+and c10r01..03. Opus 5 UltraCode analysis was started asynchronously from the
+frozen event `20260903T180444Z-79c8d29810`; no score or candidate readout was
+used to select this refill. Meanwhile safe PENDING had fallen from 25 to 9,
+one above the user's hard floor.
+
+Two matched four-cell extensions are therefore preregistered immediately:
+
+- `wma-gsm8k-gemma4b-high-r02-v02-baseline-ext-x4-v1`, `w10r05..08`;
+- `wma-gsm8k-gemma4b-high-r02-ctl-ext-x4-v1`, `c10r05..08`.
+
+They freeze the exact original w10/c10 contract: public protocol and v0.2 WMA
+at `ae46724`, Opus 5 high scientist and official/research judges, Gemma 4B,
+ten hours and no pilot. The extension changes no treatment; it supplies the
+second four replicates needed for the `w10 − c10` gate comparison to reach the
+online loop's eight-clean-cells-per-arm evidence window. Replicate IDs continue
+at 5–8 so the combined cohort is explicit. The primary analysis remains
+compliance first, then paired PTB, decision changes and transcript-derived
+gate cost. A–F retain their frozen denominators and are not pooled with this
+baseline/control contrast.
+
+Cell IDs continue at r05–r08 to make the combined cohort unambiguous; the
+manifest-local `replicate` ordinals reset to 1–4 as required by the frozen
+replication schema.
+
+This is the documented exception to the default preference for distinct
+four-cell settings: without it, the lock-gated mechanism itself has only n=4
+per arm and cannot satisfy the formal evidence gate. Submission is expected to
+raise safe PENDING from 9 to 17; it is queue insurance as well as necessary
+measurement, not a candidate promotion.
+
 ## In-flight gate read (planner, 2026-09-03 09:0x UTC)
 
 Source: the operator's 08:44 peeks of the first seven lock-gated cells
