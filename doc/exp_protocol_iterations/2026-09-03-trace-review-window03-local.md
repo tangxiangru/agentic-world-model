@@ -27,7 +27,7 @@ All sessions use `claude-opus-5[1m]`, `--effort max`, `--background`, plan permi
 
 NEW control mean (n=5) = 0.757240; NEW guard mean (n=3) = 0.741218. These are descriptive interim values, not a promotion claim. g01r01/02 are the valid restarted strict-site attempts; archived pre-requeue spillover traces are not merged with them. The v3 baseline, guard and no-protocol control remain distinct variants.
 
-The four later strict guard completions g01s01/g01s03/g01s06/g01s08 were harvested in `66ebd39`. They are outside this frozen window, pending a guard-block addendum; they do not delay or silently expand the dispatched eight-cell window.
+The four later strict guard completions g01s01/g01s03/g01s06/g01s08 were harvested in `66ebd39`. They are outside this frozen window and are being reviewed independently for the guard-block addendum by local Opus max session `73c154b4-944d-4e7d-bc60-5c192ed41207` ([launch record](trace-reviews/round01-strict-guard-addendum/launch.json)); they do not delay or silently expand the dispatched eight-cell window.
 
 ## Operational findings during dispatch
 
