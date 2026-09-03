@@ -159,3 +159,68 @@ def test_an_override_lets_a_failing_check_through_and_is_recorded(session, capsy
     info = json.loads((lineage.cards_dir(root) / "exp-01.lock.json").read_text())
     assert info["overrides"] == {"data_n_examples_match": "one row is a header line"}
     assert "overridden" in capsys.readouterr().out
+
+
+# ---- the verdict is part of the lock (2026-09-03) ----
+
+def _locked_card(session):
+    d = str(session)
+    main(["exp_protocol", "new", "--dir", d])
+    card_path = lineage.cards_dir(session) / "exp-01.yaml"
+    fill_plan(card_path, session)
+    return d, card_path
+
+
+def test_lock_records_that_no_world_model_agent_was_attached(session, capsys) -> None:
+    d, card_path = _locked_card(session)
+    assert main(["exp_protocol", "lock", "--dir", d, "exp-01"]) == 0
+    info = json.loads((lineage.cards_dir(session) / "exp-01.lock.json").read_text())
+    assert info["wma"] == {"state": "not_attached", "waited_s": 0.0, "verdict_path": None, "error": None,
+                           "request_id": None, "requested_at": None}
+    out = capsys.readouterr().out
+    assert "locked exp-01" in out and "verdict" not in out
+    # the annotation does not disturb what the lock pins
+    from awm.exp_protocol import lock
+    assert lock.verify_lock(card_path, schema.load_card(card_path)).ok
+
+
+def test_lock_waits_for_the_attached_agent_and_records_the_delivered_verdict(session, capsys, monkeypatch) -> None:
+    import threading
+    from awm import wma_client
+    from awm.wma import backends, sidecar
+    d, card_path = _locked_card(session)
+    (session / ".wma" / "requests").mkdir(parents=True)          # the sidecar opened its queue first
+    skill = session / "private-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("private WMA policy\n")
+    config = sidecar.Config(session_dir=session, skill_dir=skill, history_dir=None, backend="heuristic",
+                            model="claude-opus-5", effort="high", budget=backends.Budget(), jobs=1)
+    # the sidecar can only review once the lock file exists: answer shortly after lock writes it
+    monkeypatch.setattr(wma_client, "DEFAULT_WAIT_MIN", 0.5)
+    original = wma_client.wait_for_verdict
+    monkeypatch.setattr(wma_client, "wait_for_verdict",
+                        lambda *a, **k: original(*a, **{**k, "poll_s": 0.05, "heartbeat_s": 0.1}))
+    answered = threading.Timer(0.3, lambda: sidecar.run(config, once=True))
+    answered.start()
+    try:
+        assert main(["exp_protocol", "lock", "--dir", d, "exp-01"]) == 0
+    finally:
+        answered.join()
+    info = json.loads((lineage.cards_dir(session) / "exp-01.lock.json").read_text())
+    assert info["wma"]["state"] == "delivered" and info["wma"]["request_id"]
+    assert (lineage.cards_dir(session) / "exp-01.verdict.json").is_file()
+    out = capsys.readouterr().out
+    assert "waiting up to" in out and "verdict: L0_runs=" in out and "read it before launching" in out
+    from awm.exp_protocol import lock
+    assert lock.verify_lock(card_path, schema.load_card(card_path)).ok
+    assert not (session / "skills" / "wma").exists()
+
+
+def test_lock_can_skip_the_wait_only_with_a_recorded_reason(session, capsys) -> None:
+    d, _ = _locked_card(session)
+    (session / ".wma" / "requests").mkdir(parents=True)
+    assert main(["exp_protocol", "lock", "--dir", d, "exp-01", "--no-wma-wait", "sidecar known dead"]) == 0
+    info = json.loads((lineage.cards_dir(session) / "exp-01.lock.json").read_text())
+    assert info["wma"]["state"] == "skipped" and info["wma"]["reason"] == "sidecar known dead"
+    assert not list((session / ".wma" / "requests").glob("*.json"))
+    assert "skipped by request" in capsys.readouterr().out

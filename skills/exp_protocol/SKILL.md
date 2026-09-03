@@ -48,9 +48,9 @@ awm exp_protocol index --dir {dir}          # 1. read memory/index.md and the st
 awm exp_protocol new --dir {dir}            # 2. writes exp-NN.yaml with every required field empty, prints the questions
 #    edit sections 0-4
 awm exp_protocol check --dir {dir} exp-NN   # 3. repeat until no ERROR lines and no questions; "ok (N warnings, advisory)" is ok
-awm exp_protocol lock  --dir {dir} exp-NN   # 4. runs preflight; refuses on any FAIL; pins sections 0-4, the script, and the data
-awm wma review --dir {dir} exp-NN --background   # 4b. if a world-model agent is installed — see below
-#    launch your command exactly as written in setup.command.argv
+awm exp_protocol lock  --dir {dir} exp-NN   # 4. runs preflight; refuses on any FAIL; pins sections 0-4, the script, and the data;
+#                                                 if a world-model agent is attached it asks for the verdict and WAITS for it (see below)
+#    launch your command exactly as written in setup.command.argv — only after lock has returned
 #    keep checkpoints as setup.checkpoints says
 #    evaluate the output under evaluation.protocol; fill sections 5-6
 awm exp_protocol close --dir {dir} exp-NN   # 5. validates 5-6, re-checks the lock, rebuilds the index
@@ -71,32 +71,38 @@ You interact with the WMA only through the thin `awm wma` client. The WMA's
 own skill, priors, historical corpus and execution process are private to its
 sidecar and are not scientist inputs: do not look for or try to read them.
 
-After a successful lock, `awm wma review` asks the private estimator what the
-proposal will do: one line —
-*worth running now*, why, what to verify first, a cheaper variant if there is
-one. It is advice; you decide. Three things matter about how you use it:
+**The verdict is part of the lock.** When a world-model agent is attached,
+`awm exp_protocol lock` asks it about the card the moment the lock is written
+and then waits — up to 20 minutes, printing a heartbeat every 30 s — until the
+verdict lands beside the card (`exp-NN.verdict.json`). The last lines it prints
+are `verdict: L0=… L1=… L2=… L3=…; first precondition: …` and the verdict path.
+It is advice; you decide. Four things matter about how you use it:
 
-- **Always `--background`.** It returns at once and the verdict lands beside the
-  card (`exp-NN.verdict.json`) when it is done. Never sit waiting for it; keep
-  preparing the launch. `awm wma status --dir {dir}` shows what is in.
-- **Batch your candidates.** If you have several cards you could run next, review
-  them in one call — `awm wma review --dir {dir} exp-05 exp-06 exp-07 --background`
-  — they run in parallel and you get independent verdicts plus a ranking, not
-  three separate waits. Every named card must already be locked.
-- **Do not wait for it to launch.** If the verdict has not arrived by the time you
-  would start the run, start the run. Time is the budget; the verdict is worth
-  exactly what it saves you, and nothing when it costs you the launch.
+- **Do not start the run before `lock` has returned.** Run `lock` with a
+  long tool timeout (25 min) or in the background and use the wait to prepare
+  everything else — build data, dry-run the evaluation command on the parent,
+  write the launch line — but the training or evaluation command in
+  `setup.command.argv` starts only after the verdict line (or the timeout /
+  failure line) has been printed. A run launched while the verdict was still
+  pending is a protocol violation and the record will show it.
+- **Read the whole verdict before launching.** If it says *verify first*, that
+  is usually minutes on CPU that can save an hour on the GPU: do it, or write in
+  `situation.alternatives_rejected` of this card why you did not, before `close`.
+  If it says *no* or *defer* and you disagree, run anyway and note why in the
+  same place; that disagreement is the record the estimator learns from. If the
+  verdict changes the plan, edit sections 0–4 and `lock --relock "<reason>"`:
+  the estimator is asked again about the changed card.
+- **A failed or timed-out review is not a verdict.** `lock` says so and records
+  it; you may launch. Do not retry the review by hand before launching.
 - **If it answers "no world-model agent is attached to this cell", that is the
   whole answer.** No verdict will come; do not retry, do not look for one. Carry
   on with step 5.
 
-Read the verdict when it arrives. If it says *verify first*, that is usually
-minutes on CPU that can save an hour on the GPU. If it says *no* and you disagree,
-run anyway and note why in `situation.alternatives_rejected` of the next card;
-that disagreement is the record the estimator learns from.
-
-Use `awm wma status --dir {dir}` to check whether the sidecar has written the
-verdict. The only WMA files you should see are request/status records and
+`awm wma review --dir {dir} exp-NN` asks again about an already-locked card and
+waits the same way; `--background` queues one or more locked cards and returns
+at once — for a second opinion on several candidate cards, never as a substitute
+for the wait inside `lock`. `awm wma status --dir {dir}` shows what is in. The
+only WMA files you should see are request/status records and
 `exp-NN.verdict.json` beside the card. Missing `skills/wma` is intentional.
 
 ## The rules

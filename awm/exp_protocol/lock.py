@@ -93,6 +93,17 @@ def write_lock(card_path: Path, card: dict[str, Any], preflight_summary: dict[st
     return info
 
 
+def annotate_lock(card_path: Path, key: str, value: Any) -> dict[str, Any]:
+    """Add one top-level field to an existing lock without touching what the lock pins.
+    `verify_lock` compares plan/script/data hashes only, so an annotation never invalidates a lock."""
+    info = read_lock(card_path)
+    if info is None:
+        raise LockExists(f"{lock_path(card_path)} does not exist; nothing to annotate")
+    info[key] = value
+    lock_path(card_path).write_text(json.dumps(info, indent=2) + "\n")
+    return info
+
+
 def verify_lock(card_path: Path, card: dict[str, Any]) -> Report:
     r = Report()
     info = read_lock(card_path)

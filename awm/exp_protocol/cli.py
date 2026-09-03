@@ -147,7 +147,39 @@ def _lock(args: argparse.Namespace) -> int:
     print(f"locked {card['card_id']} at {info['locked_at']} (plan {info['plan_sha256'][:12]})")
     if info["relocked_from"]:
         print(f"re-locked {len(info['relocked_from'])} time(s); previous hashes kept")
+    _wma_gate(args, path, card["card_id"])
     return 0
+
+
+def _wma_gate(args: argparse.Namespace, card_path: Path, card_id: str) -> dict:
+    """The verdict is part of the lock (2026-09-03): when a world-model agent is attached, ask it
+    now and wait for its answer before handing the launch back. The scientist may prepare while the
+    wait runs, but the protocol forbids starting the run before this returns. Whatever happened —
+    delivered, failed, timed out, not attached, skipped with a reason — is written into the lock file
+    under `wma`, so the record shows whether the verdict was in the loop for this card."""
+    from .. import wma_client
+    from . import lock
+
+    session = Path(args.dir)
+    skip_reason = getattr(args, "no_wma_wait", None)
+    if skip_reason:
+        result = {"state": "skipped", "reason": skip_reason, "waited_s": 0.0, "verdict_path": None,
+                  "error": None, "request_id": None, "requested_at": None}
+        print(f"WMA review skipped by request: {skip_reason} (recorded in the lock)")
+    elif not wma_client.sidecar_attached(session):
+        result = {"state": "not_attached", "waited_s": 0.0, "verdict_path": None, "error": None,
+                  "request_id": None, "requested_at": None}
+    else:
+        try:
+            result = wma_client.review_and_wait(session, card_id,
+                                                timeout_min=getattr(args, "wma_timeout_min", None)
+                                                or wma_client.DEFAULT_WAIT_MIN)
+        except ValueError as exc:   # the card is not reviewable; the lock stands, the record says why
+            result = {"state": "failed", "waited_s": 0.0, "verdict_path": None, "error": str(exc),
+                      "request_id": None, "requested_at": None}
+            print(f"WMA review not queued: {exc}")
+    lock.annotate_lock(card_path, "wma", result)
+    return result
 
 
 def _close(args: argparse.Namespace) -> int:
@@ -242,10 +274,15 @@ def register(sub: argparse._SubParsersAction) -> None:
     n.set_defaults(func=_new)
     with_dir("check", "validate sections 0-4 and print what is still missing").set_defaults(func=_check)
     with_dir("preflight", "run the pre-flight checks; write exp-NN.preflight.json").set_defaults(func=_preflight)
-    lk = with_dir("lock", "check + preflight, then pin sections 0-4, the script, and the data")
+    lk = with_dir("lock", "check + preflight, pin sections 0-4, the script and the data, then ask the "
+                          "world-model agent (if attached) and wait for its verdict")
     lk.add_argument("--relock", metavar="REASON", help="lock again after a change; the previous hash is kept")
     lk.add_argument("--override", action="append", metavar="CHECK=REASON",
                     help="let a failing preflight check through; recorded in the lock (repeatable)")
+    lk.add_argument("--no-wma-wait", metavar="REASON", dest="no_wma_wait",
+                    help="lock without asking the world-model agent; the reason is recorded in the lock")
+    lk.add_argument("--wma-timeout-min", type=float, dest="wma_timeout_min",
+                    help="how long lock waits for the verdict (default 20 min)")
     lk.set_defaults(func=_lock)
     with_dir("close", "validate sections 5-6, re-check the lock, rebuild the index").set_defaults(func=_close)
     with_dir("index", "rebuild memory/index.md and list starting points", card=False).set_defaults(func=_index)
