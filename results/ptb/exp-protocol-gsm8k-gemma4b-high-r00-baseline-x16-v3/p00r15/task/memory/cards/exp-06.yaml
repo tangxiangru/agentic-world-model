@@ -1,0 +1,168 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T04:06:59Z'
+situation:
+  elapsed_h: 6.85
+  remaining_h: 3.15
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05
+    score:
+      metric: accuracy
+      value: 0.675
+      protocol_n: 200
+  trigger: "The SFT lever is spent: 8.9M -> 83.2M -> 143M cumulative tokens returned +50.5, +3.0, +1.0 points. Every one of those cards trained on somebody else's solutions to problems the model was then never asked to solve on its own. Rejection sampling is the one remaining intervention that trains on the model's own successes and targets its own failures."
+  trigger_evidence:
+    - path: /home/ben/task/eval/exp-05_greedy_dev200.json
+      locator: "accuracy 0.675 after +60.1M tokens of a new corpus"
+    - path: /home/ben/task/logs/exp-06_sample.log
+      locator: "final line: generated 56000, correct 20155 (0.360), problems solved at least once 8227/14000 (0.588)"
+  alternatives_rejected:
+    - option: "Sample from the problems exp-05 was trained on"
+      reason: "It has already fit them for an epoch; its samples there would be near-copies of its own training targets and would teach nothing. The 113,870 Orca-Math problems held out of exp-05 are genuinely unseen."
+    - option: "22,000 problems instead of 14,000"
+      reason: "First launch measured a 65-minute sampling run at that size (88,000 sequences); killed at 2% and relaunched at 14,000, which finished in 33.6 min and leaves time for the evaluation and the final assembly."
+    - option: "Keep only the self-generated correct solutions"
+      reason: "That restricts training to what the model can already do. The 5,773 problems where all 4 samples were wrong are exactly the informative ones, so they go in with their Orca gold solutions."
+    - option: "DPO on correct-vs-incorrect sample pairs"
+      reason: "The pairs exist in the sampling output, but a DPO implementation, its reference-model memory, and its hyperparameters are not something to debug with 3 h left and a working SFT loop in hand."
+  pitfalls_hit:
+    - what: "pkill -f rft_sample.py killed the launcher but left the vLLM EngineCore child holding 66 GB of the GPU; the relaunch would have OOMed"
+      cost_h: 0.05
+      fix: "kill -9 on the pid from nvidia-smi --query-compute-apps and wait for memory.used to reach 0 before relaunching"
+  smoke_runs:
+    - command: [python, scripts/rft_sample.py, --model, ckpts/exp-05, --pool, data/pool_orca_unseen.jsonl, --n-problems, '14000', --k, '4']
+      outcome: "56,000 sequences in 33.6 min at 8.2k output tok/s; 36.0% of samples correct, 58.8% of problems solved at least once; 13,975 rows kept after dedup and the 2-per-problem cap"
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/pool_exp06_deconcheck.jsonl]
+      outcome: "26,748 documents scanned, 0 contaminated, 0 matches"
+problem:
+  statement: "exp-05 gets 65 of 200 dev items wrong, every one of them a reasoning error in a cleanly formatted chain. All 143M tokens it has been trained on are other models' solutions; nothing in its training has ever been conditioned on which chains it actually gets right. On 14,000 held-out grade-school problems only 36.0% of its temperature-1 samples reach the correct answer and 41.2% of the problems are never solved in 4 tries."
+  evidence:
+    - path: /home/ben/task/logs/exp-06_sample.log
+      locator: "generated 56000, correct 20155 (0.360), solved 8227/14000 (0.588)"
+      observation: "the model's own success rate on unseen problems, measured directly"
+    - path: /home/ben/task/analysis/exp-05_failures.jsonl
+      locator: "65 failures, all stop_reason=stop except 3 repetition loops"
+      observation: "no formatting failures left to fix"
+  affected_share: 0.325
+  failure_examples:
+    - id: exp05-fail-1
+      source: /home/ben/task/analysis/exp-05_failures.jsonl
+      question: "dev-200 item scored I with a clean stop"
+      gold: "varies"
+      model_output: "well-formatted chain, wrong intermediate quantity"
+      failure: "multi-step bookkeeping error"
+    - id: exp05-fail-2
+      source: /home/ben/task/analysis/exp-05_failures.jsonl
+      question: "dev-200 item scored I with a clean stop"
+      gold: "varies"
+      model_output: "correct method, arithmetic slip"
+      failure: "arithmetic slip inside an otherwise correct chain"
+    - id: exp05-fail-3
+      source: /home/ben/task/analysis/exp-05_failures.jsonl
+      question: "3 of 200 items"
+      gold: "n/a"
+      model_output: "greedy repetition loop to the 1024-token cap"
+      failure: "degenerate repetition under greedy decoding"
+  watch_set:
+    path: /home/ben/task/analysis/exp-05_failures.jsonl
+    n: 65
+    selection: "every dev-200 item exp-05 gets wrong under the adopted greedy protocol"
+hypothesis:
+  claim: "Continuing exp-05 for one epoch on its own verified-correct samples from 8,227 held-out problems, plus gold solutions for the 5,773 it never solved and a 7k replay slice, will raise greedy dev-200 accuracy above exp-05's 0.675."
+  mechanism: "Two effects, both absent from every earlier card. The self-samples are on-policy: they are chains this model actually produces, filtered to the ones that land on the right answer, so training on them sharpens the distribution onto its own successful reasoning paths instead of teaching it to imitate a larger model's phrasing. The gold rows for the 5,773 unsolved problems are, by construction, concentrated on the problems it cannot do."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+1 to +4 points"
+  falsified_if: "greedy dev-200 accuracy is at or below 0.675, i.e. one epoch of on-policy filtered data plus hard-problem gold buys nothing over the SFT checkpoint it started from."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/train_exp06rft.jsonl
+      source: "synthetic:self (rejection samples from /home/ben/task/ckpts/exp-05) over microsoft/orca-math-word-problems-200k problems held out of exp-05, + Orca gold for unsolved problems, + replay from nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e and openai/gsm8k main/train"
+      n_examples: 26721
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-05, --pool, data/pool_orca_unseen.jsonl, --out, data/rft_exp06_raw.jsonl, --n-problems, '14000', --k, '4', --temperature, '1.0', --top-p, '0.95', --max-tokens, '512', --seed, '0']
+      selection: "a sample is kept only if it contains exactly one 'ANSWER:' and its last number equals the problem's gold answer; identical samples deduplicated; at most 2 distinct correct solutions per problem; problems with 0 correct samples contribute up to 2 gold Orca solutions instead; 7,000 replay rows from the OMI2 pool; 12% of rows carry a k-shot system message built from the gsm8k TRAIN split only"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "sampling with vllm 0.11.0; training with the same hand-written torch loop (scripts/train_sft.py)"
+    peft: none
+    hyperparams:
+      lr: 4.0e-6
+      epochs: 1
+      batch_size: 5120
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+    target_format: "identical to every earlier card; the self-samples were generated through the same template so they already carry it"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/train_exp06rft, --out, /home/ben/task/ckpts/exp-06, --init, /home/ben/task/ckpts/exp-05, --epochs, '1', --lr, '4e-6', --token-budget, '5120', --accum, '8', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env:
+      HF_HOME: /home/ben/hf_cache
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    log: /home/ben/task/logs/exp-06_train.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.5
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}-greedy', --limit, '200', --max-tokens, '1024', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 200 (first 200 items, no shuffle); greedy generation_config as adopted in exp-03"
+    n: 200
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.675
+    path: /home/ben/task/eval/exp-05_greedy_dev200.json
+  diagnostic:
+    what: "termination rate; on-policy data should if anything reduce the 3 greedy repetition loops, since degenerate samples are filtered out of the training set by the answer check"
+    n: 200
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.1
+  output_checkpoint: /home/ben/task/ckpts/exp-06
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06, step: 421}
+  training_summary:
+    final_loss: 0.2737
+    steps: 421
+    notes: "33.6 min sampling (56,000 sequences) + 28.6 min training over 3,371 micro-batches (1 epoch x 26,721 rows, 15.4M tokens) from exp-05 at lr 4e-6; loss 0.271 -> 0.274, i.e. essentially flat from the first step"
+  measurements:
+    - {metric: accuracy, value: 0.675, n: 200, path: /home/ben/task/eval/exp-06_greedy_dev200.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/logs/exp-06_sample.log
+    notes: "sampled-correct rate on held-out problems was 0.360 before the round; not re-measured after, because the dev-200 score did not move and the remaining time was needed for the final assembly"
+  watch_set_result: {fixed: null, still_failing: 65, regressions: null, path: /home/ben/task/eval/exp-06_greedy_dev200.json}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "0.675 -> 0.675, exactly zero change on 200 items. One epoch of on-policy rejection-sampled data plus gold for the 5,773 unsolved problems moved nothing; the training loss was flat from step 1 (0.271 -> 0.274), which says the self-samples were already at the model's own likelihood optimum - the filter kept the chains it was going to produce anyway."
+  decision: reject
+  next_step: "Do not spend the remaining time on more data of any kind. exp-06 is still useful as a fourth point on the exp-04 -> exp-05 trajectory for the weight average in exp-07, where it turned out to matter: the 4-way soup including it scores 0.735."

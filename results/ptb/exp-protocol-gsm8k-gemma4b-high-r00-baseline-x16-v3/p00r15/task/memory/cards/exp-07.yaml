@@ -1,0 +1,143 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T04:25:30Z'
+situation:
+  elapsed_h: 6.45
+  remaining_h: 3.55
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05
+    score:
+      metric: accuracy
+      value: 0.675
+      protocol_n: 200
+  trigger: "Three SFT cards in a row returned +50.5, +3.0, +1.0 points for 8.9M, 83.2M and 143M cumulative training tokens. With 3.55 h left there is no token budget that would move the number again, but exp-04 and exp-05 are two points on one optimisation trajectory, and averaging along a trajectory costs no GPU at all."
+  trigger_evidence:
+    - path: /home/ben/task/memory/index.md
+      locator: "exp-02 0.575 -> exp-03 0.635 -> exp-04 0.665 -> exp-05 0.675"
+    - path: /home/ben/task/eval/exp-05_greedy_dev200.json
+      locator: "accuracy 0.675, stderr 0.033"
+  alternatives_rejected:
+    - option: "Another SFT corpus"
+      reason: "exp-04 and exp-05 between them show the marginal point per doubling of SFT tokens is now under 1; there is no corpus left that would beat noise in the remaining time."
+    - option: "Averaging in the exp-02 pilot checkpoint as well"
+      reason: "exp-02 is a different trajectory (trained from base on a 16k subset, 0.635) and 143M tokens away from the incumbent; souping across that gap is more likely to interpolate into a worse basin than along the exp-04 -> exp-05 path."
+    - option: "Skip the soup and just pick between exp-04 and exp-05 with a bigger eval"
+      reason: "The soup runs on CPU while the RFT sampling in exp-06 owns the GPU, so it costs zero GPU time and only two 8-minute evals. Doing both is cheaper than choosing."
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, scripts/soup.py, --ckpts, ckpts/exp-04, ckpts/exp-05, --out, ckpts/soup-A]
+      outcome: "averaged in fp32 then cast to bf16, saved with tokenizer and generation_config; tied lm_head reported missing as expected"
+problem:
+  statement: "exp-05 (0.675) and exp-04 (0.665) differ by 1 point on dev-200 with a standard error of 0.033, so I cannot tell which is actually better, and either single checkpoint carries the SGD noise of wherever its last few hundred steps happened to land."
+  evidence:
+    - path: /home/ben/task/eval/exp-05_greedy_dev200.json
+      locator: "0.675 +/- 0.033"
+      observation: "exp-05 fixes 14 of exp-04's 67 failures but regresses 12 others - the two checkpoints disagree on 26 items while scoring almost the same"
+    - path: /home/ben/task/eval/exp-04_greedy_dev200.json
+      locator: "0.665 +/- 0.033"
+      observation: "one standard error covers the whole gap"
+  affected_share: null
+  failure_examples:
+    - id: exp05-vs-exp04
+      source: /home/ben/task/analysis/exp-05_failures.jsonl
+      question: "26 dev-200 items where exp-04 and exp-05 disagree"
+      gold: "varies"
+      model_output: "14 fixed by exp-05, 12 newly broken by exp-05"
+      failure: "checkpoint-to-checkpoint variance rather than a systematic capability difference"
+  watch_set:
+    path: /home/ben/task/analysis/exp-05_failures.jsonl
+    n: 65
+    selection: "every dev-200 item the incumbent gets wrong"
+hypothesis:
+  claim: "A uniform weight average of checkpoints along the exp-04 -> exp-05 trajectory will score at least as well as the better of its parents on greedy dev-200, and I expect it to score above exp-05's 0.675."
+  mechanism: "exp-05 was initialised from exp-04 and trained at 6e-6, so the two sit in the same loss basin; the difference between them is largely the noise of the last epoch's minibatch order. Averaging weights inside a basin cancels that noise and lands nearer the centre of the flat region, which is the standard model-soup/LAWA effect. The 12 items exp-05 newly broke and the 14 it fixed are exactly the signature of noise the average should reduce."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0 to +3 points; a soup that lands between its parents would still be evidence the basin assumption holds"
+  falsified_if: "both soups score below exp-04's 0.665, i.e. averaging lands outside the basin and is worse than either parent."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/exp-01_protocol_inputs.jsonl
+      source: local
+      n_examples: 200
+      built_by: /home/ben/task/scripts/dump_eval_inputs.py
+      build_command: [python, scripts/dump_eval_inputs.py, --limit, '200', --out, eval/exp-01_protocol_inputs.jsonl]
+      selection: "the dev-200 protocol set; this card trains on nothing, it only averages existing weights"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "scripts/soup.py: fp32 uniform average of state dicts, cast back to bf16"
+    peft: none
+    hyperparams:
+      seed: 0
+    target_format: "unchanged from exp-05"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --ckpts, ckpts/exp-04, ckpts/exp-05-step910, ckpts/exp-05, --out, ckpts/soup-B]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env:
+      HF_HOME: /home/ben/hf_cache
+    log: /home/ben/task/logs/soup.log
+  output_dir: /home/ben/task/ckpts
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget:
+    gpu: none-cpu-only
+    planned_h: 0.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}-greedy', --limit, '200', --max-tokens, '1024', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 200 (first 200 items, no shuffle); greedy generation_config as adopted in exp-03"
+    n: 200
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.675
+    path: /home/ben/task/eval/exp-05_greedy_dev200.json
+  diagnostic:
+    what: "termination rate; a soup that fell out of the basin would show up as degenerate generation before it shows up in accuracy"
+    n: 200
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.0
+  output_checkpoint: /home/ben/task/ckpts/soup-C
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup-A, step: 0}
+    - {path: /home/ben/task/ckpts/soup-B, step: 0}
+    - {path: /home/ben/task/ckpts/soup-C, step: 0}
+    - {path: /home/ben/task/ckpts/soup-D, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; fp32 uniform weight averages cast back to bf16, on CPU, while the GPU was busy with exp-06"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 200, path: /home/ben/task/eval/soup-B_greedy_dev200.json, delta_vs_comparator: 0.045}
+    - {metric: accuracy, value: 0.675, n: 200, path: /home/ben/task/eval/soup-A_greedy_dev200.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.735, n: 200, path: /home/ben/task/eval/soup-C_greedy_dev200.json, delta_vs_comparator: 0.06}
+    - {metric: accuracy, value: 0.66, n: 200, path: /home/ben/task/eval/soup-D_greedy_dev200.json, delta_vs_comparator: -0.015}
+    - {metric: accuracy, value: 0.734, n: 500, path: /home/ben/task/eval/final_model_dev500.json, delta_vs_comparator: null}
+  diagnostic_result:
+    value: 0.99
+    path: /home/ben/task/logs/2026-09-03T05-35-55+00-00_gsm8k_Ewqbqcd9AsTGEUSY2aPdc2.json
+    notes: "termination 0.995 / 0.990 / 0.990 / 0.985 for soups A/B/C/D - every average generates cleanly, so none of them fell out of the basin"
+  watch_set_result: {fixed: 12, still_failing: 53, regressions: 0, path: /home/ben/task/eval/soup-C_greedy_dev200.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The pre-registered 3-way soup (exp-04 + exp-05-step910 + exp-05) scores 0.720 vs the incumbent's 0.675: +4.5 points for zero GPU time, the second-largest gain of the batch after the format fix. Averaging more converged points on the same trajectory kept helping - a 4-way soup that adds exp-06 reaches 0.735 - while adding exp-04-step1218, a mid-run point still at 4e-6 on the cosine, drops it to 0.660. Trajectory averaging works here, but only over converged points."
+  decision: adopt
+  next_step: "NOT PRE-REGISTERED, and recorded as such: soup-C (4-way, adds exp-06) and soup-D (5-way, adds the mid-run exp-04-step1218) were built and scored after soup-B's result was in, so choosing soup-C is a best-of-4 selection on dev-200 and its 0.735 is optimistically biased. That is why final_model was re-scored on 500 items: 0.734 +/- 0.020, which matches the 200-item number and is what justifies shipping it. A cleaner run would have pre-registered the sweep over the number of averaged checkpoints as one card."

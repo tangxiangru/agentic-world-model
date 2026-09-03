@@ -79,3 +79,5 @@
 - 2026-09-03T02:48:58+00:00 cancel exp-protocol-gsm8k-gemma4b-high-r02-guard-drift-x2-v1/g02r01 job=90857 (PENDING): Superseded before launch by drift pair A v2: the protocol tree matched, but this held block shipped the older 4ae3d87 AWM paths rather than the candidate generation restored at 2f64581.
 - 2026-09-03T02:48:58+00:00 cancel exp-protocol-gsm8k-gemma4b-high-r02-guard-drift-x2-v1/g02r02 job=90858 (PENDING): Superseded before launch by drift pair A v2: the protocol tree matched, but this held block shipped the older 4ae3d87 AWM paths rather than the candidate generation restored at 2f64581.
 - 2026-09-03T05:42:36+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r12 job=90486 COMPLETED acc=0.7195 complete clean
+- 2026-09-03T06:42:35+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r11 job=90485 COMPLETED acc=0.6952 complete clean
+- 2026-09-03T06:42:37+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r15 job=90489 COMPLETED acc=0.7096 complete clean
