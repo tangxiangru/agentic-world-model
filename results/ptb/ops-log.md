@@ -101,3 +101,4 @@
 - 2026-09-03T18:39:04+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2/g01s03 job=90793 COMPLETED acc=0.7255 complete clean
 - 2026-09-03T18:39:06+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2/g01s06 job=90796 COMPLETED acc=0.7081 complete clean
 - 2026-09-03T18:39:08+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2/g01s08 job=90798 COMPLETED acc=0.7255 complete clean
+- 2026-09-03T18:42:47+00:00 restore user hold on receipt-validated, never-started Round 02 jobs 91046–91073 after unexplained external release; 28/28 verified PENDING(JobHeldUser), frozen ReqNodeList matched, no RUNNING job touched; audit held-restore-20260903T184247Z.json. Existing reconcile does not restore externally removed holds, so this was a receipt-scoped operator recovery with scontrol uhold, not a new launch or cancellation.
