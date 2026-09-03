@@ -219,6 +219,50 @@ c10r01..03 scored 0.8150, 0.7672 and 0.7020; c10r04 was still running, so the
 paired PTB readout remains provisional. The analysis process was still running
 asynchronously while this launch and harvest were recorded.
 
+### Verified completion-window diagnosis (2026-09-03 19:1x UTC)
+
+The event's Opus 5/max UltraCode report is available, but its unfinished
+specialist passes and factual overstatements are not adopted. Bounded parallel
+readers completed the uptake/levers, access and decision/harm checks; their
+reports and frozen provenance are committed under
+`doc/wma_iterations/evidence/2026-09-03-w10/`. The original advisory report and
+operator corrections remain in the shared event directory. c10r04, extensions
+and A–F outcomes were not read or used in this design window.
+
+The four clean w10 cells average 0.713419 (sample SD 0.012821); three clean c10
+cells average 0.761435 (SD 0.056706). This incomplete contrast supports no
+promotion. The authoritative w10 ledger is 30 final verdicts, 19 scored,
+11 leak-suspected, L0/L1 hit 1.0, L2 coverage 0.933 at n=15 with width/noise
+4.1145, L3 hit 0.769, and saved/wrongly-killed GPU hours 0/0. Terminal-verdict
+cost is $59.4183 total, $1.9806 per verdict, 6.1637 minutes mean; it omits
+superseded reviews and is not the complete review-cycle cost.
+
+- All 43 request/response pairs can be counted. Their lifecycle durations
+  sum to 80.11/58.76/69.58/59.66 minutes per w10 cell. These are not measured
+  GPU-idle minutes and do not establish a >1.5 h/cell cost-line breach.
+- The final files overwrite earlier verdicts; response files carry metadata,
+  not their bodies. Scientist logs recover 42 level summaries and the sole
+  single-review missing summary has its final verdict. All 43 L3 answers are
+  yes. The two recovered L0/L1 negatives led to repairs; no avoided OOM or
+  wrongly-killed training is thereby established. First verdicts must not be
+  scored against outcomes of subsequently modified proposals.
+- The 11 access flags remain. Seven concern ambient filesystem probes, four
+  actual outside package-source reads. w10r01/exp-05 also imports a package,
+  creates an installation cache and explicitly removes it outside scratch.
+  These are not automatically cleared as benign environmental information.
+- Automated uptake/timing heuristics misassociate later calls; their
+  12/29 verdict-before-launch and 26/30 adopted counts are not accepted causal
+  metrics. Hand-reading finds some checkpoint action in every w10 cell,
+  including a real two-ingredient soup suggestion taken in w10r02/exp-04.
+- The apparent wasted w10r03/exp-05 training is counterevidence: n400 reverses
+  its n150 rejection, and that checkpoint becomes the submitted model.
+
+This evidence supports testing precise probe-scope/stopping and C6/C18 advice
+as independent skill candidates, with all original measurement and launch
+guards retained. A bounded local Opus 5/max UltraCode follow-up reviews those
+designs. The already queued baseline/control extensions are a formal comparison
+dependency, not a reason to delay an independently justified candidate launch.
+
 ## In-flight gate read (planner, 2026-09-03 09:0x UTC)
 
 Source: the operator's 08:44 peeks of the first seven lock-gated cells
