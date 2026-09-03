@@ -40,10 +40,15 @@ Both read `results/ptb/<batch>/<cell>/` as the operator commits it:
 ## How
 
 1. Split the clean cells into groups of three or four, one arm per group, and
-   launch one reviewer subagent per group with the brief below. Reviewers read
-   only; they write `reports/<cell>.md` under the scratch directory.
-2. When all reviewers are done, launch one synthesis subagent over every
-   report with the synthesis brief; it writes
+   launch one reviewer subagent per group with the brief below. Use the
+   `trace-reviewer` agent definition (`.claude/agents/trace-reviewer.md`): it
+   runs at **high** effort, not max — the reading is mechanical and the brief
+   carries the judgement, and the user asked for that economy (2026-09-03).
+   Reviewers read only; they write `reports/<cell>.md` under the scratch
+   directory.
+2. When all reviewers are done, launch one synthesis subagent (the same
+   `trace-reviewer` definition) over every report with the synthesis brief; it
+   writes
    `doc/exp_protocol_iterations/<date>-trace-review-round-NN.md`.
 3. Read the synthesis and the best and worst cell of each arm yourself. Turn
    the proposals into candidates: each one item on the allowed surface, traced
