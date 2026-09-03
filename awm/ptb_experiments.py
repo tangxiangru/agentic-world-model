@@ -1259,8 +1259,18 @@ def _expanded_nodes(nodelist: str) -> set[str]:
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
-def release_held(receipt_path: Path) -> dict[str, Any]:
-    """Release one registered held receipt after ownership and placement revalidation."""
+def release_held(
+    receipt_path: Path,
+    *,
+    allow_shared_reservation: bool = False,
+    authorization: str | None = None,
+) -> dict[str, Any]:
+    """Release one registered held receipt after ownership and placement revalidation.
+
+    ``allow_shared_reservation`` is a per-release, human-authorized exception to
+    the native-reservation equality check only. Ownership, frozen node lists,
+    PENDING state and ``JobHeldUser`` remain mandatory.
+    """
     receipt_path = Path(receipt_path)
     receipt = load_receipt(receipt_path)
     if receipt.get("state") != "held":
@@ -1306,7 +1316,11 @@ def release_held(receipt_path: Path) -> dict[str, Any]:
     reservation_nodes = _expanded_nodes(
         reservation_nodes_match.group(1) if reservation_nodes_match else ""
     )
-    if reservation_nodes != frozen_nodes:
+    if allow_shared_reservation and not (authorization or "").strip():
+        raise ExperimentError(
+            "shared-reservation release override requires a non-empty authorization record"
+        )
+    if reservation_nodes != frozen_nodes and not allow_shared_reservation:
         raise ExperimentError(
             f"reservation {reservation} is not native two-node isolation: "
             f"{','.join(sorted(reservation_nodes)) or '(none)'} vs frozen "
@@ -1352,6 +1366,14 @@ def release_held(receipt_path: Path) -> dict[str, Any]:
     receipt.pop("_path", None)
     receipt["state"] = "submitted"
     receipt["released_at"] = datetime.now(timezone.utc).isoformat()
+    if allow_shared_reservation:
+        receipt["release_safety_override"] = {
+            "allow_shared_reservation": True,
+            "authorization": str(authorization).strip(),
+            "reservation": reservation,
+            "reservation_nodes": sorted(reservation_nodes),
+            "frozen_nodes": sorted(frozen_nodes),
+        }
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     return receipt
 

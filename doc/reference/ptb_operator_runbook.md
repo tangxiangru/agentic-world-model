@@ -14,7 +14,7 @@
 ## 二、四种文件就是协议
 
 1. **manifest** `experiments/posttrainbench/<batch>.yaml`:跑什么。提交后不可变;发射器把顶层 commit、PTB commit 与 manifest 冻结进 receipt。每格若用 `_awm` scaffold,`awm` 块写明要挂进沙箱的 commit、路径与 `awm sandbox setup` 的参数。
-2. **队列** `experiments/posttrainbench/queue.yaml`:期望状态。有序列表,每项 `manifest`、`want: submitted | held | cancelled`、可选 `pilot: first`、一句 `why`。`held` 只提交并登记 ownership，保留 `PENDING(JobHeldUser)`；改成 `submitted` 前必须通过 ownership 与冻结节点 release gate；`cancelled` 撤回还没开跑的格。这是规划者唯一的操作杆。
+2. **队列** `experiments/posttrainbench/queue.yaml`:期望状态。有序列表,每项 `manifest`、`want: submitted | held | cancelled`、可选 `pilot: first`、一句 `why`。`held` 只提交并登记 ownership，保留 `PENDING(JobHeldUser)`；改成 `submitted` 前必须通过 ownership 与冻结节点 release gate；`cancelled` 撤回还没开跑的格。这是规划者唯一的操作杆。只有用户明确授权时，单个 `want: submitted` 项可带 `release_override: {allow_shared_reservation: true, authorized_by, authorized_at, reason}`：它只豁免 reservation 节点集合相等检查，ownership、receipt frozen nodes、逐 job `PENDING(JobHeldUser)` 与 `ReqNodeList` 仍强制，授权与实际 reservation/frozen nodes 写回 receipt；绝不能设成全局环境开关。
 3. **receipt** `results/ptb/<batch>/<kind>-<ts>.json`:发射器写在 `data/ptb/batches/` 的原件由操作员复制进来,取消记录追加在 `cancellations`。它是唯一的归属凭证:**只有它列出的 job ID 可以被取消**,这是 `AGENTS.md` 的硬规则。
 4. **结果包** `results/ptb/<batch>/<cell>/`,布局见 `results/ptb/README.md`;`results/ptb/ops-log.md` 每个动作一行。
 

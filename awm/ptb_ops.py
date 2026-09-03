@@ -113,6 +113,27 @@ def load_queue(path: Path, repo_root: Path) -> list[dict[str, Any]]:
         why = entry.get("why")
         if not isinstance(why, str) or not why.strip():
             raise OpsError(f"{where}: why must say, in one line, why this entry is here")
+        release_override = entry.get("release_override")
+        if release_override is not None:
+            if not isinstance(release_override, dict):
+                raise OpsError(f"{where}: release_override must be a mapping")
+            allowed = {"allow_shared_reservation", "authorized_by", "authorized_at", "reason"}
+            unknown = set(release_override) - allowed
+            if unknown:
+                raise OpsError(
+                    f"{where}: release_override has unknown field(s): "
+                    f"{', '.join(sorted(unknown))}"
+                )
+            if entry.get("want") != "submitted":
+                raise OpsError(f"{where}: release_override requires want: submitted")
+            if release_override.get("allow_shared_reservation") is not True:
+                raise OpsError(
+                    f"{where}: release_override must set allow_shared_reservation: true"
+                )
+            for field in ("authorized_by", "authorized_at", "reason"):
+                value = release_override.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise OpsError(f"{where}: release_override.{field} must be non-empty")
     return entries
 
 
@@ -184,6 +205,8 @@ class Action:
     receipt: str | None = None  # receipt file name within the batch, or a source path for copy_receipt
     job_name: str | None = None
     state: str | None = None
+    allow_shared_reservation: bool = False
+    release_authorization: str | None = None
 
     def line(self) -> str:
         where = f"{self.batch}/{self.cell}" if self.cell else self.batch
@@ -257,12 +280,24 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
             ]
             if entry["want"] == "submitted" and held_receipts:
                 name, _ = held_receipts[-1]
+                release_override = entry.get("release_override") or {}
+                authorization = None
+                if release_override:
+                    authorization = (
+                        f"authorized_by={release_override['authorized_by']}; "
+                        f"authorized_at={release_override['authorized_at']}; "
+                        f"reason={release_override['reason']}"
+                    )
                 actions.append(
                     Action(
                         "release",
                         batch,
                         "ownership and frozen placement must pass before release",
                         receipt=name,
+                        allow_shared_reservation=bool(
+                            release_override.get("allow_shared_reservation")
+                        ),
+                        release_authorization=authorization,
                     )
                 )
             continue
@@ -621,7 +656,11 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
         tracked = repo_root / RESULTS_ROOT / action.batch / str(action.receipt)
         receipt_path = source if source.is_file() else tracked
         try:
-            receipt = release_batch(receipt_path)
+            receipt = release_batch(
+                receipt_path,
+                allow_shared_reservation=action.allow_shared_reservation,
+                authorization=action.release_authorization,
+            )
         except ptb.ExperimentError as exc:
             line = f"blocked release {action.batch}: {str(exc).splitlines()[0]}"
         else:

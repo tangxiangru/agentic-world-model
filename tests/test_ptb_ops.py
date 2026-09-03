@@ -95,6 +95,32 @@ def test_queue_is_validated(repo) -> None:
     assert ops.load_queue(_queue(root), root) == []
 
 
+def test_queue_validates_a_per_entry_shared_reservation_release_override(repo) -> None:
+    root, _ = repo
+    override = {
+        "allow_shared_reservation": True,
+        "authorized_by": "user",
+        "authorized_at": "2026-09-03 09:39 UTC",
+        "reason": "fill the restored owned node",
+    }
+    entry = {**ENTRY, "release_override": override}
+    assert ops.load_queue(_queue(root, entry), root) == [entry]
+
+    bad_cases = (
+        ({**ENTRY, "want": "held", "release_override": override}, "requires want: submitted"),
+        ({**ENTRY, "release_override": "yes"}, "must be a mapping"),
+        (
+            {**ENTRY, "release_override": {**override, "allow_shared_reservation": False}},
+            "must set allow_shared_reservation: true",
+        ),
+        ({**ENTRY, "release_override": {**override, "reason": ""}}, "reason must be non-empty"),
+        ({**ENTRY, "release_override": {**override, "surprise": True}}, "unknown field"),
+    )
+    for bad, message in bad_cases:
+        with pytest.raises(ops.OpsError, match=message):
+            ops.load_queue(_queue(root, bad), root)
+
+
 def test_receipt_kind_survives_the_timestamp_in_the_name() -> None:
     assert ops._receipt_kind("pilot-2026-09-02T000000.123456+0000.json") == "pilot"
     assert ops._receipt_kind("formal-2026-09-02T000000.123456+0000.json") == "formal"
@@ -128,6 +154,22 @@ def test_a_held_entry_submits_once_then_waits_for_an_explicit_release(
 
     (release,) = ops.plan([ENTRY], root)
     assert release.kind == "release" and release.receipt.startswith("formal-")
+
+    override_entry = {
+        **ENTRY,
+        "release_override": {
+            "allow_shared_reservation": True,
+            "authorized_by": "user",
+            "authorized_at": "2026-09-03 09:39 UTC",
+            "reason": "fill owned node",
+        },
+    }
+    (release,) = ops.plan([override_entry], root)
+    assert release.allow_shared_reservation is True
+    assert release.release_authorization == (
+        "authorized_by=user; authorized_at=2026-09-03 09:39 UTC; "
+        "reason=fill owned node"
+    )
 
 
 def test_pilot_first_gates_the_formal_submission(repo, tmp_path: Path) -> None:

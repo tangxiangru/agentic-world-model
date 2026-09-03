@@ -587,6 +587,83 @@ def test_held_receipt_release_refuses_a_shared_reservation(
         ptb.release_held(receipt_path)
 
 
+def test_held_receipt_release_allows_an_explicit_audited_shared_reservation_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from awm import slurm_queue
+
+    receipt_path = tmp_path / "formal.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "state": "held",
+                "site": {
+                    "POST_TRAIN_BENCH_SLURM_NODELIST": "owned-[0-1]",
+                    "POST_TRAIN_BENCH_SLURM_RESERVATION": "shared",
+                },
+                "jobs": [{"cell_id": "g01", "job_id": "10", "job_name": "branch.g01"}],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {"POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(tmp_path / "registry")},
+    )
+    monkeypatch.setattr(slurm_queue, "collect_snapshot", lambda _path: {"ownership_ok": True})
+    monkeypatch.setattr(ptb, "_job_state", lambda _job: "PENDING")
+    released: list[str] = []
+
+    def fake_run(command, **_kwargs):
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            output = (
+                "owned-0\nowned-1\nextra-0\n"
+                if command[3] == "owned-[0-1],extra-0"
+                else "owned-0\nowned-1\n"
+            )
+            return subprocess.CompletedProcess(command, 0, output, "")
+        if command[:3] == ["scontrol", "show", "reservation"]:
+            return subprocess.CompletedProcess(
+                command, 0, "ReservationName=shared Nodes=owned-[0-1],extra-0\n", ""
+            )
+        if command[:3] == ["scontrol", "show", "job"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "JobId=10 JobState=PENDING Reason=JobHeldUser "
+                "ReqNodeList=owned-[0-1]\n",
+                "",
+            )
+        if command[:2] == ["scontrol", "release"]:
+            released.append(command[2])
+            return subprocess.CompletedProcess(command, 0, "", "")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+
+    with pytest.raises(ptb.ExperimentError, match="non-empty authorization"):
+        ptb.release_held(receipt_path, allow_shared_reservation=True)
+
+    receipt = ptb.release_held(
+        receipt_path,
+        allow_shared_reservation=True,
+        authorization="authorized_by=user; authorized_at=2026-09-03T09:39:00Z; reason=fill node",
+    )
+
+    assert released == ["10"]
+    assert receipt["state"] == "submitted"
+    assert receipt["release_safety_override"] == {
+        "allow_shared_reservation": True,
+        "authorization": (
+            "authorized_by=user; authorized_at=2026-09-03T09:39:00Z; reason=fill node"
+        ),
+        "reservation": "shared",
+        "reservation_nodes": ["extra-0", "owned-0", "owned-1"],
+        "frozen_nodes": ["owned-0", "owned-1"],
+    }
+
+
 def test_site_gate_accepts_the_exp_protocol_two_node_subqueue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
