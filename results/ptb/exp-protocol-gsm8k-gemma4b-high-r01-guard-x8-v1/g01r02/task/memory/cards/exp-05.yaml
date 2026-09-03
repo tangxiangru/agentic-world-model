@@ -1,0 +1,122 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T12:19:52Z'
+
+situation:
+  elapsed_h: 5.6
+  remaining_h: 4.4
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.8267, protocol_n: 150}
+  trigger: "exp-02 trained on 150k rows for a single epoch and every stage since has been small (exp-04 was 313 optimiser steps). The teacher corpus is not exhausted: 100k OpenMathInstruct-2 chains this model has never seen are already built and contamination-checked, including 13292 GSM8K-family problems absent from every previous stage."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/build_v2.log, locator: "final line", observation: "only 13292 gsm8k-family problems in OpenMathInstruct-2 are not already in sft_v1 -- the unique-problem pool is nearly exhausted, so v3 goes after unseen *chains* for seen problems"}
+    - {path: /home/ben/task/logs/contam_v4.log, locator: "results table", observation: "99986 documents scanned, 0 contaminated"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: conclusion.summary, observation: "+2.0 on dev-150 is inside the noise floor; the run is cheap enough that adding data is the better use of the last GPU hours"}
+  alternatives_rejected:
+    - {option: "A second RFT round (k=6 on the ~12k questions exp-04's predecessor rarely solved)", reason: "sampling alone costs ~30 min at this model's ~8k tok/s and would yield perhaps 14k rows, i.e. ~140 optimiser steps; the fresh-teacher slice is 6x the signal for twice the time"}
+    - {option: "Train the fresh slice alone, without replaying the RFT rows", reason: "80k rows at lr 7e-6 would largely overwrite exp-04's 313 steps; the whole point of ordering SFT before RFT is lost if the last stage is pure SFT"}
+    - {option: "Restart from exp-03 with all the data at once", reason: "a 250k-row run from the base is ~4.3 h and there are 4.4 h left; there would be no time left to evaluate or recover"}
+    - {option: "MetaMathQA-395K as the fresh source", reason: "its chains come from a much weaker teacher than OpenMathInstruct-2's 405B; at 0.83 the risk of pulling the model down is real"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/sft_v4_check.jsonl], outcome: "99986 documents scanned, 0 contaminated, 0 matches"}
+
+problem:
+  statement: "The incumbent has seen 150k teacher chains once, plus 33663 of its own. Its remaining dev-150 errors are mathematical, and the cheapest untried lever is that a third of the usable teacher corpus was never read: 100k contamination-clean chains sit unused on disk with under five hours of budget left."
+  evidence:
+    - {path: /home/ben/task/eval/exp04_dev150.json, locator: accuracy, observation: "0.8267 -- 26 of 150 still wrong"}
+    - {path: /home/ben/task/analysis/exp04_probe200.jsonl, locator: "31 failing probes", observation: "0.845 on held-out GSM8K-train questions"}
+    - {path: /home/ben/task/data/sft_v4.jsonl, locator: "100000 rows", observation: "33292 rows on problems no previous stage saw; the rest are unseen chains for seen problems"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe200.jsonl
+    n: 200
+    selection: "the same 200 held-out GSM8K-train questions as exp-02/03/04; incumbent 169/200 = 0.845 greedy"
+
+hypothesis:
+  claim: "One more epoch from the incumbent over 80k unseen teacher chains mixed with a replay of the 33663 RFT rows will raise dev-150 accuracy relative to exp-04's 0.8267 and will not lower the held-out probe below 0.845."
+  mechanism: "The 80k fresh chains carry 405B-teacher solutions to problems (13292 of them entirely new) that the model has never fit, so they still hold gradient signal; replaying the RFT rows at ~30% of the mixture keeps the self-verified distribution exp-04 established from being written over by a stage six times its size."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+1 to +3 points"}
+  falsified_if: "dev-150 accuracy falls below 0.8267, or the held-out probe falls below 0.845 (which would say the replay failed to protect exp-04's gain)"
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/mix_v5.jsonl
+      source: 'nvidia/OpenMathInstruct-2 (80000 rows) + derived:exp-04 (33663 rows)'
+      n_examples: 113663
+      built_by: /home/ben/task/scripts/build_data3.py
+      build_command: [python, scripts/build_data2.py, --out, data/sft_v2.jsonl, '&&', python, scripts/build_data3.py, --out, data/sft_v3.jsonl, '&&', python, -c, 'shuffle 80k of sft_v4 (=v2+v3) with all of rft_v1 into mix_v5.jsonl']
+      selection: "sft_v2: gsm8k/math-family OpenMathInstruct-2 rows whose *question* appears nowhere in sft_v1 (33292 rows, shards walked in reverse). sft_v3: rows whose exact *chain* appears in neither sft_v1 nor sft_v2, <=3 chains per problem (100000 rows, shard order shuffled). sft_v4 = v2 + 66708 of v3; mix_v5 = 80000 of sft_v4 + all 33663 rft_v1 rows. Same filters as exp-02 throughout (numeric answers, no second answer marker, boxed flattened, 20% few-shot prefixes). Every item derives from GSM8K train or MATH train."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with a custom token-budget batch sampler
+    peft: none
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 6144, grad_accum: 8, max_seq_len: 1536, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32 params + bf16 autocast, paged_adamw_8bit, seed: 0}
+    target_format: "<reasoning>\\n\\nANSWER: <n><end_of_turn>\\n after the grader's '<start_of_turn>model\\n' prefix; loss on completion tokens only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --model, ckpts/exp-04/final, --data, data/mix_v5.jsonl, --out, ckpts/exp-05, --max-len, '1536', --budget, '6144', --accum, '8', --lr, '7e-6', --epochs, '1', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.8267
+    path: /home/ben/task/eval/exp04_dev150.json
+  diagnostic:
+    what: "greedy accuracy on the 200 held-out GSM8K-train probes (incumbent 0.845); this is what says whether the replay protected exp-04's gain"
+    n: 200
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.97
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 1130}
+  training_summary: {final_loss: 0.2790, steps: 1130, notes: "train_runtime 7081.8 s, 16.0 samples/s, 52.8M tokens, 113438 of 113663 rows fitted in max_seq_len. Loss started at 0.284 and ended at 0.272 -- higher than exp-04's 0.223 because 70% of the mixture is teacher text the model had not fitted, which is the signal this card was after."}
+  measurements:
+    - {metric: accuracy, value: 0.8067, n: 150, path: /home/ben/task/eval/exp05_dev150.json, delta_vs_comparator: -0.0200}
+  diagnostic_result:
+    value: 0.825
+    path: /home/ben/task/analysis/exp05_probe200.jsonl
+    notes: "held-out probe 0.845 -> 0.825 (-4 items of 200). The replay did not protect exp-04's gain: the probe fell back roughly halfway to exp-03's 0.805."
+  watch_set_result:
+    fixed: 165
+    still_failing: 35
+    regressions: null
+    path: /home/ben/task/analysis/exp05_probe200.jsonl
+    notes: "165/200 vs exp-04's 169/200 under the identical greedy 10-shot protocol"
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.8267 -> 0.8067 (-2.0) and the held-out probe 0.845 -> 0.825 (-2.0). Two independent measurements move down together, which is the falsification condition the card named. 80k more teacher chains at this point are not signal the model needs, and a 30% replay of the RFT rows did not keep a stage six times their size from washing exp-04 out."
+  decision: reject
+  next_step: "keep exp-04 as the shipped checkpoint. The teacher-data lever is exhausted for this model at this scale; what still moved the needle was self-verified data (exp-04) and decoding (exp-03). Remaining budget goes to confirming the choice on a larger eval rather than to another training stage."

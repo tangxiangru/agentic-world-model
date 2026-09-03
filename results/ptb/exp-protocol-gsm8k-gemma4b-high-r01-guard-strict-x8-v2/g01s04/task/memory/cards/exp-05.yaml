@@ -1,0 +1,139 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T16:05:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.3
+  remaining_h: 3.7
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.7333, protocol_n: 150}
+  trigger: "exp-03 and exp-04 both score exactly 110/150 on the protocol, but they disagree on 16 items (exp-04 fixes 8, breaks 8) and exp-04 is ahead by 2.25 points on the 400 held-out items. n=150 has a stderr of 0.036 and cannot decide which one to ship."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_vs_exp-03_items.json, locator: "{n:150, fixed:8, broke:8}", observation: "identical totals, 16 items of disagreement"}
+    - {path: /home/ben/task/analysis/exp-04_dev400_greedy.jsonl, locator: "312/400 correct", observation: "exp-04 on the held-out set"}
+    - {path: /home/ben/task/analysis/exp-02_dev400_greedy.jsonl, locator: "303/400 correct", observation: "exp-03's weights on the same held-out set"}
+  alternatives_rejected:
+    - {option: "Ship exp-04 on the strength of the dev-400 number alone", reason: "dev-400 is gsm8k TRAIN-distribution and exp-04 trained on more of that distribution, so it is exactly the set most likely to flatter it; the benchmark's own items are the honest tiebreak"}
+    - {option: "Ship exp-03 because it is the incumbent and the tie means no evidence to switch", reason: "a tie at n=150 is not evidence of equality, it is absence of resolution; exp-04 also terminates on 150/150 completions where exp-03 loses 4 to repetition loops, which is a real defect"}
+    - {option: "Train a third model with the remaining time instead of measuring", reason: "another run would land near the deadline with no time left to compare it, and would leave the ship decision resting on the same unresolved n=150 tie"}
+    - {option: "--limit 1319 (the whole test split) for maximum power", reason: "roughly 45 min per arm, 1.5 h for both, which leaves too little margin before the deadline for final_model assembly and a load check; n=800 resolves a 2-point paired effect at about 2 sigma"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "There are two candidate checkpoints and no measurement that separates them. Both score 0.7333 at n=150 while differing on 16 of those 150 items, so the choice of what to ship is currently being made by noise."
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: "accuracy 0.7333, stderr 0.0362", observation: "exp-03"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy 0.7333, stderr 0.0362", observation: "exp-04, identical total"}
+    - {path: /home/ben/task/analysis/exp-04_vs_exp-03_items.json, locator: "fixed 8, broke 8", observation: "the tie hides 16 disagreements, so the models are not the same model"}
+  affected_share: 0.1067
+  failure_examples:
+    - {id: tie-at-150, source: /home/ben/task/analysis/exp-04_vs_exp-03_items.json, question: "the 150 graded items", gold: "n/a", model_output: "exp-03 110/150, exp-04 110/150, 16 disagreements", failure: "the protocol cannot rank the two candidates"}
+    - {id: dev400-disagrees, source: /home/ben/task/analysis/exp-04_dev400_greedy.jsonl, question: "the 400 held-out items", gold: "n/a", model_output: "exp-04 312/400 vs exp-03 303/400", failure: "the held-out set ranks exp-04 first, the benchmark ranks them equal - one of the two signals has to break the tie"}
+    - {id: exp03-loops, source: /home/ben/task/analysis/exp-03_format.json, question: "the 150 graded items", gold: "n/a", model_output: "4 completions hit the 4000-token cap under exp-03, 0 under exp-04", failure: "exp-03 has a failure mode exp-04 does not, invisible in the tied totals"}
+  watch_set:
+    path: /home/ben/task/data/dev_train.jsonl
+    n: 400
+    selection: "the 400 gsm8k-TRAIN held-out items used throughout this batch; already scored for both candidates (303 vs 312). No test item is involved."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Scoring both candidates on 800 benchmark items instead of 150, under one identical greedy protocol, separates them; exp-04 scores at least as high as exp-03 and the ranking stops depending on which 150 items were drawn."
+  mechanism: "The two checkpoints disagree on about 11% of items, so at n=800 roughly 85 items should disagree and the paired difference has a standard deviation near 1.2 points - enough to resolve the 2.25-point gap dev-400 shows. Nothing is trained; this is a measurement that buys a defensible ship decision."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "exp-04 ahead by 0 to 3 points at n=800"
+  falsified_if: "exp-04 scores below exp-03 at n=800 by more than 1 point, in which case exp-03 ships and the dev-400 advantage was train-distribution flattery"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final_greedy
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev_train.jsonl
+      source: "derived:exp-02 (gsm8k train hold-out)"
+      n_examples: 400
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --n-dev, '400']
+      selection: "read-only prior evidence, not training data: this card trains nothing and only runs two evaluations"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect-ai + vllm 0.11.0 via evaluate.py; two arms, no training"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged; both arms carry the greedy generation_config adopted in exp-03"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04/final_greedy, --limit, '800', --max-connections, '16', --json-output-file, /home/ben/task/eval/exp-05_exp04_dev800.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-05_exp04.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '800', --max-connections, '16']
+    dev_set: "official --limit 800"
+    n: 800
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: null
+    path: null
+  diagnostic:
+    what: "paired item-level disagreement between the two arms on the same 800 items (how many each fixes and breaks), plus token-cap hits per arm"
+    n: 800
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.15
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 1108}
+    - {path: /home/ben/task/ckpts/exp-04/final_greedy, step: 374}
+    - {path: /home/ben/task/final_model, step: 374}
+  training_summary: {final_loss: null, steps: null, notes: "no training; two evaluation arms plus the shipped-artifact checks"}
+  measurements:
+    - {metric: accuracy, value: 0.75, n: 800, path: /home/ben/task/eval/exp-05_exp04_dev800.json, delta_vs_comparator: 0.00625}
+    - {metric: accuracy, value: 0.74375, n: 800, path: /home/ben/task/eval/exp-05_exp03_dev800.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.7475, n: 800, path: /home/ben/task/eval/final_model_dev800.json, delta_vs_comparator: 0.00375}
+  diagnostic_result:
+    value: 0.4
+    path: /home/ben/task/analysis/exp-05_paired800.json
+    notes: "paired over the same 800 items: exp-04 correct where exp-03 wrong on 52, the reverse on 47, 99 disagreements. McNemar continuity-corrected z=0.40, so the 5-item margin is not significant. Token-cap hits 13 (exp-04) vs 16 (exp-03). The value recorded here is that z, not an accuracy."
+  watch_set_result:
+    fixed: 9
+    still_failing: 88
+    regressions: 0
+    path: /home/ben/task/analysis/exp-04_dev400_greedy.jsonl
+    notes: "carried from exp-04; the dev-400 ranking (312 vs 303) agrees in sign with the n=800 ranking (600 vs 595)"
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: "n=800 did not separate the candidates: exp-04 600/800 (0.7500) vs exp-03 595/800 (0.74375), McNemar z=0.40 over 99 disagreements. The card was run to resolve the tie and did not; what it did establish is that exp-04 is nominally ahead on every measurement taken (n=800, dev-400, token-cap hits) and behind on none, which is enough to ship it without pretending the margin is real."
+  decision: adopt
+  next_step: "final_model/ holds exp-04's weights (checked byte-identical on a 9-tensor signature over both shards) plus the greedy generation_config, loaded once on CPU from a fresh process as Gemma3ForConditionalGeneration (4.30B params, eos [1,106], do_sample false) and scored end-to-end through evaluate.py at 0.7475 (n=800) and 0.72 (n=150). The n=150 number differs from exp-04's own 0.7333 on identical weights under greedy decoding, which pins vLLM's continuous-batching nondeterminism at about 2 items in 150 and is a caution for any future card reading a small-n delta. Untried lever left on the table: 13 of 800 completions still hit the token cap in a repetition loop, worth up to 1.6 points, which a small repetition_penalty in generation_config might recover - it needs its own card because it perturbs every generation, not just the looping ones."

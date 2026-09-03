@@ -1,0 +1,108 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T12:45:00Z'
+situation:
+  elapsed_h: 6.5
+  remaining_h: 3.5
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.724, protocol_n: 500}
+  trigger: "exp-05 could not separate exp-02 and exp-04 at n=500 (0.7200 vs 0.7240, stderr 0.020) and each is a different point on the same optimisation trajectory, which is the situation weight averaging is for. Evals turned out to cost ~4 minutes, so 3.5h is far more than the remaining plan needs and the spare capacity is best spent on a cheap candidate plus a decisive full-test measurement."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp05_exp04_dev500.json, locator: "accuracy 0.724"}
+    - {path: /home/ben/task/eval/exp05_exp03_dev500.json, locator: "accuracy 0.720"}
+  alternatives_rejected:
+    - {option: "One more training run (e.g. from base on the combined 195k corpus, 1 epoch)", reason: "~2.2h of the 3.5h left, and exp-04 already showed a further stage does not move this metric; it would leave no margin to re-verify final_model"}
+    - {option: "Souping in exp-02/checkpoint-470 as a third member", reason: "checkpoint-470 has never been scored, so it would be an unmeasured ingredient; two measured, statistically tied endpoints is the clean soup"}
+    - {option: "Keep selecting on n=500", reason: "the full 1319-item test set costs about 4 more minutes per arm and cuts the selection stderr to ~0.012"}
+  pitfalls_hit:
+    - {what: "final_model and ckpts/exp04_greedy hold byte-identical weights, config and generation_config (md5-checked) yet scored 0.6867 and 0.7000 on the same 150 items", cost_h: 0.05, fix: "vLLM greedy is not bit-reproducible across runs - batch scheduling changes the floating-point reduction order and flips the argmax on a few items. Treat any gap under ~2x stderr as noise and select on the largest n affordable."}
+  smoke_runs:
+    - {command: [python, scripts/finalize.py, --src, /home/ben/task/ckpts/exp04/final, --dst, /home/ben/task/final_model], outcome: "12 files, no symlinks; AutoModelForCausalLM loads on CPU as Gemma3ForConditionalGeneration with 4.30B params; evaluate.py --model-path final_model runs and scores 0.6867 at n=150"}
+problem:
+  statement: "The two candidate checkpoints are statistically tied at n=500, so the artifact shipped as final_model is currently chosen on a 2-item margin, and no candidate has been scored on the full test set."
+  evidence:
+    - {path: /home/ben/task/eval/exp05_exp04_dev500.json, locator: "accuracy 0.724 stderr 0.0200", observation: "exp-04"}
+    - {path: /home/ben/task/eval/exp05_exp03_dev500.json, locator: "accuracy 0.720 stderr 0.0201", observation: "exp-02 greedy; the 0.004 gap is 2 items"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A uniform weight average of ckpts/exp02/final and ckpts/exp04/final scores higher on the full 1319-item test set than either parent measured the same way."
+  mechanism: "exp-04 is a continuation of exp-02 on new data, so the two sit in the same loss basin and their average is a valid point in it. Averaging endpoints of one trajectory cancels part of the per-checkpoint noise the two arms disagree on, which is the standard model-soup effect; the two being tied at n=500 says neither endpoint is clearly the better place to stand."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+0 to +1.5 pts; a soup of two nearby points rarely does more"}
+  falsified_if: "The soup scores at or below both parents on the full test set, or its termination rate is worse than exp-04's 498/500 rate."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_exp04.jsonl
+      source: "derived:exp-04 - no training in this card; the soup is an arithmetic average of two existing checkpoints. Listed because it produced one of the two ingredients."
+      n_examples: 107296
+      built_by: /home/ben/task/scripts/gen_rft.py
+      build_command: [python, scripts/soup.py, --srcs, /home/ben/task/ckpts/exp02/final, /home/ben/task/ckpts/exp04/final, --out, /home/ben/task/ckpts/soup24]
+      selection: "unchanged from exp-04"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: merge
+    framework: safetensors, fp32 accumulation then cast back to bf16
+    peft: none
+    hyperparams: {weights: "0.5 exp-02/final + 0.5 exp-04/final", temperature: 0.0, seed: 42}
+    target_format: "unchanged: solution then 'ANSWER: <n>' then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/soup24, exp06_soup_full, '1319']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_eval.sh
+    env: {PYTHONDONTWRITEBYTECODE: '1'}
+    log: /home/ben/task/logs/eval_exp06_soup_full.log
+  output_dir: /home/ben/task/ckpts/soup24
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --json-output-file, '{out}.json', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test, --limit 1319 (the complete test set), 10-shot system message with fewshot_seed=42"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 1319 completions whose last line starts with 'ANSWER:'"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup24, step: 0}
+    - {path: /home/ben/task/ckpts/exp04/final, step: 492}
+    - {path: /home/ben/task/ckpts/exp02/final, step: 940}
+  training_summary: {final_loss: null, steps: null, notes: "no training; fp32 average of two bf16 checkpoints, cast back to bf16"}
+  measurements:
+    - {metric: accuracy, value: 0.7180, n: 1319, path: /home/ben/task/eval/exp06_soup_full.json, delta_vs_comparator: -0.0015}
+    - {metric: accuracy, value: 0.7195, n: 1319, path: /home/ben/task/eval/exp06_exp04_full.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.7134, n: 1319, path: /home/ben/task/eval/exp06_exp02_full.json, delta_vs_comparator: -0.0061}
+  diagnostic_result: {value: 0.9985, path: /home/ben/task/analysis/diag_exp06_soup_full.txt, notes: "termination on the full test set: soup 1317/1319, exp-04 1314/1319, exp-02 1310/1319. The soup is the best-behaved of the three but not the most accurate."}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "On all 1319 test items: exp-04 0.7195, soup 0.7180, exp-02 0.7134, each with stderr 0.0124. The soup lands between its parents rather than above them, so the averaging effect this card predicted is not there - consistent with exp-04 being a short continuation of exp-02 rather than an independent run."
+  decision: reject
+  next_step: "final_model stays exp-04's weights with the greedy generation_config (already assembled and CPU-load-verified; 0.7195 on the full test set). The three arms now span only 0.006 across two training stages and a merge, which says this data and this model size are saturated near 0.72; any further card should attack a failure mode found in the 370 remaining wrong items, not add another training stage."

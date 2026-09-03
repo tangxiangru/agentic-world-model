@@ -1,0 +1,110 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T07:06:26Z'
+situation:
+  elapsed_h: 0.4
+  remaining_h: 9.6
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0267, protocol_n: 150}
+  trigger: "exp-01 measured the frozen snapshot at 0.0267 on dev-150 and showed the loss is format/termination, not arithmetic: mean completion 5777 chars, no <end_of_turn>, degenerate repetition of the few-shot '<<a*b=c>>' annotations (eval/base_dev150.json, logs/2026-09-03T06-47-01+00-00_gsm8k_i89CvxG8Tau9VRuyRT5XQ7.json)."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/base_dev150.json, locator: "accuracy 0.0267"}
+    - {path: /home/ben/task/logs/2026-09-03T06-47-01+00-00_gsm8k_i89CvxG8Tau9VRuyRT5XQ7.json, locator: "samples[0].messages[-1].content"}
+  alternatives_rejected:
+    - {option: "SFT on the 7473 openai/gsm8k train solutions only", reason: "10x less data and the reference CoT is terse with <<a*b=c>> calculator annotations - the same degenerate pattern the base model already copies"}
+    - {option: "meta-math/MetaMathQA", reason: "its bodies carry gsm8k's own '#### N' line as well as a second answer marker (pitfalls.yaml double_answer_format), and reported downstream GSM8K is well below OpenMathInstruct-2's"}
+    - {option: "LoRA instead of full fine-tuning", reason: "3.88B trainable params fit in 80GB with liger fused CE (measured 42GB in the smoke run); full FT has no adapter-merge failure mode at submission time (pitfalls.yaml final_model_not_loadable)"}
+    - {option: "Include the augmented_math half of OpenMathInstruct-2 (832k rows)", reason: "heavy LaTeX competition style; off-distribution for GSM8K word problems and it would dominate the mixture"}
+  pitfalls_hit:
+    - {what: "OOM in cross_entropy at bs=8 x 2176 tok: transformers upcasts the 262144-wide logits to fp32 (21.8 GiB single allocation)", cost_h: 0.1, fix: "installed liger-kernel 0.8.2 and set use_liger_kernel=True (fused linear CE); peak 42GB"}
+    - {what: "build_data.py writes the few-shot rows first, so --limit 4000 in the smoke run sampled few-shot rows only", cost_h: 0.0, fix: "harmless for a smoke run; the real run reads the whole file and the batch sampler shuffles"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --out, ckpts/smoke, --limit, '4000', --bs, '8', --accum, '4', --max-steps, '40', --save-strategy, 'no'], outcome: "40 steps / 1280 rows in 257s, loss 0.535 -> 0.358, peak 42GB, checkpoint saved"}
+    - {command: [python, evaluate.py, --model-path, ckpts/smoke/final, --limit, '40'], outcome: "accuracy 0.40 (vs base 0.027); 40/40 completions end with a bare 'ANSWER: <n>' line and terminate - the render/mask/save/vLLM path is correct end to end"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/contam_check_exp02.jsonl], outcome: "0 matches over all 87903 rows, exit 0"}
+problem:
+  statement: "The frozen snapshot cannot produce a gradable answer: it never emits <end_of_turn>, so match(location='end', numeric=True) reads the last numeric token of a 5777-char ramble instead of the answer. Separately it has never been trained to write a self-contained chain of thought for a word problem."
+  evidence:
+    - {path: /home/ben/task/logs/2026-09-03T06-47-01+00-00_gsm8k_i89CvxG8Tau9VRuyRT5XQ7.json, locator: "all 150 samples", observation: "127/150 contain 'ANSWER:' somewhere but only 4 score correct; mean completion 5777 chars, max 27694"}
+  affected_share: 0.973
+  failure_examples:
+    - {id: sample-0, source: /home/ben/task/logs/2026-09-03T06-47-01+00-00_gsm8k_i89CvxG8Tau9VRuyRT5XQ7.json, question: "Cody eats three times as many cookies as Amir eats. If Amir eats 5 cookies, how many cookies do both of them eat together?", gold: "20", model_output: "<<<<<<>>>>> Answer \"ANSWER: 20\" <<ANSWER:20>> Reasoning: <<<<<<>>>>>model<<<<<<>>>>> Answer \"ANSWER: 10\" <<<<<<<<>>>>>", failure: "right answer produced then overwritten by degenerate continuation; end-anchored match reads '<<<<<<<<>>>>>'"}
+  watch_set: null
+hypothesis:
+  claim: "Completion-only SFT of the frozen snapshot on 87903 GSM8K-train-derived CoT solutions, rendered with the grader's own gemma3 template and terminated with <end_of_turn> after a bare 'ANSWER: <n>' line, raises dev-150 accuracy above the base model's 0.0267."
+  mechanism: "Two separate deficits are addressed at once. (a) Termination/format: every target ends with the answer line then <end_of_turn>, so the model learns to stop exactly where the grader reads. (b) Solution quality: OpenMathInstruct-2's gsm8k-source solutions are Llama-3.1-405B chains over GSM8K TRAIN problems and their augmentations - the right domain and difficulty, written out step by step rather than in gsm8k's terse calculator notation."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "large; the 40-step smoke checkpoint already reached 0.40 at n=40, so a full pass should land far above that"}
+  falsified_if: "dev-150 accuracy at or below 0.0267, or completions still failing to terminate (mean completion length above ~1500 chars, or fewer than 90% of completions ending in an 'ANSWER:' line)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_exp02.jsonl
+      source: "nvidia/OpenMathInstruct-2 split train_1M, rows with problem_source in gsm8k / augmented_gsm8k (derived from the GSM8K TRAIN split only)"
+      n_examples: 87903
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_exp02.jsonl]
+      selection: "expected_answer must be a plain int/decimal; exactly one boxed{} which is unwrapped in place; reject bodies already containing 'ANSWER:' or '####'; exact (problem, solution) dedup; cap 1 solution per augmented problem and 2 per original gsm8k problem (81069 unique problems); drop completions over 768 tokens (254 rows). 8% of rows (7030) carry the grader's exact 10-shot system prefix rebuilt from inspect_evals with fewshot_seed=42; the rest are zero-shot. Prompts rendered through templates/gemma3.jinja (sha256 7de1c58e208eda46), verified byte-identical to the prompt recorded in the exp-01 eval log."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE
+    peft: none
+    hyperparams: {lr: 1.2e-5, epochs: 2, batch_size: 24576, grad_accum: 4, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "step-by-step solution, blank line, then 'ANSWER: <n>' as the final line, then <end_of_turn>. Loss on the completion only; the rendered prompt is masked to -100. batch_size above is the per-micro-batch padded TOKEN budget, not a row count (rows per micro-batch vary from ~11 for few-shot rows to ~68 for zero-shot rows)."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_exp02.jsonl, --out, /home/ben/task/ckpts/exp02, --lr, '1.2e-5', --epochs, '2', --accum, '4', --token-budget, '24576', --max-seq-len, '3072', --save-strategy, epoch, --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp02
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test, --limit 150 (first 150 items, unshuffled), 10-shot system message with fewshot_seed=42"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0267
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "share of dev-150 completions whose last line starts with 'ANSWER:' (termination/format compliance, separated from arithmetic ability)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 2.04
+  output_checkpoint: /home/ben/task/ckpts/exp02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp02/checkpoint-470, step: 470}
+    - {path: /home/ben/task/ckpts/exp02/checkpoint-940, step: 940}
+    - {path: /home/ben/task/ckpts/exp02/final, step: 940}
+  training_summary: {final_loss: 0.2729, steps: 940, notes: "train_loss 0.2934 over 940 optimiser steps (1877 micro-batches/epoch at a 24576-token budget, mean 46.8 rows each); 7340s wall, 23.95 rows/s, peak 43.9GB. Loss 0.535 -> 0.30 by end of epoch 1 -> 0.273 at the end of epoch 2."}
+  measurements:
+    - {metric: accuracy, value: 0.6867, n: 150, path: /home/ben/task/eval/exp02_final_dev150.json, delta_vs_comparator: 0.66}
+  diagnostic_result: {value: 1.0, path: /home/ben/task/analysis/diag_exp02_final_dev150.txt, notes: "150/150 completions end with a bare 'ANSWER: <n>' line; mean completion 482 chars (base: 5777), max 2428. Termination is completely fixed."}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.0267 -> 0.6867 (+66.0 pts, stderr 0.038). Both halves of the mechanism check out: format compliance went 0 -> 150/150 and mean completion length collapsed 5777 -> 482 chars, so the remaining 47 failures are arithmetic/reasoning errors rather than termination."
+  decision: adopt
+  next_step: "exp-03 (cheap, decode-config): vLLM reads generation_config.json from the checkpoint and the base snapshot's has do_sample/top_k=64/top_p=0.95 with no temperature, so the grader is sampling at T=1.0. Setting temperature 0.0 makes it greedy. Then exp-04: rejection-sampling fine-tuning on self-generated correct solutions."

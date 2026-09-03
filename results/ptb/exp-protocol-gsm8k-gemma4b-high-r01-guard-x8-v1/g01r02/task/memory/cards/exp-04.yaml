@@ -1,0 +1,122 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T11:05:53Z'
+
+situation:
+  elapsed_h: 4.4
+  remaining_h: 5.6
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.8067, protocol_n: 150}
+  trigger: "With format (exp-02) and decoding (exp-03) both fixed, 0/150 dev completions are malformed, so the remaining ~20% are reasoning errors. Rejection sampling k=4 at T=1.0 over 40k GSM8K-derived questions shows the model is inconsistent rather than incapable: it solves 37314/40000 questions at least once but only 22889 of them 4/4."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: result.diagnostic_result, observation: "0/150 format failures; the errors are arithmetic/algebraic"}
+    - {path: /home/ben/task/analysis/rft_samples.jsonl, locator: "40000 questions x 4 samples", observation: "124281/160000 = 0.777 sample-level; correct-out-of-4 histogram {0:2686, 1:3195, 2:4160, 3:7070, 4:22889}"}
+  alternatives_rejected:
+    - {option: "More fresh OpenMathInstruct-2 data (a second 100k slice)", reason: "held as exp-05; it costs ~1.7 h against RFT's ~0.6 h, and RFT targets this model's own inconsistency rather than adding more of what it has already absorbed"}
+    - {option: "DPO on correct/incorrect pairs from the same samples", reason: "14424 questions have both a correct and an incorrect sample so the pairs exist, but preference training on a single-answer exact-match metric is a longer path than training on the verified-correct chains directly"}
+    - {option: "Keep all correct samples including the 4/4 questions", reason: "22889 of 37314 solved questions are 4/4; keeping them all would make two thirds of the stage a re-run of what the model already does, so they are downsampled to 35% and capped at one chain"}
+    - {option: "2 epochs on the RFT set", reason: "self-generated targets at 2 epochs risk sharpening onto the model's own errors; 1 epoch at lr 7e-6 first, and exp-05 can spend the time instead"}
+  pitfalls_hit:
+    - {what: "sampling 160k completions took 55 min at only ~7.9k output tok/s -- the 262144-wide vocab makes the sampling step itself expensive", cost_h: 0.9, fix: "none needed, but budget sampling at ~3k completions/min for this model"}
+    - {what: "the first exp-04 run trained to completion (1936 s, train_loss 0.2312) and then died in save_pretrained: HF GenerationConfig.validate(strict=True) rejects do_sample=False with temperature=0.0, which is exactly the greedy config exp-03 adopted, so the weights were never written", cost_h: 0.55, fix: "neutralise model.generation_config before save_pretrained and copy the parent's generation_config.json back over the saved one; relaunched with the identical command"}
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/rft_v1_check.jsonl], outcome: "33663 documents scanned, 0 contaminated, 0 matches"}
+
+problem:
+  statement: "The incumbent gets the output convention right and still fails ~20% of dev-150 on the mathematics. This is not a capability wall: sampled four times it reaches the right answer on 93% of questions, but only 57% of questions are solved on all four tries, so the greedy path is often one of the wrong ones."
+  evidence:
+    - {path: /home/ben/task/analysis/rft_samples.jsonl, locator: "per-question correct counts", observation: "14424 of 40000 questions are solved 1-3 times out of 4 -- the inconsistent band"}
+    - {path: /home/ben/task/logs/2026-09-03T09-57-53+00-00_gsm8k_PyxLF58KFW5fCu2DNyCNy7.json, locator: "the 29 incorrect samples", observation: "set-up and arithmetic slips inside otherwise fluent chains, e.g. gold 400 answered 560"}
+  affected_share: 0.36
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe200.jsonl
+    n: 200
+    selection: "the same 200 held-out GSM8K-train questions as exp-02/exp-03; the incumbent scores 161/200 = 0.805 greedy"
+
+hypothesis:
+  claim: "Continuing training from the incumbent on 33663 of its own answer-verified chains, drawn mostly from the questions it solves inconsistently, will raise dev-150 accuracy relative to exp-03's 0.8067."
+  mechanism: "Every target is a chain this model can already produce and whose final number matches the gold, so the gradient moves probability mass off the wrong modes it currently reaches and onto correct modes it already reaches sometimes. Downsampling the 4/4 questions concentrates that mass in the inconsistent band, which is where the greedy path is the one that needs moving."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+2 to +5 points"}
+  falsified_if: "dev-150 accuracy is at or below 0.800 (the lower of exp-03's two greedy measurements), or the held-out probe falls below 0.805"
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: synthetic:self
+      n_examples: 33663
+      built_by: /home/ben/task/scripts/build_rft_data.py
+      build_command: [python, scripts/build_rft_data.py, --samples, analysis/rft_samples.jsonl, --out, data/rft_v1.jsonl]
+      selection: "k=4 samples at T=1.0/top_p 0.95, zero-shot, from ckpts/exp-02/final over 40000 GSM8K-derived questions (data/rft_pool.jsonl: unique gsm8k + augmented_gsm8k problems from OpenMathInstruct-2 with numeric answers, probe200 excluded). Keep only chains whose final number matches the dataset gold under the grader's own match_str; dedup on whitespace-normalised text; require exactly one 'ANSWER:' and that it be the last line; <=2 chains per inconsistent question, <=1 for 4/4 questions and only 35% of those kept; 20% of rows get a 1-4 shot GSM8K-train prefix. Questions and golds derive from GSM8K train / MATH train only."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer with a custom token-budget batch sampler
+    peft: none
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 6144, grad_accum: 8, max_seq_len: 1536, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32 params + bf16 autocast, paged_adamw_8bit, seed: 0}
+    target_format: "<reasoning>\\n\\nANSWER: <n><end_of_turn>\\n after the grader's '<start_of_turn>model\\n' prefix; loss on completion tokens only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --model, ckpts/exp-03/final, --data, data/rft_v1.jsonl, --out, ckpts/exp-04, --max-len, '1536', --budget, '6144', --accum, '8', --lr, '7e-6', --epochs, '1', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.8067
+    path: /home/ben/task/eval/exp03_dev150.json
+  diagnostic:
+    what: "greedy accuracy on the 200 held-out GSM8K-train probes (incumbent 0.805)"
+    n: 200
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.53
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 313}
+  training_summary: {final_loss: 0.2312, steps: 313, notes: "train_runtime 1924.7 s, 17.5 samples/s; loss 0.246 -> 0.224, flat throughout, as expected when the targets are the model's own accepted chains. The first attempt with identical hyperparameters gave train_loss 0.23124 vs 0.23119 here, so the re-run reproduced it."}
+  measurements:
+    - {metric: accuracy, value: 0.8267, n: 150, path: /home/ben/task/eval/exp04_dev150.json, delta_vs_comparator: 0.0200}
+  diagnostic_result:
+    value: 0.845
+    path: /home/ben/task/analysis/exp04_probe200.jsonl
+    notes: "held-out probe 0.805 -> 0.845 (+4.0, 8 more of 200). 2/150 dev completions now fail the ANSWER-line format, up from 0/150 -- small but worth watching if another self-training round follows."
+  watch_set_result:
+    fixed: 169
+    still_failing: 31
+    regressions: null
+    path: /home/ben/task/analysis/exp04_probe200.jsonl
+    notes: "169/200 vs the incumbent's 161/200 on the identical greedy 10-shot protocol; per-item fixed/regressed was not tabulated"
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "dev-150 0.8067 -> 0.8267 (+2.0) and the held-out probe 0.805 -> 0.845 (+4.0). Both move the predicted way and the mechanism check (the probe) is outside the +/-1 run-to-run band, but +2.0 on n=150 is inside the ~4-point noise floor exp-03 measured, so dev-150 alone cannot carry the claim."
+  decision: adopt
+  next_step: "exp-05: add 80k fresh OpenMathInstruct-2 chains the model has never seen, replaying the 33663 RFT rows alongside them so this stage's gain is not overwritten; then settle exp-04 vs exp-05 on a larger eval (--limit 400) where a 2-point difference is readable."
