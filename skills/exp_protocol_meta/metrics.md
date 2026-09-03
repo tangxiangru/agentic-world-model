@@ -53,6 +53,13 @@ Measurement checks from window 03:
 - Read retained training logs before declaring early loss unobservable.
   Distinguish terminal logged loss from whole-run `train_loss`, and record
   the logging cadence; missing individual steps are unknown, not guessed.
+- For an early-stop rule, distinguish the optimizer step a line describes
+  from when that line became observable. Buffered output may reveal step20
+  only halfway through a run. Savings after an ideal step20 stop are not
+  demonstrated savings under the emitted logs; report both timing bounds.
+  Retrospective outcomes are not prospective decision inputs, and do not
+  silently add exact tolerances or exclusions absent from frozen guidance.
+  See the [P1 observability audit](../../doc/exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/p1-observability-audit.md).
 - A counterexample must satisfy the candidate's full frozen predicate,
   including sampled/trained parent identity and data composition. A mixed
   teacher/self stage is not interchangeable with a self-only stage.
@@ -81,6 +88,16 @@ Measurement checks from window 03:
   include two old identities and only one of the prescribed strict eight.
   An explicit tie-break after a null paired test is not a proven gain, but
   choosing a tied artifact is not itself statistical misconduct.
+- Compare the observed baseline with the screen's actual acceptance threshold,
+  not with perfection:7/8 already exceeds a3/4 pass rule. A passing screen
+  then does not establish incremental movement; redesign before launch or
+  withdraw the whole unstarted block rather than select a new success metric
+  after seeing candidate outcomes.
+- Use current receipt-aware result discovery to resolve eligibility. Legacy
+  status files can omit newer eligibility/quarantine fields; missing is not
+  false, nor permission to assume true. The strict-guard round record documents
+  p00r05, whose old status-only filter incorrectly reduced the baseline pool
+  from14 to13 despite current discovery validating all14.
 
 - `accuracy` flat, `pitfalls_cost_h` down: the protocol saved time that the
   scientist did not convert into score. Look at what it did with the hours.

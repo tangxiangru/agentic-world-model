@@ -8,10 +8,10 @@
 
 | # | 方向 | 来源 | 证据现状 | 状态 | 理由 / 改变状态的条件 |
 |---|---|---|---|---|---|
-| 1 | **会话结束杀掉训练**（Stop hook + 规则9 + pitfall） | p00r08、c00r02、pilots 90463/90464 | strict g01s01–08 已8/8 validator-clean，mean 0.720148；8份trace报告齐全，全cohort Opus max synthesis运行中 | **Round 01 候选，非已晋升 baseline**（`4ae3d87`） | 完整safety/score判定仍须synthesis与主审；g01s07评估先于lock/重复成本另派审计；正式晋升仍需held-out |
+| 1 | **会话结束杀掉训练**（Stop hook + 规则9 + pitfall） | p00r08、c00r02、pilots 90463/90464 | strict8/8 clean，mean0.720148；57卡关闭、0会话结束丢失工作、0hook触发 | **预注册observed-no-harm门通过；非晋升**（`4ae3d87`） | 未触发hook不能证明阻断有效；历史对照不是同期因果；全部命令合规另见#26，ownership/native门仍关闭 |
 | 2 | **解码配置**：评分器继承 `generation_config`；关键是 grader observable | Window 02 8/8 NEW 都 self-adopt greedy，same-weight +5.4 到 +20 | 最终 greedy 在 baseline 5/5 饱和；p00r11 首个 post-SFT eval 后仍等 3.3 h、用 4 张卡按 sampling 判定，其余 ≤12 min | **筛选中：Round 02 A v2**（`f6cdccc`；held 91046–91049，优先级在 D 后） | 4/4 在首次 post-SFT eval 后 ≤0.5 h 完成 measured decode choice；之后未测量 sampling decision card ≤1/cell；记录 observable 与 run-on rate |
 | 3 | **vLLM 离线采样默认值**：重复 `<bos>`、stop ids 不生效、parser inf、孤儿引擎 | protocol 多 cell；controls 约 5 h，**c01r03 首轮也因无 explicit stop 得到 bogus pass@1** | 两臂都中；不是 arm-gap 机制，但浪费可机械避免 | **筛选中：Round 02 B v2**（`9f294c3`；held 91050–91053） | B mechanisms 的 pitfall h <0.3/cell；model weak-stop 单列观察 |
-| 4 | **评估 n / repeated-read uncertainty** | W02 5/8 reversal/noisy rank；W03 多个排序反转或差距收缩 | 大 n 不是全部判据；正确 paired 统计与明确 inconclusive 的 tie-break 不等于虚假提升 | **筛选中：Round 02 C v2**（`57511f9`；held 91054–91057） | 最终交付比较 n≥500 的 cells ≥3/4；smoke 单列，unsupported sub-SE claim/reversal 单列；n 取实际 metadata，见 spec §八 |
+| 4 | **评估 n / repeated-read uncertainty** | W02/W03 noisy ranks；strict最终选择n≥500已有7/8 | 当前C v2的≥3/4通过条件已被baseline满足，不能单靠通过宣称增量；不否定uncertainty方向 | **撤回C v2整块91054–91057；待鉴别力更强的重设计** | 全部未启动，无按结果挑选；新screen须预先定义可移动的判据，不能事后把次指标当赢家标准；原tree/manifest保留 |
 | 5 | **eval-only 卡片被迫编造 `setup.data`** | W01 7/9；W02 direct overrides 10；W03 三个 guard 共12个非训练 data entries、1个 placeholder 文件 | 0 overrides 仍有 workaround；原 zero-fake-entry 判据并非通过 | **筛选中：Round 02 H**（`b52e5f2`；held 91068–91071） | fake files、non-applicable entries、overrides 分列；真实适用可选引用不禁止，其余 required fields 完整性不降 |
 | 6 | **TRL EOS zero gradient** | 原7/7 RL controls与c01r02命中；本批已读strict无GRPO暴露 | 原机制保留；无暴露不算修复或反证 | **排队（G）；`f28dd88` / `4ea16d13` 已构建未登记** | E已由指定cohort非饱和界限决定保留，当前不走G/P1替代分支；未来独立方向仍需可移动baseline |
 | 7 | **预算使用**：两臂都提前收工；新 protocol 余 1.8–3.1 h，c01r03 control 余 1:16 | clean cells | 未证明为臂间差异 | **观察** | 不诱导无意义跑；Round 02 后仍系统性早停再设计 |
@@ -27,13 +27,15 @@
 | 17 | **stop-token ownership / raw-field false check** | old 3 cells；NEW p00r12 latent double append、p00r14 5 overrides、p00r15 wrong-raw-field repair | 3 NEW manifestations，structural evidence；score harm未证明 | **排队（I）** | optional `appended_by` + rendered-row check；exercised RFT 评估后再排 wave |
 | 18 | **trajectory weight averaging / soup** | p00r15 +4.5@200 且 0.734@500；p00r11/p00r13/p00r07 contradicted | 效果混合，p00r15 4-way 又是 post-hoc best-of-four | **观察（配方，非 protocol）** | 再现时预注册 checkpoint set/权重并用 ≥500；不把“跑 soup”写进 protocol |
 | 19 | **同 artifact vLLM repeat variance** | p00r13/c01r02/p00r09；W03 g01r01/g01r02/g01s04/c01r07等 | 近阈值差异与重复波动同量级；serving config 差别另列 #24，不直接归因为并发 | **观察，归入 C screen** | ≤1 pp/≤1 SE 的 effect claim 读 paired/repeated；显式 tie-break 与证明提升分开；C 失败才考虑改字 |
-| 20 | **RFT/STaR fitted-parent 风险** | 原两窗口5 cells；W03 对 g01r01 exp-04、g01r02 exp-04/07 做专项 predicate 审核 | g01r01 混入39,757 teacher rows且早期loss下降；g01r02 exp-04 在约0.05边界；exp-07 最清楚但仅0.32h且无 matched n≥500 | **排队（P1）；`a4c4954` / `7294c236` 已构建未登记，既未证实也未整体证伪** | 读完整 lineage/data/loss predicate，终点不替成平均 train_loss；unknown 单列，不能把所有 flat-RFT 时间当可省；尚未满足两个新 guard 命中 |
+| 20 | **RFT/STaR fitted-parent 风险** | strict g01s03 exp05、g01s08 exp06；g01s06 exp03盈利边界 | 两个低loss同parent暴露，但step20日志当时不可见；2.54h仅理想上界；冻结文本没有pure-self排除或精确0.05门 | **P1 v1 `a4c4954` / `7294c236`不登记；先校准可观测性与stop语义** | first20记录不等于step20可见；+1/500不是等效、−14/500不是已证明显著退化；不能以合成报告新增条件宣布旧规则安全 |
 | 21 | **Gemma-3 logits OOM 与64 MB overlay安装故障** | 原≥20/24 cells；W03 两臂继续广泛暴露 | 机械性 bring-up 损失仍存在；不同修复路线成本差异大 | **排队（P2），未来独立单项冻结，不作为 P3 的混合 rider** | 目标仍为 OOM+装包小时下降及安全安装；不把两个独立机制叠进同一候选树 |
 | 22 | **Trainer checkpoint 缺 processor/tokenizer 文件** | W01/W02 多cell；W03 c01r04、g01s04付费，其他cell预防 | 复制所有 base 配置会把 generation_config 也覆盖回 sampling；必须区分文件用途 | **排队（P3，独立于 P2）** | 单项修订须保留 measured decode config，不能笼统“复制所有 base configs” |
 | 23 | **结束时按『最后一次运行的配置』而非『最小可改变决策的运行』定价剩余时间** | p00r11 exp-09（说 ~1 h，自身 RFT 周期 22 min）、p00r13 exp-06（2.2 h = 两 epoch）、p00r12 exp-09（余 3:05）、p00r15；w01 p00r05（余 3.7 h）、p00r10 | protocol ≥1.8 h 未用 6/14，control 1/10；按晚期边际收益约值 1 分 | **排队（P4，规则 8 措辞；在 D 与 A 的小时读数之后）** | 目标：余 ≥1.5 h 且无进程的 cell ≤1/4，且最后一次 `alternatives_rejected` 引用实测成本；是 #16 framing 的具体化 |
 | 24 | **Serving/evaluation contract 与重复读数（P5 调查）** | W03 g01r01 full n=1319 的32-vs-2 mismatch；g01r02重复150分歧；c01r07同100题但并发/显存一起变 | 重复波动成立；并发唯一因果未证实，且与 C 重叠 | **排队调查，未构建或登记 screen** | 先核对 matched n/weights/decode/memory，再判断独立单项 pitfall 是否值得4-cell screen；不强制所有卡两遍全量 |
 | 25 | **开发评测通过但官方 full scorer 失败** | p00r16 /90490九次数字 scorer 异常，无 metrics.json | scientist正常完成、judge-clean不等于validator-complete；n=500的0.712不是官方分数 | **观察 / harness failure evidence，非 protocol 候选** | 不盲目第十次重跑；recovery需新冻结合同，不能静默改评分器或填分 |
 | 26 | **GPU smoke 与锁卡覆盖范围冲突** | strict g01s01/90791、g01s07/90797 的原始smoke训练早于exp-02创建/锁定 | cell-reader仅匹配卡片主训练首条命令，3/3不能覆盖所有GPU执行；冻结模板称smoke非实验，与仓库训练/评估前锁卡要求冲突 | **待主审设计，未构建/登记** | 全部GPU训练/评估的scope不能靠smoke标签豁免；先完整launch审计与单项spec，不改原PTB分数或偷换guard-specific safety判据 |
+| 27 | **卡内head-to-head的future comparator依赖** | strict g01s02/03/06/07/08；override与pre-lock eval两类应对 | missing comparator是本卡将产生的输出；check造成冲突，但已有reasoned override，不能说违规不可避免 | **独立设计优先；未构建/登记** | prelaunch计划与postrun实测验证分离；不放过真实n/protocol mismatch，不和#26或H叠成一个候选 |
+| 28 | **训练prompt与grader few-shot分布不匹配** | g01s08灾难性首轮与g01s01小幅残差；g01s04渲染差异 | 值得调查，但一个灾难例不足以支持统一prefix比例；已存在template相关指导 | **观察，暂不建screen** | 先区分渲染可达性、训练分布与配方效果；不以≥20%prefix作为规程正确性判据 |
 
 ## 二、决策日志
 
@@ -62,6 +64,7 @@
 | 09-03 20:00 | **strict cohort 8/8 validator-clean；用g01s03/g01s08明确失败界限保留E，准备单项E v2，不走G/P1替代** | 等最后3份报告才判断已无法反转的条件；按原“可能饱和”撤E | 两个单次保守下界已>0.15h，最多6/8可pass；这不替代完整strict safety review。90820越界导致真实OWNERSHIP FAIL，新Slurm提交/放行停止；33 held保留 | E2 process-wait spec；strict addendum launch；placement-violation-90820 audit |
 | 09-03 E v2 construction | **冻结 `c6f11d8` / `ceb68549` 及新4-cell manifest，恢复guard基线；不登记、不release、不cancel** | 继续运行旧E的stale-tail判死文本；把生命周期修订叠到其他候选 | 独立forward review发现跨shell退出结果与旧artifact归属缺口，三处同步澄清；34测试与AST/YAML/六路径差异验证通过。代码准备与Slurm所有权门分离 | round-02-e2-prelaunch；E2 spec；e-wait-on-process-x4-v2 manifest |
 | 09-03 strict launch-scope audit | **保留matched training指标但撤销其“所有命令合规”的外推；登记#26与meta统计盲区** | 忽略smoke；把card后补记录当预先锁定；直接改已冻结runtime | 两个raw trace确认真实GPU训练早于训练卡；helper按script/output匹配首条主训练，未计smoke/eval。既不豁免用户硬约束，也不把新合规问题混成session-end损失或改PTB成绩 | strict addendum/launch-scope-audit.md；meta metrics |
+| 09-03 strict cohort close | **guard observed-no-harm门通过但不晋升；撤C v2未启动整块；D/B/H首波；P1 v1先校准；#26/#27独立设计** | 原样保留C，只因有pending；照收P1“两次确认/2.60h”；把所有规程违规混成guard伤害 | C baseline7/8已超过3/4门；P1 literal predicate/日志可见性不支持强结论；33held撤4后仍≥8。所有权17/16及原生11节点仍禁止新提交/放行 | 2026-09-03-round-01-strict-guard；strict planner-decision及P1 audit |
 
 ## 三、这份台账之外还没写下来的
 

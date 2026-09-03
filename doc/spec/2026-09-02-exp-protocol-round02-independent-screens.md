@@ -161,3 +161,20 @@ cells `e02s01–04`。仅三处等待指导相对 guard 基线变化；原 E man
 真实 OWNERSHIP FAIL，禁止新提交及放行。旧 E 91064–91067 保持 held，须先有新 held receipt，
 再通过 operator 整块撤回旧作业；任何 RUNNING 作业不动。8份 strict trace 报告已齐全，全 cohort
 Opus max synthesis 正在运行，尚无最终裁决，因此本节不宣告 guard 安全门通过。
+
+## 十、strict cohort 主审裁决与 C 撤回（2026-09-03）
+
+以上章节保留历史冻结决策；当前状态以本节与[Round01 strict记录](../exp_protocol_iterations/2026-09-03-round-01-strict-guard.md)为准。
+
+8/8 strict cells 通过预注册observed-no-harm门：无会话结束丢失科学工作、57卡全关闭、0hook/false blocks，
+mean0.720148高于历史v3-minus0.03护栏。未触发hook不证明其阻断有效，且没有同期matched baseline；
+不晋升。pre-lock评估与smoke另属规程合规问题，不改PTB分数或偷换guard的预注册伤害判据。
+
+**整块撤回 C v2 jobs91054–91057（n02s01–04）**。strict基线最终交付n≥500已经7/8，超过冻结的
+≥3/4通过条件；一次通过无法展示增量。评估质量方向保留，须先重设计有鉴别力的screen，而不是
+候选开跑后更换成功标准。四个作业均未启动，按原receipt取消；其他held足以保持floor8。
+
+第一科学波调整为 **D/B/H + drift A**，随后A/E v2 + drift B。#26锁卡范围与#27卡内future comparator
+另行单项设计；P1 v1不因合成报告“两次命中”直接登记，须先解决step20可见性与冻结条件歧义。
+原C manifest/tree不改写，E仍先有replacement held receipt再撤旧块。所有新提交及放行仍被独立的
+ownership/native-isolation门阻止；本节不授权取消任何RUNNING job。

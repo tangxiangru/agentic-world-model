@@ -1,6 +1,6 @@
 # Round 02 E retention and E v2 preparation — 2026-09-03
 
-Status: **E retained by the predeclared non-saturation bound; E v2 built and frozen, not registered or submitted.** This does not pass the separate full strict-guard safety gate and does not authorize any release under the active ownership/placement failure.
+Status: **E retained by the predeclared non-saturation bound; E v2 built and frozen, not registered or submitted.** The separate strict-guard observed-no-harm gate has now passed in the [Round01 record](../exp_protocol_iterations/2026-09-03-round-01-strict-guard.md); this still does not authorize release under the active ownership/placement failure or establish overall launch-order compliance.
 
 ## Retention proof, without waiting for irrelevant reviews
 
@@ -13,7 +13,7 @@ The saturation rule is ≥7/8 of exact cohort g01s01–g01s08 below 0.15 h cumul
 
 The planner checked these trace/exception excerpts against the local Opus interval reports. The reviewer excluded overlapping productive work; neither conclusion depends on counting evaluation waits, per-event-vs-total ambiguity, or borderline rounding. A single event already exceeds the per-cell threshold in each case.
 
-Therefore at most **6/8** can pass. **Keep E; do not replace it with G or P1 on the saturation branch.** Remaining trace reviews still matter to guard safety and candidate design, but cannot restore the ≥7/8 condition. Sources: `doc/exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/cells/g01s03.md` and `g01s08.md`, harvested in 66ebd39. The final three cells were harvested in 5619442; their reports are now preserved in 9e1818e. All eight reports feed the full-cohort synthesis session `79d04a31-ab3f-4fd5-9a20-4b3500f0ab52`; final guard safety remains undecided.
+Therefore at most **6/8** can pass. **Keep E; do not replace it with G or P1 on the saturation branch.** Remaining trace reviews still matter to guard safety and candidate design, but cannot restore the ≥7/8 condition. Sources: `doc/exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/cells/g01s03.md` and `g01s08.md`, harvested in 66ebd39. The final three cells were harvested in 5619442; their reports are preserved in 9e1818e. Full-cohort synthesis session `79d04a31-ab3f-4fd5-9a20-4b3500f0ab52` is complete; the linked Round01 record contains the qualified safety decision and corrections to provisional E totals.
 
 ## Why prepare E v2
 
