@@ -114,14 +114,9 @@ that disagreement is the record the estimator learns from.
 9. **Your turn is the session.** You run as one `claude --print` turn: when
    your turn ends the session ends, and every background process you started
    dies with it — a training run included. There is no next turn. Never end
-   the turn while a run is alive: wait for it in the foreground, on the
-   process rather than the clock — `while kill -0 <pid> 2>/dev/null; do sleep
-   300; tail -n 1 <log>; done` with a long Bash timeout, comparing each tail
-   to the previous one, because a progress line that has not changed across
-   one wait means the run is dead (a save can fail after every step has
-   trained; two Round 00 cells slept 1.2 h past such a death) — chain the
-   evaluation to the run's exit in the same script so the GPU never idles
-   between them, then evaluate, fill sections 5–6, close. The Stop hook blocks the end of a turn while a locked
+   the turn while a run is alive: wait for it in the foreground (`sleep 900;
+   tail -n 3 <log>`, repeated, with a long Bash timeout), evaluate, fill
+   sections 5–6, close. The Stop hook blocks the end of a turn while a locked
    card is open, and tells you this again.
 
 ## Pitfalls

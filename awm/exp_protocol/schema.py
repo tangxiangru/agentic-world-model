@@ -274,7 +274,16 @@ def validate_plan(card: dict[str, Any], session_dir: Path | None = None) -> Repo
     origin = _require(r, card, "setup.parent_checkpoint.origin")
     if origin and origin != "base_model" and not CARD_ID_RE.match(origin):
         r.error("setup.parent_checkpoint.origin", "must be base_model or a card id")
-    data = _require(r, card, "setup.data", "list")
+    family = get(card, "setup.method.family")
+    if family in TRAINING_FAMILIES or family is None:
+        data = _require(r, card, "setup.data", "list")
+    else:
+        # A card that trains nothing (decode-config, merge, an eval-only "other") has no
+        # training data; seven of nine Round 00 cells faked an entry to pass this.
+        data = get(card, "setup.data")
+        if data is not None and not isinstance(data, list):
+            r.error("setup.data", "must be a list")
+            data = None
     for i, d in enumerate(data or []):
         where = f"setup.data[{i}]"
         if not isinstance(d, dict):

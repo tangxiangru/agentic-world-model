@@ -32,10 +32,25 @@ class TestPlan:
         assert not r.ok
         assert any(p.field == dotted for p in r.errors), [p.field for p in r.errors]
 
-    def test_empty_data_list_is_an_error(self) -> None:
+    def test_empty_data_list_is_an_error_for_a_training_family(self) -> None:
         card = plan_card()
         card["setup"]["data"] = []
         assert any(p.field == "setup.data" for p in schema.validate_plan(card).errors)
+
+    @pytest.mark.parametrize("family", ["decode-config", "merge", "other"])
+    def test_empty_data_list_is_fine_when_nothing_trains(self, family: str) -> None:
+        card = plan_card()
+        card["setup"]["method"]["family"] = family
+        card["setup"]["method"]["stop_token"] = None
+        card["setup"]["data"] = []
+        assert not any(p.field.startswith("setup.data") for p in schema.validate_plan(card).errors)
+
+    def test_data_entries_are_still_validated_when_present_on_a_non_training_card(self) -> None:
+        card = plan_card()
+        card["setup"]["method"]["family"] = "other"
+        card["setup"]["data"] = [{"path": "/x/a.jsonl", "source": "", "n_examples": 0}]
+        fields = [p.field for p in schema.validate_plan(card).errors]
+        assert "setup.data[0].source" in fields and "setup.data[0].n_examples" in fields
 
     def test_unknown_method_family_is_an_error(self) -> None:
         card = plan_card()
