@@ -194,6 +194,28 @@ def test_blocking_review_times_out_with_a_heartbeat_and_records_it(tmp_path: Pat
     assert (session / ".wma/requests").is_dir() and list((session / ".wma/requests").glob("*.json"))
 
 
+def test_blocking_review_does_not_return_a_stale_verdict_on_relock(tmp_path: Path) -> None:
+    import threading
+    session = _session(tmp_path)
+    target = session / "memory/cards/exp-01.verdict.json"
+    target.write_text('{"generation": "old"}\n', encoding="utf-8")
+    prior = wma_client._verdict_version(target)
+
+    rewritten = threading.Timer(
+        0.15, lambda: target.write_text('{"generation": "fresh", "larger": true}\n', encoding="utf-8"))
+    rewritten.start()
+    try:
+        result = wma_client.wait_for_verdict(
+            session, "exp-01", "new-request", timeout_s=2, poll_s=0.02,
+            heartbeat_s=10, out=lambda _line: None, prior_verdict=prior)
+    finally:
+        rewritten.join()
+
+    assert result["state"] == "delivered"
+    assert result["waited_s"] >= 0.1
+    assert json.loads(target.read_text())["generation"] == "fresh"
+
+
 def test_blocking_review_cli_returns_at_once_on_the_control_arm(tmp_path: Path, capsys) -> None:
     session = _session(tmp_path, attached=False)
     assert _client_main(["wma", "review", "--dir", str(session), "exp-01"]) == 0

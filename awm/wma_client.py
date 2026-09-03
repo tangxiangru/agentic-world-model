@@ -13,9 +13,10 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 REQUEST_SCHEMA = "awm-wma-review-request-v1"
 CARD_ID = re.compile(r"^exp-[0-9]+$")
@@ -82,6 +83,20 @@ def verdict_path(session_dir: Path, card_id: str) -> Path:
     return Path(session_dir).resolve() / "memory" / "cards" / f"{card_id}.verdict.json"
 
 
+def _verdict_version(path: Path) -> tuple[int, int] | None:
+    """A cheap identity for one delivered verdict.
+
+    Re-locking asks for a fresh review while the previous verdict remains beside
+    the card.  Size alone is insufficient (two verdicts may serialize equally),
+    so include nanosecond mtime.  The sidecar rewrites the verdict on delivery.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
 def _response_for(session_dir: Path, request_id: str) -> dict | None:
     path = _control_dir(session_dir) / "responses" / f"{request_id}.json"
     if not path.is_file():
@@ -124,7 +139,8 @@ def wait_for_verdict(session_dir: Path, card_id: str, request_id: str, *,
                      timeout_s: float = DEFAULT_WAIT_MIN * 60, poll_s: float = 5.0,
                      heartbeat_s: float = 30.0, out: Callable[[str], None] = print,
                      clock: Callable[[], float] = time.monotonic,
-                     sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+                     sleep: Callable[[float], None] = time.sleep,
+                     prior_verdict: tuple[int, int] | None = None) -> dict[str, Any]:
     """Block until the verdict file exists, the sidecar's response reports a failure, or the
     timeout passes. Returns ``{"state": delivered|failed|timeout, "waited_s", "verdict_path", "error"}``.
     The heartbeat keeps a tool runner from mistaking the wait for a hang."""
@@ -132,7 +148,8 @@ def wait_for_verdict(session_dir: Path, card_id: str, request_id: str, *,
     next_beat = started + heartbeat_s
     target = verdict_path(session_dir, card_id)
     while True:
-        if target.is_file():
+        current_verdict = _verdict_version(target)
+        if current_verdict is not None and current_verdict != prior_verdict:
             return {"state": "delivered", "waited_s": round(clock() - started, 1),
                     "verdict_path": str(target), "error": None}
         response = _response_for(session_dir, request_id)
@@ -157,6 +174,7 @@ def review_and_wait(session_dir: Path, card_id: str, *, timeout_min: float = DEF
     """The blocking form of a review: enqueue one card, wait, print the verdict line. The result
     dict is what `lock` records; ``state`` is ``not_attached`` on the control arm."""
     session_dir = Path(session_dir).resolve()
+    prior_verdict = _verdict_version(verdict_path(session_dir, card_id))
     try:
         request_id, _ = enqueue(session_dir, [card_id])
     except NoSidecar:
@@ -167,7 +185,7 @@ def review_and_wait(session_dir: Path, card_id: str, *, timeout_min: float = DEF
     out(f"WMA review requested for {card_id} (request {request_id}); waiting up to "
         f"{timeout_min:.0f} min — prepare the launch meanwhile, do not start it")
     result = wait_for_verdict(session_dir, card_id, request_id, timeout_s=timeout_min * 60, out=out,
-                              **wait_kwargs)
+                              prior_verdict=prior_verdict, **wait_kwargs)
     result["request_id"] = request_id
     result["requested_at"] = requested_at
     if result["state"] == "delivered":
