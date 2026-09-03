@@ -1,5 +1,9 @@
 # Fable 5.1 prompt：exp_protocol PTB 联合迭代
 
+> **历史文档，2026-09-03 09:39 UTC 起不再是运行依赖。** 用户已决定 planner 不等待 Fable/PR；
+> 新分析窗口直接使用本机 Claude Code Opus 5[1m] max，合同见
+> `doc/reference/exp_protocol_local_claude_analysis.md`。本页仅保留早期协作审计。
+
 把下面整段交给 Fable 5.1。它以 GitHub PR 为唯一协作通道，不负责 Slurm 操作。
 
 ```text

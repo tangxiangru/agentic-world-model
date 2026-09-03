@@ -29,6 +29,16 @@
   decision.
 - Never reclaim capacity by cancelling jobs outside the exact receipt/job IDs authorized for the
   current experiment.
+- For `exp_protocol` trace windows, do not wait for a Fable/GitHub reply. Once eight new
+  receipt-backed validator-clean cells have accumulated, invoke local Claude Code in the
+  background as `claude-opus-5[1m]` at `--effort max` (the installed CLI's mapping for the
+  user's "Opus 5 ultracode" request), following
+  `doc/reference/exp_protocol_local_claude_analysis.md`. Claude is a read-only analysis helper;
+  the Codex planner reads its reports and owns every experiment, protocol, queue, and git decision.
+- Keep the long-running Codex goal active and use `tools/exp_protocol_completion_monitor.py` as
+  the slow external-event detector. Its ready state is surfaced on resume/compaction by the
+  project SessionStart hook; Slurm terminal state only wakes the loop and never substitutes for
+  receipt-backed PTB validation.
 - Use `/rmeng_data/robtang/slurm-queue/registry.json` as the cross-CLI ownership authority for the
   four H100 nodes. The shared queue name is `gangda`. A shared Unix user, `root`, reservation
   membership, or node placement is never
