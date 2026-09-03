@@ -270,6 +270,12 @@ Round 02 的 16 个候选 cell 之前。用户被问到"这 32 个 v0.2 同设�
 - cohort 命名:core-16(首波)不变;"all-32 / all-48"改为 **all-24**(首波 + `w02/c02 r01..04`)
   与 **all-32**(再加 `w04/c04 r01..04`);sensitivity-only cell 单列。
 
+Operator 于 00:36 UTC 按上面的 guard 分支执行:额外保留最低索引 pair
+`w02r05/c02r05`(90610/90618),把它们列为 sensitivity-only;精确取消仍 PENDING 的
+`w02/c02 r06..08`、`w03r01..03,r05..08`、`c03r01..03`,共 16 job。所有目标取消前
+均再次确认为 PENDING 且路由正确;操作后 owned GPU 仍 16/16、safe PENDING=25、
+Round 02 候选 16 个不动。两个 r05 不进入 all-24 主 cohort。
+
 `queue.yaml` 里四个 v2 entry 的 `want` 保持 `submitted`(各含 RUNNING 或保留的 cell),
 每 cell 的撤回意图写在 `why` 与本节;执行方式与 09-02 22:15 的按 receipt 精确取消相同。
 

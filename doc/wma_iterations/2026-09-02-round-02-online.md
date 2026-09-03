@@ -60,6 +60,14 @@ safe PENDING rose from 25 to 41. No cancellation or cross-subqueue action was
 part of the launch. Receipts are under the matching `results/ptb/<batch>/`
 directories.
 
+At 00:36 UTC the user-directed repeats-4 trim was applied to the Slurm-requeued
+v2 inventory. To preserve the strict 24-job operational guard, the operator
+kept the lowest-index extra pair `w02r05/c02r05` as sensitivity-only and
+cancelled 16 exact still-PENDING receipt jobs: `w02/c02 r06..08`,
+`w03 r01..03,r05..08`, and `c03r01..03`. Post-action owned allocation was
+16/16 and safe PENDING was 25, including all 16 Round 02 candidates. No RUNNING
+job was touched; r05 is excluded from the all-24 primary cohort.
+
 ## Readout and falsification
 
 - A primary: first-format-fix L2 coverage and the fixed manual exp-01 absolute

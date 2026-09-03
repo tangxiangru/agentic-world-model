@@ -331,3 +331,7 @@
 - 2026-09-02T23:34:42+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r02 job=90685 RUNNING: no sidecar log; 0 transcript(s); solve_out 345 lines
 - 2026-09-02T23:34:42+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r03 job=90686 RUNNING: no sidecar log; 0 transcript(s); solve_out 476 lines
 - 2026-09-02T23:34:42+00:00 peek wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v3/c04r04 job=90687 RUNNING: no sidecar log; 0 transcript(s); solve_out 310 lines
+- 2026-09-03T00:37:04+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-b-x8-v2/w02r06..08 jobs=90611..90613 (PENDING): user repeats-4 trim; retain r05 as guard sensitivity
+- 2026-09-03T00:37:05+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-b-x8-v2/c02r06..08 jobs=90619..90621 (PENDING): matched trim; retain c02r05 as guard sensitivity
+- 2026-09-03T00:37:07+00:00 cancel wma-gsm8k-gemma4b-high-r01-wma-c-x8-v2/w03r01..03,r05..08 jobs=90622..90624,90626..90629 (PENDING): requeued redundant inventory; w03r04 remains RUNNING sensitivity-only
+- 2026-09-03T00:37:08+00:00 cancel wma-gsm8k-gemma4b-high-r01-ctl-c-x8-v2/c03r01..03 jobs=90630..90632 (PENDING): running c03r04..08 remain sensitivity-only; post-action safe PENDING=25
