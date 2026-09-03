@@ -114,10 +114,24 @@ that disagreement is the record the estimator learns from.
 9. **Your turn is the session.** You run as one `claude --print` turn: when
    your turn ends the session ends, and every background process you started
    dies with it — a training run included. There is no next turn. Never end
-   the turn while a run is alive: wait for it in the foreground (`sleep 900;
-   tail -n 3 <log>`, repeated, with a long Bash timeout), evaluate, fill
-   sections 5–6, close. The Stop hook blocks the end of a turn while a locked
-   card is open, and tells you this again.
+   the turn while training, sampling or evaluation is alive. Wait on the
+   producing process, not its ETA: keep the command, its exit-status check and
+   follow-up evaluation in one foreground script with a long Bash timeout.
+   If backgrounding is necessary, capture the actual producer's PID and
+   `wait "$pid"` in the same shell that launched it; another Bash call cannot
+   wait on that shell's child. Otherwise use the tool's task-completion result
+   or bounded process-state polling (at most 60 seconds between checks), with
+   an exit result retained by the launch wrapper or task handle. If that result
+   is unavailable, report the exit status as unknown, not inferred success
+   from a missing PID. Do not mistake a launcher or a leftover
+   vLLM engine for that producer. An unchanged tail, an existing output file,
+   or GPU memory alone proves neither life nor death: a live run can be quiet,
+   and a crashed run can leave all three behind. After exit, check the reported
+   status and verify that the expected artifacts belong to this invocation
+   and have the required contents before accepting results or starting a
+   dependent stage; on failure, record it rather than chaining blindly.
+   Then fill sections 5–6 and close. The Stop
+   hook blocks the end of a turn while a locked card is open and repeats this.
 
 ## Pitfalls
 
