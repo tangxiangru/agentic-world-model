@@ -93,12 +93,74 @@ in `doc/spec/`.
   the record must show.
 - A round with no change is a valid round. Record it.
 
-## From offline to online
+## The online loop (rounds on H100 cells)
 
-The online loop is the same with two differences: rollouts come from real
-scientist cells on H100 (the verdict is produced at `lock`; once the scientist
-closes the card, the ledger scores it — nothing is written back), and dynamic
-probes are allowed. Going online waits until the offline ledger beats the
-heuristic floor on L0, L1 and L3 and the held-out side agrees — the thresholds
-are in `doc/spec/2026-09-01-wma-v1-design.md` §4.4 and the gates in
+Rollouts are real scientist cells. Since 2026-09-03 the verdict is part of the
+lock: `awm exp_protocol lock` asks the sidecar and waits, and the run may not
+start before it returns, so a delivered verdict precedes every launch by
+construction and the lock file records what happened (`wma.state`). Once the
+scientist closes a card the ledger scores it; nothing is written back. Dynamic
+probes are allowed. Each harvested cell is
+`results/ptb/<batch>/<cell>/`: `metrics.json`, `task/memory/cards/*.yaml` with
+`.lock.json` and `.verdict.json`, `task/.wma/` queue records,
+`wma_private/*.transcript.jsonl.gz`, `solve_parsed.txt.gz`.
+
+1. **Evidence window.** At least eight validator-complete cells per arm (or per
+   candidate). Slurm `COMPLETED` is not completion; the validator is. In-flight
+   snapshots (`<cell>.inflight/`) are for sidecar health and early reading, not
+   for the readout.
+2. **Delegate the reading; never read sixty traces in the main context.** Read
+   the ledger yourself (`awm wma ledger results/ptb/<batch>/*/task --by type`),
+   then hand one question each to subagents run in parallel, each writing a file
+   under the round directory and returning numbers with citations
+   (`w01r05/exp-05`): (a) ledger reproduction by skill hash
+   (`tools/wma-rca/verdicts.py`); (b) uptake funnel and timing
+   (`tools/wma-rca/uptake.py`, then `timeline.py` on five cells by hand — three
+   misses, two hits); (c) score levers (`tools/wma-rca/cells.py`: correlations
+   with the final score, arm differences); (d) harm cases — a `no`/`defer` that
+   was heeded on a card that would have worked, an over-optimistic L2 that led
+   to a wasted run; (e) protocol compliance — `lock.wma.state` distribution,
+   verdict-before-launch rate, wait time, timeouts and `--no-wma-wait` reasons.
+   Keep the subagent count to the questions that have evidence to read; one
+   agent per question, none for restating the ledger.
+3. **Rank the causes by evidence weight** from the files, and split them: what
+   skill text can fix (calibration, the L3 policy, the form of a suggestion)
+   versus what only the protocol or harness can fix (timing, enforcement, what
+   the scientist must answer before `close`). Write the ranked list into the
+   round record before proposing anything.
+4. **Propose candidates, one edit each**: a `skills/wma/` edit *or* a
+   protocol/harness edit, never both in one candidate; each names the cause it
+   targets, its primary metric, its falsification and its guards (leaks 0, cost
+   ≤ 1.5× the baseline, PTB not below the baseline beyond the baseline's spread),
+   preregistered in the round spec before any candidate cell runs. Up to one
+   wave of parallel candidates at the user's replication (four cells each,
+   2026-09-02). Linear commit chain: each candidate is one commit on the
+   baseline, the head returns to the baseline; the ledger groups skill
+   candidates by `wma_skill`, protocol candidates by `awm.sha`.
+5. **Readout per candidate** against the same-wave baseline cells and the
+   pooled baseline; promote at most one edit per round; never pool candidates
+   post hoc; a second passing edit is retested stacked on the promoted baseline
+   next round.
+6. **Cost and variance are results.** Report the within-arm SD and the number
+   of pairs the claimed effect would need; wait time per cell under the blocking
+   lock is GPU idle and goes in the record.
+
+### What Round 01 taught the loop (2026-09-02, 8+8 cells, `tools/wma-rca/`)
+
+- The verdict was outside the decision loop: step 4b was advisory, verdicts
+  took 5–9 min, every scientist launched at lock → 21/22 delivered verdicts
+  arrived after the launch, 26/59 cards were never reviewed. Fixed in the
+  protocol, not the skill: the blocking lock (Round 03 candidate `block`).
+- v0.2 never said "don't": L3 `yes` 22/22, so `gpu_h_saved` was 0 by
+  construction; its best suggestion (score intermediate checkpoints, 15/22
+  verdicts) was taken in 2/8 cells, the control arm's unprompted rate.
+- The levers that moved the score were not WMA-shaped: first-SFT quality
+  ρ = 0.60, training volume ρ ≈ 0.5 — recipe decisions made before any verdict.
+- Calibration (L2 width 6× the floor, misses on both sides) changed no action.
+- Within-arm SD 0.03–0.05 against a +0.4 pp delta; n = 8 resolves nothing
+  under ~4 pp.
+
+Going online in the first place waited for the offline ledger to beat the
+heuristic floor on L0, L1 and L3 with the held-out side agreeing — the
+thresholds are in `doc/spec/2026-09-01-wma-v1-design.md` §4.4 and the gates in
 `doc/spec/2026-09-02-wma-gsm8k-gemma4b-iteration-basis.md` §十.

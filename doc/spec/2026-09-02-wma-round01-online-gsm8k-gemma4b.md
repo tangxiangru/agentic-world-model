@@ -291,6 +291,54 @@ skill。因为 scientist behavior 也改变,新增同波 v0.2 x4 与 no-WMA cont
 manifest 其余合同一致。原 candidate cell 从未启动、永不进入 denominator;v2 candidate
 复用 `w06..w09 r01..04`,新 baseline/control 为 `w10/c10 r01..04`。
 
+## 2026-09-03 01:xx UTC:Round 01 根因分析 → 用户两条决定 → 阻塞 lock 的预注册读数
+
+**根因分析**(子代理逐 cell 复核,报告存 `tools/wma-rca/` 可复现;摘要见 PR 评论):
+Round 01 无收益的原因按证据权重——(1) **verdict 不在决策回路里**:规程 4b 明写
+`--background`、"Do not wait for it to launch",verdict 要 5–9 min,scientist 一 lock 就启动,
+22 份送达的 verdict 里 **21 份在训练启动之后才到**;59 张卡只有 33 张请求了 review,11 张因
+runtime bug 什么都没拿到,26 张(含全部收尾卡)从未评审;WMA 臂 46.4 训练小时里只有 23.3 h
+跑在有 verdict 的卡上。(2) 即使被消费,v0.2 的 L3 = `yes` 22/22,从不说"别跑";最有价值的
+建议(评中间 checkpoint,C5)出现在 15/22 份 verdict 里,只有 2/8 cell 做了,与对照臂无提醒下
+的 3/8 无差。(3) 真正与最终分相关的杠杆(首次 SFT 质量 ρ=0.60、epoch×行数 0.54、训练小时
+0.48、最大评测 n 0.49)是 scientist 在任何 verdict 之前就做的配方决定。(4) 校准差(L2 宽 6×)
+但本轮未改变任何动作。(5) 臂内 SD 0.031/0.050 对 +0.4 pp,n=8 分辨不了 <4 pp。
+
+**用户决定(2026-09-03)**:(a) 取消异步设定——scientist 可以一边等一边做别的,但 **`wma
+review` 没有返回之前不能启动新的实验**;(b) `wma_meta` 技能要像本轮一样,用子代理批量分析
+trace、提出下一轮的修改意见,形成真正修复问题的迭代。此后由 Fable 自主执行,无人监督。
+
+**落实 (a):公共 checkout `25a064c`**——`awm exp_protocol lock` 在写入 lock 后向已挂载的 WMA
+发出 review 并**阻塞等待**(默认 20 min、每 30 s 心跳),打印 `verdict: L0…L3; first
+precondition` 与 verdict 路径;结果(delivered / failed / timeout / not_attached / skipped+理由)
+写进 lock 文件 `wma` 字段。对照臂同一代码,记 `not_attached`、不等待。`awm wma review` 默认阻塞
+(单卡),`--background` 保留给批量第二意见。规程文本:4b 步删除;"lock 返回前不得启动";
+读完整 verdict;preconditions 要么做、要么在 `situation.alternatives_rejected` 写明为何不做;
+改计划就 `--relock` 重问;失败/超时不是 verdict。测试覆盖三条路径与对照臂。
+
+**落实为 Round 02 v2(operator `f8b9d52`/`76d75de`,与本节同时写成;planner 起草的独立
+`r03-block` 配对因 cell id 与之重合而未提交)**:同波 v0.2 基线 `w10r01..04`(`awm.sha` =
+`wma.sha` = `ae46724`,即 `25a064c` 的阻塞 lock + relock 重问修复;skill v0.2 不变,hash
+`176f0a464986`)与对照 `c10r01..04`(同一公共 checkout、无 sidecar),四个候选 A / A+B / C / D
+以同一公共 checkout 重排(`w06..w09 r01..04 -v2`),原 16 个候选 job 在 PENDING 时撤回、永不
+进分母。规程本身的效果读 `w10 − c10`,候选的效果读各候选 − `w10`。预注册读数:
+
+| 层 | 主读数 | 预注册判定 |
+|---|---|---|
+| 合规 | lock 文件 `wma.state` 分布;从 solve_parsed 算 **verdict-before-launch 率**(Round 01 = 1/22);等待时长;timeout/skip 次数 | 若 verdict-before-launch < 0.8 → 规程未生效,先修机制再谈效果 |
+| 消费 | 每 cell review 覆盖率(Round 01 = 56 %,收尾卡 0);采纳分类(Round 01 = 4/22 有动作);C5 建议 → 中间 checkpoint 被评的比例(Round 01 = 2/8 cell) | 覆盖率与"有动作"比例对 Round 01 的提升是 (a) 的直接效果 |
+| PTB | `w10` − `c10` 配对差,对照 Round 01 的 +0.004 ± 0.014 与两臂 spread | n=4 只做方向与护栏:wma 臂不得低于 ctl 超过 ctl 的 spread |
+| 成本 | 每 cell 的等待总时长(GPU 空转)、verdict 数与 $ | 等待 > 1.5 h/cell 或 cell 卡片数下降 > 30 % → 记为规程代价,写进下一轮的候选(如 `planned_h < 0.5` 的卡免等) |
+
+证伪:合规达标但 review 覆盖率、采纳率、C5 执行率都不高于 Round 01 → "在回路里"本身不
+够,下一轮转向 L3 政策(`yes` 22/22)与 preconditions 的强制回应(harness 层);合规不达标 →
+先修 harness。对照臂与 wma 臂同一新 checkout,所以规程本身的代价(等待)只落在 wma 臂,
+这正是要测的量。
+
+**落实 (b)**:`skills/wma_meta/SKILL.md` 的在线循环一节(子代理按问题并行读 trace、主代理据文件
+排根因、逐条预注册单改动候选)与 `tools/wma-rca/`(`cells.py` / `uptake.py` / `verdicts.py` /
+`timeline.py`,Round 01 的关键数字已用它复现)。
+
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
 1. **不走 pilot。** manifest 不带 `pilot` 块,queue entry 一律 `pilot: null`,直接以

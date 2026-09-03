@@ -326,6 +326,14 @@ sidecar 的冒烟由第一波的 8 个 wma cell 承担。Fable 以 commit 落实
 新 manifest(含 Round 02 的候选与 held-out)都按 4+4 配对写;要多于 4 个观测,写成多个
 不同 setting 的 manifest,而不是加 repeats。
 
+**用户指令(2026-09-03,Round 01 根因分析之后;此后 Fable 自主执行,无人监督)**:
+(a) 取消 4b 的异步设定:scientist 可以一边等一边做别的,但 **`wma review` 没有返回之前
+不能启动新的实验**——落实为 `awm exp_protocol lock` 内置阻塞等待并记录(公共 checkout
+`25a064c`),作为 Round 03 的规程候选 `block` 配对测试;(b) `skills/wma_meta` 的迭代循环
+改为:每个证据窗口用子代理并行批量分析 trace(账本、采纳漏斗与时序、分数杠杆、伤害案例、
+规程合规),主代理据其文件排出根因,再逐条预注册单改动候选(skill 文本或规程/harness),
+使迭代真正修复原因;分析脚本在 `tools/wma-rca/`。
+
 ## 十一、本 spec 登记的测量侧改动
 
 这些改动碰的是测量,不是 skill,所以在这里登记而不是在轮内做;每条都要先加测试。

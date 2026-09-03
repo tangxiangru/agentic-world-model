@@ -119,3 +119,30 @@ At 01:47–01:48 UTC all 16 original jobs (`90861..90868`, `90870..90877`) were
 rechecked PENDING and cancelled by exact tracked receipt. None had started and
 no result was produced. Safe PENDING temporarily remained 9, above the hard
 floor of 8, while the committed v2 replacements waited for a clean-tree submit.
+
+## Protocol readout for the lock-gated wave (planner, 2026-09-03 01:5x UTC)
+
+The `w10 − c10` pair reads the blocking lock itself, with skill v0.2 unchanged;
+the candidates read against `w10`. Preregistered, from the Round 01 root-cause
+analysis (`tools/wma-rca/`; PR #23 window comment):
+
+1. Compliance: `wma.state` distribution in the lock files; verdict-before-launch
+   rate from `solve_parsed` (Round 01: 1/22); wait per verdict; timeouts and
+   `--no-wma-wait` reasons. Below 0.8 verdict-before-launch → the mechanism did
+   not take; fix the harness before reading any effect.
+2. Consumption: review coverage per cell (Round 01: 33/59 cards, endgame 0),
+   uptake classes on the delivered verdicts (Round 01: 4/22 with an action by
+   hand count), intermediate checkpoints scored after a C5 suggestion (Round 01:
+   2/8 cells, the control arm's unprompted rate).
+3. PTB: paired `w10 − c10` against Round 01's +0.004 ± 0.014; n = 4 gives a
+   direction and a guard (wma not below ctl beyond ctl's spread), not a verdict.
+4. Cost of the protocol: total wait per cell (GPU idle) and cards per cell;
+   > 1.5 h waiting or > 30 % fewer cards → recorded as the price and fed into
+   the next candidate (e.g. exempt cards with `planned_h < 0.5`).
+
+Falsification: compliant but no rise in coverage, uptake or checkpoint scoring
+over Round 01 → being in the loop is not enough; the next round moves to the L3
+policy (`yes` 22/22 in Round 01) and to harness-enforced precondition answers.
+Non-compliant → harness first. The skill candidates keep their own readouts
+above; a candidate is compared only with `w10` cells that passed the compliance
+check.
