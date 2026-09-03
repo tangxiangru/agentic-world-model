@@ -36,3 +36,23 @@ Both manifests passed the held-route gate. Post-release audit found all eight
 jobs PENDING with `ReqNodeList=slurm2-a3nodesetondem-[2-3]`. Owned allocation
 remained 16/16 and safe PENDING rose from 17 to 25. No cancellation or other
 queue action was part of this launch.
+
+## Planner audit (2026-09-03 09:0x UTC)
+
+Chain and hashes verified from `git archive`: `5c266f2` → `20c8837ab7a4`,
+`a7e4d0f` → `959fbdd5bbb2`, both v0.2 (`176f0a464986`) plus one paragraph; F
+removes E's paragraph before adding its own. Manifests pin public
+`awm.sha=ae46724` (the running wave's), so w10 stays the shared baseline.
+
+One readout added for E, from the Round 01 levers: the first SFT of a run
+(C3 from the format floor) is the score-dominant card (first-SFT dev ρ +0.60,
+training hours +0.48), and v0.2 over-predicted C2 decode-config effects near
+the floor three times. If E's "no unspent C2/C5 discriminator" clause defers
+first-SFT cards toward decode probing, it could cost the lever that matters.
+Read for E, per cell, against w10: time to the first SFT launch, its dev
+accuracy, and the number of C2 cards locked before it. E is falsified on this
+channel if its first SFT lands later than w10's spread and no cell shows a
+GPU hour saved.
+
+Round 03 shares the Round 02 in-flight finding that a relock costs a second
+full wait (~6 min); the cost line (1.5 h, ×1.5) applies to E and F unchanged.

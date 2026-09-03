@@ -163,3 +163,39 @@ The held-route gate and post-release audit both passed for every cell: 24/24
 were PENDING with `ReqNodeList=slurm2-a3nodesetondem-[2-3]`. Owned allocation
 remained 16/16 and safe PENDING rose from 9 to 33. Only these v2 receipts enter
 the Round 02 denominator.
+
+## In-flight gate read (planner, 2026-09-03 09:0x UTC)
+
+Source: the operator's 08:44 peeks of the first seven lock-gated cells
+(`w10r01..04`, `c10r01..03`), 200 transcript lines each, read with
+`tools/wma-rca/inflight_gate.py`. A window, not the cells.
+
+- **The gate holds.** Eight waits observed, 5.0–8.5 min each (median ≈ 6.3),
+  all delivered; no `failed`, no `timeout`, no `--no-wma-wait`. Every training
+  launch in the windows came after the verdict line: +6 s (w10r01), +11 s
+  (w10r02), +42 s and +12 s (w10r03). Round 01 was 1/22 verdicts before launch.
+- **Preconditions are answered before the launch, in 4/4 WMA cells.** w10r01's
+  first exp-02 verdict said `L0_runs=no@0.68` (OOM at the real max-seq-len);
+  the scientist edited the card, relocked, got `L0_runs=yes@0.86`, launched.
+  w10r02 relocked with the tier-1 answers written into the card; w10r03 edited
+  the card's `alternatives_rejected` and relocked; w10r04 ran the suggested
+  `--limit 20 --max-connections 16` smoke (2 min) before the 150-item baseline.
+- **The price: one relock per card so far, each a second full wait.** Card
+  exp-02 cost 17 min of gate in w10r02 (6.5 + 5.0) and ≈ 25 min in w10r01
+  (8.5 + 8.0). Scientists prepare data during the wait, but the training GPU is
+  idle. At ~8 cards per cell this is 1–2 h of the 10 h budget — above the 1.5 h
+  line preregistered as "the price goes into the next candidate".
+- **Two scientists background the lock** (`nohup awm exp_protocol lock … > log &`,
+  w10r04; a Claude Code background task, w10r03) and poll it. Both still waited
+  for the verdict before launching; that is the intended shape ("prepare
+  meanwhile, do not start"). But the backgrounded log stayed empty for the whole
+  wait: block-buffered stdout (fixed in `7a75d84`, not in the pinned
+  `ae46724`; rides the next public bump). w10r04 lost ~8 min of turns to it.
+- **L3 is still `yes` 8/8**, including the verdict with `L0_runs=no@0.68` —
+  the inconsistency Round 03 candidate E targets.
+- Control cells (`c10`) lock and launch at once, as intended (`not_attached`).
+
+Nothing here changes the preregistered readout; the compliance criterion
+(verdict-before-launch ≥ 0.8) looks likely to pass. What the harvest must add:
+the `lock.wma.state` distribution from the lock files, wait totals per cell,
+relock counts per card, and whether the endgame cards get locked at all.
