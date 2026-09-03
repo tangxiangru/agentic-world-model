@@ -41,6 +41,14 @@ At 18:42:47 the operator restored user holds on exactly jobs 91046–91073 after
 
 ## Synthesis and planner decision
 
+### Planner's three-card read (guard variant)
+
+- [g01r01 exp-09](../../results/ptb/exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r01/task/memory/cards/exp-09.yaml): a non-training soup/measurement card still carries a training-data entry. It compares four full-1319 repeats and also optimizes a first-150 criterion because the scientist says the grading subset is unknown. This is an H exposure and a question about developer defaults versus official scoring, not proof of a new causal score mechanism.
+- [g01r02 exp-07](../../results/ptb/exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r02/task/memory/cards/exp-07.yaml): the second fitted-parent RFT runs 0.32 h with loss 0.205→0.207, then loses 3.3 points at n=150 and 1.5 on the fixed 200-item probe. This is a new guard-arm P1 signature; one cell does not satisfy the E-replacement rule's two-cell/full-block requirement.
+- [g01s04 exp-05](../../results/ptb/exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2/g01s04/task/memory/cards/exp-05.yaml): the n=800 comparison is 600 versus 595 correct, with 52 fixed and 47 broken (McNemar z=0.40). The card explicitly labels the evidence inconclusive even while shipping the nominally better checkpoint. This is counterevidence to a blanket claim that guard scientists ignore uncertainty; it also records a non-training data placeholder and repeat-read variance.
+
+These reads were completed before synthesis. They are cross-checks for the reviewer findings, not decisions to rewrite or withdraw a candidate. The control arm has no experiment cards by design.
+
 Card collection for the three NEW guard cells is saved in [guard-collect.csv](trace-reviews/window03-local/guard-collect.csv): 21 cards all locked and closed, zero locked-open cards, two relocks, zero overrides, fields_filled=1.0, and 3.92 self-attributed pitfall hours. Trace review still determines the mechanism and actual waiting losses.
 
 The excluded baseline failure has a separate [p00r16 review](2026-09-03-p00r16-scorer-failure.md); its n=500 score is not an official result.
