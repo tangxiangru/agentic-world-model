@@ -17,7 +17,7 @@ REQUIRED: dict[str, str] = {
     "hypothesis.claim": "What do you expect this run to change, and against what (base model or a previous card)? One sentence.",
     "setup.parent_checkpoint.path": "Which checkpoint does the run start from (a local directory or the base model id)?",
     "setup.parent_checkpoint.origin": "What produced that checkpoint: base_model, or which card id?",
-    "setup.data": "Which training data file(s) does the run read (paths), where did each come from, and how many examples? (asked only when the method family trains on target text; leave [] for decode-config, merge and eval-only cards)",
+    "setup.data": "Which training data file(s) does the run read (paths), where did each come from, and how many examples?",
     "setup.method.family": "Which method family: sft | rft | dpo | grpo | distill | merge | decode-config | other?",
     "setup.command.argv": "What is the exact launch command (full argv, as you will run it)?",
     "setup.command.cwd": "From which directory will you run it?",
@@ -40,10 +40,7 @@ def _missing(card: dict[str, Any], dotted: str) -> bool:
 
 
 def missing_fields(card: dict[str, Any]) -> list[tuple[str, str]]:
-    family = get(card, "setup.method.family")
-    trains = family is None or family in TRAINING_FAMILIES
-    asked = [(f, q) for f, q in REQUIRED.items()
-             if _missing(card, f) and (trains or f != "setup.data")]
+    asked = [(f, q) for f, q in REQUIRED.items() if _missing(card, f)]
     if get(card, "setup.method.family") in TRAINING_FAMILIES:
         asked += [(f, q) for f, q in TRAINING_REQUIRED.items() if _missing(card, f)]
     return asked
