@@ -96,6 +96,10 @@ def check_sufficiency(card: dict[str, Any], stage: str) -> list[str]:
             continue
         if _empty(_get(card, field)):
             missing.append(field)
+    # a completed run must name the checkpoint it produced — that is the object
+    # the post-run sweep evaluates, and the label every card exists to earn
+    if want_result and _get(card, "result.execution") == "completed" and _empty(_get(card, "result.output_checkpoint")):
+        missing.append("result.output_checkpoint")
     return missing
 
 
@@ -181,6 +185,58 @@ def log_record(wm_dir: Path, response: dict[str, Any], *, request: str,
         n_measurements=len(card.get("result", {}).get("measurements") or []) if isinstance(card.get("result"), dict) else 0,
         request_chars=len(request), path=str(cdir / f"record-{n:02d}.json"))
     return entry
+
+
+HASH_LIMIT_BYTES = 256 * 1024 * 1024  # weight shards above this are recorded by size only
+
+
+def archive_checkpoint(wm_dir: Path, session_dir: Path, card_id: str, src: Path) -> dict[str, Any]:
+    """Preserve a card's checkpoint under ``wm/checkpoints/<card>/`` before the
+    scientist overwrites or deletes it.
+
+    Every archived checkpoint gets the official test-set evaluation after the
+    run (the run harness sweeps ``wm/checkpoints/*``), which is what turns each
+    card into a labelled data point rather than only the shipped one. Copies
+    with reflink where the filesystem supports it, byte copy otherwise; writes
+    a manifest with the source path and per-file hashes (size-only above
+    ``HASH_LIMIT_BYTES``).
+    """
+    import shutil
+    import subprocess
+
+    from .schema import inside, sha256_file
+
+    src = Path(src).resolve()
+    if not src.is_dir():
+        raise WMError(f"{src} is not a directory")
+    if not inside(src, Path(session_dir).resolve()):
+        raise WMError(f"{src} is outside the session directory {session_dir}")
+    if not (src / "config.json").is_file():
+        raise WMError(f"{src} has no config.json; archive the checkpoint directory itself")
+    dest = wm_dir / "checkpoints" / card_id
+    if dest.exists():
+        raise WMError(f"{dest} already exists; one archived checkpoint per card")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    rc = subprocess.run(["cp", "-R", "--reflink=auto", str(src), str(dest)],
+                        capture_output=True, text=True).returncode
+    if rc != 0:  # BSD cp has no --reflink; fall back to a plain copy
+        shutil.copytree(src, dest)
+    files = []
+    for f in sorted(x for x in dest.rglob("*") if x.is_file()):
+        size = f.stat().st_size
+        entry: dict[str, Any] = {"path": str(f.relative_to(dest)), "bytes": size}
+        if size <= HASH_LIMIT_BYTES:
+            entry["sha256"] = sha256_file(f)
+        files.append(entry)
+    manifest = {"card_id": card_id, "source": str(src), "at": now(), "files": files,
+                "bytes_total": sum(f["bytes"] for f in files)}
+    dump_json(dest.parent / f"{card_id}.MANIFEST.json", manifest)
+    card_file = wm_dir / "cards" / card_id / "card.json"
+    if card_file.is_file():
+        card = load_json(card_file, default={})
+        card.setdefault("result", {})["archived_checkpoint"] = str(dest)
+        dump_json(card_file, card)
+    return manifest
 
 
 def record_outcome(wm_dir: Path, card_id: str, *, final_value: float | None, shipped: str | None,

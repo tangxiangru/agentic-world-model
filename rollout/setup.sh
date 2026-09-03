@@ -58,6 +58,7 @@ printf '%s\n' "${AWM_REPO_COMMIT}" > "${PAYLOAD}/AWM_COMMIT"
 
 python3 "${HERE}/patches/apply_extra_binds.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_eval_results_bind.py" "${DST}/src/run_task.sh"
+python3 "${HERE}/patches/apply_wm_checkpoint_eval.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_env_passthrough.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_agent_payload.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_prompt_file.py" "${DST}/src/run_task.sh"

@@ -57,6 +57,12 @@ of measurement. That means every card carries:
   repeatable and comparable.
 - **result** — execution status (a crash is an outcome too), and every
   measurement with value, n, and the output file it came from.
+- **the checkpoint itself** — a completed run's card names
+  `result.output_checkpoint`, and you preserve that directory with
+  `awm wm archive` as soon as the scientist reports it. After the run, the
+  harness evaluates **every** archived checkpoint on the official test set —
+  that score is the label the card exists to earn, so a checkpoint the
+  scientist deletes before you archive it is a data point lost.
 
 `awm wm record` checks this list and returns `missing`; work it down to empty.
 
@@ -104,6 +110,11 @@ Every message gets one JSON object (schema `awm-record-response-v1`) inside a
   the launch names into the card's snapshot, with hashes. Run it at `plan`
   time, before training starts overwriting things.
 - `awm wm read-eval <path>` — parse an `evaluate.py --json-output-file` result.
+- `awm wm archive --card exp-NN <checkpoint_dir>` — preserve the checkpoint a
+  completed card produced under `wm/checkpoints/exp-NN/`, for the post-run
+  official evaluation. Run it the moment a completed checkpoint is reported —
+  before the scientist overwrites or deletes it. One per card: the card's
+  final save, not every intermediate step.
 - `awm wm record --response response.json --request request.txt` — **required
   after every reply**: validates the response against the contract (it rejects
   any advisory field), computes `missing`, appends to `wm/records.jsonl`,

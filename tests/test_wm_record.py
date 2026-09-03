@@ -40,7 +40,7 @@ def full_card(card_id: str = "exp-01") -> dict:
             "command": {"argv": ["python", "train.py", "--max_steps", "1000"], "script": "train.py"},
         },
         "evaluation": {"protocol": {"command": ["python", "evaluate.py", "--limit", "150"], "n": 150}},
-        "result": {"execution": "completed",
+        "result": {"execution": "completed", "output_checkpoint": "runs/exp01/checkpoint-1000",
                    "measurements": [{"step": 1000, "metric": "accuracy", "value": 0.34, "n": 150,
                                      "source": "eval_step1000.json"}]},
     }
@@ -147,3 +147,44 @@ def test_cli_recorder_end_to_end(tmp_path: Path) -> None:
     st = json.loads(wm("status").stdout)
     assert st["mode"] == "record"
     assert st["cards"]["exp-01"] == {"records": 2, "stage": "closed", "missing": [], "outcome": 0.71}
+
+
+def test_sufficiency_requires_output_checkpoint_when_completed() -> None:
+    card = full_card()
+    assert record.check_sufficiency(card, "closed") == []
+    del card["result"]["output_checkpoint"]
+    assert record.check_sufficiency(card, "closed") == ["result.output_checkpoint"]
+    crashed = full_card()
+    crashed["result"] = {"execution": "failed", "measurements": [{"metric": "n/a", "value": 0, "n": 0, "source": "train.log"}]}
+    assert "result.output_checkpoint" not in record.check_sufficiency(crashed, "closed")
+
+
+def test_archive_checkpoint(tmp_path: Path) -> None:
+    sd = tmp_path / "task"
+    ckpt = sd / "runs" / "exp01" / "checkpoint-1000"
+    ckpt.mkdir(parents=True)
+    (ckpt / "config.json").write_text('{"model_type": "gemma"}')
+    (ckpt / "model.safetensors").write_bytes(b"\x00" * 128)
+    wm_dir = sd / "wm"
+    record.log_record(wm_dir, good_response(full_card()), request=PLAN, model="m")
+
+    with pytest.raises(WMError):  # outside the session dir
+        record.archive_checkpoint(wm_dir, sd, "exp-01", tmp_path)
+    with pytest.raises(WMError):  # not a checkpoint directory
+        (sd / "notes").mkdir()
+        record.archive_checkpoint(wm_dir, sd, "exp-01", sd / "notes")
+
+    manifest = record.archive_checkpoint(wm_dir, sd, "exp-01", ckpt)
+    dest = wm_dir / "checkpoints" / "exp-01"
+    assert (dest / "config.json").is_file() and (dest / "model.safetensors").stat().st_size == 128
+    assert manifest["source"] == str(ckpt) and manifest["bytes_total"] == 128 + len('{"model_type": "gemma"}')
+    by_path = {f["path"]: f for f in manifest["files"]}
+    assert by_path["model.safetensors"]["sha256"]
+    stored = json.loads((wm_dir / "cards" / "exp-01" / "card.json").read_text())
+    assert stored["result"]["archived_checkpoint"] == str(dest)
+    # the archive survives the scientist deleting the original
+    import shutil
+    shutil.rmtree(ckpt)
+    assert (dest / "model.safetensors").is_file()
+    with pytest.raises(WMError):  # one archive per card
+        record.archive_checkpoint(wm_dir, sd, "exp-01", dest)

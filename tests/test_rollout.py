@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from rollout import build_prompts, study_matrix
-from rollout.patches import apply_eval_results_bind, apply_extra_binds, apply_prompt_file
+from rollout.patches import (apply_eval_results_bind, apply_extra_binds, apply_prompt_file,
+                             apply_wm_checkpoint_eval)
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -210,11 +211,34 @@ def test_pack_calls_ptb_directly_with_one_gpu(
     assert "POST_TRAIN_BENCH_VISIBLE_GPUS=7\n" in forwarded
 
 
+def test_wm_checkpoint_eval_patch_is_mechanical_and_idempotent() -> None:
+    original = (
+        "x\n"
+        'if [ -d "${JOB_DIR}/task/final_model" ]; then\n'
+        '    cp -r "${JOB_DIR}/task/final_model" "$EVAL_DIR/final_model"\n'
+        "fi\n"
+        "y\n"
+        'echo "================================"\n'
+        'echo "======= EVALUATION DONE ========"\n'
+        'echo "================================"\n'
+        "z\n"
+    )
+    patched = apply_wm_checkpoint_eval.apply(original)
+    # checkpoints leave the task dir beside final_model, before the weight strip
+    assert '"${JOB_DIR}/task/wm/checkpoints" "$EVAL_DIR/wm_checkpoints"' in patched
+    assert patched.index("wm_checkpoints") < patched.index("y\n")
+    # the sweep runs after PTB's own evaluation and derives its function from run_evaluation
+    assert patched.index("declare -f run_evaluation") > patched.index("EVALUATION DONE")
+    assert "run_card_evaluation" in patched and "wm_metrics" in patched
+    assert apply_wm_checkpoint_eval.apply(patched) == patched
+
+
 def test_setup_installs_only_mechanical_ptb_extensions() -> None:
     setup = (ROLLOUT / "setup.sh").read_text()
     assert "apply_extra_binds.py" in setup
     assert "apply_eval_results_bind.py" in setup
     assert "apply_prompt_file.py" in setup
+    assert "apply_wm_checkpoint_eval.py" in setup
     assert 'archive --format=tar "${AWM_REPO_COMMIT}" awm input wma' in setup
     assert "--exclude=awm/credential_guard.py" in setup
     assert "--exclude=awm/wm/agents/llm.py" in setup

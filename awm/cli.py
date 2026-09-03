@@ -494,6 +494,16 @@ def _wm_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _wm_archive(args: argparse.Namespace) -> int:
+    from awm.wm.record import archive_checkpoint
+
+    cfg = _wm_config(args)
+    manifest = archive_checkpoint(_wm_dir(args), Path(cfg["session_dir"]), args.card, Path(args.checkpoint))
+    print(json.dumps({"card": manifest["card_id"], "archived": str(_wm_dir(args) / "checkpoints" / args.card),
+                      "bytes_total": manifest["bytes_total"], "files": len(manifest["files"])}, indent=2))
+    return 0
+
+
 def _wm_outcome(args: argparse.Namespace) -> int:
     cfg = _wm_config(args)
     if cfg.get("mode") == "record":
@@ -723,6 +733,10 @@ def build_parser() -> argparse.ArgumentParser:
     wsn = wmc.add_parser("snapshot", help="copy the files a card's command names into wm/cards/<card>/snapshot/, with hashes")
     wsn.add_argument("--card", required=True); wsn.add_argument("paths", nargs="+")
     wsn.set_defaults(func=_wm_snapshot)
+
+    wa = wmc.add_parser("archive", help="preserve a card's checkpoint under wm/checkpoints/<card>/ for the post-run official evaluation")
+    wa.add_argument("--card", required=True); wa.add_argument("checkpoint")
+    wa.set_defaults(func=_wm_archive)
 
     wo = wmc.add_parser("outcome", help="record what the scientist shipped and scored")
     wo.add_argument("--card", required=True); wo.add_argument("--final", type=float); wo.add_argument("--shipped"); wo.add_argument("--note")

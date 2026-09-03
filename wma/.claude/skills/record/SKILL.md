@@ -59,6 +59,17 @@ message and the file disagree, record the file and note the discrepancy in the
 card. A crash or a killed run is recorded the same way: `result.execution`,
 the log path, the error line.
 
+When a completed run's checkpoint is reported (`result.output_checkpoint`),
+preserve it immediately — the post-run harness officially evaluates every
+archived checkpoint, which is what gives this card its label:
+
+```bash
+awm wm archive --card exp-NN /home/ben/task/runs/exp01/checkpoint-1000
+```
+
+One archive per card, its final save. Do not wait for the card to close; the
+scientist may delete or overwrite the directory at any time.
+
 ## 5. Answer and log
 
 Write the JSON to `$AWM_SESSION_DIR/wm/tmp/response.json`, then:
