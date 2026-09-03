@@ -1,6 +1,6 @@
 # Round 02 E retention and E v2 preparation — 2026-09-03
 
-Status: **E retained by the predeclared non-saturation bound; E v2 specified but not built or submitted.** This does not pass the separate full strict-guard safety gate and does not authorize any release under the active ownership/placement failure.
+Status: **E retained by the predeclared non-saturation bound; E v2 built and frozen, not registered or submitted.** This does not pass the separate full strict-guard safety gate and does not authorize any release under the active ownership/placement failure.
 
 ## Retention proof, without waiting for irrelevant reviews
 
@@ -36,9 +36,10 @@ Score guardrail remains the predeclared protocol-baseline pool mean −0.03; a w
 
 ## Construction and queue boundary
 
-Build a new baseline-relative single-item commit, freeze `awm.sha` and `protocol_tree`, and verify the other shipped paths are identical to the drift baseline. The planned immutable replacement identity is `exp-protocol-gsm8k-gemma4b-high-r02-e-wait-on-process-x4-v2`, cells `e02s01–04`, run_index 2. This document is not a manifest or submission receipt.
+The baseline-relative single-item commit is **`c6f11d803b5f563cd25cf5fb373f5f3078028493`**, protocol tree **`ceb685494c6a44e0f717d42724b91696a88acbd6`**. Its same-commit [prelaunch record](../exp_protocol_iterations/2026-09-03-round-02-e2-prelaunch.md) contains the source-card reads, test results and independent forward review. The immutable replacement [manifest](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r02-e-wait-on-process-x4-v2.yaml) names batch `exp-protocol-gsm8k-gemma4b-high-r02-e-wait-on-process-x4-v2`, cells `e02s01–04`, run_index 2. No submission receipt exists yet.
 
-Run the existing hook/protocol CPU tests and manifest checks. Restore the branch's guard tree after freezing the candidate, as for the other independent variants.
+The four existing hook/skill-files/install/lock CPU suites pass all 34 tests. AST/YAML and SKILL prefix/suffix checks prove changes are confined to the three allowed text surfaces. The six-path comparison with `2f64581` differs only there; after freezing, the branch source was restored to guard tree `189319d63d301d64d96f8f41d051795404679f37` and all six shipped paths again match `2f64581`.
+
+Validation on 2026-09-03: `awm ptb check` on the new manifest returns **0 issues**, both `--local-only` and full site mode. Parsed old/new manifests match after excluding batch description, spec pointer, batch/cell/run identities and the frozen candidate SHA/tree. These checks establish structural and cross-variant consistency, **not ownership/release authorization**; the independent OWNERSHIP FAIL and isolation gates remain closed.
 
 Jobs 91064–91067 remain held and must not run with the stale-tail assertion. Register a valid replacement held receipt before withdrawing the old whole block through the queue/operator path; no RUNNING job is cancelled. **Current OWNERSHIP FAIL forbids new submissions, including this replacement.** Code/spec preparation may proceed, but registration and release wait for restored ownership plus the native-isolation or explicitly authorized per-receipt gate. The held buffer remains ≥8 without this replacement.
-

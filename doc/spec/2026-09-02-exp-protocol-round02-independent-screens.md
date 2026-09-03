@@ -148,3 +148,16 @@ P1 专项日志。裁决见 `doc/exp_protocol_iterations/trace-reviews/window03-
 - P1 不采用“所有 flat RFT 小时都可避免”口径。按冻结文本核对 parent、数据混合、终点/平均 loss、
   前 20 optimizer steps 的实际日志及 matched score。专项审核未证实两个新 guard cell 都命中，
   也未证明完整 P1 判据已被反例推翻；G/P1 仍不登记，等待 prescribed cohort 的证据。
+
+## 九、strict cohort 非饱和与 E v2 冻结（2026-09-03）
+
+g01s03、g01s08 的两个确定失败下界已经排除 ≥7/8 饱和，故 **E 保留，不走 G/P1 替代分支**。
+按 [E v2 spec](2026-09-03-exp-protocol-round02-e2-process-wait.md) 冻结候选 `c6f11d8`、tree
+`ceb68549`，新版 manifest 为 `exp-protocol-gsm8k-gemma4b-high-r02-e-wait-on-process-x4-v2.yaml`，
+cells `e02s01–04`。仅三处等待指导相对 guard 基线变化；原 E manifest/receipt 不改写。
+
+依赖顺序仍为：完整 strict-guard safety review + ownership/原生隔离门 → D/B/C + drift A；
+后续 A/H/E v2 + drift B，E 最后。代码和 manifest 已准备不等于可启动：90820 的 placement 违规使
+真实 OWNERSHIP FAIL，禁止新提交及放行。旧 E 91064–91067 保持 held，须先有新 held receipt，
+再通过 operator 整块撤回旧作业；任何 RUNNING 作业不动。最后三份 strict trace 及全 cohort
+synthesis 尚未完成，因此本节不宣告 guard 安全门通过。
