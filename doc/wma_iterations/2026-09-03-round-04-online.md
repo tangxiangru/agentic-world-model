@@ -1,6 +1,6 @@
 # WMA online Round 04 — scoped probes and candidate selection
 
-Status: design review in progress; no Round 04 candidate launched.
+Status: G/H design accepted for exploratory launch; archives/checks in progress.
 
 The frozen design and gates are in
 `doc/spec/2026-09-03-wma-round04-probe-selection.md`. Completed evidence and
@@ -29,11 +29,32 @@ for their original formal comparison. No candidate is promoted by this record.
 
 ## Candidate archive preparation
 
-The four reversible candidate texts are being frozen while the independent
-design review runs. Freezing a candidate is not approval to launch it. Each is
+The four reversible drafts were reviewed before launching; the two accepted
+G/H candidates are now being frozen. Freezing alone is not a launch. Each is
 one skill intervention against v0.2, and all non-skill private shipped bytes
 are checked against `ae46724`. A preparation commit restores the old private
 `lock.py` for these archives; after freezing, the branch restores the current
 operator `lock.py` and the baseline skill. No existing manifest is changed.
 This keeps the new archive's runtime identical to the comparison baseline
 without discarding the operator's newer relock-history fix.
+
+## Verified local Opus review
+
+The follow-up finished at 19:23 UTC (exit 0, is_error=false; reported cost
+$3.08096925). It supports G/H and defers I/J. Its exact report is committed as
+`evidence/2026-09-03-w10/opus-design-review.md`; operator qualifications are in
+the final pre-launch spec. In particular H removes only the positive
+"default when time is short" prior, never adds the false weakest-ingredient
+bound. G preserves the original input fence and legitimate scratch probes.
+The five-card H baseline and all 43 review summaries were checked against
+actual artifacts; no output was regenerated or rescored.
+
+I/J are not launched: existing larger-sample advice and a few irrelevant probes
+provide weak incremental behavior evidence at this replication. Their draft
+texts remain design history, not candidate sources. Eight justified G/H cells
+replenish 17 toward 25 pending; the remaining gap to 32 is not filled with
+redundant repetitions or unsupported edits.
+
+## Candidate archives
+
+- g-probe-scope: `e4402ffa6bca`; one new probe-scope rule; compared with v0.2 on byte-identical private runtime.

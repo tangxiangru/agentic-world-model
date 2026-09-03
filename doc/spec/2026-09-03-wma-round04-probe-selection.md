@@ -1,8 +1,8 @@
 # WMA Round 04 — scoped probes and candidate selection
 
-Status: preregistration under local Opus 5/max UltraCode review; no Round 04
-cell has been launched. The round record will identify accepted candidates,
-their immutable commits and any pre-launch refinements.
+Status: G/H approved for exploratory launch after local Opus 5/max UltraCode
+review and operator verification; I/J deferred. No Round 04 outcome has been read.
+The round record identifies the immutable commits and launch receipts.
 
 ## Frozen evidence and decision boundary
 
@@ -69,9 +69,9 @@ original fence. Request lifecycle duration is not measured GPU-idle time.
 | Candidate | Single edit | Mechanism and provisional primary readout |
 |---|---|---|
 | G probe-scope | One SKILL rule checking intentional probe inputs and side effects against the existing scope | Zero original-fence flags and zero outside mutations, with delivered verdicts and useful blocker detection retained |
-| H soup-ingredients | Replace the C6 manual row | On eligible soup proposals, give ingredient-conditioned, costed alternatives and matched incumbent comparisons; read actual execution of the advice and incumbent retention |
-| I eval-uncertainty | Replace the C18 manual row | On eligible uncertain selection proposals, distinguish run variation from item coverage and choose a matched evaluation that addresses the stated uncertainty |
-| J probe-stopping | Replace the SKILL probe-value rule | Reduce scope-irrelevant probes and per-card review lifecycle duration while preserving confirming checks and blocker discovery |
+| H soup-ingredients | Replace only the time-short-default clause in the C6 prior | Remove positive reliance on the clock as a default reason for averaging; read resulting L3, incumbent and merge decisions |
+| I eval-uncertainty (deferred) | Proposed C18 row correction | Existing v0.2 already recommends larger common samples; no documented misallocated repeat establishes an incremental mechanism |
+| J probe-stopping (deferred) | Proposed probe-value rule refinement | Few cited probes and an existing stopping rule do not support the proposed 20% latency target |
 
 G regulates where/how probing operates; J regulates whether another probe can
 inform the current card. H regulates averaging advice; I regulates the next
@@ -87,7 +87,7 @@ mean/SD/range. Keep terminal-verdict metrics separate from per-request review
 counts and latency, including relocks. Do not use the known background-tool
 heuristic failures in gate.py/uptake.py as causal timing denominators.
 
-For H and I, eligibility is determined by the locked pre-launch proposal and
+For H (and I if later revived), eligibility is determined by the locked pre-launch proposal and
 available pre-launch evidence, not by whether the result was favorable or the
 WMA labelled it conveniently. Report numerator, denominator and cells with an
 eligible opportunity; no opportunities means the mechanism was not tested.
@@ -98,14 +98,26 @@ identities and effective evaluator settings when claiming a matched comparison.
 - G is falsified if outside reads/writes persist, or an apparent validity gain
   comes from missing/invalid verdicts, lost justified blockers or indirect
   access that merely evades path detection. Do not clear any old flag.
-- H is falsified if the refined advice does not change soup decisions or if
-  unmeasured mixing replaces a better incumbent. Report both beneficial and
-  harmful ingredient changes; a weak ingredient may offer complementary errors.
-- I is falsified if advice confuses item coverage and runtime variability,
+- H eligibility: the locked proposal constructs or evaluates a named weight
+  average of at least two checkpoints with identifiable pre-launch lineage.
+  A merge-script command is not required: w10r03/exp-06 and exp-09 invoke an
+  evaluator on a previously constructed soup. Exclude continued training with
+  an incidental C6 label. This gives five baseline cards (w10r01/exp-07,
+  w10r02/exp-04, w10r03/exp-06 and exp-09, w10r04/exp-05).
+  Primary: positive endorsement of the time-short default in evidence/L3;
+  baseline four evidence notes plus exp-06's L3 note (five distinct cards),
+  target zero. Explicit rejection of that prior is not an endorsement.
+  This is an adherence metric, not proof of utility: require a cited changed
+  L3, merge, ingredient or incumbent decision for behavioral benefit. Fewer
+  than three eligible soup cards means insufficient opportunity. Report all
+  matched scores, costs and actual decisions, including beneficial soups.
+  H fails to establish benefit if only wording changes or if useful merging
+  is suppressed. No bound on soup quality from its weakest ingredient is valid.
+- I, if revived in a later preregistration, is falsified if advice confuses item coverage and runtime variability,
   drives unmatched comparisons, is not acted upon, or spends extra evaluation
   budget without improving the quality of the selection evidence. It mandates
   neither full evaluation on every card nor zero-variance greedy assumptions.
-- J's provisional target is a 20% reduction in the mean per-cell lifecycle
+- J's deferred draft target was a 20% reduction in the mean per-cell lifecycle
   minutes per distinct reviewed card, versus the matched w10 baseline. This
   threshold is a preregistered experimental choice, not an observed effect.
   Report total lifecycle minutes and request counts too. Falsify if irrelevant
@@ -124,3 +136,31 @@ comparison and promotion still require the wma_meta evidence/replication and
 held-out gates, with at most one edit promoted. A second useful edit is retested
 on the promoted baseline. No held-out failure details, scorer revision or
 post-hoc guard adjustment is allowed inside this round.
+
+## Final pre-launch review disposition
+
+Opus completed the bounded review at 19:23 UTC, reported cost $3.08096925,
+with a successful result. Its unchanged report is archived beside the operator
+record. The operator accepts G and a narrower H, and defers I/J.
+
+Corrections to that advice: a soup's gain is not bounded by its weakest
+ingredient; that phrase is not shipped. H changes only the unsupported clock
+prior, not type, tier, eligibility wording, ingredient-check instructions or
+cost cells. The suggested merge-command-only classifier misses evaluation-only
+soup cards and is replaced above. No hard latency ceiling or power conclusion
+is inferred from self-reported probe CPU minutes. G blocker preservation is
+judged on encountered opportunities, not a quota forcing negative verdicts;
+insufficient opportunities leave that channel unconfirmed. Zero scanner flags
+is not proof of zero hidden side effects or outcome exposure, so manual audit
+remains required. Neither the old flags nor the scoring rules are changed.
+
+I's possible manual inconsistency can be revisited when a cited bad repeat
+recommendation leads to wasted evaluation instead of an available larger
+common sample. J needs stronger measured unnecessary-probe evidence or a
+separate relock mechanism; its four-cell 20% draft target is not adopted.
+
+Only G/H enter this wave: eight jobs take the current safe pending reserve
+from 17 toward 25. This exceeds the 24-job replenishment threshold but not the
+32-job planning target. Do not launch deferred weak designs or redundant
+repeats solely to close that difference; use later validated evidence to
+prepare the next independent settings before the reserve drops again.
