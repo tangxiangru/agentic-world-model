@@ -91,19 +91,6 @@ that disagreement is the record the estimator learns from.
 1. **Sections 0–4 before the command runs.** A hypothesis written after the
    result is a description of the result. `lock` pins them; `close` re-checks.
    A material change after lock is a new card, not an edit.
-   This includes short training/evaluation smokes, memory or throughput
-   probes, and a `--dry-run` that actually trains or evaluates the model.
-   Before launching, complete and check the matching card and confirm its
-   lock succeeded. The command must be declared in that card's
-   `setup.command` or `evaluation.protocol`; a different earlier card, an
-   empty card slot, or a later `smoke_runs` entry is not coverage. An evaluation
-   already declared in a locked training card can use that card; a material
-   change or a sweep still follows the separate-card rule. A failed lock does
-   not permit launch just because a shell pipeline continued: resolve the
-   failure using the documented workflow and verify the lock before running.
-   CPU-only static inspection, syntax/data checks and tokenization that do
-   not train or evaluate a model may prepare a card. Inspect an unclear
-   command's behavior; its name or short duration does not decide the scope.
 2. **A comparator is measured under the same protocol.** Same `n`, same dev
    set, same seed, and the path of that eval goes in `evaluation.comparator.path`.
    A number from a different `--limit` is not a comparator.

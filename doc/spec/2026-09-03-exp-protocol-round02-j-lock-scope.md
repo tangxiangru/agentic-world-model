@@ -1,6 +1,6 @@
 # Round02 J — lock scope for short training/evaluation runs
 
-Status: **specified, not built or registered**. Single-item direction #26 from the strict-guard [planner decision](../exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/planner-decision.md). Ownership/native-isolation gates remain closed; this spec authorizes no Slurm submission or release.
+Status: **built and frozen, not registered**. Single-item direction #26 from the strict-guard [planner decision](../exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/planner-decision.md). Ownership/native-isolation gates remain closed; this spec authorizes no Slurm submission or release.
 
 ## Evidence and hypothesis
 
@@ -41,3 +41,11 @@ This mixed historical pool is a coarse failure guardrail, not a causal comparato
 Run the existing hook, skill-files, install and lock CPU suites. Compare parsed template YAML to prove schema/content fields unchanged and the SKILL prefix/suffix around rule1 to prove other rules unchanged. Independent read-only forward review covers a short GPU smoke, a failed lock hidden in a shell pipeline, CPU-only preparation, a dependent evaluation already covered by a lock and a parameter sweep. It must not execute a model or touch Slurm.
 
 Write the iteration record with the candidate commit, construct the immutable manifest, run local/full manifest checks and verify the six-path diff against `2f64581`. The current29 held jobs satisfy the floor without J. Do not register J while ownership fails, change another frozen manifest, cancel running work or treat CPU/manifest checks as release authorization.
+
+## Construction result
+
+Frozen candidate **`549e25a0f83be8a97be2d3d30023f21efa956b42`**, protocol tree **`7ae08ccf07d4eba47fdd1d22bfa0c0e2298b8a09`**. The [prelaunch iteration record](../exp_protocol_iterations/2026-09-03-round-02-j-prelaunch.md) was committed with that change. The [immutable manifest](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r02-j-lock-scope-x4.yaml) names the four planned cells and pins these exact identities.
+
+Validation: **34 CPU tests passed**, parsed-template fields unchanged, only rule1/template comments differ across the six shipped paths. Independent read-only forward review covered six scenarios; the extra case confirms that model-backed generation **with grading** is evaluation and cannot use an unlocked `build_command` as authorization. Pure ungraded generation is not silently resolved by this training/evaluation screen. Generic naming validation still rejects the pre-existing underscore name; runtime compatibility is preserved.
+
+Both local-only and full site `awm ptb check` return **0 issues**. Parsed manifests match the existing Round02 contract after removing variant/batch/cell/run identities, spec pointer and description. The branch's six shipped paths have been restored to the guard drift baseline; J exists only at its frozen candidate commit. These checks do not authorize Slurm registration or release.
