@@ -56,3 +56,22 @@ GPU hour saved.
 
 Round 03 shares the Round 02 in-flight finding that a relock costs a second
 full wait (~6 min); the cost line (1.5 h, ×1.5) applies to E and F unchanged.
+
+## Completion-trigger amendment (2026-09-03 09:5x UTC)
+
+The analysis dependency on a future PR #23 comment is removed. A singleton
+hourly `tools/wma-evolve-hook` now reads registry-backed manifests and PTB
+validator output, acknowledges the 32 already-analyzed clean cells as its
+starting watermark, and freezes a new event after eight new clean-complete
+cells (or a four-cell tail after six hours). Each event invokes read-only
+Claude Code with explicit `claude-opus-5`, effort `max`, and the `ultracode`
+workflow for ledger/trajectory/uptake/harm/compliance analysis and next-wave
+design. The report is advisory; Codex verifies it and retains sole authority
+for skill edits, experiments, queue actions, commits and pushes.
+
+The same hourly pass checks WMA queue ownership and exact pending routes. It
+raises a replenishment event below 24 safe PENDING jobs so the one-hour cadence
+does not approach the hard `>8` floor. It never mutates Slurm. Shared state and
+event artifacts are under
+`/rmeng_data/robtang/wma-evolve-hook/gangda_wma_evolve/`; the operating
+contract is `doc/reference/wma_evolve_hook.md`.

@@ -105,6 +105,16 @@ probes are allowed. Each harvested cell is
 `.lock.json` and `.verdict.json`, `task/.wma/` queue records,
 `wma_private/*.transcript.jsonl.gz`, `solve_parsed.txt.gz`.
 
+The operator completion trigger is `tools/wma-evolve-hook`. It does not wait
+for a PR reviewer: every eight newly validator-clean cells it freezes their
+provenance and asks read-only Claude Code Opus 5 at max effort, with the
+`ultracode` workflow, to run the delegated trace diagnosis and propose the
+next wave. Treat that report as delegated reading, not promotion authority:
+the iteration agent still reads the ledger, checks every cited cell and gate,
+records the ranked causes, and owns all edits, launches, commits and pushes.
+The hook's contract and shared state are in
+`doc/reference/wma_evolve_hook.md`.
+
 1. **Evidence window.** At least eight validator-complete cells per arm (or per
    candidate). Slurm `COMPLETED` is not completion; the validator is. In-flight
    snapshots (`<cell>.inflight/`) are for sidecar health and early reading, not

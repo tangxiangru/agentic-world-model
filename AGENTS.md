@@ -31,6 +31,13 @@
   individual jobs with `gangda-slurm-queue show JOB_ID`, then follow receipt -> cell -> manifest ->
   spec -> result directory. Preserve these paths in reports. The full workflow is
   `doc/reference/ptb_result_analysis.md`.
+- The `gangda_wma_evolve` completion hook is `tools/wma-evolve-hook`; its shared state is
+  `/rmeng_data/robtang/wma-evolve-hook/gangda_wma_evolve/`. It polls hourly, freezes every eight
+  new validator-clean cells, and launches read-only Claude Code `claude-opus-5`/max with the
+  `ultracode` workflow for trajectory diagnosis and next-wave design. PR #23 is an audit/handoff
+  surface, never an analysis dependency. The hook never edits, submits, cancels, commits, or
+  pushes; the iteration agent verifies its report and owns every mutation. See
+  `doc/reference/wma_evolve_hook.md`.
 - PostTrainBench remote ownership is fixed: `fork` is
   `https://github.com/tangxiangru/PostTrainBench.git` for the AWM branch, and `upstream` is the
   official `https://github.com/aisa-group/PostTrainBench.git` for fetch/rebase. Do not configure
