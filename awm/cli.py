@@ -342,11 +342,16 @@ def _wm_init(args: argparse.Namespace) -> int:
     session_dir = wm.parent
     for sub in ("cards", "tmp"):
         (wm / sub).mkdir(parents=True, exist_ok=True)
-    (wm / "consults.jsonl").touch()
+    (wm / ("records.jsonl" if getattr(args, "mode", "consult") == "record" else "consults.jsonl")).touch()
+    mode = getattr(args, "mode", "consult")
+    if mode == "record" and args.arm != "null":
+        print(f"WARNING: recorder mode ignores past evidence; forcing arm null (was {args.arm})", file=sys.stderr)
+        args.arm = "null"
     cfg = {
         "schema_version": "awm-wm-config-v2",
         "session_id": f"{session_dir.name}-{int(time.time())}",
         "session_dir": str(session_dir),
+        "mode": mode,
         "arm": args.arm,
         "prior_runs_root": str(Path(args.prior_runs).resolve()) if args.prior_runs else None,
         "memory_root": str(Path(args.memory_root).resolve()) if args.memory_root else None,
@@ -355,7 +360,9 @@ def _wm_init(args: argparse.Namespace) -> int:
         "split_side": args.split_side,
         "wma_model": args.wma_model,
         "base_model": args.base_model,
-        "consult_api": "SendMessage to the wma session; one response shape (awm-consult-response-v1)",
+        "consult_api": ("SendMessage to the wma session; one response shape (awm-record-response-v1); no advice"
+                        if mode == "record" else
+                        "SendMessage to the wma session; one response shape (awm-consult-response-v1)"),
     }
     if cfg["arm"] in ("traj", "llm") and not cfg["prior_runs_root"]:
         print(f"WARNING: arm {cfg['arm']} without --prior-runs: the WMA has no raw runs to read", file=sys.stderr)
@@ -446,10 +453,54 @@ def _wm_log(args: argparse.Namespace) -> int:
     return 0
 
 
-def _wm_outcome(args: argparse.Namespace) -> int:
-    from awm.wm.consult import record_outcome
+def _wm_record(args: argparse.Namespace) -> int:
+    from awm.wm.record import log_record
 
-    _wm_config(args)
+    cfg = _wm_config(args)
+    response = json.loads(Path(args.response).read_text())
+    request = Path(args.request).read_text() if args.request else ""
+    entry = log_record(_wm_dir(args), response, request=request, model=cfg.get("wma_model"))
+    print(json.dumps(entry, indent=2, default=str))
+    return 0
+
+
+def _wm_snapshot(args: argparse.Namespace) -> int:
+    import shutil
+
+    from awm.wm.schema import WMError, dump_json, inside, load_json, now, sha256_file
+
+    cfg = _wm_config(args)
+    session_dir = Path(cfg["session_dir"]).resolve()
+    dest = _wm_dir(args) / "cards" / args.card / "snapshot"
+    dest.mkdir(parents=True, exist_ok=True)
+    manifest_path = dest / "MANIFEST.json"
+    manifest = load_json(manifest_path, default={"files": []}) if manifest_path.is_file() else {"files": []}
+    for raw in args.paths:
+        src = Path(raw).resolve()
+        if not src.is_file():
+            raise WMError(f"{src} is not a file")
+        if not inside(src, session_dir):
+            raise WMError(f"{src} is outside the session directory {session_dir}")
+        rel = src.relative_to(session_dir)
+        out = dest / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, out)
+        manifest["files"] = [f for f in manifest["files"] if f.get("path") != str(rel)]
+        manifest["files"].append({"path": str(rel), "sha256": sha256_file(src),
+                                  "bytes": src.stat().st_size, "at": now()})
+    dump_json(manifest_path, manifest)
+    print(json.dumps({"card": args.card, "snapshot": str(dest),
+                      "files": [f["path"] for f in manifest["files"]]}, indent=2))
+    return 0
+
+
+def _wm_outcome(args: argparse.Namespace) -> int:
+    cfg = _wm_config(args)
+    if cfg.get("mode") == "record":
+        from awm.wm.record import record_outcome
+    else:
+        from awm.wm.consult import record_outcome
+
     entry = record_outcome(_wm_dir(args), args.card, final_value=args.final, shipped=args.shipped, note=args.note)
     print(json.dumps(entry, indent=2, default=str))
     return 0
@@ -459,6 +510,25 @@ def _wm_status(args: argparse.Namespace) -> int:
     from awm.wm.consult import ConsultLedger
 
     cfg = _wm_config(args)
+    if cfg.get("mode") == "record":
+        from awm.wm.record import RecordLedger, check_sufficiency
+        from awm.wm.schema import load_json
+
+        rows = RecordLedger(_wm_dir(args) / "records.jsonl").rows()
+        by_card: dict[str, list] = {}
+        for r in rows:
+            by_card.setdefault(r.get("card_id", "?"), []).append(r)
+        cards = {}
+        for k, v in by_card.items():
+            card_file = _wm_dir(args) / "cards" / k / "card.json"
+            card = load_json(card_file, default={}) if card_file.is_file() else {}
+            last_stage = next((x.get("stage") for x in reversed(v) if x.get("stage")), None)
+            cards[k] = {"records": len(v), "stage": last_stage,
+                        "missing": check_sufficiency(card, last_stage or "plan") if card else None,
+                        "outcome": next((x.get("final_value") for x in reversed(v) if x.get("event") == "outcome"), None)}
+        print(json.dumps({"mode": "record", "wma_model": cfg.get("wma_model"),
+                          "records": len(rows), "cards": cards}, indent=2, default=str))
+        return 0
     rows = ConsultLedger(_wm_dir(args) / "consults.jsonl").rows()
     by_card: dict[str, list] = {}
     for r in rows:
@@ -606,6 +676,8 @@ def build_parser() -> argparse.ArgumentParser:
     wmc = wm.add_subparsers(dest="cmd", required=True)
 
     wi = wmc.add_parser("init", help="write wm/config.json: which evidence the WMA may read")
+    wi.add_argument("--mode", default="consult", choices=["consult", "record"],
+                    help="consult: the WMA advises; record: the WMA only keeps the reproducible record")
     wi.add_argument("--arm", default="null", choices=["null", "retrieval", "traj", "llm"])
     wi.add_argument("--prior-runs", help="raw prior runs (traj/llm arms)")
     wi.add_argument("--memory-root", help="WMA memory with extracted cards (retrieval/llm arms)")
@@ -643,6 +715,14 @@ def build_parser() -> argparse.ArgumentParser:
     wl = wmc.add_parser("log", help="validate a consult response, lint its citations, append it to wm/consults.jsonl")
     wl.add_argument("--response", required=True, type=Path); wl.add_argument("--request", type=Path)
     wl.set_defaults(func=_wm_log)
+
+    wr = wmc.add_parser("record", help="validate a record response (recorder mode), persist the card, append it to wm/records.jsonl")
+    wr.add_argument("--response", required=True, type=Path); wr.add_argument("--request", type=Path)
+    wr.set_defaults(func=_wm_record)
+
+    wsn = wmc.add_parser("snapshot", help="copy the files a card's command names into wm/cards/<card>/snapshot/, with hashes")
+    wsn.add_argument("--card", required=True); wsn.add_argument("paths", nargs="+")
+    wsn.set_defaults(func=_wm_snapshot)
 
     wo = wmc.add_parser("outcome", help="record what the scientist shipped and scored")
     wo.add_argument("--card", required=True); wo.add_argument("--final", type=float); wo.add_argument("--shipped"); wo.add_argument("--note")
