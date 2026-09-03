@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T04:42:33Z'
+situation:
+  elapsed_h: 6.75
+  remaining_h: 3.25
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.6596, protocol_n: 1319}
+  trigger: 'exp-04 is one epoch over 179k rows and its train loss was still falling (0.298 epoch average, 0.273 at the end). Every avenue that is not "more optimisation" is now measured and closed: format is exhausted (12 of 449 failures are run-on, 437 are wrong numbers), the decode path is already greedy, the grader''s 10-shot prefix already helps rather than hurts (0.756 vs 0.740 on the held-out probe), and a uniform soup of exp-04 with exp-02 scored 0.6588, i.e. no change.'
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_full_tags.json, locator: 'summary.tags', observation: '870 correct, 437 wrong_number, 12 no_answer_marker out of 1319'}
+    - {path: /home/ben/task/logs/exp-04.log, locator: 'final loss lines', observation: 'train_loss 0.2977 for the epoch, 0.2727 at step 2408 - not converged'}
+    - {path: /home/ben/task/eval/soup0402_greedy_full.json, locator: 'accuracy', observation: '0.6588 for the exp-04/exp-02 average vs 0.6596 for exp-04 alone'}
+  alternatives_rejected:
+    - {option: 'A second RFT round sampled from exp-04', reason: 'sampling 40k questions took 52 min and the retrain another 2.6 h; that does not fit in 3.25 h with an eval and the packaging of final_model'}
+    - {option: 'A full second epoch over all 179k rows', reason: '2.6 h leaves no margin before the deadline; 85k rows is the largest subsample that finishes with time to score it and fall back'}
+    - {option: 'Add repetition_penalty to fix the 12 run-on failures', reason: 'at most +0.9 pts if every one of them were fixed, against an unmeasured risk to the 870 that already work; not worth a decode change this late'}
+    - {option: 'Ship exp-04 and stop', reason: 'that stays the fallback - final_model already holds exp-04 - so this run risks nothing but the GPU time'}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: 'exp-04 answers 66% of the full test set correctly; 437 of its 449 failures are a wrong number inside a well-formed chain. Reading them, the model sets up the wrong quantity (train-95 adds the iron nickels'' value back after already counting it), mis-reads which quantity the question asks for (train-220 answers gallons for 600 miles when asked for the extra gallons needed), or substitutes into its own algebra wrongly (train-289 solves 7x+15=301 correctly then evaluates the wrong expression). These are precision failures on problems the corpus already covers, not gaps in coverage.'
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_full_tags.json, locator: 'summary.tags', observation: '437 of 449 failures tagged wrong_number; median completion 308 chars'}
+    - {path: /home/ben/task/analysis/exp-04_probe250.json, locator: 'samples[] correct=false', observation: '61 of 250 held-out train items wrong greedy, all well-formed chains with a wrong final number'}
+  affected_share: 0.97
+  failure_examples:
+    - {id: train-95, source: /home/ben/task/data/dev_heldout250.jsonl, question: 'Alice has 20 quarters. She wants to exchange them for nickels and so she goes to the bank. After getting back from the bank, she discovers that 20% of the nickels are iron nickels worth $3 each. What is the total value of her money now?', gold: '64', model_output: 'the value of the non-iron nickels is $500 - 12 = 488 ... total is 488 + 12 = 490 ... ANSWER: 490', failure: 'works in dollars where it should work in cents and double-counts the iron nickels'}
+    - {id: train-220, source: /home/ben/task/data/dev_heldout250.jsonl, question: "A car uses 20 gallons of gas to travel 400 miles. Mr. Montero's car has 8 gallons in it. How many more gallons of gas does he need to travel 600 miles, back and forth?", gold: '52', model_output: '...he needs 30 - 8 = 22 gallons more to travel 600 miles ... ANSWER: 22', failure: 'ignores "back and forth", so it solves for 600 miles instead of 1200'}
+    - {id: train-289, source: /home/ben/task/data/dev_heldout250.jsonl, question: 'Jim collects model cars, and he has 301 models total. Jim has 4 times as many Buicks as Fords, and 3 more than twice the number of Fords than Chevys. How many Buicks does Jim have?', gold: '220', model_output: 'x=40 ... So Jim has 4(2*40+3)=320 Buicks ... ANSWER: 320', failure: 'sets up and solves the equation correctly, then substitutes into the wrong expression'}
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_watch.jsonl
+    n: 61
+    selection: 'every held-out GSM8K train item exp-04 gets wrong under greedy decoding (61 of 250, analysis/exp-04_probe250.json)'
+hypothesis:
+  claim: 'A second pass from exp-04 over an 85k-row uniform subsample of the same corpus, with a fresh cosine schedule at lr 5e-6, raises full-test accuracy above exp-04''s 0.6596.'
+  mechanism: 'exp-04 stopped with its loss still falling, so the corpus is not yet fit. A second pass at half the learning rate continues descending on data it has already seen once, which sharpens the step-by-step precision that the wrong_number failures lack, without introducing new distribution the model would have to absorb from scratch.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: '+1 to +3 pts on the full 1319-item test set'
+  falsified_if: 'full-test accuracy at or below exp-04''s 0.6596, or the held-out probe below 0.756 - either would mean the second pass is fitting the corpus rather than the task, and exp-04 ships.'
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4_sub85k.jsonl
+      source: 'derived:exp-04 - a uniform 85000-row subsample (seed 1) of data/sft_v4.jsonl, which is openai/gsm8k train + OpenMathInstruct-2 GSM + MetaMathQA GSM + exp-02 rejection samples'
+      n_examples: 85000
+      built_by: /home/ben/task/scripts/mix_data.py
+      build_command: [python, '-c', "random.Random(1).sample(open('data/sft_v4.jsonl').readlines(), 85000)"]
+      selection: 'uniform subsample without replacement, so the mixture proportions of sft_v4 are preserved (augmented_gsm8k 30150, rft:omi 21843, metamath:GSM_Rephrased 11104, gsm8k_train 10296, rft:gsm8ktrain 5087, gsm8k 3557, metamath:GSM_SV 1940, metamath:GSM_FOBAR 1023)'
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: 'transformers 4.57.3 Trainer with a custom token-budget batch sampler'
+    peft: 'none (full fine-tune of the language model; vision_tower and multi_modal_projector frozen)'
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 8192, grad_accum: 4, max_seq_len: 2816, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 1}
+    target_format: 'step-by-step reasoning, blank line, "ANSWER: <int>", then <end_of_turn>; prompt rendered with templates/gemma3.jinja and inspect_evals'' MATH_PROMPT_TEMPLATE; 5% of rows carry the grader''s exact 10-shot system message'
+    stop_token: '<end_of_turn>'
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, -u, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, data/sft_v4_sub85k.jsonl, --out, /home/ben/task/ckpts/exp-05, --lr, '5e-6', --epochs, '1', --max-seq-len, '2816', --fewshot-frac, '0.05', --token-budget, '8192', --grad-accum, '4', --warmup, '0.02', --seed, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.25}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '16', --gpu-memory-utilization, '0.8']
+    dev_set: 'official --limit 1319 (the whole openai/gsm8k test split via inspect_evals/gsm8k, fewshot=10 seed=42), scored after scripts/set_decode_config.py --mode greedy'
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.6596
+    path: /home/ben/task/eval/exp-04_greedy_full.json
+  diagnostic:
+    what: 'greedy accuracy on the 250 held-out GSM8K train items (scripts/probe.py) against exp-04''s 0.756 - an independent set, so it says whether any full-test move is a real weight improvement'
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: failed
+  wall_h: 1.26
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: 0.271, steps: 1142, notes: 'training itself completed: 1142/1142 steps in 1:12:29, train_loss 0.2713 against exp-04''s 0.2977, so the second pass was descending as predicted. The weights were then lost at save time.'}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: 'never scored - no checkpoint was written'}
+  watch_set_result: {fixed: 0, still_failing: 61, regressions: null, path: /home/ben/task/analysis/exp-04_watch.jsonl}
+  failure: |
+    File "/home/ben/task/scripts/train_sft.py", line 204, in main
+        trainer.save_model(final)
+      ...
+      File "transformers/generation/configuration_utils.py", line 684, in validate
+        raise ValueError("GenerationConfig is invalid: \n" + info_message)
+    ValueError: GenerationConfig is invalid:
+    - `temperature`: `do_sample` is set to `False`. However, `temperature` is set to `0.0` -- this flag is only used in sample-based generation modes.
+    - `top_k`: `do_sample` is set to `False`. However, `top_k` is set to `0` -- this flag is only used in sample-based generation modes.
+    Only config.json reached ckpts/exp-05/final; the safetensors were never written.
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: 'Trained to completion (loss 0.2977 -> 0.2713) and then threw away the weights: the parent checkpoint carried the greedy generation_config exp-03 introduced, and GenerationConfig.validate(strict=True) refuses to serialise do_sample=False alongside temperature 0.0, so trainer.save_model raised after writing only config.json. The hypothesis was never tested.'
+  decision: iterate
+  next_step: 'train_sft.py now resets the in-memory generation config to HF defaults before saving and writes the greedy values back as plain JSON afterwards, so this cannot recur. exp-06 reruns the same intervention on 55k rows - the largest subsample that fits the 1.9 h left with an eval and a fallback.'
