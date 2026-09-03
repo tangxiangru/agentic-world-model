@@ -133,12 +133,6 @@ verifier tier and the minutes it costs:
   200 steps on a 500-row subset first"; "LoRA with `modules_to_save` given
   1.5 h left").
 
-The first precondition is the single highest-value action: give its tier and
-minutes, an explicit pass/fail observation, and which of L0–L3 it would change.
-Order any remaining suggestions after it. If no affordable action could change
-the verdict, leave `preconditions` empty rather than leading with generic
-advice — `lock` surfaces this first item to the scientist.
-
 Not a new direction: "try DPO instead" on an SFT card is outside your role.
 
 ## Out of scope

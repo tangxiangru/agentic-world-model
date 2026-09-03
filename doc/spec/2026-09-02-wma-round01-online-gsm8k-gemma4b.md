@@ -339,6 +339,22 @@ precondition` 与 verdict 路径;结果(delivered / failed / timeout / not_attac
 排根因、逐条预注册单改动候选)与 `tools/wma-rca/`(`cells.py` / `uptake.py` / `verdicts.py` /
 `timeline.py`,Round 01 的关键数字已用它复现)。
 
+## 2026-09-03 08:5x UTC:Round 03 独立补货候选 E/F
+
+safe PENDING 降到 17,而一整波 16 slot turnover 会破坏用户的 >8 硬下限。基于已闭合、
+不依赖 Round 02 outcome 的 Round 01 RCA,预注册两个各 4-cell 的单编辑 skill 候选:
+
+- E `l3-evidence`:commit `5c266f2327c116a4e63aca48395141276ad9345d`,hash
+  `20c8837ab7a4`;C3/C4 的 L3 `yes` 必须有可高于 noise floor 的效果证据且没有未做的
+  C2/C5 cheaper discriminator,否则 defer。主指标是 L3 分布、saved/wrongly-killed GPU-h。
+- F `decisive-precondition`:commit `a7e4d0fb547044f2641fe7da952ec7565b676e49`,hash
+  `959fbdd5bbb2`;第一条 precondition 必须是单一最高价值、带 pass/fail 与 changed level
+  的动作。主指标是 lock 展示的第一动作 uptake 与下游实际行动率。
+
+两者 public `awm.sha=ae46724`,各 repeats 4(`w11/w12 r01..04`),其余合同与 lock-gated
+Round 02 相同,共享 w10 v0.2 baseline。E/F 不从 Round 02 结果选择,不改变其 denominator;
+只有 compliance ≥0.8 后读效果,leak=0,cost≤1.5×,PTB 不低于 baseline spread。
+
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
 1. **不走 pilot。** manifest 不带 `pilot` 块,queue entry 一律 `pilot: null`,直接以
