@@ -290,6 +290,12 @@ launcher 必须把这些路径从指定 SHA materialize 到共享
 Slurm user hold 提交并登记；只有 `OWNERSHIP OK`、逐 job 冻结节点复核通过且原生 reservation /
 partition / QoS 隔离恢复后才 release。
 
+2026-09-03 09:39 UTC，ondem-1 的 drain 由集群侧清除后，用户明确要求立即占用。对 Round 01
+strict replacement jobs 90791–90798，用户把 `OWNERSHIP OK` + receipt/job 逐项冻结到
+`slurm2-a3nodesetondem-[0-1]` + registry 的非借用节点边界接受为本次“等价隔离”，即使底层
+reservation 仍是共享的 11-node reservation。这个决定只放行该 8-cell block，不自动打开 Round 02
+或其它 held block；apply 前任何 ownership、hold、ReqNodeList 漂移都必须中止。
+
 开始 Round 00 前必须全部满足：
 
 - high-effort AWM scaffold 门通过；

@@ -66,6 +66,16 @@ batch/cell identity 与 `run_index: 2`，作为 strict-site replacements。队�
 4. 原生两节点 reservation/partition 或等价的 16-GPU 隔离已经恢复，不能只相信一次性的
    `ReqNodeList` 检查。
 
+### 2026-09-03 09:39 UTC 用户放行决定
+
+ondem-1 的 `SlurmdSpoolDir is full` drain 已由集群侧清除，节点重新可调度。底层
+`robtang-ptb-a3` reservation 仍覆盖 11 个节点，但用户明确要求立即占用 ondem-1；对本 strict
+replacement block，以下四项合在一起由用户接受为第 4 项的“等价隔离”：registry 为
+`OWNERSHIP OK`、8/8 jobs 仍为 `PENDING(JobHeldUser)`、每个 job 与 receipt 都冻结到
+`slurm2-a3nodesetondem-[0-1]`、节点 0–1 正是本 subqueue 的 registry 边界。operator 因此只释放
+jobs 90791–90798；原 wave 的 6 个 `launch_failed_requeued_held` jobs 90649–90654 不动，Round 02
+也不随之放行。若任何 job 的节点约束或 ownership 在 apply 前变化，整次 release 停止。
+
 任何失败、取消、超时或错误终结的首波/补跑 cell 都要收割。validator-complete 的
 placement-only 结果保留在 sensitivity；不完整结果作为 truncated/failed evidence。是否再补
 取决于 primary 每个 variant 至少两个有效重复和 matched-arm 平衡，补跑永远使用新的 immutable
