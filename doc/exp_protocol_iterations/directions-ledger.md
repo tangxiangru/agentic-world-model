@@ -27,6 +27,10 @@
 | 17 | **stop-token ownership / raw-field false check** | old 3 cells；NEW p00r12 latent double append、p00r14 5 overrides、p00r15 wrong-raw-field repair | 3 NEW manifestations，structural evidence；score harm未证明 | **排队（I）** | optional `appended_by` + rendered-row check；exercised RFT 评估后再排 wave |
 | 18 | **trajectory weight averaging / soup** | p00r15 +4.5@200 且 0.734@500；p00r11/p00r13/p00r07 contradicted | 效果混合，p00r15 4-way 又是 post-hoc best-of-four | **观察（配方，非 protocol）** | 再现时预注册 checkpoint set/权重并用 ≥500；不把“跑 soup”写进 protocol |
 | 19 | **同 artifact vLLM repeat variance** | p00r13 full 0.7051–0.7142，c01r02 identical full 差 0.46 pp，p00r09 同类 | sub-1pp 单次读与卡片 delta 同量级 | **观察，归入 C screen** | ≤1 pp/≤1 SE 用 paired/repeated；C 失败才改 wording |
+| 20 | **RFT/STaR 从已拟合的父 checkpoint 出发是空操作**：首步 loss ≈ 父模型末 loss、跑完等于父模型 | p00r13 exp-04（3.1 h，McNemar p=0.49）、p00r15 exp-06（L9518，1.1 h，0.271→0.274）、p00r06 exp-05、p00r11 exp-08（第二轮 −3.1 pp）、c01r02（2.3 h，−0.4） | 两窗口 5 个 cell、约 9 h；日志首 20 步可见的失败签名，不是方法指令 | **排队（P1，Fable window 02）** | pitfalls 条目 `rft_from_fitted_parent`（check: null）；screen 读 rft 卡里首步 loss 平坦仍跑完的小时数 <0.5 h/cell；guardrail 仍要 ≥1/4 cell 尝试 RFT |
+| 21 | **Gemma-3 262k 词表 logits OOM + `pip install liger-kernel` 撑满 64 MB overlay** | 本波 8/8（p00r11 0.3 h、p00r12 0.1、p00r13 0.08、p00r14 0.10、p00r15 0.05、c01r01 0.15、c01r02 0.1、c01r03 0.05）；w01 p00r02/p00r03/p00r10/c00r08 | ≥20/24 cell，每个 0.05–0.3 h；两臂均摊，不解释分差 | **排队（P2，entry-only，与 P3 同一 commit）** | pitfalls 条目 `gemma3_logits_memory`；目标 OOM+装包小时 <0.05 h 在 ≥3/4；不单占 screen slot |
+| 22 | **Trainer 保存的 Gemma-3 checkpoint 缺 processor/tokenizer 文件，vLLM 拒载** | p00r14 L3628（0.15 h）、p00r11 checkpoint-702（0.15 h）、p00r01 L3986（w01）；p00r15 L3256 事先复制 | 3 cell 付费、1 cell 预防；一行 guidance 能覆盖 | **排队（P3，并入 `final_model_not_loadable`）** | 目标：自家 checkpoint 的 vLLM 加载失败在 `pitfalls_hit` 里为 0（4/4） |
+| 23 | **结束时按『最后一次运行的配置』而非『最小可改变决策的运行』定价剩余时间** | p00r11 exp-09（说 ~1 h，自身 RFT 周期 22 min）、p00r13 exp-06（2.2 h = 两 epoch）、p00r12 exp-09（余 3:05）、p00r15；w01 p00r05（余 3.7 h）、p00r10 | protocol ≥1.8 h 未用 6/14，control 1/10；按晚期边际收益约值 1 分 | **排队（P4，规则 8 措辞；在 D 与 A 的小时读数之后）** | 目标：余 ≥1.5 h 且无进程的 cell ≤1/4，且最后一次 `alternatives_rejected` 引用实测成本；是 #16 framing 的具体化 |
 
 ## 二、决策日志
 
@@ -46,6 +50,7 @@
 | 09-03 02:27 | **按 trace review 改写 A/B/C（v2，旧 held job 撤回），新增第二波 D、E、H + 漂移对 B，全部 held** | 保持 A/B/C v1 原样；把 D 并入 A；把 F/G 也排进第二波 | synthesis 的证据：A 的关键是怎么核实；B 的来源写错了；C 的示例卡本身在教 n=150；D 五个 cell 5.4 h；E 两个 cell 2.5 h 空转；H 7/9 伪造。F/G 是配方知识或针对信念的测试，证据面窄，先排队 | round02 spec §六、`2f64581` 前的六个 commit |
 | 09-03 02:38 | **两个 drift pair 改 ship `2f64581`；已登记的旧 drift A 整块撤回并以 v2 替代** | 继续用 `4ae3d87`，只因 protocol_tree 相同 | 候选与 `2f64581` 的六个 shipped paths 仅差单项；与 `4ae3d87` 还差共同的 `awm/exp_protocol/collect.py` 基础设施。单 manifest check 不证明跨变体同代 | round02 spec §六、round-00 trace-review provenance addendum |
 | 09-03 08:12 | **Window 02 不改 protocol；A/B/C/D/E/H 保持冻结，C 加 paired/repeated screen observable，G/I 排队** | 立即改写 C；把 G/I 加第三波；按 recipe 差直接写数据/RL 规则 | 8-cell synthesis 无全新方向；现有 C 已覆盖 sub-SE paired 条件，先用 screen 检验。Recipe 差不是 protocol surface；held pool 52，无需扩波 | Window 02 synthesis、Round 00 Analysis window 02 decision |
+| 09-03 08:17 | **Fable 平行 window 02 review 落盘**（`2026-09-03-trace-review-round00-window02-fable.md` + 8 份 report）；同意本窗口不改 protocol；新增排队方向 #20–#23；向 planner 提出 A v2 指标饱和（baseline 5/5 greedy，改读『首个 post-SFT eval 到有测量依据的解码选择』的小时数）、E 在 baseline 已达标（5/5 idle <0.15 h）无法区分、D 按小时/cell 优先级应高于 A | 直接改 A/E 的 manifest；把 P1–P4 立即建 screen | 冻结的 screen 由 planner 定；held 池 52 已满，先把证据与指标问题写清 | 本行；PR #20 评论 |
 
 ## 三、这份台账之外还没写下来的
 
