@@ -1,0 +1,98 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T10:50:00Z'
+situation:
+  elapsed_h: 3.8
+  remaining_h: 6.2
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-e2
+    score: {metric: accuracy, value: 0.725, protocol_n: 200}
+  trigger: "exp-04 solved formatting (98% of completions are well-formed and terminated) so the whole residual 27.5% is solve-rate, and every chain it has ever been trained on was written by Llama-3.1-405B, i.e. off-policy. Sampling exp-04-e2 itself at T=1.0 on 19,973 training problems produced 69,107/79,892 verifiably correct solutions (86.5%) in 25 minutes -- a large pool of on-policy, answer-verified data that costs no external model."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04-e2_diag.json, locator: "accuracy=0.725, last_line_is_answer=0.98", observation: "format solved; residual error is solve-rate"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "final [rft] line", observation: "generations=79892 correct=69107 (0.865) kept=37949 problems_covered=19386/19973"}
+  alternatives_rejected:
+    - {option: "Retrain from the base model on 142k + 38k RFT rows", reason: "~3 h on this GPU; only 6.2 h remain and a full-test eval plus packaging must fit"}
+    - {option: "Scale the SFT corpus instead (train_2M has 282k gsm8k-derived rows, already downloaded)", reason: "kept as the fallback if RFT does not pay; on-policy data is the intervention exp-04 has never had, plain scaling is the one it has already had twice"}
+    - {option: "RFT on the RFT data alone, no replay", reason: "37,949 rows drawn from 19,386 problems is a narrower distribution than the 70,828-problem corpus; 20,000 replay rows guard against narrowing"}
+    - {option: "DPO/GRPO on correct-vs-incorrect pairs", reason: "no preference-training harness is set up and 6.2 h is not enough to build and debug one"}
+  pitfalls_hit:
+    - {what: "Trainer's save_only_model checkpoints contain no tokenizer, so vLLM could not load checkpoint-2218", cost_h: 0.05, fix: "copy tokenizer.* / *_config.json from the run root into the checkpoint dir before converting"}
+  smoke_runs: []
+problem:
+  statement: "The incumbent gets 27.5% of dev-200 wrong, and every wrong item is a well-formed chain with a wrong plan or wrong arithmetic. It has only ever imitated another model's solutions, so nothing in its training has reinforced the specific chains it is itself able to produce correctly."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04-e2_diag.json, locator: "accuracy=0.725, stop_share=0.98, last_line_is_answer=0.98", observation: "27.5% wrong with 98% well-formed output: the failure is reasoning, not format"}
+    - {path: /home/ben/task/eval/exp-04-e1.json, locator: "accuracy", observation: "0.675 after one epoch vs 0.725 after two: plain scaling of the same off-policy corpus is still paying, but at a decreasing rate"}
+  affected_share: 0.275
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continued training of exp-04 on its own answer-verified samples (37,949 rows over 19,386 GSM8K-train and augmented-train problems) mixed with 20,000 replay rows from the original corpus raises greedy dev-200 accuracy above the incumbent's 0.725."
+  mechanism: "Rejection sampling keeps only chains the model can actually produce and that reach the reference answer, so the gradient sharpens the modes it already half-knows instead of pulling it toward a 405B model's phrasing. The answer filter also removes the arithmetic slips that off-policy imitation cannot detect."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+2 to +6 pts"}
+  falsified_if: "greedy dev-200 accuracy is at or below 0.725, or the stop/format share falls below 0.96 (which would mean the narrower on-policy distribution cost generality)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix.jsonl
+      source: "synthetic:self (exp-04-e2 samples, answer-verified) + derived:exp-04 replay from data/sft_all.jsonl"
+      n_examples: 57949
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04-e2, --out, data/rft_round1.jsonl, --k, '4', --temperature, '1.0', --top-p, '0.95', --max-tokens, '512', --n-aug, '12500', --max-keep-per-problem, '2', --seed, '0']
+      selection: "Problems: all 7473 GSM8K *train* questions (gold answers) + 12,500 distinct OpenMathInstruct-2 augmented_gsm8k problems (majority-vote answers). k=4 samples each at T=1.0/top_p 0.95, max 512 tokens. A sample is kept only if it contains exactly one 'ANSWER:' marker, that marker is the last line, and its integer equals the reference answer; then exact-text dedup and at most 2 kept per problem. 37,949 RFT rows + 20,000 rows sampled (seed 1) from data/sft_all.jsonl as replay, shuffled together."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2"
+    peft: "none (full fine-tune of the 3.88B text stack; vision tower and projector frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 2.0, batch_size: 64, grad_accum: 1, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master + bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "unchanged from exp-04: chain, blank line, 'ANSWER: {int}', <end_of_turn>; loss on completion + terminator only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-04, --data, data/rft_mix.jsonl, --out, /home/ben/task/ckpts/exp-05, --lr, '1e-5', --epochs, '2', --bs, '64', --grad-accum, '1', --max-seq-len, '1024', --seed, '0', --save-steps, '906']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints: {every_steps: 906, keep: all}
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 200 (first 200 items of the gsm8k test split in inspect_evals order); bf16 + greedy generation_config.json, exactly as exp-03 and exp-04 were scored"
+    n: 200
+    seed: null
+  comparator: {ref: exp-04, value: 0.725, path: /home/ben/task/eval/exp-04-e2.json}
+  diagnostic: {what: "share of completions that end with a stop token", n: 200, metric: accuracy, direction: higher}
+result:
+  execution: completed
+  wall_h: 0.97
+  output_checkpoint: /home/ben/task/ckpts/exp-05-e2
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-906, step: 906}
+    - {path: /home/ben/task/ckpts/exp-05, step: 1810}
+    - {path: /home/ben/task/ckpts/exp-05-e2, step: 1810}
+  training_summary: {final_loss: null, steps: 1810, notes: "train_loss 0.1359; 33.4 samples/s, 3470 s wall. Loss is well below exp-04's 0.254 because the targets are the model's own samples."}
+  measurements:
+    - {metric: accuracy, value: 0.76, n: 200, path: /home/ben/task/eval/exp-05-e2.json, delta_vs_comparator: 0.035}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-05-e2_diag.json
+    notes: "stop_share 0.98 -> 1.00 and last-line format 0.98 -> 1.00: every one of the 200 completions terminated with a well-formed 'ANSWER: <n>' line. Scored accuracy and first-answer accuracy are now identical (0.760 both), so no accuracy is being lost to output shape at all."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy dev-200 0.725 -> 0.760 (+3.5 pts) from one round of answer-verified self-sampling plus replay. The +3.5 is about one standard error of the difference so the point estimate is soft, but the diagnostic is not: format and termination went to 1.000 and stayed there, and the generality guard (replay) held."
+  decision: adopt
+  next_step: "exp-06: exp-05 has still only seen 141,953 of the ~282,000 gsm8k-derived rows in OpenMathInstruct-2. Train one epoch from exp-05 on the 137,927 rows it has never seen (built and contamination-checked as data/sft_fresh.jsonl) mixed with the RFT rows so the on-policy signal is not undone. Then pick between exp-05 and exp-06 at n=500, where a 3-point difference is resolvable."

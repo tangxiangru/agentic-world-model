@@ -1,0 +1,123 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T07:28:12Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.35
+  remaining_h: 9.6
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Batch start: no measurement of the frozen base checkpoint exists under the grader's protocol, so no later card can have a valid comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty index, 0 cards"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and compare SFT runs to a published gemma-3-4b-pt GSM8K number", reason: "rule 2: a comparator must be measured under this protocol (10-shot inspect_evals harness, --limit 150); published numbers use different harnesses"}
+    - {option: "Baseline at --limit 1319 (full test)", reason: "~9x the wall clock of limit 150 at the start of a 10 h budget; 150 is the harness default and is the protocol every later card will use"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/eval_format.py], outcome: "hand-rolled renderer reproduces templates/gemma3.jinja byte-for-byte (MATCH: True); 10-shot system prefix = 2043 tokens, full eval prompt = 2163 tokens, zero-shot = 119"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained (non-instruction-tuned) checkpoint. Its GSM8K accuracy under the grader's protocol is unknown, and so is whether it terminates its turn at all: the grader stops on eos_token_id [1, 106] (<eos>, <end_of_turn>) but a -pt checkpoint has never been trained to emit <end_of_turn>, while match(numeric=True, location='end') reads the LAST number in the completion, so a model that runs on past its answer scores 0 on items it actually solved."
+  evidence:
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json, locator: "eos_token_id", observation: "[1, 106] -- vLLM will stop on <end_of_turn> (106) if the model ever emits it"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py, locator: "match_str location=end, lines 60-72", observation: "grader reverses the whitespace-split completion and takes the first numeric-looking token: the last number in the output must be the answer"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "gsm8k(fewshot=10, fewshot_seed=42)", observation: "grading is 10-shot; demos end with 'ANSWER: N' and carry GSM8K <<calc>> annotations"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/dev_trainholdout300.jsonl
+    n: 300
+    selection: "300 items sampled (seed 1234) from the GSM8K TRAIN split and permanently excluded from every training set in this batch (ids in /home/ben/task/data/train_holdout_ids.json). Used as the private probe set; no benchmark test item is in it."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Measuring the frozen base checkpoint under the grader's exact protocol establishes the floor every later card is compared against, and shows whether the untuned model terminates its turn (share of completions that hit max_tokens instead of a stop token)."
+  mechanism: "The 10-shot prefix ends each demo with 'ANSWER: N', so an in-context-learning-capable pretrained model may imitate the format; but nothing trains it to emit <end_of_turn>, so it may instead continue with a fabricated 11th problem, whose numbers the last-number grader would then read."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "none expected -- this measures the comparator itself, it is not an intervention"
+  falsified_if: "The eval produces no score (harness/OOM failure), or the base checkpoint already scores >0.80 while cleanly emitting <end_of_turn>, which would mean this is not the pretrained checkpoint described."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/datasets/openai___gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866/gsm8k-test.arrow
+      source: openai/gsm8k
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "the grader's own input: inspect_evals/gsm8k test split, first 150 items (--limit 150). No training happens in this card."
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: other
+    framework: inspect-ai + vllm 0.11.0
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "no training; measurement only"
+    stop_token: null
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-01_base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions that end without a stop token (length-capped at max_tokens=4000), i.e. the eos_mismatch symptom"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.07
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.08, n: 150, path: /home/ben/task/eval/exp-01_base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.5
+    path: /home/ben/task/eval/exp-01_base_dev150_inspect.json
+    notes: "75 of 150 completions hit max_tokens=4000 without emitting a stop token; the other 75 stopped. Accuracy splits 0.053 (max_tokens) vs 0.107 (stop). stderr 0.0222. Decoding was SAMPLED, not greedy: the base generation_config carries top_k 64 / top_p 0.95 and no temperature, so vLLM used temperature 1.0."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/data/dev_trainholdout300.jsonl}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base gemma-3-4b-pt scores 0.080 +/- 0.022 on the 150-item protocol. The predicted eos failure is real and large: exactly half the completions run to the 4000-token cap without a stop token, and those score 0.053 against 0.107 for the ones that stop. The failures that do stop are format/arithmetic failures (e.g. an answer emitted as '22/25' where the grader needs a bare integer)."
+  decision: iterate
+  next_step: "SFT on GSM8K-train-derived data whose every target ends in 'ANSWER: <integer><end_of_turn>' -- this fixes both halves of the failure at once. Two decode facts must be carried forward: (1) every later eval must use --max-connections 16 to stay comparable to this one; (2) the base generation_config makes this a sampled read, so a checkpoint saved with a greedy generation_config is not decode-comparable to this baseline and needs its own controlled comparison."

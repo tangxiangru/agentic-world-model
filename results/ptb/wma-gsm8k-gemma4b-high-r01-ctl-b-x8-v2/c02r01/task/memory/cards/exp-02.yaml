@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T07:07:09Z'
+situation:
+  elapsed_h: 0.35
+  remaining_h: 9.65
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.06, protocol_n: 200}
+  trigger: "exp-01 diagnostic: 52% of base completions never emit a stop token and keep inventing new problems after answering, and the scorer reads the LAST number, so even correct chains score wrong (analysis/exp-01_diag.json: 0.060 scored vs 0.115 at the first ANSWER line)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "scored_accuracy=0.06, acc_at_first_answer=0.115, stop_share=0.48"}
+  alternatives_rejected:
+    - {option: "Go straight to the full 142k-row corpus (~1.9 h of GPU)", reason: "the train prompt is zero-shot while the grader prompts 10-shot; if that mismatch breaks the format the whole 1.9 h is wasted. A 12-minute pilot on 15k rows buys that answer for ~1/10 the cost."}
+    - {option: "LoRA instead of full fine-tuning", reason: "full FT fits: fp32 master weights + bf16 autocast + 8-bit Adam + grad checkpointing peaks well under 80 GB at bs=64, measured in the smoke runs below"}
+    - {option: "Pure-bf16 weights (cheaper, faster)", reason: "bf16 half-ulp at |w|~0.02 is ~4e-5, larger than an Adam step at lr 1e-5, so most updates would round to zero; fp32 master weights are required"}
+    - {option: "Train with the grader's 10-shot prefix in every row", reason: "the prefix is ~1700 tokens, which would multiply token cost ~6x for prompt tokens that carry no loss"}
+  pitfalls_hit:
+    - {what: "bs=16 without gradient checkpointing OOMs at 79.1/79.2 GiB", cost_h: 0.05, fix: "keep gradient checkpointing on; bs=64 with checkpointing is both feasible and 2.4x faster than bs=8 (8.7 -> 20.9 samples/s)"}
+    - {what: "`pip` is not on PATH in this image", cost_h: 0.02, fix: "use `uv pip install --system`"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --dry-run, --data, data/sft_all.jsonl, --max-seq-len, '1024'], outcome: "0 prefix mismatches, 0 rows with zero loss tokens, 0 rows not ending in <end_of_turn>, token length p50=317 p95=499 max=1196, 0.175% of rows over 1024"}
+    - {command: [python, scripts/train_sft.py, --max-steps, '12', --bs, '8', --grad-accum, '4'], outcome: "runs, loss 0.47, 8.7 samples/s"}
+    - {command: [python, scripts/train_sft.py, --max-steps, '6', --bs, '64', --grad-accum, '1'], outcome: "runs, 20.9 samples/s, fits in 80 GB"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_all.jsonl], outcome: "141953 documents scanned, 0 contaminated, exit 0 (run as 14 parallel chunks)"}
+problem:
+  statement: "The base model has two separable defects on GSM8K: (a) it does not terminate -- 52% of completions run to the 4000-token cap, appending self-invented problems after a correct answer, which the location=end scorer then reads as the answer; (b) its actual solve rate is low even when read at the first answer line (0.115). Neither is addressed by anything in the current model."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "whole file", observation: "scored 0.060, first-answer 0.115, stop_share 0.48 over the dev-200 protocol"}
+    - {path: /home/ben/task/eval/exp-01_base_n200.json, locator: "accuracy", observation: "0.06 +/- 0.0168"}
+  affected_share: 0.52
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Completion-only SFT on GSM8K-train-derived chain-of-thought data, rendered through the grader's own templates/gemma3.jinja with every target ending 'ANSWER: <int>' + <end_of_turn>, raises dev-200 accuracy above the base model's 0.060."
+  mechanism: "Every training target terminates with <end_of_turn>, which is in the model's eos set, so the model learns to stop right after the answer; that alone converts the correct-then-ramble failures. The chains themselves are Llama-3.1-405B solutions to GSM8K-train problems, which should also lift the underlying solve rate."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+30 to +50 points; the pilot is deliberately small (15k rows) so the number is a floor, not the ceiling"
+  falsified_if: "dev-200 accuracy is at or below 0.115 (the base model's first-answer ceiling), or the share of completions ending in a stop token stays below 0.9 -- either would mean the zero-shot-trained format does not survive the grader's 10-shot prefix."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_pilot15k.jsonl
+      source: "derived: openai/gsm8k split=train + nvidia/OpenMathInstruct-2 split=train_1M rev 469216e3f46f4dacf476b382e192485ea51a143e (problem_source in {gsm8k, augmented_gsm8k} only)"
+      n_examples: 15000
+      built_by: /home/ben/task/scripts/prepare_data.py
+      build_command: [python, scripts/prepare_data.py, --out, data/sft_all.jsonl, --max-per-problem, '4']
+      selection: "GSM8K *train* split only (the test split is never read). boxed answers unwrapped, <<calc>> annotations stripped, expected_answer required to be a plain integer, exact (problem, solution) dedup, at most 4 solutions per problem, shuffled seed 0; first 15000 rows of the shuffled file taken for the pilot."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2"
+    peft: "none (full fine-tune of the 3.88B text stack; the 0.42B vision tower and multimodal projector are frozen)"
+    hyperparams: {lr: 2.0e-5, epochs: 1.0, batch_size: 64, grad_accum: 1, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master + bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "<bos><start_of_turn>user\\n{grader MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: {int}<end_of_turn>; loss on the completion and the terminating <end_of_turn> only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/sft_pilot15k.jsonl, --out, /home/ben/task/ckpts/exp-02, --lr, '2e-5', --epochs, '1', --bs, '64', --grad-accum, '1', --max-seq-len, '1024', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.35}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 200 (first 200 items of the gsm8k test split in inspect_evals order)"
+    n: 200
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.06
+    path: /home/ben/task/eval/exp-01_base_n200.json
+  diagnostic:
+    what: "share of completions that end with a stop token rather than hitting the 4000-token cap"
+    n: 200
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/ckpts/exp-02-bf16
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02, step: 235}
+    - {path: /home/ben/task/ckpts/exp-02-bf16, step: 235}
+  training_summary: {final_loss: 0.2949, steps: 235, notes: "train_loss 0.351 over the run, 0.472 -> 0.295; 32.97 samples/s (454 s for 15k rows), so the full 142k corpus costs ~1.2 h/epoch. Trainer saves fp32 (17 GB); scripts/to_bf16.py re-saves bf16 (8.6 GB) for vLLM."}
+  measurements:
+    - {metric: accuracy, value: 0.465, n: 200, path: /home/ben/task/eval/exp-02_n200.json, delta_vs_comparator: 0.405}
+  diagnostic_result:
+    value: 0.92
+    path: /home/ben/task/analysis/exp-02_diag.json
+    notes: "stop_share 0.48 -> 0.92; last line is a well-formed 'ANSWER: <n>' in 92.5%; accuracy read at the first ANSWER line is 0.460 vs 0.465 scored, i.e. the correct-then-ramble loss is essentially gone. The 16 remaining non-stopping samples all answer correctly and then restart the solution instead of emitting <end_of_turn> -- a T=1.0 sampling artefact, not a format defect."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-200 0.060 -> 0.465 (+40.5 pts) from 15k rows and 7.6 minutes of GPU. The mechanism is confirmed on both halves: stopping went 0.48 -> 0.92 and the gap between scored accuracy and first-answer accuracy closed from 5.5 pts to -0.5 pts, while the underlying solve rate went 0.115 -> 0.46."
+  decision: adopt
+  next_step: "Two independent follow-ups. (1) exp-03: the grader takes its default sampling params from the checkpoint's own generation_config.json (top_k 64, top_p 0.95, T=1.0); making the checkpoint greedy is a zero-training-cost change and should recover both the sampling noise and the 16 non-stopping samples. (2) exp-04: same recipe on the full 141,953-row corpus (~1.2 h/epoch) -- 15k rows is 10% of the available data."

@@ -1,0 +1,112 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T16:12:00Z'
+situation:
+  elapsed_h: 8.9
+  remaining_h: 1.1
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.738, protocol_n: 500}
+  trigger: "final_model/ was just overwritten with exp-06's weights. Every number in this session was measured on ckpts/..., never on the directory the grader will actually load, and the pitfall catalogue's costliest entry (final_model_not_loadable) is exactly that gap."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-06.yaml
+      locator: "conclusion.next_step - final_model/ now holds this checkpoint"
+    - path: /home/ben/task/skills/exp_protocol/pitfalls.yaml
+      locator: "final_model_not_loadable"
+  alternatives_rejected:
+    - option: "Trust the CPU load check and the md5 identity with ckpts/exp-06 and stop"
+      reason: "those cover the weights and the transformers path, but not evaluate.py's model_type() fallback: the string 'final_model' contains none of qwen/llama/gemma/smollm, so the template is chosen by reading config.json instead - a path no eval in this session has exercised"
+    - option: "Verify at n=500 for a tighter number"
+      reason: "13 min against 1.1 h left, and this card is a packaging check, not a measurement; n=150 separates 'works' from 'broken' at a glance"
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, -c, "md5 the two safetensors shards in final_model against ckpts/exp-06"]
+      outcome: "both identical - the shipped weights are the evaluated weights"
+    - command: [python, -c, "GenerationConfig+AutoTokenizer+Gemma3ForConditionalGeneration.from_pretrained('final_model', device_map=cpu)"]
+      outcome: "loads clean from a fresh process: 4.30B params, architectures ['Gemma3ForConditionalGeneration'], greedy generation_config"
+problem:
+  statement: "The deliverable is the directory final_model/, and no end-to-end grading run has ever been pointed at it. A missing tokenizer file, a template routed by the wrong branch of model_type(), or a generation_config the vllm server rejects would all show up only at grading time, when it is too late."
+  evidence:
+    - path: /home/ben/task/evaluate.py
+      locator: "model_type(), lines 98-120"
+      observation: "with no model-name keyword in the path it falls through to config.json's architectures[0]; that branch has not been exercised in this session because every eval so far used a path containing 'gemma' or was run from ckpts/"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Running the grader's own default invocation against final_model/ reproduces exp-06's accuracy to within the n=150 standard error, confirming the packaged directory is the evaluated model."
+  mechanism: "The shards are md5-identical to ckpts/exp-06 and the tokenizer, preprocessor and greedy generation_config were copied in by prep_ckpt.py, so the only thing under test is evaluate.py's own resolution of template and tokenizer from this path."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "expected 0.70-0.78 at n=150, i.e. consistent with 0.738 at n=500"
+  falsified_if: "the run errors, or accuracy comes in near the 0.04 base-model floor / far below 0.65 - either would mean the packaged directory is not being loaded or templated as the evaluated checkpoint was"
+setup:
+  parent_checkpoint: {path: /home/ben/task/final_model, origin: exp-06, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "derived:exp-06 - no data is read by this card; the field records the corpus the shipped weights came from"
+      n_examples: 83473
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v1.jsonl]
+      selection: "unchanged"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0"
+    peft: none
+    hyperparams: {seed: 0, precision: bf16, max_seq_len: 2048}
+    target_format: "unchanged from exp-06"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_eval.sh, final_model, exp-07_finalmodel_dev150, '150']
+    cwd: /home/ben/task
+    script: /home/ben/task/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/eval_exp-07_finalmodel_dev150.log
+  output_dir: /home/ben/task/eval
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, '150', --json-output-file, '{out}.json', --max-connections, '16', --max-tokens, '4000', --gpu-memory-utilization, '0.3']
+    dev_set: "official --limit 150 (first 150 items of the gsm8k test split, no shuffle)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.6733
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "the vllm startup lines in the eval log: the chat template it was given and the 'Default sampling parameters have been overridden' line, plus the usual C11 counters"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 2586}
+  training_summary: {final_loss: null, steps: null, notes: "no training - packaging verification only"}
+  measurements:
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp-07_finalmodel_dev150.json, delta_vs_comparator: 0.0534}
+  diagnostic_result:
+    value: 2.0
+    path: /home/ben/task/eval/logs/exp-07_finalmodel_dev150
+    notes: "evaluate.py's template_kwargs resolved final_model -> templates/gemma3.jinja through the config.json fallback branch (checked on CPU first, then confirmed by the run). C11 clean: run-on 0.0%, 148/150 stop, 2 no-ANSWER items, output p50 153, 0 '!!!'."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The grader's own invocation against final_model/ scores 0.7267 at n=150, consistent with the 0.738 measured at n=500 on the identical weights in ckpts/exp-06 (both inside one standard error of each other). The packaged directory is the evaluated model: template routing, tokenizer, greedy generation_config and weights all resolve correctly from this path."
+  decision: adopt
+  next_step: "Nothing further this session - final_model/ is the deliverable. The last untested lever, recorded for whoever picks this up: 2-3 epochs on data/sft_rft_v1.jsonl (113k) or data/sft_rft_v2.jsonl (179k), both already built and decontaminated, since exp-06 showed the epoch axis pays and neither corpus has had a second pass."

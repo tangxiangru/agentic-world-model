@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T13:21:54Z'
+situation:
+  elapsed_h: 6.5
+  remaining_h: 3.5
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-soup
+    score: {metric: accuracy, value: 0.7533, protocol_n: 150}
+  trigger: "Five candidates have been measured at n=150 and the spread between the best four (0.7267 to 0.7533) is smaller than one stderr (0.036). exp-04 and exp-05 are exactly tied at 0.7533 yet disagree on 26 items, so the dev-150 ranking cannot say which to ship."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-02 0.7333, exp-03 0.7267, exp-04 0.7533, exp-05 0.7533, exp-06 0.7067, all n=150"}
+    - {path: /home/ben/task/analysis/exp05_watch_rerun.json, locator: "fixed_vs_exp04 13, regressions_vs_exp04 13", observation: "the two leaders trade 13 items each way at identical accuracy"}
+  alternatives_rejected:
+    - {option: "ship exp-04 because it was measured first", reason: "arbitrary; the two are tied and a 26-item disagreement means the choice is worth about 2-3 points either way"}
+    - {option: "another soup variant (exp-04 + exp-05) instead of a selection eval", reason: "exp-06 just showed soups are not monotone, and an unmeasured new candidate does not help if the measurement cannot separate it from the others"}
+    - {option: "evaluate at n=1319 (the full test split)", reason: "roughly 40 min per model at the observed rate; two models would consume the whole remaining budget and leave no room to finalise and verify final_model"}
+    - {option: "keep using n=150 and pick the max", reason: "with stderr 0.036 the max over five candidates is mostly a draw from noise; picking on it is selection bias, which is exactly the failure this card exists to avoid"}
+  pitfalls_hit:
+    - {what: "the first attempt at this card pointed evaluation.comparator.path at the n=500 file this run would itself produce, so preflight failed on comparator_same_protocol - and the eval had already been launched in the same command as the lock", cost_h: 0.02, fix: "killed the run and deleted its partial outputs before any result existed, repointed the comparator at the exp-04 n=150 measurement that does exist, locked, then relaunched. Both arms of this card are measured under the same n=500 protocol, so the within-card comparison is what decides."}
+  smoke_runs: []
+problem:
+  statement: "Every decision this session rests on 150-item measurements whose stderr is 0.036. Under that error bar the four leading candidates are indistinguishable, and the two best are tied to the decimal while disagreeing on 26 of 150 items. Choosing final_model on dev-150 is choosing on noise."
+  evidence:
+    - {path: /home/ben/task/eval/exp04_dev150.json, locator: accuracy, observation: "0.7533, stderr 0.0353"}
+    - {path: /home/ben/task/eval/exp05_dev150.json, locator: accuracy, observation: "0.7533, stderr 0.0353 - identical to three decimal places"}
+    - {path: /home/ben/task/analysis/exp05_watch_rerun.json, locator: "fixed_vs_exp04, regressions_vs_exp04", observation: "13 items each way: same score, different models"}
+  affected_share: 0.17
+  failure_examples:
+    - {id: tie-exp04-exp05, source: /home/ben/task/eval/exp05_dev150.json, question: "the two leading candidates at n=150", gold: n/a, model_output: "0.7533 vs 0.7533", failure: "the protocol cannot rank them"}
+    - {id: churn-26, source: /home/ben/task/analysis/exp05_watch_rerun.json, question: "the 26 items the two leaders disagree on", gold: n/a, model_output: n/a, failure: "a real difference between the models that the aggregate score hides"}
+    - {id: soup3-collapse, source: /home/ben/task/eval/exp06_dev150.json, question: "the three-way soup", gold: n/a, model_output: "0.7067", failure: "a 4.7-point swing from one design choice shows how much the n=150 ranking can move"}
+  watch_set:
+    path: /home/ben/task/analysis/exp05_watch_rerun.json
+    n: 26
+    selection: "the dev-150 items on which exp-04 and exp-05 disagree"
+hypothesis:
+  claim: "Re-measuring exp-04 and exp-05 on 500 items instead of 150 separates them: with stderr falling from about 0.035 to about 0.020, the two tied candidates will show a difference that the n=150 protocol could not resolve, and the ranking at n=500 is the one that should decide what ships."
+  mechanism: "The n=150 tie is a resolution limit, not a statement that the models are identical - they disagree on 26 of those 150 items. Tripling the sample cuts the standard error by about sqrt(3.3), so a true gap of 3 points goes from well inside the error bar to roughly 1.5 standard errors. The larger sample also reduces the selection bias in taking the maximum over five candidates measured on the same 150 items: n=500 includes those 150 plus 350 the candidates were never compared on."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "both in the 0.72-0.78 range; what matters is the sign and size of the gap, not the level"
+  falsified_if: "the two n=500 scores land within 0.5 points of each other, in which case the models really are equivalent, the tie was not a resolution limit, and the choice between them can be made on the secondary criterion (clean-stop rate) instead."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04-soup
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/evaluate.py
+      source: local
+      n_examples: 500
+      built_by: null
+      build_command: []
+      selection: "no training data: this card is an evaluation. The data is the first 500 items of the official gsm8k test split as loaded by inspect_evals, a superset of the 150 used everywhere else this session."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: inspect-ai + vllm 0.11.0 (evaluate.py as shipped)
+    peft: none
+    hyperparams: {precision: bf16, max_tokens: 4000, max_connections: 16, gpu_memory_utilization: 0.85}
+    target_format: "unchanged: greedy decoding, completion graded on its last number"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [bash, -c, "python evaluate.py --model-path ckpts/exp-04-soup --limit 500 --max-connections 16 --gpu-memory-utilization 0.85 --json-output-file eval/exp04_dev500.json && python evaluate.py --model-path ckpts/exp-05/final --limit 500 --max-connections 16 --gpu-memory-utilization 0.85 --json-output-file eval/exp05_dev500.json"]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 500
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7533
+    path: /home/ben/task/eval/exp04_dev150.json
+  diagnostic:
+    what: "clean-stop rate and answer-marker health at n=500 for both candidates - the tie-break if the accuracies stay within 0.5 points"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.45
+  output_checkpoint: /home/ben/task/ckpts/exp-04-soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04-soup, step: 0}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 858}
+  training_summary: {final_loss: null, steps: null, notes: "no training: two evaluations under one protocol"}
+  measurements:
+    - {metric: accuracy, value: 0.732, n: 500, path: /home/ben/task/eval/exp04_dev500.json, delta_vs_comparator: -0.0213}
+    - {metric: accuracy, value: 0.726, n: 500, path: /home/ben/task/eval/exp05_dev500.json, delta_vs_comparator: -0.0273}
+  diagnostic_result:
+    value: 0.818
+    path: /home/ben/task/analysis/exp07_paired.json
+    notes: "Paired on the same 500 items: exp-04 alone right on 39, exp-05 alone right on 36, both right on 327, neither on 98. McNemar exact two-sided p = 0.82 - no detectable difference. Clean-stop rates are also equivalent (496/500 and 497/500) and neither produced a duplicate answer marker. Also worth recording: both models score ~2 points lower at n=500 than at n=150 (0.732 vs 0.7533, 0.726 vs 0.7533), so the n=150 numbers this session ranked on were mildly optimistic for the leaders."
+  watch_set_result: {fixed: 39, still_failing: 98, regressions: 36, path: /home/ben/task/analysis/exp07_paired.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "n=500 did not separate them: 0.732 vs 0.726, a 0.6-point gap against a 2.0-point stderr, and paired McNemar over 75 discordant items gives p = 0.82. The tie was not a resolution limit at n=150; the two models are genuinely equivalent in accuracy while disagreeing on 15% of items."
+  decision: adopt
+  next_step: "Ship exp-04-soup: it is nominally ahead under the larger protocol (0.732 vs 0.726) and it is the candidate whose advantage was reproduced rather than assumed, so the tie-break costs nothing either way. The useful finding for the next session is the 402/500 union - either model alone reaches 0.73 while at least one of them is right on 0.80, so the remaining headroom is in selecting among reasoning paths, not in more SFT data."

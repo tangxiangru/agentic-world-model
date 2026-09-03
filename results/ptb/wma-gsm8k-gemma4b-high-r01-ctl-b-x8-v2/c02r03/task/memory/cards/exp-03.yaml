@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T10:29:58Z'
+situation:
+  elapsed_h: 6.4
+  remaining_h: 3.6
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7333, protocol_n: 150}
+  trigger: "All 40 remaining dev-150 failures in exp-02 are reasoning errors, not format errors (analysis/exp02_wrong.jsonl): the model reads a quantity wrong, sets up the wrong relation, or rounds early. Format is done (1/150 cap hits), so the next lever has to be reasoning quality."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp02_wrong.jsonl, locator: "all 40 rows"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: result.diagnostic_result}
+  alternatives_rejected:
+    - {option: "second epoch over the same OpenMathInstruct-2 rows", reason: "off-policy text the model has already fit to loss 0.30; repeats the same distribution instead of correcting where the model is actually unreliable"}
+    - {option: "DPO on correct/incorrect sampled pairs", reason: "the sampler already produces both, but DPO on ~19k pairs is a new trainer and a new failure surface with 5h left; RFT reuses a training path already proven this session"}
+    - {option: "retrain from base on SFT+RFT together", reason: "2.5h+ for the SFT half alone; continuing from exp-02 buys the same data for 1.1h"}
+    - {option: "keep every correct sample", reason: "22791 of 45000 problems are solved 4/4 - keeping them all would make two thirds of the corpus problems the model already never misses"}
+  pitfalls_hit:
+    - {what: "sampling 45k problems x k=4 ran at 7.7k output tok/s, 65 min - slower than the 45 min planned", cost_h: 0.3, fix: "none needed, the budget absorbed it; size the next sampling round from this measured rate"}
+    - {what: "first exp-03 launch trained the full 931 steps (49 min) and then died in trainer.save_model: transformers validates generation_config on save with strict=True and rejects do_sample=False together with temperature=0.0/top_k=0, which is the greedy config exp-02 was saved with and which this run inherited from its parent. save_strategy was 'no', so the trained weights were lost", cost_h: 0.9, fix: "reset model.generation_config to a minimal valid GenerationConfig before save_model and write the greedy generation_config.json afterwards, sourced from the immutable base rather than the parent; verified by exercising GenerationConfig.save_pretrained directly before relaunching"}
+  smoke_runs:
+    - {command: [python, rft_sample.py, --model, ckpts/exp-02/final, --out, data/rft_smoke.jsonl, --n-problems, '200', --k, '4'], outcome: "360 rows kept from 200 problems; solved histogram 0/4:12 1/4:16 2/4:23 3/4:46 4/4:103 - confirmed the sampler, the grader-identical correctness check, and that easy problems dominate"}
+problem:
+  statement: "exp-02 gets 40/150 dev items wrong and every one is a reasoning failure: a misread quantity, a wrong setup, or premature rounding. On its own training distribution the same model solves 22791/45000 problems on all 4 samples but only 1-3 times in 4 on 18470 more, and 0 times on 3739 - a large band where it knows enough to sometimes succeed and its errors are recoverable."
+  evidence:
+    - {path: /home/ben/task/analysis/exp02_wrong.jsonl, locator: "rows 1-6", observation: "hospital-profit item computes revenue as 500*200 instead of 200 hours*200; sandcastle item halves upward instead of downward; puppy-food item rounds 3.32 bags to 4"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: solved-count histogram, observation: "0/4:3739  1/4:4059  2/4:5511  3/4:8900  4/4:22791 over 45000 problems"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: dev02-1, source: /home/ben/task/analysis/exp02_wrong.jsonl, question: "Hospital sees 500 people/day, 24 min each, doctors cost $150/h, hospital charges $200/h - profit?", gold: '10000', model_output: "computes 200 doctor-hours correctly, then revenue as 500*200=100000; profit 70000", failure: "unit switch mid-solution: patients times rate instead of hours times rate"}
+    - {id: dev02-2, source: /home/ben/task/analysis/exp02_wrong.jsonl, question: "4-level sandcastle, each level half the one below, top level 16 sq ft - total?", gold: '60', model_output: "halves downward from the top (16,8,4,2 = 30), then averages to 7.5 and answers 8", failure: "read the relation backwards, then answered a question that was not asked"}
+    - {id: dev02-3, source: /home/ben/task/analysis/exp02_wrong.jsonl, question: "Freda's tomato sauce: sauce loses half its volume, 16 oz can = 3 tomatoes, 32 oz of sauce", gold: '12', model_output: "32/16 = 2 cans, 2*3 = 6 tomatoes", failure: "ignored the halving entirely - a one-step-short solution"}
+    - {id: dev02-4, source: /home/ben/task/analysis/exp02_wrong.jsonl, question: "Solo's reading: 4+20+7+8 pages, read 15 on Monday, 4 days left", gold: '6', model_output: "sums to 39, divides by 4, rounds 9.75 up to 10", failure: "dropped the 15 pages already read"}
+  watch_set:
+    path: /home/ben/task/analysis/exp02_wrong.jsonl
+    n: 40
+    selection: every dev-150 item exp-02 answered incorrectly
+hypothesis:
+  claim: "Continuing training from exp-02 on 39.7k of its own correct solutions - drawn at temperature 1.0, kept only when the grader's own matcher scores them right, and weighted toward the 18.5k problems it solves only 1-3 times in 4 - raises dev-150 accuracy above exp-02's 0.7333."
+  mechanism: "On problems the model solves sometimes, the correct samples are reachable continuations of its own policy, so training on them raises the probability of the reasoning paths that already work and lowers the probability of the sibling paths that fail. That is a sharper signal than more Llama-405B text, which is off-policy and which the model has already fit to loss 0.30. Down-weighting the 4/4 problems (keep 30%, one solution each) stops the corpus from being two thirds material the model never gets wrong; the 20k held-out OpenMathInstruct-2 rows keep it from collapsing onto the narrower distribution of its own samples."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points (0.733 -> 0.75-0.79)"
+  falsified_if: "dev-150 accuracy is at or below exp-02's 0.7333, or fewer than 8 of the 40 watch-set items are fixed."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "synthetic:self (exp-02 samples over gsm8k-train + OpenMathInstruct-2 gsm8k/augmented_gsm8k problems) + derived:exp-02 held-out slice of data/sft_v2.jsonl"
+      n_examples: 59709
+      built_by: /home/ben/task/build_rft_mix.py
+      build_command: [python, build_rft_mix.py, --rft, data/rft_v1.jsonl, --sft, data/sft_v2.jsonl, --n-fresh, '20000', --out, data/rft_mix_v1.jsonl]
+      selection: "39709 rejection-sampled rows: 45000 distinct problems x k=4 at T=1.0/top_p=0.95, a sample kept only if inspect_ai match_str(numeric, location=end) scores it against the known answer; problems solved 1-3 of 4 keep their 2 shortest distinct correct solutions, problems solved 4/4 are kept with probability 0.3 and only one solution, problems solved 0/4 are dropped. Plus 20000 rows from data/sft_v2.jsonl[105000:] under the trainer's own Random(0) shuffle - the slice exp-02 never saw."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer with a custom token-budget batch sampler
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 4, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32 master weights + bf16 autocast, adamw_bnb_8bit, seed: 0, token_budget: 6144}
+    target_format: "identical to exp-02: <bos><start_of_turn>user\\n{MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n{CoT}\\n\\nANSWER: <n><end_of_turn>, loss on the model turn only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, train_sft.py, --data, data/rft_mix_v1.jsonl, --model, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-03, --max-seq-len, '2560', --accum, '4', --token-budget, '6144', --lr, '5e-6', --epochs, '1', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7333
+    path: /home/ben/task/eval/exp02_dev150.json
+  diagnostic:
+    what: "how many of the 40 watch-set items exp-03 now gets right, and how many previously-correct items it breaks"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.81
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 931}
+  training_summary: {final_loss: 0.2667, steps: 931, notes: "train_loss 0.2667 vs exp-02's 0.338, as expected when continuing on data drawn from the model itself; 59628 rows, 21.7M tokens, 20.4 rows/s, 48.6 min"}
+  measurements:
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp03_dev150.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 14
+    path: /home/ben/task/analysis/exp03_watch_rerun.json
+    notes: "14 of the 40 watch-set items fixed, 26 still failing, but 15 previously-correct items broke. The churn (29 items changed verdict) is far larger than the net change (-1 item), so the run moved the model without improving it."
+  watch_set_result: {fixed: 14, still_failing: 26, regressions: 15, path: /home/ben/task/analysis/exp03_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.7333 -> 0.7267 (-0.7 pts; both stderr ~0.036, so the two are statistically tied). The falsification condition was 'at or below 0.7333', and 0.7267 meets it. The 14 fixed / 15 broken split says the RFT round redistributed which items the model gets right rather than adding capability."
+  decision: reject
+  next_step: "Do not stack a further RFT round on this line - on-policy data from a model that already solves 22791/45000 of its training problems 4/4 carries little signal. Two candidates now sit within noise of each other at n=150, which is itself the problem: the next cards are a weight average of exp-02 and exp-03 (cheap, uses both), and then a larger-n evaluation to choose between candidates with an error bar small enough to separate them."
+  correction: "situation.elapsed_h/remaining_h were written as 6.4/3.6; bash timer.sh at the relock showed 5.4h remaining, so the true figures were about 4.6/5.4. The relock reason and pitfall entry are accurate; only these two numbers were wrong."

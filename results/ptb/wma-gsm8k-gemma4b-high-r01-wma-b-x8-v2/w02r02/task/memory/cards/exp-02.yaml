@@ -1,0 +1,200 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T06:27:07Z'
+situation:
+  elapsed_h: 0.45
+  remaining_h: 9.5
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: 0.04
+      protocol_n: 200
+  trigger: 'exp-01 measured the base model at 0.040 on dev-200 and showed why: 94/200 responses run to max_tokens and 175/200 emit an ANSWER: line but then invent further problems, so match(location=''end'') reads a hallucinated number.'
+  trigger_evidence:
+  - path: /home/ben/task/memory/cards/exp-01.yaml
+    locator: result.diagnostic_result
+  - path: /home/ben/task/logs/2026-09-03T06-20-15+00-00_gsm8k_eMpqZ9jTUvvNZAS8YmjZ4Z.json
+    locator: samples[0].output.choices[0].message.content
+  alternatives_rejected:
+  - option: LoRA instead of full-parameter SFT
+    reason: the deficit is behavioural (never stops, wrong output distribution), which full FT fixes more reliably; 80GB fits a 3.9B full FT with grad checkpointing
+  - option: meta-math/MetaMathQA
+    reason: 'its bodies carry gsm8k''s own ''#### N'' line alongside ''The answer is: X'' - the double_answer_format pitfall; OpenMathInstruct-2 has a single verified expected_answer field'
+  - option: microsoft/orca-math-word-problems-200k
+    reason: no separate verified answer field; the final number must be regex-guessed from prose, which injects label noise. Held back as a second-round source.
+  - option: few-shot prompting / decode-config only, no training
+    reason: exp-01 already gave the model 10 in-context demos and it still did not terminate; the stop behaviour has to be trained in
+  pitfalls_hit: []
+  smoke_runs:
+  - command:
+    - python
+    - /home/ben/contamination_check.py
+    - --reference
+    - /home/ben/test_data.json
+    - --input
+    - data/contam_input.jsonl
+    outcome: 60000 documents scanned, 0 contaminated, 0 matches
+  - command:
+    - python
+    - train_sft.py
+    - --dry-run
+    outcome: 'CPU render of all 60k rows: p50=330 p95=1087 p99=1416 max=2187 tokens; 275 rows (0.46%) over max_seq_len=1536 are dropped, not truncated; boundary_realign=0 so prompt/completion token split is exact; target decodes ending in <end_of_turn>'
+problem:
+  statement: 'The base model does not produce a terminated, single-answer response in the grader''s format. It has never been trained to emit <end_of_turn>, and it has never been trained to write a grade-school chain of thought whose last line is ''ANSWER: N''. Both the arithmetic ability and the output contract are untested because the contract fails first.'
+  evidence:
+  - path: /home/ben/task/logs/2026-09-03T06-20-15+00-00_gsm8k_eMpqZ9jTUvvNZAS8YmjZ4Z.json
+    locator: all 200 samples; stop_reason histogram
+    observation: 94 max_tokens / 106 stop; accuracy 0.04
+  - path: /home/ben/task/eval/base_dev200.json
+    locator: whole file
+    observation: accuracy 0.04, stderr 0.0139
+  affected_share: 0.96
+  failure_examples:
+  - id: sample-1
+    source: /home/ben/task/logs/2026-09-03T06-20-15+00-00_gsm8k_eMpqZ9jTUvvNZAS8YmjZ4Z.json
+    question: (dev-200 item 1, held-out benchmark item - text not copied into this card per protocol rule 7)
+    gold: '20'
+    model_output: '...ANSWER: 27 / Solve the following math problem step by step... ANSWER: 64 / ... continues inventing problems to max_tokens; graded answer 1.5'
+    failure: no termination; graded number comes from an invented later problem
+  watch_set: null
+hypothesis:
+  claim: 'Full-parameter SFT on 60k GSM8K-style chain-of-thought targets, rendered through the grader''s own templates/gemma3.jinja and each ending in exactly one ''ANSWER: N'' line followed by <end_of_turn>, will raise dev-200 accuracy against the base model''s 0.040.'
+  mechanism: 'Two separable gains. (a) Contract: every target ends with <end_of_turn> right after the answer line, so the model learns to stop and the last numeric token of its response becomes its own answer - this alone converts most of the 96% failures. (b) Competence: 60k verified grade-school solutions from OpenMathInstruct-2 teach the step-by-step decomposition GSM8K rewards. 12% of rows carry a 2-4 shot prefix (demos drawn from the training pool, never from test) so the model is robust to the 10-shot system message the grader prepends.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: +40 to +60 points; a 4B model SFT'd on gsm8k-style CoT is normally in the 0.55-0.75 band
+  falsified_if: dev-200 accuracy stays below 0.30, or the stop_reason histogram still shows >10% max_tokens (the contract did not transfer).
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/sft_train.jsonl
+    source: nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e (shards 0-3 of 32)
+    n_examples: 60000
+    built_by: /home/ben/task/build_data.py
+    build_command:
+    - python
+    - build_data.py
+    - --out
+    - data/sft_train.jsonl
+    - --shards
+    - '4'
+    - --n
+    - '60000'
+    selection: 'problem_source in {gsm8k, augmented_gsm8k} (grade-school problems derived from the GSM8K *train* split); expected_answer must be a plain integer <=1e9; boxed{x} rewritten to x and residual latex dropped; rows containing a leftover backslash or code fence dropped; one solution per unique problem; problem 20-1200 chars, solution 40-2500 chars; target = solution + newline newline + ''ANSWER: {int}''. 12% get a 2-4 shot prefix built from other rows of this same pool.'
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer (custom completion-only collator)
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 2
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 1536
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+    target_format: 'prompt = templates/gemma3.jinja applied to [optional system k-shot, user=inspect_evals MATH_PROMPT_TEMPLATE] with add_generation_prompt=True; target = chain of thought, blank line, ''ANSWER: <int>'', then <end_of_turn>. Loss on target tokens only (prompt masked to -100).'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - train_sft.py
+    - --data
+    - data/sft_train.jsonl
+    - --out
+    - ckpts/exp-02
+    - --max-seq-len
+    - '1536'
+    - --lr
+    - 1e-5
+    - --epochs
+    - '2'
+    - --bs
+    - '4'
+    - --grad-accum
+    - '8'
+    - --save-steps
+    - '1866'
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 1866
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 2.2
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '200'
+    - --max-connections
+    - '32'
+    - --gpu-memory-utilization
+    - '0.85'
+    dev_set: official gsm8k test --limit 200 (inspect_evals/gsm8k default order, fewshot=10 seed=42)
+    n: 200
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.04
+    path: /home/ben/task/eval/base_dev200.json
+  diagnostic:
+    what: 'share of dev-200 responses that stop on <end_of_turn> rather than max_tokens (target: >0.98)'
+    n: 200
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.5
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-02/final
+    step: 3734
+  - path: /home/ben/task/ckpts/exp-02/ep1_greedy
+    step: 1866
+  - path: /home/ben/task/ckpts/exp-02/checkpoint-3732
+    step: 3732
+  training_summary:
+    final_loss: 0.23
+    steps: 3734
+    notes: train_loss 0.2737 over the run; per-20-step loss fell 0.60 -> 0.27 in epoch 1 and 0.27 -> 0.23 in epoch 2. train_runtime 9011 s (2.50 h), 13.26 samples/s. save_total_limit=2 deleted checkpoint-1866 after checkpoint-3734 landed, but ep1_greedy had already been hardlinked out of it, so the epoch-1 weights are kept as promised.
+  measurements:
+  - metric: accuracy
+    value: 0.68
+    n: 200
+    path: /home/ben/task/eval/exp02_final_dev200.json
+    delta_vs_comparator: 0.64
+  diagnostic_result:
+    value: 0.985
+    path: /home/ben/task/logs/2026-09-03T09-05-56+00-00_gsm8k_7HYr9a9gCf3ohTymqLAxFi.json
+    notes: '197/200 stop on <end_of_turn> (was 106/200); only 3 hit max_tokens (was 94). 198/200 emit an ANSWER: line. The output contract transferred. The 64 remaining failures are genuine: arithmetic slips (100*2%*3 read as 18), misread problem structure, and rounding/units errors - not format.'
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: 'dev-200 0.040 -> 0.680 (+64.0 pts) against the base model. The diagnostic confirms the mechanism split the card predicted: the contract gain is essentially complete (max_tokens 94/200 -> 3/200, 197/200 clean stops), so what remains is competence.'
+  decision: adopt
+  next_step: 'exp-03: the checkpoint still ships the base generation_config (do_sample true, top_k 64, top_p 0.95) and the grader sends no temperature, so this 0.68 was measured under sampling. Test greedy decode on the same weights before spending any more GPU hours on training.'

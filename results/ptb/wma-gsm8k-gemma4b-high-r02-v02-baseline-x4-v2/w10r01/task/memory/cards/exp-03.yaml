@@ -1,0 +1,142 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T10:28:57Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.4
+  remaining_h: 6.6
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/best
+    score: {metric: accuracy, value: 0.7067, protocol_n: 150}
+  trigger: "exp-02's checkpoint sweep on dev300 shows the model is equally strong 0-shot at step 1800 and step 3546 (0.740 both), while the SAME checkpoints score 0.680 and 0.540 once the harness's 10-shot system prefix is prepended. The whole loss - and all of the over-training damage - lives in the prefix the harness always uses."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/dev300_exp-02_checkpoint-1800_fs0.jsonl, locator: "300 items, greedy, 0-shot", observation: "0.740; tags correct 222, wrong_answer 69, gold_in_chain 4, no_stop 5"}
+    - {path: /home/ben/task/analysis/dev300_exp-02_checkpoint-1800_fs10.jsonl, locator: "same 300 items, greedy, harness 10-shot prefix", observation: "0.680; tags correct 204, wrong_answer 65, gold_in_chain 24, no_stop 7. wrong_answer is flat (69 -> 65); the entire regression is gold_in_chain, 4 -> 24"}
+    - {path: /home/ben/task/analysis/dev300_exp-02_checkpoint-3546_fs10.jsonl, locator: "300 items, step 3546", observation: "0.540 with no_stop 80/300 - after two epochs the model answers, fails to emit <end_of_turn>, and loops the same solution until the cap. Same checkpoint 0-shot: 0.740, no_stop 5"}
+  alternatives_rejected:
+    - {option: "Ship exp-02/best as the final model and spend the remaining time on RFT instead", reason: "RFT attacks wrong_answer (65 items). The prefix effect is a separate 20-item bucket that no amount of extra correct-chain data addresses, and it is measured, not hypothesised. Do the measured one first; RFT is exp-04 if time allows."}
+    - {option: "Retrain from base with few-shot prefixes mixed in from the start", reason: "~3 h for a full re-run against ~40 min for a continuation, with 6.6 h left and no candidate yet evaluated on the harness"}
+    - {option: "Continue from checkpoint-3546 (the end of training) instead of 1800", reason: "3546 is the damaged checkpoint: 80/300 non-terminating under the prefix. 1800 (one epoch) is both the dev-best and the one whose termination is intact"}
+    - {option: "Train only on 10-shot-prefixed rows", reason: "the model must stay good 0-shot too - that is where its 0.740 lives - and an all-prefix diet risks teaching it to expect exemplars. The mix keeps 3/8 of rows at 0 shots."}
+    - {option: "keep per-device batch 8", reason: "max_seq_len rises 1024 -> 3072 for the 10-shot rows and the fp32 logit path scales with bs x seq x 262144; at bs 8 x 3072 that alone is ~26 GB on top of the ~48 GB resident that already peaked at 72 GB in exp-02. bs 2 x grad_accum 16 holds the effective batch at 32."}
+  pitfalls_hit:
+    - {what: "the local dev proxy had to be scored twice (with and without the prefix) before the exp-02 result was interpretable; scoring only the harness-matching variant would have shown a 0.68 plateau with no explanation", cost_h: 0.1, fix: "scripts/tag_failures.py buckets failures into no_stop / no_marker / gold_in_chain / wrong_answer, which is what separated the two mechanisms"}
+    - {what: "Trainer checkpoints ship no tokenizer and no processor files, and Gemma3ForConditionalGeneration will not load in vLLM without them; their generation_config is also still gemma's sampled one", cost_h: 0.1, fix: "scripts/finalize_ckpt.py writes a bf16 dir with tokenizer, preprocessor_config, processor_config and the greedy generation_config; select_ckpt.sh copies the aux files in place for quick reads"}
+  smoke_runs:
+    - {command: [python, add_fewshot.py, --src, ../data/sft_r1.jsonl, --out, ../data/sft_r2_fewshot.jsonl, --n, "8000", --shots, "0 0 0 2 4 8 10 10"], outcome: "8000 rows, 8.95M tokens, p50 865 / p90 2260 / p99 2628 / max 3331; 0.025% over max_seq_len 3072"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Under the harness's 10-shot system prefix the model computes the right number and then writes a different one on the ANSWER line. It is imitating the in-context exemplars - terse GSM8K human solutions, calculator annotations and all - instead of keeping the answer discipline it was trained with. On dev300 this costs 6 points at the best checkpoint and 20 at the last one."
+  evidence:
+    - {path: /home/ben/task/analysis/dev300_exp-02_checkpoint-1800_fs10.jsonl, locator: "300 items", observation: "gold_in_chain 24 with the prefix vs 4 without, on the same items and the same weights; wrong_answer essentially unchanged (65 vs 69)"}
+    - {path: /home/ben/task/analysis/dev300_exp-02_checkpoint-3546_fs10.jsonl, locator: "300 items", observation: "the same prefix on a more over-trained checkpoint converts the failure into non-termination: no_stop 80/300, the model repeating its own correct solution to the token cap"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L93-99 sample_to_fewshot", observation: "the exemplars keep gsm8k's raw <<48/2=24>> calculator annotations, a style nothing in the training data uses - the model reproduces it in its own output when they are in context"}
+  affected_share: 0.25
+  failure_examples:
+    - {id: trdev-3843, source: /home/ben/task/data/dev_heldout300.jsonl, question: "Nancy's pie slices given away (held-out GSM8K train item)", gold: "2", model_output: "...she had 2 slices left, the total number of slices she had initially is 6 + 2 = 8. ANSWER: 8", failure: "computes 2, then answers the total instead; 0-shot the same weights answer 2"}
+    - {id: trdev-6689, source: /home/ben/task/data/dev_heldout300.jsonl, question: "Mark's soup cans for 6 shelters", gold: "1800", model_output: "...1800 cans ... needs 6 times ... ANSWER: 10800", failure: "reaches 1800 then applies the shelter factor a second time; 0-shot answers 1800"}
+    - {id: trdev-5913, source: /home/ben/task/data/dev_heldout300.jsonl, question: "Julia's cake baking time in hours", gold: "6", model_output: "162 / 60 = 2.7 hours ... ANSWER: 2.7", failure: "per-cake time miscarried under the prefix; 0-shot answers 6"}
+  watch_set:
+    path: /home/ben/task/data/watch40.jsonl
+    n: 40
+    selection: "first 40 of a seed-0 shuffle of GSM8K *train*, held out of every training pool; a strict subset of dev300, scored under the same 10-shot prefix"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing exp-02's checkpoint-1800 on 8000 rows whose prompts carry a 0/2/4/8/10-shot GSM8K-train exemplar prefix, with the targets unchanged, narrows the gap between prefixed and unprefixed dev300 accuracy for the same weights, and raises harness dev-150 accuracy against exp-02."
+  mechanism: "The model has never seen an exemplar-laden prompt during training, so in-context imitation wins over its trained output policy: it copies the exemplars' terse style and their habit of naming an intermediate quantity. Showing it prefixes at train time - while the target keeps its own richer chain and its single terminal 'ANSWER: n<end_of_turn>' - makes the prefix something to condition on rather than copy. Keeping 3/8 of rows at 0 shots preserves the 0-shot behaviour the score already depends on."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+0.03 to +0.06 on dev300-with-prefix (the measured 0-shot/10-shot gap is 0.060), and a similar direction on harness dev-150"
+  falsified_if: "dev300-with-prefix accuracy does not exceed 0.700, or the gold_in_chain bucket stays above 15 of 300 - either means the prefix is still driving the answer line."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/checkpoint-1800
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_r2_fewshot.jsonl
+      source: "derived:exp-02 - an 8000-row sample of data/sft_r1.jsonl re-rendered with a k-shot prefix, k drawn uniformly from [0,0,0,2,4,8,10,10]; exemplars are GSM8K *train* items from data/train_pool.jsonl in the harness's own exemplar format (question / Reasoning: / raw solution with <<>> annotations / ANSWER: n)"
+      n_examples: 8000
+      built_by: /home/ben/task/scripts/add_fewshot.py
+      build_command: [python, add_fewshot.py, --src, ../data/sft_r1.jsonl, --out, ../data/sft_r2_fewshot.jsonl, --n, '8000', --shots, '0', '0', '0', '2', '4', '8', '10', '10', --seed, '7']
+      selection: "targets are byte-identical to the exp-02 rows they come from, so the only change is the prompt; exemplars are drawn from train_pool.jsonl, which excludes the 300 dev / 40 watch items by construction"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with a custom completion-only collator
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 2, grad_accum: 16, max_seq_len: 3072, scheduler: cosine, warmup: 0.05, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast + 8-bit Adam; the artifact is cast to bf16 before saving", seed: 0}
+    target_format: "unchanged from exp-02: supervised target '{chain of thought}\\n\\nANSWER: {n}<end_of_turn>', prompt tokens at label -100. Only the prompt gains an exemplar prefix."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-02/checkpoint-1800, --data, /home/ben/task/data/sft_r2_fewshot.jsonl, --out, /home/ben/task/ckpts/exp-03, --lr, '5e-6', --epochs, '1', --bs, '2', --grad-accum, '16', --max-seq-len, '3072', --warmup, '0.05', --save-strategy, steps, --save-steps, '50', --seed, '0']
+    cwd: /home/ben/task/scripts
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 50
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '2']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test slice, first 150; 10-shot system message from the train split at fewshot_seed 42). --max-tokens 4000 and --gpu-memory-utilization 0.3 are evaluate.py's defaults, pinned by the script hash in the lock file."
+    n: 150
+    seed: 42
+    decoding: "greedy, from the candidate's own generation_config.json (temperature 0.0), written by scripts/finalize_ckpt.py - the same decode regime exp-02's candidate was read under, so this card's delta is training only"
+  comparator:
+    ref: exp-02
+    value: 0.7067
+    path: /home/ben/task/eval/exp02_dev150.json
+  diagnostic:
+    what: "every kept checkpoint scored on dev300 twice by scripts/gen.py, with and without the harness 10-shot prefix, and bucketed by scripts/tag_failures.py. The mechanism claim is specifically that gold_in_chain under the prefix falls from 24/300 toward the 4/300 the same weights show 0-shot, while wrong_answer stays flat. That is a sharper read than the accuracy."
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.6
+  output_checkpoint: /home/ben/task/ckpts/exp-03/best
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-50, step: 50}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-100, step: 100}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-150, step: 150}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-200, step: 200}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-250, step: 250}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 250}
+    - {path: /home/ben/task/ckpts/exp-03/best, step: 200}
+  training_summary: {final_loss: 0.1802, steps: 250, notes: "2157 s wall, 3.7 samples/s (the 10-shot rows are ~2000 tokens each), peak GPU 70.8 GB at bs 2 x 3072 - the batch cut was necessary. ckpts/exp-03/best is checkpoint-200 through scripts/finalize_ckpt.py."}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp03_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 0.7433
+    path: /home/ben/task/analysis/dev300_exp-03_checkpoint-200_fs10.jsonl
+    notes: "The mechanism claim is confirmed sharply. checkpoint-200 scores 0.7433 on dev300 WITH the 10-shot prefix and 0.7433 WITHOUT it - the 6.0-point prefix gap exp-02 carried (0.680 vs 0.740) is gone. The named bucket moved as predicted: gold_in_chain 24/300 -> 12/300 under the prefix, while wrong_answer stayed flat (65 -> 63), and no_stop fell 7 -> 2. Checkpoint sweep on dev300-fs10: 50:0.7333, 100:0.710, 150:0.730, 200:0.7433, 250(final):0.730. A uniform soup of exp-03's 150/200/250 scored 0.7267, below checkpoint-200, and was not adopted; a soup of exp-02's 1800+2400 scored 0.7233, above both its 0.680/0.6833 ingredients, which is worth knowing but is beaten by this card's candidate."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/dev300_exp-03_checkpoint-200_fs10.jsonl}
+  failure: null
+  notes: "Harness diagnostic on the candidate: answer_marker_share 0.9867, stop_reasons {stop 148, max_tokens 2}, output p50 126 tokens (exp-02: 0.98 / 10 max_tokens / p50 196). One pitfall cost ~0.2 h and is not in pitfalls.yaml: running a CPU model-soup job and a vLLM job concurrently corrupted a .pyc in site-packages (gguf/vocab), and every subsequent vLLM start died with 'ValueError: bad marshal data' inside an unrelated import. Deleting the single bad .pyc fixed it. sweep.sh also cached the resulting empty result files, which hid the failure behind a '(cached)' line until the caching test was changed from -f to -s."
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The mechanism is settled: prefix-conditioned training closed the 10-shot/0-shot gap completely (0.680/0.740 -> 0.7433/0.7433 on dev300) and halved the gold_in_chain bucket it was aimed at, with no 0-shot regression. On the harness the candidate reads 0.720 vs exp-02's 0.7067; +1.3 points at n=150 is well inside one standard error (0.037), so the harness confirms the direction but cannot resolve the size."
+  decision: adopt
+  next_step: "exp-04: the residual is wrong_answer, 63 of 300 dev failures - real reasoning errors that neither turn discipline nor prefix conditioning touches. Rejection-sampling fine-tuning on this model's own correct chains is the standard lever; sampling from ckpts/exp-03/best has already started."

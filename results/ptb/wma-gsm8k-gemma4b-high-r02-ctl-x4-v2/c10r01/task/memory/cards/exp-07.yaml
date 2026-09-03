@@ -1,0 +1,106 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T16:34:09Z'
+situation:
+  elapsed_h: 8.65
+  remaining_h: 1.35
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-06/final
+    score: {metric: accuracy, value: 0.82, protocol_n: 500}
+  trigger: "exp-06 beat exp-04 on the point estimate (0.820 vs 0.810) but the paired test could not separate them: 35 items fixed, 30 broken, p = 0.62. Two checkpoints that disagree on 65 of 500 items while scoring within a point of each other are the case where their weight average can beat both, and it costs no GPU training time."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-06_failure_patterns.json, locator: "paired_vs_exp04: fixed 35, broke 30, mcnemar_p 0.620"}
+    - {path: /home/ben/task/eval/exp-06_dev500.json, locator: "0.820"}
+    - {path: /home/ben/task/eval/exp-04_dev500.json, locator: "0.810"}
+  alternatives_rejected:
+    - {option: "another training stage", reason: "1.35h left; a stage is 1h of GPU plus 12 min of eval with no room to recover from a failure, and exp-06 already showed the data-scaling slope has flattened to ~+1 point per 80k rows"}
+    - {option: "score final_model on the full 1319-item test set for a tighter number", reason: "measurement, not improvement; the n=500 protocol is what every card in this batch was decided under and re-measuring would not change the artefact"}
+    - {option: "average exp-02 in as well", reason: "exp-02 is 4 points weaker and two stages away; that is the distance at which soups degrade"}
+  pitfalls_hit:
+    - {what: "scripts/soup.py hit the exact same GenerationConfig.validate(strict=True) failure that cost exp-05 its weights - the merged model inherits the greedy config from its members and save_pretrained refuses it", cost_h: 0.05, fix: "same fix as scripts/train_sft2.py: reset generation_config before saving, write the greedy JSON afterwards with json.dump. Caught here in 30 s because the fix from exp-05 was already known."}
+  smoke_runs: []
+problem:
+  statement: "exp-04 and exp-06 lie on the same fine-tuning trajectory one stage apart and are statistically indistinguishable at n=500, yet they disagree on 65 of the 500 items (35 that only exp-06 gets, 30 that only exp-04 gets). Choosing between them on a 1-point difference the paired test calls noise means throwing away whatever the loser knows."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_failure_patterns.json, locator: "fixed 35 / broke 30 out of 500", observation: "13% of items flip between the two checkpoints"}
+    - {path: /home/ben/task/analysis/exp-04_diag500.json, locator: "accuracy 0.81", observation: "the second member scored under the same protocol"}
+  affected_share: 0.13
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A uniform parameter average of ckpts/exp-04/final and ckpts/exp-06/final scores higher at n=500 than the better of the two (0.820)."
+  mechanism: "exp-06 is exp-04 plus one more cosine cycle over 80k rows at lr 5e-6, so the two sit in the same loss basin and are linearly connected. Averaging then acts like a cheap ensemble: it keeps the directions the two runs agree on and cancels the per-run gradient noise that makes 65 items flip."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "+0 to +1.5 points; the members are close enough that a large gain would be surprising"}
+  falsified_if: "accuracy at n=500 is at or below 0.820, or clean-termination drops below 0.98 (the members are at 0.986 and 0.990)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-06/final
+    origin: exp-06
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/stage3_v1.jsonl
+      source: "derived:exp-06 - no new training data; this card only averages two existing checkpoints"
+      n_examples: 80000
+      built_by: /home/ben/task/scripts/soup.py
+      build_command: [python, scripts/soup.py, --models, /home/ben/task/ckpts/exp-06/final, /home/ben/task/ckpts/exp-04/final, --weights, '0.5', '0.5', --out, /home/ben/task/ckpts/soup_0406]
+      selection: "listed because it is the corpus behind the second member; nothing is trained in this card"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "transformers 4.57.3, fp32 accumulation then cast to bf16 (scripts/soup.py)"
+    peft: "none"
+    hyperparams: {weight_exp06: 0.5, weight_exp04: 0.5, precision: "fp32 sum then bf16 save", seed: 0}
+    target_format: "no training targets; the merged directory carries the same tokenizer, processor side-cars and greedy generation_config.json as its members"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/soup_0406, --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-07_soup_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/soup_0406
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.25}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, unshuffled)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.82
+    path: /home/ben/task/eval/exp-06_dev500.json
+  diagnostic:
+    what: "clean-termination share; a bad merge shows up first as degenerate or non-terminating output (members are at 0.986 and 0.990)"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/ckpts/soup_0406
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup_0406, step: 1245}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 0.5/0.5 parameter average of exp-06/final and exp-04/final accumulated in fp32 and saved in bf16, with tokenizer, processor side-cars and the greedy generation_config.json"}
+  measurements:
+    - {metric: accuracy, value: 0.832, n: 500, path: /home/ben/task/eval/exp-07_soup_dev500.json, delta_vs_comparator: 0.012}
+  diagnostic_result:
+    value: 0.988
+    path: /home/ben/task/analysis/exp-07_diag500.json
+    notes: "clean-termination 494/500 = 0.988, inside the 0.986-0.990 band of its two members, so the merge did not damage the output contract. Paired against exp-06 over the same 500 items: 25 fixed, 19 broken, net +6, two-sided exact McNemar p = 0.451."
+  watch_set_result: {fixed: 25, still_failing: 84, regressions: 19, path: /home/ben/task/analysis/exp-07_paired.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "0.820 -> 0.832 at n=500, above the falsification bar, with clean-termination 0.988. The soup beats both members (exp-04 0.810, exp-06 0.820) for six minutes of CPU and no training, which is what the linear-connectivity argument predicts for two checkpoints one stage apart. As with the last two steps the paired test cannot certify it on its own (25 fixed / 19 broken, p = 0.45) - the case for adopting it rests on it being at least as good as both members on the point estimate at zero risk, not on a significant per-item win."
+  decision: adopt
+  next_step: "final_model/ holds this merge: real files, tokenizer, processor side-cars, greedy generation_config.json, verified to load on CPU with transformers and to run under the grader's own default invocation (python evaluate.py --limit 60 at --max-connections 2 and --gpu-memory-utilization 0.3, 0.783). The batch ends here at 0.832 from a 0.053 base. What is left for a next batch: a verified-reward method (GRPO) against the 84 remaining failures, of which self-override is still the largest single tag; and a problem source other than OpenMathInstruct-2, whose GSM8K-derived pool this batch exhausted."

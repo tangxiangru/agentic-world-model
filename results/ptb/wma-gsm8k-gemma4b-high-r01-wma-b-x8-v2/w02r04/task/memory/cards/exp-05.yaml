@@ -1,0 +1,141 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T12:05:00Z'
+situation:
+  elapsed_h: 5.35
+  remaining_h: 4.65
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.68, protocol_n: 150}
+  trigger: "exp-04 added ~54k new off-policy GSM8K-family problems for a 2 h epoch and dev-150 did not move (0.680 -> 0.680, 48 wrong both times, 12 fixed / 12 regressed). Off-policy volume from the same distribution has saturated, so the next card has to change mechanism, not scale."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-04_vs_exp-03.json
+      locator: "fixed 12, regressions 12, wrong 48 -> 48"
+    - path: /home/ben/task/eval/exp-04_dev150.json
+      locator: "accuracy 0.68"
+  alternatives_rejected:
+    - option: "A third off-policy SFT epoch on more OpenMathInstruct-2 rows"
+      reason: "exp-04 measured that lever at exactly zero; repeating it would spend 2 of the 4.6 remaining hours on a reference class whose measured effect is churn"
+    - option: "DPO / preference training on correct-vs-incorrect samples"
+      reason: "the sampling pass gives the pairs for free, but DPO on a 4 B model needs a reference-model forward pass and careful beta tuning; with 4.6 h left an untuned DPO run is likelier to lose points than gain them"
+    - option: "Model soup of exp-02 and exp-04"
+      reason: "cheap, but both parents score 0.680 and a soup of two checkpoints one gradient-continuation apart is nearly the same point in weight space; kept in reserve if RFT also comes back flat"
+    - option: "Sample k=6 from exp-02 instead of exp-04"
+      reason: "the two score identically, and exp-04 has seen ~54k more distinct problems, so its correct samples should cover more question shapes"
+  pitfalls_hit:
+    - what: "the rejection-sampling pass ran at ~9.1k output tokens/s and took 54 min for 194838 generations (32473 questions x k=6), 20 min longer than budgeted"
+      cost_h: 0.33
+      fix: "absorbed it by dropping the planned second RFT round; the remaining schedule is train 0.7 h, eval 0.15 h, final --limit 500 selection 0.9 h"
+    - what: "the first launch of this card died at step 400/890 inside Trainer._save: the parent ckpts/exp-04/final was finalized with --decode greedy, so its generation_config has do_sample=False with temperature=0.0, and GenerationConfig.save_pretrained refuses that combination"
+      cost_h: 0.35
+      fix: "train_sft.py now sanitizes model.generation_config (do_sample=True, temperature=None) right after loading; finalize_ckpt.py rewrites the greedy decode config after training, which is the only place it is needed. Relaunched from step 0 with --save-steps 600." 
+  smoke_runs:
+    - command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --k, '6', --n-omi, '25000']
+      outcome: "28557/32473 questions produced at least one sample whose ANSWER matched the reference; 120140 correct samples total"
+problem:
+  statement: "exp-04 gets 48 of 150 dev items wrong; every failure is a fluent, correctly formatted chain that sets the problem up wrongly or slips in arithmetic. The training signal so far is entirely off-policy - Llama-405B-written solutions in someone else's phrasing - so the model has never been trained on its own successful reasoning for the question shapes it actually struggles with."
+  evidence:
+    - path: /home/ben/task/analysis/exp-04_vs_exp-03.json
+      locator: "48 wrong items after exp-04, 36 of them also wrong before"
+      observation: "36 items are wrong under both checkpoints: a stable core of failures that more off-policy data does not touch"
+    - path: /home/ben/task/logs/rft_sample.log
+      locator: "final line"
+      observation: "the model solves 28557/32473 training questions at least once in 6 samples, i.e. it has correct chains available for far more problems than it produces greedily"
+  affected_share: 1.0
+  failure_examples:
+    - {id: "gsm8k-oranges", source: /home/ben/task/analysis/exp-02_failures.json, question: "basket of oranges with bad/unripe/sour ones", gold: "17", model_output: "x + 7 = 25 ... x = 18 ... ANSWER: 18", failure: "wrong equation setup"}
+    - {id: "gsm8k-bees", source: /home/ben/task/analysis/exp-02_failures.json, question: "hive with baby and worker bees", gold: "400", model_output: "700/2=350 ... 350*2=700 ... ANSWER: 700", failure: "returns an intermediate quantity"}
+    - {id: "gsm8k-cookies", source: /home/ben/task/analysis/exp-02_failures.json, question: "Henry baking cookies", gold: "50", model_output: "110/2=55 ... 55-15=40 ... ANSWER: 40", failure: "misreads the comparison in the question"}
+  watch_set: null
+hypothesis:
+  claim: "Training exp-04's checkpoint for one epoch on 54067 of its own sampled solutions, kept only where the final ANSWER matches the reference answer, raises GSM8K accuracy at --limit 150 above exp-04's greedy 0.680."
+  mechanism: "Rejection-sampling fine-tuning concentrates probability mass on the reasoning paths the model can already produce correctly, in its own phrasing, and on the specific questions where its greedy path is currently wrong but a sampled path is right. That is a different signal from more off-policy solutions, which exp-04 showed is exhausted."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+2 to +6 points; the n=150 noise floor is about 3 points, so anything inside +/-0.03 is a null"
+  falsified_if: "greedy accuracy at n=150 is 0.680 or below, i.e. on-policy correctness filtering buys no more than the off-policy epoch it replaces"
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-04/final, origin: exp-04, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_r1.jsonl
+      source: "synthetic:self (samples from /home/ben/task/ckpts/exp-04/final); questions from openai/gsm8k split=train and nvidia/OpenMathInstruct-2 train_1M problem_source=augmented_gsm8k"
+      n_examples: 54067
+      built_by: /home/ben/task/scripts/build_rft_data.py
+      build_command: [python, scripts/build_rft_data.py, --samples, data/rft_samples.jsonl, --out, data/rft_r1.jsonl, --max-per-q, '2', --fewshot-frac, '0.10', --seed, '1']
+      selection: "k=6 samples per question at temperature 1.0 / top_p 0.95; keep a sample only if its single ANSWER line equals the reference answer; drop duplicates after masking digits; keep the 2 shortest distinct chains per question; 10% of rows carry the grader's 10-shot prefix"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "vllm 0.11.0 for sampling; transformers 4.57.3 Trainer (completion-only masking) for training"
+    peft: none
+    hyperparams:
+      lr: 5.0e-6
+      epochs: 1
+      batch_size: 0    # dynamic: token-budget batches of 8192 padded tokens
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.02
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+    target_format: "assistant turn = the model's own worked reasoning, blank line, 'ANSWER: <integer>', then <end_of_turn>; prompt tokens masked to -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, /home/ben/task/data/rft_r1.jsonl, --out, /home/ben/task/ckpts/exp-05, --max-seq-len, '3072', --lr, '5e-6', --epochs, '1', --accum, '4', --token-budget, '8192', --attn, flash_attention_2, --warmup, '0.02', --save-strategy, steps, --save-steps, '600']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-05_train.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints: {every_steps: 600, keep: all}
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator: {ref: exp-04, value: 0.68, path: /home/ben/task/eval/exp-04_dev150.json}
+  diagnostic:
+    what: "how many of exp-04's 48 wrong dev-150 items become correct, and how many previously-correct items regress"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.15
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-890, step: 890}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 890}
+  training_summary:
+    final_loss: 0.2368
+    steps: 890
+    notes: "2874 s wall on the second launch (the first died at step 400, see situation.pitfalls_hit). Masked loss 0.309 -> 0.237, as expected when training on self-generated text."
+  measurements:
+    - metric: accuracy
+      value: 0.68
+      n: 150
+      path: /home/ben/task/eval/exp-05_dev150.json
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.354
+    path: /home/ben/task/analysis/exp-05_vs_exp-04.json
+    notes: "17 of exp-04's 48 wrong items became correct and 17 previously-correct items regressed (0.354 of the failures moved each way); wrong count unchanged at 48. Same churn signature as exp-04 vs exp-03."
+
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "One epoch of rejection-sampling fine-tuning on 54067 self-generated correct chains left dev-150 at 0.680, the same as its parent and the same as exp-03. On-policy correctness filtering did not beat off-policy data here, and neither beat the round-1 SFT checkpoint."
+  decision: iterate
+  next_step: "exp-06: three checkpoints now read 0.680 at n=150, which is inside the 3.8-point noise floor. Score all three at --limit 500 and ship the winner as final_model."

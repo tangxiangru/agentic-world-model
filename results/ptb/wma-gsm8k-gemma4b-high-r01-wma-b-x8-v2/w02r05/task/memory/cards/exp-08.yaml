@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T14:45:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.6
+  remaining_h: 2.4
+  incumbent:
+    ref: exp-07
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.73086, protocol_n: 1319}
+  trigger: "In the final_model full-test log, exactly 10 of 1319 completions run to the 4000-token cap in a greedy repetition loop, all 10 are scored wrong, and they are precisely the 10 items with no ANSWER line - a 0.76-point, fully identified loss with a known cause."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/final_model_full.json, locator: "format_share 0.9924, max_output_tokens 4000", observation: "10 items capped; 10 items missing an ANSWER line; the two sets coincide"}
+    - {path: /home/ben/task/logs/2026-09-03T14-35-49+00-00_gsm8k_BX2TMmsuGWF4egRjEUVfr4.json, locator: "a capped sample's tail: '183. The total number of toys produced by the 5 workers is 400. 184. The total number of hours worked by the 5 workers is 10 hours. 185. ...'", observation: "a two-line cycle repeated under a running counter - the classic greedy degenerate loop, not a reasoning failure"}
+  alternatives_rejected:
+    - {option: "Another RFT round from the soup", reason: "sampling plus a 1-epoch continuation is ~1.5 h of the 2.4 h left, and exp-05 already showed a continuation stage on top of a good checkpoint can regress; the fallback would then need re-verification with no time to do it"}
+    - {option: "More soup variants", reason: "the 1319-item spread among the existing candidates is 0.7 points against a 1.2-point stderr, so further soup search is fitting selection noise, not finding signal"}
+    - {option: "Raise --max-tokens so the loops terminate naturally", reason: "rule 5 forbids modifying evaluate.py, and its default is what the grader will use; a loop at 4000 tokens is a loop at 8000 too"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, "-c", "symlink clone of final_model with repetition_penalty 1.05 added to generation_config.json"], outcome: "ckpts/soup_d_reppen written; weights are symlinks so they are bit-identical to final_model"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Greedy decoding makes the shipped model deterministic but also makes it unable to escape a degenerate cycle once it enters one: 10 of 1319 items produce an unbounded enumerated repetition and are scored wrong for lack of any answer line, though nothing about their reasoning had failed at the point the loop started."
+  evidence:
+    - {path: /home/ben/task/analysis/final_model_full.json, locator: "format_share 0.9924 (10/1319 without an ANSWER line), all 10 scored incorrect", observation: "0.76 accuracy points, isolated and attributable"}
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150.json, locator: "max_output_tokens 1065 vs 358 under sampling", observation: "the loop tail is a property greedy decoding introduced - the sampled config never showed it"}
+  affected_share: 0.0282
+  failure_examples:
+    - {id: capped-item-1, source: /home/ben/task/logs/2026-09-03T14-35-49+00-00_gsm8k_BX2TMmsuGWF4egRjEUVfr4.json, question: "5 workers producing toys over a number of hours", gold: "n/a - never answered", model_output: "...183. The total number of toys produced by the 5 workers is 400.\n184. The total number of hours worked by the 5 workers is 10 hours.\n185. ...", failure: "two-line cycle under an incrementing counter, run to the 4000-token cap"}
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Adding repetition_penalty 1.05 to final_model's generation_config.json, with weights unchanged, will raise full-test accuracy above 0.73086 by letting some of the 10 looping completions terminate."
+  mechanism: "vLLM reads repetition_penalty from the model's generation_config.json into its default sampling params (it is in ModelConfig.get_diff_sampling_param's available_params). A mild penalty on already-emitted tokens is enough to break a verbatim cycle while leaving normal argmax decoding on non-repeating text almost untouched."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: "at most +0.76 points (the whole loop budget); realistically +0.2 to +0.5"
+  falsified_if: "full-test accuracy is at or below 0.73086, i.e. the penalty costs more on the 1309 healthy completions than it recovers from the 10 looping ones. Because the ceiling here (+0.76) is smaller than the eval's own 1.2-point stderr and its ~0.2-point run-to-run nondeterminism, a positive result must also show the loop count itself falling, or the card is inconclusive rather than supported."
+  risk: "This is a decode change on the shipped artifact. It is adopted only if BOTH accuracy rises and the capped-completion count falls; otherwise final_model is left exactly as exp-07 packaged it."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-07
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_no_training_data.txt
+      source: local
+      n_examples: 1
+      built_by: null
+      build_command: []
+      selection: "no training; the intervention is one key in one config file"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 default sampling params from generation_config.json"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/soup_d_reppen, --limit, "1319", --max-connections, "16", --json-output-file, /home/ben/task/eval/exp-08_reppen_full.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/soup_d_reppen
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{candidate}", --limit, "1319", --max-connections, "16"]
+    dev_set: "official inspect_evals/gsm8k test, all 1319 items, greedy"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-07
+    value: 0.73086
+    path: /home/ben/task/eval/final_model_full.json
+  diagnostic:
+    what: "count of completions hitting the 4000-token cap (10 in the comparator). This is the mechanism test and it decides adoption, not the accuracy delta alone."
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.09
+  output_checkpoint: /home/ben/task/ckpts/soup_d_reppen
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup_d_reppen, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to final_model"}
+  measurements:
+    - {metric: accuracy, value: 0.721, n: 1319, path: /home/ben/task/eval/exp-08_reppen_full.json, delta_vs_comparator: -0.00986}
+  diagnostic_result:
+    value: 12
+    path: /home/ben/task/analysis/exp-08_reppen_full.json
+    notes: "capped completions went 10 -> 12, not down. Mean output length rose 188.2 -> 206.4 and format share fell 0.9924 -> 0.9901: the penalty pushed the model off its argmax path into longer, differently-degenerate continuations instead of breaking the cycles."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "repetition_penalty 1.05 cost 1.0 point (0.7309 -> 0.7210) and made the thing it targeted worse: 12 capped completions instead of 10. Both adoption conditions failed, so final_model is left exactly as exp-07 packaged it. The 10 repetition loops (0.76 points) stay as a known, unfixed defect - penalising repeated tokens is the wrong instrument on text where numbers and quantity phrases legitimately recur."
+  decision: reject
+  next_step: "Stop. final_model holds the exp-07 4-way soup at 0.73086 on the full 1319-item test set, verified end-to-end through evaluate.py's default path. With 2.4 h left, the only untried lever is another RFT continuation, which is exactly the shape that lost 4 points in exp-05 and would need re-verification time it cannot be given."

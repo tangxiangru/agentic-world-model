@@ -1,0 +1,137 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T11:50:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.4
+  remaining_h: 6.6
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.6933, protocol_n: 150}
+  trigger: "62 of the 63 items exp-02 still fails stop cleanly with a well-formed 'ANSWER: N' line and simply compute the wrong number (analysis/exp-02_final_dev150_failures.jsonl); format and termination are solved, so the remaining headroom is reasoning quality, which is a data question."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150_failures.jsonl, locator: "46 failures under the adopted greedy decode", observation: "all but 2 stop cleanly; the chains are wrong, not truncated"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: conclusion.summary, observation: "0.08 -> 0.58 sampled; exp-03 lifted the same weights to 0.6933 greedy"}
+    - {path: /home/ben/task/logs/omi5m_scan.log, locator: "problem_source counter", observation: "OpenMathInstruct-2 train_5M holds 805,928 GSM8K-train-derived solutions over 81,069 unique problems; sft_v1 drew only 60,000 of them from train_1M"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling fine-tuning (RFT) on exp-02's own correct samples", reason: "sampling k solutions for 7.2k questions costs ~0.5 h of GPU before any training starts, and the resulting chains come from a 0.69-accuracy model, whereas OpenMathInstruct-2's chains come from a much stronger generator and are already on disk. Worth revisiting if this card leaves time."}
+    - {option: "Continue training exp-02/final on the new data instead of restarting from base", reason: "cheaper, but it confounds 'better data' with 'more total steps' and risks compounding whatever style exp-02 already overfit; a clean restart from the frozen base makes the data change the only difference from exp-02"}
+    - {option: "One epoch over all 190,910 v2 rows", reason: "the 10% few-shot rows are ~2750 tokens against ~430 for the rest, so they alone would take 41% of the compute; at the measured 24.5 samples/s that epoch is ~3.1 h, more than the budget allows before the final packaging. v3 keeps the same corpus at 150k rows with the few-shot share cut to 5%."}
+    - {option: "Keep the 16,802 rows (11.2% of v3) whose target ends in a decimal", reason: "the WMA's probe on the locked card found them and it is right: all 7,473 GSM8K train golds are integers (checked), so a decimal target trains an answer form the grader can never mark correct, and one of this card's own failure examples ('levels', ANSWER: 7.5) has exactly that shape. Dropped -> sft_v4.jsonl, 133,198 rows. Relocked."}
+    - {option: "Keep the 15k OpenMathInstruct math-subset rows", reason: "cut to 4,240. One of exp-02's failures answers a plain word problem in the math subset's LaTeX display style and solves the wrong quantity (analysis/exp-02_final_dev150_failures.jsonl, the 'levels' item); a smaller share keeps the harder-arithmetic exposure without pulling the output style away from GSM8K prose"}
+  pitfalls_hit:
+    - {what: "exp-02's few-shot training prefixes had GSM8K's <<a*b=c>> annotations stripped, while the grader's own 10-shot system block keeps them -- the two prefixes were not the same distribution", cost_h: 0.15, fix: "v2/v3 build the demo prefixes from the RAW gsm8k answers, and half the few-shot rows now use the grader's exact 10-shot system message verbatim"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_v1.jsonl, --bs, '32', --grad-accum, '2', --attn, flash_attention_2], outcome: "exp-02 ran this geometry for 2636 steps at 24.5 samples/s with a 55 GB peak; v3's rows are the same shape, so no new memory risk"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v4_decon_text.jsonl], outcome: "133,198 documents scanned, 0 contaminated, exit 0"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "After exp-02 + exp-03 the model stops correctly and formats correctly, and 44 of its 46 remaining errors on the 150-item protocol are wrong arithmetic or a wrong problem set-up inside an otherwise well-formed chain. The training corpus gave it only one solution per problem for 60k GSM8K-train-derived problems, and its few-shot prefix rows did not look like the grader's actual 10-shot block."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150_failures.jsonl, locator: "46 failures", observation: "44 stop cleanly with an 'ANSWER: N' line; 2 hit max_tokens"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: accuracy, observation: "0.6933 (stderr 0.038)"}
+    - {path: /home/ben/task/data/sft_v4.jsonl, locator: "meta.source counter", observation: "117,231 omi_gsm8k / 11,954 gsm8k_train / 4,013 omi_math; 6,996 few-shot rows; every target ends in an integer"}
+  affected_share: 0.96
+  failure_examples:
+    - {id: bees, source: /home/ben/task/analysis/exp-02_final_dev150_failures.jsonl, question: "700 bees, twice as many workers as babies, twice as many babies as queens", gold: '400', model_output: "derives x = 0, calls it impossible, guesses x = 100 ... ANSWER: 200", failure: "wrong algebraic set-up, then a guess"}
+    - {id: doctors, source: /home/ben/task/analysis/exp-02_final_dev150_failures.jsonl, question: "hospital profit from 500 patients at 24 minutes each", gold: '10000', model_output: "... ANSWER: 24800", failure: "misreads which side of the transaction is charged per hour"}
+    - {id: levels, source: /home/ben/task/analysis/exp-02_final_dev150_failures.jsonl, question: "average size of four halving levels", gold: '60', model_output: "\\[ x_3 = 8/2 = 4 \\] ... ANSWER: 7.5", failure: "answers a prose word problem in the math subset's LaTeX style and averages the wrong quantity"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_greedy_dev150_failures.jsonl
+    n: 46
+    selection: "every item the incumbent (exp-02/final, greedy) gets wrong on the 150-item protocol"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Retraining from the frozen base on sft_v3 -- 150k rows covering 81k unique GSM8K-train-derived problems with two independently sampled correct chains each, few-shot prefix rows carrying the grader's own 10-shot block -- scores higher under greedy decoding on the 150-item protocol than exp-02/final does under greedy decoding."
+  mechanism: "Two distinct correct chains per problem, over 81k problems instead of 60k single chains, is more of the signal that fixes set-up and arithmetic errors per unit of compute than a second epoch over the same 60k chains; and the few-shot rows now match the prefix the grader actually sends, removing a train/test prompt mismatch that applies to 100% of graded items."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: +2 to +8 points
+  falsified_if: "Greedy accuracy on the 150-item protocol is at or below 0.6933 + 0.013 (the greedy n=150 floor), i.e. <= 0.707."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4.jsonl
+      source: openai/gsm8k train split + nvidia/OpenMathInstruct-2 split train_5M
+      n_examples: 133198
+      built_by: /home/ben/task/scripts/build_sft_v2.py
+      build_command: [python, scripts/build_sft_v2.py]
+      selection: "up to 2 distinct solutions for each of the 81,069 unique problems with problem_source in {gsm8k, augmented_gsm8k}; gsm8k train minus the 300-item holdout repeated 2x; a small math-subset remainder. Solutions capped at 2600 chars, boxed answers unwrapped, numeric answers only. Few-shot prefix rows (5%) use GSM8K's raw <<a*b=c>> annotations, and half of them use the grader's exact 10-shot system message. Then subsampled to 150,000 rows (seed 7), and every row whose target ends in a non-integer answer dropped, leaving 133,198."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 32, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "chain of thought, blank line, then 'ANSWER: <integer>' then <end_of_turn>; loss on the completion only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_v4.jsonl, --out, /home/ben/task/ckpts/exp-04, --max-seq-len, '3072', --bs, '32', --grad-accum, '2', --lr, '1e-5', --epochs, '1', --attn, flash_attention_2, --save-steps, '1040', --save-total-limit, '8']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 1040
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, '{checkpoint}', '{tag}', greedy, '150']
+    dev_set: official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle), greedy decode (temperature 0.0, top_k/top_p removed) as adopted in exp-03
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6933
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  candidate_selection: "2081 optimizer steps; --save-steps 1040 gives checkpoint-1040, checkpoint-2080 and final/. The candidate is whichever of {final, checkpoint-1040} scores higher under the protocol above; exp-02 showed the end-of-cosine snapshot is not automatically best. final_model/ is only overwritten if the candidate beats the incumbent's 0.6933 on this protocol -- otherwise the exp-02 artifact already in final_model/ stands."
+  diagnostic:
+    what: "how many of the incumbent's 46 greedy failures this checkpoint fixes, and how many previously-correct items it breaks"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.48
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1040, step: 1040}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2080, step: 2080}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2082}
+  training_summary: {final_loss: 0.278, steps: 2082, notes: "train_loss 0.3159, 25.1 samples/s, 5310 s. Trainer again wrote eos_token_id [1, 1, 106]; the guard repaired it."}
+  measurements:
+    - {metric: accuracy, value: 0.74, n: 150, path: /home/ben/task/eval/exp-04_final_greedy_dev150.json, delta_vs_comparator: 0.0467}
+  diagnostic_result:
+    value: 39
+    path: /home/ben/task/analysis/exp-04_watch_rerun.json
+    notes: "148/150 completions end on a stop token. Against the incumbent's greedy read: 20 of its 46 failures fixed, 13 previously-correct items broken, net +7 items."
+  watch_set_result: {fixed: 20, still_failing: 26, regressions: 13, path: /home/ben/task/analysis/exp-04_watch_rerun.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "0.6933 -> 0.7400 greedy on the same 150 items (+4.67 pts), a gap above the 3.0 pp ledger floor at n=150, on 21% less training compute than exp-02 (2082 steps vs 2636). Two correct chains for each of 81k unique problems, integer-only targets, and grader-matched few-shot prefixes beat one chain over 60k problems trained twice."
+  decision: adopt
+  next_step: "final_model/ repackaged from ckpts/exp-04/final with --decode greedy. The corpus still has ~660k unused GSM8K-train-derived solutions, so the next card continues this checkpoint on a DISJOINT slice (solutions 3-4 per problem) rather than repeating epoch 1; a uniform soup of exp-02/final and exp-04/final is the cheap parallel candidate."

@@ -1,0 +1,100 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T07:40:00Z'
+situation:
+  elapsed_h: 0.7
+  remaining_h: 9.3
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.635, protocol_n: 200}
+  trigger: "The incumbent was trained on 15,000 rows -- 10.6% of the 141,953-row corpus that is already built, contamination-checked and sitting on disk. Nothing about exp-02 suggested saturation: train loss was still falling (0.472 -> 0.295) at the end of a single epoch."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.training_summary", observation: "final_loss 0.2949 at step 235, still decreasing; 32.97 samples/s means the full corpus costs only ~1.2 h/epoch"}
+    - {path: /home/ben/task/data/sft_all.jsonl, locator: "141953 lines", observation: "the other 89.4% of the corpus has never been trained on"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling fine-tuning (RFT) from exp-03 instead", reason: "RFT needs a strong sampler to be worth the sampling cost; spending the cheap data scaling first gives RFT a better parent. Kept as the next card."}
+    - {option: "One epoch instead of two", reason: "a single cosine schedule over 2 epochs costs 1.3 h more and the epoch-1 checkpoint is kept anyway, so the 1-vs-2 comparison comes for free"}
+    - {option: "Raise lr above 2e-5 for the larger run", reason: "2e-5 produced a clean loss curve with grad_norm ~1.0-1.3 at batch 64; changing two things at once would make the data-scaling effect unreadable"}
+    - {option: "Add MATH / augmented_math rows from OpenMathInstruct-2", reason: "the benchmark is GSM8K only; 831k augmented_math rows would dilute grade-school style for no measured benefit"}
+  pitfalls_hit:
+    - {what: "Trainer saves fp32 (17 GB) and vLLM would then load fp32 weights", cost_h: 0.03, fix: "scripts/to_bf16.py re-saves bf16 before every eval; save_only_model=True so optimizer state is not written"}
+  smoke_runs: []
+problem:
+  statement: "The incumbent is data-starved. It saw 15k of 141,953 available GSM8K-train-derived chains for one epoch, and 36.5% of dev-200 is still wrong -- overwhelmingly wrong arithmetic or a wrong plan inside a well-formed chain, since format adherence is already 96.5%."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "accuracy=0.635, last_line_is_answer=0.965", observation: "format is solved; the residual 36.5% is solve-rate, not formatting"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.training_summary.final_loss", observation: "loss still falling at the end of the pilot's single epoch"}
+  affected_share: 0.365
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Training the same recipe on all 141,953 rows for 2 epochs instead of 15,000 rows for 1 epoch raises greedy dev-200 accuracy above the incumbent's 0.635."
+  mechanism: "The residual errors are solve-rate, not format. 9.5x more distinct Llama-3.1-405B chains over 70,828 distinct GSM8K-train problems gives far broader coverage of grade-school problem structures and far more correct arithmetic to imitate."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+5 to +15 pts"}
+  falsified_if: "greedy dev-200 accuracy of the final checkpoint is at or below 0.635, or the epoch-2 checkpoint scores below the epoch-1 checkpoint by more than 1 stderr (which would say the corpus is exhausted and the run is overfitting)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_all.jsonl
+      source: "derived: openai/gsm8k split=train + nvidia/OpenMathInstruct-2 split=train_1M rev 469216e3f46f4dacf476b382e192485ea51a143e (problem_source in {gsm8k, augmented_gsm8k} only)"
+      n_examples: 141953
+      built_by: /home/ben/task/scripts/prepare_data.py
+      build_command: [python, scripts/prepare_data.py, --out, data/sft_all.jsonl, --max-per-problem, '4']
+      selection: "GSM8K *train* split only. boxed answers unwrapped, <<calc>> annotations stripped, expected_answer required to be a plain integer, exact (problem, solution) dedup, at most 4 solutions per problem, shuffled seed 0. 70,828 distinct problems."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2"
+    peft: "none (full fine-tune of the 3.88B text stack; 0.42B vision tower and projector frozen)"
+    hyperparams: {lr: 2.0e-5, epochs: 2.0, batch_size: 64, grad_accum: 1, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master + bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "<bos><start_of_turn>user\\n{grader MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n{chain}\\n\\nANSWER: {int}<end_of_turn>; loss on completion + terminating <end_of_turn> only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/sft_all.jsonl, --out, /home/ben/task/ckpts/exp-04, --lr, '2e-5', --epochs, '2', --bs, '64', --grad-accum, '1', --max-seq-len, '1024', --seed, '0', --save-steps, '2218']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints: {every_steps: 2218, keep: all}
+  budget: {gpu: H100-80GB, planned_h: 2.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 200 (first 200 items of the gsm8k test split in inspect_evals order); checkpoints converted to bf16 + greedy generation_config.json before scoring, exactly as exp-03 was"
+    n: 200
+    seed: null
+  comparator: {ref: exp-03, value: 0.635, path: /home/ben/task/eval/exp-03_n200.json}
+  diagnostic: {what: "share of completions that end with a stop token", n: 200, metric: accuracy, direction: higher}
+result:
+  execution: completed
+  wall_h: 2.39
+  output_checkpoint: /home/ben/task/ckpts/exp-04-e2
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2218, step: 2218}
+    - {path: /home/ben/task/ckpts/exp-04, step: 4430}
+    - {path: /home/ben/task/ckpts/exp-04-e1, step: 2218}
+    - {path: /home/ben/task/ckpts/exp-04-e2, step: 4430}
+  training_summary: {final_loss: 0.1785, steps: 4430, notes: "train_loss 0.2542 over the run; 32.97 samples/s, 8597 s wall. exp-04-e1/-e2 are the bf16 + greedy-generation_config copies of checkpoint-2218 and the final checkpoint."}
+  measurements:
+    - {metric: accuracy, value: 0.725, n: 200, path: /home/ben/task/eval/exp-04-e2.json, delta_vs_comparator: 0.09}
+    - {metric: accuracy, value: 0.675, n: 200, path: /home/ben/task/eval/exp-04-e1.json, delta_vs_comparator: 0.04}
+  diagnostic_result:
+    value: 0.98
+    path: /home/ben/task/analysis/exp-04-e2_diag.json
+    notes: "stop_share 0.965 -> 0.980 and last-line format 0.965 -> 0.980. Epoch 1 alone (same corpus, 1 pass) already reaches 0.675, so both the extra data and the second pass contribute."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy dev-200 0.635 -> 0.725 (+9.0 pts) from 9.5x more data and a second epoch; the epoch-1 checkpoint scores 0.675, so the second pass is worth a further +5.0 and the corpus is not yet exhausted. Format is now essentially solved (98% well-formed, terminated completions), so the whole residual 27.5% is solve-rate."
+  decision: adopt
+  next_step: "exp-05: rejection-sampling fine-tuning. exp-04-e2 is now a strong enough sampler that its own correct solutions to GSM8K-train and OpenMathInstruct-2 augmented-train problems are on-policy training data, which the off-policy Llama-405B chains are not. Comparator 0.725 at n=200."

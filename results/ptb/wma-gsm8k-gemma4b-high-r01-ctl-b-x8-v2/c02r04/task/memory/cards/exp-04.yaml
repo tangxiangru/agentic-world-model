@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T09:50:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.9
+  remaining_h: 7.1
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "exp-02 saw each of its 151k rows exactly once and its loss was still falling (0.42 -> 0.30 across the epoch, no plateau); 152k further OpenMathInstruct-2 gsm8k rows were built and contamination-checked while exp-02 trained and are sitting unused."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-02.log, locator: "final logged loss 0.306 at epoch 0.99, train_loss 0.322", observation: "one epoch, cosine to zero, no sign of overfitting"}
+    - {path: /home/ben/task/analysis/exp-02_failure_tags.json, locator: "failures=45, runon=0", observation: "what is left is reasoning/arithmetic, which is what more solution data addresses"}
+    - {path: /home/ben/task/logs/prep2.log, locator: "kept 152227, total tokens 72.4M"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling fine-tuning (RFT) on exp-02's own correct samples first", reason: "planned as exp-05; RFT is cheaper (~1.1 h) and is better done from the strongest available parent, so it goes second"}
+    - {option: "Retrain from base on all 304k rows with one cosine schedule", reason: "cleaner but ~4 h; continuing from exp-02 with a fresh low-LR cosine buys most of it in half the time, and 7.1 h is not enough for 4 h of training plus RFT plus final packaging"}
+    - {option: "Second epoch over the SAME 151k rows", reason: "repeating seen rows risks memorisation; 152k unseen solutions to overlapping problems is strictly more information"}
+    - {option: "Add MATH / augmented_math rows in bulk", reason: "the benchmark is grade-school word problems; exp-02 already carries a 12k numeric-answer tail from math sources and the marginal row is better spent on gsm8k-style problems"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, prepare_tokens.py, --inp, data/sft_v2_extra.jsonl, --out-npz, data/sft_v2_extra_tokens.npz], outcome: "152227 rows kept, 400 dropped for length, 72.4M tokens, 152227/152227 end in token 106 <end_of_turn>"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02/exp-03 gets 42-45 of 150 items wrong and none of those failures are format failures any more: the model stops correctly, emits exactly one ANSWER line, and is simply wrong about the arithmetic or the plan. That is a capability gap, and exp-02 consumed only one pass over 151k solutions to close it."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_failure_tags.json, locator: "whole file", observation: "42 failures, run-on share 0.00, stop_reasons stop=150, median completion 445 chars"}
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: "accuracy 0.72"}
+  affected_share: 0.28
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing full-parameter SFT from ckpts/exp-02/final for one epoch over 152k previously unseen OpenMathInstruct-2 gsm8k solutions, at a lower peak LR (1e-5, cosine), will raise greedy accuracy at n=150 against exp-03's 0.72."
+  mechanism: "The remaining failures are content errors, and exp-02's loss was still decreasing when its single epoch ran out. Doubling the number of distinct verified solution chains the model has seen - same problems, different derivations, plus problems it has not seen - is the standard way that curve keeps going down. The halved LR keeps the continuation from undoing the format behaviour exp-02 already learned."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +5 points"
+  falsified_if: "greedy accuracy at n=150 is <= 0.72, or the run-on share of failures rises above 0.05 (which would mean the continuation damaged the termination behaviour)"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2_extra_clean.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, shards data/train-00000..00007-of-00032 (the full train split, not the train_1M subsample used by exp-02)"
+      n_examples: 152227
+      built_by: /home/ben/task/build_data2.py
+      build_command: [python, build_data2.py, --exclude, data/sft_v1_clean.jsonl, --out, data/sft_v2_extra.jsonl]
+      selection: "problem_source in {gsm8k, augmented_gsm8k}; numeric answers only; up to 2 further solutions per problem on top of whatever exp-02 used; every (problem, solution-prefix) pair present in sft_v1_clean.jsonl excluded; same \\boxed unwrap, same single-'ANSWER: ' guard, same 2560-token cap; 15% few-shot prefixes from gsm8k TRAIN"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, subclassed: chunked CE + token-budget batch sampler"
+    peft: "none - full fine-tune of the language model; vision_tower and multi_modal_projector frozen"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 64, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 1}
+    target_format: "identical to exp-02: solution prose, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the target only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --npz, data/sft_v2_extra_tokens.npz, --parent, ckpts/exp-02/final, --out, ckpts/exp-04, --lr, "1e-5", --epochs, "1", --warmup, "0.02", --token-budget, "16000", --bs, "64", --accum, "4", --seed, "1", --save-steps, "600"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 600
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.05}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.72
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "run-on share of failures and stop_reasons, to confirm the continuation did not damage termination"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.89
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1195}
+  training_summary: {final_loss: 0.275, steps: 1195, notes: "train_loss 0.276 mean vs exp-02's 0.322; 22.4 rows/s; intermediate checkpoint-600/1195 deleted after final was saved (same weights as 1195)"}
+  measurements:
+    - {metric: accuracy, value: 0.7333, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-04_failure_tags.json
+    notes: "run-on share still 0.00 and stop_reasons still stop=150 - the continuation did not damage termination, which was the second falsification condition"
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "0.7333 vs 0.72 at n=150 (+1.3 points, 40 failures vs 42). The direction is right and termination was preserved, but +1.3 against a 3.6-point stderr is not a measurement - doubling the solution corpus bought at most a point or two here, far less than the format fix did."
+  decision: adopt
+  next_step: "Adopt as the incumbent (it is not worse, and its training loss is genuinely lower), but stop buying more OpenMathInstruct-2 rows: the curve has flattened. exp-05 switches signal type to on-policy rejection sampling from exp-04 itself, restricted to questions in a pass-rate band, which is a different kind of data rather than more of the same."

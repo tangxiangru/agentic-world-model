@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T10:45:00Z'
+situation:
+  elapsed_h: 4.5
+  remaining_h: 5.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.6533, protocol_n: 150}
+  trigger: "exp-02/exp-03 fixed the output contract completely (150/150 terminate, 150/150 one ANSWER line) but 52 of 150 dev items are still wrong, and the failures are reasoning errors: double-counted subtractions, numbers invented from nowhere, answering a different quantity than asked."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "terminated_frac 0.98, one_answer_frac 0.98", observation: "format is not the bottleneck any more"}
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "terminated_frac 1.0", observation: "all 61 sampled-decode failures are content errors"}
+    - {path: /home/ben/task/logs/exp-04_sample2.log, locator: "final json summary", observation: "the incumbent solves 62.0% of its own samples and 85.8% of 24000 training questions in at least one of four draws - a 24-point gap between what it can do and what it does on the first try"}
+  alternatives_rejected:
+    - {option: "Another epoch of the same OpenMathInstruct-2 data", reason: "stage-1 loss had already flattened at 0.32 and the data is off-policy; the pass@4 - pass@1 gap says the model's own correct traces are the cheaper signal"}
+    - {option: "DPO on correct/incorrect sample pairs", reason: "needs a reference-model forward pass per step and a tuned beta; RFT gets the same on-policy signal with the stage-1 trainer already validated, which matters with 5.5 h left"}
+    - {option: "GRPO / online RL", reason: "hours of tuning for a first working run; not affordable in the remaining budget"}
+    - {option: "Train on the RFT data alone", reason: "29477 on-policy rows would drift the model off the stage-1 distribution; 25000 stage-1 rows are mixed back in at ~46% of the file"}
+  pitfalls_hit:
+    - {what: "First sampling run finished all 131892 generations (48 min) then died in the scoring loop: norm() called int(float('1e400')) on a model-emitted number and raised OverflowError, discarding every result", cost_h: 0.85, fix: "norm() now catches OverflowError and returns the string; the per-row loop is wrapped so one bad row cannot lose a finished run. Rerun used 24000 questions to claw back some of the lost time."}
+    - {what: "First build_rft pass produced 19546 targets with two or more 'ANSWER:' lines (the sampler sometimes repeats the answer line, in 6 cases 60+ times) because the truncation cut at the LAST marker instead of the first - the double_answer_format pitfall", cost_h: 0.1, fix: "cut at the FIRST 'ANSWER:', require the number there to equal gold, and drop any row that still has more than one marker; rebuilt file has 0 bad rows"}
+  smoke_runs:
+    - {command: [python, scripts/sample_rft.py, --model, /home/ben/task/ckpts/exp-02, --questions, data/rft_questions.jsonl, --limit, '24000', --k, '4', --temp, '1.0'], outcome: "96000 samples, sample_acc 0.620, pass@4 0.858, 3400 questions unsolved; 34 min"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/rft_v1_text.jsonl], outcome: "54477 documents scanned, 0 contaminated, exit 0"}
+problem:
+  statement: "The incumbent's first-try accuracy is far below its own reachable accuracy: it solves 85.8% of 24000 training questions in at least one of four samples but only 62.0% of individual samples, and 52 of 150 dev items are wrong for reasoning reasons. The stage-1 corpus is other models' prose, so nothing in training reinforced the reasoning paths this model actually produces."
+  evidence:
+    - {path: /home/ben/task/logs/exp-04_sample2.log, locator: "sample_acc 0.62025, pass_at_k 0.85833", observation: "24-point gap between pass@4 and per-sample accuracy on held-in training questions"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: accuracy, observation: "0.6533; 52 items wrong"}
+  affected_share: 0.35
+  failure_examples:
+    - {id: "dev-Nissa", source: "official gsm8k test --limit 150", question: "Nissa hires 60 seasonal workers ... a third quit, then 10 more quit ...", gold: "30", model_output: "60/3=20 quit -> 40 left; then 'a total of 40 + 10 = 50 elves quit' -> 10 left. ANSWER: 10", failure: "re-counts survivors as quitters"}
+    - {id: "dev-Luke", source: "official gsm8k test --limit 150", question: "Luke ... each sandcastle level has half the square footage of the one below ...", gold: "60", model_output: "16, 8, 4, 2 -> 30 -> 30/4 = 7.5. ANSWER: 7.5", failure: "wrong base value, answers the wrong quantity"}
+    - {id: "dev-Doubtfire", source: "official gsm8k test --limit 150", question: "The Doubtfire sisters ... 7 kittens ... two house cats have had kittens ...", gold: "40", model_output: "12 + 12 = 24 kittens adopted ... 24 + 7 = 31. ANSWER: 31", failure: "invents numbers not in the problem"}
+    - {id: "rft-unsolved", source: /home/ben/task/data/rft_samples.jsonl, question: "3400 of 24000 training questions where none of 4 samples was correct", gold: "various", model_output: "no correct draw in 4", failure: "beyond the model's current reach; these contribute no RFT rows and are the residual after this card"}
+  watch_set: null
+hypothesis:
+  claim: "A second SFT stage from ckpts/exp-02 on 29477 self-generated, answer-verified solutions (mixed with 25000 stage-1 rows) raises greedy dev-150 accuracy above exp-03's 0.6533."
+  mechanism: "Rejection sampling keeps only the model's own traces that reach the right answer, so gradient goes to the reasoning paths this model actually produces at decode time; that converts part of its pass@4 headroom into first-try accuracy. Capping fully-solved problems at one solution and hard problems (1-3 of 4 correct) at two concentrates the data where the signal is."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 points"
+  falsified_if: "greedy dev-150 accuracy is at or below exp-03's 0.6533"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: "synthetic:self (sampled from ckpts/exp-02) over openai/gsm8k@740312ad TRAIN questions + nvidia/OpenMathInstruct-2@469216e3 gsm8k-sourced problems; plus 25000 rows re-used from data/sft_v2.jsonl"
+      n_examples: 54477
+      built_by: /home/ben/task/scripts/build_rft.py
+      build_command: [python, scripts/build_rft.py, --samples, data/rft_samples.jsonl, --out, data/rft_v1.jsonl, --max-per-problem, '2', --max-per-easy, '1', --mix-sft, data/sft_v2.jsonl, --mix-n, '25000']
+      selection: "k=4 samples at T=1.0/top_p 0.95/top_k 64 from ckpts/exp-02 on 24000 train-derived questions; keep only samples whose first ANSWER line equals gold; 2 per hard problem (1-3 of 4 correct), 1 per fully-solved problem; deduplicated by the (numbers, operators) signature of the solution so two paraphrases of one derivation count once; 12% re-rendered behind a k-shot prefix of random GSM8K TRAIN items. GSM8K test split never read."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer, full fine-tune (same script as exp-02)
+    peft: none
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 19.7, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, token_budget: 8192, max_bs: 48, note: "lr lowered from stage 1's 1e-5 because this continues from an already-converged checkpoint"}
+    target_format: "reasoning body, newline, one 'ANSWER: <number>' line, then <end_of_turn>; prompt tokens masked to -100; rows over max_seq_len dropped, not truncated"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-02, --data, data/rft_v1.jsonl, --out, /home/ben/task/ckpts/exp-04, --max-seq-len, '2560', --lr, '7e-6', --epochs, '1', --save-steps, '350', --token-budget, '8192', --max-bs, '48', --accum, '4', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04_train.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 350
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}-greedy', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 150 (first 150 items, deterministic order), greedy decode via generation_config temperature 0.0 as adopted in exp-03
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6533
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "greedy termination share (exp-03 lost 3 items to repetition loops); if RFT on single-answer targets also fixes those loops, the share should return to 1.0"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.72
+  output_checkpoint: /home/ben/task/ckpts/exp-04
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04, step: 669}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-669, step: 669}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-350, step: 350}
+  training_summary:
+    final_loss: 0.2626
+    steps: 669
+    notes: "54477 rows, 0 dropped at max_seq_len 2560; loss flat at 0.263-0.270 throughout (the model is being fit to its own outputs, so it starts near its own entropy); 42 min wall"
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-04_greedy_dev150.json, delta_vs_comparator: 0.0533}
+  diagnostic_result:
+    value: 0.993
+    path: /home/ben/task/analysis/exp-04_diag.json
+    notes: "149/150 terminate on <end_of_turn> with exactly one ANSWER line, up from exp-03's 147/150: training on targets cut at the FIRST answer line removed two of the three greedy repetition loops."
+  watch_set_result: {fixed: 17, still_failing: 35, regressions: 9, path: /home/ben/task/analysis/exp-04_diag.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy dev-150 0.6533 -> 0.7067 (+5.3 points) from one RFT stage on the model's own answer-verified samples, at the same decode settings and from the same parent. Item-level 17 fixed / 9 regressed (paired stderr ~3.4 points, so ~1.6 sigma), and the repetition-loop count fell 3 -> 1, which is the mechanism-side confirmation."
+  decision: adopt
+  next_step: "exp-05: a second RFT round sampled from exp-04 itself. exp-04's pass@4 headroom was 24 points before this round; re-measuring it on the new checkpoint says how much is left. final_model is populated from exp-04 immediately as a safe fallback."

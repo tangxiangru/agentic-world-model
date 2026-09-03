@@ -1,0 +1,126 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T14:18:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.37
+  remaining_h: 2.63
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.76, protocol_n: 150}
+  trigger: "Five cards have now selected on the same 150 items (0.06 -> 0.70 -> 0.72 -> 0.7333 -> 0.76) and the last three deltas are all inside a ~3.6-point stderr. The artifact that will actually be graded is final_model/, which no card has scored, and n=150 cannot separate exp-04 from exp-05."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "all five rows, every one at protocol_n=150"}
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "accuracy 0.76, stderr 0.0350"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy 0.7333, stderr 0.0362"}
+  alternatives_rejected:
+    - {option: "Ship on the n=150 number and spend the remaining time on a second RFT round", reason: "a second RFT round is ~1.6 h of sampling plus training plus eval; with 2.6 h left that would finish with no margin to verify or re-package the artifact, and an unverified final_model is the one failure mode that costs everything"}
+    - {option: "Score final_model at n=150 only", reason: "it would just repeat exp-05's number on the same items; the point of this card is a wider sample and a check of the packaged copy"}
+    - {option: "Score at the full 1319 items", reason: "~45 min per model at the observed rate; n=500 costs ~20 min and already halves the stderr from 3.5 to ~1.9 points"}
+  pitfalls_hit:
+    - {what: "exp-05's first launch trained a full epoch then died in save_pretrained on the parent's greedy generation_config", cost_h: 0.75, fix: "set a valid in-memory GenerationConfig before training and write the greedy JSON directly to disk after save_model"}
+  smoke_runs:
+    - {command: [python, finalize.py, --src, ckpts/exp-05/final, --dst, final_model], outcome: "13 files, no symlinks, nothing missing; fresh-process CPU load returned arch Gemma3ForConditionalGeneration, end_of_turn id 106, logits (1,10,262208), LOAD_OK"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "final_model/ is a fresh copy of the exp-05 weights with a hand-written generation_config.json, and it has never been run through evaluate.py. Separately, every score in this batch rests on 150 items, so the exp-05 > exp-04 choice is made on a delta smaller than its own error bar."
+  evidence:
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "accuracy 0.76 stderr 0.0350"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy 0.7333 stderr 0.0362"}
+    - {path: /home/ben/task/finalize.py, locator: "the copy + fresh-process load probe; a transformers CPU load is not a vLLM load"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Measurement card: the packaged final_model/ scored at n=500 will land within one standard error of exp-05's n=150 result (0.76) rather than at the base-model floor, confirming that the copy, the tokenizer files and the greedy generation_config all survived packaging."
+  mechanism: "final_model/ holds byte-identical weight files to ckpts/exp-05/final, so the only things that can differ are the packaging artefacts - a missing processor/tokenizer file, or a generation_config vLLM rejects. Either would show up as a large drop, not a small one."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "0.72-0.80 at n=500; anything below 0.60 means packaging broke something"
+  falsified_if: "accuracy at n=500 is below 0.68, or evaluate.py fails to load final_model at all"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/final_model/config.json
+      source: "derived:exp-05 - a file copy, no training in this card"
+      n_examples: 1
+      built_by: /home/ben/task/finalize.py
+      build_command: [python, finalize.py, --src, ckpts/exp-05/final, --dst, final_model]
+      selection: "every regular file from ckpts/exp-05/final except training_args.bin, dereferenced; generation_config.json rewritten greedy"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect-ai + vLLM 0.11.0 (no training)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-05"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_eval.sh, final_model, final_model_dev500, "500"]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/eval_final_model_dev500.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: null                # not yet measured at n=500 when this card locked;
+    path: null                 # measured after the lock, recorded in result.measurements[1]
+  diagnostic:
+    what: "run-on share and stop reasons at n=500, to confirm termination holds on 350 items no card has seen"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 479}
+  training_summary: {final_loss: null, steps: null, notes: "no training; file copy of ckpts/exp-05/final plus a greedy generation_config"}
+  measurements:
+    - {metric: accuracy, value: 0.772, n: 500, path: /home/ben/task/eval/final_model_dev500.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.772, n: 500, path: /home/ben/task/eval/exp-04_dev500.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp04_vs_exp05_dev500_agreement.json
+    notes: "Packaging is clean: 0.772 +/- 0.019 at n=500, nowhere near a load failure. But the comparator, run under the same n=500 protocol, also scored 0.772 - exactly 386/500 for both. exp-05's +2.7 over exp-04 at n=150 did NOT replicate. Per-item: 354 both right, 32 only exp-05, 32 only exp-04, 82 neither; union 418/500 = 0.836, so the two are genuinely different models of equal accuracy, not the same model twice."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "final_model packages correctly and scores 0.772 +/- 0.019 at n=500, inside one stderr of exp-05's 0.76 at n=150, so nothing broke in the copy. The wider sample also retired a claim: exp-05 and exp-04 tie at 386/500, so the RFT card's +2.7 was n=150 noise, not a measured gain."
+  decision: adopt
+  next_step: "NOTE ON THE RECORD: evaluation.comparator was left null at lock time because exp-04 had no n=500 score yet; it was run immediately after this card's own eval, under the identical protocol, and is recorded as result.measurements[1] with its path rather than back-filled into the locked section 4. Two checkpoints of equal accuracy that disagree on 64 items are the textbook case for averaging rather than choosing - exp-07 souped them. Read exp-05's 'supported' verdict as inconclusive at the wider n."

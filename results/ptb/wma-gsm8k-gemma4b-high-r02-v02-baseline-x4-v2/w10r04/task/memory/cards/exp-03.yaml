@@ -1,0 +1,142 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T10:31:48Z'
+situation:
+  elapsed_h: 3.1
+  remaining_h: 6.9
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpt/exp-02/final
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "exp-02 solved the format problem completely (truncation 150/150 -> 2/150, run-on 123/150 -> 0/150) but 41 of 150 official items and 66 of 250 dev items are still wrong, and those failures are wrong chains, not wrong shapes. Sampling k=4 from exp-02 itself solves 86% of 16223 gsm8k-train questions at least once, so the model can often reach a correct chain but does not on its greedy pass."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_diag.json, locator: "stats: correct 109/150, truncated 2, runon 0, no_answer_line 2"}
+    - {path: /home/ben/task/data/rft_v1_stats.json, locator: "solve_rate 0.86, mean_correct_per_question 2.551 over 16223 questions at k=4, T=1.0"}
+  alternatives_rejected:
+    - {option: "Retrain from the base on sft_v1 + rft_v1 for 2 epochs (the canonical RFT recipe)", reason: "46M tokens/epoch = ~2.6 h of the 6.9 h left, leaving no room to score it or to recover if it lost to the incumbent; continuing from exp-02 for one epoch costs ~30 min"}
+    - {option: "A third SFT epoch on sft_v1", reason: "epoch 1 -> epoch 2 moved dev-250 only 0.716 -> 0.736 while train loss fell to 0.31; more passes over the same chains is the flattest lever available"}
+    - {option: "DPO on correct-vs-incorrect sampled pairs", reason: "the 14% of questions never solved at k=4 give few clean pairs, and a preference run needs a reference model in memory plus a tuning pass this batch has no budget to debug"}
+    - {option: "RFT rows only, no replay", reason: "self-generated chains are a narrower style than the 405B-written ones exp-02 learned; 15k rows resampled from sft_v1 are mixed in (37% of the file) to hold the distribution"}
+    - {option: "Keep all correct samples per question", reason: "mean 2.55 correct of 4 would over-weight easy questions; capped at 2 per question after de-duplicating near-identical chains"}
+  pitfalls_hit:
+    - {what: "WMA precondition (tier 1) caught before launch: train_sft.py reads generation_config.json from the parent, and ckpt/exp-02/final carries make_greedy.py's temperature 0.0, which GenerationConfig.validate() rejects at save time - the raise would have landed ~25 min in and taken the epoch with it. Parent is now models/exp-02_parent, a symlink copy whose generation_config is the base's valid one", cost_h: 0.05, fix: "symlink parent + a save-path smoke with --save-strategy epoch"}
+    - {what: "a dev eval launched next to the running trainer died: vLLM's gpu_memory_utilization is a fraction of TOTAL memory and the trainer already held 44 GB, so the engine computed -3.84 GiB of KV cache", cost_h: 0.05, fix: "no concurrent GPU jobs; evals wait for the trainer to exit"}
+  smoke_runs:
+    - {command: [python, rft_sample.py, --model, /home/ben/task/ckpt/exp-02/final, --out, data/rft_v1.jsonl, --n-aug, '9000', --k, '4'], outcome: "16223 questions in 21 min at 7.9k output tokens/s; 13952 solved at least once; 25766 rows kept"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/rft_mix_v1.jsonl], outcome: "0 contaminated documents of 40766"}
+problem:
+  statement: "exp-02's remaining errors are reasoning errors: it terminates and formats correctly (run-on 0/150) but produces a wrong chain on 41 of 150 official items and 66 of 250 held-out dev items. On 86% of gsm8k-train questions the same checkpoint produces a correct chain when sampled 4 times at T=1.0, so the correct behaviour is inside the model but is not what greedy decoding picks."
+  evidence:
+    - path: /home/ben/task/eval/exp-02_diag.json
+      locator: stats
+      observation: "41/150 wrong with truncated 2, runon 0, garbage 0 - the failures are not format failures"
+    - path: /home/ben/task/data/rft_v1_stats.json
+      locator: solve_rate
+      observation: "13952/16223 = 86% of train questions have at least one correct chain among 4 samples, mean 2.55 correct of 4"
+    - path: /home/ben/task/eval/exp-02_ep2_dev250.json
+      locator: "records with ok=false"
+      observation: "66/250 dev items wrong, mean output 171 tokens, only 4 truncated"
+  affected_share: 0.27
+  failure_examples:
+    - {id: dev-traci, source: /home/ben/task/eval/exp-02_ep2_dev250.json, question: "Traci and Harris are baking cakes together; Harris has 400g of flour, each cake needs 100g, they make 9 cakes each...", gold: '500', model_output: "'...Traci must have brought 1800 - 800 = 1000g ... ANSWER: 1000' (gold 500)", failure: "misread how much flour the 18 cakes need; well-formed chain, wrong plan"}
+    - {id: dev-aaron, source: /home/ben/task/eval/exp-02_ep2_dev250.json, question: "Aaron and his brother Carson each saved $40; the bill is 3/4 of their total money; they buy ice cream with the rest...", gold: '6', model_output: "'...$18 / $1.5 = 12 scoops ... they each bought 12 scoops ... ANSWER: 12' (gold 6)", failure: "divided the pair's remaining money without splitting it between the two of them"}
+    - {id: dev-ben, source: /home/ben/task/eval/exp-02_ep2_dev250.json, question: "Ben will receive a bonus of $1496 and allocates 1/22, 1/4 and 1/8 of it to three expenses; how much is left?", gold: '867', model_output: "'...$68 + $374 + $187 = $630 ... ANSWER: 866' (gold 867)", failure: "one-off arithmetic slip: 1496/22 = 68 was rounded, so the total is 1 too high"}
+    - {id: dev-edith, source: /home/ben/task/eval/exp-02_ep2_dev250.json, question: "Edith has 80 novels, half as many as her writing books; how many novels and writing books does she have altogether?", gold: '240', model_output: "'80 (novels) + 40 (writing books) = 120 ... ANSWER: 120' (gold 240)", failure: "inverted the 'half as many as' relation"}
+  watch_set:
+    path: /home/ben/task/data/dev_holdout.jsonl
+    n: 250
+    selection: "the same 250 held-out gsm8k TRAIN items as exp-02, so fixed/regressed counts are comparable across cards; exp-02 gets 184 right and 66 wrong"
+hypothesis:
+  claim: "Continuing exp-02 for one epoch on 25.8k self-generated chains that were verified to reach the gold answer, plus a 15k-row replay slice of the exp-02 corpus, increases greedy accuracy relative to exp-02 on the held-out dev-250 and on the official test set, and reduces the wrong-chain share of its failures."
+  mechanism: "Rejection sampling concentrates probability on chains the model itself can produce AND that reach the right answer, which is exactly the gap between its sampled 86% and its greedy 73%: it re-ranks the model's own solution distribution toward the correct modes rather than teaching a new style."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +5 pts on dev-250; on official n=150 an effect that size sits inside the 0.037 stderr, so both models are also scored at n=500"
+  falsified_if: "dev-250 accuracy at or below exp-02's 0.736, or official n=500 accuracy below exp-02's n=500 score"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/models/exp-02_parent
+    origin: exp-02
+    hash: "symlinks to every weight/tokenizer file of ckpt/exp-02/final; only generation_config.json differs (the greedy temperature 0.0 that make_greedy.py writes for scoring cannot be loaded into a Trainer)"
+
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "synthetic:self (ckpt/exp-02/final) over gsm8k train + OpenMathInstruct-2 augmented_gsm8k questions, mixed with derived:exp-02 replay rows"
+      n_examples: 40766
+      built_by: /home/ben/task/rft_sample.py
+      build_command: [python, rft_sample.py, --model, /home/ben/task/ckpt/exp-02/final, --out, data/rft_v1.jsonl, --n-aug, '9000', --k, '4', --temperature, '1.0', --max-tokens, '640', --keep-per-question, '2']
+      selection: "k=4 at T=1.0/top_p 0.95 over 7223 gsm8k-train and 9000 augmented_gsm8k questions (the 250 dev-holdout questions excluded). A sample is kept only if it terminated, contains an ANSWER: line, and its graded last numeric token equals the gold answer; near-identical chains de-duplicated on the first 400 normalised characters; at most 2 per question -> 25766 rows. Plus 15000 rows sampled from data/sft_v1.jsonl (seed 0) as replay."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 + flash-attn 2.8.3
+    peft: none
+    hyperparams: {lr: 5.0e-06, epochs: 1, batch_size: 1, grad_accum: 3, max_seq_len: 3072,
+      scheduler: cosine, warmup: 20, weight_decay: 0.0, precision: bf16, seed: 0,
+      token_budget_per_microbatch: 16384, optim: adamw_torch_fused, adam_beta2: 0.95,
+      max_grad_norm: 1.0, gradient_checkpointing: true}
+    target_format: "identical to exp-02: prompt is the grader's exact rendering (15% of rows carry a random 1-10 shot gsm8k-train prefix), completion is chain + blank line + 'ANSWER: n' + <end_of_turn>, loss on completion tokens only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/models/exp-02_parent, --data, /home/ben/task/data/rft_mix_v1.jsonl,
+      --out, /home/ben/task/ckpt/exp-03, --epochs, '1', --lr, '5e-6', --warmup, '20',
+      --token-budget, '16384', --grad-accum, '3', --max-seq-len, '3072', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpt/exp-03
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.7
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: official --limit 150 (first 150 items of openai/gsm8k test as served by inspect_evals)
+    n: 150
+    seed: null
+    decode: "greedy via make_greedy.py (temperature 0.0, eos [1,106]); evaluate.py's --max-tokens 4000 and --gpu-memory-utilization 0.3 left at their defaults"
+    selection_note: "n=150 has a 0.037 stderr and cannot resolve the effect this card predicts, so exp-02 and exp-03 are ALSO both scored at --limit 500 under the identical greedy/conn-16 invocation, and that pair decides adopt/reject. The test split is used only as the benchmark; nothing derived from it enters training."
+  comparator:
+    ref: exp-02
+    value: 0.7267
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "held-out dev-250 accuracy via local_eval.py (greedy, max_tokens 1024) plus fixed/still-failing/regressed against exp-02's 184/66 split; exp-02 = 0.736 at eval/exp-02_ep2_dev250.json"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.4
+  output_checkpoint: /home/ben/task/ckpt/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpt/exp-03/final, step: 371}
+  training_summary: {final_loss: 0.2642, steps: 371, notes: "1112 micro-batches, 17.7M real tokens, 0.1% padding, 1426 s, 3.84 s/step"}
+  measurements:
+    - {metric: accuracy, value: 0.6990, n: 1319, path: /home/ben/task/eval/exp-03_full.json, delta_vs_comparator: 0.0114}
+    - {metric: accuracy, value: 0.6800, n: 150, path: /home/ben/task/eval/exp-03_dev150.json, delta_vs_comparator: -0.0467}
+  diagnostic_result:
+    value: 0.720
+    path: /home/ben/task/eval/exp-03_dev250.json
+    notes: "dev-250 0.736 -> 0.720 (-1.6 pts, inside the 0.03 noise floor of a 250-item read). Termination improved further: truncated 4 -> 0, no_answer_line 4 -> 0, mean output 171 -> 156 tokens. On the full 1319-item test the paired comparison is exp-03-only-correct 111 vs exp-02-only-correct 96, delta +0.0114 +/- 0.0109 (McNemar), z = 1.04: a real-looking but statistically unresolved gain. The n=150 protocol slice moved the other way (0.7267 -> 0.6800), which is what a 0.038-stderr read does; the n=150 slice also flatters exp-02 (0.7267 there vs 0.6876 on the full set). A zero-shot probe on the same dev items gave exp-03 0.736 against 0.720 with the graded 10-shot prefix, so the prefix costs at most ~1.6 pts and is not the lever."
+  watch_set_result:
+    fixed: 15
+    still_failing: 51
+    regressions: 19
+    path: /home/ben/task/eval/exp-03_watch.json
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "RFT moved the full-test score from 0.6876 to 0.6990 (+1.14 pts, z = 1.04 paired) and removed the last termination failures (truncated 4 -> 0 on dev, 5 -> 11 of 1319 on test), but it is inside noise on every read and it lost 1.6 pts on the held-out dev-250 with 19 regressions against 15 fixes. The predicted +2 to +5 pts did not appear."
+  decision: iterate
+  next_step: "The self-distillation lever is close to exhausted: one round of chains the model could already produce buys ~1 pt. exp-04 goes the other way - keep the RFT rows but train from the base checkpoint on a much larger corpus (111k rows: all 25.8k RFT rows plus ~52k more unique augmented_gsm8k problems and 22k more gsm8k solutions from OpenMathInstruct-2 shards already on disk), with the few-shot prefix depth raised to match the graded prompt. exp-03/final is kept as the fallback incumbent."

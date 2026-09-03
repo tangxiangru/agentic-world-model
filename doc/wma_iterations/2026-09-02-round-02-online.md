@@ -198,6 +198,27 @@ per arm and cannot satisfy the formal evidence gate. Submission is expected to
 raise safe PENDING from 9 to 17; it is queue insurance as well as necessary
 measurement, not a candidate promotion.
 
+### Extension launch and first lock-gated harvest (18:08–18:10 UTC)
+
+Both manifests passed `awm ptb check` with zero issues and the reconcile preview
+contained only the two intended submissions, 16 terminal harvests and running
+cell peeks. Formal jobs are:
+
+- baseline extension `w10r05..08`: `91425..91428`;
+- control extension `c10r05..08`: `91429..91432`.
+
+All eight were PENDING after release with
+`ReqNodeList=slurm2-a3nodesetondem-[2-3]`. Registry ownership remained OK,
+WMA allocation remained 16/16, and safe PENDING rose from 9 to 17. No job was
+cancelled or routed outside the subqueue.
+
+The same apply harvested all 16 cells frozen in UltraCode event
+`20260903T180444Z-79c8d29810`; every cell was validator-complete and clean.
+The original w10 baseline scores were 0.6945, 0.7172, 0.7195 and 0.7225.
+c10r01..03 scored 0.8150, 0.7672 and 0.7020; c10r04 was still running, so the
+paired PTB readout remains provisional. The analysis process was still running
+asynchronously while this launch and harvest were recorded.
+
 ## In-flight gate read (planner, 2026-09-03 09:0x UTC)
 
 Source: the operator's 08:44 peeks of the first seven lock-gated cells

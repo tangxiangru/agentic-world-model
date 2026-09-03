@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T13:31:38Z'
+situation:
+  elapsed_h: 6.3
+  remaining_h: 3.7
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.71, protocol_n: 500}
+  trigger: "13 of the shipped model's 145 n=500 failures (9%) are degenerate repetition loops: the completion never reaches an ANSWER line and burns all 4000 tokens repeating one sentence with the variable names permuted. That is a decode failure, not a reasoning failure, and it is the only failure class left that is cheap to attack."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-04_soup2_dev500_failures.json
+      locator: "the 13 items with no 'ANSWER:' substring"
+      observation: "e.g. a tail of 'We can now express $q$ in terms of $w$ using the third equation ... We can now express $w$ in terms of $q$ using the first equation' repeating to the token cap"
+    - path: /home/ben/task/eval/logs/exp-04_soup2_dev500
+      locator: "stop reasons: 487 stop / 13 max_tokens"
+      observation: "every max_tokens item is one of the 13 no-ANSWER items - the two counts coincide exactly"
+  alternatives_rejected:
+    - option: "A second training epoch (the last untested training axis)"
+      reason: "2.1 h against 3.7 h remaining, and both existing runs say the curve is already flat inside one epoch (exp-02 step 650 = 0.680 vs final 0.6733; exp-03 step 1350 = 0.6867 vs final 0.660). It is queued as exp-06 with a hard kill time, after this 25-minute card."
+    - option: "Train the loops away with more data"
+      reason: "no training run can be measured in the time left; a generation_config field is a one-line change to the artifact that is already packaged"
+    - option: "Raise repetition_penalty higher than 1.05"
+      reason: "maths solutions legitimately repeat tokens (the same numbers and variable names recur every line), so a strong penalty is more likely to break correct chains than to fix loops; 1.05 is the mildest setting that still ends a verbatim loop"
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The shipped model degenerates into a verbatim repetition loop on ~2.6% of test items. Those items are scored wrong no matter what the model knows, because the grader reads the last number in a completion that never contains an answer line, and they also cost 4000 generated tokens each."
+  evidence:
+    - path: /home/ben/task/analysis/exp-04_soup2_dev500_failures.json
+      locator: "13 of 145 failures"
+      observation: "no ANSWER line; the tail is a sentence repeated with permuted variables"
+    - path: /home/ben/task/eval/exp-04_soup2_dev500.json
+      locator: "accuracy 0.710"
+      observation: "an upper bound of +2.6 points is available if every loop were converted into a correct answer; a realistic share of those items would still be wrong for reasoning reasons"
+  affected_share: 0.09
+  failure_examples:
+    - {id: soup2-loop-1, source: /home/ben/task/analysis/exp-04_soup2_dev500_failures.json, question: "(gsm8k test item - not reproduced here, rule 7)", gold: "(withheld, rule 7)", model_output: "'We can now express $q$ in terms of $w$ ...' repeated to the 4000-token cap", failure: "degenerate loop, no ANSWER line, graded wrong"}
+  watch_set: null
+hypothesis:
+  claim: "Setting repetition_penalty 1.05 in final_model's generation_config.json - the only decode field the grader lets the artifact control, since evaluate.py sends no sampling parameters - reduces the number of max_tokens/no-ANSWER-line items at n=500 without lowering accuracy."
+  mechanism: "vLLM reads default sampling parameters from the checkpoint's generation_config.json (confirmed in this session's eval logs: 'Default sampling parameters have been overridden by the model's Hugging Face generation config'). A mild repetition penalty lowers the logit of tokens already generated, which is exactly what a verbatim loop needs to escape, while 1.05 is weak enough that the recurring numbers and names of a normal solution are not suppressed."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+0 to +2 points; the mechanism can recover at most the 2.6% of items currently lost to loops"
+  falsified_if: "the no-ANSWER-line count at n=500 does not fall below 13, or accuracy falls below the incumbent's 0.710. Adoption is gated on BOTH: the loop count must drop AND accuracy must not be lower, because a +1-point move on its own is inside the 0.020 standard error and would be noise, not a finding."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_rft_v1.jsonl
+      source: "derived:exp-04 - this card reads no training data; the field records the corpus the parent weights came from"
+      n_examples: 113165
+      built_by: /home/ben/task/build_mix.py
+      build_command: [python, build_mix.py, --inputs, data/sft_v1.jsonl, data/rft_raw_f.jsonl, data/rft_hard_f.jsonl, --out, data/sft_rft_v1.jsonl]
+      selection: "unchanged; nothing is trained in this card"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 default_sampling_params via generation_config.json"
+    peft: none
+    hyperparams: {seed: 0, precision: bf16, max_seq_len: 2048}
+    target_format: "unchanged from exp-04; the weights are byte-identical, only generation_config.json differs"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_eval.sh, /home/ben/task/ckpts/exp-05-reppen, exp-05_reppen_dev500, '500']
+    cwd: /home/ben/task
+    script: /home/ben/task/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/eval_exp-05_reppen_dev500.log
+  output_dir: /home/ben/task/ckpts/exp-05-reppen
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --json-output-file, '{out}.json', --max-connections, '16', --max-tokens, '4000', --gpu-memory-utilization, '0.3']
+    dev_set: "official --limit 500 (first 500 items of the gsm8k test split, no shuffle) - the same protocol exp-04 used"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.71
+    path: /home/ben/task/eval/exp-04_soup2_dev500.json
+  diagnostic:
+    what: "the count of items with no ANSWER line and the max_tokens stop count at n=500 - this is the mechanism itself, and it is what adoption is gated on, not the accuracy"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.25
+  output_checkpoint: /home/ben/task/ckpts/exp-05-reppen
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05-reppen, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training: the weights are symlinks to final_model's shards, only generation_config.json differs (repetition_penalty 1.05 added). The eval log carries the 'Default sampling parameters have been overridden by the model's Hugging Face generation config' line, so vLLM did read the file."}
+  measurements:
+    - {metric: accuracy, value: 0.686, n: 500, path: /home/ben/task/eval/exp-05_reppen_dev500.json, delta_vs_comparator: -0.024}
+  diagnostic_result:
+    value: 9.0
+    path: /home/ben/task/eval/logs/exp-05_reppen_dev500
+    notes: "the mechanism did what it was supposed to: no-ANSWER-line items 13 -> 9 and max_tokens stops 13 -> 9 (stop 487 -> 491). Output p50 rose 174 -> 179 tokens. But accuracy fell 0.710 -> 0.686, i.e. the penalty broke more correct chains than it rescued loops - maths solutions reuse the same numbers and names line after line, which is exactly what repetition_penalty suppresses."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "Mechanism supported, claim contradicted: repetition_penalty 1.05 removed 4 of the 13 loops but cost 2.4 points of accuracy (0.710 -> 0.686 at n=500). The adoption gate written before the run required the loop count to fall AND accuracy not to fall; the second half fails, so nothing is shipped."
+  decision: reject
+  next_step: "final_model keeps greedy decoding with no repetition penalty. The gate is what mattered here: on accuracy alone this looked like a 1.2-sigma miss worth a re-read, but the diagnostic shows the loss came through the mechanism itself, so no amount of re-reading would have rescued it. The loop class (2.6% of items) stays unfixed and is a training-side problem, not a decode-side one."

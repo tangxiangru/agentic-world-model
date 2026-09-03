@@ -1,0 +1,106 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T10:34:08Z'
+situation:
+  elapsed_h: 2.7
+  remaining_h: 7.3
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.764, protocol_n: 500}
+  trigger: "logs/exp-01.log line 'Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator' - the vLLM server takes its default sampling params from the checkpoint's own generation_config.json, and evaluate.py never sends a temperature, so every score so far was measured under gemma-3-4b-pt's shipped do_sample=true / top_k=64 / top_p=0.95 with vLLM's default temperature 1.0."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-01.log, locator: "APIServer line 'Default sampling parameters have been overridden by the model's Hugging Face generation config'"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample true, top_k 64, top_p 0.95, no temperature key"}
+    - {path: /home/ben/task/evaluate.py, locator: "L74-L86", observation: "inspect_eval is called with max_tokens and max_connections only; no temperature is passed, so the request omits it and the server default applies"}
+  alternatives_rejected:
+    - {option: "leave the shipped sampling config alone", reason: "temperature-1.0 sampling of a single chain is strictly worse than greedy for CoT arithmetic; the generation_config.json inside my own checkpoint is part of the artefact I am asked to deliver, unlike evaluate.py and templates/ which are off limits"}
+    - {option: "self-consistency / majority vote over k samples", reason: "the harness scores one completion per item; there is nowhere to aggregate votes"}
+    - {option: "keep measuring at n=150", reason: "stderr 3.6pp at n=150 cannot separate candidates a few points apart; n=500 gives 1.9pp for ~8 min of eval, so this card moves the protocol to n=500 and re-scored the incumbent under it first"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/final, --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85'], outcome: "comparator for this card measured under the new n=500 protocol: accuracy 0.764 (stderr 0.019), clean-termination 499/500"}
+problem:
+  statement: "exp-02's 0.764 is measured with the model sampling at temperature 1.0 (top_k 64, top_p 0.95) because vLLM adopts the checkpoint's generation_config.json as its default sampling params. On a single-chain chain-of-thought benchmark that throws away accuracy: any token sampled off the mode inside an arithmetic step corrupts the rest of the chain, and there is no vote to recover it."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_diag500.json, locator: "n=500, accuracy 0.764, clean_frac 0.998", observation: "format is no longer the problem (499/500 clean); the residual 118 failures are reasoning/arithmetic, exactly the class that stochastic decoding inflates"}
+    - {path: /home/ben/task/logs/exp-01.log, locator: "vLLM startup banner", observation: "the sampling defaults come from the model directory, so they are mine to set"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Setting temperature 0 (greedy) in the checkpoint's generation_config.json raises accuracy at n=500 relative to the same weights scored with the shipped do_sample/top_k/top_p config."
+  mechanism: "Greedy decoding follows the mode of the chain the SFT distribution puts most mass on. Temperature-1.0 sampling with top_p 0.95 lets low-probability digits and operators through mid-chain; a single such token makes the rest of the derivation and the final ANSWER wrong, and single-sample scoring has no way to average that out."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +8 points"}
+  falsified_if: "greedy accuracy at n=500 is not above 0.764 by more than one standard error (0.019), i.e. <= 0.783, or greedy induces repetition loops that raise the max_tokens count above the 1/500 seen with sampling."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "derived:exp-02 - no new training data; this card only changes decoding"
+      n_examples: 155880
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v1.jsonl]
+      selection: "unchanged from exp-02; listed because the weights under test are exp-02's"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 (reads generation_config.json for its default sampling params)"
+    peft: "none"
+    hyperparams: {temperature: 0.0, top_k: 0, top_p: 1.0, do_sample: false, seed: 42}
+    target_format: "weights are byte-identical to exp-02 (symlinked); only generation_config.json differs"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03_greedy, --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, unshuffled)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.764
+    path: /home/ben/task/eval/exp-02_dev500_sampled.json
+  diagnostic:
+    what: "clean-termination share and max_tokens count - greedy must not introduce repetition loops (sampling gave 499/500 clean, 1 max_tokens)"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.16
+  output_checkpoint: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03_greedy, step: 2423}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to exp-02/final, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.78, n: 500, path: /home/ben/task/eval/exp-03_greedy_dev500.json, delta_vs_comparator: 0.016}
+  diagnostic_result:
+    value: 0.992
+    path: /home/ben/task/analysis/exp-03_diag500.json
+    notes: "clean-termination 496/500 vs 499/500 under sampling; max_tokens 4 vs 1 - greedy does introduce a few repetition loops, but 4/500 is not a real cost. Paired McNemar over the same 500 items: greedy fixes 44 and breaks 36, net +8, two-sided exact p = 0.434. GenerationConfig.to_diff_dict() on the candidate dir is {temperature: 0.0, top_k: 0}, which is what vLLM reads, so the greedy config really was in force."
+  watch_set_result: {fixed: 44, still_failing: 110, regressions: 36, path: /home/ben/task/analysis/exp-03_diag500.json}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "0.764 -> 0.780 (+1.6) at n=500, which is below the one-standard-error bar this card set as its falsification threshold (needed > 0.783); the paired test agrees (44 fixed / 36 broken, p = 0.43). The mechanism is real but small: top_k=64 + top_p=0.95 already truncates most of the damaging tail, so removing the last of it buys little."
+  decision: adopt
+  next_step: "Keep greedy in the delivered artefact anyway - it costs nothing, the point estimate is higher, and it makes the single-shot final score deterministic instead of a draw from a distribution with this much per-item churn. Real headroom is elsewhere: 19.1% of the 110 greedy failures contain a 'However'-style self-override (vs 2.3% of correct answers, analysis/exp-03_failure_patterns.json) - the model reaches the right number and then argues itself out of it. exp-04 attacks that with rejection-sampled self-generated solutions."

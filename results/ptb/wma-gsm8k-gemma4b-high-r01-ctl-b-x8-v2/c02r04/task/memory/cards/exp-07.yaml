@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T14:30:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.57
+  remaining_h: 2.43
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.772, protocol_n: 500}
+  trigger: "final_model (exp-05) measures 0.772 +/- 0.019 at n=500, so the artifact is safe and verified. 2.4 h remain - too little for a second RFT round (1.6 h with no margin to re-verify) but enough for one cheap, no-training candidate."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/final_model_dev500.json, locator: "accuracy 0.772, stderr 0.0188"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.failure - the first launch cost 0.75 h to a save-time crash; a second training run carries the same class of risk"}
+  alternatives_rejected:
+    - {option: "A second RFT round from exp-05", reason: "~40 min sampling + 45 min training + 20 min eval = 1.6 h, finishing with ~40 min of margin; exp-05's first launch already showed a whole epoch can be lost at save time, and losing the margin risks shipping an unverified artifact"}
+    - {option: "Interpolate at several alphas and pick the best", reason: "each alpha costs a 20-minute eval, and picking the best of several on the same items is exactly the selection-on-noise problem this batch already has too much of; one symmetric average, one eval"}
+    - {option: "Soup exp-02 into the average as well", reason: "exp-02 is 6 points worse and two continuations upstream; averaging it in would drag the result toward the weaker point on the trajectory"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, soup.py, --a, ckpts/exp-05/final, --b, ckpts/exp-04/final, --out, ckpts/exp-07-soup, --alpha, "0.5"], outcome: "883 tensors merged across 2 shards on CPU in under a minute; all non-weight files copied, greedy generation_config carried over"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-05 is the last point of a single optimisation trajectory taken after a cosine decay to zero on a 60k-row mixture. A single endpoint of SGD sits in a noisier place than the average of nearby points on the same path, and nothing in this batch has tried to reduce that variance."
+  evidence:
+    - {path: /home/ben/task/eval/final_model_dev500.json, locator: "accuracy 0.772 stderr 0.0188"}
+    - {path: /home/ben/task/logs/exp-05b.log, locator: "train_loss 0.260, cosine LR decayed to 3.1e-08 by epoch 0.96"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A uniform 0.5/0.5 weight average of ckpts/exp-05/final and its own parent ckpts/exp-04/final will score at least as high as exp-05 alone at n=500."
+  mechanism: "exp-05 is a continuation of exp-04 with no restart, so the two checkpoints lie in the same loss basin and averaging them is a Polyak average along one path rather than a merge of unrelated models. Averaging along a trajectory cancels the last epoch's gradient noise while keeping the shared direction of travel."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "-1 to +2 points; this is a variance play, not a capability gain"
+  falsified_if: "accuracy at n=500 is below exp-05's 0.772, or the run-on share of failures is above 0.05 (which would mean the average landed off the basin)"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-07-soup/model.safetensors.index.json
+      source: "derived:exp-05 and derived:exp-04 - weight average, no training data"
+      n_examples: 1
+      built_by: /home/ben/task/soup.py
+      build_command: [python, soup.py, --a, ckpts/exp-05/final, --b, ckpts/exp-04/final, --out, ckpts/exp-07-soup, --alpha, "0.5"]
+      selection: "every floating-point tensor averaged 0.5/0.5 in fp32 then cast back to bf16; integer tensors taken from exp-05"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors shard-by-shard average on CPU"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-05"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_eval.sh, ckpts/exp-07-soup, exp-07_dev500, "500"]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/eval_exp-07_dev500.log
+  output_dir: /home/ben/task/ckpts/exp-07-soup
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.772
+    path: /home/ben/task/eval/final_model_dev500.json
+  diagnostic:
+    what: "run-on share and stop reasons at n=500 - an average that landed off the basin would show up as broken termination, not just a lower score"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.6
+  output_checkpoint: /home/ben/task/ckpts/exp-07-soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07-soup, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 883 tensors averaged 0.5/0.5 in fp32 across 2 shards, cast back to bf16"}
+  measurements:
+    - {metric: accuracy, value: 0.782, n: 500, path: /home/ben/task/eval/exp-07_dev500.json, delta_vs_comparator: 0.010}
+    - {metric: accuracy, value: 0.7513, n: 1319, path: /home/ben/task/eval/final_soup_full.json, delta_vs_comparator: -0.0068}
+    - {metric: accuracy, value: 0.7582, n: 1319, path: /home/ben/task/eval/exp-05_full.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/soup_vs_exp05_full1319.json
+    notes: "Termination is intact: run-on share 0.00, stop_reasons stop=498/max_tokens=2 at n=500, so the average did land in the basin. Paired on all 1319 items: 944 both right, 47 only soup, 56 only exp-05, 272 neither; McNemar z = 0.89 favouring exp-05 (p ~ 0.37). The two are statistically indistinguishable."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "The soup beat exp-05 by +1.0 at n=500 (0.782 vs 0.772) and then LOST by 0.7 on the full 1319 (0.7513 vs 0.7582); paired McNemar z=0.89 for exp-05, p~0.37. The mechanism held - the average stayed in the basin and termination was untouched - but the claim 'at least as high as exp-05' is false on the widest sample available."
+  decision: reject
+  next_step: "Ship exp-05, not the soup: on the full test set it has the better point estimate and the soup has no evidence behind it. This card is also the second time in this batch that an n=500-or-smaller win evaporated at wider n - see exp-06. Any future card here should be scored on the full 1319 before it is adopted."

@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T12:01:54Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.2
+  remaining_h: 4.8
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score: {metric: accuracy, value: 0.678, protocol_n: 500}
+  trigger: "Re-scored at n=500, exp-02-greedy and exp-04-greedy are 0.676 and 0.678 - the -4.0 pt gap dev-150 showed was noise. Two checkpoints of equal quality trained from the same base on different data mixtures is exactly the setting where a uniform weight average usually beats both parents."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02greedy_dev500.json, locator: "accuracy 0.676, stderr 0.0210"}
+    - {path: /home/ben/task/eval/exp-04greedy_dev500.json, locator: "accuracy 0.678, stderr 0.0209"}
+    - {path: /home/ben/task/analysis/exp-04_watch_rerun.json, locator: "fixed=24, regressions=19 on probe-250", observation: "the two checkpoints disagree on 43 of 250 probe items, so their errors are partly independent - the precondition for averaging to help"}
+  alternatives_rejected:
+    - {option: "Ship exp-04-greedy and stop", reason: "0.678 and 0.676 are within one stderr of each other; a soup costs 5 min of CPU plus one 12-min eval and is the only remaining cheap way to get a checkpoint that is better than both"}
+    - {option: "A second RFT round from exp-04", reason: "the first round moved nothing measurable, and a second costs ~2.5 h of the 4.8 h left, leaving no margin for final packaging and verification"}
+    - {option: "Train one more model on all 122k rows (full sft_v1 + full rft_v1)", reason: "exp-04 already raised the corpus from 55k to 88.5k rows for no measurable gain, so the run is not data-limited; ~2.4 h for a lever the evidence says is exhausted"}
+    - {option: "Weighted soup (0.3/0.7) or a 3-way soup", reason: "no third independent checkpoint exists, and tuning the mixing weight on a 500-item dev set would be fitting the weight to the dev noise"}
+  pitfalls_hit:
+    - {what: "started a probe_eval with --gpu-mem 0.10 alongside a running eval at 0.85; 8 GB cannot hold an 8.6 GB model, so the two vLLM instances would have fought for memory", cost_h: 0.03, fix: "killed it; evals run strictly sequentially"}
+  smoke_runs:
+    - {command: [python, soup.py, --a, ckpts/exp-02/final, --b, ckpts/exp-04/final, --out, ckpts/soup24, --weight-a, '0.5'], outcome: "both safetensors shards merged in fp32 and cast back to bf16; tokenizer/config/processor files copied"}
+    - {command: [python, make_variant.py, --src, ckpts/soup24, --dst, ckpts/soup24-greedy, --temperature, '0.0', --symlink-weights], outcome: "greedy generation_config written; weights symlinked"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Two candidate checkpoints score the same (0.676 / 0.678 at n=500) but disagree item by item - 24 probe items exp-04 fixes and 19 it breaks relative to exp-02. Shipping either one throws away whichever half of that disagreement it happens to get wrong, and dev-set noise cannot tell me which one to ship."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02greedy_dev500.json, locator: "accuracy 0.676", observation: "n=500, greedy"}
+    - {path: /home/ben/task/eval/exp-04greedy_dev500.json, locator: "accuracy 0.678", observation: "n=500, greedy; 1-item difference from exp-02"}
+    - {path: /home/ben/task/analysis/exp-04_watch_rerun.json, locator: "fixed=24, still_failing=61, regressions=19", observation: "43 of 250 probe items are answered differently by the two checkpoints"}
+  affected_share: 0.172
+  failure_examples:
+    - {id: "probe items exp-02 gets right and exp-04 gets wrong", source: /home/ben/task/analysis/exp-04_watch_rerun.json, question: "(19 held-out GSM8K TRAIN probe items; see analysis/exp-03_probe250.json vs analysis/exp-04_probe250.json)", gold: "in analysis/probe250.jsonl", model_output: "in the two probe result files", failure: "regressed by the RFT mixture"}
+    - {id: "probe items exp-04 gets right and exp-02 gets wrong", source: /home/ben/task/analysis/exp-04_watch_rerun.json, question: "(24 held-out GSM8K TRAIN probe items)", gold: "in analysis/probe250.jsonl", model_output: "in the two probe result files", failure: "would be lost by shipping exp-02"}
+    - {id: "probe items both get wrong", source: /home/ben/task/analysis/exp-04_watch_rerun.json, question: "(61 held-out GSM8K TRAIN probe items neither checkpoint answers)", gold: "in analysis/probe250.jsonl", model_output: "in the two probe result files", failure: "shared failure mode; a soup cannot fix these"}
+  watch_set:
+    path: /home/ben/task/analysis/probe250.jsonl
+    n: 250
+    selection: "same 250 held-out GSM8K TRAIN items used by exp-01..exp-04; no benchmark test item"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "The uniform (0.5/0.5) parameter average of ckpts/exp-02/final and ckpts/exp-04/final, decoded greedily, scores higher on dev-500 than the better parent's 0.678."
+  mechanism: "Both checkpoints are one epoch of full fine-tuning from the same base snapshot with the same hyper-parameters, so they sit in the same loss basin and their weights are averageable without a permutation alignment. Their errors are partly independent (43/250 disagreements), and averaging weights in a shared basin approximates an ensemble of the two functions while keeping a single forward pass - which is all the grader allows."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+0 to +3 pts"}
+  falsified_if: "soup dev-500 accuracy is at or below 0.678, or the soup's probe-250 accuracy is below both parents' (0.660 and 0.680)"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "not read by this card; it is the corpus one of the two merged parents was trained on (the other is data/sft_v1.jsonl)"
+      n_examples: 88539
+      built_by: /home/ben/task/rft_sample.py
+      build_command: []
+      selection: "n/a - weight-space merge, no training"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors load/save; fp32 accumulate, cast back to bf16"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: worked solution, then 'ANSWER: <number>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/soup24-greedy, --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-05_soup_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/soup24
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 500 (first 500 items, no shuffle)
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.678
+    path: /home/ben/task/eval/exp-04greedy_dev500.json
+  diagnostic:
+    what: "greedy probe-250 accuracy of the soup against exp-02's 0.660 and exp-04's 0.680; a second, disjoint read that no checkpoint was trained on"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/soup24-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup24, step: null}
+    - {path: /home/ben/task/ckpts/soup24-greedy, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 0.5/0.5 parameter average of ckpts/exp-02/final and ckpts/exp-04/final"}
+  measurements:
+    - {metric: accuracy, value: 0.676, n: 500, path: /home/ben/task/eval/exp-05_soup_dev500.json, delta_vs_comparator: -0.002}
+  diagnostic_result:
+    value: 0.664
+    path: /home/ben/task/analysis/soup24_probe250.json
+    notes: "probe-250 greedy 0.664, between exp-02's 0.660 and exp-04's 0.680 and below the better parent. The soup is coherent (no degeneration: 0 truncations, normal solutions) but it is not better than either parent on either set."
+  watch_set_result:
+    fixed: null
+    still_failing: null
+    regressions: null
+    path: /home/ben/task/analysis/soup24_probe250.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-500: soup 0.676 vs exp-02 0.676 vs exp-04 0.678 - three checkpoints inside a 1-item band. probe-250: soup 0.664, below exp-04's 0.680. Averaging the weights did not recover the 43 items the parents disagree on; whatever makes them disagree is not a direction the average preserves."
+  decision: reject
+  next_step: "Three artefacts now sit at 0.676-0.678 on dev-500, so neither data volume (exp-04) nor weight averaging (exp-05) moves this recipe. exp-06 changes the remaining untested axis - optimisation rather than data - with a second low-LR pass over the corpus from the exp-04 checkpoint."

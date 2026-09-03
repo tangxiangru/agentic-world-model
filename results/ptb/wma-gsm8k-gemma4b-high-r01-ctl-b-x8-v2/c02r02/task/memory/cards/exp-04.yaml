@@ -1,0 +1,135 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T10:16:40Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 3.43
+  remaining_h: 6.57
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.6733, protocol_n: 150}
+  trigger: "With formatting and decoding fixed, the incumbent still misses 49 of 150 items, and the rejection-sampling pass just run on 47473 training questions shows why: the model gets 57.7% of single samples right but 81.7% of questions right at least once in 4 (data/rft_exp04_stats.json). The knowledge is there and the single-shot policy is not selecting it."
+  trigger_evidence:
+    - {path: /home/ben/task/data/rft_exp04_stats.json, locator: "sample_accuracy=0.5769, pass_at_k=0.8167, questions=47473"}
+    - {path: /home/ben/task/analysis/exp-03_dev150.json, locator: "accuracy=0.6733, format_compliance=0.9933"}
+  alternatives_rejected:
+    - {option: "GRPO/RL on the same questions", reason: "one H100 and 6.5 h left; a policy-gradient loop over a 4B model would not finish a useful number of steps, and RFT is the offline approximation of the same signal"}
+    - {option: "RFT data only (no fresh problems)", reason: "46k on-policy rows is 14M tokens, a 20-minute run; the marginal GPU hour is better spent also showing the model the 66k OpenMathInstruct-2 gsm-type rows stage 1 never saw. The cost is that this card tests one combined intervention, so a null result will not say which half failed"}
+    - {option: "Retrain from base on stage1+stage2 union", reason: "80M tokens = 2.6 h; worth doing only if this cheaper continued-SFT shows the stage-2 data helps at all. Kept as the exp-05 candidate"}
+    - {option: "Keep 4 solutions per solved question", reason: "that over-weights the questions the model already answers 4/4; keeping 1 for those and 2 for the 1-2/4 questions puts the mass on the frontier"}
+  pitfalls_hit:
+    - {what: "passing seed= inside vLLM SamplingParams put generation on a per-sequence RNG path; throughput sat at 7.5k output tok/s", cost_h: 0.15, fix: "dropped the per-request seed and raised max_num_seqs to 1024 (8.8k tok/s); the LLM(seed=...) engine seed still pins the run"}
+    - {what: "pkill -f sample_rft.py matched the shell running it and left a 66 GB VLLM::EngineCore orphan holding the GPU", cost_h: 0.05, fix: "killed the engine by PID from nvidia-smi before relaunching"}
+  smoke_runs:
+    - {command: [python, sample_rft.py, --model, ckpts/exp-02/final, --out, data/rft_exp04.jsonl, --n-omi, '40000', --k, '4'], outcome: "64 min, 189892 samples, 109544 correct, 46161 rows written after dedup and frontier weighting"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "The incumbent's single greedy sample is much weaker than its own reachable set: on 47473 held-in training questions it solves 81.7% at least once in 4 temperature-1.0 samples but only 57.7% of individual samples are right. The gap is a policy problem - correct derivations exist in the model's distribution but are not the mode. Separately, stage 1 saw only 95k of the 161.6k OpenMathInstruct-2 gsm-type rows, so 66.6k problems remain unused."
+  evidence:
+    - {path: /home/ben/task/data/rft_exp04_stats.json, locator: "sample_accuracy=0.5769 vs pass_at_k=0.8167", observation: "a 24-point gap between one sample and four on training-distribution questions"}
+    - {path: /home/ben/task/analysis/exp-03_dev150.json, locator: "accuracy=0.6733", observation: "49/150 test items still wrong with formatting and termination at ~99-100%"}
+    - {path: /home/ben/task/logs/build_v3.log, locator: "gsm rows=161590; fresh gsm rows 45000", observation: "stage 1 consumed rows [0:95000] of the shuffled gsm-type pool; 66590 were never shown"}
+  affected_share: 0.24
+  failure_examples:
+    - {id: rft-unsolved, source: /home/ben/task/data/rft_exp04_stats.json, question: "(aggregate: 8701 of 47473 training questions)", gold: "(various)", model_output: "0 of 4 samples correct", failure: "genuinely beyond the current policy - RFT cannot help these, they are the ceiling this card does not move"}
+    - {id: rft-frontier, source: /home/ben/task/data/rft_exp04_stats.json, question: "(aggregate: the 1-2 of 4 questions)", gold: "(various)", model_output: "sometimes right, sometimes wrong on the same question", failure: "the exact population RFT targets: a correct derivation exists and is being trained on"}
+    - {id: exp03-fail-agg, source: /home/ben/task/analysis/exp-03_dev150.json, question: "(aggregate over the 49 wrong test items)", gold: "(various)", model_output: "well-formed chains ending in a wrong number", failure: "set-up or arithmetic errors under greedy decode"}
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "A second SFT stage from exp-02's weights on 46k on-policy rejection-sampled correct solutions plus 53k unseen OpenMathInstruct-2 rows increases greedy accuracy at --limit 150 relative to exp-03-greedy."
+  mechanism: "Two effects, both narrowing the sample/pass@4 gap. On-policy correct solutions raise the probability of derivations the model can already produce but does not choose, which is precisely what moves a single greedy sample toward pass@4; the frontier weighting concentrates that mass on questions it currently gets right only 1-2 times in 4. The unseen OpenMathInstruct-2 problems add new problem structures rather than new style, so they should not fight the on-policy update."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +7 points; RFT typically buys a few points over a strong SFT stage and the pass@4 headroom is 24 points on training questions"
+  falsified_if: "greedy accuracy at n=150 is at or below exp-03's 0.6733, or format compliance drops below 0.98 (which would mean the second stage damaged the turn behaviour stage 1 established)"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/train_v3.jsonl
+      source: "synthetic:self (46161 rows sampled from exp-02) + nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e rows [95000:140000] gsm-type and [15000:23000] math-type"
+      n_examples: 99161
+      built_by: /home/ben/task/build_data2.py
+      build_command: [python, build_data2.py, --rft, data/rft_exp04.jsonl, --out, data/train_v3.jsonl, --fresh-gsm, '45000', --fresh-math, '8000', --fewshot-rows, '1500']
+      selection: "RFT: k=4 at temperature 1.0 / top_p 0.95 from ckpts/exp-02/final on 7473 gsm8k-train + 40000 unseen OpenMathInstruct-2 gsm-type questions; keep only samples whose last numeric token matches gold under the grader's own match_str; dedup on whitespace-normalised text; shortest first; 1 solution kept for questions solved 3-4/4 and 2 for those solved 1-2/4. Fresh rows: the OpenMathInstruct-2 slices stage 1 did not consume. 1500 rows carry the grader's exact 10-shot prefix. Nothing from the gsm8k test split."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer with liger-kernel 0.8.2 fused linear cross-entropy"
+    peft: "none (full parameter; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 1, grad_accum: 8, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02: reasoning, blank line, one 'ANSWER: <n>' line, then <end_of_turn>; loss on the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/train_v3.jsonl, --model, ckpts/exp-02/final, --out, ckpts/exp-04, --lr, '7e-6', --epochs, '1', --accum, '8', --tok-budget, '8192', --max-rows-per-batch, '64', --warmup, '0.03', --save-steps, '300', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 300
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.3}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '8', --json-output-file, '{out}.json']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6733
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "format_compliance and stopped_cleanly, to confirm the second stage did not damage the turn behaviour, plus mean output tokens as a proxy for solution-style drift toward the terser on-policy data"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.18
+  output_checkpoint: /home/ben/task/ckpts/exp-04-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-300, step: 300}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-589, step: 589}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 589}
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 589}
+  training_summary:
+    final_loss: 0.2876
+    steps: 589
+    notes: "37.2M tokens over 4705 micro-batches, 4234 s = 8.8k tok/s; train_loss 0.288 against stage 1's 0.333, as expected when a large share of the targets are the model's own samples"
+  measurements:
+    - {metric: accuracy, value: 0.7000, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.0267}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-04_dev150.json
+    notes: "format_compliance 0.9933 -> 1.0000 and stopped_cleanly 0.9933 -> 1.0000: the second stage did not damage the turn behaviour, it repaired the one greedy item that ran long. Mean output 184 -> 158 tokens, i.e. the style did drift toward the terser on-policy solutions."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "0.6733 -> 0.7000 (+2.7 pts, n=150) which is under the 0.038 stderr of the protocol, so the direction is right but the magnitude is not resolvable at n=150. The stage did no harm: formatting and termination are now 100%, and the checkpoint is at worst equal to the incumbent."
+  decision: adopt
+  next_step: "Two things follow. (1) The 25 sampled failures are comprehension/set-up errors, not arithmetic slips or format faults, so more of the same solution data has a low ceiling. (2) exp-04 vs exp-03 needs n=500 to be resolved; that eval is deferred until the GPU is free. exp-05 retrains from base in a single stage on the union of both stages' data, which removes the mismatched two-cosine schedule as a confound and is the last training run the budget allows."

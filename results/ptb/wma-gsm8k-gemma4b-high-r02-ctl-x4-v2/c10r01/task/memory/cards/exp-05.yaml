@@ -1,0 +1,104 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T14:16:44Z'
+situation:
+  elapsed_h: 6.35
+  remaining_h: 3.65
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.81, protocol_n: 500}
+  trigger: "The data-scaling curve has not bent yet: 155k rows -> 0.780, +99k rows -> 0.810 at n=500, with the second stage's gain (+15 net paired items) arriving despite its stated mechanism failing. 119090 unused fresh-solution rows are already built and contamination-checked in data/sft_v2.jsonl, and 3.6h remain."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_greedy_dev500.json, locator: "0.780 after 155046 training rows"}
+    - {path: /home/ben/task/eval/exp-04_dev500.json, locator: "0.810 after a further 98071 rows"}
+    - {path: /home/ben/task/analysis/probe_shots_exp04.json, locator: "zero_shot 0.8113 vs ten_shot 0.8137, n=800", observation: "the 10-shot prefix costs nothing, so prompt-condition matching is a dead lever and data is the live one"}
+  alternatives_rejected:
+    - {option: "a second rejection-sampling round from exp-04", reason: "30 min of H100 sampling before any training starts, and round 1's contribution is confounded with the teacher rows it shipped alongside; with 3.6h left the safer spend is the data that is already built"}
+    - {option: "train with the grader's exact 10-shot prefix on a slice of rows", reason: "closed by the held-out probe: 0-shot 0.8113 vs 10-shot 0.8138 on 800 unseen OMI-2 GSM8K problems, so there is no prompt-condition gap to recover"}
+    - {option: "use all 119090 remaining rows", reason: "1.8h of training would leave no room for an eval plus the checkpoint-averaging fallback; 80000 rows fit in ~1.1h"}
+    - {option: "DPO / GRPO on the residual failures", reason: "no preference data and no verified-reward loop built; not startable and finishable in 3.6h"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "exp-04 still misses 95 of 500 items. The largest tagged group is self-override ('However...', 20/95 = 0.211) and exp-04 showed that rejection sampling plus a backtracking filter does not shrink it. The rest are ordinary reasoning and set-up errors (e.g. the sandcastle item, where the model names the top level x and then treats x as the bottom level). No single targeted intervention is available for these in the remaining budget; what is available is more supervision."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_failure_patterns.json, locator: "failures_with_override 20/95 = 0.211", observation: "the targeted fix did not move this class"}
+    - {path: /home/ben/task/analysis/exp-04_diag500.json, locator: "accuracy 0.81, clean_frac 0.986, max_tokens 7", observation: "format is fine; the residue is reasoning"}
+  affected_share: null
+  failure_examples:
+    - {id: "n500-sandcastle", source: /home/ben/task/logs/2026-09-03T14-06-28+00-00_gsm8k_2BrEVu2oKpcFjFJ9pppUQH.json, question: "each level of a sandcastle has half the square footage of the level below it; 4 levels, top level 16, average square footage?", gold: "60", model_output: "lets x be the top level then expands x + x/2 + x/4 + x/8, i.e. treats x as the largest level", failure: "variable/direction set-up error"}
+    - {id: "n500-orange", source: /home/ben/task/logs/2026-09-03T14-06-28+00-00_gsm8k_2BrEVu2oKpcFjFJ9pppUQH.json, question: "A basket contains 25 oranges among which 1 is bad, 20% are unripe, 2 are sour and the rest are good.", gold: "17", model_output: "computes 17 then overrides to 20", failure: "self-override, unchanged by exp-04"}
+    - {id: "n500-tabloid", source: /home/ben/task/logs/2026-09-03T10-44-56+00-00_gsm8k_L9K2KLdPrmhtGisMyxcYSA.json, question: "folded tabloid, 32 pages, how many pieces of paper?", gold: "8", model_output: "32 * 2 / 2 = 32", failure: "physical-model error the training distribution does not cover"}
+  watch_set: null
+hypothesis:
+  claim: "A third SFT stage from exp-04's checkpoint on 80000 further rows (17767 on-policy rejection-sampled chains re-shown, 62233 unseen teacher solutions) at a decayed peak lr of 5e-6 raises accuracy at n=500 above exp-04's 0.810."
+  mechanism: "The 0.780 -> 0.810 step came from adding ~98k rows to a 155k-row run, i.e. the model is still supervision-limited rather than capacity-limited at 4B. The 62233 rows are OpenMathInstruct-2 solutions the model has never seen (different Llama-405B chains for GSM8K-derived problems), so they add gradient signal about alternative correct derivations rather than repeating targets verbatim; the lower peak lr keeps the third cosine cycle from undoing the second."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+0.5 to +2 points; smaller than the last step because most of these rows are new solutions to problems already trained on"}
+  falsified_if: "accuracy at n=500 is at or below 0.810, or clean-termination falls below 0.98."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/stage3_v1.jsonl
+      source: "synthetic:self (rejection-sampled from ckpts/exp-02/final) + nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e shards 3-6"
+      n_examples: 80000
+      built_by: /home/ben/task/scripts/mix_data.py
+      build_command: [python, -c, "reproduce the seed-0 shuffle of scripts/mix_data.py, take rft_v1 minus backtracking (17767) plus sft_v2 rows 50000:112233 (62233), reshuffle with seed 1"]
+      selection: "the 62233 teacher rows are exactly the complement of the 50000 sft_v2 rows exp-04 consumed - none of them has been trained on. The 17767 rejection-sampled rows are the same ones exp-04 saw, re-shown as replay so the third stage does not drift off the on-policy distribution."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2"
+    peft: "none (full parameter; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 32, grad_accum: 2, max_seq_len: 1280, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit, beta2=0.95", seed: 0}
+    target_format: "identical to exp-02 and exp-04: prompt = <bos><start_of_turn>user\\n[demos]MATH_PROMPT_TEMPLATE<end_of_turn>\\n<start_of_turn>model\\n ; target = {chain}\\n\\nANSWER: {n}<end_of_turn> ; completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, /home/ben/task/data/stage3_v1.jsonl, --out, /home/ben/task/ckpts/exp-05, --max-seq-len, '1280', --lr, '5e-6', --epochs, '1', --bs, '32', --accum, '2', --liger]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.15}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, unshuffled); greedy generation_config copied into the checkpoint before scoring, as adopted in exp-03"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.81
+    path: /home/ben/task/eval/exp-04_dev500.json
+  diagnostic:
+    what: "clean-termination share (0.986 at exp-04) and the self-override share of failures (0.211 at exp-04)"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: failed
+  wall_h: 0.98
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: 0.2428, steps: 1245, notes: "training itself completed normally: mean loss 0.2428, last logged losses 0.21-0.24, grad_norm ~1.0-1.4, 79654 of 80000 rows kept (0.43% over max_seq_len), 22.5 samples/s, peak 66.1 GiB. The weights were then lost at save time."}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: "no checkpoint to evaluate"}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/logs/exp-05.log}
+  failure: "ValueError: GenerationConfig is invalid: `temperature`: `do_sample` is set to `False`. However, `temperature` is set to `0.0` ... raised from transformers/generation/configuration_utils.py:723 save_pretrained -> validate(strict=True), reached via trainer.save_model(final) in scripts/train_sft.py:184. The parent checkpoint ckpts/exp-04/final carried the greedy generation_config.json adopted in exp-03; the model picked it up as model.generation_config at load, and transformers refuses to serialise it. Only config.json was written to ckpts/exp-05/final; the 59 minutes of training are gone."
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "The run trained to completion (loss 0.2428) and then threw the weights away: save_pretrained validates model.generation_config strictly, and the greedy config exp-03 adopted (do_sample=False with temperature=0.0 and top_k=0) is invalid by that check. Nothing can be said about the hypothesis."
+  decision: iterate
+  next_step: "exp-06 repeats this card unchanged except that scripts/train_sft.py now resets model.generation_config to a valid one before saving and writes the greedy generation_config.json afterwards with json.dump, plus a save_pretrained fallback in an except branch so a config problem can never cost the weights again."

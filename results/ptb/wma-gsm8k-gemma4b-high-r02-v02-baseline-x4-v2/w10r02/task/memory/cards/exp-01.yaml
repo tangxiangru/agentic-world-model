@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T07:21:33Z'
+situation:
+  elapsed_h: 0.1
+  remaining_h: 9.9
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: null
+      protocol_n: null
+  trigger: "Session start: no number exists for the untrained base model under the grader's own protocol, so no later card can have a legitimate comparator (pitfall comparator_protocol_mismatch)."
+  trigger_evidence:
+    - path: /home/ben/task/memory/index.md
+      locator: "table is empty - no prior card in this session"
+  alternatives_rejected:
+    - option: "Skip the baseline and compare the first SFT run against published gemma-3-4b-pt GSM8K numbers"
+      reason: "published numbers use a different prompt, few-shot count and extractor; rule 2 requires the comparator be measured under this protocol"
+    - option: "Run the baseline at --limit 50 to save ~10 min"
+      reason: "every later card would then be locked to n=50 or need a re-measure; 150 is the harness default and the stated good limit"
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, -c, "render templates/gemma3.jinja with jinja2 and diff against build_data.render_prompt"]
+      outcome: "byte-identical for the 0-shot and the k-shot message list (pitfall template_unreachable cleared before any training card)"
+    - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/_decon_input.jsonl]
+      outcome: "0 matches over 83473 candidate SFT rows; exit 0"
+  decode_note: "The snapshot's generation_config.json is do_sample=true, top_k=64, top_p=0.95 with no temperature, and evaluate.py sends no temperature, so `vllm serve --generation-config auto` will decode this baseline SAMPLED at temperature 1.0 / top_k 64 / top_p 0.95. That is a property of the checkpoint under test, not of the protocol, so it is left as it is: the baseline is the base model as shipped. Later cards own their checkpoint's generation_config.json and any change to it is an intervention that gets its own card."
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained (non-instruction-tuned) checkpoint. Under the grader's 10-shot chat-templated GSM8K prompt it is expected to ramble past the answer and not emit a stop token, so the last number in the completion - which is what match(numeric=True, location=end) reads - is often not its answer. The size of that loss is unmeasured."
+  evidence:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      locator: "lines 1-100: fewshot=10 system message, 'ANSWER: $ANSWER' instruction, scorer match(numeric=True)"
+      observation: "grading reads the LAST numeric token of the completion, so failure to stop is scored as a wrong answer"
+    - path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/tokenizer_config.json
+      locator: "no chat_template key"
+      observation: "the base checkpoint ships no chat template; the grader supplies templates/gemma3.jinja, whose turn terminator is <end_of_turn> (id 106), which generation_config.json does list as an eos id"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Measuring google/gemma-3-4b-pt with evaluate.py --limit 150 yields a baseline accuracy that all later cards in this session use as their comparator; the base model's failures are dominated by non-termination / format drift rather than by arithmetic."
+  mechanism: "A pretrained checkpoint has never been trained to end a turn with <end_of_turn>, so under a chat template it continues inventing new problems after answering; the grader then reads a number from the continuation."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "no change expected - this run defines the reference point, not an intervention"
+  falsified_if: "the base model already terminates cleanly on most items (i.e. inspecting the completions shows <5% of items with text after the ANSWER line), which would mean format is not the primary problem"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/exp-01_base_dev150.json
+      source: openai/gsm8k
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "evaluation only, no training data: the official gsm8k test split, first 150 items as taken by inspect-ai --limit 150"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect_ai + vllm 0.11.0
+    peft: none
+    hyperparams:
+      seed: null
+      precision: bf16
+    target_format: "not applicable - no training in this card"
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --json-output-file, /home/ben/task/eval/exp-01_base_dev150.json, --max-connections, '16', --max-tokens, '4000', --gpu-memory-utilization, '0.3']
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/eval/logs/exp-01}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '16', --max-tokens, '4000', --gpu-memory-utilization, '0.3']
+    dev_set: "official --limit 150 (first 150 items of the gsm8k test split, no shuffle - deterministic across cards)"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "read from the inspect-ai json log in $INSPECT_LOG_DIR: (a) share of completions with text after the first 'ANSWER:' line (non-termination), (b) stop reason distribution, (c) share of completions starting with a garbage prefix such as '!!!!' (the high-concurrency corruption mode)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.07
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.04, n: 150, path: /home/ben/task/eval/exp-01_base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.747
+    path: /home/ben/task/eval/logs/exp-01/2026-09-03T07-37-47+00-00_gsm8k_htjeEvuNev6UZK2KECzRrp.json
+    notes: "(a) 112/150 = 74.7% of completions keep generating after their first 'ANSWER:' line and 19/150 never emit one at all; (b) stop reasons: max_tokens 81, stop 69 - 54% of items burn the full 4000-token cap; (c) 0 completions with a '!!!' garbage prefix, so --max-connections 16 did not corrupt this read and the number is usable as the session comparator. Output tokens p50 = 4000."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  # decision is 'iterate': this card produces a reference number, not a checkpoint;
+  # the incumbent is still the base snapshot named in setup.parent_checkpoint.
+  summary: "google/gemma-3-4b-pt scores 0.040 on gsm8k n=150 under the grader's own protocol. The failure is format, not arithmetic: 75% of completions run on past the answer line and 54% hit the token cap, so match(numeric=True, location='end') reads a number from the continuation - e.g. one item answers 'ANSWER: 26' correctly in-line and is then graded on a later stray number."
+  decision: iterate
+  next_step: "SFT that teaches the model to answer once and emit <end_of_turn>: this is exp-02, whose comparator is this 0.040 at n=150. The base decodes sampled (its own generation_config: do_sample true, top_k 64, top_p 0.95, no temperature); trained checkpoints will ship temperature 0, and that decode axis gets measured on the trained model where the shipping decision actually lives."

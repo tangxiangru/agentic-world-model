@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T10:35:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.7
+  remaining_h: 6.3
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.69333, protocol_n: 150}
+  trigger: "Reading exp-03's 46 greedy failures: format is perfect (150/150 end in an ANSWER line) and the arithmetic is usually right, but the model misreads what the problem asks - it answers the average instead of the total, ignores 'inner' volume with 1-inch walls, mislabels which of two quantities is doubled."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150.json, locator: "wrong_ids (46 items), format_share 1.0", observation: "no remaining format failures; every remaining loss is a reasoning/comprehension loss"}
+    - {path: /home/ben/task/data/rft_v1_report.json, locator: "pass_at_k 0.8808, solved 18913 of 21473, n_kept 35453", observation: "at k=4, temperature 1.0, exp-02/final already solves 88% of GSM8K-train and augmented-GSM8K problems at least once, so there is a large pool of on-policy correct chains it does not reliably reproduce greedily"}
+  alternatives_rejected:
+    - {option: "Retrain from base on the union of everything for 2 epochs", reason: "113k rows x 2 epochs is ~3.3 h at the measured 1.55 s/step; with 6.3 h left that leaves no room for an eval, a fallback, or the final-model checks"}
+    - {option: "Pure RFT continuation with replay, no new corpus", reason: "cleaner attribution, but RFT reinforces chains the model already produces and the measured failures are comprehension failures on problem types it reads wrongly - self-samples cannot supply a reading it never had. Accepting the loss of attribution here is a deliberate trade, recorded below."}
+    - {option: "DPO on correct/incorrect self-sample pairs", reason: "the 2560 problems unsolved at k=4 have no correct chain to pair against, and building pairs plus a DPO loop does not fit the remaining budget"}
+    - {option: "Add MATH / augmented_math from OpenMathInstruct-2", reason: "LaTeX competition problems are off-distribution for GSM8K and would compete for capacity with word-problem reading"}
+  pitfalls_hit:
+    - {what: "First RFT sampling run generated all 109892 completions then died in the answer normaliser on a float('inf') produced by a runaway numeric token; nothing was written", cost_h: 0.55, fix: "guard norm() against inf/nan/>1e15 and dump raw generations to rft_v1_raw.jsonl before any filtering"}
+    - {what: "Relaunched sampling while the crashed run's vLLM EngineCore child was still holding 66 GiB; vLLM aborted with 'Free memory on device (14.12/79.19 GiB) is less than desired GPU memory utilization'. Not noticed for 25 min because I slept on a long poll", cost_h: 0.45, fix: "kill -9 the orphaned EngineCore, and poll a fresh launch within 2 min before sleeping on it"}
+  smoke_runs:
+    - {command: [python, scripts/mix_data.py, --in, "data/rft_v1.jsonl:1.0", "data/orca_v1.jsonl:20000", "data/sft_v1.jsonl:12000", --out, data/stage2_v1.jsonl], outcome: "67453 rows; token length p50 310, p95 598, p99 896, max 1985 - all inside max_seq_len 2560"}
+    - {command: [python, scripts/build_orca.py, --out, data/orca_v1.jsonl, --n, "45000"], outcome: "45000 rows; final integer recovered from the last line only when that line holds exactly one number (hand-checked 15/15 correct on a random sample)"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent's remaining 46/150 failures are comprehension failures, not format or arithmetic failures: it sets up the wrong quantity and then computes that wrong quantity correctly. Its own chains are also terse (157 tokens mean), so it commits to a reading in the first sentence and never re-checks it."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150.json, locator: "format_share 1.0, mean_output_tokens 157.5, 46 wrong_ids", observation: "0 of the 46 failures are format failures"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: "accuracy 0.69333", observation: "the incumbent number this card must beat"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: gsm8k_2b38cfd5, source: /home/ben/task/analysis/exp-03_greedy_dev150.json, question: "3 boxes, 5x6x4 inches, walls 1 inch thick - total INNER volume", gold: "72", model_output: "5*6*4 = 120 per box, 3*120 = 360 cubic inches. ANSWER: 360", failure: "ignored the wall thickness entirely; computed outer volume"}
+    - {id: gsm8k_0f53259b, source: /home/ben/task/analysis/exp-03_greedy_dev150.json, question: "Marcell and Beatrice fruit roll-up contest, 2x24 vs 3x?", gold: "45", model_output: "Beatrice ate 24, Marcell ate 14, total 38, average 19. ANSWER: 19", failure: "dropped the width factor on both sides, then averaged the wrong pair"}
+    - {id: gsm8k_2466f3cc, source: /home/ben/task/analysis/exp-03_greedy_dev150.json, question: "12-mile trail, 4 mi then 2 mi in 1 h each, wants 4 mph average - what speed for the rest?", gold: "6", model_output: "average is 12/3 = 4 mph, so she needs 4 mph. ANSWER: 4", failure: "assumed the conclusion; never solved for the remaining leg's time"}
+    - {id: gsm8k_01a47d5c, source: /home/ben/task/analysis/exp-03_greedy_dev150.json, question: "700 bees, twice as many workers as babies, twice as many babies as queens", gold: "400", model_output: "q + 2q + 2q = 700 so q = 140, w = 4q = 560. ANSWER: 560", failure: "wrote the total as q+2q+2q instead of q+2q+4q - the algebraic setup contradicts its own substitution"}
+    - {id: gsm8k_18abb77f, source: /home/ben/task/analysis/exp-03_greedy_dev150.json, question: "4-level sandcastle, each level half the one below, top level 16 sq ft", gold: "60", model_output: "16 + 8 + 4 + 2 = 30, average 30/4 = 7.5. ANSWER: 7.5", failure: "read 'top level' as the largest level and halved downward, inverting the problem"}
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A second training stage from exp-02/final on 67453 rows - 35453 self-generated chains that the model itself got right (rejection-sampled at k=4), 20000 verbose Orca-Math word-problem solutions, and 12000 replayed stage-1 rows - will raise greedy dev-150 accuracy above the incumbent's 0.693."
+  mechanism: "Two effects, deliberately not separated (see alternatives_rejected). Rejection sampling concentrates probability mass on the model's own correct chains, so chains it currently finds only 1-in-4 times become its greedy output. Orca-Math's solutions are longer and restate what is being asked before computing, which is the step the failure examples skip. The 12000 replayed rows are there to stop stage-2 drifting off the stage-1 distribution."
+  mechanism_caveat: "This card cannot attribute a gain between rejection sampling and the Orca corpus. That is a budget decision, not an oversight: with 6.3 h left, running the two arms separately costs an extra ~1.2 h that the schedule does not have."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 points"
+  falsified_if: "greedy dev-150 accuracy is at or below the incumbent's 0.693, or format share falls below 1.0, or mean output length grows past ~400 tokens without an accuracy gain (verbosity absorbed without comprehension)."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/stage2_v1.jsonl
+      source: "derived:exp-02 (35453 rejection-sampled self-chains) + microsoft/orca-math-word-problems-200k (20000) + derived:exp-02 stage-1 replay from data/sft_v1.jsonl (12000)"
+      n_examples: 67453
+      built_by: /home/ben/task/scripts/mix_data.py
+      build_command: [python, scripts/mix_data.py, --in, "data/rft_v1.jsonl:1.0", "data/orca_v1.jsonl:20000", "data/sft_v1.jsonl:12000", --out, data/stage2_v1.jsonl, --seed, "0"]
+      selection: "RFT: 4 samples per problem from exp-02/final at temperature 1.0 / top_p 0.95 over 7473 GSM8K-train + 14000 distinct augmented_gsm8k problems; a sample is kept only when its 'ANSWER: N' line matches gold; exact duplicates removed; the 2 shortest correct chains per problem kept (pass@4 = 0.881, 18913 of 21473 problems solved). Orca: final integer recovered only from a last line containing exactly one number. All three files pass the contamination checker against the GSM8K test copy."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler"
+    peft: "none (full fine-tune of the 3.880B text tower; vision tower frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 8, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02: chain of thought, blank line, 'ANSWER: <integer>', then <end_of_turn>; prompt masked to -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/stage2_v1.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-05, --lr, "7e-6", --epochs, "1", --batch-size, "8", --grad-accum, "4", --max-seq-len, "2560", --max-tokens-per-batch, "8000", --save-strategy, epoch]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.2}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official inspect_evals/gsm8k test --limit 150 (first 150 items in dataset order); the checkpoint carries the exp-03 greedy generation_config.json, so this is a greedy read like its comparator"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.69333
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "format share and mean output tokens; the Orca half should lengthen chains (157 -> ~250) and must not break the ANSWER-line discipline"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.96
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-2123, step: 2123}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 2123}
+    - {path: /home/ben/task/ckpts/exp-05/final_greedy, step: 2123}
+  training_summary: {final_loss: 0.2479, steps: 2123, notes: "train_loss 0.2470 over 3442 s; started below exp-02's finish (0.278) as expected for a continuation on largely self-generated targets"}
+  measurements:
+    - {metric: accuracy, value: 0.65333, n: 150, path: /home/ben/task/eval/exp-05_greedy_dev150.json, delta_vs_comparator: -0.04}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-05_greedy_dev150.json
+    notes: "format share held at 1.0, but mean output tokens fell 157.5 -> 135.5 instead of rising toward the predicted ~250. The chains got SHORTER, which is the opposite of the mechanism this card was built on."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Greedy dev-150 0.693 -> 0.653 (-4.0 points), inside falsified_if. The diagnostic says why: mean chain length fell 157.5 -> 135.5. The RFT half of the mixture kept the *two shortest* correct chains per problem (scripts/sample_rft.py sorts candidates by length before slicing), so 53% of the rows selected for terseness and swamped the Orca half that was supposed to teach the model to restate the problem before computing. The card bought verbosity and got the opposite."
+  decision: reject
+  next_step: "Do not continue from this checkpoint. The raw generations survive in data/rft_v1_raw.jsonl, so the selection bug is fixable on CPU with no resampling: pick correct chains at random rather than shortest. Next card retrains from base on sft_v1 + the rebuilt RFT set, which is the canonical RFT recipe and avoids the third-epoch continuation that this card confounded into the result."

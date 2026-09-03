@@ -1,0 +1,123 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T07:45:09Z'
+situation:
+  elapsed_h: 0.2
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Start of the batch: no number exists for the untrained base checkpoint under the official protocol, so no later card could have a comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty card table"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and start training immediately", reason: "every later card needs a comparator measured under the same protocol; without it no delta is interpretable"}
+    - {option: "Baseline at --limit 500 for tighter error bars", reason: "the harness default and the protocol for this batch is --limit 150; a comparator must use the same n"}
+    - {option: "Score the base snapshot as shipped (sampled decode)", reason: "WMA precondition tier-1 accepted. evaluate.py passes no temperature, so vLLM takes the decode from generation_config.json; the shipped file has top_k 64 / top_p 0.95 / no temperature, i.e. temperature 1.0 sampling, while any Trainer-saved candidate would decode greedily - every later delta would silently mix a decode change with the training. The batch protocol is therefore frozen as GREEDY for base and candidates alike: models/gemma3_base_greedy symlinks the immutable snapshot's weights and overrides only generation_config.json (temperature 0.0). Base weights are untouched."}
+    - {option: "--max-connections 2 (the script default, WMA-preferred)", reason: "tried first and abandoned. The base at greedy never emits <end_of_turn>: all 20 completions of the conn=2 n=20 smoke ran to the 4000-token cap, and the n=150 conn=2 run was managing 24 samples in 11 min (~70 min projected) for a number already known to be ~0. The batch protocol is therefore conn=16, with analyze_log.py's garbage counter (repeated-punctuation prefix) as the mechanical guard against the concurrency corruption the WMA warned about; the first trained candidate will additionally be scored at conn=2 and conn=16 to show the two agree."}
+    - {option: "A repeat read of the same 150 to measure the sampling spread (WMA cheaper_variant tier-4)", reason: "not needed once the protocol is greedy: decode is deterministic, so the repeat would only measure vLLM batching jitter"}
+  pitfalls_hit:
+    - {what: "greedy decoding makes the untrained base degenerate: 20/20 smoke completions ran to the 4000-token cap in repetition loops ('CDCl' repeated), so a base read is ~20x slower than a trained one", cost_h: 0.05, fix: "expected for a pt checkpoint; it is a property of the base, not of the harness"}
+    - {what: "the n=150 conn=2 run was abandoned after 11 min at 24/150 (~70 min projected) - the whole batch's protocol was re-set to conn=16", cost_h: 0.2, fix: "conn=16 plus a garbage self-check in analyze_log.py"}
+  smoke_runs:
+    - {command: [python, evaluate.py, --model-path, /home/ben/task/models/gemma3_base_greedy, --limit, '20', --max-connections, '2'], outcome: "accuracy 0.000; 20/20 truncated at max_tokens, 17/20 run-on, 0 garbage; 4 min. Confirms the greedy base does not terminate."}
+    - {command: [python, evaluate.py, --model-path, /home/ben/task/models/gemma3_base_greedy, --limit, '150', --max-connections, '2'], outcome: "killed at 24/150 after 11 min; too slow to be worth an already-known ~0"}
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained (non-instruct) checkpoint. Under the inspect_evals gsm8k task it must (a) follow the 'ANSWER: $ANSWER' instruction, (b) stop at <end_of_turn> so no stray later number is graded, and (c) do the arithmetic. Which of the three it fails, and how often, is unknown."
+  evidence:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py
+      locator: "L40-L94 (match_str, first_number_normalized)"
+      observation: "the graded answer is the LAST numeric whitespace-token of the whole completion, so a completion that runs on past its answer is scored on the wrong number"
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      locator: "L20-L30 prompt template, L47-L63 fewshot, L70 scorer"
+      observation: "prompt is a 10-shot system message built from the gsm8k TRAIN split (seed 42) plus a 'Reasoning:' instruction template; scorer is match(numeric=True, location='end')"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Scoring the untrained base checkpoint under the official protocol (evaluate.py --limit 150) yields the baseline accuracy plus a completion log in which the three failure modes (no ANSWER line / run-on past the stop token / arithmetic error) can be counted; that number becomes the comparator for every later card."
+  mechanism: "A pretrained-only checkpoint has no instruction-following or turn-termination behaviour; the 10-shot prefix is the only thing holding the output format together, so the log should show format failures alongside arithmetic ones."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "descriptive: this card establishes the comparator, it does not intervene"
+  falsified_if: "the run produces no scored log at n=150 (OOM or vLLM load failure), so no comparator exists"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/models/gemma3_base_greedy
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d (symlinks to the immutable snapshot; only generation_config.json differs)
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/NONE_evaluation_only.txt
+      source: local
+      n_examples: 1
+      built_by: null
+      build_command: []
+      selection: "evaluation-only card: no training data is read. The only data the run touches is the openai/gsm8k test split served by inspect_evals (first 150 items), used solely as the benchmark, never as training input."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect_ai 0.1.dev3780 + vllm 0.11.0
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null,
+      scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: n/a - evaluation only
+    stop_token: null
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/models/gemma3_base_greedy,
+      --limit, '150', --max-connections, '16', --json-output-file, /home/ben/task/eval/base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/eval/exp-01_logs}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: official --limit 150 (first 150 items of openai/gsm8k test as served by inspect_evals)
+    decode: greedy - the checkpoint's generation_config.json must contain temperature 0.0 and no top_k/top_p (vllm/config/model.py L1367-L1384 reads exactly these keys and ignores do_sample)
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "from the inspect_ai json log in /home/ben/task/eval/exp-01_logs: share of completions with no 'ANSWER:' line; share whose last numeric token is not the one on the ANSWER line (run-on past the stop token); and a garbage self-check (completions starting with a repeated-punctuation prefix, which would mean the read is corrupt rather than low)"
+    parsed_by: /home/ben/task/analyze_log.py
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.08
+  output_checkpoint: /home/ben/task/models/gemma3_base_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/models/gemma3_base_greedy, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "evaluation-only card; nothing was trained"}
+  measurements:
+    - {metric: accuracy, value: 0.0267, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.0267
+    path: /home/ben/task/eval/exp-01_diag.json
+    notes: "n=150: correct 4, truncated 150/150 (every completion hit the 4000-token cap), runon 123/150 (the number on the ANSWER line is not the last number graded), no_answer_line 10/150, garbage 0/150. The garbage counter is 0, so --max-connections 16 did not corrupt the read; the conn=2 and conn=16 n=20 smokes also agree (0.000 both, garbage 0 both). Wall time 4:51 at conn=16 vs a ~70 min projection at conn=2."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The base scores 0.0267 on official n=150 under the frozen greedy protocol, and the log says why: 150/150 completions run to the token cap and 123 of them are graded on a number from the run-on tail, not from their ANSWER line. The dominant failure is termination, not arithmetic."
+  decision: adopt
+  next_step: "exp-02: full-parameter SFT whose targets end in <end_of_turn>, so the model terminates and the last-numeric-token scorer reads the intended answer. Comparator for the batch: 0.0267 at n=150, greedy, conn=16."
+

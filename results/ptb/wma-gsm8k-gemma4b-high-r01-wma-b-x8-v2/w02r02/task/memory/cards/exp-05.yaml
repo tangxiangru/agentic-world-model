@@ -1,0 +1,234 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T12:30:00Z'
+situation:
+  elapsed_h: 6.55
+  remaining_h: 3.45
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score:
+      metric: accuracy
+      value: 0.74
+      protocol_n: 200
+  trigger: exp-02's diagnostic showed the output contract is solved (197/200 clean stops) and all 52 remaining dev-200 failures are reasoning errors. exp-04 showed checkpoint choice is noise. The only lever left that fits the remaining time is better training signal on the reasoning itself.
+  trigger_evidence:
+  - path: /home/ben/task/memory/cards/exp-02.yaml
+    locator: result.diagnostic_result
+  - path: /home/ben/task/memory/cards/exp-04.yaml
+    locator: conclusion
+  - path: /home/ben/task/analysis/rft_stats.json
+    locator: whole file
+    observation_note: 'pass@4 0.897 vs single-sample 0.715: the model can already reach the right answer on 90% of training problems, so its own correct chains are a large untapped training signal'
+  alternatives_rejected:
+  - option: Retrain from base on 70k unique problems with a longer few-shot mix
+    reason: ~3 h of training alone; does not fit in 3.45 h with an eval and final-model assembly still to do
+  - option: A second full epoch on the exp-02 corpus
+    reason: exp-04 measured epoch 2 vs epoch 1 at +1.5 pts, half a standard error - more passes over the same OpenMathInstruct-2 text is a spent lever
+  - option: DPO on correct/incorrect sampled pairs
+    reason: needs a preference-pair build plus a trainer I have not smoke-tested; RFT reuses the SFT path that is already known to work here
+  - option: Regenerate the samples after fixing the vLLM stop bug
+    reason: the raw generations were saved this time, and truncating each sample at its first ANSWER line reconstructs exactly the text a correct stop would have produced - recovering 40013 correct samples for zero GPU cost instead of another 55 min
+  pitfalls_hit:
+  - what: gen_rft.py's answer parser raised OverflowError on a sample whose number overflowed to inf, after 1.2 h of generation had completed; the results were in memory only and were all lost
+    cost_h: 1.2
+    fix: parser now returns None on any unparseable value, and the raw generations are written to disk before any parsing happens
+  - what: the crashed run's vLLM EngineCore stayed alive holding 66 GB, so the relaunch died with 'Engine core initialization failed'
+    cost_h: 0.42
+    fix: check nvidia-smi --query-compute-apps and kill the orphan before relaunching
+  - what: in vLLM's offline LLM.generate path the model's generation_config eos ids are not applied and skip_special_tokens strips <end_of_turn> before the string stop can match, so 82% of samples ran on past their answer and scored as wrong (apparent sample accuracy 0.12 vs the true 0.71)
+    cost_h: 0.1
+    fix: recovered by truncating at the first ANSWER line in reparse_rft.py; a live fix would be stop_token_ids=[1, 106] in SamplingParams
+  smoke_runs:
+  - command:
+    - python
+    - reparse_rft.py
+    outcome: 56000 samples, 686 unparseable, 40013 correct (0.715 sample accuracy at T=1.0, consistent with the 0.74 greedy dev score), pass@4 0.897, 23713 rows kept
+  - command:
+    - python
+    - /home/ben/contamination_check.py
+    - --reference
+    - /home/ben/test_data.json
+    - --input
+    - data/contam_rft.jsonl
+    outcome: 25155 documents scanned, 0 contaminated, 0 matches
+  - command:
+    - python
+    - train_sft.py
+    - --dry-run
+    - --data
+    - data/rft_train.jsonl
+    - --max-seq-len
+    - '2560'
+    outcome: p50=331 p95=1943 p99=2317 max=3291 tokens; 55 rows (0.22%) over 2560 dropped; boundary_realign=0. At 2048 the drop rate was 3.52%, above the 2% bar, which is why max_seq_len is 2560.
+problem:
+  statement: The model's remaining errors are wrong intermediate quantities inside otherwise well-formed chains. Its training signal so far is entirely off-policy text written by a much larger model (OpenMathInstruct-2), and it has never been trained on its own correct reasoning. Separately, 1442 of 14000 training problems are ones it cannot solve in 4 attempts, and nothing in the current recipe concentrates on those.
+  evidence:
+  - path: /home/ben/task/logs/2026-09-03T09-13-51+00-00_gsm8k_49fCHkGR8xyCV4RG9W9QCw.json
+    locator: the 52 incorrect samples
+    observation: single wrong arithmetic step or wrong quantity carried forward; format is correct in 197/200
+  - path: /home/ben/task/analysis/rft_stats.json
+    locator: sample_accuracy, pass_at_4
+    observation: '0.715 single-sample vs 0.897 pass@4: a 18-point gap between what the model can do and what it does on its first try'
+  affected_share: 1.0
+  failure_examples:
+  - id: dev200-wrong-1
+    source: /home/ben/task/logs/2026-09-03T09-05-56+00-00_gsm8k_7HYr9a9gCf3ohTymqLAxFi.json
+    question: (held-out benchmark item - text not copied per protocol rule 7)
+    gold: '106'
+    model_output: '...100 * 2% * 3 = 600/100 * 3 = 18 ... ANSWER: 118'
+    failure: arithmetic step wrong
+  - id: dev200-wrong-2
+    source: /home/ben/task/logs/2026-09-03T09-05-56+00-00_gsm8k_7HYr9a9gCf3ohTymqLAxFi.json
+    question: (held-out benchmark item)
+    gold: '60'
+    model_output: '...(16 + 8 + 4 + 2) / 4 = 30 / 4 = 7.5 ... ANSWER: 7.5'
+    failure: wrong quantity averaged
+  - id: dev200-wrong-3
+    source: /home/ben/task/logs/2026-09-03T09-05-56+00-00_gsm8k_7HYr9a9gCf3ohTymqLAxFi.json
+    question: (held-out benchmark item)
+    gold: '5'
+    model_output: '...910 / 110 = 8.27 bags ... ANSWER: 9'
+    failure: wrong intermediate quantity carried forward
+  watch_set: null
+hypothesis:
+  claim: Continuing exp-02's checkpoint for one epoch on its own answer-verified samples, plus reference solutions for the problems it could not solve, plus a longer few-shot slice, will raise dev-200 accuracy against exp-03's 0.740 under the same greedy protocol.
+  mechanism: 'Three effects. (a) On-policy: 23713 chains the model itself produced and that reached the gold answer sit inside its own output distribution, so the update sharpens the modal chain toward the ones that verify instead of pulling it toward a larger model''s phrasing - this is what converts part of the 0.715 -> 0.897 single-sample/pass@4 gap. (b) Hard tail: 1442 problems where 0 of 4 samples were right get their OpenMathInstruct-2 reference solution, which is the only way to learn them. (c) Few-shot: 20% of rows carry a 4-8 shot prefix (~1000-1900 tokens) against exp-02''s 12% at k=2-4, so the ~1700-token 10-shot context the grader always sends is in-distribution.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: +2 to +5 points
+  falsified_if: dev-200 accuracy is at or below 0.740, i.e. within noise of or worse than the incumbent under the identical greedy protocol.
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/rft_train.jsonl
+    source: synthetic:self (ckpts/exp-02/final_greedy sampling problems from nvidia/OpenMathInstruct-2@469216e3, gsm8k/augmented_gsm8k rows only) + derived:exp-02 reference solutions for the unsolved tail
+    n_examples: 25155
+    built_by: /home/ben/task/build_rft_train.py
+    build_command:
+    - python
+    - build_rft_train.py
+    - --rft
+    - data/rft.jsonl
+    - --problems
+    - data/sft_train2.jsonl
+    - --n-problems
+    - '14000'
+    - --gen-seed
+    - '0'
+    - --out
+    - data/rft_train.jsonl
+    selection: '14000 GSM8K-train-derived problems sampled k=4 at T=1.0/top_p 0.95; each sample truncated at its first ''ANSWER: n'' line; kept when that number equals the gold answer and the body is >=80 chars; up to 2 distinct correct chains per problem (23713 rows). Plus the OpenMathInstruct-2 reference solution for each of the 1442 problems solved 0/4 times (hard tail). 20% of the merged pool then gets a 4-8 shot prefix whose demos come from the same pool.'
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer (custom completion-only collator)
+    peft: none
+    hyperparams:
+      lr: 7.0e-06
+      epochs: 1
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+    target_format: 'unchanged from exp-02: chain of thought, blank line, ''ANSWER: <int>'', then <end_of_turn>; loss on target tokens only'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - train_sft.py
+    - --data
+    - data/rft_train.jsonl
+    - --parent
+    - ckpts/exp-02/final
+    - --out
+    - ckpts/exp-05
+    - --max-seq-len
+    - '2560'
+    - --lr
+    - 7e-6
+    - --epochs
+    - '1'
+    - --bs
+    - '4'
+    - --grad-accum
+    - '8'
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.8
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '200'
+    - --max-connections
+    - '32'
+    - --gpu-memory-utilization
+    - '0.85'
+    dev_set: official gsm8k test --limit 200 (inspect_evals/gsm8k default order, fewshot=10 seed=42)
+    n: 200
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.74
+    path: /home/ben/task/eval/exp03_greedy_dev200.json
+  diagnostic:
+    what: stop_reason histogram and ANSWER-line count, to confirm the on-policy update did not damage the output contract
+    n: 200
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.67
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final_greedy
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-05/final
+    step: 785
+  - path: /home/ben/task/ckpts/exp-05/final_greedy
+    step: 785
+  training_summary:
+    final_loss: 0.204
+    steps: 785
+    notes: train_loss 0.2092, train_runtime 2410 s (0.67 h), 10.4 samples/s. Loss starts near exp-02's end-of-training level, as expected for continued training on the model's own outputs.
+  measurements:
+  - metric: accuracy
+    value: 0.725
+    n: 200
+    path: /home/ben/task/eval/exp05_dev200.json
+    delta_vs_comparator: -0.015
+  diagnostic_result:
+    value: 0.995
+    path: logs/2026-09-03T13-12-05+00-00_gsm8k_cS6zsxVJoiKcKgbn4k3BRz.json
+    notes: 'stop_reason {''stop'': 199, ''max_tokens'': 1}, 199/200 carry an ANSWER: line. The on-policy update did not damage the output contract, so the flat score is a competence result, not a format regression.'
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: 'RFT scores 0.725 vs the incumbent 0.740 under the identical greedy dev-200 protocol: -1.5 points, half a standard error, and below the falsification line the card set. One epoch of the model''s own verified chains did not convert the 0.715 -> 0.897 single-sample/pass@4 gap into first-try accuracy.'
+  decision: iterate
+  next_step: The two candidates are 1.5 points apart with stderr 0.032 each, so dev-200 cannot separate them. exp-06 re-scores both at n=500 under the same decode and picks final_model on that.

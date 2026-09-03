@@ -1,0 +1,90 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T07:30:00Z'
+situation:
+  elapsed_h: 0.6
+  remaining_h: 9.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02-bf16
+    score: {metric: accuracy, value: 0.465, protocol_n: 200}
+  trigger: "The grader never sends temperature/top_p/top_k (inspect_ai only forwards params that are set in GenerateConfig, and evaluate.py sets only max_tokens/max_connections), so vLLM takes its defaults from the checkpoint's own generation_config.json -- which is still gemma-3-4b-pt's do_sample=true, top_k=64, top_p=0.95, i.e. T=1.0 sampling. exp-02's 16 non-stopping samples are all correct-then-restart, a sampling artefact."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "stop_share=0.92", observation: "8% of samples never emit <end_of_turn> despite every training target ending in it"}
+    - {path: /home/ben/task/ckpts/exp-02-bf16/generation_config.json, locator: "whole file", observation: "do_sample true, top_k 64, top_p 0.95, no temperature key -> vLLM default T=1.0"}
+  alternatives_rejected:
+    - {option: "Leave sampling alone and spend the time on more training data", reason: "not exclusive; this costs one 5-minute eval and no GPU training, and the answer transfers to every later checkpoint"}
+    - {option: "Ask the grader for greedy decoding", reason: "evaluate.py and templates/ are immutable by the task rules; the checkpoint's own generation_config.json is the only legitimate lever"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "exp-02 is graded under stochastic decoding it did not choose: T=1.0 with top_k 64 / top_p 0.95, inherited from the base model's generation_config.json. On a single-sample benchmark this costs accuracy directly (a low-probability token derails a chain) and produces the 8% of samples that never stop."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "stop_share=0.92, accuracy=0.465", observation: "16/200 samples answered correctly then restarted the solution and ran to the 4000-token cap"}
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "acc_at_first_answer=0.115", observation: "the same sampling defaults applied to the base model"}
+  affected_share: 0.08
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Setting the checkpoint's generation_config.json to greedy (do_sample false, temperature 0.0, top_k 1, top_p 1.0), with the weights byte-identical to exp-02, raises dev-200 accuracy relative to exp-02's 0.465."
+  mechanism: "Greedy decoding always takes the argmax, so no chain is derailed by a tail-probability token and <end_of_turn> -- which SFT made the argmax after 'ANSWER: <n>' -- is always emitted."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +8 pts; stop_share should reach ~1.0"}
+  falsified_if: "dev-200 accuracy is at or below exp-02's 0.465, or stop_share does not rise above 0.97 (which would mean generation_config.json is not what vLLM reads)."
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-02-bf16, origin: exp-02, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_pilot15k.jsonl
+      source: "derived:exp-02 (no new data; the weights are exp-02's, hard-linked)"
+      n_examples: 15000
+      built_by: /home/ben/task/scripts/prepare_data.py
+      build_command: [python, scripts/prepare_data.py, --out, data/sft_all.jsonl, --max-per-problem, '4']
+      selection: "unchanged from exp-02; this card trains nothing"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 default sampling params from generation_config.json"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: 1024, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/make_decode_variant.py, --src, /home/ben/task/ckpts/exp-02-bf16, --dst, /home/ben/task/ckpts/exp-03-greedy, --greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/make_decode_variant.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 200 (first 200 items of the gsm8k test split in inspect_evals order)"
+    n: 200
+    seed: null
+  comparator: {ref: exp-02, value: 0.465, path: /home/ben/task/eval/exp-02_n200.json}
+  diagnostic: {what: "share of completions that end with a stop token", n: 200, metric: accuracy, direction: higher}
+result:
+  execution: completed
+  wall_h: 0.09
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 235}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are hard links to exp-02-bf16, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.635, n: 200, path: /home/ben/task/eval/exp-03_n200.json, delta_vs_comparator: 0.17}
+  diagnostic_result:
+    value: 0.965
+    path: /home/ben/task/analysis/exp-03_diag.json
+    notes: "stop_share 0.920 -> 0.965; last-line format 0.925 -> 0.965. vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config', confirming the file is what it reads. The residual 3.5% are greedy repetition loops, a different failure from the T=1.0 derailments."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Identical weights, greedy instead of T=1.0/top_k64/top_p0.95: dev-200 0.465 -> 0.635 (+17.0 pts), far above the predicted +2 to +8. Stochastic decoding was costing more than a third of the model's correct answers on a single-sample benchmark."
+  decision: adopt
+  next_step: "Greedy generation_config.json is now part of every checkpoint I ship, including final_model. exp-04: the same SFT recipe on the full 141,953-row corpus for 2 epochs (~2.5 h), evaluated greedy so the comparator is exp-03's 0.635."

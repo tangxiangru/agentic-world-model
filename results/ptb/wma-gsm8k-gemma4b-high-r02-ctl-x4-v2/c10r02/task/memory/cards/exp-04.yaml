@@ -1,0 +1,106 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T11:55:00Z'
+situation:
+  elapsed_h: 4.0
+  remaining_h: 6.0
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "exp-02/exp-03 closed the format gap completely (150/150 well-formed, 150/150 terminating) but 41 of 150 dev items are still wrong, and the errors are reasoning errors - wrong algebraic setup, sign confusion, misread constraints (eval/exp-03_greedy_dev150_inspect.json). exp-03 also showed the decode config has no points left in it (+0.67 pt, 16 fixed / 15 broken)."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150_inspect.json, locator: "the 41 samples with scores.match.value == 'I'"}
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "identical_to_sampled=0, format_ok=147"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "final json: pass_rate 0.7132 over 93892 samples - the model's own pass rate on held-out GSM8K-style questions matches its dev score, so the rejection filter is selecting real signal"}
+  alternatives_rejected:
+    - {option: "Only continue SFT on the 83k unseen OpenMathInstruct-2 rows", reason: "more of the same off-policy data; it does not use the fact that the model now solves 90% of GSM8K-train-style questions at least once in 4 tries, which is free supervision in the model's own voice."}
+    - {option: "Only train on the rejection-sampled rows", reason: "40k on-policy rows alone is a narrow, self-generated distribution; mixing 40k fresh 405B-generated rows keeps the off-policy anchor and doubles the token budget usefully."}
+    - {option: "DPO / GRPO on correct-vs-incorrect samples", reason: "the sampling run already gave 27k incorrect completions so pairs exist, but a preference/RL stage needs its own tuning pass and there is one training slot left in the budget; RFT is the lower-variance use of the same samples."}
+    - {option: "A second RFT round after this one", reason: "kept as a fallback only if time remains after the eval; the deadline (6.0 h left, 1.75 h of training plus 0.25 h of eval here) does not leave room to plan on it."}
+  pitfalls_hit:
+    - {what: "First rejection-sampling launch used the grader's 2043-token 10-shot prefix for every request; vLLM spent 63k tok/s on prefill and the ETA was ~56 min. Killed and relaunched zero-shot (the prefix only affects sampling, not the training target, which the trainer re-renders).", cost_h: 0.1, fix: "--fewshot 0; ETA fell to 31 min at 9.0k output tok/s."}
+    - {what: "pkill -f rft_sample matched the very shell that ran it, so the wrapper died while VLLM::EngineCore (pid 9920) kept 70 GB of the GPU; the relaunch never got memory.", cost_h: 0.07, fix: "find the holder with nvidia-smi --query-compute-apps and kill it by pid."}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_stage2.jsonl, --out, /tmp/z, --tokenize-only, --full-fewshot-frac, '0.12', --part-fewshot-frac, '0.06'], outcome: "79940 rows kept, 24 dropped over max_seq_len=3072; 49.3M tokens/epoch, 14.1M label tokens -> ~1.75 h at the 7.9k tok/s measured in exp-02"}
+problem:
+  statement: "After exp-02 the model terminates and formats perfectly but still gets 41/150 dev items wrong, all through faulty reasoning: it commits to a wrong algebraic setup, mishandles signs, or invents a missing quantity and then answers confidently."
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150_inspect.json, locator: "scores.match.value == 'I' (41 samples)", observation: "every wrong sample is well-formed and terminates; the error is in the chain, not the wrapper"}
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "format_ok=150, stop_reasons={'stop':150}", observation: "no remaining format or termination headroom"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: dev-w1, source: /home/ben/task/eval/exp-02_dev150_inspect.json, question: "700 bees; workers twice babies, babies twice queens; how many workers?", gold: "400", model_output: "x + x/2 + 2x = 700 -> x = 280 -> 560 workers", failure: "wrong variable assignment; the ratio chain is inverted"}
+    - {id: dev-w2, source: /home/ben/task/eval/exp-02_dev150_inspect.json, question: "(profit problem)", gold: "10000", model_output: "hedging paragraph about the sign, then ANSWER: -14000", failure: "sign/aggregation error, then rationalises it"}
+    - {id: dev-w3, source: /home/ben/task/eval/exp-02_dev150_inspect.json, question: "(sandcastle levels)", gold: "60", model_output: "'the number of levels is not given' then divides by 4 anyway, ANSWER: 4", failure: "invents a missing quantity instead of reading it off the problem"}
+  watch_set: null
+hypothesis:
+  claim: "A second SFT stage from exp-02/final on 40k rejection-sampled, answer-verified solutions the model generated itself plus 40k unseen OpenMathInstruct-2 rows will raise dev-150 accuracy above exp-03's 0.7267."
+  mechanism: "Rejection sampling keeps only chains that reach the gold answer, so training on them raises the probability mass of the model's own correct reasoning paths relative to the wrong ones it currently samples 29% of the time; the 40k fresh off-policy rows add problems and solution patterns it has never seen, so the update is not purely self-distillation."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+2 to +6 points"}
+  falsified_if: "dev-150 accuracy is at or below exp-03's 0.7267, or the well-formed-ANSWER share falls below 0.95."
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-02/final, origin: exp-02, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_stage2.jsonl
+      source: "derived:exp-02 (rejection samples) + nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e rows 95000-177867"
+      n_examples: 79964
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --questions, data/rft_questions.jsonl, --out, data/rft_raw.jsonl, --k, '4', --temperature, '1.0', --top-p, '0.95', --top-k, '64', --max-tokens, '640', --max-per-question, '2', --fewshot, '0', --seed, '0']
+      selection: "39964 rejection-sampled rows: 4 samples at T=1.0 for each of 23473 questions (7473 openai/gsm8k TRAIN questions + 16000 OpenMathInstruct-2 gsm8k-derived questions exp-02 never trained on); a sample is kept only if inspect_ai's match(location=end, numeric=True) scores it against gold, it contains 'ANSWER:' exactly once and its last line is the ANSWER line; the 2 shortest distinct correct samples per question are kept (66967/93892 samples correct, 21194/23473 questions solved at least once). Plus 40000 rows sampled from the 82867 OpenMathInstruct-2 rows exp-02 did not read. No item comes from the gsm8k test split."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "custom loop on transformers 4.57.3 + liger-kernel 0.8.2 fused-linear-CE + bitsandbytes AdamW8bit"
+    peft: none
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 131072, grad_accum: -1, max_seq_len: 3072, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast", seed: 1}
+    target_format: "identical to exp-02: templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4), user turn = verbatim inspect_evals MATH_PROMPT_TEMPLATE, model turn = '<solution body>\\n\\nANSWER: <number><end_of_turn>', loss on completion tokens only, 12% of rows carry the grader's exact 10-shot system message and 6% a 2-4 shot prefix of it."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_stage2.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-04, --epochs, '1', --lr, '7e-6', --max-seq-len, '3072', --tokens-per-micro, '12288', --tokens-per-step, '131072', --full-fewshot-frac, '0.12', --part-fewshot-frac, '0.06', --save-every-frac, '0.6', --max-hours, '2.2', --seed, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints: {every_steps: null, keep: all}
+  budget: {gpu: H100-80GB, planned_h: 1.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '8', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: null
+  comparator: {ref: exp-03, value: 0.7267, path: /home/ben/task/eval/exp-03_greedy_dev150.json}
+  diagnostic:
+    what: "well-formed-ANSWER share, stop_reason distribution and median completion length - a self-distillation stage must not shorten chains into skipped steps"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.74
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-214, step: 214}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 357}
+  training_summary: {final_loss: 0.26, steps: 357, notes: "79940 rows -> 49.3M tokens, 357 steps; loss started at 0.25 (already low, the parent had seen this distribution) and ended ~0.26; 57.3 GB peak"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 0.987
+    path: /home/ben/task/analysis/exp-04_diag.json
+    notes: "148/150 well-formed and terminating (2 greedy repetition loops, same failure mode and rate as exp-03); median completion 89 words vs exp-03's 100 - the self-distilled rows shortened the chains slightly but did not skip steps."
+  watch_set_result: {fixed: 10, still_failing: 31, regressions: 11, path: /home/ben/task/eval/exp-04_dev150_inspect.json}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.7267 -> 0.7200 (-0.67 pt, both n=150, stderr 0.037): the second stage bought nothing. 10 items flipped correct and 11 flipped wrong, i.e. pure churn. Training loss started the stage at 0.25 and never fell, which says the parent had already fit this distribution - 40k of its own verified samples plus 40k more OpenMathInstruct-2 rows carry no information it did not already have."
+  decision: reject
+  next_step: "Stop adding same-distribution SFT tokens; the recipe is saturated at ~0.72-0.73 pass@1. exp-05 changes the inference policy instead: train the model to emit three independent attempts and answer with their majority, converting self-consistency (which needs several samples) into something a single graded completion can carry."
