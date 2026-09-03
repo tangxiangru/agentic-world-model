@@ -337,3 +337,35 @@ nonexistent structured exp-01 absolute field.
 The competing interval-width cap is now rejected by the provisional ledger:
 the wide exp-02 intervals were needed and still missed high twice. Re-open it
 only if the frozen ledger contradicts the 12-card inflight audit.
+
+### What the runtime-fixed block adds to the root cause (planner, 2026-09-03 11:xx UTC)
+
+The w04 sensitivity block ran the same advisory protocol as core-8 but with the
+two review-runtime defects already fixed, so it is the closest thing to a
+"delivery works, uptake is free" arm. Read with `tools/wma-rca/uptake.py`
+(mechanical uptake is an upper bound; see the kit's README):
+
+| | core-8 (buggy runtime) | w04 ×5 (runtime fixed) |
+|---|---|---|
+| cards / reviews requested | 59 / 33 | 38 / 19 |
+| requests that returned nothing | 11 | **0** |
+| verdicts delivered | 22 | 19 |
+| verdict before the launch | 1/22 | 1/19 |
+| training hours under a verdict | 23.3 / 47.7 (49 %) | 19.6 / 25.7 (**76 %**) |
+| checkpoint advice suggested / acted | 15 / 6 | 12 / **7** |
+| L3 | `yes` 22/22 | `yes` 18, `no` 1 |
+| PTB paired delta | +0.0043 ± 0.0136 (8 pairs) | −0.0203 ± 0.0435 (4 pairs) |
+
+Every consumption metric improved and the score did not: the paired delta went
+if anything the other way, inside its own spread. Both blocks are
+noise-dominated at n = 4–8, so this is not evidence of harm; it is evidence
+that **delivery and uptake are not the binding constraint on the score.**
+
+Consequence for the queue, preregistered before the lock-gated harvest lands:
+expect the lock gate to raise compliance and coverage to near 1.0 and expect no
+PTB gain from that alone. The candidates worth capacity after Round 02 are the
+ones with a channel to a *decision* — L3 that can say `defer` (E), a
+precondition that changes what is trained (D) — not further increases in
+coverage or salience (F). If the lock-gated w10 cells show the same shape
+(coverage up, decisions unchanged, PTB flat), the next wave should not spend
+16 GPUs on more consumption edits.

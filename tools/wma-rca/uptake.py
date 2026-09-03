@@ -54,6 +54,11 @@ def card_rows(batch: str, cell: str, cell_dir: Path) -> list[dict]:
         wall_h = num(g(card, "result.wall_h")) or 0.0
         run_end = (launch + timedelta(hours=wall_h)) if launch and wall_h else None
         gate = lock.get("wma") or {}          # since 2026-09-03: lock waits and records
+        # every lock of the card asked again; the earlier waits ride in relocked_from (they are lost
+        # on checkouts before the fix, where a card shows one review and its last wait only)
+        earlier_gates = [h["wma"] for h in (lock.get("relocked_from") or []) if h.get("wma")]
+        gates = [g_ for g_ in [*earlier_gates, gate] if g_]
+        waited_total = sum(num(g_.get("waited_s")) or 0.0 for g_ in gates)
         suggestions = suggestion_text(verdict) if verdict and not rejected else ""
         suggested = {k: bool(p.search(suggestions)) for k, p in SUGGESTS.items()}
         acted = {}
@@ -88,6 +93,8 @@ def card_rows(batch: str, cell: str, cell_dir: Path) -> list[dict]:
             "read": hhmm(read) if read else ("NEVER" if issued else None),
             "read_lag_min": round((read - issued).total_seconds() / 60) if (read and issued) else None,
             "lock_wma_state": gate.get("state"), "lock_wma_waited_s": gate.get("waited_s"),
+            "relocks": len(lock.get("relocked_from") or []),
+            "gate_reviews": len(gates), "gate_waited_total_s": round(waited_total, 1) or None,
             "L0": g(verdict, "levels.L0_runs.answer") if verdict else None,
             "L1": g(verdict, "levels.L1_valid.answer") if verdict else None,
             "L2": g(verdict, "levels.L2_effect.direction") if verdict else None,
@@ -108,11 +115,16 @@ def aggregate(rows: list[dict]) -> dict:
     before = [r for r in delivered if r["verdict_before_launch"] is not None]
     gate_states = Counter(r["lock_wma_state"] for r in wma if r["lock_wma_state"])
     waits = [r["lock_wma_waited_s"] for r in wma if isinstance(r.get("lock_wma_waited_s"), (int, float))]
+    card_waits = [r["gate_waited_total_s"] for r in wma if r.get("gate_waited_total_s")]
     by_cell = {}
     for r in wma:
         c = by_cell.setdefault(r["cell"], {"cards": 0, "requested": 0, "delivered": 0, "actions": 0,
+                                           "relocks": 0, "gate_reviews": 0, "gate_wait_h": 0.0,
                                            "last_requested_card": None})
         c["cards"] += 1
+        c["relocks"] += r.get("relocks") or 0
+        c["gate_reviews"] += r.get("gate_reviews") or 0
+        c["gate_wait_h"] = round(c["gate_wait_h"] + (r.get("gate_waited_total_s") or 0) / 3600, 2)
         if r["requested"]:
             c["requested"] += 1
             c["last_requested_card"] = r["card"]
@@ -135,6 +147,10 @@ def aggregate(rows: list[dict]) -> dict:
         "acted_checkpoint_scoring": sum(1 for r in delivered if "score_checkpoint" in r["acted_after_read"]
                                         or "save_steps" in r["acted_after_read"]),
         "lock_gate_states": dict(gate_states), "lock_gate_wait_s_median": median(waits),
+        "gate_reviews": sum(r.get("gate_reviews") or 0 for r in wma),
+        "relocks": sum(r.get("relocks") or 0 for r in wma),
+        "gate_wait_s_per_card_median": median(card_waits),
+        "gate_wait_h_total": round(sum(card_waits) / 3600, 2),
         "train_h_total": round(sum(r["wall_h"] for r in wma if r["family"] not in ("other", "decode-config")), 1),
         "train_h_with_verdict": round(sum(r["wall_h"] for r in delivered
                                           if r["family"] not in ("other", "decode-config")), 1),
@@ -151,7 +167,9 @@ def markdown(rows: list[dict], agg: dict) -> str:
            f"L0/L1 no: {agg['L0_or_L1_no'] or 'none'}; checkpoint scoring suggested/acted "
            f"{agg['suggested_checkpoint_scoring']}/{agg['acted_checkpoint_scoring']}; training hours with a verdict "
            f"{agg['train_h_with_verdict']}/{agg['train_h_total']}; lock gate states {agg['lock_gate_states']} "
-           f"(median wait {agg['lock_gate_wait_s_median']} s)", "",
+           f"(median wait {agg['lock_gate_wait_s_median']} s); reviews {agg['gate_reviews']} over "
+           f"{agg['relocks']} relocks, {agg['gate_wait_h_total']} h of gate in total, "
+           f"{agg['gate_wait_s_per_card_median']} s per card median", "",
            "| cell | card | family | locked | requested | response | verdict | issued | launch | before launch | read | lag min | gate | L3 | L2 | uptake | acted |",
            "|---|---|---|---|---|---|---|---|---|---|---|---:|---|---|---|---|---|"]
     for r in rows:
@@ -162,9 +180,12 @@ def markdown(rows: list[dict], agg: dict) -> str:
                    f"{r['read_lag_min'] if r['read_lag_min'] is not None else ''} | {r['lock_wma_state'] or ''} | "
                    f"{r['L3']} | {r['L2']} {r['L2_interval'] or ''} | {r['uptake'] or ''} | "
                    f"{','.join(r['acted_after_read'])} |")
-    out += ["", "## Per cell", "", "| cell | cards | requested | delivered | actions | last requested card |", "|---|---:|---:|---:|---:|---|"]
+    out += ["", "## Per cell", "",
+            "| cell | cards | requested | delivered | actions | relocks | reviews | gate h | last requested card |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---|"]
     for cell, c in sorted(agg["by_cell"].items()):
-        out.append(f"| {cell} | {c['cards']} | {c['requested']} | {c['delivered']} | {c['actions']} | {c['last_requested_card']} |")
+        out.append(f"| {cell} | {c['cards']} | {c['requested']} | {c['delivered']} | {c['actions']} | "
+                   f"{c['relocks']} | {c['gate_reviews']} | {c['gate_wait_h']} | {c['last_requested_card']} |")
     return "\n".join(out) + "\n"
 
 

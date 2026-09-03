@@ -224,3 +224,24 @@ def test_lock_can_skip_the_wait_only_with_a_recorded_reason(session, capsys) -> 
     assert info["wma"]["state"] == "skipped" and info["wma"]["reason"] == "sidecar known dead"
     assert not list((session / ".wma" / "requests").glob("*.json"))
     assert "skipped by request" in capsys.readouterr().out
+
+
+def test_a_relock_keeps_the_earlier_verdict_wait_in_the_lock_history(session) -> None:
+    """Answering a verdict's preconditions means re-locking, and every lock waits again. The cost of
+    the gate is only recoverable if the earlier wait survives the new lock (2026-09-03)."""
+    from awm.exp_protocol import lock
+    d, card_path = _locked_card(session)
+    assert main(["exp_protocol", "lock", "--dir", d, "exp-01"]) == 0
+    lock.annotate_lock(card_path, "wma", {"state": "delivered", "waited_s": 390.0,
+                                          "verdict_path": "memory/cards/exp-01.verdict.json",
+                                          "error": None, "request_id": "r1", "requested_at": None})
+    card = schema.load_card(card_path)
+    card["hypothesis"]["claim"] = "the answer the WMA asked us to check first"
+    schema.dump_card(card_path, card)
+    assert main(["exp_protocol", "lock", "--dir", d, "exp-01", "--relock", "answering the precondition"]) == 0
+
+    info = json.loads((lineage.cards_dir(session) / "exp-01.lock.json").read_text())
+    assert info["relocked_from"][0]["wma"]["waited_s"] == 390.0
+    assert info["relocked_from"][0]["reason"] == "answering the precondition"
+    assert info["wma"]["state"] == "not_attached"          # this lock asked again; no sidecar here
+    assert lock.verify_lock(card_path, schema.load_card(card_path)).ok
