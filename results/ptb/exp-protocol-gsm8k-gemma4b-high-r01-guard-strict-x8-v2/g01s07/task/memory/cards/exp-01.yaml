@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T09:52:23Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 0.2
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Start of the batch: no measured score exists for the immutable base snapshot under the harness protocol, so no later card can have a legal comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "card table is empty"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and cite published gemma-3-4b-pt GSM8K numbers", reason: "protocol rule 2: a comparator must be measured under this exact protocol (this template, this --limit, this sampling config)"}
+    - {option: "Run the baseline at --limit 50 to save ~10 min", reason: "comparator must use the same n as every later eval; 150 is the harness default"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruction-tuned checkpoint. The harness prompts it with a 10-shot GSM8K system message plus an instruction to end with 'ANSWER: $ANSWER', and grades with inspect_ai match(location='end', numeric=True) - the LAST parseable number in the completion must equal the gold answer. A base model is expected to fail this both by getting arithmetic wrong and by not terminating, so that the last number in the output belongs to a continuation rather than to its answer. The size of that floor is unknown."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "lines 27-35, 50-66, 77", observation: "10-shot system message built from the gsm8k TRAIN split (seed 42), 'ANSWER: $ANSWER' instruction, scorer match(numeric=True) with default location='end'"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_match.py, locator: "match_str, location=='end' branch", observation: "words are reversed and the first parseable number from the end is compared to the target"}
+    - {path: /home/ben/task/templates/gemma3.jinja, locator: "lines 26-47", observation: "turns are <start_of_turn>role\\n ... <end_of_turn>; the generation prompt is '<start_of_turn>model\\n', so the terminator the grader stops on is <end_of_turn>"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Measuring the immutable base snapshot with evaluate.py --limit 150 gives a nonzero accuracy floor usable as the comparator for every later card, and its failures will be dominated by format/termination problems rather than by clean-but-wrong arithmetic."
+  mechanism: "10-shot prompting gives a pretrained model enough format signal to answer some items, but without instruction tuning it tends to continue past its answer with a new question; the 'last number wins' grader then reads a number from that continuation."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "0.15-0.45 for a 4B pretrained model at 10-shot"
+  falsified_if: "accuracy is exactly 0.0 (that would indicate a broken template/server rather than a weak model), or fewer than 10% of the 150 completions end in an 'ANSWER: <number>' line."
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_eval_only.md
+      source: "openai/gsm8k (test split, first 150) - read by the harness, NOT training data; this card trains nothing"
+      n_examples: 150
+      built_by: null
+      build_command: [python, evaluate.py, --limit, "150"]
+      selection: "evaluation-only card: no training data is read. The harness loads the official gsm8k test split itself via hf_dataset and takes the first 150 items."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0 via evaluate.py"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - evaluation only, no training targets"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, "150", --max-connections, "16", --json-output-file, /home/ben/task/eval/base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official --limit 150 (first 150 items of inspect_evals/gsm8k test split, unshuffled)"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions whose text contains an 'ANSWER: <number>' line (format compliance, measured separately from correctness)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "evaluation-only card, nothing trained"}
+  measurements:
+    - {metric: accuracy, value: 0.06, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.7466666666666667
+    path: /home/ben/task/analysis/exp-01_diagnostic.json
+    notes: "74.7% of completions contain an 'ANSWER: <n>' line, but only 6.0% score: the model keeps generating a NEW problem after its answer, so the grader's last-number rule reads a number from the continuation. 50.7% of samples hit the 4000-token cap (stop_reason=max_tokens) without ever emitting <end_of_turn>. Latent ability is also low: taking the FIRST 'ANSWER:' line instead of the last would still score only 9.3%. vLLM inherits generation_config.json from the checkpoint, so decoding is do_sample with top_k=64/top_p=0.95/temperature=1.0, which produces degenerate loops (e.g. 'crumbs:' repeated to the token cap)."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base gemma-3-4b-pt scores 0.060 on the 150-item dev protocol; this is the comparator for every later card. Failures are dominated by non-termination, exactly as hypothesised: 74.7% do emit an ANSWER line but 50.7% run to the 4000-token cap and continue with a fresh problem, so the last-number grader reads the wrong number."
+  decision: reject
+  next_step: "exp-02: SFT so the model emits one solution ending in 'ANSWER: <n><end_of_turn>' and stops. Two separable levers were exposed here - termination/format (worth up to ~+3 pts on its own, since first-ANSWER accuracy is 9.3%) and actual solving ability (the big one). A third, free lever: the checkpoint's generation_config.json controls vLLM's sampling, so a later decode-config card should test greedy against the inherited temperature=1.0 sampling."
