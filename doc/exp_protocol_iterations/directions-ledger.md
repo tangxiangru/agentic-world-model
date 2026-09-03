@@ -24,7 +24,7 @@
 | 14 | **父 checkpoint 的 greedy 配置让 Trainer 首次保存失败** | p00r02、p00r07、p00r06、c00r03、c00r04（约 5.4 h） | 一个根因，五个 cell，两臂都有；是 A 推荐的修法所制造的陷阱 | **筛选中：Round 02 第二波 D**（`8332917`；held 91060–91063） | 目标：归因于该错误的小时数为 0 且检查触发过；对 stock 配置零误报 |
 | 15 | **按时钟等而不是按进程等**：固定 `sleep 3000+` 错过已死的 run | p00r02（1.28 h 空转）、p00r07（1.2 h）；对照 c00r01/c00r08 按 PID 等则没有损失 | 规则 9 与 hook 文案里 `sleep 900; tail` 的写法本身就是诱因 | **筛选中：Round 02 第二波 E**（`7832cb9`；held 91064–91067） | 目标：run 死亡到下一命令的空转 < 0.15 h/cell |
 | 16 | **仪式本身的代价（承接 #11）** | synthesis §3.4：直接成本 0.17 h/cell 不是分数；间接成本是决策框架（小步、固定小 n 的 `falsified_if`、逐卡时间算术总选更短的选项） | 与解码配置在 n=9 时无法分离 | **假设，待 A v2 的 4 个 cell** | 若 ≥3/4 交付 greedy 而 A 块仍落后漂移对 ≥ 0.03，残差就是框架，下一步先执行『停止做的事』清单 |
-| 17 | **`stop_token_consistent` 读原始字段迫使 3/9 个 cell 重写数据** | p00r01 L4559、p00r03 L5152、p00r07 L4320 | 台账 #9 的『0 次 override』低估了代价：scientist 改数据而不是 override | **排队（I）** | 接受 `stop_token: {{value, appended_by: script}}` 并校验 dry-run 的一条渲染行 |
+| 17 | **`stop_token_consistent` 读原始字段迫使 3/9 个 cell 重写数据** | p00r01 L4559、p00r03 L5152、p00r07 L4320；**p00r12 L4796+L3126 数据里追加一次、`encode_rows` 再追加一次（潜在双终止符，RFT 未跑到）** | 台账 #9 的『0 次 override』低估了代价：scientist 改数据而不是 override；歧义的另一种形态是重复追加 | **排队（I）** | 接受 `stop_token: {{value, appended_by: script}}` 并校验 dry-run 的一条渲染行 |
 
 ## 二、决策日志
 
