@@ -9,18 +9,22 @@
 | # | 方向 | 来源 | 证据现状 | 状态 | 理由 / 改变状态的条件 |
 |---|---|---|---|---|---|
 | 1 | **会话结束杀掉训练**（Stop hook + 规则 9 + pitfall `run_dies_with_the_session`） | p00r08（9.4 h 作废）、c00r02（7.6 h 作废）、pilot 90463/90464 | harness 的确定性性质；两臂各丢一个 cell | **已采纳为 Round 01 候选**，commit `4ae3d87`，8 个 cell 在 ondem-0 重跑中 | 判据在 `doc/spec/2026-09-02-exp-protocol-round01-session-guard.md`：无 cell 再因会话结束丢训练、hook 阻止次数、accuracy 不低于基线 −0.03。通过则成为新基线树 |
-| 2 | **解码配置**：评分器继承 `generation_config`，Gemma 默认采样 | pilot 90462（+5 pp）、p00r05（+16）、p00r02（+14）、p00r07（+7）、对照 7/7 自设 greedy；p00r01/p00r03/p00r04/p00r09/p00r10 交付采样配置 | 规程臂 greedy 4/9；greedy 组 0.727 对采样组 0.646，解释了臂间差距的大部分 | **筛选中：Round 02 A**（`3be3a29`，pitfalls `decode_config_inherited`，held 90845–48） | 目标指标：4 cell 里 ≥3 交付 greedy 或有测量依据的配置。条目同时点名父 checkpoint 上写 greedy 会让 Trainer 保存失败（p00r02 exp-06 0.55 h、p00r07 exp-05 1.2 h） |
-| 3 | **vLLM 离线采样三个默认值**：重复 `<bos>`、stop ids 不生效、被杀引擎不释放显存 | p00r01 exp-03（1.8 h）、p00r03 exp-04（0.45 h）、p00r05 exp-04（孤儿引擎）；c00r06/c00r07 事先绕过 | 规程臂 7 张 RFT 卡 5 张 contradicted；对照的 rejection sampling 多数有效 | **筛选中：Round 02 B**（`92d5c79`，pitfalls `vllm_offline_prompt_and_stop`，held 90849–52） | 目标指标：RFT 卡里可归因于采样的 `pitfalls_hit` 小时数 < 0.3/cell |
-| 4 | **评估样本数**：n 必须承载所声称的差距 | p00r01（200 对 600 反转）、p00r03（同一 checkpoint 在 n=150 上 0.660–0.727）、c00r04（300 题第一名在全集排第 6） | 规程臂最大评估 n 143–1306，对照 493–1344 | **筛选中：Round 02 C**（`7f117a0`，SKILL 规则 2 加一段，held 90853–56） | 目标指标：最大评估 n ≥ 500 的 cell ≥ 3/4，且无排序反转报告。planner 把我的"抛硬币"措辞改成了可辩护的表述 |
-| 5 | **eval-only 卡片被迫编造 `setup.data`**（`data_files_exist` override） | p00r05 exp-01、p00r09 exp-01 | 2/9 个 cell，都是同一种 override | **排队**（Round 03 候选） | 这是 schema 张力，不是 scientist 的错：`family: other` 且不训练的卡不该要求 data 条目。再出现一次或 Round 02 有空 slot 就做；改动面是 card schema / check，需要先写测试 |
+| 2 | **解码配置**：评分器继承 `generation_config`，Gemma 默认采样。trace review：分水岭不是知不知道而是怎么核实（12/12 看了请求体或 vLLM 日志的都改了，5/5 只读文件的都没改） | pilot 90462（+5 pp）、p00r05（+16）、p00r02（+14）、p00r07（+7）、对照 7/7 自设 greedy；p00r01/p00r03/p00r04/p00r09/p00r10 交付采样配置 | 规程臂 greedy 4/9；greedy 组 0.727 对采样组 0.646，解释了臂间差距的大部分 | **筛选中：Round 02 A v2**（`f6cdccc`，改写后的 `decode_config_inherited`；v1 `3be3a29` 的 held job 撤回） | 目标指标：4 cell 里 ≥3 交付 greedy 或有测量依据的配置。条目同时点名父 checkpoint 上写 greedy 会让 Trainer 保存失败（p00r02 exp-06 0.55 h、p00r07 exp-05 1.2 h） |
+| 3 | **vLLM 离线采样三个默认值**：重复 `<bos>`、stop ids 不生效、被杀引擎不释放显存 | p00r01 exp-03（1.8 h）、p00r03 exp-04（0.45 h）、p00r05 exp-04（孤儿引擎）；c00r06/c00r07 事先绕过 | 规程臂 7 张 RFT 卡 5 张 contradicted；对照的 rejection sampling 多数有效 | **筛选中：Round 02 B v2**（`9f294c3`；trace review 纠正：对照也付出了 5.0 h，不是臂间差异机制，但仍是两臂的小时损失） | 目标指标：RFT 卡里可归因于采样的 `pitfalls_hit` 小时数 < 0.3/cell |
+| 4 | **评估样本数**：n 必须承载所声称的差距 | p00r01（200 对 600 反转）、p00r03（同一 checkpoint 在 n=150 上 0.660–0.727）、c00r04（300 题第一名在全集排第 6） | 规程臂最大评估 n 143–1306，对照 493–1344 | **筛选中：Round 02 C v2**（`57511f9`；加入前 N 题偏易、全集评估成本、`falsified_if` 的 n、允许中途提高 n；示例卡从 150 改为 500，示例卡本身是 n=150 的诱因） | 目标指标：最大评估 n ≥ 500 的 cell ≥ 3/4，且无排序反转报告。planner 把我的"抛硬币"措辞改成了可辩护的表述 |
+| 5 | **eval-only 卡片被迫编造 `setup.data`**（`data_files_exist` override） | p00r05 exp-01、p00r09 exp-01 | 2/9 个 cell，都是同一种 override | **筛选中：Round 02 第二波 H**（`b52e5f2`） | trace review 数出 7/9 个 cell 伪造了数据条目（其中一个指向测试集 parquet），远超台账原先的 2/9；schema 与 questions 只在训练 family 时要求 `setup.data` |
 | 6 | **TRL 截断掩码的 eos 变体**：`mask_truncated_completions` 用 tokenizer eos（1）而 Gemma 停在 `<end_of_turn>`（106），loss 全零 | c00r06（一分钟内自修）、c00r05、c00r01 | 只在对照的 GRPO 里出现，因为规程臂没人跑 RL | **排队** | 现有 `eos_mismatch` 条目只写了 SFT 目标那种变体；等规程臂出现 RL 卡再补，否则条目没有本臂的 source |
 | 7 | **预算使用**：两臂都提前收工 1–2 h，p00r05 剩 3.7 h，p00r10 剩 2.2 h | 全部 16 个干净 cell | 不是臂间差异 | **观察** | 没有规程杠杆能"让人用完时间"而不诱导无意义的跑；若 Round 02 后规程臂仍系统性早停，再设计 |
 | 8 | **on-policy RL 的采用**：规程臂 0/9，对照 5/7（各 +0.75 到 +8） | 全部干净 cell | 最大的配方差异，且与卡片的"小步可证伪"倾向可能相关 | **观察** | 规程明文"不告诉你跑什么"；只有 16 对 16 后若差异仍在，才讨论是否是仪式的代价（见 #11） |
-| 9 | **`stop_token_consistent` 误报**：脚本追加终止符时 check 读文件报 FAIL | pilot 90462/90464 各 override 一次 | v3 正式 cell 里 0 次 override（scientist 改为把终止符写进数据） | **搁置** | 证据消失；若某个 v3/guard cell 再 override，恢复为候选（修法：接受"由脚本追加"的声明并校验一条渲染样例） |
+| 9 | **`stop_token_consistent` 误报**（见 #17：代价以数据重写而非 override 出现）：脚本追加终止符时 check 读文件报 FAIL | pilot 90462/90464 各 override 一次 | v3 正式 cell 里 0 次 override（scientist 改为把终止符写进数据） | **搁置** | 证据消失；若某个 v3/guard cell 再 override，恢复为候选（修法：接受"由脚本追加"的声明并校验一条渲染样例） |
 | 10 | **bootstrap 文本进规程树**（现在由 PTB fork 的 solve.sh 前缀注入） | Round 00 设计时 | 与分数无关，是 meta 循环的可迭代性问题 | **排队（meta 回顾）** | 三轮后与 `exp_protocol_meta` 一起改；改法：`skills/exp_protocol/bootstrap.md` 由 `awm sandbox setup` 写入任务目录 |
 | 11 | **仪式本身的代价**：写卡、锁、结案是否在花分数 | 首波：规程执行完美（66 卡全闭、39/39 先锁后跑）但 −0.073 | 现在无法与 #2–#4 分离 | **假设，待 Round 02** | 若 A/B/C 把知识装进 pitfalls 后规程臂仍追不上对照，下一步测"更轻的规程变体"（例如只保留 pitfalls 提醒 + 锁）而不是继续加条目 |
 | 12 | **对照 c00r06 与 batch 1 的 0.7832 完全相同** | c00r06 REPORT vs batch 1 结果包（在集群上） | 答对题数相同（1033/1319），配方是否相同未核 | **待核实** | operator 比对两份 REPORT 后写入记录 |
 | 13 | **GSM8K-train 人写解法的简洁风格拖分 ~22 点** | p00r10 exp-02/03、p00r03 exp-03（10-shot 前缀拷贝演示风格） | 数据配方发现，两个 cell 各自独立发现 | **观察（知识，非规程）** | 若再出现，作为 pitfalls 的"数据风格"条目候选；现在不加是因为规程不该规定训练数据 |
+| 14 | **父 checkpoint 的 greedy 配置让 Trainer 首次保存失败** | p00r02、p00r07、p00r06、c00r03、c00r04（约 5.4 h） | 一个根因，五个 cell，两臂都有；是 A 推荐的修法所制造的陷阱 | **筛选中：Round 02 第二波 D**（`8332917`，preflight 检查 `parent_generation_config_valid`） | 目标：归因于该错误的小时数为 0 且检查触发过；对 stock 配置零误报 |
+| 15 | **按时钟等而不是按进程等**：固定 `sleep 3000+` 错过已死的 run | p00r02（1.28 h 空转）、p00r07（1.2 h）；对照 c00r01/c00r08 按 PID 等则没有损失 | 规则 9 与 hook 文案里 `sleep 900; tail` 的写法本身就是诱因 | **筛选中：Round 02 第二波 E**（`7832cb9`） | 目标：run 死亡到下一命令的空转 < 0.15 h/cell |
+| 16 | **仪式本身的代价（承接 #11）** | synthesis §3.4：直接成本 0.17 h/cell 不是分数；间接成本是决策框架（小步、固定小 n 的 `falsified_if`、逐卡时间算术总选更短的选项） | 与解码配置在 n=9 时无法分离 | **假设，待 A v2 的 4 个 cell** | 若 ≥3/4 交付 greedy 而 A 块仍落后漂移对 ≥ 0.03，残差就是框架，下一步先执行『停止做的事』清单 |
+| 17 | **`stop_token_consistent` 读原始字段迫使 3/9 个 cell 重写数据** | p00r01 L4559、p00r03 L5152、p00r07 L4320 | 台账 #9 的『0 次 override』低估了代价：scientist 改数据而不是 override | **排队（I）** | 接受 `stop_token: {{value, appended_by: script}}` 并校验 dry-run 的一条渲染行 |
 
 ## 二、决策日志
 
@@ -37,6 +41,7 @@
 | 09-02 23:20 | 取消 baseline-b（8 个 PENDING），Round 02 held 登记后 | 保留精度扩展 | 整块撤回不构成挑选；让 Round 02 早一波 | `696dc6b`/`3bb4a07` |
 | 09-02 23:45 | 候选 C 措辞由 planner 修正 | 我的原文 | "抛硬币"表述不可辩护 | `7f117a0`、`ca90b31` |
 | 09-03 00:20 | **meta 循环加入 subagent trace review**：每个分析窗口由 reviewer subagent 分组读全部 cell 的 trace、synthesis subagent 排名解释并提候选；`exp_protocol_meta` 据此修订（用户授权在轮中修改） | 继续由我手工逐 cell 读 | 用户要求 meta skill 像本次一样启动 subagent 批量分析 trace 再提出新一轮修改，全部自主执行；手工读 16 个 cell 不可持续，且 Round 00 证明数字说不出原因、trace 才说得出 | iteration-basis §七 第 6 条、`skills/exp_protocol_meta/trace_review.md`（`fe7895e`） |
+| 09-03 03:30 | **按 trace review 改写 A/B/C（v2，旧 held job 撤回），新增第二波 D、E、H + 漂移对 B，全部 held** | 保持 A/B/C v1 原样；把 D 并入 A；把 F/G 也排进第二波 | synthesis 的证据：A 的关键是怎么核实；B 的来源写错了；C 的示例卡本身在教 n=150；D 五个 cell 5.4 h；E 两个 cell 2.5 h 空转；H 7/9 伪造。F/G 是配方知识或针对信念的测试，证据面窄，先排队 | round02 spec §六、`2f64581` 前的六个 commit |
 
 ## 三、这份台账之外还没写下来的
 
