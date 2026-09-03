@@ -108,6 +108,22 @@ Measurement checks from window 03:
   false, nor permission to assume true. The strict-guard round record documents
   p00r05, whose old status-only filter incorrectly reduced the baseline pool
   from14 to13 despite current discovery validating all14.
+- Calibrate repeat variability on the actual compared artifact. A different
+  checkpoint's wider spread, even in the same cell, is not the final model's
+  noise distribution. A reused `final_model` path needs its timestamp/lineage
+  or content identity; equal scalar accuracy need not mean equal correct items.
+- Separate logged/requested knobs from resolved engine state and library/image
+  identity. Equal code/template hashes or aggregate token counts do not prove
+  every request or environment matched. Compare retained per-item inputs when
+  available; a configuration contrast that changes both concurrency and memory
+  cannot isolate either, and cross-model gaps are not a dose-response test.
+- Missing from a git bundle is not necessarily lost. Check `status.skipped` and
+  the original receipt-backed result directory before requesting more GPU
+  reads. Conversely, logs written into ephemeral evaluator/source scratch need
+  durable preservation before cleanup; a larger harvest cap alone cannot save
+  them. The [P5 adjudication](../../doc/exp_protocol_iterations/trace-reviews/p5-serving-audit/planner-decision.md)
+  recovered full developer metadata while leaving official per-item evidence
+  explicitly unresolved. Do not bypass host trust checks to fill that gap.
 
 - `accuracy` flat, `pitfalls_cost_h` down: the protocol saved time that the
   scientist did not convert into score. Look at what it did with the hours.
