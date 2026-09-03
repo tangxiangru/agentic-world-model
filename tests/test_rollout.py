@@ -36,9 +36,9 @@ def test_prompts_are_ptb_plus_only_the_declared_study_sections() -> None:
     c3 = build_prompts.wm_prompt(base, fulltraj=False)
 
     assert "## Prior runs" in c1
-    assert "## The recorder agent" not in c1
-    assert "## Prior runs" in c2 and "## The recorder agent" in c2
-    assert "## Prior runs" not in c3 and "## The recorder agent" in c3
+    assert "## Experiment log" not in c1
+    assert "## Prior runs" in c2 and "## Experiment log" in c2
+    assert "## Prior runs" not in c3 and "## Experiment log" in c3
     for prompt in (c1, c2, c3):
         assert "## Pinned base checkpoint" not in prompt
         assert "## Session completion" in prompt
@@ -302,7 +302,7 @@ def test_c0_prompt_is_ptb_plus_only_the_session_completion_note() -> None:
     base = "before\n\n## Rules\n1. baseline\n"
     c0 = build_prompts.ptb_noprior(base)
     assert "## Prior runs" not in c0
-    assert "## The recorder agent" not in c0
+    assert "## Experiment log" not in c0
     assert "## Session completion" in c0
     assert c0.count("## Rules") == 1
     # Removing the one shared section gives back PTB's prompt unchanged.

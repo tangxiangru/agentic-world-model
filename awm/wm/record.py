@@ -1,21 +1,13 @@
-"""The single API of the recorder mode: ``record``.
+"""Recorder mode: the experiment record, kept by command.
 
-In recorder mode the world-model agent gives no advice. The scientist explores
-on its own, with no access to past trajectories, and messages the WMA around
-each launch: the plan before it runs, results as they arrive, the shipped
-checkpoint at the end. The WMA answers with one response of fixed shape:
-
-    card        its structured understanding of the experiment
-                (awm-experiment-card-v1), written at launch time — before the
-                outcome exists — and extended with results as they are reported
-    questions   at most three questions back to the scientist, allowed only to
-                close reproducibility gaps, never to steer
-    ack         one line saying what was recorded
-
-No verdict, no prediction, no eval plan, no suggestion. A response carrying any
-of those keys is rejected. The point of the run is the record: a list of cards
-whose lineage resolves to the base model, each sufficient to re-produce its
-checkpoint.
+The scientist explores on its own, with no access to past trajectories and no
+advisor. What it must do instead is keep the record: before running each
+experiment (once implemented), and again when the experiment ends, it submits
+the experiment card — ``awm wm submit <card.yaml>`` — with every field of the
+recipe filled. The command validates the card, snapshots the scripts it names,
+archives the checkpoint a completed run produced (for the post-run official
+evaluation that labels every card), appends to ``wm/records.jsonl``, and
+returns the fields still missing.
 
 **What makes a recipe sufficient** is `SUFFICIENCY`: another agent, given the
 cards (and the snapshots under ``wm/cards/<id>/snapshot/``) and nothing else —
@@ -27,11 +19,12 @@ built), exactly what method (family, framework versions, the effective
 hyperparameters including defaults, seed, precision), the exact launch
 command with a snapshot of the script it names, how it was measured (exact
 eval command and n), and what happened (execution status, measurements with
-value/n/source). Unknown is recorded as a question, never guessed.
+value/n/source, the produced checkpoint).
 
-This module holds the schema, its validator, the sufficiency checker, and the
-ledger every record is appended to. The reasoning itself happens in the WMA's
-own Claude Code session (``wma/CLAUDE.md``).
+The module also keeps the peer-agent record contract (``awm-record-response-v1``,
+``validate_response``/``log_record``) for a recorder run driven by a world-model
+agent session instead of the command; the two share the ledger, the sufficiency
+checker, snapshots, and the archive.
 """
 
 from __future__ import annotations
@@ -185,6 +178,107 @@ def log_record(wm_dir: Path, response: dict[str, Any], *, request: str,
         n_measurements=len(card.get("result", {}).get("measurements") or []) if isinstance(card.get("result"), dict) else 0,
         request_chars=len(request), path=str(cdir / f"record-{n:02d}.json"))
     return entry
+
+
+def snapshot_files(wm_dir: Path, session_dir: Path, card_id: str, paths: list[Path]) -> dict[str, Any]:
+    """Copy the given files into ``wm/cards/<card>/snapshot/`` with hashes.
+
+    The scientist edits scripts in place; the snapshot is what keeps a card's
+    ``setup.command`` true after the fact.
+    """
+    import shutil
+
+    from .schema import inside, sha256_file
+
+    session_dir = Path(session_dir).resolve()
+    dest = wm_dir / "cards" / card_id / "snapshot"
+    dest.mkdir(parents=True, exist_ok=True)
+    manifest_path = dest / "MANIFEST.json"
+    manifest = load_json(manifest_path, default={"files": []}) if manifest_path.is_file() else {"files": []}
+    for raw in paths:
+        src = Path(raw).resolve()
+        if not src.is_file():
+            raise WMError(f"{src} is not a file")
+        if not inside(src, session_dir):
+            raise WMError(f"{src} is outside the session directory {session_dir}")
+        rel = src.relative_to(session_dir)
+        out = dest / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, out)
+        manifest["files"] = [f for f in manifest["files"] if f.get("path") != str(rel)]
+        manifest["files"].append({"path": str(rel), "sha256": sha256_file(src),
+                                  "bytes": src.stat().st_size, "at": now()})
+    dump_json(manifest_path, manifest)
+    return manifest
+
+
+def _card_scripts(card: dict[str, Any], session_dir: Path) -> list[Path]:
+    """The files a card's reproducibility depends on, when they exist on disk."""
+    out = []
+    script = _get(card, "setup.command.script")
+    for cand in [script] + [d.get("built_by") for d in _get(card, "setup.data") or [] if isinstance(d, dict)]:
+        if not isinstance(cand, str) or not cand.strip():
+            continue
+        path = Path(cand) if Path(cand).is_absolute() else Path(session_dir) / cand
+        if path.is_file():
+            out.append(path)
+    return out
+
+
+def submit_card(wm_dir: Path, session_dir: Path, card_path: Path, *, stage: str | None = None) -> dict[str, Any]:
+    """The scientist-facing verb: register an experiment card before its launch,
+    and again with results after.
+
+    Infers the stage from what is filled (``result.execution`` set → closed;
+    measurements without it → running; otherwise plan), snapshots the scripts
+    the card names, archives ``result.output_checkpoint`` when the run
+    completed, appends to the ledger, and returns what is still missing.
+    """
+    from .schema import load_yaml
+
+    card = load_yaml(Path(card_path))
+    if not isinstance(card, dict) or card.get("schema_version") != CARD_SCHEMA:
+        raise WMError(f"{card_path}: schema_version must be {CARD_SCHEMA}")
+    card_id = card.get("card_id")
+    if not isinstance(card_id, str) or not card_id.startswith("exp-"):
+        raise WMError(f"{card_path}: card_id must look like exp-NN")
+    if stage is None:
+        if not _empty(_get(card, "result.execution")):
+            stage = "closed"
+        elif not _empty(_get(card, "result.measurements")):
+            stage = "running"
+        else:
+            stage = "plan"
+    if stage not in STAGES:
+        raise WMError(f"stage must be one of {STAGES}")
+    missing = check_sufficiency(card, stage)
+    cdir = wm_dir / "cards" / card_id
+    cdir.mkdir(parents=True, exist_ok=True)
+    dump_json(cdir / "card.json", card)
+    snapshotted = []
+    scripts = _card_scripts(card, session_dir)
+    if scripts:
+        manifest = snapshot_files(wm_dir, Path(session_dir), card_id, scripts)
+        snapshotted = [f["path"] for f in manifest["files"]]
+    archived = None
+    ckpt = _get(card, "result.output_checkpoint")
+    if stage != "plan" and _get(card, "result.execution") == "completed" and isinstance(ckpt, str) and ckpt.strip():
+        path = Path(ckpt) if Path(ckpt).is_absolute() else Path(session_dir) / ckpt
+        if (wm_dir / "checkpoints" / card_id).exists():
+            archived = str(wm_dir / "checkpoints" / card_id)
+        elif path.is_dir():
+            archive_checkpoint(wm_dir, Path(session_dir), card_id, path)
+            archived = str(wm_dir / "checkpoints" / card_id)
+        else:
+            missing = missing + [f"result.output_checkpoint: {ckpt} not found on disk, nothing archived"]
+    ledger = RecordLedger(wm_dir / "records.jsonl")
+    n = len(ledger.for_card(card_id)) + 1
+    dump_json(cdir / f"record-{n:02d}.json", {"event": "submit", "card": card, "at": now()})
+    ledger.append(card_id=card_id, record_n=n, event="submit", stage=stage, missing=missing,
+                  snapshotted=snapshotted, archived=archived, source=str(Path(card_path).resolve()),
+                  path=str(cdir / f"record-{n:02d}.json"))
+    return {"card_id": card_id, "stage": stage, "missing": missing,
+            "snapshotted": snapshotted, "archived": archived}
 
 
 HASH_LIMIT_BYTES = 256 * 1024 * 1024  # weight shards above this are recorded by size only

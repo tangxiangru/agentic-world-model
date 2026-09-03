@@ -453,6 +453,17 @@ def _wm_log(args: argparse.Namespace) -> int:
     return 0
 
 
+def _wm_submit(args: argparse.Namespace) -> int:
+    from awm.wm.record import submit_card
+
+    cfg = _wm_config(args)
+    out = submit_card(_wm_dir(args), Path(cfg["session_dir"]), Path(args.card), stage=args.stage)
+    print(json.dumps(out, indent=2))
+    if out["missing"]:
+        print("fill the missing fields and submit again", file=sys.stderr)
+    return 0
+
+
 def _wm_record(args: argparse.Namespace) -> int:
     from awm.wm.record import log_record
 
@@ -465,31 +476,11 @@ def _wm_record(args: argparse.Namespace) -> int:
 
 
 def _wm_snapshot(args: argparse.Namespace) -> int:
-    import shutil
-
-    from awm.wm.schema import WMError, dump_json, inside, load_json, now, sha256_file
+    from awm.wm.record import snapshot_files
 
     cfg = _wm_config(args)
-    session_dir = Path(cfg["session_dir"]).resolve()
-    dest = _wm_dir(args) / "cards" / args.card / "snapshot"
-    dest.mkdir(parents=True, exist_ok=True)
-    manifest_path = dest / "MANIFEST.json"
-    manifest = load_json(manifest_path, default={"files": []}) if manifest_path.is_file() else {"files": []}
-    for raw in args.paths:
-        src = Path(raw).resolve()
-        if not src.is_file():
-            raise WMError(f"{src} is not a file")
-        if not inside(src, session_dir):
-            raise WMError(f"{src} is outside the session directory {session_dir}")
-        rel = src.relative_to(session_dir)
-        out = dest / rel
-        out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, out)
-        manifest["files"] = [f for f in manifest["files"] if f.get("path") != str(rel)]
-        manifest["files"].append({"path": str(rel), "sha256": sha256_file(src),
-                                  "bytes": src.stat().st_size, "at": now()})
-    dump_json(manifest_path, manifest)
-    print(json.dumps({"card": args.card, "snapshot": str(dest),
+    manifest = snapshot_files(_wm_dir(args), Path(cfg["session_dir"]), args.card, [Path(p) for p in args.paths])
+    print(json.dumps({"card": args.card, "snapshot": str(_wm_dir(args) / "cards" / args.card / "snapshot"),
                       "files": [f["path"] for f in manifest["files"]]}, indent=2))
     return 0
 
@@ -725,6 +716,11 @@ def build_parser() -> argparse.ArgumentParser:
     wl = wmc.add_parser("log", help="validate a consult response, lint its citations, append it to wm/consults.jsonl")
     wl.add_argument("--response", required=True, type=Path); wl.add_argument("--request", type=Path)
     wl.set_defaults(func=_wm_log)
+
+    wsu = wmc.add_parser("submit", help="register an experiment card (recorder mode): validate, snapshot its scripts, archive its checkpoint, list what is missing")
+    wsu.add_argument("card", help="path to the filled exp-card YAML")
+    wsu.add_argument("--stage", choices=["plan", "running", "closed"], help="override the inferred stage")
+    wsu.set_defaults(func=_wm_submit)
 
     wr = wmc.add_parser("record", help="validate a record response (recorder mode), persist the card, append it to wm/records.jsonl")
     wr.add_argument("--response", required=True, type=Path); wr.add_argument("--request", type=Path)

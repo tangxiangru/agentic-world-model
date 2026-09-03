@@ -188,3 +188,53 @@ def test_archive_checkpoint(tmp_path: Path) -> None:
     assert (dest / "model.safetensors").is_file()
     with pytest.raises(WMError):  # one archive per card
         record.archive_checkpoint(wm_dir, sd, "exp-01", dest)
+
+
+def test_submit_card_registers_snapshots_and_archives(tmp_path: Path) -> None:
+    sd = tmp_path / "task"
+    (sd / "memory" / "cards").mkdir(parents=True)
+    (sd / "train.py").write_text("print('train')\n")
+    (sd / "prep.py").write_text("print('prep')\n")
+    ckpt = sd / "runs" / "exp01" / "checkpoint-1000"
+    ckpt.mkdir(parents=True)
+    (ckpt / "config.json").write_text("{}")
+    (ckpt / "model.safetensors").write_bytes(b"\x00" * 64)
+    wm_dir = sd / "wm"
+
+    card = full_card()
+    card["setup"]["data"][0]["built_by"] = "prep.py"
+    plan = dict(card); plan.pop("result")
+    card_file = sd / "memory" / "cards" / "exp-01.yaml"
+    import yaml as _yaml
+    card_file.write_text(_yaml.safe_dump(plan, sort_keys=False))
+
+    out = record.submit_card(wm_dir, sd, card_file)
+    assert out["stage"] == "plan" and out["missing"] == [] and out["archived"] is None
+    assert sorted(out["snapshotted"]) == ["prep.py", "train.py"]
+    assert (wm_dir / "cards" / "exp-01" / "snapshot" / "train.py").is_file()
+
+    # resubmit with results: closed, checkpoint archived
+    card["result"]["output_checkpoint"] = str(ckpt)
+    card_file.write_text(_yaml.safe_dump(card, sort_keys=False))
+    out = record.submit_card(wm_dir, sd, card_file)
+    assert out["stage"] == "closed" and out["missing"] == []
+    assert out["archived"] == str(wm_dir / "checkpoints" / "exp-01")
+    assert (wm_dir / "checkpoints" / "exp-01" / "model.safetensors").is_file()
+    # idempotent on the archive
+    assert record.submit_card(wm_dir, sd, card_file)["archived"] == out["archived"]
+
+    # a completed card pointing at a deleted checkpoint reports it
+    import shutil
+    shutil.rmtree(ckpt)
+    gone = full_card("exp-02")
+    gone["result"]["output_checkpoint"] = str(ckpt)
+    gone_file = sd / "memory" / "cards" / "exp-02.yaml"
+    gone_file.write_text(_yaml.safe_dump(gone, sort_keys=False))
+    out = record.submit_card(wm_dir, sd, gone_file)
+    assert out["archived"] is None and any("not found on disk" in m for m in out["missing"])
+
+    rows = record.RecordLedger(wm_dir / "records.jsonl").rows()
+    assert [r["event"] for r in rows] == ["submit"] * 4
+    with pytest.raises(WMError):
+        bad = gone_file.with_name("bad.yaml"); bad.write_text("card_id: nope\n")
+        record.submit_card(wm_dir, sd, bad)

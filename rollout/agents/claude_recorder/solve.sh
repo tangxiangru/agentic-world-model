@@ -1,15 +1,15 @@
 #!/bin/bash
-# Recorder cells: PostTrainBench's Claude invocation plus one peer WMA session
-# in recorder mode. The scientist gets no prior information of any kind and
-# explores on its own; the WMA only keeps the reproducible record — a list of
-# experiment cards, one per launch, collected as the run happens. The PTB
-# runner remains responsible for deciding whether the scientist run and
-# evaluation succeeded; no study-specific artifact or credential gate runs.
+# Recorder cells: PostTrainBench's Claude invocation, no peer session. The
+# scientist gets no prior information of any kind and explores on its own; it
+# registers every experiment itself — `awm wm submit <card.yaml>` before each
+# launch and again with results — and the command keeps the record: validated
+# cards, script snapshots, archived checkpoints for the post-run evaluation.
+# The PTB runner remains responsible for deciding whether the scientist run
+# and evaluation succeeded; no study-specific artifact or credential gate runs.
 
 IFS=: read -r MODEL _REST <<EOF
 ${AGENT_CONFIG}
 EOF
-WMA_MODEL="${AWM_WMA_MODEL:-claude-opus-5}"
 AWM_ROOT=/home/ben/agent/awm-src
 
 export BASH_MAX_TIMEOUT_MS="36000000"
@@ -31,33 +31,11 @@ export PATH="/home/ben/.local/bin:${PATH}"
 python3 -m awm.cli wm init \
     --mode record \
     --arm null \
-    --wma-model "${WMA_MODEL}" \
-    --base-model "${MODEL_TO_TRAIN:-google/gemma-3-4b-pt}"
-awm_init_rc=$?
+    --base-model "${MODEL_TO_TRAIN:-google/gemma-3-4b-pt}" \
+    || printf 'awm init failed\n' > /home/ben/task/wm/init.err
 
-WMA_PID=""
-if [ "${awm_init_rc}" -eq 0 ] && [ -d "${AWM_ROOT}/wma" ]; then
-    cp -r "${AWM_ROOT}/wma" /home/ben/wma
-    (
-        cd /home/ben/wma || exit
-        exec env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT AWM_SESSION_DIR=/home/ben/task \
-            claude --print --verbose --model "${WMA_MODEL}" \
-            --output-format stream-json \
-            --allowedTools "Read,Grep,Glob,ListAgents,SendMessage,Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(grep:*),Bash(rg:*),Bash(find:*),Bash(cat:*),Bash(sleep:*),Bash(awm:*),Bash(python3 -m awm.cli:*),Bash(mkdir:*)" \
-            --dangerously-skip-permissions \
-            "You are the world-model agent for this session, in recorder mode. Read CLAUDE.md and the record skill, then keep the record for the whole run. Begin by running: sleep 120." \
-            > /home/ben/task/wm/wma-session.jsonl \
-            2> /home/ben/task/wm/wma-session.err
-    ) &
-    WMA_PID=$!
-else
-    printf 'WMA setup did not start (awm init rc=%s)\n' "${awm_init_rc}" \
-        > /home/ben/task/wm/wma-session.err
-fi
-
-# Give the peer time to register, but do not replace PTB's success semantics
-# with a custom readiness or artifact validator.
-sleep 20
+# The card template the prompt tells the scientist to copy from.
+cp "${AWM_ROOT}/input/exp-card.template.yaml" /home/ben/task/exp-card.template.yaml
 
 cd /home/ben/task || exit 1
 if [ -r /home/ben/task/instruction.md ]; then
@@ -73,9 +51,9 @@ else
     scientist_rc=$?
 fi
 
-# Match PostTrainBench's claude_reprompt lifecycle. Keep the peer and outer
-# container alive while the same scientist conversation is resumed; this is
-# intentionally independent of model artifacts and PTB evaluation semantics.
+# Match PostTrainBench's claude_reprompt lifecycle: resume the same scientist
+# conversation while budget remains. This is intentionally independent of
+# model artifacts and PTB evaluation semantics.
 while true; do
     TIMER_OUTPUT="$(bash timer.sh 2>/dev/null)"
     if printf '%s\n' "${TIMER_OUTPUT}" | grep -q "expired"; then
@@ -99,10 +77,5 @@ while true; do
         --dangerously-skip-permissions
     scientist_rc=$?
 done
-
-if [ -n "${WMA_PID}" ]; then
-    kill "${WMA_PID}" 2>/dev/null || true
-    wait "${WMA_PID}" 2>/dev/null || true
-fi
 
 exit "${scientist_rc}"
