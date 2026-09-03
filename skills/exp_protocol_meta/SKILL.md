@@ -119,6 +119,13 @@ directive of 2026-09-03, recorded in the iteration-basis spec §七 and in
   independently specified, validated cells held as `PENDING(JobHeldUser)` and
   release already-safe downstream work asynchronously when its scientific and
   ownership gates are satisfied.
+- A receipt's `state: held` records intent, not the current scheduler hold.
+  Count the floor from live `JobHeldUser` reasons; investigate any external
+  release that disagrees with the committed queue before a screen can start.
+- For local Claude dispatch and liveness checks, follow
+  `doc/reference/exp_protocol_local_claude_analysis.md`: separate the prompt
+  from variadic tool arguments and verify the same session in the same
+  execution-permission context before restarting it.
 
 ## Rules
 

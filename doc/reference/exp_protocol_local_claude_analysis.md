@@ -24,11 +24,18 @@ planner 随后运行 `awm ptb reconcile --apply`、提交收割物，并以 PTB 
 ```bash
 claude --model 'claude-opus-5[1m]' --effort max --background \
   --permission-mode plan --permission-prompts none \
-  --tools 'Read,Grep,Glob,Bash' '<review prompt>'
+  --tools 'Read,Grep,Glob,Bash' -- '<review prompt>'
 ```
 
 后台命令返回的 session id 必须写进本窗口 synthesis。planner 用 `claude logs <id>` 读取结果；
 Claude 只读 evidence 并输出报告建议，不 release/cancel job、不 push、不决定晋升。
+
+`--tools` 是多参数选项，必须用 `--` 隔开 prompt，否则 2.1.259 会创建没有收到任务的 idle session。
+拿到 session id 不是分析已经开始：在与启动相同的执行权限环境里核对 `claude agents --json` 和
+`claude logs <id>`，看到实际读文件/trace 后才记作 started。受限 shell 的 socket 连接失败或看不见
+host PID 不证明 helper 已退出；先在原权限环境复查同一 id，不据此重复派发。
+这套只读 tool set 不包含 Write，reviewer 在最终输出中给出每份 Markdown report，由 planner 保存到
+窗口目录；不要让 reviewer 静默扩展工具权限来落盘。
 
 ## 每个分析窗口
 

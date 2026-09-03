@@ -44,8 +44,9 @@ Both read `results/ptb/<batch>/<cell>/` as the operator commits it:
    `trace-reviewer` agent definition (`.claude/agents/trace-reviewer.md`). For
    this line the later local-analysis contract supersedes the earlier
    high-effort economy: local Claude Code sessions use
-   `claude-opus-5[1m] --effort max`. Reviewers read only; they write
-   `reports/<cell>.md` under the scratch directory. If one group exposes a
+   `claude-opus-5[1m] --effort max`. With the local read-only tool set, reviewers
+   emit one Markdown report per cell in their final session output; the planner
+   saves `reports/<cell>.md`. If one group exposes a
    cross-cell ambiguity that its assigned traces cannot settle, launch an
    additional focused reviewer rather than compressing the issue into the
    synthesis.

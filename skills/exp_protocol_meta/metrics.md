@@ -46,3 +46,12 @@ read what the cards cannot say; the reviewer reports carry them per cell.
 - `n_locked_open` up: runs are being started and not closed. Either the close
   step is too heavy or the deadline is being hit; check `situation.remaining_h`
   on the open cards.
+
+A loadable artifact, a clean judge, and a successful n=500 developer evaluation
+do not prove official full-evaluation completion. p00r16/job 90490 passed those
+stages but all nine full evaluations aborted in the numeric scorer, leaving no
+`metrics.json`. Keep such attempts failed/incomplete; do not substitute the
+developer score or reconstruct accuracy from a partial official run. Repeated
+deterministic scorer errors need a separately scoped recovery decision, not
+unbounded retries or a silent change to the frozen evaluation contract. Evidence:
+[`p00r16` failure review](../../doc/exp_protocol_iterations/2026-09-03-p00r16-scorer-failure.md).
