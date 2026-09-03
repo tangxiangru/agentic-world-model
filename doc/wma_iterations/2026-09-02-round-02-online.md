@@ -2,6 +2,12 @@
 
 Status: launched; all 16 candidate cells safely PENDING; no candidate result read.
 
+Amendment (2026-09-03 01:4x UTC): the first candidate receipts are withdrawn
+before start because their public checkout used the obsolete non-blocking WMA
+review. They are replaced by six lock-gated v2 manifests: the same four
+candidate skills plus a same-wave v0.2 baseline and no-WMA control, all on
+public `awm.sha=ae4672487cc16f1d75921dcaab85498d7adc938e`.
+
 ## Frozen basis
 
 Round 01 completed 8/8 validator-clean cells per arm. WMA v0.2 scored 0.7565
@@ -85,3 +91,26 @@ Every candidate requires zero leak-suspected verdicts, accepted-verdict cost
 ≤1.5× v0.2, and PTB no worse than v0.2 beyond its observed spread. At most one
 edit is promoted. A second passing edit is retested stacked on the promoted
 baseline in the next round; candidates are never pooled post hoc.
+
+## Verdict-in-lock amendment
+
+Round 01 showed that 21/22 delivered verdicts arrived after the launch under
+the old advisory background step. Commit `25a064c` therefore makes the verdict
+part of `awm exp_protocol lock`; `ae46724` additionally prevents a re-lock from
+mistaking an old verdict file for the new response. A WMA-attached scientist
+may prepare while waiting, but cannot start the card's command before lock
+returns. The control records `not_attached` and returns without a verdict.
+
+This behavior changes the treatment and invalidates comparison of the original
+Round 02 receipts against old w04/c04. Before any original candidate job
+started, queue intent was changed to cancel those 16 exact cells and replace
+them with:
+
+- v0.2 baseline `w10r01..04`, private/public SHA `ae46724`;
+- control `c10r01..04`, identical public checkout and no sidecar;
+- A/A+B/C/D v2, reusing `w06..w09 r01..04` with the same immutable candidate
+  private SHAs and public SHA `ae46724`.
+
+All six v2 manifests have four repeats and otherwise retain the frozen Round 02
+contract. The original candidate receipts never contribute to a result or
+denominator.

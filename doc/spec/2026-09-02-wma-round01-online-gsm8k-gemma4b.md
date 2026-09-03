@@ -279,6 +279,18 @@ Round 02 候选 16 个不动。两个 r05 不进入 all-24 主 cohort。
 `queue.yaml` 里四个 v2 entry 的 `want` 保持 `submitted`(各含 RUNNING 或保留的 cell),
 每 cell 的撤回意图写在 `why` 与本节;执行方式与 09-02 22:15 的按 receipt 精确取消相同。
 
+## 2026-09-03 01:4x UTC:Round 02 改为 verdict-in-lock setting
+
+用户取消旧的 advisory async setting:WMA verdict 现在属于 lock,attached arm 在 verdict
+返回/明确失败/超时前不能启动该 card。原 Round 02 的 16 candidate job 尚全为 PENDING,
+但 frozen public `awm.sha=e8a8599` 仍是旧异步协议,所以不能作为新 setting 的证据。
+
+在不看任何 candidate outcome 的前提下,撤回原 16 job,并以 public
+`awm.sha=ae4672487cc16f1d75921dcaab85498d7adc938e` 重排同一 A/A+B/C/D private
+skill。因为 scientist behavior 也改变,新增同波 v0.2 x4 与 no-WMA control x4;六个
+manifest 其余合同一致。原 candidate cell 从未启动、永不进入 denominator;v2 candidate
+复用 `w06..w09 r01..04`,新 baseline/control 为 `w10/c10 r01..04`。
+
 ## 用户指令(2026-09-02,覆盖基础合同 §十"上线后第一轮只跑 ≥3 cell"的条款)
 
 1. **不走 pilot。** manifest 不带 `pilot` 块,queue entry 一律 `pilot: null`,直接以
