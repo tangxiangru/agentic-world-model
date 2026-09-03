@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T13:01:45Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.3
+  remaining_h: 6.7
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.06, protocol_n: 150}
+  trigger: "exp-03 reasons well but never stops: reading the first 'ANSWER:' marker it is right on 63.3% of dev-150, yet only 1/150 completions end in an ANSWER line and 74% run into the 4000-token cap, so the graded score is 0.06 (analysis/exp-03_diagnostic.json)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_diagnostic.json, locator: "whole file", observation: "first-marker 0.633 vs graded 0.060; ends_with_answer_line 0.0067; hit_token_cap 0.74"}
+    - {path: /home/ben/task/logs/2026-09-03T12-52-07+00-00_gsm8k_V6rgrDmiVXi76wsuMFp7px.json, locator: "samples[0].output.choices[0].message.content", observation: "answers 'ANSWER: 20' (correct) and then writes a fresh problem and solves that, repeatedly, to the token cap"}
+  alternatives_rejected:
+    - {option: "Retrain from the base model with fewshot-augmented prompts", reason: "would cost the whole remaining budget; exp-03 already holds the content, only the turn-ending behaviour is missing"}
+    - {option: "Add stop strings or change decoding inside evaluate.py", reason: "evaluate.py and templates/ are immutable by the task rules"}
+    - {option: "Train only on 10-shot prompts", reason: "would lose the zero-shot behaviour needed for the rejection-sampling round; k~U{0..10} covers the graded condition and generalises"}
+  pitfalls_hit:
+    - {what: "exp-03 trained every row with exactly one problem in the prompt while the grader puts ten solved examples in front of it; the stop_token preflight passed because the training targets DO end in <end_of_turn> - the mismatch was in the prompt distribution, not the target", cost_h: 2.2, fix: "train on prompts rendered with the grader's system-message fewshot block, k drawn per row"}
+    - {what: "at bs 4 x 2251-token rows the run measured 10.4 s/step -> 2.2h for 24k rows, more than the remaining budget allows alongside a rejection-sampling round; killed after 13 steps and re-locked at 12k rows (~1.1h). Format behaviour needs a few hundred steps, not a full epoch", cost_h: 0.15, fix: "12k rows; relock"}
+    - {what: "first fewshot build dropped 12% of rows at max_seq_len 2048, and the dropped rows were exactly the k=10 ones that matter most", cost_h: 0.1, fix: "max_seq_len 2560"}
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Under the graded prompt (10 solved GSM8K examples folded into the user turn, then the question), exp-03 emits a correct answer and then keeps going - inventing and solving further problems - because nothing in its training showed a turn that ends after one answer when worked examples precede it. The last-number scorer then reads a number out of the drift."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_diagnostic.json, locator: "whole file", observation: "0.633 first-marker vs 0.060 graded: 0.573 of dev-150 is lost purely to not stopping"}
+  affected_share: 0.99
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing exp-03 for one epoch on 12k of the same targets, but with prompts rendered as the grader renders them - a system message of k~U{0..10} solved GSM8K TRAIN examples folded into the user turn - makes the model end its turn after one ANSWER line under the 10-shot prompt, converting most of its 0.633 first-marker accuracy into graded accuracy."
+  mechanism: "The model imitates the in-context pattern it is given. Prompts that contain worked examples AND a target that ends with <end_of_turn> after a single answer make 'stop after one answer' the behaviour the fewshot context predicts, instead of 'continue the list'."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+50 points or so; expect 0.55-0.68, bounded by exp-03's 0.633 first-marker plus whatever the extra epoch adds"}
+  falsified_if: "fewer than 90% of dev-150 completions end in an 'ANSWER: N' line, or graded accuracy below 0.45"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_fewshot12k.jsonl
+      source: "derived:exp-03 (rows re-rendered from data/sft_omi2_x2.jsonl; fewshot blocks from the openai/gsm8k TRAIN split)"
+      n_examples: 12000
+      built_by: /home/ben/task/prep_fewshot.py
+      build_command: [python, prep_fewshot.py, --n, '12000', --max-seq-len, '2560', --out, data/sft_fewshot12k.jsonl]
+      selection: "first 12000 rows of the exp-03 training file that fit 2560 tokens after prepending a fewshot block; k=0 with p=0.2, k=10 with p=0.3, else k~U{1..9}; fewshot examples drawn from the 7473 GSM8K TRAIN items and rendered exactly as inspect_evals' sample_to_fewshot does; the block is passed as a system message so templates/gemma3.jinja folds it into the first user turn the way the grader does"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, torch 2.8.0"
+    peft: "none (full fine-tune; vision tower and projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 4, grad_accum: 8, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "bf16 weights + bf16 autocast, 8-bit AdamW, gradient checkpointing", seed: 0}
+    target_format: "unchanged from exp-03: solution body, blank line, 'ANSWER: N', then <end_of_turn>; loss on target tokens only. Only the prompt distribution changes."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_fewshot12k.jsonl, --parent, /home/ben/task/ckpts/exp-03/final, --out, ckpts/exp-04, --bs, '4', --grad-accum, '8', --lr, '7e-6', --epochs, '1', --max-seq-len, '2560', --grad-checkpointing, --save-steps, '200', --dtype, bf16]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04_train.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 200
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.2}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --json-output-file, '{out}.json']
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k test in harness order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.06
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "share of dev-150 completions ending in an 'ANSWER: N' line (must go from 0.007 to near 1.0 for the mechanism to be the one claimed)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.67
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 375}
+  training_summary: {final_loss: 0.253, steps: 375, notes: "5.0 samples/s (long prompts); peak GPU memory 68 GiB; no OOM"}
+  measurements:
+    - {metric: accuracy, value: 0.70, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.64}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-04_diagnostic.json
+    notes: "150/150 completions now end in an 'ANSWER: N' line, 0% hit the token cap, no completion carries a second ANSWER marker, mean completion 488 chars (was 9824). The stop failure is completely gone."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.060 -> 0.700 (+64.0) from 375 steps on 12k rows whose only change is the prompt distribution. The diagnostic is unambiguous: end-in-ANSWER-line went 0.007 -> 1.000 and token-cap hits 0.74 -> 0.00, so the gain is the stop behaviour plus the ~7 points the extra epoch adds over exp-03's 0.633 first-marker ceiling."
+  decision: adopt
+  next_step: "exp-05: the harness sends no temperature, so vLLM falls back to the checkpoint's generation_config (do_sample true, top_k 64, top_p 0.95, temperature 1.0) - i.e. every graded answer is sampled, not greedy. Test greedy decoding as a decode-config change on the same checkpoint."

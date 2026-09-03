@@ -1,0 +1,125 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T10:15:34Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.7
+  remaining_h: 9.3
+  incumbent:
+    ref: exp-01
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0667, protocol_n: 150}
+  trigger: "exp-01 showed the base model answers many items correctly and then keeps generating new invented problems: only 37/150 completions end on an 'ANSWER: n' line, and the grader reads the last number in the completion."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-01.yaml, locator: "result.diagnostic_result"}
+    - {path: /home/ben/task/logs/2026-09-03T09-56-46+00-00_gsm8k_7M4nmJQDGZNKvsjw4J9X9T.json, locator: "samples[0].output - answers 20 correctly, then invents a new problem"}
+  alternatives_rejected:
+    - {option: "Train straight on the full 75,140-row mixture (~3.2 h at the measured 6.5 samples/s)", reason: "the learning rate is unvalidated on this checkpoint; a 30k run costs ~80 min, de-risks the big one, and leaves a usable fallback model either way"}
+    - {option: "LoRA instead of full fine-tuning", reason: "full FT fits in 38 GB with liger fused-CE + 8-bit Adam (measured in the smoke run) and generally beats LoRA for a format+skill shift this large"}
+    - {option: "Few-shot prompt engineering only, no training", reason: "evaluate.py fixes the prompt; the only lever on stop behaviour is the weights"}
+    - {option: "MetaMathQA/orca only, no OpenMathInstruct-2", reason: "OMI2's gsm8k-sourced split is the largest consistent-style CoT pool (153k rows in train_1M); the other two are kept as ~30% diversity"}
+  pitfalls_hit:
+    - {what: "OOM at bs=8: Gemma3ForConditionalGeneration's loss path materialises a [8,3072,262208] fp32 logit tensor (20 GiB alloc)", cost_h: 0.15, fix: "liger-kernel fused_linear_cross_entropy (apply_liger_kernel_to_gemma3); peak now 38 GiB"}
+    - {what: "uv pip install --system filled the 64 MB writable root overlay and left it at 100%", cost_h: 0.1, fix: "install to --target /home/ben/task/pylibs and run with PYTHONPATH; do not write to / again"}
+  smoke_runs:
+    - {command: [python, scripts/build_data.py, --out, data/pilot_gsm8k.jsonl, --n-gsm8k, "200"], outcome: "200/200 targets end with <end_of_turn> and contain 'ANSWER: ' exactly once"}
+    - {command: [python, scripts/train_sft.py, --train-file, data/smoke.jsonl, --output-dir, ckpts/smoke, --epochs, "1"], outcome: "2000 rows, 63 steps, 306 s, loss 0.47 -> 0.36, 6.5 samples/s, 38 GiB peak; final/ saved with tokenizer + generation_config"}
+    - {command: [python, evaluate.py, --model-path, ckpts/smoke/final, --limit, "20"], outcome: "format probe of the 2000-row smoke checkpoint, to confirm vLLM stops at <end_of_turn> before the 30k run is launched"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/mix_v2.jsonl], outcome: "75140 documents checked, 0 contaminated, 0 matches"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The base checkpoint has no notion of ending a turn: it answers, then continues with fresh self-invented word problems until max_tokens. The grader takes the last number in the completion, so a correct answer followed by an invented problem scores 0. Accuracy is 0.067 even though 140/150 completions contain an 'ANSWER:' line."
+  evidence:
+    - {path: /home/ben/task/logs/2026-09-03T09-56-46+00-00_gsm8k_7M4nmJQDGZNKvsjw4J9X9T.json, locator: "all 150 samples", observation: "37/150 end on 'ANSWER: n'; 62/150 hit the 4000-token cap; median completion 4.6k chars"}
+  affected_share: 0.75
+  failure_examples:
+    - {id: sample-0, source: /home/ben/task/logs/2026-09-03T09-56-46+00-00_gsm8k_7M4nmJQDGZNKvsjw4J9X9T.json, question: "dev-150 item 0 (gsm8k test, held out)", gold: "20", model_output: "Amir eats 5 cookies. Cody eats 5 x 3 = 15 cookies. Together they eat 5 + 15 = 20 cookies.\nANSWER: 20\n\nMark has two boxes... (invents a new problem and answers it)", failure: "correct answer, then continues; the last number belongs to an invented problem"}
+    - {id: sample-1, source: /home/ben/task/logs/2026-09-03T09-56-46+00-00_gsm8k_7M4nmJQDGZNKvsjw4J9X9T.json, question: "dev-150 item 1 (gsm8k test, held out)", gold: "see log", model_output: "... ends by echoing a few-shot problem and '>>> 16'", failure: "regurgitates the system-prompt few-shot examples"}
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Full-parameter SFT on 30k gsm8k-style CoT rows whose targets end 'ANSWER: n<end_of_turn>' raises dev-150 accuracy above the base model's 0.067, because generation then stops at token 106 (already in the base generation_config eos list) right after the answer."
+  mechanism: "The scorer reads the last number of the completion. Teaching the model to emit the answer and then the turn terminator makes the last number the intended answer; the CoT data additionally supplies grade-school arithmetic practice."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-01, magnitude: "+40 to +60 points: the format fix alone should recover most of the 140/150 items that already contain an ANSWER line"}
+  falsified_if: "dev-150 accuracy below 0.40, or the share of completions ending on an 'ANSWER: n' line stays below 0.90"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/mix_v2_30k.jsonl
+      source: "openai/gsm8k train + nvidia/OpenMathInstruct-2 train_1M (gsm8k, augmented_gsm8k) + meta-math/MetaMathQA (GSM_*) + microsoft/orca-math-word-problems-200k"
+      n_examples: 30000
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/mix_v2.jsonl, --n-gsm8k, "7473", --n-omi2, "60000", --n-metamath, "15000", --n-orca, "15000", --fewshot-frac, "0.2", --max-target-tokens, "640"]
+      selection: "boxed/#### markers and <<..>> annotations stripped; the final answer must normalise to a number; dedup on (normalised question, answer) dropped 21686 rows; targets over 640 tokens dropped (647); shuffled, then the first 30000 lines of mix_v1.jsonl. 20% of rows carry the grader's exact 10-shot system message, 80% are zero-shot. Composition: omi2 18700 / orca 4895 / metamath 4431 / gsm8k 1974."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.6.2 (fused linear CE)"
+    peft: "none (full FT of the 3.88B language model; vision tower + projector, 420M, frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "step-by-step reasoning, blank line, 'ANSWER: <number>', then the turn terminator; prompt rendered with templates/gemma3.jinja and the grader's own MATH_PROMPT_TEMPLATE; loss on completion tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --train-file, /home/ben/task/data/mix_v2_30k.jsonl, --output-dir, /home/ben/task/ckpts/exp-02, --epochs, "1", --batch-size, "16", --grad-accum, "2", --lr, "1e-5", --max-seq-len, "3072"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTHONPATH: /home/ben/task/pylibs, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-02_train.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.0667
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic:
+    what: "share of completions whose last line matches 'ANSWER: <number>' (format compliance)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.71
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 938}
+  training_summary: {final_loss: 0.3185, steps: 938, notes: "2569 s, 11.68 samples/s, 42 GiB peak; loss 0.55 -> ~0.30 (mean 0.318). liger fused-CE + adamw_bnb_8bit, bf16, grad checkpointing."}
+  measurements:
+    - {metric: accuracy, value: 0.5867, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: 0.52}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/logs/2026-09-03T11-08-34+00-00_gsm8k_cp5FExJipX7EMdE2bNaRP5.json
+    notes: "150/150 completions end on an 'ANSWER: n' line and all 150 stop on <end_of_turn> (0 hit the 4000-token cap; median completion 465 chars vs 4611 for the base model). Format is fully solved."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.067 -> 0.5867 +/- 0.0403 (+52.0 points). The mechanism was exactly the stated one: format compliance went 37/150 -> 150/150 and every completion now stops at <end_of_turn>. The remaining 62 failures are reasoning and arithmetic errors, not formatting."
+  decision: adopt
+  next_step: "Two independent leads. (a) The eval log says vLLM took its default sampling params from the model's generation_config, i.e. the model is being graded with do_sample/top_k=64/top_p=0.95 at temperature 1.0; item 4's failure ('6 + 4 + 18 = 28 + 18 = 46') looks like sampling noise. Test a greedy generation_config as a decode-config card. (b) Only 30k of the 75,140 prepared rows were used; continue training on the remaining 45,140."

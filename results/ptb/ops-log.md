@@ -97,3 +97,7 @@
 - 2026-09-03T18:05:29+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r01 job=90647 COMPLETED acc=0.7104 complete clean
 - 2026-09-03T18:05:31+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r02 job=90648 COMPLETED acc=0.7779 complete clean
 - 2026-09-03T18:05:33+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2/g01s04 job=90794 COMPLETED acc=0.7354 complete clean
+- 2026-09-03T18:39:01+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2/g01s01 job=90791 COMPLETED acc=0.6960 complete clean
+- 2026-09-03T18:39:04+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2/g01s03 job=90793 COMPLETED acc=0.7255 complete clean
+- 2026-09-03T18:39:06+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2/g01s06 job=90796 COMPLETED acc=0.7081 complete clean
+- 2026-09-03T18:39:08+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2/g01s08 job=90798 COMPLETED acc=0.7255 complete clean
