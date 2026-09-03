@@ -76,14 +76,8 @@ def write_lock(card_path: Path, card: dict[str, Any], preflight_summary: dict[st
         if not relock_reason:
             raise LockExists(f"{lock_path(card_path)} exists; re-lock only with a reason")
         history = list(previous.get("relocked_from") or [])
-        earlier = {"plan_sha256": previous.get("plan_sha256"), "locked_at": previous.get("locked_at"),
-                   "overrides": dict(previous.get("overrides") or {}), "reason": relock_reason}
-        if previous.get("wma") is not None:
-            # each lock of a card asks the world-model agent again and waits for the answer; without
-            # this the new lock would drop the earlier wait and the card's gate cost would be
-            # unrecoverable from the artefacts (2026-09-03: relocks are how preconditions are answered)
-            earlier["wma"] = previous["wma"]
-        history.append(earlier)
+        history.append({"plan_sha256": previous.get("plan_sha256"), "locked_at": previous.get("locked_at"),
+                        "overrides": dict(previous.get("overrides") or {}), "reason": relock_reason})
     info = {
         "schema_version": LOCK_SCHEMA,
         "card_id": card.get("card_id"),
