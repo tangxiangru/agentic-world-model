@@ -1,6 +1,7 @@
 # WMA online Round 02 — four single-edit candidates
 
-Status: launched; all 16 candidate cells safely PENDING; no candidate result read.
+Status: lock-gated v2 launched; all 24 replacement cells safely PENDING; no
+candidate result read.
 
 Amendment (2026-09-03 01:4x UTC): the first candidate receipts are withdrawn
 before start because their public checkout used the obsolete non-blocking WMA
@@ -146,3 +147,19 @@ policy (`yes` 22/22 in Round 01) and to harness-enforced precondition answers.
 Non-compliant → harness first. The skill candidates keep their own readouts
 above; a candidate is compared only with `w10` cells that passed the compliance
 check.
+
+## Lock-gated v2 launch (2026-09-03 01:49–01:51 UTC)
+
+At 01:49–01:51 UTC reconcile submitted the lock-gated v2 design:
+
+- v0.2 baseline: `90982..90985`;
+- no-WMA control: `90998..91001`;
+- A: `91002..91005`;
+- A+B: `91007..91010`;
+- C: `91014,91021..91023`;
+- D: `91024..91027`.
+
+The held-route gate and post-release audit both passed for every cell: 24/24
+were PENDING with `ReqNodeList=slurm2-a3nodesetondem-[2-3]`. Owned allocation
+remained 16/16 and safe PENDING rose from 9 to 33. Only these v2 receipts enter
+the Round 02 denominator.
