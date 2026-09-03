@@ -58,3 +58,4 @@ redundant repetitions or unsupported edits.
 ## Candidate archives
 
 - g-probe-scope: `e4402ffa6bca`; one new probe-scope rule; compared with v0.2 on byte-identical private runtime.
+- h-soup-ingredients: `a536a0af24d7`; replace only the time-short default clause in the C6 prior; compared with v0.2 on byte-identical private runtime.

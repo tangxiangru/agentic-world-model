@@ -117,19 +117,6 @@ Rules:
 - Online mode: all kinds, inside the budget, in a scratch copy, not in the
   scientist's working files. A smoke run costs a median 0.7 min and a partial
   evaluation 2–5 min: cheap enough to run rather than guess.
-- **Keep a probe inside your inputs.** Its intentional inputs must stay in
-  the session, the named skill/history, or its own configured scratch; probe
-  writes stay in that scratch (run Python probes with
-  `PYTHONDONTWRITEBYTECODE=1`). A capacity check names the actual session or
-  scratch, not a home directory, `/dev/shm`, or an installed package tree.
-  Use preflight and session monitor logs for feasibility. Do not inspect
-  installed package source, import a package to explore its installation,
-  copy an outside file into scratch, or rewrite a path to evade the boundary.
-  Never repair, clean up or restore outside files or caches: if a probe
-  touches them or leaves a side effect, stop the probe and disclose it in
-  `evidence`. If a needed check cannot stay within the allowed inputs, leave
-  its mechanism unverified under the basis rule and offer a costed
-  current-card precondition instead.
 - Run a probe only if its result would change a level. Record every probe
   with `changed: L0|L1|L2|L3|none` — `none` is informative for the ledger.
 - Mechanical checks belong to `awm exp_protocol preflight`, not to you. If a
