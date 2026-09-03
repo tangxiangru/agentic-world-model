@@ -115,3 +115,10 @@ developer score or reconstruct accuracy from a partial official run. Repeated
 deterministic scorer errors need a separately scoped recovery decision, not
 unbounded retries or a silent change to the frozen evaluation contract. Evidence:
 [`p00r16` failure review](../../doc/exp_protocol_iterations/2026-09-03-p00r16-scorer-failure.md).
+
+A whole-block administrative withdrawal before any job starts still needs its
+receipt cancellation and terminal status harvested, but supplies neither a
+scientist failure trajectory nor a validator-clean result. Keep accuracy null
+and disclose the withdrawn planned cells separately; absence of judge flags
+does not make an unstarted job a clean observation. The strict-guard round's
+C withdrawal demonstrates this distinction.
