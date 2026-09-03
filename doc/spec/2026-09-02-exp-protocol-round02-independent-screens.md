@@ -159,5 +159,5 @@ cells `e02s01–04`。仅三处等待指导相对 guard 基线变化；原 E man
 依赖顺序仍为：完整 strict-guard safety review + ownership/原生隔离门 → D/B/C + drift A；
 后续 A/H/E v2 + drift B，E 最后。代码和 manifest 已准备不等于可启动：90820 的 placement 违规使
 真实 OWNERSHIP FAIL，禁止新提交及放行。旧 E 91064–91067 保持 held，须先有新 held receipt，
-再通过 operator 整块撤回旧作业；任何 RUNNING 作业不动。最后三份 strict trace 及全 cohort
-synthesis 尚未完成，因此本节不宣告 guard 安全门通过。
+再通过 operator 整块撤回旧作业；任何 RUNNING 作业不动。8份 strict trace 报告已齐全，全 cohort
+Opus max synthesis 正在运行，尚无最终裁决，因此本节不宣告 guard 安全门通过。

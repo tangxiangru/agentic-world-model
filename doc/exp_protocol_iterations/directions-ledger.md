@@ -8,7 +8,7 @@
 
 | # | 方向 | 来源 | 证据现状 | 状态 | 理由 / 改变状态的条件 |
 |---|---|---|---|---|---|
-| 1 | **会话结束杀掉训练**（Stop hook + 规则9 + pitfall） | p00r08、c00r02、pilots 90463/90464 | strict g01s01–08 已8/8 validator-clean，mean 0.720148；已有5份strict trace报告，最后3份审阅运行中 | **Round 01 候选，非已晋升 baseline**（`4ae3d87`） | 完整safety/score判定仍须full-cohort synthesis；正式baseline晋升仍需held-out，不能混入旧g01r01/02 |
+| 1 | **会话结束杀掉训练**（Stop hook + 规则9 + pitfall） | p00r08、c00r02、pilots 90463/90464 | strict g01s01–08 已8/8 validator-clean，mean 0.720148；8份trace报告齐全，全cohort Opus max synthesis运行中 | **Round 01 候选，非已晋升 baseline**（`4ae3d87`） | 完整safety/score判定仍须synthesis与主审；g01s07评估先于lock/重复成本另派审计；正式晋升仍需held-out |
 | 2 | **解码配置**：评分器继承 `generation_config`；关键是 grader observable | Window 02 8/8 NEW 都 self-adopt greedy，same-weight +5.4 到 +20 | 最终 greedy 在 baseline 5/5 饱和；p00r11 首个 post-SFT eval 后仍等 3.3 h、用 4 张卡按 sampling 判定，其余 ≤12 min | **筛选中：Round 02 A v2**（`f6cdccc`；held 91046–91049，优先级在 D 后） | 4/4 在首次 post-SFT eval 后 ≤0.5 h 完成 measured decode choice；之后未测量 sampling decision card ≤1/cell；记录 observable 与 run-on rate |
 | 3 | **vLLM 离线采样默认值**：重复 `<bos>`、stop ids 不生效、parser inf、孤儿引擎 | protocol 多 cell；controls 约 5 h，**c01r03 首轮也因无 explicit stop 得到 bogus pass@1** | 两臂都中；不是 arm-gap 机制，但浪费可机械避免 | **筛选中：Round 02 B v2**（`9f294c3`；held 91050–91053） | B mechanisms 的 pitfall h <0.3/cell；model weak-stop 单列观察 |
 | 4 | **评估 n / repeated-read uncertainty** | W02 5/8 reversal/noisy rank；W03 多个排序反转或差距收缩 | 大 n 不是全部判据；正确 paired 统计与明确 inconclusive 的 tie-break 不等于虚假提升 | **筛选中：Round 02 C v2**（`57511f9`；held 91054–91057） | 最终交付比较 n≥500 的 cells ≥3/4；smoke 单列，unsupported sub-SE claim/reversal 单列；n 取实际 metadata，见 spec §八 |
