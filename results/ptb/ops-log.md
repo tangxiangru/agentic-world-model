@@ -87,3 +87,4 @@
 - 2026-09-03T07:42:51+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r14 job=90488 COMPLETED acc=0.6702 complete clean
 - 2026-09-03T07:42:53+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-b-x8-v1/c01r02 job=90492 COMPLETED acc=0.7187 complete clean
 - 2026-09-03T09:43:17+00:00 blocked release exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2: reservation robtang-ptb-a3 is not native two-node isolation: slurm2-a3nodeset-0,slurm2-a3nodeset-1,slurm2-a3nodeset-2,slurm2-a3nodeset0-3,slurm2-a3nodeset1-0,slurm2-a3nodeset1-1,slurm2-a3nodeset1-2,slurm2-a3nodesetondem-0,slurm2-a3nodesetondem-1,slurm2-a3nodesetondem-2,slurm2-a3nodesetondem-3 vs frozen slurm2-a3nodesetondem-0,slurm2-a3nodesetondem-1
+- 2026-09-03T09:46:56+00:00 release exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2: 8 held job(s) 90791,90792,90793,90794,90795,90796,90797,90798
