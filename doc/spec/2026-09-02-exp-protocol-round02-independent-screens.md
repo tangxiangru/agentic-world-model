@@ -40,7 +40,9 @@ manifest 以 `awm.sha` + `awm.protocol_tree` 冻结，operator 从指定 sha mat
 - **B**：目标指标 = RFT 卡 `pitfalls_hit` 中可归因于采样的小时数（Round 00 约 1 h/尝试 RFT 的 cell →
   期望 < 0.3），以及 RFT 卡的 verdict。
 - **C**：目标指标 = 每 cell 最大评估 n（inspect log 大小 ÷ 44 KB）≥ 500 的 cell 数 ≥ 3/4，且 trace
-  中无"小样本排序反转"的报告。
+  中无"小样本排序反转"的报告。Window 02 额外记录：若 claimed delta ≤ 1 percentage point 或
+  不大于一个 marginal standard error，card 是否使用 paired item counts 或 repeated read；这是 C v2
+  现有"SE 小于 delta，或 paired statistic"规则的 screen observable，不改写已冻结的 protocol tree。
 - **护栏**：三者的 accuracy mean 不低于 baseline 池（v3 core 16 + guard）均值 − 0.03；n=4 只能分辨
   0.06，护栏只挡大跌。
 - **赢家**：目标指标动了且护栏通过 → 新 immutable manifest 再补 4 个 cell（`run_index` +1）到 8 个，
