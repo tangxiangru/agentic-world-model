@@ -1,6 +1,6 @@
 # WMA online Round 03 — L3 and uptake extension
 
-Status: preregistered; no candidate outcome read.
+Status: launched; 8/8 cells safely PENDING; no candidate outcome read.
 
 ## Basis
 
@@ -26,3 +26,13 @@ same-wave w10 v0.2 baseline. Compliance (`lock.wma.state`, verdict-before-launch
 ≥0.8) is checked before effects. Leaks must be zero; PTB is directional and a
 guard at n=4. At most one edit can be promoted, and only after the earlier
 Round 02 candidates are read on their own preregistered metrics.
+
+## Launch (2026-09-03 08:52–08:54 UTC)
+
+- E jobs: `91173..91176`.
+- F jobs: `91177..91180`.
+
+Both manifests passed the held-route gate. Post-release audit found all eight
+jobs PENDING with `ReqNodeList=slurm2-a3nodesetondem-[2-3]`. Owned allocation
+remained 16/16 and safe PENDING rose from 17 to 25. No cancellation or other
+queue action was part of this launch.
