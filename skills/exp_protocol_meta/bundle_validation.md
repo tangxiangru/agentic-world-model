@@ -26,6 +26,17 @@ belong in the [bundle specification](../../doc/spec/2026-09-04-exp-protocol-bund
   Preserve selected on-disk bytes/hashes separately from safe checkpoint
   serialization. A wrapper's success or import does not prove bypass-free
   coverage; audit actual callers and label unsupported paths honestly.
+- Missing evidence must stay unverified across old and new consumers. A
+  legacy comparator's existence, requested limit or scalar/SE pair is not a
+  verified completed count. Mark unsupported evidence explicitly rather than
+  turning it into PASS or inventing a new required schema field. Test absent
+  helpers and combined non-training/deferred-failure closure, not just isolated
+  positive JSON examples.
+- Update resume/wake-up guidance when analysis policy changes. The terminal
+  detector does not establish scientific completion; a completed predeclared
+  small discovery block can trigger review without filler to reach eight.
+  Preserve the live monitor's cumulative IDs and cadence while changing that
+  guidance; a text change is not grounds to restart a healthy detector.
 - Use independent forward tests on realistic inputs, not only regressions
   that encode the intended answer. Keep read-only historical replay, synthetic
   CPU integration, observed scientist behavior and measured GPU effects distinct.

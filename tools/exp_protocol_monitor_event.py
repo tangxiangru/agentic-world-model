@@ -14,7 +14,7 @@ def main() -> int:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return 0
-    if state.get("status") != "ready":
+    if not isinstance(state, dict) or state.get("status") != "ready":
         return 0
     terminal = ",".join(str(item) for item in state.get("terminal_jobs") or [])
     context = (
@@ -22,8 +22,11 @@ def main() -> int:
         f"{state.get('terminal_count')}/{state.get('threshold')} terminal jobs at "
         f"{state.get('checked_at')}; jobs={terminal}. First read "
         "skills/exp_protocol_meta/SKILL.md, then harvest with the operator, require validator-clean "
-        "receipt-backed bundles, and only when the new-clean window reaches eight start the local "
-        "Claude Code Opus 5[1m] max trace review. Do not wait for a GitHub/Fable response."
+        "receipt-backed bundles. Start local Claude Code Opus 5[1m] max trace review when either "
+        "eight NEW clean cells have accumulated or a predeclared discovery/confirmation block "
+        "is scientifically complete under the current meta policy. Terminal count alone proves "
+        "neither condition; do not launch filler repeats to reach eight. Do not wait for a "
+        "GitHub/Fable response."
     )
     print(
         json.dumps(

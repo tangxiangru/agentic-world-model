@@ -1,6 +1,6 @@
 # exp-protocol operator state and dependencies
 
-Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 for the user-directed bundle transition; live queue08:06:53, monitor process08:07:23, last reservation check06:55:49. Unchanged older cohorts retain the2026-09-03 validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
+Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 for the user-directed bundle transition; live queue08:06:53, monitor process08:25:12 / tick08:27:36, reservation recheck08:12. Unchanged older cohorts retain the2026-09-03 validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
 
 ## Completed, running and held
 
@@ -33,7 +33,7 @@ With the five strict-baseline jobs and control repair91965, this is **22 actual 
 
 ## Gates and next-wave graph
 
-At08:06:53 UTC **0/16 owned GPUs were allocated**,0 jobs running,and OWNERSHIP OK. Reservation check06:55:49 showed11 nodes; no native-isolation restoration or new release authorization has been received. Capacity is not idle for a scientific straggler or Claude. D1/E1 are withdrawn;22 physical holds remain. Their scientific replacement audit and native release gate are separate. Control repair91965 is held,not automatically funded under the new policy. No running work was cancelled.
+At08:06:53 UTC **0/16 owned GPUs were allocated**,0 jobs running,and OWNERSHIP OK. Reservation recheck08:12 still showed11 nodes; no native-isolation restoration or new release authorization has been received. Capacity is not idle for a scientific straggler or Claude. D1/E1 are withdrawn;22 physical holds remain. Their scientific replacement audit and native release gate are separate. Control repair91965 is held,not automatically funded under the new policy. No running work was cancelled.
 
 ```text
 strict guard8 complete and fully reviewed
@@ -66,13 +66,15 @@ Baseline-strict stragglers are not a fabricated dependency for independent scree
 | J lock scope |`549e25a` / `7ae08ccf`|[J](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r02-j-lock-scope-x4.yaml)|
 | K deferred comparator |`58a6992` / `ec7d5f2a`|[K](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r02-k-deferred-comparator-x4.yaml)|
 
-All three have recorded CPU/independent-forward validation and local/full manifest checks; none has a scheduler receipt. They are separate baseline-relative variants; the host shipped tree is guard drift `2f64581`. P1 v1 must not be registered as written; G remains a future direction, not E's replacement. P5 is read-only investigation, not a candidate or queue entry.
+All three have recorded CPU/independent-forward validation and local/full manifest checks; none has a scheduler receipt. They are historical separate baseline-relative variants,now components rather than automatic standalone funding; the host shipped tree is guard drift `2f64581`. P1 v1 must not be registered as written; G remains a future direction, not E's replacement. P5 is read-only investigation, not a candidate or queue entry.
+
+**Bundle construction:** spec4b14768 is committed/pushed. Isolated worktree `/rmeng_data/robtang/exp-protocol-bundle-work-5iV6EzGB/repo`,branch `codex/exp-protocol-bundles-20260904`,checkpointc1db377 is also pushed. Its `doc/exp_protocol_iterations/2026-09-04-bundle-construction.md` records H/J/K/B/process-guidance integration and honest comparator-count handling:202 protocol/sandbox tests plus100 PTB tests passed. PTB remainsdcf5da0. This is partial E construction,not a complete frozen experiment: E4's focused agent is implementing/testing save/Trainer paths separately; E5 attempt records,E6/E7 mechanized sampling/rendered checks and export consumers remain. L/P have not been constructed. No new manifests/receipts/jobs or releases. Preserve concurrent user meta/analysis drafts in the operator worktree.
 
 ## Monitoring and analysis
 
 Historical detectors:2086813 completed14/17 at04:00:55;2446155 completed3/3 at05:06:32. Both events were archived and outcomes harvested. Neither is a live detector now; do not restart a completed PID.
 
-**Current live monitor PID2612586**,verified by `ps` at08:07:23,watches the22 remaining receipt-backed held IDs, threshold6 plus2 buffered clean tail cells; latest tick07:27:36 is0/22 terminal,next08:27:36. Log `/tmp/exp-protocol-held-monitor-expanded-wboe41dy/monitor.log`; exact settings/history in Window04 `launch.json`. PID2579442 was deliberately replaced to add91965 while retaining all21 previous IDs; this was not a timeout/counter reset. D/E were already excluded,so their withdrawal changes no watched IDs. Terminals still require harvest/validator review.
+**Current live monitor PID2612586**,verified by `ps` at08:25:12,watches the22 remaining receipt-backed held IDs, threshold6 plus2 buffered clean tail cells; latest tick08:27:36 is0/22 terminal,next09:27:36. Log `/tmp/exp-protocol-held-monitor-expanded-wboe41dy/monitor.log`; exact settings/history in Window04 `launch.json`. PID2579442 was deliberately replaced to add91965 while retaining all21 previous IDs; this was not a timeout/counter reset. D/E were already excluded,so their withdrawal changes no watched IDs. Terminals still require harvest/validator review. The SessionStart event helper now recognizes either8 NEW clean cells or a scientifically complete predeclared block under current meta; it never equates its terminal threshold with either condition. The live detector was not restarted.
 
 **Window04 is CLOSED by [planner adjudication](2026-09-04-round-02-window04-decision.md)** after full reads of14 NEW reports,five focused audits,both syntheses(507/532lines) and the planner prefix audit. Both Claude sessions completed/stopped;do not duplicate them. Keep guard baseline,no promotion,no helper proposal accepted as written. Its old B/H/J standalone priority is superseded by bundle construction. D's actual save interface now has a focused technical review; implementation/combined tests remain. E2's historical retention proof is unresolved; SE-derived hard count gating remains rejected. Original reports remain unaltered.
 
