@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T01:46:12Z'
+situation:
+  elapsed_h: 6.6
+  remaining_h: 3.4
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.77333, protocol_n: 150}
+  trigger: "exp-05 repaired the few-shot brittleness with only 20k rows of prefix-mixed training against exp-04's 151k zero-shot rows, and it improved on every measurement at once (probe few-shot 0.700 -> 0.887, zero-shot 0.857 -> 0.883, official 0.740 -> 0.773). The prefix-mixed distribution is still the under-trained one."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-05_probe.json, locator: summary, observation: "fewshot_greedy 0.887 / zeroshot_greedy 0.883 - both configurations improved, so the 20k repair phase was not a trade-off and there is no sign of saturation"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.training_summary", observation: "313 steps, train_loss 0.2105; only ~7k of the 20k rows carried a prefix"}
+  alternatives_rejected:
+    - {option: "Stop and ship exp-05", reason: "3.4 h remain; exp-05 is already saved to final_model as the safe fallback, so a 1 h continuation risks nothing and the previous continuation gained 3.3 points"}
+    - {option: "Rejection-sampling fine-tuning from exp-05", reason: "sampling 20k problems x 4 plus training plus evaluation does not fit in 3.4 h with the packaging and card-closing still to do; a failed RFT run would leave no time to recover"}
+    - {option: "Confirm exp-05 at --limit 500 instead of training", reason: "a tighter error bar does not raise the score, and the decision it would inform (exp-05 over exp-03) is already supported by the probe as well as the official protocol; run it only if the continuation finishes early"}
+    - {option: "Raise the prefix probability above 0.35", reason: "few-shot is already the stronger configuration at 0.35; pushing further would start trading away zero-shot without evidence that it helps"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "exp-05's exposure to the prompt shape the grader actually uses is thin: one epoch over 20k rows of which ~7k carried a few-shot prefix, on top of 151k zero-shot-only rows from exp-04. Its remaining 22.7% of official-protocol errors are wrong chains rather than format or termination failures (1 of 150 truncated, 149 of 150 well-formed), so the question is whether more training at the correct prompt distribution keeps converting them."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_diag.json, locator: "stop, format_compliance", observation: "149/150 stopped normally, format compliance 0.993 - nothing left in formatting or termination"}
+    - {path: /home/ben/task/analysis/exp-05_probe.json, locator: "summary.fewshot_greedy", observation: "0.887 on probe-300; 34 of the 300 held-out problems still wrong"}
+  affected_share: 0.227
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe_gsm8ktrain300.jsonl
+    n: 300
+    selection: "the same 300 held-out GSM8K TRAIN problems used since exp-02; the benchmark test split is never read"
+hypothesis:
+  claim: "Continuing exp-05 for one more epoch over a disjoint 20k rows under the same 35% few-shot-prefix mixture raises official-protocol accuracy above exp-05's 0.77333."
+  mechanism: "The gain from exp-04 to exp-05 came from training at the prompt distribution the grader uses; that phase was short and its LR schedule annealed to zero after only 313 steps. A second, disjoint pass at the same mixture continues the same effect on data the model has not seen."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0 to +3 points; this is a diminishing-returns continuation, so a null result is likely and a regression from over-training is possible"
+  falsified_if: "Official-protocol accuracy is at or below exp-05's 0.77333, or probe-300 fewshot_greedy falls below exp-05's 0.887."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_mix20k_b.jsonl
+      source: derived:exp-04 (rows 20000-39999 of the same seed-99 shuffle of the exp-04 file; nvidia/OpenMathInstruct-2@469216e3 train_1M, gsm8k-sourced only)
+      n_examples: 20000
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --n, '200000', --max-per-problem, '4', --out, /home/ben/task/data/sft_omi2_gsm8k_big.jsonl]
+      selection: "disjoint from exp-05's sft_mix20k.jsonl by construction (slice [20000:40000] of the same shuffle); probe problems already excluded upstream. train_sft.py prepends a few-shot prefix with probability 0.35, seed 0."
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/fewshot_prefixes.json
+      source: openai/gsm8k split train
+      n_examples: 256
+      built_by: /home/ben/task/build_probe.py
+      build_command: [python, -c, "prefix builder, see exp-05"]
+      selection: "unchanged from exp-05: 256 prefixes of 2-10 GSM8K TRAIN problems (seed 11, probe problems excluded) in inspect's exact few-shot shape"
+      contamination_check: not_run
+      mixture_weight: 0.35
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with a custom completion-only collator
+    peft: none
+    hyperparams: {lr: 6.0e-6, epochs: 1.0, batch_size: 2, grad_accum: 32, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32-master+bf16-autocast/adamw_bnb_8bit/beta2=0.98, seed: 1}
+    target_format: "unchanged from exp-05"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_mix20k_b.jsonl, --parent, /home/ben/task/ckpts/exp-05/final, --out, /home/ben/task/ckpts/exp-06, --lr, '6e-6', --epochs, '1', --bs, '2', --grad-accum, '32', --max-seq-len, '2816', --master-fp32, --fewshot-prob, '0.35', --seed, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 1.05}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.77333
+    path: /home/ben/task/eval/exp05_dev150.json
+  diagnostic:
+    what: "probe-300 fewshot_greedy accuracy and truncation against exp-05's 0.887 / 0.000 - the continuation must not reintroduce the exp-04 loop, and the probe is the second read that decides adoption when the 150-item official difference is inside its error bar"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.0
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 313}
+  training_summary: {final_loss: null, steps: 313, notes: "train_loss 0.2099 over 1 epoch of 20000 disjoint rows; 3561 s wall; essentially the same loss exp-05 reached (0.2105), i.e. the second pass found nothing new"}
+  measurements:
+    - {metric: accuracy, value: 0.77333, n: 150, path: /home/ben/task/eval/exp06_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.89
+    path: /home/ben/task/analysis/exp-06_probe.json
+    notes: "probe-300 fewshot_greedy 0.890 vs exp-05's 0.887 (+1 item) but zeroshot_greedy 0.870 vs 0.883 (-4 items), and official-eval truncations rose from 1 to 3 of 150 with format compliance 0.980 vs 0.993. No configuration moved beyond noise, and the two that moved point in opposite directions."
+  watch_set_result: {fixed: 1, still_failing: 33, regressions: 0, path: /home/ben/task/analysis/exp-06_probe.json}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "A second, disjoint 20k-row pass at the same prefix mixture changed nothing measurable: official protocol 0.77333 -> 0.77333, probe few-shot +0.3 points, probe zero-shot -1.3 points, training loss flat at 0.210. The prefix-repair effect saturated inside exp-05's first 20k rows."
+  decision: reject
+  next_step: "Ship exp-05 (already staged in final_model/). exp-07: confirm the shipped artifact end-to-end at --limit 500, loading final_model/ the way the grader does."

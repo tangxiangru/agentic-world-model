@@ -152,3 +152,12 @@
 - 2026-09-04T03:05:07+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r06 job=90652 COMPLETED acc=0.7081 complete clean
 - 2026-09-04T03:05:09+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r08 job=90654 COMPLETED acc=0.7028 complete clean
 - 2026-09-04T03:05:10+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/c01s06 job=90818 COMPLETED acc=0.7415 complete clean
+- 2026-09-04T04:06:33+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r03 job=90649 COMPLETED acc=0.8279 complete clean
+- 2026-09-04T04:06:36+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r07 job=90653 COMPLETED acc=0.7218 complete clean
+- 2026-09-04T04:06:47+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/c01s01 job=90813 COMPLETED acc=0.7892 complete clean
+- 2026-09-04T04:06:48+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/c01s02 job=90814 COMPLETED acc=0.7817 complete clean
+- 2026-09-04T04:06:50+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/c01s03 job=90815 COMPLETED acc=0.7202 complete clean
+- 2026-09-04T04:06:51+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/c01s04 job=90816 COMPLETED acc=0.7559 complete clean
+- 2026-09-04T04:06:53+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/c01s07 job=90819 COMPLETED acc=0.7202 complete clean
+- 2026-09-04T04:06:55+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8-v1/p00s01 job=90823 COMPLETED acc=0.7703 complete clean
+- 2026-09-04T04:06:57+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8-v1/p00s02 job=90824 COMPLETED acc=0.7771 complete clean

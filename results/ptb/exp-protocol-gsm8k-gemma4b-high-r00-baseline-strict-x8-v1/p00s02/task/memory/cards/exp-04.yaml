@@ -1,0 +1,113 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T20:50:25Z'
+situation:
+  elapsed_h: 1.65
+  remaining_h: 8.35
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.74, protocol_n: 150}
+  trigger: "exp-02 used only 69.7k of the 151.9k GSM8K-derived rows that survive the build filters, and it was still improving: train_loss 0.288 over a single epoch with no sign of memorisation. OpenMathInstruct-2's published scaling curve is monotone in data size over this range."
+  trigger_evidence:
+    - {path: /home/ben/task/data/sft_omi2_gsm8k_big_clean.jsonl, locator: "line count", observation: "151867 usable rows exist; exp-02 trained on 69686 of them"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.training_summary", observation: "one epoch, final_loss 0.245, no overfitting signal"}
+  alternatives_rejected:
+    - {option: "Second epoch over exp-02's 69.7k rows", reason: "the same problems again; unique data is the cheaper axis while 82k unused rows are sitting on disk"}
+    - {option: "Continue training exp-02's checkpoint on the 82k unseen rows", reason: "a restarted LR schedule on a cosine-annealed checkpoint makes the result hard to attribute; training from base on all 151.9k is one clean comparison against exp-02"}
+    - {option: "Rejection-sampling fine-tuning (RFT) from exp-03 instead", reason: "self-generated solutions are at best as good as the 405B-generated ones already in the pool; try the cheaper data-scale lever first and keep RFT as the next card if this one saturates"}
+    - {option: "Add the MATH-derived half of OpenMathInstruct-2", reason: "GSM8K is grade-school arithmetic word problems; MATH solutions are LaTeX-heavy and would spend capacity off-target"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The incumbent (exp-03, 0.74 on the official protocol) still misses roughly a quarter of items, and after the termination and decode fixes those misses are reasoning and arithmetic errors rather than format failures - 150/150 generations are well-formed and terminated. The remaining lever inside SFT is how much GSM8K-style supervision the model has seen: exp-02 saw 46% of the available rows."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "whole file", observation: "format_compliance 1.0, stop 150/150, accuracy 0.74 - nothing left to gain from formatting or termination"}
+    - {path: /home/ben/task/analysis/exp-02_probe.json, locator: "summary.fewshot_greedy", observation: "0.800 on probe-300 under greedy: the errors that remain are wrong chains, not unread answers"}
+  affected_share: 0.26
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe_gsm8ktrain300.jsonl
+    n: 300
+    selection: "the same 300 held-out GSM8K TRAIN problems as exp-02/exp-03, removed from this training file too (592 rows dropped); the benchmark test split is never read"
+hypothesis:
+  claim: "Training from the base snapshot on all 151.9k GSM8K-derived OpenMathInstruct-2 rows, instead of exp-02's 69.7k, raises official-protocol accuracy above exp-03's 0.74 under identical greedy decoding."
+  mechanism: "2.2x more unique 405B-generated solutions to GSM8K-train-derived problems gives broader coverage of problem phrasings and solution paths, which is where the remaining errors are; the dataset's own scaling curve is still rising at this size."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +4 points; data scaling at this range is a slow lever, so a null result is a real possibility"
+  falsified_if: "Official-protocol accuracy under greedy is at or below exp-03's 0.74, or probe-300 fewshot_greedy is at or below exp-02's 0.800."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_omi2_gsm8k_big_clean.jsonl
+      source: nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e split train_1M
+      n_examples: 151867
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --n, '200000', --max-per-problem, '4', --out, /home/ben/task/data/sft_omi2_gsm8k_big.jsonl]
+      selection: "identical filters to exp-02 (problem_source in {gsm8k, augmented_gsm8k}; numeric answer; solution <= 3000 chars; \\boxed{} unwrapped; '<<>>' stripped; final line 'ANSWER: <n>' verified as the last numeric token; 'ANSWER:' exactly once; target terminated with <end_of_turn>) but keeping every row that survives them instead of a 70k sample; then 592 rows containing a probe problem verbatim were dropped. Superset of exp-02's file."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with a custom completion-only collator
+    peft: none
+    hyperparams: {lr: 1.5e-5, epochs: 1.0, batch_size: 8, grad_accum: 8, max_seq_len: 896, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32-master+bf16-autocast/adamw_bnb_8bit/beta2=0.98, seed: 0}
+    target_format: "unchanged from exp-02: <bos><start_of_turn>user\\n{MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: {n}<end_of_turn>\\n, loss on the model turn only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_omi2_gsm8k_big_clean.jsonl, --out, /home/ben/task/ckpts/exp-04, --lr, '1.5e-5', --epochs, '1', --bs, '8', --grad-accum, '8', --max-seq-len, '896', --master-fp32, --save-steps, '800']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints: {every_steps: 800, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 2.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.74
+    path: /home/ben/task/eval/exp03_dev150.json
+  diagnostic:
+    what: "probe_multi.py fewshot_greedy on the same 300 held-out GSM8K TRAIN problems, compared against exp-02's 0.800 - a second, independent read on whether more data helped, plus truncation and format compliance"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.29
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2369}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2369, step: 2369}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1600, step: 1600}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-800, step: 800}
+  training_summary: {final_loss: 0.2561, steps: 2369, notes: "train_loss 0.2725 over 1 epoch of 151579 rows (288 dropped for len>896); 8237 s wall"}
+  measurements:
+    - {metric: accuracy, value: 0.63333, n: 150, path: /home/ben/task/eval/exp04_dev150.json, delta_vs_comparator: -0.10667}
+  diagnostic_result:
+    value: 0.70
+    path: /home/ben/task/analysis/exp-04_probe.json
+    notes: "The two probe configurations split. zeroshot_greedy 0.857 (exp-02: 0.817, +4.0) with 0% truncation - more data genuinely produced a better solver. fewshot_greedy 0.700 (exp-02: 0.800) with 19.3% of generations hitting the token cap - with the eval's 2044-token 10-shot prefix in context, greedy decoding falls into repetition loops. The official eval reproduces this exactly: 28 of 150 samples stopped on max_tokens (exp-03: 0 of 150)."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-04_probe.json}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Official protocol 0.7400 -> 0.6333 (-10.7 points): the hypothesis that more data raises the score is contradicted as stated. But the probe shows why, and it is not that the model got worse at maths - zero-shot it got better (0.817 -> 0.857). Training a full epoch on 2.2x the zero-shot-only rows made the model brittle to the long few-shot prefix the grader always prepends, and under greedy decoding that brittleness shows up as repetition loops on ~19% of items."
+  decision: iterate
+  next_step: "exp-05: keep exp-04's weights and repair the prefix brittleness by continuing training on a mixture where a third of the prompts carry a multi-shot prefix built from GSM8K TRAIN examples in the eval's exact few-shot shape. Target: exp-04's zero-shot quality with exp-03's few-shot robustness."
