@@ -1,9 +1,10 @@
 # Opus 4.8 cross-benchmark launch record
 
 Status: production acceptance passed; all **60 scientific jobs submitted** in
-15 four-cell manifests. At 14:14 UTC the WMA subqueue is ownership-clean,
-16/16 GPUs allocated, with 53 safely routed pending jobs. Allocation does not
-measure GPU utilization. The study has no completed scientific readout yet.
+15 four-cell manifests. At 16:01 UTC the WMA subqueue is ownership-clean,
+16/16 GPUs allocated, with 49 safely routed pending jobs. Allocation does not
+measure GPU utilization. The study has zero completed scientific results and
+two incomplete terminal attempts; see the dated checks below.
 
 Study contract: `doc/spec/2026-09-04-wma-opus48-crossbench.md`. The user first
 requested the broader comparison and then explicitly waited for implementation
@@ -152,3 +153,27 @@ validator/judge-clean completions are now 81, with zero in the new study.
 Both terminal attempts and the 16 current snapshots have been harvested after
 an inspected reconcile preview. See `evidence/2026-09-04-1500/operator-review.md`
 for the direct failure evidence, unchanged G ledger, costs and disposition.
+
+## 16:00 UTC operator check
+
+BFCL raw c53r01 (92181) also ended without a model/metrics. A bounded delegated
+review, verified against the trace and outer solve diagnostic, reproduces the
+GSM8K failure sequence: final waiting reply, normal CLI end_turn, stopped
+background waits and absent deliverable. Earlier training OOM was recovered;
+it contradicts the general judge's blanket no-OOM statement but is not shown
+to be the terminal cause. The exact near-30-minute stop mechanism remains open.
+The common raw launcher and runtime are unchanged across the two failed cells.
+
+The BFCL failure used 0.7375 allocated GPU-h, $4.987571 scientist and
+$3.83153925 recorded judge cost. Keep both failed raw attempts in their
+original four-repeat accounting; no selective retry or frozen-treatment edit
+occurs. BFCL raw c53r02/03 (92182/92183) are now running and c53r04 is pending.
+The new study still has no valid completed score. Lifecycle reproduction and
+any resulting runtime fix would be independent of this frozen study.
+
+Separately, c10r08 in the old Opus5 cohort completes at 73.0857%, bringing the
+old control to 8/8 and total PTB/judge-clean completions to 82. Old matched
+control/WMA means are 74.9716%/72.3180%; they are not pooled with this study and
+do not constitute promotion evidence. Both new terminal attempts are harvested.
+Evidence, unchanged baseline ledger, full provenance and the accepted limits
+of the delegated diagnosis are in `evidence/2026-09-04-1600/`.

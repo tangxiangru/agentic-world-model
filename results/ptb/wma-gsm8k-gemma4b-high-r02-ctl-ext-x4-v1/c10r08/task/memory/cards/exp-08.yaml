@@ -1,0 +1,130 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-04T13:12:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.2
+  remaining_h: 2.8
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.764, protocol_n: 500}
+  trigger: "exp-07 scored 0.754 against exp-04's 0.764, but the item-level diff shows the two disagree on 43 of 500 items (19 that only exp-07 gets right, 24 that only exp-04 gets right). Two checkpoints that are 1.0 point apart yet differ on 8.6% of items are holding partly complementary knowledge."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-07_format_diag.json, locator: "fixed_vs_exp04=19, regressed_vs_exp04=24, correct=377 of 500", observation: "the disagreement (43 items) is four times the score gap (5 items)"}
+    - {path: /home/ben/task/memory/cards/exp-07.yaml, locator: "setup.parent_checkpoint", observation: "exp-07 is a 1561-step 5e-6 fine-tune OF exp-04, so the two checkpoints sit in the same loss basin and a linear path between them stays in-distribution"}
+  alternatives_rejected:
+    - {option: "Stop here and ship exp-04", reason: "still the fallback, and final_model already holds exp-04; this card risks nothing but 15 minutes because the incumbent is not overwritten unless the average wins"}
+    - {option: "Another training round", reason: "2.8 h left and a training round is 0.7-1.9 h plus eval, leaving no margin to package and verify final_model; weight averaging costs 6 min of arithmetic and no GPU training"}
+    - {option: "Sweep alpha over {0.25, 0.5, 0.75}", reason: "three builds plus three evals is ~40 min and each eval has stderr 0.019, so the sweep cannot resolve the differences it would produce; take the midpoint, which is where complementary-error averaging is strongest"}
+    - {option: "Average in exp-02 as well", reason: "exp-02 scores 0.710 under greedy decode, 5.4 points below the other two; including it drags the mean toward a strictly worse model"}
+  pitfalls_hit:
+    - {what: "None new. Carried forward: any checkpoint written by transformers must not have temperature=0.0 with do_sample=False in model.generation_config (cost 0.98 h across exp-05 and exp-06). This card writes safetensors directly with safetensors.torch.save_file and copies the config files from exp-07, so it does not go through that validator at all.", cost_h: 0.0, fix: "scripts/average_weights.py copies every non-safetensors file from --b and writes tensors itself"}
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The best checkpoint gets 118 of 500 dev items wrong. 19 of those are items its own RFT descendant (exp-07) answers correctly, and conversely exp-07 breaks 24 items exp-04 has right. Neither checkpoint dominates, and with 2.8 h left there is no budget for a training round that could combine them."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-07_format_diag.json, locator: "fixed_vs_exp04=19, regressed_vs_exp04=24", observation: "complementary errors: 43 items where exactly one of the two is right"}
+    - {path: /home/ben/task/eval/exp-04_dev500.json, locator: "accuracy 0.764, stderr 0.019, n=500", observation: "the incumbent"}
+    - {path: /home/ben/task/eval/exp-07_dev500.json, locator: "accuracy 0.754, stderr 0.019, n=500", observation: "the RFT descendant, 1.0 point behind"}
+  affected_share: 0.086
+  failure_examples:
+    - {id: split-1, source: /home/ben/task/eval/exp-07_dev500_samples.json, question: "(the 19 dev-500 items exp-07 answers correctly and exp-04 does not)", gold: "(various)", model_output: "(exp-04: well-formed chain, wrong number)", failure: "knowledge present in the RFT descendant but absent from the incumbent"}
+    - {id: split-2, source: /home/ben/task/eval/exp-04_dev500_samples.json, question: "(the 24 dev-500 items exp-04 answers correctly and exp-07 does not)", gold: "(various)", model_output: "(exp-07: well-formed chain, wrong number)", failure: "knowledge the RFT pass displaced"}
+    - {id: split-3, source: /home/ben/task/eval/exp-04_dev500_samples.json, question: "(the 104 dev-500 items both get wrong)", gold: "(various)", model_output: "(both: well-formed chain, wrong number)", failure: "the shared residual, which averaging cannot touch"}
+  watch_set:
+    path: /home/ben/task/data/dev_holdout300.jsonl
+    n: 300
+    selection: "300 items sampled with random.Random(0) from the openai/gsm8k TRAIN split, excluded from every training file in this batch; zero overlap with inspect's seed-42 few-shot items"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "The tensor-wise midpoint of exp-04 and exp-07, out = 0.5*exp04 + 0.5*exp07, scores higher on dev-500 than exp-04's 0.764."
+  mechanism: "exp-07 is a short low-learning-rate fine-tune of exp-04, so the two lie in the same loss basin and the segment between them stays in a region where the loss is near-convex. Averaging weights along that segment behaves like an ensemble of the two functions without paying two forward passes: errors the two make independently partially cancel, while the 357 items both get right are supported by both endpoints and survive. The 43-item disagreement is the budget this can draw on."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+0 to +2 points on dev-500; the mechanism can only act on the 43 disputed items, so about 8 items is the ceiling"
+  falsified_if: "dev-500 accuracy is at or below exp-04's 0.764, or the merged checkpoint's format diagnostic degrades (more than 15/500 completions not ending on an ANSWER line), which would indicate the interpolation left the basin."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev_holdout300.jsonl
+      source: "openai/gsm8k TRAIN split holdout - probe set only; this card trains nothing and reads no training data"
+      n_examples: 300
+      built_by: null
+      build_command: [python, -c, "see exp-01 setup.data"]
+      selection: "unchanged from exp-01"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors 0.6.x; scripts/average_weights.py"
+    peft: "none - a tensor-wise linear interpolation of two full checkpoints"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-04: reasoning body, blank line, 'ANSWER: <number>', <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/average_weights.py, --a, /home/ben/task/ckpts/exp-04/final, --b, /home/ben/task/ckpts/exp-07/final, --alpha, '0.5', --out, /home/ben/task/ckpts/exp-08_avg]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/average_weights.py
+    env: {}
+    log: /home/ben/task/logs/exp-08_avg.log
+  output_dir: /home/ben/task/ckpts/exp-08_avg
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.25}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '32']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, no shuffle)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.764
+    path: /home/ben/task/eval/exp-04_dev500.json
+  diagnostic:
+    what: "of the 43 items exp-04 and exp-07 disagree on, how many the merge gets right (exp-04 gets 24, exp-07 gets 19); plus completions not ending on an ANSWER line"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/ckpts/exp-08_avg
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08_avg, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 883 tensors interpolated across two shards in ~4 min of CPU arithmetic"}
+  measurements:
+    - {metric: accuracy, value: 0.744, n: 500, path: /home/ben/task/eval/exp-08_dev500.json, delta_vs_comparator: -0.020}
+  diagnostic_result:
+    value: 0.419
+    path: /home/ben/task/analysis/exp-08_merge_diag.json
+    notes: "on the 43 disputed items the merge gets 18, below BOTH endpoints (exp-04: 24, exp-07: 19) - it did not recover complementary knowledge, it lost some of each. It also broke 8 of the 358 items both endpoints had right (350 kept). Format was unaffected (7/500 malformed, same as both parents), so the interpolation did not leave the basin in any gross sense."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/eval/exp-08_dev500_samples.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-500 0.764 -> 0.744 (-2.0 points); the merge is worse than both of its parents. The diagnostic kills the mechanism specifically: on the 43 items the parents disagree about, the midpoint scores 18 against exp-04's 24 and exp-07's 19, and it additionally breaks 8 items both parents had right."
+  decision: reject
+  next_step: "Stop experimenting. exp-04 is the batch's best checkpoint at 0.764 (n=500) and is already in final_model/. The remaining budget goes to verifying that final_model/ loads and grades correctly through evaluate.py from a fresh process, and to a full 1319-item confirmation score. Lesson for the next batch: complementary errors between a checkpoint and its own short fine-tune are not evidence that weight averaging will help - here the parents' disagreement was mostly items neither model is reliable on, and the midpoint was reliable on fewer of them than either endpoint."

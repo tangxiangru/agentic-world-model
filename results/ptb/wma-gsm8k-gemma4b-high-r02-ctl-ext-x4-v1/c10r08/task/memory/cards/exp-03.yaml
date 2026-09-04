@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T08:57:09Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.55
+  remaining_h: 7.45
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.584, protocol_n: 500}
+  trigger: "Reading vllm/config/model.py get_diff_sampling_param: with the default generation_config='auto', vLLM takes its default sampling parameters from the model directory's generation_config.json. gemma-3-4b-pt ships do_sample=true, top_k=64, top_p=0.95 and NO temperature key, and inspect sends no temperature, so protocol.py falls back to default_sampling_params.get('temperature', 1.0). Every score so far was measured under stochastic decoding at T=1.0."
+  trigger_evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py, locator: "L1344-1394 get_diff_sampling_param; available_params includes temperature/top_k/top_p", observation: "generation_config.json in the model dir sets vLLM's server-side sampling defaults"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/entrypoints/openai/protocol.py, locator: "L294 temperature: Optional[float] = None; L357 temperature = default_sampling_params.get(...)", observation: "an omitted temperature falls through to the model's own generation config, not to 0"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "whole file", observation: "copied verbatim from the base snapshot by scripts/train_sft.py, deliberately, so that decode stayed a separate variable from exp-02's SFT"}
+  alternatives_rejected:
+    - {option: "Fold the decode change silently into the next training run", reason: "it would confound a free decode win with whatever the training did; isolating it costs one 7-minute eval"}
+    - {option: "Ask for a lower temperature through evaluate.py", reason: "evaluate.py and templates/ are immutable (task rule 5); generation_config.json inside my own model directory is the only legitimate lever, and setting it is a normal part of shipping a model"}
+    - {option: "Leave sampling on and assume the noise averages out", reason: "the grader takes one sample per item; T=1.0 over a 250-token arithmetic chain compounds per-token noise into wrong answers rather than averaging"}
+  pitfalls_hit:
+    - {what: "None new. For the record: the n=150 protocol has stderr 0.040 at this accuracy and cannot resolve a 3-4 point decode effect", cost_h: 0.0, fix: "protocol moved to n=500 (stderr 0.022) for this and later cards; exp-02 was re-scored at n=500 so the comparator is same-protocol"}
+  smoke_runs:
+    - {command: [ls, /home/ben/task/ckpts/exp-03_greedy], outcome: "symlink farm onto exp-02/final's safetensors plus its own generation_config.json; weights bit-identical, so decode is the only variable"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02's checkpoint is graded under stochastic decoding it never asked for. Its generation_config.json is the base model's, which sets do_sample=true, top_k=64 and top_p=0.95; vLLM adopts those as server defaults and supplies temperature=1.0 because the file names no temperature. Each dev item is scored from a single T=1.0 sample of a ~250-token arithmetic chain, so token-level noise that corrupts one intermediate number costs the whole item."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_dev500.json, locator: "accuracy 0.584, stderr 0.0221, n=500", observation: "the incumbent number, measured under T=1.0 sampling"}
+    - {path: /home/ben/task/analysis/exp-02_format_diag.json, locator: "whole file", observation: "format is no longer a factor (150/150 well-formed, 0 truncations), so decode noise now acts directly on answer correctness"}
+    - {path: /home/ben/task/eval/exp-02_dev150_samples.json, locator: "samples with scores.match.value == 'I'", observation: "wrong answers are single-step arithmetic/setup slips inside otherwise coherent chains - exactly the error profile a lower-entropy decode should shrink"}
+  affected_share: 0.416
+  failure_examples:
+    - {id: exp02-err-1, source: /home/ben/task/eval/exp-02_dev150_samples.json, question: "(dev-150 item, worker bees)", gold: "400", model_output: "...W = (116.67 + 108) / 2\nW = 112\n...And since Q is 54, W is 324.\n\nANSWER: 324", failure: "the chain wanders between mutually inconsistent values for W and commits to the last one"}
+    - {id: exp02-err-2, source: /home/ben/task/eval/exp-02_dev150_samples.json, question: "(dev-150 item, clinic revenue)", gold: "10000", model_output: "The doctors earn 80 hours * $150/hour = $12,000 per day\nEach patient pays 200 * 60 = $12,000 a day\nThey earn $12,000 - $12,000 = $0 per day\n\nANSWER: 0", failure: "two different quantities both come out as $12,000, so the difference collapses to 0"}
+    - {id: exp02-err-3, source: /home/ben/task/eval/exp-02_dev150_samples.json, question: "(the 59 dev-150 items scored I)", gold: "(various)", model_output: "(well-formed chain ending in a single ANSWER line)", failure: "59/150 wrong with 0 format failures: the entire residual is reasoning/arithmetic"}
+  watch_set:
+    path: /home/ben/task/data/dev_holdout300.jsonl
+    n: 300
+    selection: "300 items sampled with random.Random(0) from the openai/gsm8k TRAIN split, excluded from all training data; verified to have zero overlap with the 10 few-shot items inspect draws from the train split at seed 42"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Writing do_sample=false / temperature=0.0 into the model directory's generation_config.json, with the weights byte-identical to exp-02's, raises dev-500 accuracy above exp-02's 0.584."
+  mechanism: "vLLM's server-side default sampling parameters come from generation_config.json. Setting temperature to 0 makes the harness decode greedily, taking the argmax at every step instead of sampling from a top_k=64 / top_p=0.95 tail. On a chain-of-thought arithmetic task one sampled-away digit invalidates the final answer, so removing decode entropy converts a fraction of near-miss chains into correct ones."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points on dev-500"
+  falsified_if: "dev-500 accuracy is at or below exp-02's 0.584, or the two differ by less than one standard error (0.022), which would mean decode entropy is not costing anything measurable."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev_holdout300.jsonl
+      source: "openai/gsm8k TRAIN split holdout - probe set only; this card trains nothing and reads no training data"
+      n_examples: 300
+      built_by: null
+      build_command: [python, -c, "see exp-01 setup.data"]
+      selection: "unchanged from exp-01"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 via evaluate.py"
+    peft: "none - the weights are symlinks to exp-02/final, bit-identical"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02: reasoning body, blank line, 'ANSWER: <number>', <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03_greedy, --limit, '500', --max-connections, '32', --json-output-file, /home/ben/task/eval/exp-03_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/logs/exp-03_eval500.log
+  output_dir: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '32']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, no shuffle)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.584
+    path: /home/ben/task/eval/exp-02_dev500.json
+  diagnostic:
+    what: "count of completions whose last line is not an ANSWER line, and count hitting the token cap, to confirm greedy did not induce repetition loops"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.04
+  output_checkpoint: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03_greedy, step: 4413}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to exp-02/final"}
+  measurements:
+    - {metric: accuracy, value: 0.710, n: 500, path: /home/ben/task/eval/exp-03_dev500.json, delta_vs_comparator: 0.126}
+  diagnostic_result:
+    value: 0.988
+    path: /home/ben/task/analysis/exp-03_format_diag.json
+    notes: "no repetition-loop pathology: 6/500 completions hit the token cap and the same 6 are the only ones not ending on an ANSWER line; mean completion 583 characters. Greedy decoding did not make the model ramble."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-500 0.584 -> 0.710 (+12.6 points, 5.7 standard errors) from a five-line JSON file, with the weights unchanged. The effect is far larger than the +2 to +6 predicted: T=1.0 sampling over a 250-token arithmetic chain was costing about one dev item in eight."
+  decision: adopt
+  next_step: "Greedy decode is now part of every later checkpoint: scripts/train_sft.py --greedy-gen-config and scripts/make_final_model.py --greedy both write this file. exp-04 attacks the remaining 29% of failures, which are now genuine reasoning errors, with a second SFT pass over 140k unseen OpenMathInstruct-2 rows (data/sft_v2_fresh.jsonl, contamination-clean)."

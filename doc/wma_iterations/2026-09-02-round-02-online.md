@@ -1,7 +1,9 @@
 # WMA online Round 02 — four single-edit candidates
 
-Status: lock-gated v2 launched; all 24 replacement cells safely PENDING; no
-candidate result read.
+Status (2026-09-04 16:00 UTC): the six lock-gated v2 arms are validator-complete;
+baseline/control extensions are also complete (8+8 baseline/control cells).
+Original flags and cohort boundaries remain in force; no candidate is promoted.
+The launch history and subsequent readout are recorded below.
 
 Amendment (2026-09-03 01:4x UTC): the first candidate receipts are withdrawn
 before start because their public checkout used the obsolete non-blocking WMA
@@ -298,3 +300,21 @@ Nothing here changes the preregistered readout; the compliance criterion
 (verdict-before-launch ≥ 0.8) looks likely to pass. What the harvest must add:
 the `lock.wma.state` distribution from the lock files, wait totals per cell,
 relock counts per card, and whether the endgame cards get locked at all.
+
+## Completed baseline/control reference — 2026-09-04 16:00 UTC
+
+The final control tail c10r08 / 91432 passes the validator and automatic judges
+at 73.0856709629%. Matched c10r01–08 control is **74.9716% ± 4.3408 pp** sample
+SD; w10r01–08 WMA v0.2 is **72.3180% ± 2.7382 pp**, n=8 each. Both groups and
+both extension manifests have identical frozen public `ae46724` configuration
+and contract excluding run_index; WMA private source is also `ae46724`.
+The descriptive WMA-control difference is -2.6535 pp, not a significance or
+promotion claim. R1, other runtimes, candidates and new Opus4.8 results remain
+separate. The raw PTB readout does not clear any original WMA access flag.
+
+The unchanged final-verdict ledger has 58 records, 36 scored, 22 suspected
+leaks; L2 coverage .9 over 30 scorable cards, width/noise 4.4546 and L3 hit
+.704. It reports $114.6868 retained-final-review spend, which excludes
+superseded requests and is not total project cost. These are final-file counts,
+not the larger reconstructed request/action history. Full scores, source checks,
+provenance and ledger are in `evidence/2026-09-04-1600/`.

@@ -1,0 +1,139 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T08:58:02Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.65
+  remaining_h: 7.35
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.710, protocol_n: 500}
+  trigger: "With format (exp-02) and decode (exp-03) both fixed, the residual 145/500 dev failures are pure reasoning errors: exp-03's diagnostic shows only 6/500 completions are malformed, so nothing but solution quality is left to buy."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_format_diag.json, locator: "not_ending_answer_line=6, stop_reason_max_tokens=6, correct=355 of 500", observation: "98.8% of completions are well-formed; the 29% error rate is reasoning, not plumbing"}
+    - {path: /home/ben/task/memory/index.md, locator: "exp-02 row", observation: "exp-02 saw 141k rows for exactly one epoch and its loss was still 0.33 with healthy grad norms, i.e. it was not saturated when the cosine schedule ended"}
+  alternatives_rejected:
+    - {option: "Second epoch over the same data/sft_v1.jsonl", reason: "repeats teach memorisation of 141k specific solutions; 140k unseen rows of the same distribution cost the identical 1.9 h and carry new information"}
+    - {option: "Go straight to on-policy rejection sampling (data/rft_questions.jsonl is already built)", reason: "RFT quality is bounded by the sampler's competence, so it should run from the strongest available parent. Sequencing more-data first and RFT second (exp-05) makes each round's parent stronger; the reverse order wastes the RFT pass."}
+    - {option: "Train from base on the combined 280k rows", reason: "3.8 h against the 7.35 h remaining, with no expected advantage over sequential training and no intermediate checkpoint to fall back to"}
+    - {option: "Raise the learning rate back to 1e-5", reason: "this is a continuation of a schedule that already annealed to zero; a full-height restart risks unlearning exp-02. 7e-6 peak with cosine is a controlled second cycle."}
+  pitfalls_hit:
+    - {what: "None new in this card. Carrying forward from exp-02: liger-kernel is required or the 262144-vocab cross-entropy OOMs, and gradient checkpointing must stay on at bs=32", cost_h: 0.0, fix: "same launch configuration as exp-02"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_v2_fresh.jsonl, --out, /tmp/dry, --dry-run, --max-seq-len, '2048'], outcome: "kept 139923/140000, dropped-too-long 0.055%, p50=341 p99=1696 max=2389; renders '...ANSWER: 54<end_of_turn>'"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v2_fresh_contam.jsonl], outcome: "140000 documents scanned, 0 contaminated, exit 0"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent gets 145 of 500 dev items wrong, and essentially all of them are well-formed chains that reach a wrong number: it sets up the wrong relation, or slips on one arithmetic step, and then commits to the result. exp-02 consumed its 141k-row corpus in a single epoch and ended with training loss still at 0.33, so the model is under-trained rather than saturated on this data distribution."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_format_diag.json, locator: "correct=355, not_ending_answer_line=6 of n=500", observation: "145 failures, at most 6 of which could be format-related"}
+    - {path: /home/ben/task/eval/exp-03_dev500_samples.json, locator: "samples with scores.match.value == 'I'", observation: "the failures are coherent, terminated chains with a wrong intermediate quantity"}
+    - {path: /home/ben/task/logs/exp-02_train.log, locator: "final logging lines: loss 0.284-0.339, grad_norm 2.1-5.0 at epoch 1.0", observation: "no sign of convergence at the end of the single epoch"}
+  affected_share: 0.29
+  failure_examples:
+    - {id: exp02-err-1, source: /home/ben/task/eval/exp-02_dev150_samples.json, question: "(dev item, worker bees)", gold: "400", model_output: "...W = (116.67 + 108) / 2\nW = 112\n...And since Q is 54, W is 324.\n\nANSWER: 324", failure: "inconsistent values for the same unknown; commits to the last"}
+    - {id: exp02-err-2, source: /home/ben/task/eval/exp-02_dev150_samples.json, question: "(dev item, clinic revenue)", gold: "10000", model_output: "The doctors earn 80 hours * $150/hour = $12,000 per day\nEach patient pays 200 * 60 = $12,000 a day\n...\n\nANSWER: 0", failure: "wrong relation between two quantities makes the difference vanish"}
+    - {id: exp03-err-3, source: /home/ben/task/eval/exp-03_dev500_samples.json, question: "(the 145 dev-500 items scored I under greedy decode)", gold: "(various)", model_output: "(well-formed chain, single ANSWER line, wrong number)", failure: "145/500 wrong with only 6 malformed: the residual is solution quality"}
+  watch_set:
+    path: /home/ben/task/data/dev_holdout300.jsonl
+    n: 300
+    selection: "300 items sampled with random.Random(0) from the openai/gsm8k TRAIN split, excluded from every training file including data/sft_v2_fresh.jsonl; zero overlap with inspect's seed-42 few-shot items"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing SFT from exp-02's checkpoint for one epoch over 140k previously unseen OpenMathInstruct-2 GSM8K-derived rows, at a 7e-6 cosine second cycle, raises dev-500 accuracy above exp-03's 0.710 under the same greedy decode."
+  mechanism: "exp-02 ended a single cosine cycle with loss still falling, so the model has not extracted everything this solution distribution offers. The 140k rows are disjoint from exp-02's corpus at the (question, solution) level and drawn from the same author-verified Llama-3.1-405B pool, so they add new problem set-ups and new correct arithmetic chains rather than repeating old ones. Doubling the unique supervision should reduce set-up errors, which are the dominant residual failure."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +5 points on dev-500; data scaling at this size is log-linear, so a doubling buys a few points, not a step change"
+  falsified_if: "dev-500 accuracy is at or below exp-03's 0.710, or the format diagnostic regresses (more than 15/500 completions not ending on an ANSWER line), which would mean the second cycle damaged what exp-02 established."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2_fresh.jsonl
+      source: "nvidia/OpenMathInstruct-2, full 13.97M-row train split, problem_source in {gsm8k, augmented_gsm8k}; datasets==4.5.0"
+      n_examples: 140000
+      built_by: /home/ben/task/logs/build_sft_v2.log
+      build_command: [python, -u, -c, "iterate the full OMI2 train split; keep gsm8k-derived rows whose (question, target) pair is absent from data/sft_v1.jsonl and whose question is in neither data/dev_holdout300.jsonl nor data/rft_questions.jsonl; stop at 140000"]
+      selection: "disjoint from exp-02's corpus at the (question, target) level; questions reserved for the exp-05 rejection-sampling pool are excluded so that round stays on unseen problems; \\boxed{} unwrapped; every target rebuilt as '<body>\\n\\nANSWER: <number><end_of_turn>' with exactly one marker; rows whose reimplemented grader extraction does not return gold, or whose gold is negative, dropped; 18% carry a k-shot system prefix with k in {1,2,3,4,8} built from gsm8k TRAIN items"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross-entropy"
+    peft: "none (full fine-tune of the 3.88B text tower; 420M vision tower and projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 32, grad_accum: 1, max_seq_len: 2048, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02: prompt = templates/gemma3.jinja over [optional k-shot system] + inspect's MATH_PROMPT_TEMPLATE user turn; completion = reasoning body, blank line, 'ANSWER: <number>', <end_of_turn>. Loss on completion tokens only."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v2_fresh.jsonl, --out, /home/ben/task/ckpts/exp-04, --parent, /home/ben/task/ckpts/exp-02/final, --max-seq-len, '2048', --bs, '32', --grad-accum, '1', --lr, '7e-6', --epochs, '1', --save-steps, '2200', --greedy-gen-config]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04_train.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 2200
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '32']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, no shuffle)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.710
+    path: /home/ben/task/eval/exp-03_dev500.json
+  diagnostic:
+    what: "format health under greedy decode: completions not ending on an ANSWER line and completions hitting the token cap, out of 500 (exp-03: 6 and 6)"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.83
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 4373}
+  training_summary:
+    final_loss: 0.259
+    steps: 4373
+    notes: "6455 s wall, 21.7 samples/s. Loss 0.33 (exp-02's end) -> 0.259, grad norms 2.2-2.7 throughout, no instability from restarting the cosine cycle at 7e-6. checkpoint-2200/4373 written then deleted per setup.checkpoints.keep=last."
+  measurements:
+    - {metric: accuracy, value: 0.764, n: 500, path: /home/ben/task/eval/exp-04_dev500.json, delta_vs_comparator: 0.054}
+  diagnostic_result:
+    value: 0.986
+    path: /home/ben/task/analysis/exp-04_format_diag.json
+    notes: "format held: 7/500 completions not ending on an ANSWER line and the same 7 hit the token cap (exp-03: 6 and 6), well inside the 15/500 falsification bound. Mean completion grew 583 -> 634 characters, i.e. slightly longer chains."
+  watch_set_result:
+    fixed: 51
+    still_failing: 118
+    regressions: 24
+    path: /home/ben/task/eval/exp-04_dev500_samples.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-500 0.710 -> 0.764 (+5.4 points, 2.7 standard errors of the difference). Item-level: 51 previously-wrong items fixed against 24 newly broken, a net +27 of 500. Training loss fell 0.33 -> 0.259 with no instability, confirming exp-02 was under-trained rather than saturated."
+  decision: adopt
+  next_step: "exp-05: on-policy rejection-sampling fine-tune from this checkpoint. 24 regressions against 51 fixes says the second distillation cycle is now trading errors, not just removing them, which is the point at which off-policy teacher data starts to run out of value; sampling the model's own correct solutions on 14931 held-out gsm8k-train and unseen OMI2 questions (data/rft_questions.jsonl) targets exactly the problems this model still gets wrong."
