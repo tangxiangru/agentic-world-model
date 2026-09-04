@@ -4,6 +4,8 @@ Status update2026-09-04: **E remains a candidate direction, but its unconditiona
 
 The original construction rationale below is retained as historical evidence. Its `certain`/`conservative lower bound` wording and unconditional at-most6/8 conclusion are superseded by this correction, not silently redefined as a different metric. New in-scope exit evidence or explicit adjudication of a defensible conditional assumption is required to restore that proof.
 
+**Window04 planner decision:** [closed-window record](../exp_protocol_iterations/2026-09-04-round-02-window04-decision.md) supersedes the old replacement-first timing rule for **E v1 withdrawal only**. Jobs91064–91067 carry the known-false unchanged-tail=>dead text and are to be withdrawn as one wholly unstarted block after exact receipt/state checks.22 other useful held cells already satisfy the buffer without a replacement. This does not resolve E2 retention, change its metric, authorize E2 registration/release, or trigger G/P1 automatically. Historical construction/queue statements below remain provenance, not current instructions.
+
 ## Retention proof, without waiting for irrelevant reviews
 
 The saturation rule is ≥7/8 of exact cohort g01s01–g01s08 below 0.15 h cumulative post-exit idle per cell. Two certain failures make that impossible even if every other cell passes.

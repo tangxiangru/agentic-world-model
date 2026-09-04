@@ -1,6 +1,6 @@
 # Window04 local trace review — 2026-09-04
 
-Status: **14 NEW receipt-backed validator-clean cells frozen; initial synthesis fully read; revision2 delivered and awaiting full planner reading/adjudication**. This supersedes the [five-cell accumulation checkpoint](2026-09-04-window04-accumulation.md), without counting its five twice. Nine additional clean completions were harvested and pushed in `6bcfd4e`; the prior five are in `7043fa4`. The [later tail harvest](2026-09-04-window04-tail-harvest.md) adds2 clean cells plus1 placement-quarantined result outside this frozen window. Independently, the known-defective D1 unstarted block has now been withdrawn and harvested without adding clean results.
+Status: **CLOSED by the [planner decision](2026-09-04-round-02-window04-decision.md)** after full reads of14 reports,both syntheses,five focused reviewer audits and the planner prefix audit. No promotion or new runtime variant is accepted as written; B/H/J are next scientific priority, with unresolved designs recorded explicitly. This supersedes the [five-cell accumulation checkpoint](2026-09-04-window04-accumulation.md), without counting its five twice. Nine additional clean completions were harvested and pushed in `6bcfd4e`; the prior five are in `7043fa4`. The [later tail harvest](2026-09-04-window04-tail-harvest.md) adds2 clean cells plus1 placement-quarantined result outside this frozen window. D1 withdrawal and planned oldE1 withdrawal add no clean cells.
 
 ## Frozen evidence and denominators
 

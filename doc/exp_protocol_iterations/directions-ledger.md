@@ -37,6 +37,7 @@
 | 27 | **卡内head-to-head的future comparator依赖（K）** | strict g01s02/03/06/07/08；override与pre-lock eval两类应对 | close未复查comparator，其他消费者只看conclusion；仅放宽preflight不够 | **K `58a6992` / `ec7d5f2a`已冻结，4-cell manifest local/full check通过；未登记** | 严格验证实际n/metric与失败结案，结案凭据贯穿index/collect/hook且可移植；legacy不变；与J/H/E独立 |
 | 28 | **训练prompt与grader few-shot分布不匹配** | g01s08灾难性首轮与g01s01小幅残差；g01s04渲染差异 | 值得调查，但一个灾难例不足以支持统一prefix比例；已存在template相关指导 | **观察，暂不建screen** | 先区分渲染可达性、训练分布与配方效果；不以≥20%prefix作为规程正确性判据 |
 | 29 | **正式逐题评测证据的scratch生命周期**（operator/harness，非protocol候选） | P5三个cell：developer大JSON仍在结果卷；official默认log在job-local frozen source | 镜像源码确认JSON周期性整文件重写；不能假定直接改共享盘是零行为影响 | **CPU原型含真实Inspect mock链路44测试通过；全套159；生产尚未接线/启用** | 保持评测期本地I/O，attempt后归档、cleanup前补保全，raw+compact格式回放已验证，caller/harvest尚缺；新共同PTB代次，不混现有Round02，不加GPU实验 |
+| 30 | **普通comparator的实际count/value/subset绑定** | Window04 p00s02 exp07(150对500)、g01r03 exp08(错误sample-array切片和value/file不符) | 46个引用artifact缺n；SE可交叉核对，不是实际count provenance；K仅处理opt-in deferred路径 | **保留为独立设计方向，未构建/登记** | 拒绝SE反推或自报n作为硬性验证；需要实际评估count、value与source绑定，subset用声明的ID集合，不按返回数组顺序；不能混入已冻结K |
 
 ## 二、决策日志
 
@@ -70,6 +71,8 @@
 | 09-03 P5 supplemental close | **不新增并发规则，不重跑、不改queue；保留观察与证据持久化后续** | 接受helper跨模型dose-response/其他checkpoint噪声解释；照做同时改mc/memory的“单因子”重复 | 原始开发JSON回收核实三组1319及32/32/16、0.85/0.85/0.3；官方逐题日志不在持久result，scratch清理是另一层边界。helper原文保留、主审更正单列，知识写meta | p5-serving-audit/planner-decision.md、developer-metadata.json |
 
 ## 三、这份台账之外还没写下来的
+
+09-04 Window04 CLOSED: [planner decision](2026-09-04-round-02-window04-decision.md) follows full reads of14 cell reports,two syntheses,five focused audits and the planner prefix audit. Keep guard baseline,no promotion. B/H/J are next scientific priority; J's fresh scope evidence is8/8 and its existing frozen screen advances to held-registration preparation under fresh source/site gates. D2 predicates remain undecided; reject comparator-SE hard gating; P4 requires a separate non-vacuous cost-honesty design. A's missing endpoint is never a pass and its clock scope needs a prospective statement. D1 is withdrawn; oldE1 replacement-first timing is superseded because22 other useful held cells suffice, so withdraw its whole unstarted block while leaving E2 retention unresolved. No stale proof,raw helper suggestion or CPU check supplies release authority.
 
 09-04 06:19 independent disposition: [D v1 withdrawal](2026-09-04-d-v1-withdrawal.md) cancels exactly91060–91063 as a wholly unstarted receipt block; all4 terminal states confirmed and harvested, zero clean additions.26actual held/22 excluding staleE remain. Controller-filtered pending-only cancellation and post-state confirmation pass100 CPU tests; native release gates unchanged. The receipt-root audit-file placement error was corrected before apply and its lesson added to meta. Revised synthesis is delivered and awaiting full planner reading; this D1 disposition does not accept any D2 implementation.
 
