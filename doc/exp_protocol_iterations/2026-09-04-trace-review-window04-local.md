@@ -1,6 +1,6 @@
 # Window04 local trace review — 2026-09-04
 
-Status: **14 NEW receipt-backed validator-clean cells frozen; initial independent synthesis delivered and fully read; revision2 follow-up running, final adjudication pending**. This supersedes the [five-cell accumulation checkpoint](2026-09-04-window04-accumulation.md), without counting its five twice. Nine additional clean completions were harvested and pushed in `6bcfd4e`; the prior five are in `7043fa4`. The [later tail harvest](2026-09-04-window04-tail-harvest.md) adds2 clean cells plus1 placement-quarantined result outside this frozen window.
+Status: **14 NEW receipt-backed validator-clean cells frozen; initial synthesis fully read; revision2 delivered and awaiting full planner reading/adjudication**. This supersedes the [five-cell accumulation checkpoint](2026-09-04-window04-accumulation.md), without counting its five twice. Nine additional clean completions were harvested and pushed in `6bcfd4e`; the prior five are in `7043fa4`. The [later tail harvest](2026-09-04-window04-tail-harvest.md) adds2 clean cells plus1 placement-quarantined result outside this frozen window. Independently, the known-defective D1 unstarted block has now been withdrawn and harvested without adding clean results.
 
 ## Frozen evidence and denominators
 
@@ -36,11 +36,13 @@ Independent local synthesis **`ea5ac0e9-f5e4-4ae7-a9c6-cc328a80ef70`**, PID25931
 
 **Delivery update:** its complete unaltered output is saved as `synthesis.initial.raw.md`, extracted report as `synthesis.initial.md` (507lines), all read by planner. Parent was idle and then stopped after delivery; it is no longer running. Local analystCLI is now verified2.1.260 (not the frozen scientistCLI2.1.219). A requested same-history correction with explicit flags caused the CLI to create revision copy **`a1e293bb-7b8c-4e8a-ae0b-d305c22d47e3`**, PID2690672; only that revision is active, and actual reads of the follow-up brief and new audits were verified. `launch.json` records parent/copy lineage.
 
+**Revision2 delivery:** the copy has also finished and was stopped after complete output plus idle verification. `synthesis.revision2.raw.md` preserves its full output and `synthesis.revision2.md` contains532 report lines. No Claude helper remains active for this window; full planner reading/adjudication of revision2 is still required. Do not start another helper merely because these completed PIDs are absent.
+
 The [follow-up brief](trace-reviews/window04-local/briefs/synthesis-followup.md) requires incorporation of exact control-b pairs, correction of13/14 executed max-n coverage and9 re-locked cards/12 events, and resolution of D2's known false-block/guardrail contradiction. The planner's [g01r03 prefix audit](trace-reviews/window04-local/g01r03-prefix-audit.md) additionally proves the scientist sliced stored sample order instead of declared dataset IDs:126/150 came from the wrong subset (122IDs outside the intended prefix); the aligned comparison is128→127, not126→127. The official82.79 score is unchanged. No first-version proposal is accepted as an experiment merely because it appears in the synthesis.
 
 ## Operations while analysis runs
 
-**Current update05:04 UTC:** all three tail jobs ended and were harvested; ownership is now OK,0/16 GPUs allocated,29 held. Native11-node reservation still blocks release. D's first-wave priority is suspended pending its scope audit. Historical snapshots below remain provenance, not current capacity claims.
+**Current update06:21 UTC:** all tail jobs were harvested, control repair91965 was registered held, and [D1 jobs91060–91063 were withdrawn](2026-09-04-d-v1-withdrawal.md) as a wholly unstarted block. All4 cancellations are confirmed and harvested;26 actual held/22 excluding staleE remain,0/16 allocated,OWNERSHIP OK. No release authority has been restored or supplied. Historical snapshots below remain provenance, not current capacity claims.
 
 At04:04:23 UTC the subqueue had **2/16 owned GPUs allocated**, three registered running jobs and29 actual `PENDING(JobHeldUser)`. The outside-node90820 still causes OWNERSHIP FAIL; the native reservation still covers11 nodes. Fourteen owned GPUs are idle because the operational release gates are not satisfied, not because the planner is waiting for a scientific straggler or for Claude. There were no unknown jobs/name mismatches or runnable pending jobs. No submit/release/cancel was performed.
 

@@ -1,6 +1,6 @@
 # exp-protocol operator state and dependencies
 
-Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 after the05:02 tail harvest and05:25 held control repair; live queue05:26:37, receipt node/hold verification05:27:36. Unchanged older cohorts retain the2026-09-03 validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
+Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 after the05:02 tail harvest,05:25 held control repair and06:19 D1 withdrawal/harvest; live queue06:21:03. Unchanged older cohorts retain the2026-09-03 validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
 
 ## Completed, running and held
 
@@ -26,16 +26,15 @@ Additional held Round02 blocks:
 | A v2 |91046–91049|second wave|
 | B v2 |91050–91053|first wave|
 | drift A v2 |91058–91059|first-wave comparator|
-| D |91060–91063|do not release pending CPU audit of false blocks on non-saving cards|
 | old E |91064–91067|remain held until E2 replacement receipt exists; then withdraw whole unstarted block|
 | H |91068–91071|first wave|
 | drift B |91072–91073|second-wave comparator|
 
-With the five strict-baseline jobs and control repair91965, this is **30 actual PENDING(JobHeldUser)**, zero ordinary runnable pending. Excluding D4/staleE4 from scientifically usable work leaves22 held; those eight questionable cells must not inflate the post-release useful floor. C v2 jobs91054–91057 are cancelled and harvested, not counted. Resolve any individual job through `.venv/bin/awm slurm show JOB --json`, then receipt→cell→manifest→spec→result; ownership authority is `/rmeng_data/robtang/slurm-queue/registry.json`.
+With the five strict-baseline jobs and control repair91965, this is **26 actual PENDING(JobHeldUser)**, zero ordinary runnable pending. Excluding staleE4 from scientifically usable work leaves22 held; the stale block must not inflate the post-release useful floor. C v2 jobs91054–91057 and **D v1 jobs91060–91063** are cancelled and harvested, not counted. D1's entire unstarted block was withdrawn after confirmed scope defects; this creates no score or failed scientist trajectory. Resolve any job through `.venv/bin/awm slurm show JOB --json`, then receipt→cell→manifest→spec→result; registry authority is `/rmeng_data/robtang/slurm-queue/registry.json`.
 
 ## Gates and next-wave graph
 
-At05:26:37 UTC **0/16 owned GPUs were allocated** and no jobs were running.90820 ended naturally and OWNERSHIP is now OK. The reservation still covers11 nodes, so native two-node isolation and the independent release gate remain unsatisfied. Capacity is not being held idle for a scientific straggler or for local Claude analysis. Restoring isolation or an explicit per-receipt exception requires applicable operator/user authority. D4 is under scientific scope audit and oldE4 awaits replacement; even excluding both,22 held cells remain behind the operational gate. The independently planned control repair was safely registered held under ownership OK, not released.
+At06:21:03 UTC **0/16 owned GPUs were allocated** and no jobs were running.90820 ended naturally and OWNERSHIP remains OK. The last verified reservation still covers11 nodes; native isolation/release authority has not been restored or supplied. Capacity is not being held idle for a scientific straggler or for Claude. D1 has been withdrawn; oldE4 awaits its separate replacement/retention decision, leaving22 usable held cells behind the operational gate. Control repair91965 remains held, not released. No running work was cancelled.
 
 ```text
 strict guard8 complete and fully reviewed
@@ -46,15 +45,15 @@ OWNERSHIP OK + per-job frozen ReqNodeList + native two-node isolation
      └─ no releases; re-audit documented per-manifest held-registration gates
 
 when operational gates pass, independently of unrelated stragglers:
-  D4 scope audit must resolve before D is treated as releasable
-  prior first-wave plan D4 + B4 + H4 + drift A2 is provisional, not an instruction to release
+  old D1 block withdrawn; D2 requires a new accepted design/test/manifest before any queue entry
+  select up to3 independently ready candidates per wave; prior D1/B/H order is obsolete
   new E2 held receipt4 → withdraw old E4, only if all old jobs remain unstarted
   replenish with≥4 scientifically valid, validated independent held cells
   A4 + E2 4 + drift B2 → later10 cells, after re-auditing scientific need and held floor
   winners → independent second4 cells → held-out confirmation before promotion
 ```
 
-The buffer must be checked **after each proposed release/withdrawal**, not only before. Superseding the earlier29−14 arithmetic:30 actual held minus8 D/staleE under review leaves22 usable. Releasing14 independently valid cells would leave8 usable; adding the control repair to that same release would leave7, so replenish first or change the scientifically justified wave. Do not count a known problematic block merely because Slurm still says JobHeldUser. Frozen J/K are possible sources only after a fresh scientific/operational audit, not automatic releases or filler. If other jobs leave hold, recompute exact IDs. This is not release authorization.
+The buffer must be checked **after each proposed release/withdrawal**, not only before.26 actual held minus4 staleE leaves22 usable; D1 withdrawal did not reduce this already-excluded useful count. Releasing14 independently valid cells leaves8 usable; adding control repair to that release leaves7, so replenish first or change the scientifically justified wave. Do not count a known problematic block merely because Slurm says JobHeldUser. Frozen J/K are possible sources only after a fresh audit, not automatic releases or filler. Recompute exact IDs after any change. This is not release authorization.
 
 Baseline-strict stragglers are not a fabricated dependency for independent screens. Genuine matched-arm/promotion requirements still need their designated evidence. The remaining5 baseline holds share a receipt with3 completed jobs: [CPU boundary audit](2026-09-04-mixed-receipt-release-boundary.md) confirms current `release_held` refuses mixed state even after mocked valid native gates. They require explicit receipt-backed state handling before selecting them for release; do not rewrite old job membership or release ad hoc. All-held independent receipts need not wait for that disposition. Source: [Round02 current decision](../spec/2026-09-02-exp-protocol-round02-independent-screens.md), sections10–11.
 
@@ -74,7 +73,7 @@ Original monitor2086813 completed normally at04:00:55 with14 terminal attempts; 
 
 Tail detector2446155 completed3/3 normally at05:06:32; event archived and all outcomes harvested. The subsequent held detector2579442 was deliberately replaced at05:27:36 to add new receipt91965, preserving all21 original watched IDs and threshold6 plus2 buffered clean cells. **Current live monitor PID2612586** watches22 IDs, first tick0/22 terminal, next06:27:36; log `/tmp/exp-protocol-held-monitor-expanded-wboe41dy/monitor.log`. The prior state is archived in `held-monitor-before-expansion.json`; exact current and previous settings are in Window04 `launch.json`. Old PID absence and replacement liveness were verified. This was watch-set expansion, not a timeout/partial-harvest counter reset, and does not release jobs or equate terminals with clean cells.
 
-All14 NEW reports, five focused audit reports and the initial507-line independent synthesis were read by planner. Original synthesis **ea5ac0e9-f5e4-4ae7-a9c6-cc328a80ef70** delivered and was stopped after idle verification. **Current revision2 helper a1e293bb-7b8c-4e8a-ae0b-d305c22d47e3, PID2690672**, is busy/working with actual new-audit/brief reads verified; CLI created a context-preserving copy due to explicit resume flags, not a second active initial synthesis. Do not duplicate either. E2's unconditional non-saturation proof remains reopened; D v1 is not releasable. Exact control-b pairing and the new g01r03 stored-array-prefix error must be incorporated, along with initial-synthesis counting and proposal contradictions, before final candidate adjudication. Raw initial output is preserved, not silently corrected.
+All14 NEW reports, five focused audit reports and the initial507-line independent synthesis were read by planner. Original synthesis **ea5ac0e9-f5e4-4ae7-a9c6-cc328a80ef70** delivered and stopped. Revision2 **a1e293bb-7b8c-4e8a-ae0b-d305c22d47e3** also delivered and was stopped after idle verification; complete raw output and the532-line extracted report are saved as `synthesis.revision2.raw.md`/`synthesis.revision2.md`. **Planner full reading/adjudication of revision2 is still pending.** Do not duplicate either helper. E2's unconditional non-saturation proof remains reopened; D1 is withdrawn, not silently changed to D2. Check exact control-b pairs, g01r03 prefix identity and proposal/guardrail consistency before accepting any new candidate. Raw original reports remain unchanged.
 
 Concurrent worktree note06:04 UTC: `doc/exp_protocol_iterations/analysis-2026-09-04-user-review/` appeared during another analysis activity and is not part of this operator's changes. Preserve it and exclude it from operator commits. A future source-frozen submit requires a clean worktree; do not hide, delete or commit those unrelated files to satisfy that gate. The current review/helper can continue without a new submission.
 

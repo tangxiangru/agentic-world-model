@@ -1,6 +1,6 @@
 # D v1 whole-block withdrawal — 2026-09-04
 
-Status: planner withdrawal decision recorded before operator apply; terminal/cancellation confirmation is recorded below after execution. This is an independent known-defect disposition, not acceptance of the unfinished revised synthesis's D2 design.
+Status: **all4 unstarted jobs cancelled and harvested**. This is an independent known-defect disposition, not acceptance of the unfinished revised synthesis's D2 design.
 
 ## Decision and exact targets
 
@@ -24,4 +24,8 @@ An exit0 from a filtered request is not itself confirmation. The operator re-rea
 
 ## Execution and harvest
 
-Pending operator apply and fresh terminal verification. All resulting status records must remain administrative withdrawals with no accuracy/scientific-clean contribution, not failed scientist trajectories. Preserve cancellation records and every retained artifact if any unexpected prior execution is discovered.
+At06:19:39 the final ownership/job-name/hold gate passed again; all4 had elapsed0 and Start Unknown. Normal `awm ptb reconcile --apply` confirmed all4 CANCELLED at06:19:41, with `state_before:PENDING`, `state_after:CANCELLED` and `pending_only:true` appended to the tracked receipt. `sacct` independently reports all4 `CANCELLED by0`,elapsed0,Start None. The original job membership/source fields remain unchanged. No running job, unrelated ID, model output or experiment result was removed.
+
+The next dry reconciliation contained exactly4 harvests; apply created all4 administrative status records. Each is `slurm_state:CANCELLED`, `complete:false`, `eligible:false`, `accuracy:null`, with `result directory not found`. These are withdrawn unstarted plans, not failed scientist trajectories or new clean cells. At06:21:03 the live registry view is OWNERSHIP OK,26 actual held,0 running/allocated; excluding staleE4 leaves22 usable. The live hourly monitor's22 IDs are unchanged because D4 was already excluded.
+
+One pre-action issue was corrected before any cancellation: the control-repair verification JSON had been placed at its batch root, where all JSONs are discovered as receipts. It was relocated to `audit/` and all references updated; dry reconciliation then returned exactly the intended4 cancellations. This preserves strict receipt parsing and all evidence. No malformed receipt was ignored to force the action through.
