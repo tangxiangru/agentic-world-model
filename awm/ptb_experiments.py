@@ -721,6 +721,7 @@ def local_issues(
                     if (checked.get("passed") is not True or checked.get("model") != wma["model"]
                             or checked.get("effort") != wma["effort"]
                             or checked.get("private_sha") != wma["sha"]
+                            or checked.get("public_sha") != cell.get("awm", {}).get("sha")
                             or checked.get("os_canaries") != "passed"
                             or checked.get("comparison", {}).get("state") != "completed"
                             or checked.get("review", {}).get("state") != "delivered"):

@@ -12,7 +12,6 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from awm import wma_client
 from awm.exp_protocol import decisions, lock, schema
 
 from . import isolation, sidecar
@@ -21,6 +20,14 @@ from .review import default_skill_dir, make_brief
 
 
 def accept(output: Path, model: str, effort: str) -> dict:
+    # The production private archive intentionally excludes the scientist client.
+    # The synthetic harness imports that client from a separately bound public archive.
+    import awm
+    public = os.environ.get("AWM_PUBLIC_CHECKOUT")
+    if public:
+        awm.__path__.append(str(Path(public) / "awm"))
+    from awm import wma_client
+
     session = output / "session"
     cards = session / "memory/cards"
     cards.mkdir(parents=True)
@@ -133,6 +140,7 @@ print('CANARIES_OK')
                 "comparison": joint, "review": reviewed, "probe_limits": limits,
                 "tool_inventories": inventories,
                 "private_sha": os.environ.get("POST_TRAIN_BENCH_WMA_CHECKOUT_SHA"),
+                "public_sha": os.environ.get("AWM_CHECKOUT_SHA"),
                 "uid": os.getuid(), "kernel": platform.release(),
                 "node": os.environ.get("SLURMD_NODENAME"),
                 "job_id": os.environ.get("SLURM_JOB_ID")}
