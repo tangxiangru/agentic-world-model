@@ -14,6 +14,7 @@ leave a valid verdict file behind. Two kinds:
 
 from __future__ import annotations
 
+import contextlib
 import glob
 import json
 import os
@@ -193,6 +194,8 @@ def history_dirs(history: Path) -> list[Path]:
 def transcript_path(verdict_path: Path, output_dir: Path | None = None) -> Path:
     """``exp-NN.transcript[.tag].jsonl`` beside the verdict: what the agent did, turn by turn."""
     verdict_path = Path(verdict_path)
+    if verdict_path.name == "comparison.json":
+        return (Path(output_dir) if output_dir else verdict_path.parent) / "comparison.transcript.jsonl"
     m = schema.VERDICT_FILE_RE.match(verdict_path.name)
     if not m:
         raise ValueError(f"{verdict_path.name} is not a verdict file name")
@@ -284,7 +287,7 @@ class CommandBackend(Backend):
     def __init__(self, name: str, argv_template: list[str], model: str | None = None, *,
                  effort: str | None = None, effort_flag: list[str] | None = None,
                  transcript: str | None = None, history_flag: str | None = None,
-                 max_turns_flag: str | None = None) -> None:
+                 max_turns_flag: str | None = None, isolated: bool = False) -> None:
         self.name = name
         self.argv_template = list(argv_template)
         self.model = model
@@ -295,6 +298,7 @@ class CommandBackend(Backend):
         self.transcript = transcript          # "stream-json" → stdout is parsed for cost and file access
         self.history_flag = history_flag      # e.g. --add-dir: lets the agent read the history link's target
         self.max_turns_flag = max_turns_flag  # e.g. --max-turns: a hard stop on top of the wall budget
+        self.isolated = isolated
 
     def argv(self, brief: Brief | None = None) -> list[str]:
         out = []
@@ -320,58 +324,102 @@ class CommandBackend(Backend):
         return out
 
     def run(self, brief: Brief) -> None:
+        from .isolation import IsolationError, isolated_tools
+
         argv = self.argv(brief)
         if shutil.which(argv[0]) is None and not Path(argv[0]).exists():
             raise BackendError(f"{self.name}: executable not found: {argv[0]}")
         if brief.verdict_path.exists():
             brief.verdict_path.unlink()
         started = time.monotonic()
-        try:
-            proc = subprocess.run(argv, input=brief.prompt, text=True, cwd=str(brief.session_dir),
-                                  capture_output=True, timeout=max(1.0, brief.budget.wall_min * 60),
-                                  check=False)
-        except subprocess.TimeoutExpired as exc:
-            raise BackendError(f"{self.name}: timed out after {brief.budget.wall_min} min") from exc
-        wall_min = round((time.monotonic() - started) / 60, 6)
-        if not brief.verdict_path.is_file():
-            tail = (proc.stdout or "")[-500:] + (proc.stderr or "")[-500:]
-            raise BackendError(f"{self.name}: no verdict written to {brief.verdict_path} (exit {proc.returncode}); {tail!r}")
-        # What the run measurably was — kept even when the file the agent wrote is unusable.
-        measured: dict[str, Any] = {"backend": self.name, "wall_min": wall_min}
+        measured: dict[str, Any] = {"backend": self.name, "cost": {}}
         if self.model:
             measured["model"] = self.model
         if self.effort:
             measured["effort"] = self.effort
+        brief.extra["measured"] = measured
+        stdout = ""
+        error = None
+        try:
+            boundary = isolated_tools(brief, argv, self.name) if self.isolated else contextlib.nullcontext(None)
+            with boundary as isolated:
+                if isolated is not None:
+                    measured["isolation"] = {
+                        "method": "landlock-seccomp-mcp-v1", "network": "denied-for-probes",
+                        "probes": "cpu-static-only", "inputs": isolated.policy["files"],
+                        "selection": isolated.policy.get("selection"),
+                        "limits": isolated.policy.get("limits"),
+                    }
+                proc = subprocess.run(isolated.argv if isolated else argv,
+                                      input=brief.prompt + (isolated.prompt_suffix if isolated else ""),
+                                      text=True, cwd=str(isolated.cwd if isolated else brief.session_dir),
+                                      capture_output=True, timeout=max(1.0, brief.budget.wall_min * 60), check=False)
+                stdout = proc.stdout or ""
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            error = f"{self.name}: timed out after {brief.budget.wall_min} min"
+        except IsolationError as exc:
+            error = f"{self.name}: input isolation unavailable: {exc}"
+        except OSError as exc:
+            error = f"{self.name}: could not run backend: {exc}"
+        wall_min = round((time.monotonic() - started) / 60, 6)
+        measured["wall_min"] = wall_min
+        measured["cost"]["wall_min"] = wall_min
         if self.transcript == "stream-json":
-            # Kept whole: the iteration agent reads it by hand, and a fence fix can rescan it.
-            transcript_path(
-                brief.verdict_path, brief.extra.get("transcript_dir")
-            ).write_text(proc.stdout or "")
-            cost, access = scan_transcript(proc.stdout or "", brief)
-            measured.update({"cost": cost, "access": access, "leak_suspected": bool(access["outside"])})
+            path = transcript_path(brief.verdict_path, brief.extra.get("transcript_dir"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(stdout)
+            cost, access = scan_transcript(stdout, brief)
+            measured["cost"].update(cost)
+            measured["cost"]["wall_min"] = wall_min
+            measured.update({"access": access, "leak_suspected": bool(access["outside"])})
+        if brief.extra.get("transcript_dir"):
+            target = Path(brief.extra["transcript_dir"])
+            target.mkdir(parents=True, exist_ok=True)
+            # Per-request directory supplied by the sidecar keeps all attempts, including failures.
+            (target / f"{brief.card_id}.measurement.json").write_text(json.dumps(measured, indent=2) + "\n")
+        if error:
+            raise BackendError(error)
+        if not brief.verdict_path.is_file():
+            tail = stdout[-500:] + (proc.stderr or "")[-500:]
+            raise BackendError(f"{self.name}: no verdict written to {brief.verdict_path} (exit {proc.returncode}); {tail!r}")
         try:
             v = schema.load_verdict(brief.verdict_path)
         except ValueError as exc:
             schema.reject_verdict(brief.verdict_path, f"invalid verdict JSON: {exc}", **measured)
             raise BackendError(f"{self.name}: invalid verdict JSON: {exc}") from exc
-        schema.normalize_verdict(v)
-        report = schema.validate_verdict(v)
-        if not report.ok:
-            schema.reject_verdict(brief.verdict_path, report.render(), **measured)
-            raise BackendError(f"{self.name}: invalid verdict:\n{report.render()}")
+        if not isinstance(v, dict):
+            schema.reject_verdict(brief.verdict_path, "output must be a JSON object", **measured)
+            raise BackendError(f"{self.name}: output must be a JSON object")
+        if brief.extra.get("output_kind") == "comparison":
+            from awm.exp_protocol import decisions as wma_decisions
+            try:
+                wma_decisions.validate_comparison(v, brief.extra["proposal"])
+            except ValueError as exc:
+                schema.reject_verdict(brief.verdict_path, str(exc), **measured)
+                raise BackendError(f"{self.name}: invalid comparison: {exc}") from exc
+        else:
+            schema.normalize_verdict(v)
+            report = schema.validate_verdict(v)
+            if not report.ok:
+                schema.reject_verdict(brief.verdict_path, report.render(), **measured)
+                raise BackendError(f"{self.name}: invalid verdict:\n{report.render()}")
         v["backend"] = self.name
         if self.model:
             v["model"] = self.model
         if self.effort:
             v["effort"] = self.effort
+        # Never accept model-authored cost, access or isolation claims.
+        v["cost"] = dict(measured["cost"])
+        v.pop("access", None)
+        v.pop("isolation", None)
+        v.pop("leak_suspected", None)
         if self.transcript == "stream-json":
-            v.setdefault("cost", {})
-            v["cost"].update(measured["cost"])
             v["access"] = measured["access"]
             if measured["leak_suspected"]:
                 v["leak_suspected"] = True
-        v.setdefault("cost", {})
-        v["cost"]["wall_min"] = wall_min          # measured beats self-reported
+        if measured.get("isolation"):
+            v["isolation"] = measured["isolation"]
         schema.dump_verdict(brief.verdict_path, v)
 
 
@@ -384,10 +432,10 @@ BACKENDS: dict[str, Any] = {
                    "--model", "{model}", "--setting-sources", "", "--no-session-persistence",
                    "--dangerously-skip-permissions"], model,
         effort=effort, effort_flag=["--effort", "{effort}"],
-        transcript="stream-json", history_flag="--add-dir", max_turns_flag="--max-turns"),
+        transcript="stream-json", history_flag="--add-dir", max_turns_flag="--max-turns", isolated=True),
     "codex": lambda model, effort: CommandBackend(
         "codex", ["codex", "exec", "--skip-git-repo-check", "--yolo", "--model", "{model}"], model,
-        effort=effort, effort_flag=["-c", "model_reasoning_effort={effort}"]),
+        effort=effort, effort_flag=["-c", "model_reasoning_effort={effort}"], isolated=True),
 }
 
 

@@ -412,8 +412,9 @@ def test_receipt_validation(tmp_path: Path) -> None:
     assert ptb.load_receipt(receipt)["jobs"][0]["cell_id"] == "b06"
 
 
+@pytest.mark.parametrize("context_smoke", [False, True])
 def test_formal_submit_holds_all_jobs_before_one_release(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, context_smoke: bool
 ) -> None:
     data = ptb.load_manifest(DUAL_MANIFEST)
     cell_ids = [
@@ -478,12 +479,15 @@ def test_formal_submit_holds_all_jobs_before_one_release(
         return subprocess.CompletedProcess(command, 0, f"Submitted Slurm job {job_id}\n", "")
 
     monkeypatch.setattr(ptb.subprocess, "run", fake_run)
-    receipt_path = ptb.submit(data)
+    receipt_path = ptb.submit(data, cell_ids=cell_ids if context_smoke else None,
+                              context_smoke=context_smoke)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
 
     submitted = [command for command in commands if command[0] == "fake-submit"]
     assert len(submitted) == 32
     assert all("--hold" in command for command in submitted)
+    assert all(("--runtime-smoke" in command) == context_smoke for command in submitted)
+    assert bool(receipt.get("validation_only")) == context_smoke
     assert commands[-1] == (
         "scontrol",
         "release",
@@ -781,7 +785,7 @@ def test_a_cell_task_outside_the_batch_tasks_is_rejected() -> None:
 
 def test_a_task_outside_the_approved_list_is_rejected() -> None:
     data = _two_repeats_manifest()
-    data["contract"]["task"] = "humaneval"
+    data["contract"]["task"] = "not-a-registered-benchmark"
     with pytest.raises(ptb.ExperimentError, match="subset"):
         ptb.validate_manifest(data)
 

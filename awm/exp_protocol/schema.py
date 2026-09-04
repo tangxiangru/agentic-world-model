@@ -309,6 +309,13 @@ def validate_plan(card: dict[str, Any], session_dir: Path | None = None) -> Repo
     argv = _require(r, card, "setup.command.argv", "list")
     if argv and not all(isinstance(a, str) and a for a in argv):
         r.error("setup.command.argv", "must be a list of non-empty strings")
+    configs = get(card, "setup.command.configs")
+    if configs is not None and (not isinstance(configs, list) or any(not isinstance(p, str) or not p for p in configs)):
+        r.error("setup.command.configs", "must be a list of config file paths")
+    environment = get(card, "setup.command.env")
+    if environment is not None and (not isinstance(environment, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in environment.items())):
+        r.error("setup.command.env", "must map environment names to string values")
     cwd = _require(r, card, "setup.command.cwd")
     if cwd and not _inside(cwd, session_dir):
         r.warn("setup.command.cwd", "outside the session dir")

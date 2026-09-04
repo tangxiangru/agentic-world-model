@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 from exp_protocol_cards import plan_card
 
-from awm import wma_client
+from awm import wma_client, wma_decisions
 from awm.wma import backends, sidecar
 
 
@@ -45,6 +45,7 @@ def test_client_enqueues_a_batch_without_wma_policy(tmp_path: Path) -> None:
         "request_id": request_id,
         "created_at": request["created_at"],
         "card_ids": ["exp-01"],
+        "fingerprints": {"exp-01": wma_decisions.card_fingerprint(session, "exp-01")},
     }
     assert not (session / "skills/wma").exists()
 

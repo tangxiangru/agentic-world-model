@@ -32,8 +32,10 @@ APPROVED_BASE_MODELS = (
     "HuggingFaceTB/SmolLM3-3B-Base",
     "google/gemma-3-4b-pt",
 )
-APPROVED_TASKS = ("gsm8k", "aime2025")
+APPROVED_TASKS = ("gsm8k", "aime2025", "gpqamain", "bfcl", "humaneval")
 APPROVED_AGENT_SETUPS = (
+    ("claude_vertex_high_200k", "claude-opus-4-8", "high", 200_000),
+    ("claude_vertex_high_200k_awm", "claude-opus-4-8", "high", 200_000),
     ("claude_vertex_max", "claude-opus-5[1m]", "max", 1_000_000),
     ("claude_vertex_xhigh", "claude-opus-5[1m]", "xhigh", 1_000_000),
     ("claude_vertex_high", "claude-opus-5[1m]", "high", 1_000_000),
@@ -185,11 +187,12 @@ def _validate_wma_block(cell_id: str, agent: Any, block: Any) -> None:
         raise ExperimentError(f"cell {cell_id}: wma must be a mapping")
     expected = {
         "backend": "claude",
-        "model": "claude-opus-5",
         "effort": "high",
         "mode": "online",
         "budget": "cpu=10,gpu=0,wall=15,turns=40",
     }
+    if block.get("model") not in {"claude-opus-5", "claude-opus-4-8"}:
+        raise ExperimentError(f"cell {cell_id}: unsupported frozen WMA model")
     for key, value in expected.items():
         if block.get(key) != value:
             raise ExperimentError(f"cell {cell_id}: wma.{key} must be {value!r}")
@@ -708,6 +711,22 @@ def local_issues(
             history = Path(wma["history"])
             if not history.is_dir():
                 issues.append(f"cell {cell['id']}: WMA history directory is missing: {history}")
+            if require_context and (wma["model"] == "claude-opus-4-8"
+                                    or contract.get("study") == "wma-crossbench-opus48-v1"):
+                validation = wma.get("runtime_validation")
+                try:
+                    if not isinstance(validation, str):
+                        raise ValueError("missing runtime_validation path")  # noqa: TRY004 - manifest validation
+                    checked = json.loads((paths.REPO_ROOT / validation).read_text())
+                    if (checked.get("passed") is not True or checked.get("model") != wma["model"]
+                            or checked.get("effort") != wma["effort"]
+                            or checked.get("private_sha") != wma["sha"]
+                            or checked.get("os_canaries") != "passed"
+                            or checked.get("comparison", {}).get("state") != "completed"
+                            or checked.get("review", {}).get("state") != "delivered"):
+                        raise ValueError("model/private source/canary/round-trip evidence differs")
+                except (OSError, ValueError) as exc:
+                    issues.append(f"cell {cell['id']}: WMA production acceptance is not ready: {exc}")
         for name in ("solve.sh", "api_keys.json", "profile.env"):
             relative = f"agents/{cell['agent']}/{name}"
             if not (PTB_ROOT / relative).is_file():
@@ -769,6 +788,11 @@ def local_issues(
                     issues.append(
                         f"invalid {expected_context}-token provider validation for {profile}: {path}"
                     )
+                if model == "claude-opus-4-8" and (
+                    record.get("model_verified") is not True
+                    or (record.get("canonical_model") or record.get("resolved_model")) != model
+                ):
+                    issues.append(f"actual Opus 4.8 model identity is not verified: {path}")
             except (OSError, ValueError, TypeError) as exc:
                 issues.append(
                     f"unreadable {expected_context}-token provider validation for {profile}: {exc}"
@@ -1034,40 +1058,17 @@ def dry_run(data: dict[str, Any], *, pilot: bool = False) -> list[tuple[str, str
 
 
 def submit_context_smokes(data: dict[str, Any], cell_ids: list[str]) -> list[dict[str, str]]:
-    assert_source_ownership(data, {"top_branch": current_top_branch()})
-    issues = local_issues(data, require_context=False, cell_ids=cell_ids) + site_issues()
-    if issues:
-        raise ExperimentError("context-smoke gates failed:\n- " + "\n- ".join(issues))
-    jobs = []
-    for launch in build_launches(data, cell_ids=cell_ids, purpose="context-smoke"):
-        env = os.environ | launch.environment
-        env["POST_TRAIN_BENCH_REQUIRE_CONTEXT_VALIDATION"] = "0"
-        result = subprocess.run(
-            [*launch.command, "--runtime-smoke", "--walltime", "00:15:00"],
-            cwd=PTB_ROOT,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode:
-            raise ExperimentError(
-                result.stderr.strip() or f"context smoke failed for {launch.cell_id}"
-            )
-        match = re.search(r"Submitted Slurm job (\d+)", result.stdout)
-        if not match:
-            raise ExperimentError(f"could not parse context-smoke job id: {result.stdout}")
-        jobs.append(
-            {
-                "cell_id": launch.cell_id,
-                "job_id": match.group(1),
-                "job_name": _command_option(launch, "--job-name"),
-            }
-        )
-    return jobs
+    if not cell_ids:
+        raise ExperimentError("context smoke requires explicit cell IDs")
+    receipt_path = submit(data, cell_ids=cell_ids, context_smoke=True)
+    receipt = load_receipt(receipt_path)
+    return [{**job, "receipt": str(receipt_path)} for job in receipt["jobs"]]
 
 
-def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | None = None) -> Path:
+def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | None = None,
+           context_smoke: bool = False) -> Path:
+    if context_smoke and (pilot or not cell_ids):
+        raise ExperimentError("context smoke requires explicit cells and cannot be a pilot")
     if pilot and cell_ids:
         raise ExperimentError("pilot and explicit retry cells are mutually exclusive")
     snapshot = source_snapshot()
@@ -1078,15 +1079,20 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
             raise ExperimentError("retry cell ids must be unique")
         for cell_id in selected_cell_ids:
             _cell(data, cell_id)
-    issues = local_issues(data, cell_ids=selected_cell_ids) + site_issues()
+    issues = (local_issues(data, cell_ids=selected_cell_ids, require_context=False) if context_smoke
+              else local_issues(data, cell_ids=selected_cell_ids)) + site_issues()
     if issues:
         raise ExperimentError("submission gates failed:\n- " + "\n- ".join(issues))
     if snapshot["top_status"] or snapshot["ptb_status"]:
         raise ExperimentError("formal source freeze requires clean top-level and PTB worktrees")
-    dry_run(data, pilot=pilot)
+    if not context_smoke:
+        dry_run(data, pilot=pilot)
     submitted_at = datetime.now(timezone.utc).isoformat()
     out_dir = paths.ensure(paths.data_root() / "ptb" / "batches" / data["batch_id"])
-    if pilot:
+    if context_smoke:
+        kind = f"context-smoke-{len(list(out_dir.glob('context-smoke-*.json'))) + 1}"
+        run_purpose = kind
+    elif pilot:
         kind = "pilot"
         run_purpose = None
     elif selected_cell_ids:
@@ -1109,7 +1115,7 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         hold=not pilot,
         purpose=run_purpose,
     )
-    if any(
+    if not context_smoke and any(
         "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256" not in launch.environment
         for launch in launches
     ):
@@ -1129,7 +1135,7 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         "context_validation": {
             launch.cell_id: {
                 "path": launch.environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD"],
-                "sha256": launch.environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"],
+                "sha256": launch.environment.get("POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"),
             }
             for launch in launches
         },
@@ -1138,6 +1144,12 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         },
         "wma_private_checkouts": {
             launch.cell_id: launch.wma_checkout for launch in launches if launch.wma_checkout
+        },
+        "wma_runtime_validation": {
+            cell["id"]: {"path": cell["wma"]["runtime_validation"],
+                         "sha256": _sha256(paths.REPO_ROOT / cell["wma"]["runtime_validation"])}
+            for cell in (_cell(data, launch.cell_id) for launch in launches)
+            if not context_smoke and cell.get("wma", {}).get("runtime_validation")
         },
         "site": {
             key: ptb_env.get(key, "")
@@ -1150,6 +1162,8 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         },
         "jobs": [],
     }
+    if context_smoke:
+        receipt["validation_only"] = True
     output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     frozen_environment = {
         "POST_TRAIN_BENCH_FROZEN_TOP_BRANCH": snapshot["top_branch"],
@@ -1157,10 +1171,22 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         "POST_TRAIN_BENCH_FROZEN_PTB_COMMIT": snapshot["ptb_commit"],
     }
     for launch in launches:
+        command = launch.command
+        launch_environment = os.environ | launch.environment | frozen_environment
+        if context_smoke:
+            if "--hold" not in command:
+                raise ExperimentError("context-smoke jobs must be submitted held")
+            command = (*command, "--runtime-smoke", "--walltime", "00:30:00")
+            launch_environment["POST_TRAIN_BENCH_REQUIRE_CONTEXT_VALIDATION"] = "0"
+            if launch.wma_checkout:
+                launch_environment["POST_TRAIN_BENCH_WMA_VALIDATION_DIR"] = str(
+                    paths.data_root() / "ptb" / "context-validation" / "wma-runtime"
+                    / launch.wma_checkout["sha"]
+                )
         result = subprocess.run(
-            launch.command,
+            command,
             cwd=PTB_ROOT,
-            env=os.environ | launch.environment | frozen_environment,
+            env=launch_environment,
             text=True,
             capture_output=True,
             check=False,

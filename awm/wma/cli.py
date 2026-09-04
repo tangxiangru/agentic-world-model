@@ -241,6 +241,8 @@ def _replay(args: argparse.Namespace) -> int:
 def register(sub: argparse._SubParsersAction) -> None:
     wp = sub.add_parser("wma", help="the world-model agent: review cards, status, ledger, replay")
     cmds = wp.add_subparsers(dest="cmd", required=True)
+    from awm.wma_client import register_decisions
+    register_decisions(cmds)
 
     r = cmds.add_parser("review", help="ask a backend for a verdict on one or more cards (writes exp-NN.verdict[.tag].json)")
     r.add_argument("--dir", required=True)

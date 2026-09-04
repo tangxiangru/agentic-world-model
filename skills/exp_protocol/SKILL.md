@@ -1,6 +1,6 @@
 ---
 name: exp_protocol
-description: Use before, during, and after every model-training or evaluation experiment. Write the card first, run the pre-flight checks, lock, then train; close the card after. Keeps a run from producing a clean-looking wrong answer, and leaves a record another agent can rerun and understand.
+description: Use before, during, and after every model-training or evaluation experiment. Compare real training proposals before choosing, then write the card, preflight, lock, record the action, launch with run, and close. Keeps execution and decisions reproducible.
 ---
 
 # Experiment protocol
@@ -41,6 +41,57 @@ Seven sections. **0–4 are written before the launch command runs; 5–6 after.
 `card.template.yaml` in this directory is the annotated template;
 `example-card.yaml` is one filled in.
 
+## Configured decision mode
+
+Read `awm_sandbox.json` before the workflow. Its frozen `decision_mode` is
+`single`, `multi-self`, or `multi-joint` (legacy setups without this field use
+`multi-joint`). Do not change this study configuration.
+
+- `single`: write the selected formal card directly; omit the candidate-set
+  step below. All preflight, blocking lock, action and `run` checks still apply.
+- `multi-self`: prepare the same real briefs below and choose yourself. The
+  `compare` command freezes their version and returns `not_requested`; it makes
+  no joint model call. The selected card still receives its normal WMA review
+  if a sidecar is attached.
+- `multi-joint`: use the joint comparison below before choosing, then obtain
+  the selected card's separate blocking review.
+
+## Before choosing the next training (multi modes)
+
+In either multi mode, before committing the next major training budget, prepare usually 2–3 real
+candidate briefs in a decision file. This step also applies when no WMA is
+attached, so a comparison measures the value of its advice on the same
+candidate set. Do not invent extra candidates: one is allowed with a
+`singleton_reason`. Routine packaging, evaluation, and implementation repairs
+do not need a new candidate set.
+
+```bash
+awm wma propose --dir {dir}                 # creates memory/decisions/decision-NN.proposal.json
+# edit the briefs; record scientist_preference BEFORE asking for comparison
+awm wma compare --dir {dir} decision-NN     # freeze briefs; joint call only in multi-joint mode
+# read the comparison, or its recorded unavailable/failed/timed-out status; choose yourself
+awm wma choose --dir {dir} decision-NN --candidate A --reason "why A is the best use of this budget"
+```
+
+Use `proposal.example.json` in this directory for the file shape; its paths,
+numbers, and choices are synthetic. Share the incumbent, hours left, and
+evidence once. For each candidate state the parent, data/objective/schedule
+change, hypothesis, train/eval hours, cost basis, evidence, uncertainty, and
+what observation would change the next decision. Mark unprepared inputs
+honestly; these are briefs, not a requirement to build several datasets or
+run several trainings before choosing.
+
+Keep the pre-comparison preference unchanged. Record the final choice and
+reason even when you agree with it or no comparison was available. Once the
+selected formal card exists, bind it with `choose ... --card exp-NN`.
+This binds the plan and its declared script/data/config bytes. After a repair
+changes them, confirm the choice again with `choose --card` and a reason; if
+the candidate brief itself changes, compare the new brief first. Use
+`choose ... --decline --reason "..."` if none of the real candidates should run.
+Comparison is advice, not launch approval: the selected card still follows
+the complete workflow below. Independent single-card second opinions are not
+a joint comparison of alternatives.
+
 ## Workflow
 
 ```bash
@@ -50,10 +101,12 @@ awm exp_protocol new --dir {dir}            # 2. writes exp-NN.yaml with every r
 awm exp_protocol check --dir {dir} exp-NN   # 3. repeat until no ERROR lines and no questions; "ok (N warnings, advisory)" is ok
 awm exp_protocol lock  --dir {dir} exp-NN   # 4. runs preflight; refuses on any FAIL; pins sections 0-4, the script, and the data;
 #                                                 if a world-model agent is attached it asks for the verdict and WAITS for it (see below)
-#    launch your command exactly as written in setup.command.argv — only after lock has returned
+awm wma act --dir {dir} exp-NN --action proceed --reason "review considered; why this version should run"
+awm exp_protocol run --dir {dir} exp-NN    # 5. launches the locked argv, only after lock has returned;
+#                                                 checks current hashes and a current proceed record, records launch and exit
 #    keep checkpoints as setup.checkpoints says
 #    evaluate the output under evaluation.protocol; fill sections 5-6
-awm exp_protocol close --dir {dir} exp-NN   # 5. validates 5-6, re-checks the lock, rebuilds the index
+awm exp_protocol close --dir {dir} exp-NN   # 6. validates 5-6, re-checks the lock, rebuilds the index
 ```
 
 `awm exp_protocol preflight --dir {dir} exp-NN` can be run on its own any time.
@@ -85,31 +138,52 @@ It is advice; you decide. Four things matter about how you use it:
   `setup.command.argv` starts only after the verdict line (or the timeout /
   failure line) has been printed. A run launched while the verdict was still
   pending is a protocol violation and the record will show it.
-- **Read the whole verdict before launching.** If it says *verify first*, that
-  is usually minutes on CPU that can save an hour on the GPU: do it, or write in
-  `situation.alternatives_rejected` of this card why you did not, before `close`.
-  If it says *no* or *defer* and you disagree, run anyway and note why in the
-  same place; that disagreement is the record the estimator learns from. If the
-  verdict changes the plan, edit sections 0–4 and `lock --relock "<reason>"`:
-  the estimator is asked again about the changed card.
+- **Read the whole verdict before launching.** Record how it changes your
+  action with `awm wma act` before executing that action, including when you
+  decline advice inside a `yes` verdict. If it says *no* or *defer* and you
+  disagree, record the reason, then proceed through `run`. If the verdict
+  changes the plan, edit sections 0–4 and `lock --relock "<reason>"`: the
+  estimator is asked again about the changed card. Record a new `proceed`
+  after the new lock returns; an old action does not authorize a new version.
 - **A failed or timed-out review is not a verdict.** `lock` says so and records
-  it; you may launch. Do not retry the review by hand before launching.
+  it; you may record `proceed` with that status in the reason and launch with
+  `run`. Do not retry the review by hand before launching.
 - **If it answers "no world-model agent is attached to this cell", that is the
   whole answer.** No verdict will come; do not retry, do not look for one. Carry
-  on with step 5.
+  on with the action record and step 5.
+
+Record a `probe`, `repair`, `decline`, or `abandon` action when that is your
+decision; none substitutes for the final `proceed` needed by `run`. For example:
+
+```bash
+awm wma act --dir {dir} exp-NN --action probe --suggestion precondition-1 --reason "compare existing checkpoints to choose the parent"
+# perform the check; if the original parent and locked plan still stand, record why to proceed
+awm wma act --dir {dir} exp-NN --action proceed --reason "comparison retained the original parent; old-data plateau does not invalidate the proposed new mixture within the remaining budget" --evidence memory/checkpoint-comparison.json
+```
+
+`--evidence PATH` may be repeated. Action records are immutable; add a new
+event when the observation or decision changes. Record cancellations too and
+close unrun cards with their actual status. An unrun recipe's endpoint remains
+unknown. A short training or an old checkpoint plateau may change confidence
+or budget priorities, but does not by itself prove a changed full recipe has
+failed. A real implementation blocker can still require repair before launch.
 
 `awm wma review --dir {dir} exp-NN` asks again about an already-locked card and
 waits the same way; `--background` queues one or more locked cards and returns
 at once — for a second opinion on several candidate cards, never as a substitute
 for the wait inside `lock`. `awm wma status --dir {dir}` shows what is in. The
 only WMA files you should see are request/status records and
-`exp-NN.verdict.json` beside the card. Missing `skills/wma` is intentional.
+`exp-NN.verdict.json` beside the card, plus your decision and action records
+and the joint comparison under `.wma/comparisons`. Proposals and choices are
+under `memory/decisions`. Missing `skills/wma` is intentional.
 
 ## The rules
 
 1. **Sections 0–4 before the command runs.** A hypothesis written after the
    result is a description of the result. `lock` pins them; `close` re-checks.
-   A material change after lock is a new card, not an edit.
+   Launch `setup.command.argv` through `awm exp_protocol run`; do not bypass
+   its hash and action checks with a manual launch. A new hypothesis is a new
+   card; implementation repairs to the existing plan require a re-lock.
 2. **A comparator is measured under the same protocol.** Same `n`, same dev
    set, same seed, and the path of that eval goes in `evaluation.comparator.path`.
    A number from a different `--limit` is not a comparator.
@@ -151,8 +225,12 @@ When you lose time to something not in the list, record it in the next card's
 
 ## Budget
 
-The protocol should cost you under five minutes per card. If it is costing
-more, the card is doing too much: split it.
+Keep card bookkeeping short. Record comparison/review time and probe costs as
+part of the session budget. Estimate training and evaluation costs from this
+trajectory's measured throughput when available, and update stale estimates.
+Before ending early, record the real options that fit the remaining time and
+why keeping the incumbent is preferable. More completed SFTs is not a goal by
+itself; there is no minimum training-count target.
 
 ## Optional: Claude Code Stop hook
 

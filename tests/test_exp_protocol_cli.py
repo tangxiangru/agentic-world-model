@@ -176,7 +176,8 @@ def test_lock_records_that_no_world_model_agent_was_attached(session, capsys) ->
     assert main(["exp_protocol", "lock", "--dir", d, "exp-01"]) == 0
     info = json.loads((lineage.cards_dir(session) / "exp-01.lock.json").read_text())
     assert info["wma"] == {"state": "not_attached", "waited_s": 0.0, "verdict_path": None, "error": None,
-                           "request_id": None, "requested_at": None}
+                           "request_id": None, "requested_at": None, "fingerprint": info["wma"]["fingerprint"]}
+    assert info["wma"]["fingerprint"]["plan_sha256"] == info["plan_sha256"]
     out = capsys.readouterr().out
     assert "locked exp-01" in out and "verdict" not in out
     # the annotation does not disturb what the lock pins
@@ -186,6 +187,7 @@ def test_lock_records_that_no_world_model_agent_was_attached(session, capsys) ->
 
 def test_lock_waits_for_the_attached_agent_and_records_the_delivered_verdict(session, capsys, monkeypatch) -> None:
     import threading
+
     from awm import wma_client
     from awm.wma import backends, sidecar
     d, card_path = _locked_card(session)

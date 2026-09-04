@@ -103,7 +103,8 @@ def review(session_dir: Path, card_id: str, backend: Backend, *, mode: str = "of
            history_dir: Path | None = None, force: bool = False, tag: str | None = None,
            effort: str | None = None, expose_skill: bool = True,
            transcript_dir: Path | None = None,
-           allowed_roots: list[Path] | None = None) -> dict[str, Any]:
+           allowed_roots: list[Path] | None = None,
+           card_snapshot: Path | None = None) -> dict[str, Any]:
     if mode not in schema.MODES:
         raise ReviewError(f"mode must be one of {schema.MODES}")
     skill_dir = Path(skill_dir) if skill_dir else default_skill_dir()
@@ -114,6 +115,9 @@ def review(session_dir: Path, card_id: str, backend: Backend, *, mode: str = "of
         raise ReviewError(str(exc)) from exc
     if not brief.card_path.is_file():
         raise ReviewError(f"no such card: {brief.card_path}")
+    if card_snapshot is not None:
+        brief.card_path = Path(card_snapshot)
+        brief.prompt = build_prompt(brief)
     if transcript_dir is not None:
         transcript_dir = Path(transcript_dir)
         transcript_dir.mkdir(parents=True, exist_ok=True)

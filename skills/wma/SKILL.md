@@ -21,8 +21,8 @@ more than an unchecked 0.9: the ledger measures calibration.
 
 **The rulers are cheap; the candidates are expensive.** A full official
 evaluation takes minutes (gsm8k median 3.0 min); a training takes hours and
-eats 61–72 % of a run's budget. So most of a proposal's fate is *decidable
-before any GPU is spent*, by the verifier tier its change type admits —
+eats 61–72 % of a run's budget. Many implementation failures can be checked
+before full training, by the verifier tier its change type admits —
 and the part that is not decidable (what a training will do to the score) is
 where you give a wide, honest interval and put your effort into "is this
 training worth its hours". `change_types.md` in this directory is the manual:
@@ -69,9 +69,11 @@ verdict in progress.
    along (a `C2` format change in the data, a `C12` change in the evaluation
    command). Note when two labels ride on one launch: agents rarely change one
    thing, and that confounds what the result will show.
-2. **Find the cheapest tier that decides it** (manual §2). C1/C2/C5/C6/C12
-   are decidable without training. C3/C4 are not: no verifier between the
-   smoke test and the full training says what the training will do.
+2. **Find the cheapest tier that decides the relevant claim** (manual §2).
+   C1/C2/C5/C6/C12 checks can inspect implementation or compare existing
+   candidates without new training. They do not establish the effect of a
+   future C3/C4 run. A smoke checks feasibility; a partial training is not
+   the observed endpoint of the proposed full training.
 3. **Run the probes that tier allows** (manual §3, offline only static ones).
    Each probe answers a named mechanism and records which level it changed.
    What you can decide, decide — do not estimate what a two-minute check can
@@ -82,8 +84,9 @@ verdict in progress.
    floor claims what the ruler cannot show.
 5. **Price it** for L3: the cost of the change type (hours for C3/C4, minutes
    for the rest) against its prior, the hours left, and the cheaper moves the
-   manual says dominate (C2 alignment, C5 checkpoint sweep, C1b after its
-   probe). Every suggestion names its tier and its minutes.
+   card could actually take (C2 alignment, C5 checkpoint sweep, C1b after its
+   probe). Historical effects do not establish that these dominate this
+   proposal. Every suggestion names its tier and its minutes.
 
 ## The four levels
 
@@ -122,6 +125,29 @@ Rules:
 - Mechanical checks belong to `awm exp_protocol preflight`, not to you. If a
   preflight report exists, read it instead of redoing it.
 
+## Evidence scope before stopping or replacing a run
+
+When a recommendation would stop, replace, or deprioritize the proposal,
+state the exact claim tested and how the evidence applies to its **parent,
+data, objective, schedule, and evaluator**. Put the observation and its limits
+in `evidence[].note`, and the action and its reason in the suggestion. This
+applies to suggestions inside a `yes` verdict as well as `no` or `defer`.
+
+- A missing weight file, OOM, or failed save/load check can justify repairing
+  the current implementation before launch. State the tested configuration;
+  passing a reduced smoke does not guarantee the full run will succeed.
+- A plateau among an earlier run's checkpoints describes that run's tail.
+  It does not falsify a proposal with different data, objective, or schedule.
+- A short run with an independently shortened schedule gives preliminary
+  evidence. Unless a relevant surrogate relationship has been validated,
+  its score is not a pass/fail test of the full run's endpoint. An evaluation
+  noise floor is not a minimum gain that a short training must achieve.
+
+You may prefer an alternative under uncertainty: name the actual alternative
+and the opportunity-cost reason, while leaving the unexecuted proposal's
+outcome unknown. Uncertainty does not require running every proposal. The
+scientist retains the choice; distinguish a recommendation from a result.
+
 ## Suggestions
 
 Two kinds only, both derived from *this* proposal, each tagged with the
@@ -130,8 +156,10 @@ verifier tier and the minutes it costs:
   the eval template renders the same string the trainer sees"; "[tier 3,
   5 min] the 41 watch items really fail on the parent").
 - `cheaper_variants` — the same idea at lower cost or risk ("[tier 2, 1 min]
-  200 steps on a 500-row subset first"; "LoRA with `modules_to_save` given
-  1.5 h left").
+  scratch smoke for finite loss, memory, and save/load, then repair any
+  implementation failure"; "LoRA with `modules_to_save` given 1.5 h left").
+  Explain what a probe result would change; a scratch smoke tests execution,
+  not whether the full training will improve the metric.
 
 Not a new direction: "try DPO instead" on an SFT card is outside your role.
 

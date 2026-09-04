@@ -31,9 +31,8 @@ from typing import Any
 
 import yaml
 
-from awm import paths
+from awm import paths, ptb_results
 from awm import ptb_experiments as ptb
-from awm import ptb_results
 
 QUEUE_PATH = Path("experiments/posttrainbench/queue.yaml")
 RESULTS_ROOT = Path("results/ptb")
@@ -202,6 +201,9 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
                     f"receipt {name} is in state {receipt.get('state')!r}: "
                     f"{failure.get('reason') or failure.get('stderr') or failure.get('error') or 'see the receipt'}",
                     receipt=name))
+            if str(receipt.get("kind", "")).startswith("context-smoke-"):
+                # Runtime validation has no scientific result bundle.
+                continue
             for job in receipt["jobs"]:
                 state = states[job["job_id"]]
                 if state in TERMINAL_STATES:
@@ -216,7 +218,7 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
                                           job_id=job["job_id"], receipt=name,
                                           job_name=job.get("job_name"), state=state))
         if entry["want"] == "staged":
-            if receipts:
+            if any(not str(r.get("kind", "")).startswith("context-smoke-") for _, r in receipts):
                 actions.append(Action(
                     "blocked", batch,
                     "staged entry already has a receipt; choose submitted or cancelled explicitly"))
@@ -338,16 +340,26 @@ def _copy_sidecar(result_dir: Path, out_dir: Path, skipped: list[dict[str, Any]]
         found["sidecar_log_tail"] = lines[-1] if lines else ""
     private = result_dir / PRIVATE_DIR
     if private.is_dir():
-        for src in sorted(private.glob("*.jsonl")):
+        for src in sorted(private.rglob("*")):
+            if not src.is_file() or src.is_symlink() or not src.resolve().is_relative_to(private.resolve()):
+                continue
+            if src.suffix not in (".jsonl", ".json", ".yaml", ".yml"):
+                continue
+            name = str(src.relative_to(private))
             size = src.stat().st_size
-            found["transcripts"].append({"name": src.name, "size": size})
-            rel = f"{PRIVATE_DIR}/{src.name}"
+            if src.suffix == ".jsonl":
+                found["transcripts"].append({"name": name, "size": size})
+            rel = f"{PRIVATE_DIR}/{name}"
             if size > PER_FILE_CAP:
                 skipped.append({"path": rel, "size": size, "reason": f"over {PER_FILE_CAP} bytes"})
                 continue
-            (out_dir / PRIVATE_DIR).mkdir(exist_ok=True)
-            with src.open("rb") as fin, gzip.open(out_dir / PRIVATE_DIR / f"{src.name}.gz", "wb") as fout:
-                shutil.copyfileobj(fin, fout)
+            dst = out_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.suffix == ".jsonl":
+                with src.open("rb") as fin, gzip.open(str(dst) + ".gz", "wb") as fout:
+                    shutil.copyfileobj(fin, fout)
+            else:
+                shutil.copy2(src, dst)
     return found
 
 

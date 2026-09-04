@@ -30,7 +30,7 @@ DEFAULT_CURRENT = Path("/rmeng_data/robtang/slurm-queue/current.json")
 DEFAULT_STATE_DIR = Path("/rmeng_data/robtang/wma-evolve-hook/gangda_wma_evolve")
 DEFAULT_SUBQUEUE = "gangda_wma_evolve"
 DEFAULT_BRANCH = "gangda_wma_evolve"
-DEFAULT_PREFIX = "wma-gsm8k-gemma4b-high-r"
+DEFAULT_PREFIX = "wma-"
 EXPECTED_NODES = "slurm2-a3nodesetondem-[2-3]"
 
 
@@ -210,7 +210,7 @@ def queue_health(
         if not str(source.get("batch_id", "")).startswith(prefix):
             continue
         source_subqueue = source.get("subqueue")
-        if source_subqueue and source_subqueue != subqueue:
+        if source_subqueue != subqueue:
             continue
         jobs.extend(source.get("jobs", []))
     running = [job for job in jobs if _job_state(job) == "RUNNING"]
@@ -291,6 +291,11 @@ result directories, cards, lock files, WMA verdicts, private transcripts and
 clean-complete cells in the payload.  Treat fewer than eight clean-complete
 cells per compared arm as provisional and never recommend promotion from such
 a window.
+Stratify by benchmark, scientist/WMA model, public protocol and treatment mode.
+Never pool raw scores across benchmarks or compare Opus 4.8 cells to the old
+Opus 5 cohort as though only the WMA skill changed. Validation-only context
+jobs are not scientific results. Check operator.status.json before repeating
+an already executed report handoff.
 
 Use parallel specialist analysis for every dimension that has evidence:
 ledger reproduction by skill hash, uptake/timing, score levers, harm cases,

@@ -121,6 +121,14 @@ def test_an_entry_without_a_receipt_is_submitted(repo) -> None:
         "submit", "ep-r01", False, ENTRY["manifest"])
 
 
+def test_context_receipt_never_becomes_a_scientific_harvest_or_blocks_staging(repo, tmp_path):
+    root, states = repo
+    _receipt(tmp_path / "vol", "ep-r01", "context-smoke-1", [("p01r1", "99")])
+    states["99"] = "COMPLETED"
+    assert [a.kind for a in ops.plan([{**ENTRY, "want": "staged"}], root)] == ["copy_receipt"]
+    assert [a.kind for a in ops.plan([ENTRY], root)] == ["copy_receipt", "submit"]
+
+
 def test_pilot_first_gates_the_formal_submission(repo, tmp_path: Path) -> None:
     root, states = repo
     entry = {**ENTRY, "pilot": "first"}
@@ -170,6 +178,8 @@ def test_finished_jobs_are_harvested_once(repo, tmp_path: Path) -> None:
 
 
 def test_a_cancelled_entry_cancels_pending_jobs_only(repo, tmp_path: Path, monkeypatch) -> None:
+    # This assertion exercises the unprivileged route, independent of the host's PTB .env.
+    monkeypatch.setattr(ops.ptb, "read_ptb_env", dict)
     root, states = repo
     _receipt(tmp_path / "vol", "ep-r01", "formal", [("p01r1", "301"), ("p01r2", "302"), ("p01r3", "303")])
     states.update({"301": "PENDING", "302": "RUNNING", "303": "COMPLETED"})
@@ -203,7 +213,7 @@ def test_a_receipt_that_did_not_reach_submitted_blocks(repo, tmp_path: Path) -> 
 # ---- apply: submit -----------------------------------------------------------
 
 def test_apply_submits_through_the_launcher_and_tracks_the_receipt(repo, tmp_path: Path, monkeypatch) -> None:
-    root, states = repo
+    root, _states = repo
     submitted: list[tuple[str, bool]] = []
 
     def fake_submit(manifest, *, pilot=False, cell_ids=None):
@@ -250,7 +260,7 @@ def test_one_round_submits_every_manifest_before_any_receipt_lands(repo, tmp_pat
 
 
 def test_a_dirty_worktree_blocks_submits_but_not_harvests(repo, tmp_path: Path, monkeypatch) -> None:
-    root, states = repo
+    root, _states = repo
     monkeypatch.setattr(ops, "_worktree_dirty", lambda repo_root: "?? results/ptb/x")
     monkeypatch.setattr(ops, "submit_batch", lambda *a, **k: pytest.fail("must not submit"))
     lines = ops.apply(ops.plan([ENTRY], root), root)
@@ -417,7 +427,7 @@ def test_cancel_refuses_anything_but_pending(tmp_path: Path, monkeypatch) -> Non
 def test_cancel_uses_sudo_for_root_owned_allocations(monkeypatch) -> None:
     monkeypatch.setattr(ops.ptb, "read_ptb_env", lambda: {"POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "1"})
     assert ops._scancel_command("5") == ["sudo", "scancel", "5"]
-    monkeypatch.setattr(ops.ptb, "read_ptb_env", lambda: {})
+    monkeypatch.setattr(ops.ptb, "read_ptb_env", dict)
     assert ops._scancel_command("5") == ["scancel", "5"]
 
 

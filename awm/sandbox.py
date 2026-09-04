@@ -62,8 +62,27 @@ def setup(
     tool: str = "claude",
     exp_protocol: bool = False,
     stop_hook: bool = False,
+    decision_mode: str | None = None,
 ) -> dict[str, Any]:
+    from awm.exp_protocol import treatment
+
     target = Path(target).resolve()
+    configured = None
+    if decision_mode is None and (target / RECORD).exists():
+        previous = treatment.identity(target)
+        if previous["explicit"]:
+            decision_mode = previous["decision_mode"]
+    if decision_mode is not None:
+        if not exp_protocol:
+            raise SandboxError("--decision-mode needs --exp-protocol")
+        try:
+            configured = treatment.describe(decision_mode, explicit=True)
+            if (target / RECORD).exists():
+                previous = treatment.identity(target)
+                if previous["explicit"] and previous != configured:
+                    raise SandboxError("cannot change the study mode of an existing task")
+        except ValueError as exc:
+            raise SandboxError(str(exc)) from exc
     if stop_hook and not exp_protocol:
         raise SandboxError("--stop-hook needs --exp-protocol: the hook is part of the protocol")
     target.mkdir(parents=True, exist_ok=True)
@@ -84,6 +103,8 @@ def setup(
         "written": sorted(str(p.relative_to(target)) for p in written),
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if configured is not None:
+        record.update(decision_mode=decision_mode, decision_mode_sha256=configured["sha256"])
     (target / RECORD).write_text(json.dumps(record, indent=2) + "\n")
     return record
 
@@ -96,6 +117,7 @@ def _setup(args: argparse.Namespace) -> int:
             tool=args.tool,
             exp_protocol=args.exp_protocol,
             stop_hook=args.stop_hook,
+            decision_mode=args.decision_mode,
         )
     except SandboxError as exc:
         print(f"not set up: {exc}")
@@ -114,6 +136,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--sha", default="unknown", help="commit of the mounted checkout, for provenance")
     s.add_argument("--tool", choices=("claude", "codex", "both"), default="claude")
     s.add_argument("--exp-protocol", action="store_true", help="install skills/exp_protocol")
+    from awm.exp_protocol.treatment import MODES
+    s.add_argument("--decision-mode", choices=MODES,
+                   help="freeze single-proposal, multi-candidate self-selection, or joint WMA mode")
     s.add_argument("--stop-hook", action="store_true",
                    help="also register the protocol's Claude Code Stop hook (needs --exp-protocol)")
     s.set_defaults(func=_setup)
