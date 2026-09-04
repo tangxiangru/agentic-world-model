@@ -83,6 +83,12 @@ None of these interprets credentials or model artifacts.
   environment if that is not available.
 - `Qwen/Qwen3-4B-Base` and `google/gemma-3-4b-pt` must be in the HF cache
   (`containers/download_hf_cache/`).
+- **GPQA's test set is gated and the sandbox has no HF token (rule 9).** Pre-cache
+  `Idavidrein/gpqa` (`gpqa_main`) into the HF cache that `run_task.sh` overlays into
+  the sandbox, exactly as PTB's own `download_hf_cache` list does; a cached copy loads
+  with no token. Without it the scientist cannot run `evaluate.py --limit` on GPQA and
+  ships blind — the first Qwen smoke did, and scored 0.0 on a corrupted merge it never
+  evaluated.
 
 ## Prepare a private checkout
 
