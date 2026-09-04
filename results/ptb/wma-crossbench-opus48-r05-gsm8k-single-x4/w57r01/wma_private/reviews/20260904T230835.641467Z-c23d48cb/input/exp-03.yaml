@@ -1,0 +1,85 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T23:07:31Z'
+situation:
+  elapsed_h: 2.6
+  remaining_h: 7.35
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp-01
+    score: {metric: accuracy, value: 0.50, protocol_n: 150}
+  trigger: "exp-02 (MetaMath mixture) collapsed to 0.067 not from bad reasoning but from a STOPPING failure: trained only on zero-shot (0-shot) prompts, the stronger generator imitates the grader's 10-shot Q/Reasoning/ANSWER listing and never emits <end_of_turn> after the first answer, so the numeric-end scorer reads a later wrong number. exp-01 (weaker generator) happens to stop. The fix is to train the model to STOP inside a few-shot context while keeping the MetaMath reasoning signal."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy=0.0667"}
+    - {path: /home/ben/task/logs/2026-09-04T22-49-50+00-00_gsm8k_D7itBadwaPzAA4d6zaiXCe.json, locator: "134/150 run-on outputs, finish_reason=length"}
+  alternatives_rejected:
+    - {option: "Ship exp-01 (0.50) as final", reason: "it stops reliably but plateaus; with >7h left there is budget for one corrective training that could raise the ceiling"}
+    - {option: "RFT/rejection-sampling self-distillation from exp-01", reason: "would also fix stopping (samples end in <end_of_turn>) but needs a vLLM generation pass + filtering; the few-shot-structured SFT reuses the already-built, contamination-checked data and directly targets the diagnosed cause"}
+    - {option: "Add a hard stop string / post-process at eval", reason: "forbidden — cannot modify evaluate.py or templates/; the fix must live in the model's behavior"}
+    - {option: "Continue SFT from exp-02", reason: "compounds exp-02's run-on habit; fresh SFT from the immutable base is cleaner"}
+  pitfalls_hit:
+    - {what: "eos_mismatch/run-on in few-shot context (exp-02): zero-shot-only training does not teach stopping under the grader's 10-shot prompt", cost_h: 1.6}
+    - {what: "GPU not freed after vLLM gen_test (EngineCore subprocess survived pkill, held 66GB); fixed by killing via nvidia-smi --query-compute-apps=pid", cost_h: 0.2}
+    - {what: "seq_len right-truncation would cut long few-shot completions; mitigated by train_sft_fs.py LEFT-truncation (drops earliest shots, preserves completion)", cost_h: 0.1}
+  smoke_runs:
+    - {command: [python, scripts/build_fewshot.py], outcome: "19471 rows (7473 GSM + ~12000 MetaMath GSM), k in {0,2,4,6,8,10} real GSM8K-train shots per row; contamination_check.py exit 0, 0 flagged"}
+    - {command: [python, scripts/train_sft_fs.py, "(32 longest rows, 1 step)"], outcome: "no OOM at bs4/max_len2048 on H100-80GB, ~1.17s/it, all overflow rows left-truncated with completion intact"}
+problem:
+  statement: "The grader always prompts with 10 few-shot Q/Reasoning/ANSWER blocks. A model trained only on zero-shot prompts (exp-01, exp-02) has never been supervised to STOP after the final answer in that context; a sufficiently strong generator (exp-02) continues the listing and fails, and even exp-01's stopping is incidental rather than trained."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy=0.0667", observation: "run-on generation; 10/150 correct"}
+    - {path: /home/ben/task/logs/2026-09-04T22-49-50+00-00_gsm8k_D7itBadwaPzAA4d6zaiXCe.json, locator: "finish_reason=length on 134/150", observation: "no <end_of_turn> emitted after first ANSWER"}
+  affected_share: "~0.89 of exp-02 dev outputs run on past the first correct answer"
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Fresh full-parameter SFT from the base on FEW-SHOT-STRUCTURED data (each target preceded by k in {0,2,4,6,8,10} real GSM8K-train example blocks rendered exactly like the grader, loss only on the final completion ending in '<end_of_turn>') will raise GSM8K dev-150 accuracy above exp-01's 0.50."
+  mechanism: "Supervising the completion inside a grader-shaped few-shot prompt teaches the model to emit <end_of_turn> after the final ANSWER instead of continuing the listing, so the numeric-end scorer reads the correct number; the MetaMath reasoning in the targets supplies the diversity that exp-01 lacked, without the run-on side effect that sank exp-02."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-01, magnitude: "+5 to +20 pts (0.50 -> ~0.55-0.70)"}
+  falsified_if: "dev-150 accuracy <= 0.50 (no improvement over exp-01)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/mix_fs.jsonl
+      source: "openai/gsm8k train + meta-math/MetaMathQA (GSM_Rephrased,GSM_AnsAug)"
+      n_examples: 19471
+      built_by: /home/ben/task/scripts/build_fewshot.py
+      build_command: [python, scripts/build_fewshot.py, --model, "<snapshot>", --template, templates/gemma3.jinja, --out, data/mix_fs.jsonl, --n_meta, "12000"]
+      selection: "GSM8K-train targets (7473) + 12000 MetaMathQA GSM-subset targets; each preceded by k in {0,2,4,6,8,10} GSM8K-train example blocks (raw reasoning with <<>>, grader format) in a system message; completion = clean reasoning + single 'ANSWER: N' + <end_of_turn>; integer/decimal targets only"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 (custom completion-only collator, LEFT-truncation)
+    peft: none
+    hyperparams: {lr: 2.0e-5, epochs: 2, batch_size: 4, grad_accum: 8, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "clean chain-of-thought, blank line, 'ANSWER: <number>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft_fs.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/mix_fs.jsonl, --out, /home/ben/task/ckpts/exp-03, --template, /home/ben/task/templates/gemma3.jinja, --lr, "2e-5", --epochs, "2", --bs, "4", --grad_accum, "8", --max_len, "2048"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft_fs.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    configs: []
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03, --limit, "150", --gpu-memory-utilization, "0.85", --max-connections, "16", --json-output-file, eval/exp-03_dev150.json]
+    dev_set: "official gsm8k test --limit 150 (10-shot, fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.50
+    path: /home/ben/task/eval/exp-01_dev150.json
+  diagnostic: null

@@ -340,3 +340,37 @@ backfill started GSM8K multi-self w58r04. The queue remains16/16 H100s
 allocated,16 RUNNING and29 safe PENDING; pending is above the24-job trigger.
 No new batch, skill edit or promotion is justified. Validation92312 and the
 four staged S0 cells keep their existing gate.
+
+## 23:45 UTC GSM8K raw n3 and WMA delivery failure
+
+GSM8K raw c51r04 and c51r03 are newly validator/judge-clean at66.5656% and
+42.4564%. With c51r02=54.8143%, raw primary is **54.6121% ±12.0559pp sample
+SD (n3)**. Protocol primary remains54.5868% ±10.4038pp(n3), so descriptive
+P−R is **−0.0253pp** with a9.1939pp Welch standard error. The observed means
+are effectively tied at current precision; neither the66.57% maximum nor the
+42.46% minimum supports a treatment claim. Raw c51r01 remains incomplete.
+
+w57r01/job92198 is a separate FAILED/PTB-incomplete single-WMA attempt: no
+final model, metrics or official score. Its three WMA reviews all returned
+Opus4.8 quota429, wrote `wma.state=failed`, and produced no verdict; explicit
+`proceed` fallbacks then allowed each card to start. The main session later
+ended while background exp-03 was training and the process was killed. Known
+cost is$16.58684725 scientist +$3.42892375 judges, allocation3.0078GPU-h.
+This cell is excluded both for missing scientific output and0/3 delivered WMA
+verdicts. It is the eighth recorded background-wait/end-turn lifecycle case.
+
+A bounded sidecar-health audit found ten additional 429-like in-flight review
+measurements in six running cells, but correctly leaves them as operational
+signals until terminal evidence exists. The leading causes are provider quota
+plus permissive fallback enforcement, followed by the known lifecycle defect;
+neither is a WMA skill-text problem. A protocol-only fail-closed delivery gate
+is preregistered in `doc/spec/2026-09-04-wma-verdict-delivery-gate.md`; it has no
+implementation or job. Existing cells stay frozen and no new WMA science may
+use a failed-review `proceed` path.
+
+Totals are103 PTB complete/100 automatically clean, new study14/11. Queue
+ownership/routes remain clean with16/16 allocated,16 RUNNING and26 safe
+PENDING; normal backfill started GSM8K joint w59r01–03. No replenishment,
+cancellation, promotion or skill/scorer/guard mutation occurs. Validation92312
+remains pending; formal S0 now also requires resolution of the strict delivered-
+verdict gate before launch.

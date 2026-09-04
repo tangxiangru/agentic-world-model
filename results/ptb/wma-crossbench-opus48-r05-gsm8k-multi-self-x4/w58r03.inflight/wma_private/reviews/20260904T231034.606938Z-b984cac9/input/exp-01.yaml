@@ -1,0 +1,84 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T22:55:13Z'
+situation:
+  elapsed_h: 0.15
+  remaining_h: 9.85
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0533, protocol_n: 150}
+  trigger: "Task start: gemma-3-4b-pt is a PT (pretrained) model with no SFT; baseline GSM8K eval (10-shot, limit 150) running at eval/base_150.json to quantify the floor."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/base_150.json, locator: "baseline 10-shot accuracy (pending)"}
+  alternatives_rejected:
+    - {option: "LoRA r=64 (candidate B)", reason: "full FT fits comfortably in 80GB so memory advantage is moot; LoRA ceiling lower for format-heavy adaptation"}
+    - {option: "Add external math corpus now (candidate C)", reason: "unproven gain, ~1h data-prep + contamination cost before any signal; deferred to a follow-up card if exp-01 plateaus"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The PT base model has not been taught the grader's answer format ('ANSWER: N' as the last line) nor to stop after the answer; base few-shot GSM8K accuracy is at the floor and generations run long without emitting a stop token."
+  evidence:
+    - {path: /home/ben/task/logs/base_eval_150.log, locator: "vllm generations, base model", observation: "base model does not reliably terminate after the answer under the 10-shot prompt"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Full-parameter SFT of gemma-3-4b-pt on 7473 GSM8K-train problems reformatted into the grader's gemma3 chat template, with completion-only targets ending in 'ANSWER: N<end_of_turn>', will raise GSM8K (limit 150, 10-shot) accuracy substantially above the PT base."
+  mechanism: "SFT teaches the exact output format the grader reads (last number == answer) and the <end_of_turn> stop token, so vLLM stops right after the answer instead of rambling; it also sharpens step-by-step arithmetic on in-domain problems."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+20 pts or more vs the PT base"
+  falsified_if: "limit-150 accuracy does not exceed the base by at least 5 pts, or the model still fails to stop after the answer."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/train_sft.jsonl
+      source: "openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py]
+      selection: "GSM8K train reformatted: <<..>> calc annotations stripped, '#### N' replaced by 'ANSWER: N'; rendered with templates/gemma3.jinja (grader template); completion ends '<end_of_turn>\\n'"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3 (custom completion-only collator)"
+    peft: "none"
+    hyperparams: {lr: 1.0e-5, epochs: 3, batch_size: 16, grad_accum: 1, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant turn = clean reasoning then 'ANSWER: N' then <end_of_turn>; loss on completion tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/train_sft.jsonl, --out, /home/ben/task/ckpts/exp-01, --epochs, "3", --lr, "1e-5", --bs, "16", --grad_accum, "1", --max_seq_len, "1024"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-01_train.log
+  output_dir: /home/ben/task/ckpts/exp-01
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-01, --limit, "150", --json-output-file, /home/ben/task/eval/exp-01_150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0533
+    path: /home/ben/task/eval/base_150.json
+  diagnostic:
+    what: "fraction of outputs that stop after the answer (emit end_of_turn before max_tokens)"
+    n: 150
+    metric: accuracy
+    direction: higher

@@ -1,0 +1,101 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T20:40:09Z'
+situation:
+  elapsed_h: 0.17
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0467, protocol_n: 150}
+  trigger: "Base gemma-3-4b-pt scores 0.0467 on GSM8K dev-150 (10-shot); it rarely emits the 'ANSWER: N' final line the grader reads."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/base_dev150.json, locator: "accuracy=0.0467"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full FT", reason: "H100-80GB fits full FT of the 3.9B text stack; full FT expected to move a pt base further on format+reasoning"}
+    - {option: "Train with the 10-shot prompt matching eval", reason: "adds ~1700 tokens/row for little gain; zero-shot SFT teaches the format and eval still supplies fewshots"}
+    - {option: "MetaMathQA / larger synthetic corpus", reason: "risk of double-answer-format contamination and dataset drift; establish clean GSM8K-train SFT baseline first, then augment if warranted"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/smoke.jsonl, --epochs, "1", --bs, "4"], outcome: "64 rows, 0 truncated, loss 0.79->0.70, no OOM, saved all HF files"}
+    - {command: [python, scripts/build_data.py], outcome: "7473 rows; row0 renders prompt==eval format, completion ends 'ANSWER: 72<end_of_turn>'"}
+problem:
+  statement: "The pretrained base almost never produces a gradeable answer in the required 'ANSWER: N' format and its chain-of-thought is unreliable, so GSM8K accuracy sits at the 0.0467 floor."
+  evidence:
+    - {path: /home/ben/task/eval/base_dev150.json, locator: "accuracy=0.0467", observation: "7/150 correct under the official 10-shot protocol"}
+  affected_share: 0.95
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Full-parameter completion-only SFT on 7473 GSM8K-train CoT examples, formatted exactly as the grader expects (clean reasoning then 'ANSWER: N' then <end_of_turn>), will raise GSM8K dev-150 accuracy far above the base 0.0467."
+  mechanism: "The base model has math ability from pretraining but has not learned the turn/answer format; SFT on in-domain CoT teaches it to reason and emit the exact answer marker the numeric-end grader reads, and to stop on <end_of_turn> (in the eos list [1,106])."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "+40 pts or more (base 0.0467 -> ~0.5+)"}
+  falsified_if: "dev-150 accuracy < 0.30, or loss flat/zero (format not learned)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "openai/gsm8k (main, train split)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --model, "<snapshot>", --template, templates/gemma3.jinja, --out, data/gsm8k_train.jsonl]
+      selection: "strip <<..>> calc annotations; drop '#### N' body marker; completion = reasoning + 'ANSWER: N' + <end_of_turn>; zero-shot prompt rendered with grader's gemma3.jinja"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 (custom completion-only collator)
+    peft: none
+    hyperparams: {lr: 2.0e-5, epochs: 3, batch_size: 8, grad_accum: 4, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "clean chain-of-thought, blank line, 'ANSWER: <int>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/gsm8k_train.jsonl, --out, /home/ben/task/ckpts/exp-01, --template, /home/ben/task/templates/gemma3.jinja, --lr, "2e-5", --epochs, "3", --bs, "8", --grad_accum, "4", --max_len, "1024"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    configs: []
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/ckpts/exp-01
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-01, --limit, "150", --gpu-memory-utilization, "0.85", --max-connections, "16", --json-output-file, eval/exp-01_dev150.json]
+    dev_set: "official gsm8k test --limit 150 (10-shot, fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0467
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "share of outputs that emit a parseable 'ANSWER: N' final line"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.28
+  output_checkpoint: /home/ben/task/ckpts/exp-01
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-01, step: 702}
+  training_summary: {final_loss: 0.363, steps: 702, notes: "3 epochs, eff batch 32, lr 2e-5 cosine; 1024s wall; 0 rows truncated"}
+  measurements:
+    - {metric: accuracy, value: 0.50, n: 150, path: /home/ben/task/eval/exp-01_dev150.json, delta_vs_comparator: 0.4533}
+  diagnostic_result: {value: null, path: null, notes: "not separately parsed; +45pt accuracy jump implies the ANSWER format is now emitted reliably"}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "GSM8K-train completion-only SFT lifted dev-150 from 0.0467 to 0.50 (+45.3). Format+CoT SFT works as hypothesized; well above the 0.30 falsification line."
+  decision: adopt
+  next_step: "exp-02: augment with a larger, diverse, contamination-checked math CoT corpus (MetaMathQA, reformatted to single ANSWER marker) to improve reasoning generalization beyond 0.50."

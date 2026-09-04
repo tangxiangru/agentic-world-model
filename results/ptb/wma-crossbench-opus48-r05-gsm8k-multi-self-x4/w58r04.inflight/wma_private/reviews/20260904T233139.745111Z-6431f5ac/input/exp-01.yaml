@@ -1,0 +1,79 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T23:17:10Z'
+situation:
+  elapsed_h: 0.6
+  remaining_h: 9.4
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.06, protocol_n: 150}
+  trigger: "Fresh batch: base gemma-3-4b-pt is a pretrained (non-instruct) model with no training on the grader's 'ANSWER: <n>' output format; base 10-shot comparator eval running at eval/base_dev150.json."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/base_dev150.json, locator: "10-shot GSM8K, --limit 150"}
+  alternatives_rejected:
+    - {option: "Start directly with the 100k MetaMath mixture (candidate B)", reason: "3h run; better to validate the format/eos/template/eval pipeline on 0.5h of in-distribution gold data first (decision-01)"}
+    - {option: "LoRA instead of full FT", reason: "4B full FT fits comfortably on the H100; full FT gives a cleaner format-learning signal and avoids adapter-merge packaging risk"}
+  pitfalls_hit:
+    - {what: "base comparator eval is slow (~75 min): base model rambles to max_tokens=4000 per sample, no clean stop", cost_h: 1.2, fix: "trained models stop at <end_of_turn>; use higher --max-connections for later evals (parallelism does not change scores)"}
+  smoke_runs:
+    - {command: [python, "-c", "render one training row through templates/gemma3.jinja"], outcome: "full string has single <bos>, ends with token 106 <end_of_turn>; matches eval format"}
+    - {command: [python, "token-length audit (2000 rows)"], outcome: "gsm8k max=529 tok, 0% over 1024 -> max_seq_len=1024 safe"}
+problem:
+  statement: "The base model has never been trained to emit the grader's exact format (chain-of-thought then a single 'ANSWER: <n>' line terminated by <end_of_turn>); as a pretrained model it produces unstructured continuations, so even when arithmetic is right the final number is often not the last number the numeric-match grader reads."
+  evidence:
+    - {path: /home/ben/task/eval/base_dev150.json, locator: "accuracy", observation: "base 10-shot comparator = 0.06 (rambles, last-number rarely the gold answer)"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Completion-only SFT on the 7473 GSM8K TRAIN solutions, reformatted to reasoning + a single 'ANSWER: <n>' line terminated with <end_of_turn>, raises 10-shot GSM8K --limit 150 accuracy substantially above the base model."
+  mechanism: "SFT teaches the model to produce grade-school reasoning and to end with the exact answer marker the grader reads, so correct reasoning is scored as correct and generation stops cleanly at <end_of_turn>."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "+20 pts or more over base"}
+  falsified_if: "exp-01 --limit 150 accuracy is not clearly above the base comparator under the same protocol."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: openai/gsm8k (main, split=train)
+      n_examples: 7473
+      built_by: /home/ben/task/data_prep.py
+      build_command: [python, data_prep.py, --which, gsm8k, --out, data/gsm8k_train.jsonl]
+      selection: "strip <<...>> calculator annotations; split on '####'; target = reasoning + '\\n\\nANSWER: <n>' (single marker); commas removed from final number"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 (completion-only masking, custom collator)
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 3, batch_size: 16, grad_accum: 2, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "reasoning then '\\n\\nANSWER: <n>' then <end_of_turn>; prompt = MATH_PROMPT_TEMPLATE rendered via templates/gemma3.jinja; prompt tokens masked (-100)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/gsm8k_train.jsonl, --output, ckpts/exp-01, --epochs, "3", --lr, "1e-5", --batch-size, "16", --grad-accum, "2", --max-seq-len, "1024", --save-strategy, epoch]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/ckpts/exp-01
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/exp-01, --limit, "150", --max-connections, "16", --json-output-file, eval/exp-01_dev150.json]
+    dev_set: "official gsm8k test --limit 150 (10-shot, fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.06
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic: {what: null, n: null, metric: accuracy, direction: higher}

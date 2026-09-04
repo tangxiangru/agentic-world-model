@@ -1,0 +1,97 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T21:08:14Z'
+situation:
+  elapsed_h: 0.65
+  remaining_h: 9.35
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp-01
+    score: {metric: accuracy, value: 0.50, protocol_n: 150}
+  trigger: "exp-01 SFT on 7473 GSM8K-train examples reached 0.50 dev-150; data volume/diversity is the obvious next lever for a 4B base."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-01_dev150.json, locator: "accuracy=0.50"}
+  alternatives_rejected:
+    - {option: "RFT self-distillation from exp-01", reason: "reliable but incremental; try the larger-data lever first, RFT can follow as exp-03"}
+    - {option: "Include MetaMathQA MATH subsets", reason: "MATH answers are LaTeX/non-integer and off-distribution for GSM8K's numeric-end grader; keep to GSM subsets"}
+    - {option: "Include GSM_SV / GSM_FOBAR", reason: "their question structure (answer injected, solve-for-unknown) diverges from the plain GSM8K test format"}
+    - {option: "Continue SFT from exp-01 on new data", reason: "fresh SFT from the immutable base on the full mixture is cleaner and avoids compounding a single-source fit"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/build_meta.py], outcome: "57471 rows after dropping 2 with stray markers; 0 rows with !=1 ANSWER marker; contamination check exit 0, 0 flagged"}
+problem:
+  statement: "exp-01 plateaus at 0.50 on dev-150; trained on only 7473 GSM8K-train traces, it still misses roughly half of grade-school problems, likely from limited reasoning-pattern diversity."
+  evidence:
+    - {path: /home/ben/task/eval/exp-01_dev150.json, locator: "accuracy=0.50", observation: "75/150 correct"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Fresh full-parameter SFT from the base on a larger mixture (7473 GSM8K-train + 25k GSM_Rephrased + 25k GSM_AnsAug from MetaMathQA, reformatted to a single 'ANSWER: N' marker) will raise GSM8K dev-150 accuracy above exp-01's 0.50."
+  mechanism: "MetaMathQA's rephrasings and answer-augmented alternate solutions expand the diversity of grade-school reasoning the model sees, improving generalization to unseen test phrasings while keeping the exact grader answer format."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-01, magnitude: "+8 to +18 pts (0.50 -> ~0.6-0.68)"}
+  falsified_if: "dev-150 accuracy <= 0.50 (no improvement over exp-01)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/mix_exp02.jsonl
+      source: "openai/gsm8k train + meta-math/MetaMathQA (GSM_Rephrased,GSM_AnsAug)"
+      n_examples: 57471
+      built_by: /home/ben/task/scripts/build_meta.py
+      build_command: [python, scripts/build_meta.py, --model, "<snapshot>", --template, templates/gemma3.jinja, --out, data/mix_exp02.jsonl, --n_rephrased, "25000", --n_ansaug, "25000"]
+      selection: "GSM8K-train + MetaMathQA GSM subsets; strip <<..>>, '#### N', 'The answer is: N'; single 'ANSWER: N' + <end_of_turn>; integer/decimal targets only; 2 stray-marker rows dropped"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 (custom completion-only collator)
+    peft: none
+    hyperparams: {lr: 2.0e-5, epochs: 2, batch_size: 8, grad_accum: 4, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "clean chain-of-thought, blank line, 'ANSWER: <number>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/mix_exp02.jsonl, --out, /home/ben/task/ckpts/exp-02, --template, /home/ben/task/templates/gemma3.jinja, --lr, "2e-5", --epochs, "2", --bs, "8", --grad_accum, "4", --max_len, "1024"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    configs: []
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02, --limit, "150", --gpu-memory-utilization, "0.85", --max-connections, "16", --json-output-file, eval/exp-02_dev150.json]
+    dev_set: "official gsm8k test --limit 150 (10-shot, fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.50
+    path: /home/ben/task/eval/exp-01_dev150.json
+  diagnostic: null
+result:
+  execution: completed
+  wall_h: 1.57
+  output_checkpoint: /home/ben/task/ckpts/exp-02
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02, step: 3592}
+  training_summary: {final_loss: 0.169, steps: 3592, notes: "2 epochs, eff batch 32, lr 2e-5; loss fell to ~0.12-0.17"}
+  measurements:
+    - {metric: accuracy, value: 0.0667, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: -0.4333}
+  diagnostic_result: {value: null, path: /home/ben/task/logs/2026-09-04T22-49-50+00-00_gsm8k_D7itBadwaPzAA4d6zaiXCe.json, notes: "only 16/150 outputs are single-answer; 134/150 run on past the first correct ANSWER and never emit <end_of_turn> in the 10-shot eval context. Direct gen test: exp-02 STOPS zero-shot (finish=stop, correct) but RUNS ON few-shot (finish=length)."}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "Accuracy collapsed to 0.067 (< exp-01 0.50). Not a reasoning failure: the stronger MetaMath-trained generator mimics the eval's 10-shot Q/Reasoning/ANSWER listing and fails to stop after the first answer, so the numeric-end grader reads a later wrong number. Zero-shot it stops and answers correctly."
+  decision: iterate
+  next_step: "exp-03: SFT on few-shot-STRUCTURED data (0-10 GSM8K-train shots in a system message matching the grader) so the model learns to emit <end_of_turn> after the FINAL answer; keep the MetaMath reasoning signal."
