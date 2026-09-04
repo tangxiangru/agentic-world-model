@@ -1,8 +1,8 @@
 # exp-protocol operator state and dependencies
 
-Mutable handoff, updated2026-09-04 after the17-cell legacy retirement.
+Mutable handoff, updated2026-09-04 after the real monitor handoff and blocking audit.
 Receipt source remains immutable apart from appended cancellation records.
-Latest postflight15:22:09; monitor's15:16:40 tick predates the cancellations.
+Latest release/access checks16:19–16:21; new monitor first tick16:16:40.
 Scope remains only
 `gangda_exp-protocol-evolve`, `slurm2-a3nodesetondem-[0-1]`; never AWM full.
 
@@ -71,7 +71,7 @@ has no official score; do not substitute its developer metric.
 
 ## Release gate and next dependencies
 
-At11:55 the reservation `robtang-ptb-a3` still named11 nodes, not an exact
+At16:19 the reservation `robtang-ptb-a3` still named11 nodes, not an exact
 native two-node subqueue reservation. No infrastructure change or new release
 exception has been authorized. The old09-03 exception only covered90791–90798;
 it does not authorize92125–92140. Ownership and frozen ReqNodeList passed for
@@ -169,8 +169,8 @@ now pass too (five invented programs,52s). AWM independent expected-task checks
 are wired through all consumers including manual harvest;136 focused tests pass.
 Old guard8 and strict-control7+one quarantine remain unchanged in actual re-audits.
 Shared offline parquet is now provisioned and read/hash-checked in both images.
-The local ignored PTB .env contains the public bwrap path; the separate operator
-clone must receive that key when HumanEval is admitted.12 matched four-repeat
+Both local and shared-operator ignored PTB .env files contain the same public
+bwrap path, with no scheduler/identity changes.12 matched four-repeat
 drafts are in `experiments/posttrainbench/*humaneval*.draft.yaml`, explicitly
 unqueued and still rejected by the task allowlist. They contribute no held cells.
 Remaining: compute-node/GPU-enabled/outer-timeout acceptance, common PTB pin
@@ -183,28 +183,29 @@ Authorized node access is needed. No HumanEval receipt exists.
 
 ## Monitoring and trace review
 
-Current monitor **PID3564003**, tick15:16:40 shows0/38 terminal,
-next16:16:40. It predates the17 cancellations at15:16:47 onward; those are already
-harvested administrative terminals, not missing model results. Keep this live
-process/cumulative watched set until its real event, then archive/rearm the21
-remaining jobs, never trigger clean-cell analysis from administrative terminals.
-One-shot helper3676924 is waiting on the actual old process's pidfd to perform
-only that exact administrative handoff. It is in
-`/tmp/exp-protocol-admin-handoff.sTGNfhBs`, with waiting/error/completed evidence
-and the eventual new-monitor log; verify completed.json and new PID before
-claiming the handoff happened. Unexpected terminal/owner/state stops it.
-Args:all22 original legacy IDs plus92125–92140, threshold8,
-poll3600s. Log `/tmp/exp-protocol-opus48-monitor-yIxSYcTT/monitor.log`;
-[handoff](analysis-2026-09-04-opus48-onboarding/monitor-handoff.json)
-preserves the old state. Old2612586 was stopped only after the new watcher was
-confirmed alive and wrote all38 IDs; old terminal count was0. This was a real
-scope expansion, not a restart after a missing PID/observation timeout.
+Current monitor **PID3684437**, verified live; first tick16:16:40 shows0/21
+terminal, next17:16:40. Args:90826–90830 plus92125–92140, threshold8,poll3600s.
+Log `/tmp/exp-protocol-admin-handoff.sTGNfhBs/new-monitor.log`.
+Old3564003 naturally completed with17 known administrative terminals; helper
+3676924 rechecked their harvested receipt/status evidence and then started the
+new detector. Both old/helper processes are now finished. No early kill/reset
+occurred and no clean result was generated. The old ready state, completed
+handoff and source/tests are [archived](analysis-2026-09-04-opus48-onboarding/monitor-admin-handoff/README.md).
+The previous22→38 expansion record remains separate and unchanged.
 
 New Opus4.8 clean count0. Old c01s05 and p00s03 remain separately buffered legacy
 evidence, not new-study samples. Slurm terminals only wake the loop: harvest,
 validate, filter eligibility/judges and then invoke local Claude Opus5[1m]/max
 after eight NEW clean or a completed predeclared comparison block. Scientist
-Opus4.8 and analyst Opus5 are different roles. Keep the long-running goal active.
+Opus4.8 and analyst Opus5 are different roles. The hourly detector remains live.
+
+Launch blockers persist across at least three goal turns: native isolation/change
+approval and authorized node access remain unavailable, GPQA remains403. However,
+GPQA's synthetic CPU scorer/loader/evidence integration is independent remaining
+work, so the full goal stays active rather than being marked blocked prematurely.
+Proceed with [that bounded work](../spec/2026-09-04-exp-protocol-gpqa-onboarding.md),
+then re-audit the actual remaining authority/access gates. The study is incomplete;
+keep the approved40-cell objective and do not count12 unsubmitted drafts as inventory.
 
 [Window04](2026-09-04-round-02-window04-decision.md) is closed at14 NEW clean,
 all traces/syntheses/focused audits read; do not launch a duplicate synthesis.

@@ -23,9 +23,10 @@ The local operator PTB `.env` received only
 `POST_TRAIN_BENCH_PYTHON_BWRAP=/home/robtang_google_com/.local/bin/bwrap`, the
 already tested public binary. No scheduler/identity settings changed. Its SHA is
 `d78807229d616606e339c5988392b9e0ab4a6a6998fa51e4590837f426a12fca`.
-This ignored local config is not shipped in git, and the separate shared
-submitting clone has not yet received the key; configure it explicitly when
-HumanEval is admitted. Existing GSM8K frozen jobs do not use this key.
+This ignored local config is not shipped in git. The separate shared submitting
+clone subsequently received the same single public-binary key by a scoped
+patch; byte comparison confirms the site files match. Existing GSM8K frozen
+jobs do not use this key. No task was admitted or submitted by this change.
 
 ## Match the actual concurrency, not a stale comment
 
@@ -78,3 +79,27 @@ without consuming the event. Eight tests passed, including a real pidfd/process
 handoff using synthetic detectors that never query Slurm or real monitor state.
 Completion is
 not claimed until completed.json and the new live monitor/first tick are observed.
+
+The real handoff completed and was independently verified at16:16:40:
+new monitor3684437,21 watched jobs,0 terminal, next17:16:40.
+See [the archived transition](../monitor-admin-handoff/completed.json).
+
+## Current blocking audit
+
+Fresh16:19–16:21 checks still show the old reservation covering11 nodes,
+OWNERSHIP OK but GPU allocation0/16, and all16 new study jobs held with exact
+ondem0–1 requests. The official GPQA file still returns GatedRepoError/403 using
+existing credentials. Strict SSH with the already-registered matching OS Login
+identity is still refused. No approval for a new native two-node reservation
+has arrived. These requirements have remained unresolved through at least the
+14:50,15:25 and current goal turns; this is not a claim that quiet jobs failed.
+
+The HumanEval data/config/draft and monitor work above is complete. Further
+experiment execution requires authorized node access and native isolation;
+GPQA additionally requires official access or a lawful supplied local source.
+Do not add repeats, swap benchmarks, waive task admission, upload keys or alter
+shared reservations to manufacture progress. GPQA's synthetic CPU scorer/loader
+integration remains independent required work; the overall goal therefore stays
+active for that work rather than being marked blocked solely by launch gates.
+See the [bounded next step](../../../spec/2026-09-04-exp-protocol-gpqa-onboarding.md).
+Keep the hourly detector and every frozen result/receipt intact.
