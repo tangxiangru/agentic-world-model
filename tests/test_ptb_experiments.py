@@ -512,6 +512,55 @@ def test_held_receipt_release_revalidates_ownership_and_frozen_nodes(
     assert json.loads(receipt_path.read_text())["state"] == "submitted"
 
 
+@pytest.mark.parametrize("first_state", ["COMPLETED", "RUNNING", "UNKNOWN"])
+def test_held_receipt_release_refuses_mixed_state_without_mutating_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_state: str
+) -> None:
+    """An old receipt is not a fresh held block after external partial release."""
+    from awm import slurm_queue
+
+    receipt_path = tmp_path / "formal.json"
+    original = json.dumps(
+        {
+            "schema_version": 1,
+            "state": "held",
+            "site": {
+                "POST_TRAIN_BENCH_SLURM_NODELIST": "owned-[0-1]",
+                "POST_TRAIN_BENCH_SLURM_RESERVATION": "strict-two-node",
+            },
+            "jobs": [
+                {"cell_id": "p01", "job_id": "10", "job_name": "branch.p01"},
+                {"cell_id": "p02", "job_id": "11", "job_name": "branch.p02"},
+            ],
+        }
+    )
+    receipt_path.write_text(original)
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {"POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(tmp_path / "registry")},
+    )
+    monkeypatch.setattr(slurm_queue, "collect_snapshot", lambda _path: {"ownership_ok": True})
+    monkeypatch.setattr(ptb, "_job_state", lambda job: first_state if job == "10" else "PENDING")
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            return subprocess.CompletedProcess(command, 0, "owned-0\nowned-1\n", "")
+        if command[:3] == ["scontrol", "show", "reservation"]:
+            return subprocess.CompletedProcess(
+                command, 0, "ReservationName=strict-two-node Nodes=owned-[0-1]\n", ""
+            )
+        raise AssertionError("mixed-state receipt must not reach a release command")
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+    with pytest.raises(ptb.ExperimentError, match="held job 10 is not PENDING"):
+        ptb.release_held(receipt_path)
+    assert receipt_path.read_text() == original
+    assert not any(command[:2] == ["scontrol", "release"] for command in commands)
+
+
 def test_held_receipt_release_refuses_reqnodelist_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

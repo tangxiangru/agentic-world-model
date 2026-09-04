@@ -56,7 +56,7 @@ when operational gates pass, independently of unrelated stragglers:
 
 The buffer must be checked **after each proposed release/withdrawal**, not only before. Superseding the earlier29−14 arithmetic:30 actual held minus8 D/staleE under review leaves22 usable. Releasing14 independently valid cells would leave8 usable; adding the control repair to that same release would leave7, so replenish first or change the scientifically justified wave. Do not count a known problematic block merely because Slurm still says JobHeldUser. Frozen J/K are possible sources only after a fresh scientific/operational audit, not automatic releases or filler. If other jobs leave hold, recompute exact IDs. This is not release authorization.
 
-Baseline-strict stragglers are not a fabricated dependency for independent screens. Genuine matched-arm/promotion requirements still need their designated evidence. Source: [Round02 current decision](../spec/2026-09-02-exp-protocol-round02-independent-screens.md), section10.
+Baseline-strict stragglers are not a fabricated dependency for independent screens. Genuine matched-arm/promotion requirements still need their designated evidence. The remaining5 baseline holds share a receipt with3 completed jobs: [CPU boundary audit](2026-09-04-mixed-receipt-release-boundary.md) confirms current `release_held` refuses mixed state even after mocked valid native gates. They require explicit receipt-backed state handling before selecting them for release; do not rewrite old job membership or release ad hoc. All-held independent receipts need not wait for that disposition. Source: [Round02 current decision](../spec/2026-09-02-exp-protocol-round02-independent-screens.md), sections10–11.
 
 ## Prepared but not registered
 
