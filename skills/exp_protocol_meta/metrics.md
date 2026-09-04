@@ -143,6 +143,15 @@ Measurement checks from window 03:
   checkpoint's wider spread, even in the same cell, is not the final model's
   noise distribution. A reused `final_model` path needs its timestamp/lineage
   or content identity; equal scalar accuracy need not mean equal correct items.
+- For paired outcomes, parse structured sample records and join typed item ID
+  plus epoch; do not regex-stream nested JSON or zip completion-order arrays.
+  Check uniqueness, selected/scored/completed counts, pair-table totals and
+  numerator differences against scalar accuracy, then verify aligned inputs
+  and targets. A claimed one-row omission can hide much larger pairing errors:
+  [Window04 control-b](../../doc/exp_protocol_iterations/trace-reviews/window04-local/paired-counts/control-b-structural-pairs-report.md)
+  corrected219/211 to58/51 with no missing samples. Dataset population size is
+  not limited-run n; shared prefixes use declared dataset IDs, not returned
+  completion order. An exact null paired test still does not prove equivalence.
 - Separate logged/requested knobs from resolved engine state and library/image
   identity. Equal code/template hashes or aggregate token counts do not prove
   every request or environment matched. Compare retained per-item inputs when
