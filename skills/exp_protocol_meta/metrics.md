@@ -152,6 +152,11 @@ Measurement checks from window 03:
   corrected219/211 to58/51 with no missing samples. Dataset population size is
   not limited-run n; shared prefixes use declared dataset IDs, not returned
   completion order. An exact null paired test still does not prove equivalence.
+  The [g01r03 prefix audit](../../doc/exp_protocol_iterations/trace-reviews/window04-local/g01r03-prefix-audit.md)
+  shows the same error in a scientist card: its claimed150-item comparator
+  took the stored array's first150 (126correct), of which122IDs were outside
+  the intended dataset prefix (128correct). A declared n alone cannot prove
+  subset identity or bind the card value to its referenced scalar artifact.
 - Separate logged/requested knobs from resolved engine state and library/image
   identity. Equal code/template hashes or aggregate token counts do not prove
   every request or environment matched. Compare retained per-item inputs when

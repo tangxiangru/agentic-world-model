@@ -37,6 +37,13 @@ host PID 不证明 helper 已退出；先在原权限环境复查同一 id，不
 这套只读 tool set 不包含 Write，reviewer 在最终输出中给出每份 Markdown report，由 planner 保存到
 窗口目录；不要让 reviewer 静默扩展工具权限来落盘。
 
+修订已交付报告时，先保存完整原文、确认idle，再停止父会话。CLI2.1.260实测：`--resume ID --background`
+加显式model/effort/tools等flags会创建保留上下文的副本，即使父会话已停止；输出明确给出新ID。
+若要沿用原ID，CLI提示不传这些flags而使用saved options，但必须先确认保存的选项仍符合本合同。
+不要同时启动两种路径。以实际返回ID和实际文件读取为准，记录parent/copy关系，不能把副本写成
+原ID的续跑。Window04原synthesis `ea5ac0e9`已完成停止后，修订副本为`a1e293bb`；它不是一次新的
+八样本窗口。分析CLI版本与冻结scientist镜像CLI版本分开记录，前者变化不能静默改动后者。
+
 ## 每个分析窗口
 
 1. planner 先生成每个 clean cell 的 `tools/exp_protocol_cell_read.py` 与
