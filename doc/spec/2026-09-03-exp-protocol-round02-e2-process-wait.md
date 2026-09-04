@@ -1,6 +1,8 @@
 # Round 02 E retention and E v2 preparation — 2026-09-03
 
-Status: **E retained by the predeclared non-saturation bound; E v2 built and frozen, not registered or submitted.** The separate strict-guard observed-no-harm gate has now passed in the [Round01 record](../exp_protocol_iterations/2026-09-03-round-01-strict-guard.md); this still does not authorize release under the active ownership/placement failure or establish overall launch-order compliance.
+Status update2026-09-04: **E remains a candidate direction, but its unconditional non-saturation proof is reopened; E v2 stays frozen and unregistered.** The [exit-evidence audit](../exp_protocol_iterations/trace-reviews/window04-local/e2-retention-exit-evidence-audit.md) shows that the two cited lower bounds require exit-by-GPU-release assumptions. Their strict selected-event intervals are [0,0.450556] h and [0,0.250833] h, so these premises alone do not prove two failing cells. They do not prove saturation either. Do not register/release E2 or automatically substitute G/P1 from this unresolved proof. The separate strict-guard observed-no-harm result is unchanged. Current operational gates are in the [operator view](../exp_protocol_iterations/operator-state.md).
+
+The original construction rationale below is retained as historical evidence. Its `certain`/`conservative lower bound` wording and unconditional at-most6/8 conclusion are superseded by this correction, not silently redefined as a different metric. New in-scope exit evidence or explicit adjudication of a defensible conditional assumption is required to restore that proof.
 
 ## Retention proof, without waiting for irrelevant reviews
 

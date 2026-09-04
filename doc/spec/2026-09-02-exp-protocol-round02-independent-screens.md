@@ -178,3 +178,9 @@ mean0.720148高于历史v3-minus0.03护栏。未触发hook不证明其阻断有�
 另行单项设计；P1 v1不因合成报告“两次命中”直接登记，须先解决step20可见性与冻结条件歧义。
 原C manifest/tree不改写，E仍先有replacement held receipt再撤旧块。所有新提交及放行仍被独立的
 ownership/native-isolation门阻止；本节不授权取消任何RUNNING job。
+
+## 十一、Window04证据纠正，综合裁决前（2026-09-04）
+
+以上优先级不再直接作为放行指令。精确8332917的CPU重放确认D对pure-eval卡和已在代码修复的save路径误拦；91060–91063保持held，等待单项修订/整块替换裁决，真实merge保存风险不能被非训练豁免隐藏。E2的g01s03/g01s08下界依赖exit-by-GPU-release假设，严格非饱和证明重新打开；不宣告饱和、不自动换G/P1、不变更冻结metric。详见[纠正清单](../exp_protocol_iterations/trace-reviews/window04-local/planner-corrections.md)、D scope CPU报告与E2 exit audit。
+
+14份NEW报告已齐并读完，独立综合分析仍须完成。晚到2clean+1placement-quarantine另记，不改窗口分母。当前ownership恢复OK但原生11节点reservation不满足放行门；没有新授权时仍不release。历史manifest/receipt与runtime树均未改写。

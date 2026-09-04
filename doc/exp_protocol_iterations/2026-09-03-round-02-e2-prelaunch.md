@@ -2,6 +2,8 @@
 
 Status: candidate frozen by the commit that introduces this record; **0/4 run, no receipt, no release, no promotion**. The resolved commit/tree and immutable manifest are recorded in the [E v2 spec](../spec/2026-09-03-exp-protocol-round02-e2-process-wait.md) after construction. This is a prelaunch record, not a completed round.
 
+**2026-09-04 correction:** the historical0.433/0.234 h post-exit lower bounds below are conditional on producer exit by GPU release, not unconditional measurements. The [focused audit](trace-reviews/window04-local/e2-retention-exit-evidence-audit.md) reopens the strict non-saturation proof without claiming saturation or changing the frozen intervention. E2 remains unregistered pending adjudication; CPU validation remains valid but does not establish the scientific retention gate.
+
 ## Variants
 
 | label | commit of skills/exp_protocol | what differs from baseline |

@@ -63,7 +63,7 @@ No frozen scientist tree is changed by this decision. Reusable accounting and ob
 
 ## Next round and operational dependencies
 
-Latest handoff: [operator state and dependency graph](operator-state.md). J/#26 and K/#27 are now separately frozen and validated, as is E2; none is registered. The snapshots below retain the timing of the strict-cohort decision. The current graph includes held-buffer arithmetic across releases and replacements, not only a pre-release count.
+Latest handoff: [operator state and dependency graph](operator-state.md). J/#26 and K/#27 are now separately frozen and validated, as is E2; none is registered. **2026-09-04 correction:** E2's two-event unconditional non-saturation proof is reopened by the [exit-evidence audit](trace-reviews/window04-local/e2-retention-exit-evidence-audit.md); this does not reverse this cohort's separate observed-no-harm result, establish saturation, or authorize a replacement. The snapshots below retain the timing of the strict-cohort decision. The current graph includes held-buffer arithmetic across releases and replacements, not only a pre-release count.
 
 At20:55 UTC, current checker: physical16/16, **registered17/16**, job90820 on a forbidden node, native reservation11 nodes. C jobs91054–91057 were cancelled from PENDING at21:10:24; `sacct` records zero elapsed and no start. At21:15:27 the operator verified **29 live JobHeldUser jobs**, all four cancellation receipts/terminal bundles and no remaining actions for the C-only queue. See [withdrawal audit](../../results/ptb/c-screen-withdrawal-20260903T211024Z.json). No running work was touched;90820 remains RUNNING and requires a separate user decision. Monitor PID2086813 remains live at3600s cadence; its21:00:54 sample has0/17 terminal jobs.
 

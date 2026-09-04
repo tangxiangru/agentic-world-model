@@ -76,6 +76,22 @@ Measurement checks from window 03:
 - Do not double-count an invalid-save run's post-exit waiting under both D
   and E when reporting total savings. Low GPU memory or an unchanged log
   alone is not proof that the producing process exited.
+- Fatal traceback plus GPU release can make prompt producer exit plausible,
+  but a strict post-exit lower bound needs an actual exit upper bound (for
+  example a timestamped producer-absence check or retained exit result).
+  Later absence cannot retroactively date exit. Distinguish unconditional
+  intervals from conditional teardown assumptions; a corrected premise must
+  propagate to candidate retention/saturation gates, not just a footnote.
+  [E2's retention re-audit](../../doc/exp_protocol_iterations/trace-reviews/window04-local/e2-retention-exit-evidence-audit.md)
+  reopens an at-most6/8 proof without asserting the opposite conclusion.
+- A sum of first-to-last low-memory sample spans discards singleton samples;
+  report its formula/counts, not a continuous idle duration. Multiplying
+  samples by the nominal interval is not a proven replacement. Exclude
+  productive CPU filtering, saves and script preparation from idle, and do
+  not apply a whole-cell screen threshold to selected-event coverage.
+  The [control timing audit](../../doc/exp_protocol_iterations/trace-reviews/window04-local/control-timing-audit.md)
+  supplies bounded examples and explains why retained copy-time mtimes are
+  not producer timestamps.
 - `pitfalls_cost_h` is a sum of card entries, not unique failure events. A
   follow-up card may repeat its predecessor's crash cost. Preserve the raw
   collect value; derive a separate event-deduplicated ledger with trace
@@ -87,6 +103,17 @@ Measurement checks from window 03:
   Before calling a violation unavoidable, check the alternatives actually
   available to the scientist, including documented reasoned overrides.
   See the [g01s07 ordering/cost audit](../../doc/exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/g01s07-ordering-cost-audit.md).
+- A scientist agreeing with a failure does not prove a runtime defect. For
+  raw-field checks, inspect the original renderer/label path before the repair
+  and compare the resulting model input: a data/schema rewrite may preserve
+  the already-correct training sequence. The [Window04 semantic audit](../../doc/exp_protocol_iterations/trace-reviews/window04-local/card-semantics-audit.md)
+  rejects a claimed65-point checker benefit because EOT was already supervised.
+- Exercise a check on operations that do not use the rejected property, not
+  only on stock valid/invalid inputs. A save-time hazard can apply to a merge
+  but not a pure evaluation; an in-memory repair can leave the parent file
+  unchanged. [Frozen D's CPU scope replay](../../doc/exp_protocol_iterations/trace-reviews/window04-local/d-scope/report.md)
+  demonstrates why family labels and stock-only false-positive tests are
+  insufficient. Keep counterfactual replays distinct from scientist outcomes.
 - Check the launch counter's denominator before asserting universal compliance:
   the cell-reader matches the first training command for a card's script/output
   and omits unmatched launches. Audit GPU smoke/probes, retries and evaluations

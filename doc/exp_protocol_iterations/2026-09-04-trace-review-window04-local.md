@@ -1,6 +1,6 @@
 # Window04 local trace review — 2026-09-04
 
-Status: **14 NEW receipt-backed validator-clean cells frozen; five local Opus max reviewers running; synthesis and planner adjudication pending**. This supersedes the [five-cell accumulation checkpoint](2026-09-04-window04-accumulation.md), without counting its five twice. Nine additional clean completions were harvested and pushed in `6bcfd4e`; the prior five are in `7043fa4`.
+Status: **14 NEW receipt-backed validator-clean cells frozen; all reports and four focused audits read; independent Opus max synthesis running, final adjudication pending**. This supersedes the [five-cell accumulation checkpoint](2026-09-04-window04-accumulation.md), without counting its five twice. Nine additional clean completions were harvested and pushed in `6bcfd4e`; the prior five are in `7043fa4`. The [later tail harvest](2026-09-04-window04-tail-harvest.md) adds2 clean cells plus1 placement-quarantined result outside this frozen window.
 
 ## Frozen evidence and denominators
 
@@ -30,9 +30,13 @@ Jobs90817,90820,90825 were still running at the fixed04:00 trigger and are expli
 | control-b |c01s04,c01s06,c01s07|56db4d25|
 | baseline |p00s01,p00s02; p00r02 calibration only|4be21ecc|
 
-Reviewers emit one report per NEW cell in final output, plus a separately marked calibration note where assigned. They must use original named raw-result directories when the git bundle omitted large logs; prepared regex/size-based markers are only locators. No reviewer may write files, change jobs/git, execute a model/evaluator or make a queue/promotion decision. The planner saves reports, then starts a separate independent Opus max synthesis over the whole window. No synthesis has been started yet, no reports are declared complete, and no hypotheses or candidate changes are accepted by this dispatch record.
+All14 NEW reports and the separate p00r02 calibration note are now saved under `trace-reviews/window04-local/reports/`, with complete unaltered group outputs in `groups/`. Sessions were stopped only after complete report output and idle verification. The planner read every report and the four completed focused audits; [corrections](trace-reviews/window04-local/planner-corrections.md) preserve measurement/causal qualifications. Three additional reviewers supplied control timing, E2 retention timing, frozen-D CPU scope and card/runtime semantics. Frozen D is not releasable as-is; E2's unconditional non-saturation proof is reopened, not declared saturated. Runtime trees and scores are unchanged.
+
+Independent local synthesis **`ea5ac0e9-f5e4-4ae7-a9c6-cc328a80ef70`**, PID2593119, started05:16:40 UTC with Opus5[1m] max and the same read-only tools. Same-host agents reports busy/working, and actual reads of the brief, meta instructions, roster, corrections and audits were verified. [Synthesis brief](trace-reviews/window04-local/briefs/synthesis.md) requires every NEW report and separate treatment of uncertain evidence. No final candidate decision follows from merely launching synthesis.
 
 ## Operations while analysis runs
+
+**Current update05:04 UTC:** all three tail jobs ended and were harvested; ownership is now OK,0/16 GPUs allocated,29 held. Native11-node reservation still blocks release. D's first-wave priority is suspended pending its scope audit. Historical snapshots below remain provenance, not current capacity claims.
 
 At04:04:23 UTC the subqueue had **2/16 owned GPUs allocated**, three registered running jobs and29 actual `PENDING(JobHeldUser)`. The outside-node90820 still causes OWNERSHIP FAIL; the native reservation still covers11 nodes. Fourteen owned GPUs are idle because the operational release gates are not satisfied, not because the planner is waiting for a scientific straggler or for Claude. There were no unknown jobs/name mismatches or runnable pending jobs. No submit/release/cancel was performed.
 
@@ -42,4 +46,6 @@ D/B/H plus drift A remain independently specified first-wave work; E2/J/K remain
 
 ## Required next steps
 
-Receive and read every NEW report; resolve cross-cell ambiguities with additional focused reviewers when needed. Then invoke a separate synthesis, personally inspect best/worst and three cards per variant, audit every held block, and record accepted/rejected proposals with reusable knowledge in meta. Do not promote from the record high or pool calibration into NEW counts. Keep all current frozen scientist trees, evaluation contracts and queue releases unchanged until their separate scientific/operational gates are satisfied.
+Read the independent synthesis when it finishes, reconcile remaining ambiguities, audit every held block and record final accepted/rejected proposals. Every NEW report, best/worst per variant and at least three cards per protocol variant have already been read; controls have no cards. Reusable timing/raw-render/check-scope corrections are now in meta metrics. Do not promote from the record high or pool calibration into NEW counts. Frozen scientist trees, evaluation contracts and release gates remain unchanged.
+
+The tail detector completed3/3 at05:06:32 and its event is archived. New hourly monitor **PID2579442** watches21 held IDs excluding D4/staleE4, threshold6 with2 already-buffered clean tail cells; first tick05:12:27 is0/21 terminal and its live PID was verified. Next nominal tick06:12:27. This is read-only event detection, not release authorization or an assertion that six terminals are six clean results. The user was asked to choose native-isolation restoration or an explicit scoped release exception; no answer is assumed.
