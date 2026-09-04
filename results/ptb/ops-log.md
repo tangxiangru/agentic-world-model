@@ -164,3 +164,4 @@
 - 2026-09-04T05:01:58+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/c01s05 job=90817 COMPLETED acc=0.7255 complete clean
 - 2026-09-04T05:01:59+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/c01s08 job=90820 COMPLETED acc=0.7718 quarantined (1 reason(s)) clean
 - 2026-09-04T05:02:02+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8-v1/p00s03 job=90825 COMPLETED acc=0.7104 complete clean
+- 2026-09-04T05:25:27+00:00 submit exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-tail-x1-v1 (held): 1 job(s) 91965 -> results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-tail-x1-v1/formal-2026-09-04T052527.042436+0000.json

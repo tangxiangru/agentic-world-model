@@ -1,6 +1,6 @@
 # Strict control eighth-repeat repair — 2026-09-04
 
-Status: planned single missing-repeat repair; no result or efficacy claim. This is not a new protocol candidate or a one-cell comparison. Its scientist remains protocol-free. Preparation/held registration is independent of Window04 synthesis; release still needs the native-isolation/explicit per-receipt authorization gate.
+Status: **registered held as job91965/c02s01**, no release, result or efficacy claim. This is not a new protocol candidate or a one-cell comparison. Its scientist remains protocol-free. Preparation/held registration is independent of Window04 synthesis; release still needs the native-isolation/explicit per-receipt authorization gate.
 
 ## Why one repeat, and why this attempt
 
@@ -31,3 +31,9 @@ Held accounting before this repair:29 actual JobHeldUser, including D4 under sco
 ## Pre-registration validation
 
 2026-09-04, before freezing this plan: `awm ptb check` returns0 issues in both local-only and full site modes. A parsed comparison asserts identical contracts except run_index/replication, identical c01s08/c02s01 cell settings except id/replicate, identical context validation and ownership branch. PTB remains clean at `dcf5da031435c54e3680b6ec3f63e7e317efc13e`. The dry operator plan contains exactly one held-only submission and no release/cancel/harvest. Current-checkout registry view05:23:45 is OWNERSHIP OK,0 running,29 held, no unknown/name/placement/capacity violations. Recheck ownership immediately before apply; this timestamp is not a permanent authorization.
+
+## Held receipt and monitor update
+
+Plan/manifest/queue frozen in `ab8a0b2`; fresh ownership05:25:00 was OK. Normal operator apply registered[receipt](../../results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-tail-x1-v1/formal-2026-09-04T052527.042436+0000.json) at05:25:27, job91965. The [verification](../../results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-tail-x1-v1/held-verification-20260904T052736Z.json) asserts actual PENDING/JobHeldUser,zero runtime and ReqNodeList equal to frozen ondem0–1; `awm slurm show91965` resolves the registry to this exact receipt and cell. Source top/PTB worktrees were clean. At05:26:37 current ownership remains OK,30 actual held,0 running/allocated; no release/cancel occurred.
+
+The hourly detector's watched set was intentionally expanded from21 to22 receipt-backed IDs by adding91965 and retaining every prior ID. Before the change PID2579442 was verified as the owned detector; its last state is archived as `window04-local/held-monitor-before-expansion.json`. It was deliberately terminated and replaced by live PID2612586, not restarted on an observation timeout. First tick05:27:36:0/22 terminal; threshold6 plus2 buffered clean tail cells unchanged. No cumulative IDs were dropped. Log `/tmp/exp-protocol-held-monitor-expanded-wboe41dy/monitor.log`; next nominal tick06:27:36.
