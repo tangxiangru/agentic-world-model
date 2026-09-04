@@ -26,6 +26,20 @@ belong in the [bundle specification](../../doc/spec/2026-09-04-exp-protocol-bund
   Preserve selected on-disk bytes/hashes separately from safe checkpoint
   serialization. A wrapper's success or import does not prove bypass-free
   coverage; audit actual callers and label unsupported paths honestly.
+- Export verification needs the already-selected identity, not a fresh snapshot
+  taken after an undocumented decoder change. Native metadata loading, weight
+  file structure, exact serving bytes and an actual evaluator result are
+  separate evidence. Test both sampled and greedy selected settings, all indexed
+  shards and the actual model profile's tokenizer/processor assets.
+- Stage a complete selected export before replacing an incumbent. Recoverable
+  backup/publication renames are not an atomic exchange; record intended paths
+  before mutation and retain failed stages and the old artifact. Quiescence is
+  an externally established precondition, not something a flag proves. Test
+  interruption and a competing unowned destination without reclaiming it.
+- Scope metadata checks to metadata: a vocabulary token named `tokenizer_file`
+  or `custom_generate` is data, not a configuration directive. Native tokenizer
+  serialization can retain both vocab/merges and tokenizer JSON; exercise that
+  actual layout instead of generalizing from a minimal synthetic tokenizer.
 - Missing evidence must stay unverified across old and new consumers. A
   legacy comparator's existence, requested limit or scalar/SE pair is not a
   verified completed count. Mark unsupported evidence explicitly rather than
