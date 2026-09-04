@@ -7,14 +7,13 @@ description: Use before, during, and after every model-training or evaluation ex
 
 ## Why this exists
 
-Under a fixed executor, six historical recipes reproduced about a tenth of the
-score spread the corpus attributes to them; roughly 90 % of a run's outcome is
-how it was executed, not what was tried. The three defects a CPU dry run caught
-in one such rerun — targets ending in the wrong stop token, rows longer than
-`max_seq_len`, a chat template the sandbox could not reach — each produced a
-clean-looking wrong answer and exited 0. This protocol is the checklist that
-catches that class of failure before GPU time is spent, and the record that
-lets the next experiment start from where this one ended.
+Execution defects can invalidate a useful experiment without producing a
+nonzero exit code. Historical runs exposed stop-token/template mismatches,
+lost supervised tokens after truncation, broken saves and incomparable
+evaluation records. Those cases motivate checks; they do not establish a
+universal percentage of outcome variance caused by execution. This protocol
+checks the supported mechanisms and preserves enough evidence to rerun and
+interpret the experiment, including what remains unverified.
 
 It tells you how to do an experiment correctly. It does not tell you what to
 run; that is your call.
@@ -49,7 +48,8 @@ awm exp_protocol new --dir {dir}            # 2. writes exp-NN.yaml with every r
 #    edit sections 0-4
 awm exp_protocol check --dir {dir} exp-NN   # 3. repeat until no ERROR lines and no questions; "ok (N warnings, advisory)" is ok
 awm exp_protocol lock  --dir {dir} exp-NN   # 4. runs preflight; refuses on any FAIL; pins sections 0-4, the script, and the data
-awm wma review --dir {dir} exp-NN --background   # 4b. if a world-model agent is installed — see below
+# Optional: first check whether `awm wma --help` succeeds in this installation.
+# If available: awm wma review --dir {dir} exp-NN --background
 #    launch your command exactly as written in setup.command.argv
 #    keep checkpoints as setup.checkpoints says
 #    evaluate the output under evaluation.protocol; fill sections 5-6
@@ -67,7 +67,11 @@ a re-lock or an override without a real reason is what the record will show.
 
 ## If a world-model agent is installed
 
-`awm wma review` asks an estimator what your locked card will do: one line —
+First check `awm wma --help` in the current installation. If that command is
+unavailable, skip the optional review; do not install it, alter the sandbox,
+or block the experiment. The protocol-only PTB shipment does not include WMA.
+
+When available, `awm wma review` asks an estimator what your locked card will do: one line —
 *worth running now*, why, what to verify first, a cheaper variant if there is
 one. It is advice; you decide. Three things matter about how you use it:
 
@@ -91,9 +95,27 @@ that disagreement is the record the estimator learns from.
 1. **Sections 0–4 before the command runs.** A hypothesis written after the
    result is a description of the result. `lock` pins them; `close` re-checks.
    A material change after lock is a new card, not an edit.
+   This includes short training/evaluation smokes, memory or throughput
+   probes, and a `--dry-run` that actually trains or evaluates the model.
+   Before launching, complete and check the matching card and confirm its
+   lock succeeded. The command must be declared in that card's
+   `setup.command` or `evaluation.protocol`; a different earlier card, an
+   empty card slot, or a later `smoke_runs` entry is not coverage. An evaluation
+   already declared in a locked training card can use that card; a material
+   change or a sweep still follows the separate-card rule. A failed lock does
+   not permit launch just because a shell pipeline continued: resolve the
+   failure using the documented workflow and verify the lock before running.
+   CPU-only static inspection, syntax/data checks and tokenization that do
+   not train or evaluate a model may prepare a card. Inspect an unclear
+   command's behavior; its name or short duration does not decide the scope.
 2. **A comparator is measured under the same protocol.** Same `n`, same dev
    set, same seed, and the path of that eval goes in `evaluation.comparator.path`.
    A number from a different `--limit` is not a comparator.
+   If this card will produce its comparator, read `deferred-comparator.md`
+   before opting into `evaluation.comparator.defer_validation: true`.
+   Missing output is then deferred, not assumed valid: `close` verifies the
+   actual report and writes the required completion receipt. This does not
+   excuse a mismatched existing result or launching before the lock.
 3. **Unknown is `null`, never a guess.** `check` asks for what is missing;
    answer it or leave it null. Do not invent an evidence path.
 4. **A target is not a hypothesis.** "Reach 85 %" is rejected as a claim.
@@ -114,10 +136,24 @@ that disagreement is the record the estimator learns from.
 9. **Your turn is the session.** You run as one `claude --print` turn: when
    your turn ends the session ends, and every background process you started
    dies with it — a training run included. There is no next turn. Never end
-   the turn while a run is alive: wait for it in the foreground (`sleep 900;
-   tail -n 3 <log>`, repeated, with a long Bash timeout), evaluate, fill
-   sections 5–6, close. The Stop hook blocks the end of a turn while a locked
-   card is open, and tells you this again.
+   the turn while training, sampling or evaluation is alive. Wait on the
+   producing process, not its ETA: keep the command, its exit-status check and
+   follow-up evaluation in one foreground script with a long Bash timeout.
+   If backgrounding is necessary, capture the actual producer's PID and
+   `wait "$pid"` in the same shell that launched it; another Bash call cannot
+   wait on that shell's child. Otherwise use the tool's task-completion result
+   or bounded process-state polling (at most 60 seconds between checks), with
+   an exit result retained by the launch wrapper or task handle. If that result
+   is unavailable, report the exit status as unknown, not inferred success
+   from a missing PID. Do not mistake a launcher or a leftover
+   vLLM engine for that producer. An unchanged tail, an existing output file,
+   or GPU memory alone proves neither life nor death: a live run can be quiet,
+   and a crashed run can leave all three behind. After exit, check the reported
+   status and verify that the expected artifacts belong to this invocation
+   and have the required contents before accepting results or starting a
+   dependent stage; on failure, record it rather than chaining blindly.
+   Then fill sections 5–6 and close. The Stop
+   hook blocks the end of a turn while a locked card is open and repeats this.
 
 ## Pitfalls
 
@@ -147,6 +183,8 @@ more, the card is doing too much: split it.
 `hooks/stop_open_cards.py` blocks the end of a turn while a locked card has no
 conclusion, up to twelve times, and each time says why (rule 9) and how to wait.
 It is installed into `.claude/settings.json` by `awm sandbox setup --exp-protocol
---stop-hook`. Closing the card releases it; if the CLI is unavailable, filling
-`result` and `conclusion.decision` in the YAML by hand counts as closed.
+--stop-hook`. Closing the card releases it; for ordinary cards, if the CLI is
+unavailable, filling `result` and `conclusion.decision` by hand counts as closed.
+Opted-in deferred comparators also need a valid close receipt; a populated
+conclusion alone does not resolve them (see `deferred-comparator.md`).
 Standard library only; does nothing for Codex.

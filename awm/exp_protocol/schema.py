@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -274,7 +275,16 @@ def validate_plan(card: dict[str, Any], session_dir: Path | None = None) -> Repo
     origin = _require(r, card, "setup.parent_checkpoint.origin")
     if origin and origin != "base_model" and not CARD_ID_RE.match(origin):
         r.error("setup.parent_checkpoint.origin", "must be base_model or a card id")
-    data = _require(r, card, "setup.data", "list")
+    family = get(card, "setup.method.family")
+    if family in TRAINING_FAMILIES or family is None:
+        data = _require(r, card, "setup.data", "list")
+    else:
+        # A card that trains nothing (decode-config, merge, an eval-only "other") has no
+        # training data; seven of nine Round 00 cells faked an entry to pass this.
+        data = get(card, "setup.data")
+        if data is not None and not isinstance(data, list):
+            r.error("setup.data", "must be a list")
+            data = None
     for i, d in enumerate(data or []):
         where = f"setup.data[{i}]"
         if not isinstance(d, dict):
@@ -328,6 +338,19 @@ def validate_plan(card: dict[str, Any], session_dir: Path | None = None) -> Repo
     comp = get(card, "evaluation.comparator") or {}
     if isinstance(comp, dict) and comp.get("value") is not None and not comp.get("path"):
         r.error("evaluation.comparator.path", "a comparator value needs the path of the eval it came from")
+    if isinstance(comp, dict) and "defer_validation" in comp:
+        if not isinstance(comp["defer_validation"], bool):
+            r.error("evaluation.comparator.defer_validation", "must be a boolean")
+        elif comp["defer_validation"]:
+            if not isinstance(comp.get("path"), str) or not Path(comp["path"]).is_absolute():
+                r.error("evaluation.comparator.path", "deferred comparison needs an absolute planned output path")
+            if not isinstance(comp.get("ref"), str) or not comp["ref"].strip():
+                r.error("evaluation.comparator.ref", "deferred comparison needs a named comparator")
+            if comp.get("value") is not None:
+                r.error("evaluation.comparator.value", "keep null: the deferred score is not a prelaunch observation")
+            metric = get(card, "hypothesis.expected_effect.metric")
+            if not isinstance(metric, str) or not metric.strip():
+                r.error("hypothesis.expected_effect.metric", "deferred comparison needs a named metric")
     return r
 
 
@@ -380,4 +403,35 @@ def validate_result(card: dict[str, Any]) -> Report:
         r.error("result.output_checkpoint", "adopt needs the checkpoint that becomes the incumbent")
     if decision == "iterate" and not get(card, "conclusion.next_step"):
         r.warn("conclusion.next_step", "iterate: name the change in next_step")
+    if get(card, "evaluation.comparator.defer_validation") is True:
+        from . import comparator
+
+        if execution == "completed":
+            metric = get(card, "hypothesis.expected_effect.metric")
+            expected_n = get(card, "evaluation.protocol.n")
+            matching = [m for m in measurements if isinstance(m, dict)
+                        and m.get("metric") == metric and m.get("n") == expected_n]
+            if not matching:
+                r.error("result.measurements", "deferred comparison needs a recorded target measurement at the locked metric and n")
+            for m in matching:
+                value = m.get("value")
+                try:
+                    finite = _is_num(value) and math.isfinite(value)
+                except OverflowError:
+                    finite = False
+                if not finite or not isinstance(m.get("path"), str) or not m["path"].strip():
+                    r.error("result.measurements", "the matching target measurement needs a finite value and evidence path")
+            checked = comparator.check_output(card)
+            if checked["status"] != "pass":
+                r.error("evaluation.comparator", checked["detail"])
+            else:
+                r.warn("evaluation.comparator", checked["detail"])
+        elif execution in ("failed", "killed", "not_run"):
+            if verdict != "inconclusive" or decision == "adopt":
+                r.error("conclusion", "an unverified deferred experiment must be inconclusive and non-adopted")
+            if execution in ("failed", "killed"):
+                reason = get(card, "result.failure")
+                if not isinstance(reason, str) or not reason.strip():
+                    r.error("result.failure", "explain why the deferred experiment failed or was killed")
+            r.warn("evaluation.comparator", "failed/unrun experiment: no verified comparator measurement")
     return r

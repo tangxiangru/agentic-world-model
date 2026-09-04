@@ -25,6 +25,7 @@ def session(tmp_path):
     (tmp_path / "eval" / "base.json").write_text(json.dumps({"accuracy": 0.33, "n": 150}))
     (tmp_path / "ckpts").mkdir()
     card = plan_card()
+    card["hypothesis"]["expected_effect"] = {"metric": "accuracy"}
     card["setup"]["command"] = {"argv": ["python", "train.py"], "cwd": str(tmp_path),
                                 "script": str(tmp_path / "train.py")}
     card["setup"]["data"] = [{"path": str(tmp_path / "data" / "train.jsonl"),
@@ -94,6 +95,60 @@ def test_comparator_measured_under_a_different_n_fails(session) -> None:
     root, card = session
     (root / "eval" / "base.json").write_text(json.dumps({"accuracy": 0.33, "n": 300}))
     assert status(preflight.run_preflight(card, root, pitfalls=[]), "comparator_same_protocol") == "fail"
+
+
+@pytest.mark.parametrize("payload", [
+    {"accuracy": 0.33, "stderr": 0.01},
+    {"accuracy": 0.33, "limit": 150},
+    {"accuracy": 0.33, "eval": {"dataset": {"samples": 150}}},
+    [0.33, 150],
+])
+def test_legacy_comparator_missing_actual_count_is_unverified_not_pass(session, payload):
+    root, card = session
+    (root / "eval" / "base.json").write_text(json.dumps(payload))
+    report = preflight.run_preflight(card, root, pitfalls=[])
+    assert status(report, "comparator_same_protocol") == "warn"
+
+
+def test_legacy_non_json_comparator_is_unverified_not_pass(session):
+    root, card = session
+    (root / "eval" / "base.json").write_text("accuracy=0.33")
+    assert status(preflight.run_preflight(card, root, pitfalls=[]), "comparator_same_protocol") == "warn"
+
+
+def test_legacy_missing_metric_is_unknown_not_a_new_required_schema_field(session):
+    root, card = session
+    card["hypothesis"].pop("expected_effect")
+    assert status(preflight.run_preflight(card, root, pitfalls=[]), "comparator_same_protocol") == "warn"
+    (root / "eval" / "base.json").write_text(json.dumps({"n": 149, "accuracy": 0.33}))
+    assert status(preflight.run_preflight(card, root, pitfalls=[]), "comparator_same_protocol") == "fail"
+
+
+@pytest.mark.parametrize("payload", [
+    {"accuracy": 0.33, "n": 150, "num_samples": 149},
+    {"accuracy": 0.33, "n": True},
+    {"accuracy": 0.33, "n": 150.0},
+    {"accuracy": float("nan"), "n": 150},
+    {"accuracy": 0.33, "status": "error"},
+    {"accuracy": 0.33, "limit": 149},
+])
+def test_legacy_comparator_rejects_conflicting_or_invalid_evidence(session, payload):
+    root, card = session
+    (root / "eval" / "base.json").write_text(json.dumps(payload))
+    assert status(preflight.run_preflight(card, root, pitfalls=[]), "comparator_same_protocol") == "fail"
+
+
+def test_legacy_inspect_sample_list_is_counted_not_compared_to_integer(session):
+    root, card = session
+    payload = {"status": "success", "samples": [{"id": i} for i in range(150)],
+               "results": {"total_samples": 150, "completed_samples": 150,
+                           "scores": [{"scored_samples": 150, "unscored_samples": 0,
+                                       "metrics": {"accuracy": {"value": 0.33}}}]}}
+    (root / "eval" / "base.json").write_text(json.dumps(payload))
+    report = preflight.run_preflight(card, root, pitfalls=[])
+    assert status(report, "comparator_same_protocol") == "pass"
+    detail = next(item["detail"] for item in report["results"] if item["check"] == "comparator_same_protocol")
+    assert "remaining protocol identity needs manual verification" in detail
 
 
 def test_local_parent_checkpoint_needs_config_json(session) -> None:

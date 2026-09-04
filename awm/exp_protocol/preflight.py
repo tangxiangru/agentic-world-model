@@ -262,9 +262,14 @@ def max_seq_len_headroom(ctx: Context) -> CheckResult:
     return CheckResult("max_seq_len_headroom", "pass", detail)
 
 
-@check("comparator_same_protocol", "the comparator's eval file exists and used the same n")
+@check("comparator_same_protocol", "verify recorded comparator counts; mark absent evidence unverified")
 def comparator_same_protocol(ctx: Context) -> CheckResult:
     comp = get(ctx.card, "evaluation.comparator") or {}
+    if isinstance(comp, dict) and comp.get("defer_validation") is True:
+        from .comparator import check_output
+
+        report = check_output(ctx.card, allow_missing=True)
+        return CheckResult("comparator_same_protocol", report["status"], report["detail"])
     path = comp.get("path") if isinstance(comp, dict) else None
     if not path:
         return CheckResult("comparator_same_protocol", "skip", "no comparator path")
@@ -274,15 +279,54 @@ def comparator_same_protocol(ctx: Context) -> CheckResult:
     n = get(ctx.card, "evaluation.protocol.n")
     try:
         payload = json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
-        return CheckResult("comparator_same_protocol", "pass", f"{p.name} exists; not JSON, n not verifiable")
-    for key in ("n", "limit", "num_samples", "samples"):
-        if isinstance(payload, dict) and key in payload:
-            if payload[key] != n:
-                return CheckResult("comparator_same_protocol", "fail",
-                                   f"{p.name} records {key}={payload[key]}, the protocol says n={n}")
-            return CheckResult("comparator_same_protocol", "pass", f"{p.name} records {key}={n}")
-    return CheckResult("comparator_same_protocol", "pass", f"{p.name} exists; it does not record n")
+    except (OSError, ValueError, UnicodeError):
+        return CheckResult("comparator_same_protocol", "warn",
+                           f"{p.name}: unverified comparator; no readable JSON count evidence")
+    if not isinstance(payload, dict):
+        return CheckResult("comparator_same_protocol", "warn",
+                           f"{p.name}: unverified comparator; unsupported report shape")
+    if "status" in payload and payload["status"] not in ("success", "completed"):
+        return CheckResult("comparator_same_protocol", "fail",
+                           f"{p.name}: evaluator did not report successful completion")
+    # A requested limit can disprove the declared comparison, but matching it
+    # cannot prove how many samples actually completed. Never infer n from SE.
+    if "limit" in payload and (type(payload["limit"]) is not int or payload["limit"] != n):
+        return CheckResult("comparator_same_protocol", "fail",
+                           f"{p.name}: requested limit does not match protocol n={n}")
+    results = payload.get("results")
+    has_counts = any(key in payload for key in ("n", "num_samples", "samples"))
+    if isinstance(results, dict):
+        has_counts = has_counts or any(key in results for key in ("total_samples", "completed_samples"))
+        scores = results.get("scores")
+        if isinstance(scores, list):
+            has_counts = has_counts or any(isinstance(score, dict) and "scored_samples" in score
+                                           for score in scores)
+    if not has_counts:
+        return CheckResult("comparator_same_protocol", "warn",
+                           f"{p.name}: actual count unverified; limit, population and stderr are not count evidence")
+    direct_counts = [(key, payload[key]) for key in ("n", "num_samples") if key in payload]
+    if "samples" in payload:
+        value = payload["samples"]
+        direct_counts.append(("samples", len(value) if isinstance(value, list) else value))
+    if isinstance(results, dict):
+        direct_counts.extend((key, results[key]) for key in ("total_samples", "completed_samples")
+                             if key in results)
+    for source, actual in direct_counts:
+        if type(actual) is not int or actual != n:
+            return CheckResult("comparator_same_protocol", "fail",
+                               f"{p.name}: {source}={actual!r}, expected actual n={n}")
+    metric = get(ctx.card, "hypothesis.expected_effect.metric")
+    if not isinstance(metric, str) or not metric.strip():
+        return CheckResult("comparator_same_protocol", "warn",
+                           f"{p.name}: count fields match; metric and remaining comparison identity unverified")
+    from .comparator import helper
+
+    try:
+        checked = helper().inspect_output(str(p.resolve()), n, metric)
+    except (OSError, ValueError, TypeError, ImportError, SyntaxError):
+        return CheckResult("comparator_same_protocol", "warn",
+                           f"{p.name}: comparator helper unavailable; evidence remains unverified")
+    return CheckResult("comparator_same_protocol", checked["status"], checked["detail"])
 
 
 @check("parent_checkpoint_loadable", "a local parent checkpoint has a config.json")

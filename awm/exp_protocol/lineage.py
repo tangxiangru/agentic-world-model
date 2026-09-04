@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from . import comparator
 from .lock import read_lock
 from .schema import CardError, get, load_card
 
@@ -77,8 +78,10 @@ def _best(card: dict[str, Any]) -> str:
     return f"{m.get('metric', '?')}={m['value']}"
 
 
-def _status(card: dict[str, Any]) -> str:
+def _status(card: dict[str, Any], path: Path, info: dict | None) -> str:
     if isinstance(card.get("conclusion"), dict) and get(card, "conclusion.decision"):
+        if not comparator.completion_state(path, card, info)["valid"]:
+            return "unverified"
         return "closed"
     return "open"
 
@@ -94,7 +97,7 @@ def index_rows(cards: dict[str, dict[str, Any]], cards_directory: Path) -> list[
             "elapsed_h": get(card, "situation.elapsed_h"),
             "family": get(card, "setup.method.family") or "",
             "parent": get(card, "setup.parent_checkpoint.origin") or "",
-            "status": _status(card),
+            "status": _status(card, path, info),
             "locked": info is not None,
             "relocks": len((info or {}).get("relocked_from") or []),
             "verdict": get(card, "conclusion.verdict") or "",
@@ -140,6 +143,11 @@ def starting_points(cards: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         card = cards[card_id]
         if get(card, "conclusion.decision") != "adopt":
             continue
+        path = Path(card["_path"]) if card.get("_path") else None
+        info = read_lock(path) if path is not None else None
+        if comparator.enabled(card) or "deferred_comparator" in (info or {}):
+            if path is None or not comparator.completion_state(path, card, info)["valid"]:
+                continue
         ckpt = get(card, "result.output_checkpoint")
         exists = bool(ckpt) and Path(str(ckpt)).is_dir()
         points.append({"card_id": card_id, "checkpoint": ckpt if exists else None,

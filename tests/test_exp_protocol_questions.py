@@ -35,3 +35,17 @@ def test_a_training_family_adds_the_stop_token_and_max_seq_len_questions() -> No
     card["setup"]["method"]["family"] = "merge"
     asked = [f for f, _ in questions.missing_fields(card)]
     assert "setup.method.stop_token" not in asked
+
+
+def test_a_card_that_trains_nothing_is_not_asked_for_data() -> None:
+    card = plan_card()
+    card["setup"]["method"]["family"] = "decode-config"
+    card["setup"]["data"] = []
+    assert "setup.data" not in [f for f, _ in questions.missing_fields(card)]
+
+
+def test_a_card_without_a_family_yet_is_still_asked_for_data() -> None:
+    card = plan_card()
+    card["setup"]["method"]["family"] = None
+    card["setup"]["data"] = []
+    assert "setup.data" in [f for f, _ in questions.missing_fields(card)]
