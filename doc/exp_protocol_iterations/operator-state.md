@@ -1,6 +1,6 @@
 # exp-protocol operator state and dependencies
 
-Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 for the user-directed bundle transition; live queue08:06:53, monitor process08:25:12 / tick08:27:36, reservation recheck08:12. Unchanged older cohorts retain the2026-09-03 validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
+Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 for the user-directed bundle transition; live queue/reservation09:18:43, monitor process09:18:11 / tick08:27:36. Unchanged older cohorts retain the2026-09-03 validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
 
 ## Completed, running and held
 
@@ -33,7 +33,7 @@ With the five strict-baseline jobs and control repair91965, this is **22 actual 
 
 ## Gates and next-wave graph
 
-At08:06:53 UTC **0/16 owned GPUs were allocated**,0 jobs running,and OWNERSHIP OK. Reservation recheck08:12 still showed11 nodes; no native-isolation restoration or new release authorization has been received. Capacity is not idle for a scientific straggler or Claude. D1/E1 are withdrawn;22 physical holds remain. Their scientific replacement audit and native release gate are separate. Control repair91965 is held,not automatically funded under the new policy. No running work was cancelled.
+At09:18:43 UTC **0/16 owned GPUs were allocated**,0 jobs running,and OWNERSHIP OK. Reservation recheck at the same time still showed11 nodes; no native-isolation restoration or new release authorization has been received. Capacity is not idle for a scientific straggler or Claude. D1/E1 are withdrawn;22 physical holds remain. Their scientific replacement audit and native release gate are separate. Control repair91965 is held,not automatically funded under the new policy. No running Slurm work was cancelled.
 
 ```text
 strict guard8 complete and fully reviewed
@@ -71,6 +71,10 @@ All three have recorded CPU/independent-forward validation and local/full manife
 **Bundle construction:** spec4b14768 is committed/pushed. Isolated worktree `/rmeng_data/robtang/exp-protocol-bundle-work-5iV6EzGB/repo`,branch `codex/exp-protocol-bundles-20260904`,checkpoints c1db377 and77512cd are pushed; its top/PTB statuses are clean. Its `doc/exp_protocol_iterations/2026-09-04-bundle-construction.md` records H/J/K/B/process-guidance integration and honest comparator-count handling:202 protocol/sandbox tests plus100 PTB tests passed. E4 is now implemented and linked from the scientist skill; the focused reviewer completed. Main independently reproduced51 pinned-image CPU save tests (32 stand-in/control,19 real native),including tiny Gemma3 and native Trainer checkpoint/final/state-dict paths. Original-env save tests report32 passed/15 skips because Torch is absent; those skips are not the native proof. Ruff passed. Reproduction guide is `skills/exp_protocol/save-safety.md` in that worktree; owned extracted runtime `/tmp/exp-protocol-save-runtime.JEZlHo` (~14GB) is retained. PTB remainsdcf5da0. This is partial E construction,not a complete frozen experiment: E5 attempt records,E6/E7 mechanized sampling/rendered checks and selected-artifact/export consumers remain. L/P have not been constructed. No new manifests/receipts/jobs or releases. Preserve concurrent user meta/analysis drafts in the operator worktree.
 
 Final live queue check08:31:39 again returned OWNERSHIP OK,22 exact JobHeldUser cells,0/16 allocated and no placement/capacity violations. Monitor process2612586 was live at08:33:56; its08:27:36 tick remained0/22 terminal. The operator's dry reconciliation returned `nothing to do`. Next scheduled poll09:27:36. Native reservation last recheck08:12 remained11 nodes; no new release authority was received.
+
+**E5/E7 update09:18:** construction branch now clean at pushed4261538,following d1ed495. E5 foreground execution records are implemented and integrated into the skill/CLI:31 tests pass on both original Python and pinned-image Python3.10; combined protocol/sandbox/PTB regression is365 passed/15 known missing-Torch skip reports. Independent reviewer ran six real CPU attempts across seven cards,including SIGINT,observer SIGKILL and justified new-card retry;70 original evidence files are byte-identically archived under `doc/exp_protocol_iterations/trace-reviews/bundle-e5-forward/`. Main corrected a result-only-update false block,relative data-path ambiguity and interrupted exit timestamp; final tests cover those subsequent corrections. Original input/Slurm work was not changed. Generic skill-creator naming check still rejects the repository's existing underscore name; identity is preserved,not renamed. E7's prepared-token/checked-consumer interface is accepted and committed after original g03/g05/g08 source/trace verification; it is not implemented yet. Next: E6 sampling helpers,E7 materializer/consumer,and remaining E4/E5 selected-artifact/export consumers,then full E/L/P construction and freezing. No new manifests or receipts; no standalone micro-screen top-up.
+
+Latest authoritative scheduler check09:18:43 again confirms22 JobHeldUser,0 running,OWNERSHIP OK,no unknown jobs or placement/capacity violations; native reservation still11 nodes. Monitor2612586 is live,not restarted; next scheduled check09:27:36. Zero new results or clean cells have been added by these synthetic CPU reviews.
 
 ## Monitoring and analysis
 

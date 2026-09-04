@@ -52,6 +52,13 @@ belong in the [bundle specification](../../doc/spec/2026-09-04-exp-protocol-bund
   resolve PID birth identity rather than names/PID existence, and do not turn
   missing final evidence into an automatic retry. Test actual interruption
   and observer-death behavior with owned synthetic processes.
+- Match integrity checks to the actual immutable boundary. V2 pins plan
+  sections0–4, not legitimate result/conclusion updates after observation.
+  A whole-card byte-change gate can falsely reject correct result recording.
+  Preserve before/after card hashes, verify plan/identity/lock/source separately,
+  and keep a real child exit distinct from later evidence-validation failure.
+  Relative input paths also need their resolution context; a v2 lock without
+  caller cwd cannot silently certify that a later command reads the same file.
 - Freeze source, interfaces, full component differences and the outcome vector
   before discovery. Small samples can resolve a mechanism or expose a useful
   branch; they do not identify every component's causal effect or establish
