@@ -1,10 +1,12 @@
-# Cross-benchmark comparison planning: 2026-09-04 user update
+# Cross-benchmark comparison: approved 2026-09-04
 
 The latest user discussion requests experiments beyond GSM8K, a scientist-model
 change to Opus4.8, several leading/current protocol variants and a genuinely
 protocol-free baseline, **four independent replicates per arm**, plus a GSM8K
 comparison of the latest method. Four supersedes the earlier two-cell default
-for this proposed study. Historical frozen runs/receipts remain unchanged.
+for this study. The subsequent “好的你去做吧” approves the forty-cell matrix
+below; historical frozen runs/receipts remain unchanged. The execution contract
+is [the cross-benchmark spec](../../doc/spec/2026-09-04-exp-protocol-opus48-cross-benchmark.md).
 
 Treat Opus4.8 as the scientist agent, not the open model being post-trained.
 Keep base-model revision, scientist effort/context, GPU/time budget, runtime,
@@ -25,14 +27,13 @@ L/P remain designs, not ready methods or measured winners. The protocol-free
 arm omits exp_protocol/WMA treatment while preserving the common PTB task,
 runtime, official scoring and safety/contamination contract.
 
-Benchmark names and the final matrix are still being discussed. The current
-recommendation is GSM8K as a regression anchor, GPQA Main for science reasoning
-and HumanEval for code; AIME2026 is another candidate. AIME2025 remains the
+The approved tasks are GSM8K as a regression anchor, GPQA Main for science
+reasoning and HumanEval for code; AIME2026 is not in this wave. AIME2025 remains the
 previously reserved held-out task unless the user explicitly changes its role.
-The proposed first matrix has protocol-free, process-knowledge and E arms on
+The approved first matrix has protocol-free, process-knowledge and E arms on
 all three tasks (four each), plus four old-guard GSM8K runs as a matched Opus4.8
-historical bridge:40 full-budget cells, not yet approved task selection or
-submitted work. At10h each this is400 nominal scientist GPU-hours, excluding
+historical bridge:40 full-budget cells. Approval is not evidence of submitted
+work. At10h each this is400 nominal scientist GPU-hours, excluding
 evaluation/judge/scheduler overhead. Do not silently replace the discussion
 with a larger factorial or omit matched Opus4.8 controls.
 Do not quietly use it for repeated discovery or choose tasks after seeing

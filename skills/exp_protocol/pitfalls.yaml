@@ -1,7 +1,9 @@
 # Known ways a training run produces a clean-looking wrong answer and exits 0.
-# Each entry names the preflight check that catches it mechanically, or
-# `check: null` when only the scientist can check it — those are printed by
-# `awm exp_protocol preflight` as reminders. Add an entry when a run is lost
+# Each entry names an implemented preflight check, or `check: null` when this
+# version only prints a reminder. Null does not mean automation is impossible.
+# Detailed practices are in process_checks.md inside this installed skill.
+# Sources are provenance, not instructions to fetch benchmark history.
+# Add an entry when a run is lost
 # to something new; move it from null to a check id once the check exists.
 #
 # Fields: id, symptom (what you see), cause (what actually happened),
@@ -11,14 +13,14 @@
   symptom: The model never emits a stop token at grading; answers are buried in a long tail; the score sits at the base model's floor.
   cause: Training targets ended with the tokenizer's eos (e.g. <|endoftext|> on a Base checkpoint) while the grading chat template — and therefore vLLM — stops on a different token (e.g. <|im_end|>).
   check: stop_token_consistent
-  guidance: Read the terminator from the same chat template the grader uses and end every training target with it. Declare it in setup.method.stop_token so preflight can verify the data.
+  guidance: Verify the terminator in actual rendered/tokenized supervised targets and declare setup.method.stop_token. The check reads raw fields only; a renderer-owned terminator needs evidence and a reasoned false-alarm override, not a duplicate appended token. See process_checks.md.
   source: main@529fc11 doc/split-redesign.md, "Three defects the CPU dry run caught" (2026-08-30)
 
 - id: seq_len_truncation
   symptom: Loss is flat or zero from step one; every arm scores the base floor; the run exits 0.
   cause: max_seq_len was smaller than the prompt (a 10-shot system message alone can be ~1700 tokens). Under completion-only loss the completion is what gets truncated, so every row carries zero loss tokens.
   check: max_seq_len_headroom
-  guidance: Measure the token length of your longest rows before training (p50 and max), set max_seq_len above the max, and fail the run if more than 2% of rows truncate.
+  guidance: Measure real rendered lengths and retained supervision under the declared truncation/drop policy. The chars/4 sample check excludes added template tokens; PASS is not a runtime length audit. Preserve current thresholds and document specific false alarms. See process_checks.md.
   source: main@529fc11 doc/split-redesign.md (2026-08-30)
 
 - id: template_unreachable
@@ -39,14 +41,14 @@
   symptom: A delta that looks like an improvement is really two different evaluations being compared.
   cause: The comparator was scored with a different --limit, seed, or dev set than the candidate.
   check: comparator_same_protocol
-  guidance: Score the parent under the exact protocol in evaluation.protocol before launching and record the path; a comparator measured on a different --limit is not a comparator.
+  guidance: Bind comparisons to actual scored IDs/n, inputs, artifact and effective settings. If this card measures both sides, declare both reads with unavailable comparator value/path null, lock before evaluating, then record and verify both results. Current close does not automatically verify this contract. See process_checks.md.
   source: doc/spec/experiment-card-v1.md (jerry-dev), "Evaluation"
 
 - id: final_model_not_loadable
   symptom: The final evaluation scores the base model or fails to load; hours of training count for nothing.
   cause: final_model/ was a LoRA adapter directory, lacked the tokenizer, or had a config.json the grader's vLLM could not load.
   check: null
-  guidance: Merge adapters, save the tokenizer alongside the weights, and load final_model/ once on CPU with transformers before the deadline. The grader loads final_model/ with vLLM from a fresh process.
+  guidance: Export the grader-supported format with all weights/shards and tokenizer/processor assets, preserving selected serving settings. Stage a replacement before discarding the incumbent. CPU metadata/loading and the actual evaluator are distinct checks; model-evaluation probes require a locked card. See process_checks.md.
   source: doc/reference/harness_facts/posttrainbench.md §4 (final evaluation)
 
 - id: datasets_version_drift
@@ -60,5 +62,54 @@
   symptom: The trace ends with "I'll report back when the run finishes"; the training log stops mid-epoch; final_model/ is never written; most of the budget is unused.
   cause: You run as a single `claude --print` turn. Ending the turn ends the session, and Claude Code kills every background process it started with it - a run launched with `nohup ... &` or as a background task included. There is no next turn. Separately, a Bash tool call that times out kills that call's process group.
   check: null
-  guidance: Never end the turn while a run is alive. Wait for it in the foreground - `sleep 900; tail -n 3 <log>` repeated, or `while [ ! -f <out>/config.json ]; do sleep 300; done` with a long Bash timeout - then evaluate, fill sections 5-6 and close the card. Launch long runs with `setsid nohup <cmd> > <log> 2>&1 < /dev/null &` so a tool timeout cannot take them down. The Stop hook (hooks/stop_open_cards.py) blocks the end of the turn while a locked card is open and says so.
+  guidance: Keep the session alive; track the actual producer, its exit status and invocation-specific outputs. Use a launch lifetime that survives bounded observation timeouts. Quiet logs, GPU release and config.json presence are not successful exit. Investigate missing evidence before retrying. See process_checks.md.
   source: results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3/p00r08 (job 90482, exp-02 killed at step 207/4154, 2026-09-02); pilots 90463 and 90464 lost runs to tool timeouts
+
+- id: effective_config_not_declared_config
+  symptom: The card describes a decode policy that the evaluator never actually uses.
+  cause: Model defaults and request overrides differ from the assumed settings.
+  check: null
+  guidance: Record actual defaults, request overrides, token cap and stop handling; distinguish logged values from inferences. This verifies the executed contract, not which decode policy is best. See process_checks.md.
+  source: p00r01/g01r07 decode audits and g01r03 same-weight comparison (2026-09-04)
+
+- id: materialized_data_differs_from_plan
+  symptom: Larger data has fewer unique questions, or realized prefix counts differ from the declared fraction.
+  cause: Caps, filters, reshuffling or shared mutable records change the final input distribution.
+  check: null
+  guidance: Audit the materialized file/hash, rows, question/solution identity, duplicate weights and actual prefix/length distribution. Reuse build evidence with its coverage; a requested cap is not an observed count. See process_checks.md.
+  source: g01r03 data-overlap and g01r05 repeated-object prefix audits (2026-09-04)
+
+- id: precision_label_hides_update_path
+  symptom: A precision label obscures parameter update paths, and flat loss is treated as data saturation.
+  cause: Parameter/master dtype, optimizer-state dtype, autocast and export dtype are different properties.
+  check: null
+  guidance: Record the actual parameter/optimizer path and existing gradient/step evidence. FP32 state is not FP32 master weights. Scoped deltas need a declared diagnostic; missing evidence does not prove numerical failure or prescribe a precision change. See process_checks.md.
+  source: g01r03/g01r05 versus g01r04/g01r08 trainer and optimizer-source audit (2026-09-04)
+
+- id: completion_order_is_not_dataset_order
+  symptom: A purported matched subset uses different questions and can reverse the reported score difference.
+  cause: Samples are sliced in completion order or paired by position instead of identity.
+  check: null
+  guidance: Join typed item ID and epoch, verify uniqueness and aligned inputs/targets, and obtain prefixes from declared dataset IDs. Verify completed/scored counts. Scalar scores, requested limits and file sizes do not certify a comparison. See process_checks.md.
+  source: g01r03 exp-08 and c01s04/c01s07 structured paired-count audits (2026-09-04)
+
+- id: serving_config_breaks_save
+  symptom: Training or merging finishes but serialization rejects the inherited generation configuration.
+  cause: Serving settings and a serializer's valid in-memory configuration have different contracts.
+  check: null
+  guidance: Check the actual save operation and in-code repair; pure evaluation need not exercise save validation. Preserve selected serving settings across serialization and verify the export. Do not reject by family or parent file alone. See process_checks.md.
+  source: g01r03/g01r05/g01r06 save failures and frozen-D operation-scope audit (2026-09-04)
+
+- id: sampling_output_lost_before_scoring
+  symptom: A long generation pass has no recoverable usable data after tokenization or parser errors.
+  cause: Duplicate special tokens, missing effective stops, or scoring before raw outputs are durable.
+  check: null
+  guidance: Verify actual tokens and finish reasons in a declared probe; persist raw draws before parsing/filtering. Count requests, draws, parse errors and retained rows separately. Preserve failed output and identify the actual producer before cleanup/retry. See process_checks.md.
+  source: p00r01 sampler failures, g01r04 parser failure and c01s06 discarded sampling (2026-09-04)
+
+- id: scalar_tie_hides_different_errors
+  symptom: Equal accuracy is treated as proof of identical models or useless retained artifacts.
+  cause: Marginal scores omit item-level differences and lineage needed for reuse.
+  check: null
+  guidance: Honor declared retention and report matched fixes/regressions when comparing artifacts. Distinct errors alone do not justify storage, another run or a merge; those are scientific decisions. An oracle union is not achieved accuracy. See process_checks.md.
+  source: g01r03 parent/soup and g01r05 equal-score distinct-error audits (2026-09-04)
