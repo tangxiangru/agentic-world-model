@@ -4,6 +4,9 @@ Use with `search_policy.md` when constructing a coherent package from trace
 findings. The outer bundle policy does not change the scientist's experiment
 unit or waive card/check/lock. Source-specific mechanisms and candidate details
 belong in the [bundle specification](../../doc/spec/2026-09-04-exp-protocol-bundle-discovery.md).
+For the latest Opus4.8/cross-benchmark study, apply
+[the four-repeat planning update](cross_benchmark_policy.md) before preparing
+any new manifest; the earlier two-cell proposal is superseded for that study.
 
 - Keep scientific policy transitions separate from operational permission.
   An explicit newer human search decision supersedes historical defaults;
