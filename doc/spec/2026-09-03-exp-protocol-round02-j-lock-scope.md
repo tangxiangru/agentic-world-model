@@ -2,6 +2,8 @@
 
 Status: **built and frozen, not registered**. Single-item direction #26 from the strict-guard [planner decision](../exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/planner-decision.md). Ownership/native-isolation gates remain closed; this spec authorizes no Slurm submission or release.
 
+2026-09-04 update: [Window04 adjudication](../exp_protocol_iterations/2026-09-04-round-02-window04-decision.md) completed the fresh scientific review and advances this unchanged candidate to **held-only registration** under current OWNERSHIP OK and fresh source/site gates. The [execution record](../exp_protocol_iterations/2026-09-04-j-held-registration.md) defines its clean checkout and verification. This supersedes the older no-registration planning status,not the native-isolation release gate; no release override or metric/tree change is authorized.
+
 ## Evidence and hypothesis
 
 The [launch-scope audit](../exp_protocol_iterations/trace-reviews/round01-strict-guard-addendum/launch-scope-audit.md) verifies actual GPU training before the matching training card in two strict cells:
