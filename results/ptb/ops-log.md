@@ -181,3 +181,7 @@
 - 2026-09-04T06:55:03+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r02-e-wait-on-process-x4-v1/e02r02 job=91065 CANCELLED incomplete (1 issue(s)) clean
 - 2026-09-04T06:55:03+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r02-e-wait-on-process-x4-v1/e02r03 job=91066 CANCELLED incomplete (1 issue(s)) clean
 - 2026-09-04T06:55:03+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r02-e-wait-on-process-x4-v1/e02r04 job=91067 CANCELLED incomplete (1 issue(s)) clean
+- 2026-09-04T13:00:35+00:00 submit exp-protocol-opus48-gsm8k-none-x4-v1 (held): 4 job(s) 92125,92126,92127,92128 -> results/ptb/exp-protocol-opus48-gsm8k-none-x4-v1/formal-2026-09-04T125911.714295+0000.json
+- 2026-09-04T13:00:35+00:00 submit exp-protocol-opus48-gsm8k-knowledge-x4-v1 (held): 4 job(s) 92129,92130,92131,92132 -> results/ptb/exp-protocol-opus48-gsm8k-knowledge-x4-v1/formal-2026-09-04T125936.492439+0000.json
+- 2026-09-04T13:00:36+00:00 submit exp-protocol-opus48-gsm8k-tools-x4-v1 (held): 4 job(s) 92133,92134,92135,92136 -> results/ptb/exp-protocol-opus48-gsm8k-tools-x4-v1/formal-2026-09-04T130010.391533+0000.json
+- 2026-09-04T13:00:36+00:00 submit exp-protocol-opus48-gsm8k-guard-x4-v1 (held): 4 job(s) 92137,92138,92139,92140 -> results/ptb/exp-protocol-opus48-gsm8k-guard-x4-v1/formal-2026-09-04T130035.208861+0000.json
