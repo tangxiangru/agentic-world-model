@@ -221,3 +221,21 @@ maximum80.0607%. Its11 original scope flags and high dispersion bar promotion;
 it remains separate from the unfinished Opus4.8 study. Total PTB/automatic-judge
 completions are now89. Four S0 legacy-policy cells remain staged behind technical
 job92312; that validation receipt is recorded, safely routed and PENDING.
+
+## 19:00 UTC first BFCL readout
+
+BFCL protocol-only c54r01 is the first clean Opus4.8 study result at **91/100**.
+It follows one explicit protocol card, full-SFT on decontaminated xLAM data,
+verified final-model delivery and clean required judges. Scientist cost is
+$17.43948625; allocation2.5217GPU-h; judge cost is unavailable. Coverage P1/4
+does not support a protocol effect.
+
+Raw c53r04 completes at92/100 but has `general_anomaly`: it preserved a valid
+best checkpoint, then exited while another background training round was still
+unfinished. It remains a flagged sensitivity result. Raw primary-clean coverage
+is0/4: c53r01 incomplete, c53r02/03 running, c53r04 flagged complete. Do not use
+the one-point flagged-R/clean-P difference as a treatment effect.
+
+Total PTB-complete is91, automatic-judge-clean90. The queue has16RUNNING and
+41 safe PENDING; validation92312 remains pending and S0 science remains staged.
+Full evidence and disposition are in `evidence/2026-09-04-1900/`.
