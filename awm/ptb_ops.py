@@ -508,9 +508,11 @@ def harvest_job(
 
 def _scancel_command(job_id: str) -> list[str]:
     env = ptb.read_ptb_env()
+    # Keep the state filter in the controller request, not only our earlier read.
+    command = ["scancel", "--ctld", "--state=PENDING", job_id]
     if env.get("POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT") == "1":
-        return ["sudo", "scancel", job_id]
-    return ["scancel", job_id]
+        return ["sudo", *command]
+    return command
 
 
 def cancel_job(receipt_path: Path, cell: str, reason: str) -> dict[str, Any]:
@@ -526,8 +528,15 @@ def cancel_job(receipt_path: Path, cell: str, reason: str) -> dict[str, Any]:
     done = subprocess.run(_scancel_command(job["job_id"]), text=True, capture_output=True, check=False)
     if done.returncode:
         raise OpsError(f"scancel {job['job_id']} failed: {done.stderr.strip()}")
+    state_after = job_state(job["job_id"])
+    if state_after != "CANCELLED":
+        raise OpsError(
+            f"pending-only cancellation requested for {job['job_id']}, but observed "
+            f"{state_after}; cancellation is not confirmed and is not recorded as success"
+        )
     record = {"cell_id": cell, "job_id": job["job_id"], "reason": reason,
-              "state_before": state, "at": _now()}
+              "state_before": state, "state_after": state_after,
+              "pending_only": True, "at": _now()}
     receipt.setdefault("cancellations", []).append(record)
     receipt.pop("_path", None)
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
@@ -685,7 +694,7 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
             try:
                 record = cancel_job(receipt_path, str(action.cell), action.detail)
             except OpsError as exc:
-                line = f"cancel {action.batch}/{action.cell} job={action.job_id} did not happen: {exc}"
+                line = f"cancel {action.batch}/{action.cell} job={action.job_id} not confirmed: {exc}"
             else:
                 line = f"cancel {action.batch}/{action.cell} job={record['job_id']} ({record['state_before']}): {action.detail}"
         elif action.kind == "harvest":

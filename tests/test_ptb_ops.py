@@ -226,13 +226,20 @@ def test_a_cancelled_entry_cancels_pending_jobs_only(repo, tmp_path: Path, monke
     assert [(a.kind, a.cell) for a in actions] == [
         ("copy_receipt", None), ("harvest", "p01r3"), ("cancel", "p01r1"), ("wait", "p01r2")]
     calls: list[list[str]] = []
-    monkeypatch.setattr(ops.subprocess, "run", lambda cmd, **kw: (calls.append(list(cmd)) or
-                        __import__("subprocess").CompletedProcess(cmd, 0, "", "")))
+    def fake_cancel(cmd, **kw):
+        calls.append(list(cmd))
+        assert cmd == ["scancel", "--ctld", "--state=PENDING", "301"]
+        states["301"] = "CANCELLED"
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_cancel)
     lines = ops.apply(actions, root)
-    assert calls == [["scancel", "301"]]
+    assert calls == [["scancel", "--ctld", "--state=PENDING", "301"]]
     receipt = json.loads((root / "results/ptb/ep-r01/formal-2026-09-02T000000.json").read_text())
     assert receipt["cancellations"][0]["job_id"] == "301"
     assert receipt["cancellations"][0]["reason"] == "replaced by ep-r02"
+    assert receipt["cancellations"][0]["state_after"] == "CANCELLED"
+    assert receipt["cancellations"][0]["pending_only"] is True
     assert any(line.startswith("cancel ep-r01/p01r1 job=301 (PENDING)") for line in lines)
     # the next plan does not cancel it again, and still leaves the running one alone
     states["301"] = "CANCELLED"
@@ -552,9 +559,29 @@ def test_cancel_refuses_anything_but_pending(tmp_path: Path, monkeypatch) -> Non
 
 def test_cancel_uses_sudo_for_root_owned_allocations(monkeypatch) -> None:
     monkeypatch.setattr(ops.ptb, "read_ptb_env", lambda: {"POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "1"})
-    assert ops._scancel_command("5") == ["sudo", "scancel", "5"]
+    assert ops._scancel_command("5") == ["sudo", "scancel", "--ctld", "--state=PENDING", "5"]
     monkeypatch.setattr(ops.ptb, "read_ptb_env", dict)
-    assert ops._scancel_command("5") == ["scancel", "5"]
+    assert ops._scancel_command("5") == ["scancel", "--ctld", "--state=PENDING", "5"]
+
+
+@pytest.mark.parametrize("state_after", ["RUNNING", "PENDING", "UNKNOWN", "FAILED"])
+def test_cancel_does_not_record_unconfirmed_or_racing_success(tmp_path: Path, monkeypatch, state_after) -> None:
+    receipt = _receipt(tmp_path, "ep-r01", "formal", [("p01r1", "701")])
+    before = receipt.read_bytes()
+    observed = iter(["PENDING", state_after])
+    monkeypatch.setattr(ops, "job_state", lambda job_id: next(observed))
+    monkeypatch.setattr(ops.ptb, "read_ptb_env", dict)
+    calls = []
+
+    def fake_cancel(cmd, **kw):
+        calls.append(cmd)
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_cancel)
+    with pytest.raises(ops.OpsError, match="cancellation is not confirmed"):
+        ops.cancel_job(receipt, "p01r1", "withdraw unstarted block")
+    assert calls == [["scancel", "--ctld", "--state=PENDING", "701"]]
+    assert receipt.read_bytes() == before
 
 
 # ---- CLI --------------------------------------------------------------------------
