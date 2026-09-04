@@ -404,6 +404,7 @@ def harvest_job(
     state: str | None = None,
     slurm_log_dir: Path | None = None,
     expected_nodes: set[str] | None = None,
+    expected_task: str | None = None,
 ) -> dict[str, Any]:
     """Copy the small, readable part of one cell's result into ``out_dir``; write status.json.
 
@@ -476,7 +477,7 @@ def harvest_job(
         if isinstance(metrics.get("accuracy"), (int, float)):
             status["accuracy"] = metrics["accuracy"]
             status["stderr"] = metrics.get("stderr")
-        status["issues"] = audit_result(result_dir)
+        status["issues"] = audit_result(result_dir, expected_task=expected_task)
         if expected_nodes:
             provenance = ptb_results._read_json(result_dir / "runtime_provenance.json")
             actual_node = str((provenance.get("slurm") or {}).get("node", ""))
@@ -701,10 +702,14 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
             result_dir = result_for_job(str(action.job_id))
             out_dir = repo_root / RESULTS_ROOT / action.batch / str(action.cell)
             receipt_path = repo_root / RESULTS_ROOT / action.batch / str(action.receipt)
+            try:
+                expected_task = ptb.receipt_task(ptb.load_receipt(receipt_path), str(action.job_id), str(action.cell))
+            except (ptb.ExperimentError, OSError, ValueError):
+                expected_task = None  # Preserve artifacts, but completion must fail closed.
             status = harvest_job(result_dir, out_dir, batch=action.batch, cell=str(action.cell),
                                  job_id=str(action.job_id), job_name=action.job_name,
                                  state=action.state, slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm",
-                                 expected_nodes=_receipt_expected_nodes(receipt_path))
+                                 expected_nodes=_receipt_expected_nodes(receipt_path), expected_task=expected_task)
             if status["quarantined"]:
                 verdict = f"quarantined ({len(status['quarantine_reasons'])} reason(s))"
             elif status["complete"]:
@@ -745,9 +750,22 @@ def reconcile_cli(args) -> int:
 
 def harvest_cli(args) -> int:
     out = paths.REPO_ROOT / RESULTS_ROOT / args.batch / args.cell if args.out is None else Path(args.out)
+    matches = []
+    for path in (paths.REPO_ROOT / RESULTS_ROOT / args.batch).glob("*.json"):
+        try:
+            receipt = ptb.load_receipt(path)
+            if receipt.get("batch_id") != args.batch:
+                continue
+            task = ptb.receipt_task(receipt, str(args.job), str(args.cell))
+            matches.append((path, task))
+        except (ptb.ExperimentError, OSError, ValueError):
+            continue
+    expected_task = matches[0][1] if len(matches) == 1 else None
+    expected_nodes = _receipt_expected_nodes(matches[0][0]) if len(matches) == 1 else None
     status = harvest_job(Path(args.result_dir) if args.result_dir else None, out, batch=args.batch,
                          cell=args.cell, job_id=args.job, job_name=args.job_name, state=args.state,
-                         slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm")
+                         slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm",
+                         expected_task=expected_task, expected_nodes=expected_nodes)
     verdict = ("quarantined" if status["quarantined"] else
                "complete" if status["complete"] else "incomplete")
     print(f"wrote {out / STATUS}: {verdict}, "

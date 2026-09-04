@@ -685,11 +685,23 @@ def render_snapshot(
     return "\n".join(lines) + "\n"
 
 
-def _has_validated_ptb_result(job_id: str) -> bool:
+def _source_task(source: dict[str, Any], job: dict[str, Any]) -> str | None:
     from awm import ptb_experiments
 
+    try:
+        receipt = ptb_experiments.load_receipt(Path(str(source.get("path", ""))))
+        return ptb_experiments.receipt_task(receipt, str(job["job_id"]), str(job.get("cell_id", "")))
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _has_validated_ptb_result(job_id: str, *, expected_task: str | None = None) -> bool:
+    from awm import ptb_experiments
+
+    if not expected_task:
+        return False
     result_dir = ptb_experiments.result_for_job(job_id)
-    return result_dir is not None and not ptb_experiments.audit_result(result_dir)
+    return result_dir is not None and not ptb_experiments.audit_result(result_dir, expected_task=expected_task)
 
 
 def failure_records(snapshot: dict[str, Any], *, include_resolved: bool = False) -> list[dict]:
@@ -714,7 +726,7 @@ def failure_records(snapshot: dict[str, Any], *, include_resolved: bool = False)
             cell_id = str(job.get("cell_id", ""))
             replacement = (
                 {"source": "validated PTB result", "job_id": job["job_id"], "state": "COMPLETE"}
-                if _has_validated_ptb_result(str(job["job_id"]))
+                if _has_validated_ptb_result(str(job["job_id"]), expected_task=_source_task(source, job))
                 else None
             )
             if replacement is None:
@@ -842,7 +854,7 @@ def explain_job(snapshot: dict[str, Any], job_id: str) -> dict[str, Any]:
             result_dir = ptb_experiments.result_for_job(str(job_id))
             if result_dir:
                 metrics = ptb_results._read_json(result_dir / "metrics.json")
-                issues = ptb_experiments.audit_result(result_dir)
+                issues = ptb_experiments.audit_result(result_dir, expected_task=_source_task(source, job))
                 explanation["result"] = {
                     "path": str(result_dir),
                     "complete": not issues,

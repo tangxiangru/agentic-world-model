@@ -290,7 +290,7 @@ def _ptb(args: argparse.Namespace) -> int:
                 print(f"{job['cell_id']}: Slurm job {job['job_id']}")
             return 0
         if args.cmd == "audit":
-            issues = ptb.audit_result(args.result_dir.resolve())
+            issues = ptb.audit_result(args.result_dir.resolve(), expected_task=args.expected_task)
             for issue in issues:
                 print(f"  - {issue}")
             print(f"{len(issues)} issue(s)")
@@ -633,6 +633,7 @@ def build_parser() -> argparse.ArgumentParser:
     release.set_defaults(func=_ptb)
     audit = eps.add_parser("audit")
     audit.add_argument("result_dir", type=Path)
+    audit.add_argument("--expected-task", help="independent task identity, required to prove completion")
     audit.add_argument("--manifest", type=Path, default=default_manifest)
     audit.set_defaults(func=_ptb)
     for command_name in ("status", "audit-receipt", "research-judges"):

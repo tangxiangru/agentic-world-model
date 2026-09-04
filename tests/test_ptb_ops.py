@@ -48,7 +48,7 @@ def repo(tmp_path: Path, monkeypatch):
     states: dict[str, str] = {}
     monkeypatch.setattr(ops, "job_state", lambda job_id: states.get(job_id, "UNKNOWN"))
     monkeypatch.setattr(ops, "result_for_job", lambda job_id: None)
-    monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
+    monkeypatch.setattr(ops, "audit_result", lambda result_dir, **_kwargs: [])
     monkeypatch.setattr(ops, "_worktree_dirty", lambda repo_root: "")
     monkeypatch.setattr(ops, "_submission_ownership_issue", lambda: None)
     return root, states
@@ -440,7 +440,7 @@ def _fake_result(tmp_path: Path) -> Path:
 def test_harvest_quarantines_a_runtime_node_outside_the_frozen_site(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(ops, "audit_result", lambda _result_dir: [])
+    monkeypatch.setattr(ops, "audit_result", lambda _result_dir, **_kwargs: [])
     result = _fake_result(tmp_path)
     (result / "runtime_provenance.json").write_text(
         '{"experiment": {"cell_id": "p01r1"}, "slurm": {"node": "spill-node"}}'
@@ -465,7 +465,7 @@ def test_harvest_quarantines_a_runtime_node_outside_the_frozen_site(
 
 
 def test_harvest_keeps_the_readable_part_and_lists_the_rest(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
+    monkeypatch.setattr(ops, "audit_result", lambda result_dir, **_kwargs: [])
     result = _fake_result(tmp_path)
     logs = tmp_path / "logs"
     logs.mkdir()
@@ -505,7 +505,7 @@ def test_harvest_without_a_result_dir_records_that(tmp_path: Path) -> None:
 
 
 def test_harvesting_a_later_attempt_keeps_the_earlier_bundle(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
+    monkeypatch.setattr(ops, "audit_result", lambda result_dir, **_kwargs: [])
     result = _fake_result(tmp_path)
     out = tmp_path / "results" / "ptb" / "ep-r01" / "p01r1"
     ops.harvest_job(result, out, batch="ep-r01", cell="p01r1", job_id="555", state="FAILED")
@@ -534,7 +534,7 @@ def test_plan_recognizes_an_archived_earlier_attempt(
 
 
 def test_collect_reads_a_bundle(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
+    monkeypatch.setattr(ops, "audit_result", lambda result_dir, **_kwargs: [])
     result = _fake_result(tmp_path)
     shutil.copy(paths.REPO_ROOT / "skills" / "exp_protocol" / "example-card.yaml",
                 result / "task" / "memory" / "cards" / "exp-01.yaml")

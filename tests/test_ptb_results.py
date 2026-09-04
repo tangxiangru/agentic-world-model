@@ -49,7 +49,7 @@ def test_report_discovers_results_by_provenance_and_keeps_flags(
     monkeypatch.setattr(
         ptb_results.ptb,
         "audit_result",
-        lambda result: [] if result == complete else ["missing metrics"],
+        lambda result, **_kwargs: [] if result == complete else ["missing metrics"],
     )
     manifest = {
         "_path": "/repo/manifest.yaml",
@@ -119,7 +119,7 @@ def test_report_keeps_a_complete_spillover_score_but_quarantines_it(
     (result / "runtime_provenance.json").write_text(json.dumps(provenance))
     monkeypatch.setattr(ptb_results, "_results_root", lambda: tmp_path / "raw")
     monkeypatch.setattr(ptb_results, "_receipts_root", lambda: receipts)
-    monkeypatch.setattr(ptb_results.ptb, "audit_result", lambda _result: [])
+    monkeypatch.setattr(ptb_results.ptb, "audit_result", lambda _result, **_kwargs: [])
     manifest = {
         "_path": "/repo/manifest.yaml",
         "batch_id": "batch-v1",
@@ -174,7 +174,7 @@ def test_a_completed_pilot_never_enters_formal_coverage_or_accuracy(
     )
     monkeypatch.setattr(ptb_results, "_results_root", lambda: tmp_path)
     monkeypatch.setattr(ptb_results, "_receipts_root", lambda: tmp_path / "no-receipts")
-    monkeypatch.setattr(ptb_results.ptb, "audit_result", lambda _result: [])
+    monkeypatch.setattr(ptb_results.ptb, "audit_result", lambda _result, **_kwargs: [])
     manifest = {
         "_path": "/repo/manifest.yaml",
         "batch_id": "batch-v1",

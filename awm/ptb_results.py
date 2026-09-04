@@ -157,7 +157,9 @@ def discover_attempts(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]
         accuracy = metrics.get("accuracy")
         if not isinstance(accuracy, (int, float)):
             accuracy = None
-        issues = ptb.audit_result(result_dir)
+        issues = ptb.audit_result(
+            result_dir, expected_task=ptb._cell_task(manifest.get("contract") or {}, cells[cell_id])
+        )
         slurm = provenance.get("slurm") or {}
         run_purpose = str(experiment.get("run_purpose", ""))
         job_id = str(slurm.get("job_id", ""))

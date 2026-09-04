@@ -927,7 +927,8 @@ def test_a_cell_outside_the_approved_setups_is_rejected() -> None:
         ptb.validate_manifest(data)
 
 
-def test_high_effort_awm_scaffold_is_an_approved_setup() -> None:
+def test_high_effort_awm_scaffold_is_an_approved_setup(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AWM_DATA_ROOT", str(tmp_path))
     data = _awm_manifest()
     for cell in data["cells"]:
         cell["agent"] = "claude_vertex_high_awm"

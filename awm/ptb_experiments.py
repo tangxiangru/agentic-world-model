@@ -1382,22 +1382,61 @@ def release_held(
     return receipt
 
 
-def audit_result(result_dir: Path) -> list[str]:
+def receipt_task(receipt: dict[str, Any], job_id: str, cell_id: str | None = None) -> str:
+    """Resolve a task from the immutable job/cell contract, never result claims."""
+    raw_jobs, raw_cells = receipt.get("jobs"), receipt.get("cells")
+    if (not isinstance(raw_jobs, list) or not isinstance(raw_cells, list)
+            or any(not isinstance(item, dict) for item in raw_jobs + raw_cells)):
+        raise ExperimentError("receipt jobs/cells must be lists of frozen records")
+    jobs = [job for job in raw_jobs if str(job.get("job_id")) == str(job_id)]
+    if len(jobs) != 1 or (cell_id is not None and str(jobs[0].get("cell_id")) != str(cell_id)):
+        raise ExperimentError("job/cell does not uniquely match the receipt")
+    cells = [cell for cell in raw_cells
+             if str(cell.get("id")) == str(jobs[0].get("cell_id"))]
+    if len(cells) != 1:
+        raise ExperimentError("receipt does not identify a unique frozen cell")
+    contract = receipt.get("contract") or {}
+    if not isinstance(contract, dict):
+        raise ExperimentError("receipt contract must be a frozen object")
+    return _cell_task(contract, cells[0])
+
+
+def audit_result(result_dir: Path, *, expected_task: str | None = None) -> list[str]:
+    """Audit with an independent task identity; an unscoped check is diagnostic only.
+
+    Old GSM8K/AIME validators keep their CLI. HumanEval requires the new strict
+    interface and never retries without the task flag after a rejection.
+    """
+    issues: list[str] = []
+    if not expected_task:
+        issues.append("independent expected task is required for completion validation")
+    else:
+        try:
+            provenance = json.loads((result_dir / "runtime_provenance.json").read_text())
+            experiment = provenance.get("experiment") if isinstance(provenance, dict) else None
+            actual_task = experiment.get("task") if isinstance(experiment, dict) else None
+            if actual_task != expected_task:
+                issues.append("runtime provenance task differs from independent expected task")
+        except (OSError, ValueError):
+            issues.append("cannot read runtime provenance for expected task validation")
     validator = PTB_ROOT / "src" / "utils" / "validate_completed_run.py"
+    command = [sys.executable, str(validator), str(result_dir), "--judge-profile", "official"]
+    if expected_task == "humaneval":
+        command.extend(["--expected-task", expected_task])
     result = subprocess.run(
-        [sys.executable, str(validator), str(result_dir), "--judge-profile", "official"],
+        command,
         text=True,
         capture_output=True,
         check=False,
     )
     if result.returncode == 0:
-        return []
-    issues = []
+        return issues
+    validator_issues = []
     for line in result.stdout.splitlines():
         prefix = "COMPLETION ERROR: "
         if line.startswith(prefix):
-            issues.append(line.removeprefix(prefix))
-    return issues or [result.stderr.strip() or "completion validator failed without details"]
+            validator_issues.append(line.removeprefix(prefix))
+    return issues + (validator_issues or [result.stderr.strip() or "completion validator failed without details"])
 
 
 def load_receipt(filename: Path) -> dict[str, Any]:
@@ -1472,7 +1511,12 @@ def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
             cell_issues.append("result directory not found")
         else:
             result_dir = Path(job["result_dir"])
-            cell_issues.extend(audit_result(result_dir))
+            try:
+                expected_task = receipt_task(receipt, str(job["job_id"]), str(job["cell_id"]))
+            except ExperimentError as exc:
+                expected_task = None
+                cell_issues.append(str(exc))
+            cell_issues.extend(audit_result(result_dir, expected_task=expected_task))
             provenance_path = result_dir / "runtime_provenance.json"
             if provenance_path.is_file():
                 try:

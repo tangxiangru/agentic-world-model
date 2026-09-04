@@ -125,3 +125,40 @@ or analysis window exists. Do not trigger another Claude trace synthesis from
 these CPU tests. Generic skill quick-validation still rejects the historical
 underscore name `exp_protocol_meta`; preserve the established identity. The
 narrow reference update does not modify its frontmatter or user-owned drafts.
+
+## Follow-up: actual scientist image and independent task consumers
+
+At14:54, the exact same PTB09c90b6 backend ran inside actual `opus_5.sif` with
+the scientist's contain/cleanenv/pid/no-init layout (CPU only, no --nv).
+Five invented programs exercised C/I/import-I/timeout-I and private environment/
+filesystem visibility. Native verify, sample store, exact-byte publication and
+revalidation passed in52s. Original public runtime is
+`8f0ce4b3c4702f2d8b497cd35dd6f42322c71af04a6fa906ea423ad790cc515c`,
+distinct from the evaluation image; helper/declared limits are unchanged.
+
+The AWM consumers now pass task identity from the manifest or exact receipt
+job/cell. A naked result directory is diagnostic, not authority. Old GSM8K/AIME
+retain the legacy validator CLI plus AWM's task-field check; HumanEval requires
+the new --expected-task interface, with no retry under a weaker interface.
+Manual harvest resolves a unique matching batch/cell/job receipt; missing or
+conflicting identity preserves evidence but cannot mark complete. The old PTB
+pin remains active, so this is not an allowlist bypass.136 focused tests pass.
+Actual historical guard remains8 clean; strict-control remains7 clean plus
+one placement quarantine after the change. No historical score was changed.
+
+Compute-node access: direct SSH initially had no trusted host key. Read-only
+GCP API lookup identified ondem0 in sercan-v1/us-west1-a and provided its
+hostkeys guest attributes. A task-local known_hosts pin allowed strict server
+identity verification without editing global trust. The default identity and
+the already-existing google_compute_engine identity were both refused for
+robtang_google_com (publickey). No identity was generated/uploaded, no login
+policy or node configuration was changed, and no weaker host check was used.
+Node execution/--nv/outer-timeout acceptance therefore remains unproven and
+requires authorized access; no GPU/native-reservation authorization is inferred.
+
+[Scientist-image raw archive](opus-image-cpu-evidence-20260904.tar.gz) contains
+the synthetic logs/snapshot/runtime, probe and public host-key provenance,
+not private credentials, actual models or benchmark items. The separate
+reservation and GPQA-access requests remain unanswered.
+Archive321,586 bytes, SHA256
+`916edf68c190b9b11711b87b4cb10daf017d6d78038994f321f74c2346ed78a2`.

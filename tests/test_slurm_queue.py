@@ -119,7 +119,7 @@ def test_unknown_jobs_become_enforceable_only_after_grace() -> None:
 
 
 def test_current_failures_and_history_are_separate_views(monkeypatch) -> None:
-    monkeypatch.setattr(slurm_queue, "_has_validated_ptb_result", lambda _job_id: False)
+    monkeypatch.setattr(slurm_queue, "_has_validated_ptb_result", lambda _job_id, **_kwargs: False)
     snapshot = {
         "updated_at": "2026-09-01T00:00:00+00:00",
         "queue_name": "gangda",
@@ -186,7 +186,7 @@ def test_current_failures_and_history_are_separate_views(monkeypatch) -> None:
 
 
 def test_validated_result_resolves_scheduler_failure(monkeypatch) -> None:
-    monkeypatch.setattr(slurm_queue, "_has_validated_ptb_result", lambda job_id: job_id == "101")
+    monkeypatch.setattr(slurm_queue, "_has_validated_ptb_result", lambda job_id, **_kwargs: job_id == "101")
     snapshot = {
         "updated_at": "2026-09-01T00:00:00+00:00",
         "queue_name": "gangda",
