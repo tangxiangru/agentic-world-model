@@ -851,6 +851,64 @@ def test_two_repeats_of_one_setting_is_a_valid_batch() -> None:
     assert pilot.command[pilot.command.index("--hours") + 1] == "1"
 
 
+def test_opus48_high_1m_protocol_free_profile_preserves_the_outer_contract() -> None:
+    data = _two_repeats_manifest()
+    data["context_validation"] = {
+        "claude-opus-4-8[1m]:high": "doc/exp_protocol_iterations/analysis-2026-09-04-opus48-onboarding/context/record.json"
+    }
+    for cell in data["cells"]:
+        cell.update(agent="claude_vertex_high", agent_model="claude-opus-4-8[1m]", effort="high")
+        cell.pop("awm", None)
+    ptb.validate_manifest(data)
+    for launch in ptb.build_launches(data, hold=True):
+        assert "claude-opus-4-8[1m]" in launch.command
+        assert launch.checkout is None
+        assert launch.environment["POST_TRAIN_BENCH_EXPECTED_CONTEXT_TOKENS"] == "1000000"
+        assert launch.environment["POST_TRAIN_BENCH_SKIP_CLI_UPDATE"] == "1"
+        assert launch.environment["POST_TRAIN_BENCH_JUDGE_PROFILE"] == "official"
+
+
+def test_opus48_does_not_silently_admit_other_efforts_or_contexts() -> None:
+    data = _two_repeats_manifest()
+    for cell in data["cells"]:
+        cell.update(agent="claude_vertex_high", agent_model="claude-opus-4-8[1m]", effort="max")
+    with pytest.raises(ptb.ExperimentError, match="approved agent setup"):
+        ptb.validate_manifest(data)
+
+
+def test_approved_opus48_gsm8k_wave_has_four_frozen_arms_of_four() -> None:
+    expected = {
+        "none": None,
+        "knowledge": "359de271b889f616995968097ddda2e2cf1741b0",
+        "tools": "dcfa742dbc8813970192efe3fbf2bd30dfc38ea9",
+        "guard": "4ae3d87c446bbda9732537a72b2f0fb3f96ac35a",
+    }
+    ids = set()
+    contracts = []
+    for arm, sha in expected.items():
+        manifest = paths.REPO_ROOT / f"experiments/posttrainbench/exp-protocol-opus48-gsm8k-{arm}-x4-v1.yaml"
+        data = ptb.load_manifest(manifest)
+        contracts.append(data["contract"])
+        assert data["ownership"]["branch"] == "gangda_exp_protocol_evolve"
+        assert len(data["cells"]) == 4
+        assert [c["replicate"] for c in data["cells"]] == [1, 2, 3, 4]
+        assert "pilot" not in data
+        for cell in data["cells"]:
+            assert cell["id"] not in ids
+            ids.add(cell["id"])
+            assert cell["agent_model"] == "claude-opus-4-8[1m]"
+            assert cell["effort"] == "high" and cell["context_tokens"] == 1_000_000
+            if sha is None:
+                assert cell["agent"] == "claude_vertex_high" and "awm" not in cell
+            else:
+                assert cell["agent"] == "claude_vertex_high_awm"
+                assert cell["awm"]["sha"] == sha
+                assert tuple(cell["awm"]["paths"]) == ptb.EXP_PROTOCOL_SHIP
+                assert "--exp-protocol" in cell["awm"]["setup"]
+    assert len(ids) == 16
+    assert all(contract == contracts[0] for contract in contracts)
+
+
 def test_a_batch_pins_only_the_base_models_it_uses_but_all_of_those() -> None:
     data = _two_repeats_manifest()
     ptb.validate_manifest(data)

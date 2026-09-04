@@ -43,6 +43,10 @@ APPROVED_AGENT_SETUPS = (
     # says what it ships.
     ("claude_vertex_max_awm", "claude-opus-5[1m]", "max", 1_000_000),
     ("claude_vertex_high_awm", "claude-opus-5[1m]", "high", 1_000_000),
+    # User-approved cross-benchmark study; actual pinned CLI/provider context
+    # is independently checked by the manifest's immutable validation record.
+    ("claude_vertex_high", "claude-opus-4-8[1m]", "high", 1_000_000),
+    ("claude_vertex_high_awm", "claude-opus-4-8[1m]", "high", 1_000_000),
 )
 
 #: Where an `_awm` scaffold expects the checkout inside the sandbox.
