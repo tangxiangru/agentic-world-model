@@ -58,6 +58,8 @@ Baseline-strict stragglers are not a fabricated dependency for independent scree
 
 ## Prepared but not registered
 
+**Policy reconciliation07:17–07:23 UTC:** concurrent user work updated meta to substantial bundles,limited repeats and no automatic standalone micro-screens. The task's saved objective still says single-item; clarification was requested before changing that planning scope. J's new execution clone passed source/site checks,but no J receipt existed and no J job was submitted. Its just-added unsubmitted queue entry was removed to prevent accidental execution of the old plan. Do not use the private763701c snapshot to submit J until strategy is reconciled. Existing22 held and the hourly monitor are unchanged; review their scientific need under the confirmed policy before release.
+
 | candidate | frozen SHA / protocol tree | four-cell manifest |
 |---|---|---|
 | E2 process wait; non-saturation proof reopened |`c6f11d8` / `ceb68549`|[E2](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r02-e-wait-on-process-x4-v2.yaml)|
