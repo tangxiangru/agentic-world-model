@@ -10,7 +10,7 @@ import pytest
 
 from rollout import build_prompts, study_matrix
 from rollout.patches import (apply_eval_results_bind, apply_extra_binds, apply_prompt_file,
-                             apply_wm_checkpoint_eval)
+                             apply_prompt_env_guard, apply_wm_checkpoint_eval)
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -430,3 +430,22 @@ def test_setup_and_prompt_file_patch_cover_the_recorder_and_c0_agents() -> None:
     assert "for payload_agent in claude_recorder claude_wm; do" in setup
     patched = apply_prompt_file.apply('x\necho "$PROMPT" > "${EVAL_DIR}/prompt.txt"\ny\n')
     assert "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder" in patched
+
+
+def test_prompt_env_guard_blanks_the_prompt_for_study_agents_only() -> None:
+    original = (
+        'x\n'
+        '    timeout --signal=TERM --kill-after=30s "$((NUM_HOURS * 60 + 5))m" \\\n'
+        '        --env PROMPT="${PROMPT}" \\\n'
+        'y\n'
+    )
+    patched = apply_prompt_env_guard.apply(original)
+    assert '--env PROMPT="${AGENT_PROMPT_ENV}"' in patched
+    assert '--env PROMPT="${PROMPT}"' not in patched
+    assert 'AGENT_PROMPT_ENV="${PROMPT}"' in patched
+    assert "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder)" in patched
+    assert apply_prompt_env_guard.apply(patched) == patched
+
+
+def test_setup_installs_the_prompt_env_guard() -> None:
+    assert "apply_prompt_env_guard.py" in (ROLLOUT / "setup.sh").read_text()
