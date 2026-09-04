@@ -19,18 +19,19 @@ ROLLOUT = REPO / "rollout"
 
 def test_recorder_matrix_is_balanced_over_scientists_tasks_and_bases() -> None:
     cells = study_matrix.recorder_matrix()
-    assert len(cells) == 16
-    assert len({cell.spec for cell in cells}) == 16
+    assert len(cells) == 8
+    assert len({cell.spec for cell in cells}) == 8
     assert all(cell.condition == "r" for cell in cells)
     by_model = {m: sum(c.scientist_model == m for c in cells) for m in ("claude-opus-4-8", "claude-opus-5")}
-    assert by_model == {"claude-opus-4-8": 8, "claude-opus-5": 8}
-    assert {cell.task for cell in cells} == {"gpqamain", "healthbench"}
+    assert by_model == {"claude-opus-4-8": 4, "claude-opus-5": 4}
+    assert {cell.task for cell in cells} == {"gpqamain"}
     assert {cell.base_alias for cell in cells} == {"gemma3-4b", "qwen3-4b"}
     assert {cell.record()["base_model"] for cell in cells} == {"google/gemma-3-4b-pt", "Qwen/Qwen3-4B-Base"}
     assert all("claude-opus-4-6" not in cell.spec for cell in cells)
     assert all(cell.record()["num_hours"] == 10 for cell in cells)
     assert all(cell.record()["prior_rollout_count"] == 0 for cell in cells)
-    assert len(study_matrix.recorder_matrix(4)) == 32
+    assert len(study_matrix.recorder_matrix(4)) == 16
+    assert len(study_matrix.recorder_matrix(5)) == 20
     with pytest.raises(ValueError):
         study_matrix.recorder_matrix(9)
 

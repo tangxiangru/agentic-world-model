@@ -6,9 +6,9 @@ recipes, so every cell is a *recorder* cell: the scientist gets no prior
 information of any kind and registers each experiment by command
 (``awm wm submit``). The matrix is balanced by construction — half the cells
 run each scientist model — over two PostTrainBench tasks, two base models, and
-N repetitions:
+N repetitions (HealthBench parked until a grader key exists):
 
-    2 scientists x 2 tasks x 2 base models x N repetitions   (N = 2 -> 16 cells)
+    2 scientists x 1 task x 2 base models x N repetitions    (N = 2 -> 8 cells)
 
 Every cell is one H100 for ten hours. ``--format specs`` emits one
 ``wm_pack.sbatch`` spec per line; ``--reps`` changes N.
@@ -27,7 +27,9 @@ SCIENTIST_MODELS = (
     "claude-opus-4-8",
     "claude-opus-5",
 )
-TASKS = ("gpqamain", "healthbench")
+# healthbench is LLM-graded (gpt-5-mini via OPENAI_API_KEY) and is parked until a
+# grader key exists; the launcher still accepts it for individual cells.
+TASKS = ("gpqamain",)
 # spec alias -> Hugging Face id, as PostTrainBench names its base models.
 BASE_MODELS = {
     "gemma3-4b": "google/gemma-3-4b-pt",

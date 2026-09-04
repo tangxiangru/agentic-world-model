@@ -22,9 +22,9 @@ directories remain in the tree but `wm_pack.sbatch` refuses their specs.
 is one H100 for ten hours, and the matrix is balanced by construction:
 
     2 scientists (claude-opus-4-8, claude-opus-5)
-  × 2 tasks      (gpqamain, healthbench)
+  × 1 task       (gpqamain — healthbench is parked until a grader key exists)
   × 2 base models (gemma3-4b = google/gemma-3-4b-pt, qwen3-4b = Qwen/Qwen3-4B-Base)
-  × N repetitions (--reps, default 2)          → 16 cells; --reps 4 → 32
+  × N repetitions (--reps, default 2)          → 8 cells; --reps 5 → 20
 
 A spec names its cell completely: `r:<scientist>:<task>:<base>:<rep>`. The
 task and base are in the spec rather than the environment so the same wrapper
