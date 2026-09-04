@@ -159,5 +159,6 @@ def test_reconcile_harvest_passes_receipt_task(tmp_path, monkeypatch):
     monkeypatch.setattr(ptb_ops, "harvest_job", harvest)
     action = ptb_ops.Action("harvest", "invented-batch", "test only", cell="h01",
                            job_id="101", receipt="formal.json", state="FAILED")
-    ptb_ops.apply([action], tmp_path)
+    written = ptb_ops.apply([action], tmp_path)
     assert calls[0]["expected_task"] == "humaneval"
+    assert "judges-unverified" in written[0] and not written[0].endswith(" clean")

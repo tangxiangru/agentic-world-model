@@ -58,3 +58,34 @@ all16 retained new jobs are JobHeldUser, zero runtime, StartTime Unknown,
 zero restarts, exact receipt names and ReqNodeList on ondem0–1. GPUs allocated0.
 [Raw controller/receipt evidence](analysis-2026-09-04-opus48-onboarding/legacy-retirement-preflight.json).
 No mutation occurred in that check; operator apply must still recheck PENDING.
+
+## Execution completed
+
+Planner/source decisionff9143e was pushed before operator execution. The clean
+shared operator clone was fast-forwarded; its dry plan contained exactly17
+cancellations and nothing else. Immediate15:16:47 preflight reconfirmed all33
+target/retained jobs and ownership. Normal apply confirmed17 pending-only
+cancellations, then the next exact17-action plan harvested them all. All have
+complete=false, eligible=false, accuracy=null, result directory not found.
+Commit4cd1dbd records the six appended cancellation lists,17 status bundles and
+ops log; pushed and fast-forwarded back to the planner. No existing result was
+deleted. Old configurations remain reproducible through new future receipts.
+
+[Postflight15:22:09](analysis-2026-09-04-opus48-onboarding/legacy-retirement-postflight.json)
+confirms all17 CANCELLED, no allocated resources, zero runtime and accounting
+Start=None/ElapsedRaw=0. All16 new jobs remain JobHeldUser with exact names/nodes.
+Current inventory21 physical holds,16 useful; ownership OK,0/16 allocated.
+Slurm controller StartTime becomes the cancellation timestamp (equal EndTime)
+even for these never-started jobs; do not confuse that with actual allocation.
+The initial postflight's Unknown-only assertion exposed this difference; the
+corrected check retains both controller and independent accounting evidence.
+
+The historical console suffix “clean” on these incomplete harvests meant only
+an empty flags list, not judge-clean completion. Status JSON never marked them
+complete. The logger is corrected prospectively to say judges-unverified for
+incomplete/flagless results; existing logs remain unaltered.
+
+Monitor3564003 wrote its15:16:40 tick just before cancellation, still0/38 seen
+terminal. Keep it live and unchanged until its next16:16:40 event; the17 known
+administrative terminals are already harvested but do not create clean evidence.
+After the real detector event, archive its state and rearm the remaining21 jobs.

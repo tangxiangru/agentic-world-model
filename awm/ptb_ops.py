@@ -716,7 +716,9 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
                 verdict = "complete"
             else:
                 verdict = f"incomplete ({len(status['issues'])} issue(s))"
-            flags = ",".join(status["judge_flags"]) or "clean"
+            flags = ",".join(status["judge_flags"]) or (
+                "clean" if status["complete"] else "judges-unverified"
+            )
             acc = "" if status["accuracy"] is None else f" acc={status['accuracy']:.4f}"
             line = f"harvest {action.batch}/{action.cell} job={action.job_id} {action.state}{acc} {verdict} {flags}"
         else:  # pragma: no cover - plan only emits the kinds above

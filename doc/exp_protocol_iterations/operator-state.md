@@ -1,8 +1,9 @@
 # exp-protocol operator state and dependencies
 
-Mutable handoff, updated2026-09-04 after the HumanEval CPU integration checkpoint.
-Receipt source remains immutable. Latest queue check14:16:46; monitor's
-14:16:40 tick still has0/38 terminals. Scope remains only
+Mutable handoff, updated2026-09-04 after the17-cell legacy retirement.
+Receipt source remains immutable apart from appended cancellation records.
+Latest postflight15:22:09; monitor's15:16:40 tick predates the cancellations.
+Scope remains only
 `gangda_exp-protocol-evolve`, `slurm2-a3nodesetondem-[0-1]`; never AWM full.
 
 ## Approved study and actual scheduler state
@@ -28,27 +29,28 @@ All16 jobs were individually checked: PENDING, Reason=JobHeldUser,
 ReqNodeList=slurm2-a3nodesetondem-[0-1], one GPU/16 CPUs. OWNERSHIP OK.
 **0/16 GPUs allocated,0 running. Submitted held does not mean running.**
 
-There are **38 physical held jobs**:16 newly specified/validated study cells plus
-22 legacy holds below. Only the16 new cells currently have an affirmative
-scientific purpose under this approved wave; retaining old jobs is not proof
-they remain useful. Do not release more than the justified buffer permits.
+There are **21 physical held jobs**:16 newly specified/validated study cells plus
+5 untouched mixed-baseline holds. The17 other old jobs were retired and harvested
+under the [whole-block decision](2026-09-04-opus48-legacy-queue-retirement.md).
+Only the16 new cells currently have an affirmative scientific purpose under
+this approved wave. Do not release more than the justified buffer permits.
 With only16 justified held, releasing all16 would violate the eight-held floor.
 
-## Legacy holds and completed evidence
+## Legacy holds, retirements and completed evidence
 
-| Legacy block | exact held IDs | disposition |
+| Legacy block | exact receipt IDs | disposition |
 |---|---|---|
 | strict baseline tail |90826–90830|mixed receipt with90823–90825 completed; explicit remaining-tail disposition needed|
-| old strict control repair |91965|no longer automatically funded|
-| A v2 |91046–91049|old standalone screen; re-audit/withdraw as a whole if obsolete|
-| B v2 |91050–91053|mechanism incorporated into E; no automatic standalone funding|
-| drift A |91058–91059|no automatic drift top-up|
-| H |91068–91071|mechanism incorporated into E; no automatic standalone funding|
-| drift B |91072–91073|no automatic drift top-up|
+| old strict control repair |91965|CANCELLED/harvested; stop old strict8 completion, retain strict7+sensitivity|
+| A v2 |91046–91049|CANCELLED/harvested; new agenda retires old configuration, not proof E covers A|
+| B v2 |91050–91053|CANCELLED/harvested; E6 carries engineering, no standalone attribution spend|
+| drift A |91058–91059|CANCELLED/harvested with old companion wave|
+| H |91068–91071|CANCELLED/harvested; applicability engineering enters E2|
+| drift B |91072–91073|CANCELLED/harvested with old companion wave|
 
-No legacy hold was cancelled in this registration step. New useful inventory
-now permits a reasoned whole-block retirement audit. Use exact receipt IDs and
-live not-started state, never running/foreign work or outcome-selected cells.
+The17 administrative retirements are saved in4cd1dbd: exact receipts, no starts,
+zero runtime, no result directories, incomplete/null-score bundles. They add no
+clean result or scientist-failure observation. No running/foreign work was touched.
 The old strict-baseline receipt has3 completed plus5 held; its mixed-state
 release refusal is documented in [boundary audit](2026-09-04-mixed-receipt-release-boundary.md).
 Do not rewrite receipt membership or release arbitrary IDs to bypass it.
@@ -121,7 +123,7 @@ record remains. A restricted shell also cannot see the host PID/controller;
 use approved host reads, not a duplicate monitor or fabricated terminal state.
 
 The shared clean submitting clone is
-`/rmeng_data/robtang/exp-protocol-opus48-submit-ob4GmM8N/repo`, currentlyc45c944.
+`/rmeng_data/robtang/exp-protocol-opus48-submit-ob4GmM8N/repo`, currently4cd1dbd.
 It has independent Git objects, correct fork/upstream remotes, the shared data
 link and the same600-mode non-secret site configuration (path references, not
 copied auth-file contents). Auto-review initially rejected unknown .env copying;
@@ -133,7 +135,7 @@ submission source. Root's unrelated user meta/analysis drafts remain untouched.
 
 See [audit](analysis-2026-09-04-opus48-onboarding/new-task-eval-audit.md).
 Only GSM8K/AIME2025 currently pass the task allowlist; Opus4.8 high/1M profiles
-are admitted. The110-test operator/manifest/probe suite passes; all four GSM8K
+are admitted. The136-test operator/task-identity suite passes; all four GSM8K
 full source/site checks returned0 issues. No new-task allowlist bypass exists.
 
 GPQA Main:Idavidrein/gpqa revision633f5ee89ab8ad4522a9f850766b73f62147ffdd,
@@ -162,15 +164,24 @@ policy failure retained stdout/report and published no score. Host regression
 raw evidence, runtime/model/source/limit checks and formal retry/validator wiring
 are implemented. Reviews were **informed, not blind**. Zero model results.
 
-Remaining: actual scientist-image and compute-node/GPU-enabled/outer-timeout
-acceptance; shared offline parquet/bwrap site provisioning; adopting the common
-PTB pin and expected-task checks in AWM consumers, synthetic harvest/judge/placement
-tests and full three-arm manifest/site admission. No HumanEval receipt exists.
+Actual scientist opus_5 image CPU original-scorer/log/private-visibility tests
+now pass too (five invented programs,52s). AWM independent expected-task checks
+are wired through all consumers including manual harvest;136 focused tests pass.
+Old guard8 and strict-control7+one quarantine remain unchanged in actual re-audits.
+Remaining: compute-node/GPU-enabled/outer-timeout acceptance, shared offline
+parquet/bwrap provisioning, common PTB pin adoption and full three-arm admission.
+On ondem0, cloud API host-key verification succeeded but both existing SSH
+identities were refused; do not generate/upload credentials or weaken host
+checks. Authorized node access is needed. No HumanEval receipt exists.
 
 ## Monitoring and trace review
 
-Current monitor **PID3564003**, tick14:16:40 shows0/38 terminal,
-next15:16:40. Args:all22 legacy held IDs plus92125–92140, threshold8,
+Current monitor **PID3564003**, tick15:16:40 shows0/38 terminal,
+next16:16:40. It predates the17 cancellations at15:16:47 onward; those are already
+harvested administrative terminals, not missing model results. Keep this live
+process/cumulative watched set until its real event, then archive/rearm the21
+remaining jobs, never trigger clean-cell analysis from administrative terminals.
+Args:all22 original legacy IDs plus92125–92140, threshold8,
 poll3600s. Log `/tmp/exp-protocol-opus48-monitor-yIxSYcTT/monitor.log`;
 [handoff](analysis-2026-09-04-opus48-onboarding/monitor-handoff.json)
 preserves the old state. Old2612586 was stopped only after the new watcher was

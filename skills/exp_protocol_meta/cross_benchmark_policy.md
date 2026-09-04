@@ -90,3 +90,12 @@ and source identities. Recompute archive hashes and outcomes: matching saved
 hash labels alone does not validate bytes. Make verified raw bytes durable
 before atomic metrics publication, and preserve failed attempts. CPU fixtures
 never enter the scientist score table or clean-cell review trigger.
+
+Carry the expected task from the immutable receipt job/cell or specified
+manifest through every consumer, including manual harvest and queue failure
+resolution. A result's self-reported task must not choose a weaker validator;
+do not retry a rejected strict-task check under a legacy interface. An unscoped
+directory audit is diagnostic, not completion authority. Missing judge files
+can yield an empty flag list: only a completed validated result may be labelled
+judge-clean. Administrative cancellations remain unverified/null-score evidence,
+as in the [old-block retirement](../../doc/exp_protocol_iterations/2026-09-04-opus48-legacy-queue-retirement.md).
