@@ -213,3 +213,11 @@ new runtime as S. This adds a reference arm, not a change to any original
 receipt; it is not a replacement for failed raw attempts. Exact validation must
 return before S0 scientific submission. See the policy-comparison spec/record
 and `evidence/2026-09-04-1730/operator-review.md`.
+
+## H final operational update
+
+H completed at73.2183% ±5.0257pp(n4), including the current WMA single-run
+maximum80.0607%. Its11 original scope flags and high dispersion bar promotion;
+it remains separate from the unfinished Opus4.8 study. Total PTB/automatic-judge
+completions are now89. Four S0 legacy-policy cells remain staged behind technical
+job92312; that validation receipt is recorded, safely routed and PENDING.

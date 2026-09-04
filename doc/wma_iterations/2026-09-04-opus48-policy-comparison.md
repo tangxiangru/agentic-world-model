@@ -43,3 +43,27 @@ acceptance and its separate200k context proof. Both legacy and restored current
 policy pass all six existing skill-contract tests. Non-skill private source is
 byte-identical to31b854bb. No missing gate is bypassed; the next action is the
 registered validation-only job, with a30-minute cap and independent proof path.
+
+## Validation submitted asynchronously
+
+Technical-only **v91r01 / job92312** is PENDING on the exact nodes2–3 route.
+Receipt: `results/ptb/wma-crossbench-opus48-legacy-v02-runtime-validation-x4/context-smoke-1-2026-09-04T180034.371470+0000.json`.
+It was registered and route-checked while held, then released. Source top is
+9de9865a; public31b854bb; privatef8e4c228; original context proof is untouched.
+No scientific S0 job is submitted; all four remain staged.
+
+The PTB worktree advanced concurrently from e62036f to **9695e32f3a160b8c7e927cbb4de66727de7c72ad**
+between preview and submission. The actual receipt freezes the latter, while
+the top gitlink remains e62036f. The only changed file is standalone
+`src/judges/smoke_claude_vertex.sh`, not called by this experiment; all launch,
+agent, acceptance, task and evaluation code is unchanged. The exact diff and
+limits are recorded in `ptb-source-equivalence.json`; keep this external work
+and do not silently stage its submodule pointer. Recheck equivalence before the
+scientific launch; future relevant changes are not automatically approved.
+
+Continuation: inspect job92312 and the acceptance JSON under
+`data/ptb/context-validation/wma-runtime/f8e4c2284f4da82be961aca3a15dfa61ca6fd765/92312/`.
+Require passed context/model/isolation and matching public/private SHA. Then
+freeze its exact path in the S0 manifest, full-check, inspect reconcile preview,
+commit/push and submit w66r01–04 without waiting on unrelated science. A failed
+validation remains a blocker; it is not a scientific failure or a promotion.

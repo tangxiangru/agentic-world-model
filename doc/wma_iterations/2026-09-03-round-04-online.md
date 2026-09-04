@@ -186,3 +186,25 @@ A separate four-cell legacy-policy reference in the new Opus4.8 runtime is
 preregistered in `doc/spec/2026-09-04-opus48-wma-policy-comparison.md`. It compares
 old versus new policy without changing G/H or the original crossbench receipts;
 its scientific launch remains gated on its exact production acceptance.
+
+## H complete — 2026-09-04 18:06 UTC
+
+All H cells pass PTB completion and automatic judges: 73.6164%, 70.7354%,
+80.0607%, 68.4610%. Mean **73.2183%**, sample SD **5.0257 pp**, n=4; range
+68.4610–80.0607%. Relative to matched w10 v0.2 (72.3180% ±2.7382,n8),
+the descriptive difference is +0.9003pp, much smaller than H variability.
+w14r03 is the highest observed WMA single score so far, but a maximum is not
+a treatment effect or promotion.
+
+The unchanged H ledger is 25 final /14 scored / **11 original access flags**;
+L2coverage.727(n11), width/noise4.9453,L3hit.600 and saved/wrongly-killed
+GPU-h both zero. Retained-final WMA cost is $49.117 for25 verdicts. Scientist
+cost across four cells is $224.60378525; known combined scientist + retained
+WMA is $273.72078525, excluding judges and superseded reviews. Allocated time
+is 35.0261h and is not utilization. All Slurm states FAILED/2:0 are retained
+alongside scientifically valid PTB results.
+
+Eleven original scope flags alone fail the common zero-flag guard; no H promotion
+is possible. The full soup-opportunity/advice readout and bounded audit of the
+high-score cell are recorded under `evidence/2026-09-04-1730/`; original flags
+and scorer remain unchanged. No additional H repetitions are submitted.

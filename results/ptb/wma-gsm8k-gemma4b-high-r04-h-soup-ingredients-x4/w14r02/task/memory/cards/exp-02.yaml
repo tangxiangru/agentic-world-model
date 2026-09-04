@@ -1,0 +1,108 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T09:25:40Z'
+situation:
+  elapsed_h: 0.65
+  remaining_h: 9.35
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0533, protocol_n: 300}
+  trigger: "exp-01's diagnostic: 140/300 completions ran to the 4000-token cap and 74% do not end on an 'ANSWER:' line, while the snapshot's generation_config.json makes evaluate.py sample at temperature 1.0, top_k=64, top_p=0.95 (analysis/exp-01_diag.json)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "summary.stop_reasons, summary.format_failure_share"}
+    - {path: /home/ben/task/memory/cards/exp-01.verdict.json.rejected, locator: "suggestions.preconditions[1] and [3]"}
+  alternatives_rejected:
+    - {option: "Skip this card and compare the SFT checkpoint straight to exp-01", reason: "the SFT checkpoint will ship a greedy generation_config, so that delta would mix decode with training; the WMA's precondition 2 names this exact failure"}
+    - {option: "Ship the trained checkpoints with the base model's sampled decode so exp-01 stays the comparator", reason: "keeps the noisy ruler (WMA precondition 4: ~0.05 decision floor under sampling) for every remaining card, and gives up free accuracy at grading time"}
+    - {option: "Run a C18 repeat of exp-01 to measure the sampling spread directly", reason: "8 min for a variance estimate; greedy removes the variance instead of measuring it, and answers the decode question at the same time"}
+  pitfalls_hit:
+    - {what: "first version of ckpts/base_gemma_greedy set only do_sample=false and DELETED top_k/top_p. vllm/config/model.py:1367 get_diff_sampling_param reads only {repetition_penalty, temperature, top_k, top_p, min_p, max_new_tokens} - do_sample is ignored - so that dir would have served temperature 1.0 with the top_k=64/top_p=0.95 filter removed, i.e. noisier than exp-01, and would have falsified greedy without testing it. Caught by the WMA verdict on this card before launch.", cost_h: 0.1, fix: "spell greedy out as temperature 0.0 / top_p 1.0 / top_k -1; same fix applied to scripts/train_sft.py so every later checkpoint and final_model/ ship it"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --model, "$PTB_BASE_MODEL_SNAPSHOT", --data, data/sft_v1.jsonl, --out, ckpts/smoke, --max-seq-len, "1024", --max-rows, "2000", --bs, "16", --grad-accum, "4", --epochs, "1"], outcome: "32 steps in 106 s (18.9 rows/s, 39 GB of 80 GB), final loss 0.42; 0/2000 rows exceeded max_seq_len (p50 311, p99 616, max 930); saved checkpoint keeps eos_token_id [1,106] and Gemma3ForConditionalGeneration"}
+    - {command: [python, "-c", "vllm LLM(ckpts/smoke/final).chat(one gsm8k train question, templates/gemma3.jinja)"], outcome: "loads in vLLM 0.11 from the saved dir and returns 'Natalia sold 48 clips... ANSWER: 72' with finish_reason=stop - template, stop token and answer marker all correct end to end (pitfalls final_model_not_loadable and template_unreachable rehearsed)"}
+problem:
+  statement: "Every accuracy this batch measures is a single unseeded draw at temperature 1.0, because evaluate.py passes no temperature/seed and vLLM inherits do_sample/top_k/top_p from the model directory. That both depresses the score (a sampled token derails a chain greedy would finish) and widens the decision floor to ~0.05, which is the size of the effects later cards need to resolve."
+  evidence:
+    - {path: /home/ben/task/eval/exp-01_base_dev300_inspect.json, locator: "samples[*].output.choices[0].stop_reason", observation: "140/300 max_tokens: at t=1.0 the model wanders into invented follow-up problems instead of stopping"}
+    - {path: /home/ben/task/evaluate.py, locator: "lines 74-86 (inspect_eval call)", observation: "no temperature, top_p or seed is ever placed in GenerateConfig, so decode is whatever the model dir's generation_config.json says"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Serving the identical base weights with a greedy generation_config (do_sample=false, no top_k/top_p) raises accuracy on dev-300 relative to exp-01's sampled decode, and reduces the max_tokens stop-reason share."
+  mechanism: "Greedy removes the tail-sampling that turns a correct partial chain into a wrong one and that keeps the model generating past the answer line; the 10-shot prefix already makes 'ANSWER: n' the highest-probability continuation for a fraction of items."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "+0 to +8 pts; base is format-bound so most of the 0.74 format-failure share will survive"}
+  falsified_if: "greedy accuracy is at or below exp-01's 0.0533, or the max_tokens share does not fall - in which case the trained checkpoints should keep the base decode and exp-01 stays the comparator."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/base_gemma_greedy
+    origin: base_model
+    hash: "symlinks to the cc012e0a snapshot blobs; only generation_config.json differs: {temperature: 0.0, top_p: 1.0, top_k: -1, do_sample: false, eos_token_id: [1,106]}"
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/datasets/openai___gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866/gsm8k-test.arrow
+      source: "openai/gsm8k (data_dir=main, split=test, revision 740312add88f781978c0658806c59bc2815b9866)"
+      n_examples: 1319
+      built_by: null
+      build_command: []
+      selection: "NOT training data - this card trains nothing; it is the evaluation set, first 300 items scored."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0"
+    peft: none
+    hyperparams: {}
+    target_format: "not applicable - no training in this card"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/base_gemma_greedy, --limit, '300', --max-connections, '32', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-02_basegreedy_dev300.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '300', --max-connections, '32', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: "official inspect_evals/gsm8k test split --limit 300 (first 300 items, no shuffle)"
+    n: 300
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.0533
+    path: /home/ben/task/eval/exp-01_base_dev300.json
+  diagnostic:
+    what: "max_tokens stop-reason share and share of completions whose last numeric token is not on an ANSWER: line"
+    n: 300
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/ckpts/base_gemma_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/base_gemma_greedy, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.0233, n: 300, path: /home/ben/task/eval/exp-02_basegreedy_dev300.json, delta_vs_comparator: -0.030}
+  diagnostic_result:
+    value: 0.29
+    path: /home/ben/task/analysis/exp-02_diag.json
+    notes: "The two effects the WMA asked to be separated move in opposite directions. Termination: 300/300 completions hit the 4000-token cap under greedy vs 140/300 under sampling, and ends_at_first_answer_share falls 0.15 -> 0.00 - exactly the prediction in precondition 1, the sampled eos hazard was the only thing that ever stopped this base model. Reasoning: first_answer_accuracy RISES 0.11 -> 0.29, i.e. greedy nearly triples the rate at which the first answer the model states is correct. Because the scorer reads the LAST number and nothing ever terminates, the scored accuracy falls 0.0533 -> 0.0233. Greedy receipt: logs/exp-02.log:71 carries vLLM's 'Default sampling parameters have been overridden by the model's Hugging Face generation config' line; median completion length went 3748 -> 10193 chars, which only happens if the eos hazard is gone."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "As a scored number greedy is worse on the untuned base: 0.0233 vs 0.0533, because greedy removes the random eos draws that were the base model's only way of stopping (max_tokens 140/300 -> 300/300). But the mechanism probe says the opposite about capability: the first answer the model states is correct on 29% of items under greedy against 11% under sampling."
+  decision: adopt
+  next_step: "Adopt greedy (temperature 0.0, top_p 1.0, top_k dropped) for every trained checkpoint and for final_model, because SFT supplies the termination that greedy removes - the 2000-row smoke checkpoint already stops on <end_of_turn> - and greedy then keeps the 0.29-vs-0.11 reasoning advantage instead of throwing it away. 0.0233 is the same-decode comparator for exp-03. Do NOT adopt greedy for an untuned checkpoint. Also: top_k=-1 was replaced by dropping the field in scripts/train_sft.py per WMA precondition 3."

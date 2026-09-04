@@ -1,0 +1,139 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-04T15:30:03Z'
+situation:
+  elapsed_h: 6.6
+  remaining_h: 3.4
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/checkpoint-1484
+    score:
+      metric: accuracy
+      value: 0.7407
+      protocol_n: 1319
+  trigger: "The best artefact of the session is checkpoint-1484, the point exactly one epoch into a two-epoch cosine schedule - i.e. a checkpoint taken while the learning rate was still at half its peak, which is not a converged model. exp-02 showed what annealing is worth on this trajectory: its own mid-cosine 1.5-epoch point read 0.6333 and its annealed 2-epoch end point read 0.6933 on the same items."
+  trigger_evidence:
+    - path: /home/ben/task/eval/exp-06_exp-04_checkpoint-1484_full1319.json
+      locator: "accuracy 0.7407 over all 1319 test items"
+    - path: /home/ben/task/memory/cards/exp-02.yaml
+      locator: "result.measurements: 0.6333 at step 3255 (mid-cosine) vs 0.6933 at step 4342 (annealed end)"
+  alternatives_rejected:
+    - option: "Stop and ship checkpoint-1484 or the soup"
+      reason: "That remains the fallback and final_model already holds a scored candidate; this card writes to a new directory and can only be adopted by beating the incumbent's n=1319 number."
+    - option: "Two epochs again with a different LR"
+      reason: "Two epochs of stage 2 is exactly what produced the decay 0.7600 -> 0.7267 -> 0.7200. The observation to act on is that the good region is around one epoch, so the schedule should end there."
+    - option: "A third RFT round from checkpoint-1484"
+      reason: "Sampling plus training plus a full read is ~2.2 h against 3.4 h remaining, with no margin for the packaging and verification steps. Re-running the schedule that is already known to pass through a good region, with the anneal it was missing, is the cheaper and better-evidenced move."
+    - option: "Continue the existing 2-epoch run with a linear decay to zero from step 1484"
+      reason: "Would need the optimizer state, and setup.checkpoints in exp-04 used save_only_model=True, so it is not on disk. Re-running one epoch from the exp-02 parent is the same cost and is a clean, reproducible schedule."
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-02/final, --data, /home/ben/task/data/stage2.jsonl, "(exp-04, same script, same data, same parent)"]
+      outcome: "The identical script/data/parent combination already ran to completion for 1h27m in exp-04, including the first-batch label-masking assertion and the aux-file copy into every checkpoint dir; only --epochs and --save-steps differ here, so no new smoke run is warranted."
+problem:
+  statement: "Every candidate this session has produced sits between 0.7133 and 0.7600 on dev-150 and the best of them reads 0.7407 on the full 1319-item test set. The single largest structured effect observed anywhere in the session is not a data or method change - it is where on the learning-rate schedule the checkpoint is taken (exp-02: 0.6333 mid-cosine vs 0.6933 annealed; exp-04: 0.7600 mid-cosine at one epoch, decaying to 0.7200 by the annealed end of two). The incumbent is a mid-cosine checkpoint, so it has never been annealed at the point where it is good."
+  evidence:
+    - path: /home/ben/task/memory/cards/exp-02.yaml
+      locator: "result.measurements"
+      observation: "0.5933 / 0.5933 / 0.6333 / 0.6933 at 0.5 / 1.0 / 1.5 / 2.0 epochs: the largest single jump in the whole curve is the last half epoch, which is where the cosine anneals to zero."
+    - path: /home/ben/task/memory/cards/exp-04.yaml
+      locator: "result.measurements"
+      observation: "0.7333 / 0.7600 / 0.7267 / 0.7200: the peak is at one epoch, and the annealed end of the two-epoch schedule is the worst point of the four."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Re-running stage 2 from ckpts/exp-02/final on the identical 47,479-row corpus for exactly ONE epoch with a cosine schedule annealed to zero over that epoch produces a checkpoint whose full-test-set (n=1319) greedy accuracy exceeds checkpoint-1484's 0.7407."
+  mechanism: "checkpoint-1484 is the same number of optimisation steps into the same data, but was taken with the learning rate still at ~50% of peak, so its weights are a snapshot of a moving iterate. Annealing to zero over the same steps ends the run at the bottom of the basin instead of in transit through it, which is the effect exp-02's own curve measures at +6 pts over its mid-cosine neighbour."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +4 points on n=1319; the anneal effect on exp-02 was larger, but that was over a longer remaining fraction of the schedule"
+  falsified_if: "The annealed one-epoch checkpoint reads at or below 0.7407 - 0.016 (one unpaired standard error of a 1319-item difference) on the full test set, i.e. annealing bought nothing measurable."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/stage2.jsonl
+      source: "identical to exp-04: synthetic:self (13,479 rejection-sampled rows from ckpts/exp-02/final on openai/gsm8k main/train questions) + 34,000 nvidia/OpenMathInstruct-2 gsm8k-family rows held out of exp-02"
+      n_examples: 47479
+      built_by: /home/ben/task/scripts/sample_rft.py
+      build_command: [python, scripts/sample_rft.py, --model, /home/ben/task/ckpts/exp-02/final, --out, data/rft_v1.jsonl, --k, '6', --temperature, '1.0', --top-p, '0.95', --top-k, '64', --max-tokens, '640', --max-per-question, '2', --gpu-memory-utilization, '0.85', --stats, analysis/rft_v1_stats.json]
+      selection: "unchanged from exp-04; the corpus is deliberately held fixed so the schedule is the only difference between this card and exp-04"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 (fused linear cross-entropy), flash_attention_2"
+    peft: "none"
+    hyperparams:
+      lr: 7.0e-6
+      epochs: 1
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2304
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+    target_format: "identical to exp-02 and exp-04"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-02/final, --data, /home/ben/task/data/stage2.jsonl, --out, /home/ben/task/ckpts/exp-07, --lr, '7e-6', --epochs, '1', --bs, '16', --grad-accum, '2', --max-seq-len, '2304', --seed, '0', --save-strategy, steps, --save-steps, '1200']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: 1200
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.8
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '-1', --json-output-file, '{out}.json', --max-connections, '2', --max-tokens, '4000', --gpu-memory-utilization, '0.3']
+    dev_set: "official full test split, 1319 items (fewshot=10 seed=42), greedy arm (do_sample=false, temperature=0.0) - the exp-06 protocol"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.7407
+    path: /home/ben/task/eval/exp-06_exp-04_checkpoint-1484_full1319.json
+  diagnostic:
+    what: "scripts/analyze_eval.py on the full greedy log (stop_reason histogram, ends_with_answer_line, mean completion length) plus scripts/paired_compare.py against the comparator's log: a McNemar count of discordant items resolves a small gap that the unpaired 1.6 pp standard error cannot."
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.75
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/checkpoint-1200, step: 1200}
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 1484}
+  training_summary:
+    final_loss: 0.248
+    steps: 1484
+    notes: "45 min wall. Same script, data, parent and seed as exp-04; only num_train_epochs differs, so the cosine anneals to zero at step 1484 instead of passing through it at half the peak LR. checkpoint-1484 was written 0 steps before the end and deleted as a duplicate of final. The greedy arm had to be set explicitly before the read (WMA tier-1 precondition): train_sft.py copies the parent's generation_config, and exp-02/final's is the sampling one - verified do_sample=false / temperature=0.0 / eos [1, 106] before evaluate.py started."
+  measurements:
+    - {metric: accuracy, value: 0.7354, n: 1319, path: /home/ben/task/eval/exp-07_final_full1319.json, delta_vs_comparator: -0.0053}
+  diagnostic_result:
+    value: 0.6426
+    path: /home/ben/task/analysis/exp-07_final_diag.json
+    notes: "McNemar against the comparator's log over all 1319 items: 890 both correct, 262 both wrong, 87 checkpoint-1484 only, 80 exp-07 only, exact two-sided p = 0.643 - indistinguishable. Formatting is clean: ends_with_answer_line 0.986, 1300/1319 stop, 19 greedy repetition loops (checkpoint-1484 has 20), mean completion 648 chars."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "Annealing the learning rate to zero over the one-epoch point gives 0.7354 on the full test set against the mid-cosine checkpoint's 0.7407 - 0.5 pts the wrong way, McNemar p = 0.643. The anneal effect that was worth +6 pts inside exp-02's first training stage is worth nothing measurable inside stage 2."
+  decision: reject
+  next_step: "Per the rule fixed in analysis/exp-07_decision_rule.md before the run, adoption required beating 0.7407 outright, so final_model is not overwritten and keeps ckpts/exp-05_soup. The wider reading: five artefacts now sit between 0.7278 and 0.7407 on all 1319 items with every pairwise McNemar p above 0.6, so stage-2 variants are indistinguishable and further schedule tweaks are not where any remaining gain is. exp-07/final is, however, a genuinely different point in the same basin, which makes it a new ingredient for a weight average rather than a competitor to one."

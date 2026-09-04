@@ -1,0 +1,3 @@
+| wma_skill | backend | model | effort | mode | slice | n | n_scored | n_leak_suspected | L0_hit | L0_recall_failed | L1_hit | L1_recall_invalid | L2_coverage | L2_width_mean | L2_width_over_noise | n_L2_scorable | L3_hit | gpu_h_saved | gpu_h_wrongly_killed | cost_usd_sum | cost_usd_mean | cost_wall_min_mean |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| a536a0af24d7 | claude | claude-opus-5 | high | online |  | 25 | 14 | 11 | 1.0 |  | 1.0 |  | 0.727 | 0.1373 | 4.9453 | 11 | 0.6 | 0 | 0 | 49.117 | 1.9647 | 6.3608 |

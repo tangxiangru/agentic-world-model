@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T11:55:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.7
+  remaining_h: 7.3
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.75333, protocol_n: 150}
+  trigger: "exp-03's diagnostic: with formatting and decode both solved, 36 of 150 items are still well-formed wrong answers, i.e. reasoning/arithmetic failures, and exp-02 trained on only one solution per problem for 1009 optimizer steps."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "wrong_but_has_answer_line=36, answer_line_is_last=149", observation: "the residual failure class is reasoning, not format"}
+    - {path: /home/ben/task/ckpts/exp-02/train_summary.json, locator: "steps=1009, total_tokens=31943540", observation: "exp-02 saw each of the 80855 problems exactly once, 32M tokens, final loss 0.311"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling fine-tuning (RFT) from exp-02 instead", reason: "on-policy self-distillation is the natural next card, but it costs a ~0.7h sampling pass before any training starts, and the cheaper question -- whether this recipe is simply undertrained -- is unanswered. Kept as exp-05 if time allows"}
+    - {option: "More distinct problems from a larger OpenMathInstruct-2 split", reason: "measured and rejected: train_5M yields exactly the same 80855 distinct gsm8k-sourced problems as train_1M (logs/build_big.log), so a bigger split buys more solutions per problem, not more problems. That is what this card scales"}
+    - {option: "Evaluate exp-02's surviving checkpoint-600/900 under the greedy config first (WMA cheaper_variant 1, the C5 lever)", reason: "they are fp32 and tokenizer-less so each needs a conversion pass, ~12 min for both, and on a single-epoch cosine schedule a checkpoint at 59%/89% of the run still has 40%/10% of peak LR -- I price it as unlikely to beat the fully-decayed final. --save-steps 950 on THIS card buys the same C5 sweep on checkpoints that are already greedy and tokenizer-complete, at zero conversion cost"}
+    - {option: "2-3 epochs over exp-02's 88328 rows", reason: "same optimizer-step count but repeated targets; three distinct verified solutions per problem is strictly more information for the same compute"}
+    - {option: "Add the 832k MATH-derived augmented_math rows", reason: "off-distribution for grade-school word problems; would spend ~2h of the remaining 7.3h on competition LaTeX"}
+    - {option: "Raise --fewshot-rows in proportion to the corpus", reason: "would change two things at once. exp-03 scores 0.753 under the 10-shot prompt with only 1200 aligned rows, so the pattern is already learned; the absolute count is held at 1200 to keep this a single-variable data-scale card"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/contam_v2.jsonl], outcome: "249843 documents scanned, 0 contaminated, exit 0 (analysis/contam_v2.err)"}
+    - {command: [python, scripts/build_data_big.py], outcome: "OpenMathInstruct-2 train_5M gsm8k+augmented_gsm8k -> 80855 distinct problems, identical to train_1M; 330438 rows at up to 4 solutions/problem, subsampled to 3/problem for this card"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "After the format fix (exp-02) and the decode fix (exp-03) the incumbent still gets 36 of 150 items wrong, all of them well-formed answers with a broken reasoning chain. The recipe that produced it saw each training problem exactly once: 88159 rows, 32M tokens, 1009 optimizer steps, final loss 0.311 -- little enough that the model may simply be undertrained on grade-school arithmetic reasoning."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "wrong_but_has_answer_line=36", observation: "24% of all items are well-formed and wrong; 0 are mis-formatted"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: "accuracy, stderr", observation: "0.75333 +/- 0.0353"}
+    - {path: /home/ben/task/ckpts/exp-02/train_summary.json, locator: "final_loss, steps", observation: "0.311 after a single pass over one solution per problem"}
+  affected_share: 0.24
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Training from the same base checkpoint on three distinct verified solutions per problem instead of one -- 249843 rows and ~2840 optimizer steps against exp-02's 88159 and 1009 -- will raise greedy dev-150 accuracy against exp-03's 0.75333."
+  mechanism: "The problem set is fixed at 80855, so this adds solution diversity, not coverage: each problem is now seen with three different correct derivations written by the same generator. That is a stronger signal than three epochs on one derivation, because it teaches the mapping problem -> answer rather than problem -> one memorised token sequence, and it triples the optimizer steps at the same learning rate, which addresses the undertrained reading of exp-02's loss curve. OpenMathInstruct-2's own scaling ablation reports a couple of GSM8K points from exactly this 1M -> 5M move."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0.01 to +0.05"
+  falsified_if: "greedy dev-150 accuracy is at or below exp-03's 0.75333, which would say solution diversity at fixed problem coverage is spent, and the remaining headroom needs on-policy data (RFT) or something other than more of the same corpus."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_train_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2 (split train_5M, problem_source in {gsm8k, augmented_gsm8k}) + openai/gsm8k (split train)"
+      n_examples: 249843
+      built_by: /home/ben/task/scripts/build_data_big.py
+      build_command: [python, scripts/build_data_big.py]
+      selection: "The same transform as exp-02 (\\boxed{X} unwrapped, <<a*b=c>> spans removed, '\\n\\nANSWER: <normalised number>' appended, row dropped unless the last number equals the reference answer and 'ANSWER: ' occurs exactly once, terminator '<end_of_turn>' stored in the field), applied to train_5M and capped at 3 distinct solutions per problem (seed 2) over the same 80855 problems, plus all 7473 openai/gsm8k TRAIN rows. Superset of exp-02's corpus. The GSM8K TEST split is used by no source."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused CE"
+    peft: "none (full fine-tune; vision_tower and multi_modal_projector frozen: 419.8M frozen / 3880.3M trainable)"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 87, grad_accum: 1, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 params + bf16 autocast, adamw_bnb_8bit; checkpoint cast to bfloat16 before save", seed: 0}
+    target_format: "unchanged from exp-02: assistant turn = <chain of thought>\\n\\nANSWER: <number>, rendered by templates/gemma3.jinja, loss on the assistant turn only. The one deliberate difference from exp-02 is that the saved generation_config sets temperature 0.0 (--greedy-gen-config), so this candidate is served greedily and is directly comparable to exp-03 rather than to exp-02's sampled read."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_train_v2.jsonl, --output-dir, /home/ben/task/ckpts/exp-04, --max-seq-len, "1024", --fewshot-max-seq-len, "3072", --fewshot-rows, "1200", --token-budget, "40000", --max-batch, "96", --grad-accum, "1", --lr, "1e-5", --epochs, "1.0", --liger, --greedy-gen-config, --save-steps, "950", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 950
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.3}   # 90.4M tokens / 12816 tok/s measured in exp-02 = 1.96h stepping + ~10 min tokenising 249843 rows + ~4 min load/save
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, dataset order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.75333
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "same script as exp-01..exp-03: ANSWER-last share, stop_reason counts and the count of well-formed-but-wrong completions, which is the quantity this card is trying to move (36 at exp-03)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.79
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2743}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2743, step: 2743}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1900, step: 1900}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-950, step: 950}
+  training_summary:
+    final_loss: 0.2752
+    steps: 2743
+    notes: "249362 rows kept of 249843 (481 dropped as too long, 0.19%); 86971844 tokens; 2743 token-budget micro-batches at grad_accum 1, mean 91 sequences per step; 6438s of stepping = 13509 tok/s. Cosine annealed fully (LR 1e-5 -> ~0 over 2743 steps, verified against the logged trajectory). Correction to setup.data.selection, which called this corpus a superset of exp-02's: the problem set is identical (80855) but the solutions are a fresh 3-of-~10 draw, so only about a third of exp-02's rows recur. The intended contrast -- 3 distinct verified solutions per problem instead of 1 -- is unaffected."
+  measurements:
+    - {metric: accuracy, value: 0.77333, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.02}
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-04_diag.json
+    notes: "Format and stop behaviour unchanged from exp-03: 149/150 ANSWER-last, one greedy repetition loop into the 4000-token cap. Well-formed-but-wrong fell 36 -> 34. Median completion grew 380 -> 446 chars: three solutions per problem produced slightly longer chains. The paired read is the informative one (analysis/exp-04_paired_vs_exp03.json): on the same 150 items exp-04 fixes 14 that exp-03 missed and breaks 11 that exp-03 had, net +3 items, exact McNemar two-sided p = 0.69."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "greedy dev-150 0.75333 -> 0.77333 (+2.0 pp), inside the predicted +0.01..+0.05 band and not below the falsification line, but the paired decomposition is 14 fixed against 11 regressed (McNemar p = 0.69): tripling solution diversity at fixed problem coverage bought a point estimate, not a demonstrated effect. 1.79h of GPU for an unproven +2."
+  decision: adopt
+  next_step: "Adopt exp-04 as incumbent on the point estimate -- it is the higher read and there is no reason to prefer the weaker one -- but treat the corpus-scaling line as exhausted: the same problems with more 405B-written solutions are hitting diminishing returns. exp-05 goes to a different distribution instead, rejection-sampling on-policy solutions from exp-04 itself. The C5 checkpoint sweep over checkpoint-950/1900 was skipped: each needs a bf16 + tokenizer conversion pass first, the cosine annealed fully so the final checkpoint should dominate, and the ~0.3h is worth more spent on RFT with 4.5h left."

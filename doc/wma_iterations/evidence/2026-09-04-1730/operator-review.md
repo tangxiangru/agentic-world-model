@@ -18,15 +18,15 @@ remains unmeasured because of the previously recorded SSH trust / Slurm identity
 limitations. The inspected reconcile preview contained one harvest and 16 peeks,
 no submit/cancel; it was applied to archive H/w14r04 and update active snapshots.
 
-H/w14r04 / 91448 is PTB validator/automatic-judge-complete at **68.4609552691%**
+H/w14r04 / 91448 was the first PTB validator/automatic-judge-complete cell at **68.4609552691%**
 (standard error 1.27994 pp), but contains two original WMA scope-flagged verdicts.
-Coverage is H 1/4; no replicate SD or score effect is estimable. Its frozen H
+Coverage at that first snapshot was H 1/4; no replicate SD or score effect was estimable. Its frozen H
 skill is `a536a0af24d7`, private `7e69e5c`, public `ae46724`, old Opus5 cohort.
 Slurm FAILED/2:0, allocation 08:14:07 and agent time 07:48:25 are retained.
 Scientist reported spend is $55.70025725, excluding judges; retained-final WMA
 cost is $11.9022, excluding three overwritten review costs.
 
-The H bounded review finds **two eligible soup cards**, exp-05 and exp-06,
+The first-cell bounded review finds **two eligible soup cards**, exp-05 and exp-06,
 although exp-06 contains two averages. Both locked plans/script hashes match.
 Positive time-short-default endorsement is 0/2, explicit rejection also 0/2;
 card-specific budget-fit reasoning is not the prohibited generic clock prior.
@@ -91,3 +91,31 @@ must not be reanalysed or resubmitted as the same evidence window. The original
 Claude report and its erroneous claims remain archived for audit; corrected
 interpretations are here. Promotion remains None. Existing singleton monitoring
 continues; no additional timer or PR dependency is introduced.
+
+## H full-arm addendum
+
+All four H cells subsequently completed and were harvested in this same operator
+check: 73.6164%, 70.7354%, **80.0607%**, 68.4610%; mean **73.2183%**, sample
+SD **5.0257pp**, range11.5997pp. The 80.0607% cell is the highest observed WMA
+single score to date, but the arm's mean is only+0.9003pp over matched v0.2 and
+is overwhelmed by dispersion. A maximum is not promotion evidence.
+
+The full bounded mechanism readout finds six eligible soup cards across three
+cells. Positive time-short-default endorsement is0/6, so the text-adherence
+metric is met. Actual uptake is mixed and often already prescribed by the frozen
+card; no clean H-caused soup, ingredient or incumbent decision is established.
+The authoritative full H ledger is25final/14scored/**11 original scope flags**,
+L2coverage.727(n11), width/noise4.9453,L3hit.600. The zero-flag guard fails,
+so H is not promoted or repeated unchanged despite the text metric.
+
+Scientist cost totals$224.60378525; retained-final WMA$49.117, with superseded
+WMA costs and judges unavailable. Known combined spend is$273.72078525 and
+allocated time35.0261GPU-h; allocation is not utilization. Complete evidence is
+in `h-complete-*`, `h-costs.json`, and `h-complete-mechanism.md`. All Slurm
+FAILED/2:0 and PTB-complete facts are kept.
+
+Final queue audit at18:11UTC: ownership OK,16/16 allocated,16RUNNING and
+**43 safely routed PENDING**, no bad routes. That pending count is42 original
+scientific jobs plus validation-only92312; four S0 science cells are staged and
+not counted. All live scheduler dependencies are null. No capacity fiction is
+used: even excluding the technical job, scientific pending remains above32.
