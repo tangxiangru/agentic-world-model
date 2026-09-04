@@ -6,6 +6,8 @@ The original construction rationale below is retained as historical evidence. It
 
 **Window04 planner decision:** [closed-window record](../exp_protocol_iterations/2026-09-04-round-02-window04-decision.md) supersedes the old replacement-first timing rule for **E v1 withdrawal only**. Jobs91064–91067 carry the known-false unchanged-tail=>dead text and are to be withdrawn as one wholly unstarted block after exact receipt/state checks.22 other useful held cells already satisfy the buffer without a replacement. This does not resolve E2 retention, change its metric, authorize E2 registration/release, or trigger G/P1 automatically. Historical construction/queue statements below remain provenance, not current instructions.
 
+Execution confirmed06:53:39 UTC:all4 oldE jobs cancelled from PENDING with zero elapsed time,and subsequently harvested as unstarted administrative withdrawals.22 held remain; no running work or result was deleted. The linked Window04 record preserves exact receipt/action evidence.
+
 ## Retention proof, without waiting for irrelevant reviews
 
 The saturation rule is ≥7/8 of exact cohort g01s01–g01s08 below 0.15 h cumulative post-exit idle per cell. Two certain failures make that impossible even if every other cell passes.

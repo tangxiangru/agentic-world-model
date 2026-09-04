@@ -4,7 +4,7 @@
 
 状态含义：**已采纳**（进了基线树）· **筛选中**（Round 02 起的 4-cell screen）· **排队**（有证据、等 slot）· **观察**（不是规程能改的事，只记数）· **搁置**（证据消失或被更强的候选压后）· **已否决**（评估后放弃，附理由）。
 
-## 一、方向台账（更新至 2026-09-03 Window 03；原始来源保留）
+## 一、方向台账（更新至2026-09-04 Window04主审；原始来源保留）
 
 | # | 方向 | 来源 | 证据现状 | 状态 | 理由 / 改变状态的条件 |
 |---|---|---|---|---|---|
@@ -22,7 +22,7 @@
 | 12 | **对照 c00r06 与 batch 1 的 0.7832 完全相同** | c00r06 job 90472 REPORT vs batch 1 g12 job 87250 RESULTS/结果包 | 两者同为 1033/1319，但配方完全不同：g12 是 125k SFT + 28k few-shot pass + RFT/fresh-data 后三 checkpoint soup；c00r06 是 82k SFT + 三阶段 GRPO 620 steps | **已核实：不是配方复现；标量同分/独立收敛** | retained official bundle 无 1319-item per-item log，不能声称答对集合相同；不作为 protocol 候选，只保留为高方差/多路径同分证据 |
 | 13 | **GSM8K-train 人写解法的简洁风格拖分 ~22 点** | p00r10 exp-02/03、p00r03 exp-03（10-shot 前缀拷贝演示风格） | 数据配方发现，两个 cell 各自独立发现 | **观察（知识，非规程）** | 若再出现，作为 pitfalls 的"数据风格"条目候选；现在不加是因为规程不该规定训练数据 |
 | 14 | **greedy parent 使 model/Trainer save 失败** | 原多cell；Window04新增Trainer与soup失败，并有两张pure-eval反例 | 精确8332917 CPU重放确认无family/operation门；g01r03 exp08、p00s02 exp07误拦，已在代码修复的save也误拦 | **D v1未启动整块91060–91063已取消并收割（09-04 06:19）**；D2设计待最终裁决，尚未构建/登记 | 26held中22个不涉及staleE，floor充足；原tree/manifest/receipt保留。真实Trainer/merge保存保护仍需，不能以有已知误拦的family捷径满足零误拦护栏；详见D withdrawal及scope audit |
-| 15 | **按时钟/非生产进程信号等待** | 原p00r02/p00r07；strict g01s03/g01s08失败与长等待真实，但0.433/0.234h仅在exit-by-GPU-release假设下成立；新c01s02确认pgrep自匹配 | **09-04复核：strict非饱和证明重新打开**；不能把显存释放当OS退出，亦不能反推已饱和；E2进程/退出结果指导仍为候选 | **E2 `c6f11d8` / `ceb68549` 保持冻结、未登记，待证据裁决；旧91064–91067保持未启动，不自动替换为G/P1** | CPU34测试不等于科学保留门；见window04-local/e2-retention-exit-evidence-audit.md。恢复非饱和证明或明确条件性判定后，再审registration/release门 |
+| 15 | **按时钟/非生产进程信号等待** | strict两事件的0.433/0.234h依赖退出假设；Window04确认pgrep自匹配，旧E文字把quiet tail当dead | strict非饱和证明未成立也不证明饱和；原E1确定文字缺陷单独处理 | **旧E1整块91064–91067已取消并收割；E2冻结未登记、待判据裁决** | Window04撤销replacement-first时序，因为22其他held足够；不改E2 primary、不自动换G/P1；实际退出/exit result/current-run artifact仍须区分 |
 | 16 | **间接 decision framing** | Window 02 both arms 8/8 greedy but gap −0.0565；protocol serial cards/RFT 5/5，controls broader plans | 与 initial SFT recipe 混杂，不能由 observational window 决定 | **假设，待 A/C screens** | A balanced 且 residual ≥0.03 才测 lighter framing；先不改 |
 | 17 | **stop-token ownership / raw-field false check** | old 3 cells；NEW p00r12 latent double append、p00r14 5 overrides、p00r15 wrong-raw-field repair | 3 NEW manifestations，structural evidence；score harm未证明 | **排队（I）** | optional `appended_by` + rendered-row check；exercised RFT 评估后再排 wave |
 | 18 | **trajectory weight averaging / soup** | p00r15 +4.5@200 且 0.734@500；p00r11/p00r13/p00r07 contradicted | 效果混合，p00r15 4-way 又是 post-hoc best-of-four | **观察（配方，非 protocol）** | 再现时预注册 checkpoint set/权重并用 ≥500；不把“跑 soup”写进 protocol |
@@ -33,7 +33,7 @@
 | 23 | **结束时按『最后一次运行的配置』而非『最小可改变决策的运行』定价剩余时间** | p00r11 exp-09（说 ~1 h，自身 RFT 周期 22 min）、p00r13 exp-06（2.2 h = 两 epoch）、p00r12 exp-09（余 3:05）、p00r15；w01 p00r05（余 3.7 h）、p00r10 | protocol ≥1.8 h 未用 6/14，control 1/10；按晚期边际收益约值 1 分 | **排队（P4，规则 8 措辞；在 D 与 A 的小时读数之后）** | 目标：余 ≥1.5 h 且无进程的 cell ≤1/4，且最后一次 `alternatives_rejected` 引用实测成本；是 #16 framing 的具体化 |
 | 24 | **Serving/evaluation contract 与重复读数（P5）** | g01r01/g01s02/g01s07原始开发日志，实际n=1319；正式少11/9/21题 | 前两cell的memory也不同；不同checkpoint的repeat不能当最终模型noise；官方逐题证据未恢复 | **P5专项已裁决：保留观察，不新增screen** | 不作跨模型dose-response推断；开发大JSON仍在原始卷，official log却写job-local source；先设计持久化证据，不重跑或写并发因果规则 |
 | 25 | **开发评测通过但官方 full scorer 失败** | p00r16 /90490九次数字 scorer 异常，无 metrics.json | scientist正常完成、judge-clean不等于validator-complete；n=500的0.712不是官方分数 | **观察 / harness failure evidence，非 protocol 候选** | 不盲目第十次重跑；recovery需新冻结合同，不能静默改评分器或填分 |
-| 26 | **GPU smoke 与锁卡覆盖范围冲突（J）** | strict g01s01/90791、g01s07/90797 的原始smoke训练早于exp-02创建/锁定 | card-matched计数漏掉probes；模板“非实验”标签与训练/评估前锁卡要求冲突 | **J `549e25a` / `7ae08ccf`已冻结，manifest已验证，未登记** | 仅rule1与模板注释；34测试、6场景forward review、local/full check通过；完整launch审计，固定floor0.673721；不叠#27 |
+| 26 | **GPU smoke与锁卡覆盖范围冲突（J）** | strict g01s01/g01s07原始来源；Window04全部8个协议cell复现 | 主审已读全部新trace报告及原始卡，fresh科学审查通过；不是已观察到J效果 | **J549e25a /7ae08ccf已冻结；下一优先held-registration准备，仍未登记** | 原单项rule1/template不变，34测试/6场景记录保持；提交前新做source/site检查，不能用CPU证据宣称GPU效果或放行权限 |
 | 27 | **卡内head-to-head的future comparator依赖（K）** | strict g01s02/03/06/07/08；override与pre-lock eval两类应对 | close未复查comparator，其他消费者只看conclusion；仅放宽preflight不够 | **K `58a6992` / `ec7d5f2a`已冻结，4-cell manifest local/full check通过；未登记** | 严格验证实际n/metric与失败结案，结案凭据贯穿index/collect/hook且可移植；legacy不变；与J/H/E独立 |
 | 28 | **训练prompt与grader few-shot分布不匹配** | g01s08灾难性首轮与g01s01小幅残差；g01s04渲染差异 | 值得调查，但一个灾难例不足以支持统一prefix比例；已存在template相关指导 | **观察，暂不建screen** | 先区分渲染可达性、训练分布与配方效果；不以≥20%prefix作为规程正确性判据 |
 | 29 | **正式逐题评测证据的scratch生命周期**（operator/harness，非protocol候选） | P5三个cell：developer大JSON仍在结果卷；official默认log在job-local frozen source | 镜像源码确认JSON周期性整文件重写；不能假定直接改共享盘是零行为影响 | **CPU原型含真实Inspect mock链路44测试通过；全套159；生产尚未接线/启用** | 保持评测期本地I/O，attempt后归档、cleanup前补保全，raw+compact格式回放已验证，caller/harvest尚缺；新共同PTB代次，不混现有Round02，不加GPU实验 |

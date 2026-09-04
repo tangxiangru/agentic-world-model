@@ -57,6 +57,11 @@ Measurement checks from window 03:
   reports with the verified sample-SE convention, `p(1-p)/SE² + 1` can
   cross-check n; do not generalize that formula to other estimators or treat
   rounded scores as exact counts.
+  A blocking check that promises actual-count verification must not silently
+  promote this diagnostic inversion to proof, even if it fits every historical
+  example. Require count provenance and handle degenerate/other estimators;
+  the [Window04 decision](../../doc/exp_protocol_iterations/2026-09-04-round-02-window04-decision.md)
+  rejects that proposed shortcut.
 - Split composite calls before attributing time: `lock; evaluate` is not all
   paperwork, and `launch; sleep` is not all launch overhead. A mention of
   `final_model` in a card or task title is not an artifact write.

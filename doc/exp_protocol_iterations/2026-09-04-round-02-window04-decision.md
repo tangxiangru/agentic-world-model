@@ -99,8 +99,14 @@ Five focused reviewer reports plus the planner prefix audit are linked by launch
 
 ## Next round
 
-1. Complete/harvest oldE's exact four unstarted cancellations; preserve22 useful held.
+1. OldE's exact four unstarted cancellations are confirmed/harvested; preserve22 useful held.
 2. Prepare a clean source-frozen execution checkout for J registration if concurrent user files still occupy the operator tree. Preserve those files; never ignore them merely to pass the clean-tree gate. Revalidate J's existing SHA/tree,all-six-path baseline-relative diff,contract and site,then register held through the normal operator path. This authorizes held preparation under OWNERSHIP OK, **not release**.
 3. Select at most3 single-item candidates per wave with same-generation guard drift comparisons. B4/H4/J4+driftA2 is14; control repair adds1. With J held added,the current useful pool would rise22→26,leaving11 after15 releases. Actual release needs live exact-ID math,OWNERSHIP OK,frozen ReqNodeList and native isolation or explicit per-receipt authorization. Do not count a checked manifest as a held receipt.
 4. Handle the strict-baseline mixed receipt explicitly before selecting its5 remaining holds for release. A,K,P4 and any revisedD need their stated remaining scientific/operational preparation; no automatic releases or filler.
 5. Maintain the current hourly detector and2 buffered clean tail cells. No new8-clean window exists; withdrawn jobs count as administrative terminals,not clean evidence. Winners still require a new second4-cell block and held-out confirmation before promotion.
+
+## E v1 execution receipt
+
+Fresh06:53:37 registry evidence showed OWNERSHIP OK,26 held,and exact receipt/job-name matches for91064–91067,allJobHeldUser. Accounting showed elapsed0,Start Unknown for all4. Normal operator apply confirmed all4 CANCELLED at06:53:39 using pending-only controller requests,before/after states appended to [their tracked receipt](../../results/ptb/exp-protocol-gsm8k-gemma4b-high-r02-e-wait-on-process-x4-v1/formal-2026-09-03T024807.587340+0000.json). A separate accounting read confirmed all4 cancelled with elapsed0 and no start. No running job or unrelated ID was touched,and no result was deleted.
+
+The next reconciliation harvested all4 status records:complete=false,eligible=false,accuracy=null,result directory not found. These are administrative withdrawals,not scientist failures or clean cells. At06:54:54 there were22 actual held,0 running/allocated and OWNERSHIP OK. The reservation recheck06:55:49 still spans11 nodes. No release authorization has arrived. D/E withdrawals changed no monitor IDs; its06:27:36 tick is0/22 terminal,next07:27:36.
