@@ -11,7 +11,7 @@ first as4b14768. Construction is isolated in
 | label | source | change |
 |---|---|---|
 | reference |guard drift2f64581 / protocol tree189319d6|historical reference|
-| E in construction |commits carrying this record; not an approved frozen variant|H/J/K integration, revised process/serving guidance, honest comparator evidence, tested native-save adapter|
+| E in construction |commits carrying this record; not an approved frozen variant|H/J/K integration, honest comparator evidence, tested native-save adapter and foreground execution records|
 | E+L / E+P / E+L+P |not constructed|distinct additions from the predeclared spec|
 
 This checkpoint incorporates H `b52e5f2`, J `549e25a`, K `58a6992`, B `9f294c3`
@@ -36,7 +36,7 @@ cells, benchmark scores or new-clean observations.
 No GPU outcome vector yet. Current official record remains g01r03's82.79%,
 which is unrelated to the effectiveness of this unrun package.
 
-CPU evidence through08:35 UTC:
+CPU evidence through09:18 UTC:
 
 -36 original K lifecycle tests passed after the first mechanical integration.
 -183 protocol/sandbox tests passed after H/J/K and revised guidance integration.
@@ -55,6 +55,24 @@ CPU evidence through08:35 UTC:
   no Torch/Transformers; its passing stand-in tests are not the native proof.
   The combined original-environment protocol/sandbox suite also passed after
   routing the scientist skill to the new helper, with these expected skips.
+-31 E5 execution tests passed in the original environment and independently in
+  the pinned image's Python3.10 runtime (`31 passed in2.98s`), without models,
+  network or GPU devices. They exercise real child exits/signals/observer death,
+  fresh namespaces, stale inputs, same-card concurrency, incomplete receipts,
+  allowed result-only card updates, and E3 failed closure.
+-Final original-environment combined protocol/sandbox/PTB suite:
+  `365 passed,15 skipped in18.84s`. The15 skip reports are the known missing-Torch
+  native save cases, not unknown E5 failures. Save's independent51-test pinned
+  evidence above remains separate.
+-Independent [E5 forward review](trace-reviews/bundle-e5-forward/report.md): six
+  real CPU attempts, seven honestly closed cards, no locked-open cards and no
+  remaining owned child processes. Seventy original text artifacts were archived
+  byte-identically, including unsuccessful/interrupted/unknown attempts.
+
+The generic skill-creator validator exits1 on the repository's preexisting
+`exp_protocol` underscore name. Preserve that installed identity; do not rename
+it to satisfy an unrelated naming convention. Behavioral/repository tests and
+reference routing are the validation here, not a claimed generic-validator PASS.
 
 The first broad PTB run had96 passes/4 failures: the new worktree lacked its
 pinned PTB checkout and shared HF data path. Those were real setup deficiencies,
@@ -93,6 +111,11 @@ Keep the current baseline; continue constructing the **complete** E package.
 No submission, release, promotion, quality gain or restored useful-held floor
 is claimed. Eight new discovery cells alone would not satisfy16 running+8 held.
 
+E5 is accepted as a tested component, not a full E package. E7's
+[rendered-input interface](2026-09-04-rendered-input-design.md) is accepted for
+construction after original g03/g05/g08 source/trace checks; no token materializer
+or consumer is implemented yet. These CPU reviews add zero validator-clean cells.
+
 ## Change
 
 Legacy comparator files with only requested limits, scalar accuracy/stderr or
@@ -120,6 +143,23 @@ is supported and tested; sharded/offloaded/custom/distributed paths remain
 unsupported. The skill routes save operations to this contract, not eval-only
 cards to a global parent-config blocker.
 
+E5 adds `awm exp_protocol run`, private no-clobber attempt records, exact argv/cwd
+and declared environment application, live lock/script/data checks, owned-group
+signal handling and optional predeclared fresh-directory evidence. It never
+auto-closes, retries, selects a model, or equates exit0 with scientific completion.
+An unresolved prior observer-death attempt cannot be retried solely because the
+OS lock disappeared; current PID birth identity is reported, not guessed.
+
+Main review found and reproduced a false block on legitimate result-section
+writes: the correction checks the immutable plan/card identity/lock, while
+allowing sections5–6 to be recorded after observing results. Absolute data paths
+are required by this optional wrapper because v2 locks did not pin the caller
+cwd for relative paths. Interrupted cleanup now timestamps an observed child
+exit; an expensive partial-output inventory is not forced and stays unverified.
+The independent reviewer tested the pre-correction execution source and did not
+rerun after it was unfrozen; the parent's final regression tests prove these
+specific subsequent corrections. No blanket claim of a blind final-code audit.
+
 ## Evidence
 
 See spec components E1–E8 and Window04 D scope, card semantics, exit/timing and
@@ -128,9 +168,9 @@ conflicts, absent helpers and combined consumers, not only matching headings.
 
 ## Next round
 
-Integrate E4's selected-artifact evidence with the remaining export consumers;
-implement E5's thin attempt recording and E6/E7 real sampling/rendered-input
-helpers. Validate the whole package with independent forward cases.
+Integrate E4/E5 evidence with the remaining selected-artifact/export consumers;
+implement E6 real sampling helpers and E7's prepared-token/checked-consumer
+interface. Validate the whole package with independent forward cases.
 Only afterward freeze complete variants and2-cell manifests, prepare L/P,
 replace scientifically obsolete holds through exact receipts, and revisit
 release with real native isolation/authority. A passing partial suite cannot

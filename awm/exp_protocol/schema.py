@@ -325,6 +325,15 @@ def validate_plan(card: dict[str, Any], session_dir: Path | None = None) -> Repo
     out = _require(r, card, "setup.output_dir")
     if out and not _inside(out, session_dir):
         r.warn("setup.output_dir", "outside the session dir")
+    execution_evidence = get(card, "setup.execution")
+    if execution_evidence is not None:
+        if not isinstance(execution_evidence, dict):
+            r.error("setup.execution", "must be a mapping when supplied")
+        elif execution_evidence.get("output_evidence") not in ("unverified", "fresh-directory"):
+            r.error("setup.execution.output_evidence", "must be unverified or fresh-directory")
+        elif execution_evidence["output_evidence"] == "fresh-directory":
+            if not isinstance(out, str) or not Path(out).is_absolute():
+                r.error("setup.output_dir", "fresh-directory evidence requires an absolute output path")
     keep = get(card, "setup.checkpoints.keep")
     if keep is None:
         r.error("setup.checkpoints.keep", "required: all | last | best | <positive int>")

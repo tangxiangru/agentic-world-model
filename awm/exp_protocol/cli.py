@@ -234,6 +234,28 @@ def _install(args: argparse.Namespace) -> int:
 
 # ----------------------------------------------------------------- parser
 
+def _run(args: argparse.Namespace) -> int:
+    from .execution import ExecutionInterrupted, run_card
+
+    path = _card_path(args)
+    if path is None:
+        return 2
+    try:
+        record = run_card(path, Path(args.dir))
+    except ExecutionInterrupted as exc:
+        print(f"interrupted: {exc}; inspect the execution record, then close honestly")
+        return 128 + exc.signum
+    except KeyboardInterrupt:
+        print("execution observer interrupted; do not infer completion")
+        return 130
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"execution evidence failed: {exc}; no scientific completion is certified")
+        return 2
+    print(f"command returncode={record['observed_returncode']}; "
+          f"artifacts={record['artifacts']['status']}; scientific validation not performed")
+    code = record["wrapper_returncode"]
+    return 128 - code if code < 0 else code
+
 def register(sub: argparse._SubParsersAction) -> None:
     ep = sub.add_parser("exp_protocol",
                         help="the experiment protocol: card, check, preflight, lock, close, index")
@@ -257,6 +279,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     lk.add_argument("--override", action="append", metavar="CHECK=REASON",
                     help="let a failing preflight check through; recorded in the lock (repeatable)")
     lk.set_defaults(func=_lock)
+    with_dir("run", "run the exact locked command and retain exit evidence; never auto-close").set_defaults(func=_run)
     with_dir("close", "validate sections 5-6, re-check the lock, rebuild the index").set_defaults(func=_close)
     with_dir("index", "rebuild memory/index.md and list starting points", card=False).set_defaults(func=_index)
     with_dir("chain", "print the parent chain back to the base model").set_defaults(func=_chain)

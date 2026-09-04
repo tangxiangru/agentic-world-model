@@ -50,7 +50,7 @@ awm exp_protocol check --dir {dir} exp-NN   # 3. repeat until no ERROR lines and
 awm exp_protocol lock  --dir {dir} exp-NN   # 4. runs preflight; refuses on any FAIL; pins sections 0-4, the script, and the data
 # Optional: first check whether `awm wma --help` succeeds in this installation.
 # If available: awm wma review --dir {dir} exp-NN --background
-#    launch your command exactly as written in setup.command.argv
+awm exp_protocol run --dir {dir} exp-NN    # run the exact locked argv; see execution-records.md
 #    keep checkpoints as setup.checkpoints says
 #    evaluate the output under evaluation.protocol; fill sections 5-6
 awm exp_protocol close --dir {dir} exp-NN   # 5. validates 5-6, re-checks the lock, rebuilds the index
@@ -58,6 +58,12 @@ awm exp_protocol close --dir {dir} exp-NN   # 5. validates 5-6, re-checks the lo
 
 `awm exp_protocol preflight --dir {dir} exp-NN` can be run on its own any time.
 Read its reminders: they are the pitfalls no check can catch for you.
+
+Read `execution-records.md` before using `run`: it preserves real child exit
+evidence and does not close the card or certify scientific completion. Missing
+finish records require investigation, not an automatic retry. Existing output
+directories stay unverified unless a supported evidence path establishes more;
+the optional fresh-directory mode must be declared before lock.
 
 Two escape hatches, both recorded in the lock file where the meta loop counts
 them: `lock --relock "<reason>"` when you must change sections 0–4 after a
