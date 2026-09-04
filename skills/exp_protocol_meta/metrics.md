@@ -108,6 +108,10 @@ Measurement checks from window 03:
   false, nor permission to assume true. The strict-guard round record documents
   p00r05, whose old status-only filter incorrectly reduced the baseline pool
   from14 to13 despite current discovery validating all14.
+- Identify an arm from its frozen manifest/setup and installed guidance, not
+  the AWM code SHA alone or the number of cards observed afterward. A control
+  can have AWM bootstrap provenance while excluding the protocol skill and
+  its setup flag; Window04's c01s06 is such a protocol-free control.
 - Calibrate repeat variability on the actual compared artifact. A different
   checkpoint's wider spread, even in the same cell, is not the final model's
   noise distribution. A reused `final_model` path needs its timestamp/lineage

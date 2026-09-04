@@ -115,6 +115,12 @@ directive of 2026-09-03, recorded in the iteration-basis spec §七 and in
   immutable-receipt, PTB-validator-complete, judge-clean cells toward the
   eight-cell analysis window. If the window is still short, restart the hourly
   monitor on the remaining relevant jobs.
+- If a partial harvest occurs while the detector is still live below its
+  terminal threshold, keep that process and its cumulative watched IDs; do not
+  reset the counter merely because those attempts were harvested. Track NEW
+  clean cells separately. [Window04's five-cell checkpoint](../../doc/exp_protocol_iterations/2026-09-04-window04-accumulation.md)
+  shows why removing five terminal IDs and waiting for eight more would delay
+  the intended trigger from eight to thirteen total terminals.
 - After repairing operator state parsing, audit the full in-scope receipt queue
   for historical terminals the old parser skipped, not only the triggering job.
   Inspect available bundles before classifying them: a cancelled/requeued job
