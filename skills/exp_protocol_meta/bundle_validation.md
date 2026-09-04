@@ -40,6 +40,18 @@ belong in the [bundle specification](../../doc/spec/2026-09-04-exp-protocol-bund
 - Use independent forward tests on realistic inputs, not only regressions
   that encode the intended answer. Keep read-only historical replay, synthetic
   CPU integration, observed scientist behavior and measured GPU effects distinct.
+- For rendered-input checks, compare original preprocessing versions and the
+  actual supervised arrays, not just retained post-repair scripts. Moving a
+  terminator from renderer to raw data may leave the intended training sequence
+  unchanged. Already-rendered prompts, separate versus joint tokenization,
+  masked demonstrations, explicit template tails and padded batch width are
+  distinct cases. Certify a prepared artifact and its supported consumer
+  separately; neither a summary JSON nor a loader call proves actual model use.
+- A foreground observer's file lock can disappear while its detached child
+  survives an abrupt observer death. Keep unique launch/process/exit records,
+  resolve PID birth identity rather than names/PID existence, and do not turn
+  missing final evidence into an automatic retry. Test actual interruption
+  and observer-death behavior with owned synthetic processes.
 - Freeze source, interfaces, full component differences and the outcome vector
   before discovery. Small samples can resolve a mechanism or expose a useful
   branch; they do not identify every component's causal effect or establish
