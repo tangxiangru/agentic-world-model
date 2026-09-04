@@ -1,8 +1,9 @@
 # exp-protocol operator state and dependencies
 
-Mutable handoff, updated2026-09-04 after the real monitor handoff and blocking audit.
+Mutable handoff, updated2026-09-04 after GPQA CPU integration/review and blocking audit.
 Receipt source remains immutable apart from appended cancellation records.
-Latest release/access checks16:19–16:21; new monitor first tick16:16:40.
+Latest queue/reservation/GPQA checks17:31; node access last checked16:21.
+Monitor's latest tick17:16:40.
 Scope remains only
 `gangda_exp-protocol-evolve`, `slurm2-a3nodesetondem-[0-1]`; never AWM full.
 
@@ -71,7 +72,7 @@ has no official score; do not substitute its developer metric.
 
 ## Release gate and next dependencies
 
-At16:19 the reservation `robtang-ptb-a3` still named11 nodes, not an exact
+At17:31 the reservation `robtang-ptb-a3` still named11 nodes, not an exact
 native two-node subqueue reservation. No infrastructure change or new release
 exception has been authorized. The old09-03 exception only covered90791–90798;
 it does not authorize92125–92140. Ownership and frozen ReqNodeList passed for
@@ -135,14 +136,18 @@ submission source. Root's unrelated user meta/analysis drafts remain untouched.
 
 See [audit](analysis-2026-09-04-opus48-onboarding/new-task-eval-audit.md).
 Only GSM8K/AIME2025 currently pass the task allowlist; Opus4.8 high/1M profiles
-are admitted. The136-test operator/task-identity suite passes; all four GSM8K
+are admitted. The140-test operator/task-identity suite passes; all four GSM8K
 full source/site checks returned0 issues. No new-task allowlist bypass exists.
 
 GPQA Main:Idavidrein/gpqa revision633f5ee89ab8ad4522a9f850766b73f62147ffdd,
 official gpqa_main.csv download returned403 despite an existing HF token.
 User was asked asynchronously to authorize the account or supply a legally
 authorized local path; never ask for a token in chat, accept terms implicitly
-or substitute a mirror. No GPQA reference/manifest/receipt exists.
+or substitute a mirror. No GPQA reference/manifest/receipt exists. Independent
+synthetic integration and informed review are now complete at PTB60df491;
+native randomization/choice/presentation/output and durable evidence are tested
+in both actual images. See the [GPQA checkpoint](analysis-2026-09-04-opus48-onboarding/gpqa-runtime-checkpoint.md).
+This does not establish actual data, GPU/node acceptance or task admission.
 
 HumanEval:openai/openai_humaneval revision7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544.
 Pinned parquet83920 bytes/SHA2f2871a15fbc95b6c683043359f4ed8e144c5a1c4f24f25f66bc51f598dfcfb6
@@ -151,7 +156,7 @@ executing dataset code. Actual164 rows/164 IDs; reference SHA
 85d6c3ab3a76590160695424d75d79e90049d5ceaaa809c9771d292054ad68a5.
 Files are in `/tmp/ptb-opus48-onboarding-oGLZFUf4/repo/src/eval/tasks/humaneval/`.
 The PTB working branch `codex/opus48-cross-task-runtime` is now clean at
-09c90b63ad4f9daa2259ab0137ac323e0e345605, pushed to the designated PTB fork.
+60df491f2bac85ceb801d8b04b706023ce76e02c, pushed to the designated PTB fork.
 This is a construction checkpoint, not the operator's adopted PTB pin or task
 admission. See the [full checkpoint/evidence](analysis-2026-09-04-opus48-onboarding/humaneval-runtime-checkpoint.md).
 
@@ -183,8 +188,8 @@ Authorized node access is needed. No HumanEval receipt exists.
 
 ## Monitoring and trace review
 
-Current monitor **PID3684437**, verified live; first tick16:16:40 shows0/21
-terminal, next17:16:40. Args:90826–90830 plus92125–92140, threshold8,poll3600s.
+Current monitor **PID3684437**, verified live at17:31; latest tick17:16:40 shows0/21
+terminal, next18:16:40. Args:90826–90830 plus92125–92140, threshold8,poll3600s.
 Log `/tmp/exp-protocol-admin-handoff.sTGNfhBs/new-monitor.log`.
 Old3564003 naturally completed with17 known administrative terminals; helper
 3676924 rechecked their harvested receipt/status evidence and then started the
@@ -200,12 +205,13 @@ after eight NEW clean or a completed predeclared comparison block. Scientist
 Opus4.8 and analyst Opus5 are different roles. The hourly detector remains live.
 
 Launch blockers persist across at least three goal turns: native isolation/change
-approval and authorized node access remain unavailable, GPQA remains403. However,
-GPQA's synthetic CPU scorer/loader/evidence integration is independent remaining
-work, so the full goal stays active rather than being marked blocked prematurely.
-Proceed with [that bounded work](../spec/2026-09-04-exp-protocol-gpqa-onboarding.md),
-then re-audit the actual remaining authority/access gates. The study is incomplete;
-keep the approved40-cell objective and do not count12 unsubmitted drafts as inventory.
+approval and authorized node access remain unavailable, GPQA remains403. The
+independent GPQA CPU scorer/loader/evidence implementation and informed review
+are now complete, including a demonstrated output/score gap correction. No
+further admission/execution can proceed without the external prerequisites.
+Keep the hourly detector live and the approved40-cell study incomplete; the
+planning goal now meets the blocked threshold and needs user direction. Do not
+count12 unsubmitted drafts as inventory or repeat synthetic work as new progress.
 
 [Window04](2026-09-04-round-02-window04-decision.md) is closed at14 NEW clean,
 all traces/syntheses/focused audits read; do not launch a duplicate synthesis.

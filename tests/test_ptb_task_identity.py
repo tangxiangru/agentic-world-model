@@ -14,8 +14,9 @@ def provenance(path, task):
     (path / "runtime_provenance.json").write_text(json.dumps({"experiment": {"task": task}}))
 
 
+@pytest.mark.parametrize("expected_task", ["humaneval", "gpqamain"])
 @pytest.mark.parametrize("actual", [None, "gsm8k", "", True])
-def test_humaneval_cannot_select_legacy_validation_by_claim(actual, tmp_path, monkeypatch):
+def test_strict_task_cannot_select_legacy_validation_by_claim(actual, expected_task, tmp_path, monkeypatch):
     provenance(tmp_path, actual)
     calls = []
 
@@ -25,9 +26,9 @@ def test_humaneval_cannot_select_legacy_validation_by_claim(actual, tmp_path, mo
         return subprocess.CompletedProcess(command, 2, "", "unrecognized arguments: --expected-task")
 
     monkeypatch.setattr(ptb.subprocess, "run", old_validator)
-    issues = ptb.audit_result(tmp_path, expected_task="humaneval")
+    issues = ptb.audit_result(tmp_path, expected_task=expected_task)
     assert "runtime provenance task differs from independent expected task" in issues
-    assert len(calls) == 1 and calls[0][-2:] == ["--expected-task", "humaneval"]
+    assert len(calls) == 1 and calls[0][-2:] == ["--expected-task", expected_task]
 
 
 def test_old_gsm_validator_retains_cli_but_requires_correct_identity(tmp_path, monkeypatch):

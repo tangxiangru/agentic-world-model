@@ -55,3 +55,14 @@ Physical launch still needs native two-node isolation, ownership, exact job
 placement and eight useful held cells. Keep hourly monitoring live. The lack
 of GPU/data authority blocks execution, but does not justify claiming that
 the independent GPQA software portion is already complete.
+
+## Completed CPU checkpoint
+
+The independent implementation/review above completed at PTB60df491, including
+native presentation/parser differential tests, complete synthetic AWM evidence
+flow and the reviewer's output-to-score correction. See the
+[checkpoint and raw evidence](../exp_protocol_iterations/analysis-2026-09-04-opus48-onboarding/gpqa-runtime-checkpoint.md).
+This supersedes the earlier pending-software status, not actual-data/node gates.
+Official access remains403; no real data profile/reference or GPQA manifest/
+receipt has been fabricated. Next admission requires external prerequisites,
+not another synthetic implementation cycle.

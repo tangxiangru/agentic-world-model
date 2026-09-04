@@ -99,3 +99,23 @@ directory audit is diagnostic, not completion authority. Missing judge files
 can yield an empty flag list: only a completed validated result may be labelled
 judge-clean. Administrative cancellations remain unverified/null-score evidence,
 as in the [old-block retirement](../../doc/exp_protocol_iterations/2026-09-04-opus48-legacy-queue-retirement.md).
+
+For multiple-choice evidence, preserve option identity through positions rather
+than answer-text joins: duplicate text can represent distinct correct/incorrect
+source options. Record native production randomization honestly; deterministic
+CPU seams must not silently become formal fixed seeds. Bind actual generation
+events and retained output to the native answer parser and score, not just score
+labels and aggregate arithmetic. A host parser projection needs differential
+checks against the pinned runtime, including case, first-match, empty and
+structured-content behavior. Do not change native parsing to make a test pass.
+The [GPQA checkpoint](../../doc/exp_protocol_iterations/analysis-2026-09-04-opus48-onboarding/gpqa-runtime-checkpoint.md)
+records the informed review's demonstrated output/score gap and its correction.
+
+Keep development snapshot compatibility separate from formal final artifacts:
+HF file symlinks may be hashed for developer evaluation while formal final-model
+files remain strict. A provided frozen base-model identifier must not become an
+unpinned download fallback. When data or deployment is unavailable, finish
+independent synthetic integration first, then stop at the actual authority/access
+gate; do not fabricate data profiles, task admission, filler experiments or GPU
+occupancy. A live external-event detector can remain running while the planning
+goal is blocked on required user action.

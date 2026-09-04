@@ -1404,7 +1404,7 @@ def receipt_task(receipt: dict[str, Any], job_id: str, cell_id: str | None = Non
 def audit_result(result_dir: Path, *, expected_task: str | None = None) -> list[str]:
     """Audit with an independent task identity; an unscoped check is diagnostic only.
 
-    Old GSM8K/AIME validators keep their CLI. HumanEval requires the new strict
+    Old GSM8K/AIME validators keep their CLI. HumanEval/GPQA require the new strict
     interface and never retries without the task flag after a rejection.
     """
     issues: list[str] = []
@@ -1421,7 +1421,7 @@ def audit_result(result_dir: Path, *, expected_task: str | None = None) -> list[
             issues.append("cannot read runtime provenance for expected task validation")
     validator = PTB_ROOT / "src" / "utils" / "validate_completed_run.py"
     command = [sys.executable, str(validator), str(result_dir), "--judge-profile", "official"]
-    if expected_task == "humaneval":
+    if expected_task in ("humaneval", "gpqamain"):
         command.extend(["--expected-task", expected_task])
     result = subprocess.run(
         command,

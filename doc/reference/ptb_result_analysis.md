@@ -63,7 +63,7 @@ uv run awm ptb audit /PATH/TO/RESULT --expected-task gsm8k
 
 An unscoped directory check reports missing identity rather than proving
 completion. Existing GSM8K/AIME PTB validators keep their original interface;
-HumanEval requires the strict task-aware interface and never falls back to
+HumanEval and GPQA require the strict task-aware interface and never fall back to
 numeric-only validation after a rejection. This is not new-task launch admission.
 
 ## Inspect result evidence
