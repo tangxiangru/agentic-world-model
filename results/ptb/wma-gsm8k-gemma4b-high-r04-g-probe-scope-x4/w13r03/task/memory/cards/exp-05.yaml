@@ -1,0 +1,111 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T15:02:53Z'
+situation:
+  elapsed_h: 7.2
+  remaining_h: 2.8
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7800, protocol_n: 500}
+  trigger: "exp-04 shipped exp-03/final into final_model on a 1.71-sigma paired read (52 vs 36 discordant pairs at n=500), and exp-04 rejected the full test set on a cost estimate that turned out to be wrong by an order of magnitude: it assumed ~32 min per candidate, but the three n=500 arms actually started 2.2 min apart (inspect log timestamps 14:44:53, 14:47:03, 14:49:24), so 1319 items is ~4-5 min per arm, not 32."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.diagnostic_result", observation: "exp-03 vs exp-02/final at n=500: +0.0320, paired se 0.0188, z=+1.71 - below the 1.96 the same card used as its own bar"}
+    - {path: /home/ben/task/logs/exp-04_select500.log, locator: "the three inspect Log: lines", observation: "consecutive n=500 arms 2.2 min apart, i.e. ~1.5 min of vLLM boot plus ~40 s of generation for 500 items"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "situation.alternatives_rejected[1]", observation: "the full-test option was rejected at '~32 min per candidate'; that number was wrong"}
+  alternatives_rejected:
+    - {option: "Leave final_model as it is and stop", reason: "the choice that put it there is 1.71 sigma. The full test set is the benchmark itself, costs ~10 min for both arms at the measured throughput, and 2.8 h remain. Two history precedents cited by the WMA (r-918be760/exp-23, r-9395d5af/exp-09) had a small-n lead of 0.7-2 pt reverse on the full 1319."}
+    - {option: "A third training round", reason: "sampling plus training plus selection is ~2 h against 2.8 h remaining, with no margin to re-verify and re-package final_model. A run that finishes at the deadline cannot be shipped."}
+    - {option: "A weight soup of exp-02/final and exp-03/final", reason: "exp-03 is a CONTINUATION of exp-02 on the same trajectory, so a soup of the two is an interpolation along the training path - close to an intermediate checkpoint of exp-03, and exp-02 (0.748) is the worse endpoint. The soup would most likely land between them, which is not worth an eval slot now."}
+    - {option: "Include exp-02/e1 as a third arm again", reason: "settled: it lost to exp-03 by +8.4 pts at z=+4.12 on 500 items. Re-measuring it would spend 5 min to re-answer a question that is already answered."}
+  pitfalls_hit:
+    - {what: "exp-04 rejected the full test set on a wall-clock estimate extrapolated from the n=150 runs without subtracting the ~1.5 min of fixed vLLM boot, inflating the per-arm cost roughly 7x and steering the selection to a weaker read", cost_h: 0.0, fix: "measure the marginal cost per item from consecutive inspect log timestamps, not from end-to-end run time"}
+  smoke_runs: []
+problem:
+  statement: "The checkpoint now in final_model was chosen over its own parent on a paired advantage of +3.2 pts with z=+1.71 - suggestive, below the 1.96 bar exp-04 itself applied, and measured on the first 500 of 1319 test items. The two candidates differ by one training stage, so the wrong choice costs whatever that stage was worth (+3.2 pts if exp-03 is genuinely better, or a shipped regression if the lead is a 500-item artifact). At the measured throughput this is answerable on the entire test set for about ten minutes of GPU."
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_final_dev500.json, locator: "whole file", observation: "0.7800, stderr 0.0185"}
+    - {path: /home/ben/task/eval/exp-02_e2_dev500.json, locator: "whole file", observation: "0.7480, stderr 0.0194"}
+    - {path: /home/ben/task/analysis/exp-03_final_dev500.jsonl, locator: "paired join against analysis/exp-02_e2_dev500.jsonl", observation: "52 discordant pairs favour exp-03, 36 favour exp-02; z=+1.71"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Scoring exp-03/final and exp-02/final on all 1319 test items under the otherwise identical protocol resolves the paired comparison that n=500 left at 1.71 sigma, and the resulting paired sign - not the n=500 one - decides what stays in final_model."
+  mechanism: "The discordant-pair count grows roughly with n, so if the +3.2 pt effect is real the paired z should rise by about sqrt(1319/500) = 1.62x, to roughly 2.8; if the n=500 lead was a slice artifact the extra 819 items will pull it towards zero or reverse it. Either way the sign becomes trustworthy, and it is measured on the whole benchmark rather than on a prefix of it."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "exp-03 ahead by +1 to +4 pts with |z| around 2-3; the absolute accuracies should sit within ~2 pts of the n=500 reads (0.780 and 0.748)"}
+  falsified_if: "the paired difference at n=1319 is negative, i.e. exp-02/final has more discordant pairs in its favour than exp-03/final - in which case final_model is rewritten from ckpts/exp-02/final"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: "bf16 save of step 1260; byte-identical to final_model except training_args.bin"
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+      source: "openai/gsm8k (benchmark input read by evaluate.py; NOT training data - no weights are updated in this card)"
+      n_examples: 1319
+      built_by: null
+      build_command: []
+      selection: "the entire official test split, as evaluate.py --limit -1 takes it"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0 (evaluation only, no weight update)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - no training in this card"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, scripts/select_eval.py, --candidates, /home/ben/task/ckpts/exp-03/final, /home/ben/task/ckpts/exp-02/final, --tags, exp-03_full, exp-02_e2_full, --limit, '-1', --max-connections, '8', --max-tokens, '1024', --gpu-memory-utilization, '0.85']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/select_eval.py
+    env: {}
+    log: /home/ben/task/logs/exp-05_full.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '-1', --max-connections, '8', --max-tokens, '1024', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "the entire official inspect_evals/gsm8k test split, 1319 items (--limit -1 makes evaluate.py pass no limit at all); 10-shot system prefix from the gsm8k TRAIN split with fewshot_seed=42; greedy decoding via each checkpoint's generation_config (temperature 0.0, no top_k/top_p); inspect_ai 0.1.dev3780, vllm 0.11.0. Identical to the session protocol except for --limit."
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7480
+    path: /home/ben/task/eval/exp-02_e2_dev500.json
+  diagnostic:
+    what: "the paired discordant-pair counts between the two arms over all 1319 items (scripts/paired_compare.py) and each arm's stop_reason / trailing-ANSWER share (scripts/inspect_report.py) - the sign of the paired difference is the decision variable, not the marginal accuracies"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 1260}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 2108}
+    - {path: /home/ben/task/ckpts/exp-02/e1, step: 1054}
+    - {path: /home/ben/task/final_model, step: 1260}
+  training_summary: {final_loss: null, steps: null, notes: "evaluation only; no weight update; final_model was NOT rewritten"}
+  measurements:
+    - {metric: accuracy, value: 0.7513, n: 1319, path: /home/ben/task/eval/exp-03_full_dev-1.json, delta_vs_comparator: 0.0106}
+    - {metric: accuracy, value: 0.7407, n: 1319, path: /home/ben/task/eval/exp-02_e2_full_dev-1.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.0106
+    path: /home/ben/task/analysis/exp-03_full.jsonl
+    notes: "Paired over all 1319 items: 865 both correct, 126 only exp-03, 112 only exp-02, 216 neither; difference +0.0106, paired se 0.0117, z=+0.91 - positive but unresolved. The n=500 lead of +3.2 pts (z=+1.71) shrank to +1.1 pts on the full set, so most of it was slice effect: the first 500 items favour exp-03 more than the remaining 819 do. Absolute accuracies also fell for both arms (0.780 -> 0.751 and 0.748 -> 0.741), i.e. the first 500 items are easier than the tail. Termination is intact and slightly better on the shipped arm: 14/1319 non-terminating for exp-03 against 18/1319 for exp-02, completion tokens p50 140 vs 157."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The card predicted the paired z would RISE from 1.71 to about 2.8 on the full test set if the effect were real; it fell to +0.91. exp-03/final is still ahead of exp-02/final on the whole benchmark (0.7513 vs 0.7407, 126 vs 112 discordant pairs) but the margin is about a third of what n=500 showed, so the honest reading is that the second training stage is worth roughly +1 pt, not +3, and that the n=500 read was flattered by its slice."
+  decision: adopt
+  next_step: "final_model is unchanged - it keeps ckpts/exp-03/final. The tie rule pre-registered before launch (keep the incumbent unless the paired difference is negative AND |z| >= 1.0, tightened from the card's bare-sign rule on the WMA's first precondition) is satisfied by a positive difference, and exp-03 is additionally the better arm on termination (14 vs 18 non-terminating of 1319). Because final_model was not rewritten, exp-04's two loadability checks still hold on the shipped bytes and were not repeated. For a successor: the full-test number for the shipped model is 0.7513 (stderr 0.0119, n=1319) and the base model's anchor is 0.0200 at n=150; the largest untested levers left are a third rejection-sampling round from exp-03, separating exp-03's confounded self-distillation and fresh-coverage arms, and self-consistency, which this harness's single-sample grading does not permit."

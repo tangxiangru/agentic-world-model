@@ -633,3 +633,22 @@
 - 2026-09-04T16:02:32+00:00 harvest wma-crossbench-opus48-r05-bfcl-raw-x4/c53r01 job=92181 FAILED incomplete (4 issue(s)) general_anomaly
 - 2026-09-04T16:02:32+00:00 peek wma-crossbench-opus48-r05-bfcl-raw-x4/c53r02 job=92182 RUNNING: no sidecar log; 0 transcript(s); solve_out 306 lines
 - 2026-09-04T16:02:32+00:00 peek wma-crossbench-opus48-r05-bfcl-raw-x4/c53r03 job=92183 RUNNING: no sidecar log; 0 transcript(s); solve_out 327 lines
+- 2026-09-04T16:31:43+00:00 harvest wma-gsm8k-gemma4b-high-r04-g-probe-scope-x4/w13r01 job=91441 FAILED acc=0.7263 complete clean
+- 2026-09-04T16:31:45+00:00 harvest wma-gsm8k-gemma4b-high-r04-g-probe-scope-x4/w13r02 job=91442 FAILED acc=0.7020 complete clean
+- 2026-09-04T16:31:48+00:00 harvest wma-gsm8k-gemma4b-high-r04-g-probe-scope-x4/w13r03 job=91443 FAILED acc=0.7627 complete clean
+- 2026-09-04T16:31:48+00:00 peek wma-gsm8k-gemma4b-high-r04-h-soup-ingredients-x4/w14r01 job=91445 RUNNING: sidecar: log empty; 7 transcript(s); solve_out 2150 lines
+- 2026-09-04T16:31:49+00:00 peek wma-gsm8k-gemma4b-high-r04-h-soup-ingredients-x4/w14r02 job=91446 RUNNING: sidecar: log empty; 5 transcript(s); solve_out 1710 lines
+- 2026-09-04T16:31:49+00:00 peek wma-gsm8k-gemma4b-high-r04-h-soup-ingredients-x4/w14r03 job=91447 RUNNING: sidecar: log empty; 5 transcript(s); solve_out 1393 lines
+- 2026-09-04T16:31:49+00:00 peek wma-gsm8k-gemma4b-high-r04-h-soup-ingredients-x4/w14r04 job=91448 RUNNING: sidecar: log empty; 5 transcript(s); solve_out 1497 lines
+- 2026-09-04T16:31:49+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r02 job=92164 RUNNING: no sidecar log; 0 transcript(s); solve_out 562 lines
+- 2026-09-04T16:31:50+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r03 job=92165 RUNNING: no sidecar log; 0 transcript(s); solve_out 738 lines
+- 2026-09-04T16:31:50+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r04 job=92166 RUNNING: no sidecar log; 0 transcript(s); solve_out 670 lines
+- 2026-09-04T16:31:50+00:00 peek wma-crossbench-opus48-r05-gsm8k-protocol-x4/c52r01 job=92167 RUNNING: no sidecar log; 0 transcript(s); solve_out 600 lines
+- 2026-09-04T16:31:50+00:00 peek wma-crossbench-opus48-r05-gsm8k-protocol-x4/c52r02 job=92168 RUNNING: no sidecar log; 0 transcript(s); solve_out 782 lines
+- 2026-09-04T16:31:50+00:00 peek wma-crossbench-opus48-r05-gsm8k-protocol-x4/c52r03 job=92169 RUNNING: no sidecar log; 0 transcript(s); solve_out 1014 lines
+- 2026-09-04T16:31:51+00:00 peek wma-crossbench-opus48-r05-gsm8k-protocol-x4/c52r04 job=92170 RUNNING: no sidecar log; 0 transcript(s); solve_out 818 lines
+- 2026-09-04T16:31:51+00:00 peek wma-crossbench-opus48-r05-bfcl-raw-x4/c53r02 job=92182 RUNNING: no sidecar log; 0 transcript(s); solve_out 379 lines
+- 2026-09-04T16:31:51+00:00 peek wma-crossbench-opus48-r05-bfcl-raw-x4/c53r03 job=92183 RUNNING: no sidecar log; 0 transcript(s); solve_out 414 lines
+- 2026-09-04T16:31:51+00:00 peek wma-crossbench-opus48-r05-bfcl-raw-x4/c53r04 job=92184 RUNNING: no sidecar log; 0 transcript(s); solve_out 239 lines
+- 2026-09-04T16:31:51+00:00 peek wma-crossbench-opus48-r05-bfcl-protocol-x4/c54r01 job=92185 RUNNING: no sidecar log; 0 transcript(s); solve_out 232 lines
+- 2026-09-04T16:31:51+00:00 peek wma-crossbench-opus48-r05-bfcl-protocol-x4/c54r02 job=92186 RUNNING: no sidecar log; 0 transcript(s); solve_out 244 lines

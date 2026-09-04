@@ -1,6 +1,8 @@
 # WMA online Round 04 — scoped probes and candidate selection
 
-Status: launched. G/H each have four safely routed PENDING cells; no candidate result read.
+Status (2026-09-04 16:30 UTC): G is complete at 4/4 but fails its original
+scope guard and a separate manual semantic audit; it is not promoted. H remains
+running at 0/4 complete. Frozen design and launch history are retained below.
 
 The frozen design and gates are in
 `doc/spec/2026-09-03-wma-round04-probe-selection.md`. Completed evidence and
@@ -126,3 +128,36 @@ judges. Agent time is 06:22:09; allocated time 06:46:37. Slurm exit FAILED/2:0
 is preserved alongside the successful PTB completion verdict; no retry occurs.
 The full receipt/cell/manifest/spec/result chain, unchanged ledgers and bounded
 review are in `evidence/2026-09-04-1500/`. Existing exclusions remain in force.
+
+## G complete / guard failed — 2026-09-04 16:30 UTC
+
+New jobs 91441/91442/91443 complete at 72.6308%, 70.2047%, 76.2699%; together
+with w13r04, G is **73.5406% ± 2.6897 pp sample SD**, n=4. Matched w10 baseline
+is 72.3180% ± 2.7382 pp, n=8. The +1.2225 pp descriptive difference is not a
+formal effect. Public configuration matches; non-skill private shipped paths
+are byte-identical to baseline. All four PTB results and original Slurm
+FAILED/2:0 states are retained.
+
+The authoritative ledger has 25 finals, 21 scored, **4 original access flags**;
+L2 coverage .722 (n18), width/noise 5.5606, L3 hit .647. G therefore fails the
+predeclared zero-original-flag criterion. A bounded parallel audit additionally
+confirms **w13r01/exp-01 raw held-out-input exposure**, originally unflagged:
+150 GSM8K test records were loaded from a session-resident input copy and two
+question/gold records reached WMA context before this card ran. File/hash/source
+and tool-call evidence were independently checked. Record it separately; keep
+original ledger/scorer/flags unchanged. No score or training contamination
+causality is inferred, and no question/answer text is copied into new notes.
+
+42 request/response pairs completed and all 25 final locks delivered. Two early
+negative reviews led to repairs, including a reproduced save-path failure;
+another cell missed that same failure and lost an observed 69:03 training wall
+before repair. This preserves evidence of useful blockers without establishing
+matched recall or net benefit. Retained-final WMA cost is $47.6701, excluding
+17 overwritten review costs; final waits are 142.395 minutes and full request
+lifecycle 251.305 minutes, neither measured GPU idle.
+
+**Decision: G falsified; no promotion or unchanged extension.** H continues
+under its own original contract. The different Opus4.8 runtime is not judged
+by G's older export path. Full scores, cost bounds, provenance, unchanged ledgers,
+manual flag, two delegated audits and operator verification are preserved in
+`evidence/2026-09-04-1630/`.

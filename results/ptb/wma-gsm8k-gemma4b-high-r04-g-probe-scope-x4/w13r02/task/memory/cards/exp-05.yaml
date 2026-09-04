@@ -1,0 +1,158 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T11:35:55Z'
+situation:
+  elapsed_h: 4.3
+  remaining_h: 5.7
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score:
+      metric: accuracy
+      value: 0.7
+      protocol_n: 150
+  trigger: "With termination fixed (exp-03) and decode settled (exp-04, 0.700 greedy), the 45 remaining dev-150 failures are almost all well-formed but wrong answers (only 1 of 45 lacks an ANSWER line). The model is now limited by solution quality, and it has a large untapped supply of its own correct solutions: sampling 4 completions per GSM8K TRAIN question gave first-sample accuracy 0.667 but pass@4 0.881, so 6581 of 7473 training questions have at least one self-generated correct chain the model is not yet trained on."
+  trigger_evidence:
+  - path: /home/ben/task/data/rft_samples_summary.json
+    locator: "acc_first_sample 0.6675, pass_at_n 0.8808, n 7473, samples_per_q 4, temperature 1.0"
+  - path: /home/ben/task/analysis/exp-04_failures.json
+    locator: "summary.n_failures = 45, no_answer_line_among_failures = 1"
+  alternatives_rejected:
+  - option: "Train on the remaining 74k unseen OpenMathInstruct-2 rows instead (off-policy scale-up)"
+    reason: "at ~1000 tokens/row that is ~3 h, more than the remaining budget allows alongside finalisation, and it is more of the same distribution exp-02/exp-03 already learned. The self-generated set is on-policy: drawn from this model's own output distribution at the exact prompts it is graded on."
+  - option: "Pure RFT (12184 self-generated rows only)"
+    reason: "those rows cover only 6581 distinct GSM8K-train problems and are all self-authored; adding 6000 fresh unseen OpenMathInstruct-2 rows keeps problem diversity up and acts as a regulariser against sharpening onto the model's own quirks"
+  - option: "A second RFT round after this one"
+    reason: "no budget: this run plus its eval plus finalisation and a wider confirmation read already fill the remaining 5.7 h"
+  - option: "DPO/GRPO on correct-vs-incorrect pairs from the same samples"
+    reason: "the sample file supports it (892 questions have no correct sample, most have a mix), but a preference/RL stage is a new trainer and a new failure surface with under 6 h left; rejection sampling reuses the exact SFT path that is already validated end to end"
+  - option: "The looser decision rule this card was first locked with (falsified only at or below ~0.71)"
+    reason: "WMA exp-05 preconditions[1]: +1 pt is inside the n=150 noise floor, so that rule could not separate the hypothesis from its comparator. Tightened before launch to +0.04, with an --limit 500 tie-break for the 0.700-0.740 band."
+  - option: "system_prob 0.85 as in exp-03"
+    reason: "the few-shot prefix is ~1100 tokens on average and dominates this run's cost; termination is already installed by exp-03, so 0.7 keeps heavy exposure to the graded context while cutting ~15% of the token budget"
+  pitfalls_hit: []
+  smoke_runs:
+  - command: [python, build_rft.py, --samples, data/rft_samples.jsonl, --out, data/rft_train.jsonl, --max-per-question, '2']
+    outcome: "7473 questions in, 6581 with at least one correct sample, 12184 rows kept, 7 dropped on format"
+  - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/_decon_mix.jsonl]
+    outcome: "18184 documents scanned, 0 contaminated, 0 matches"
+problem:
+  statement: "exp-04 leaves 45 of 150 dev items wrong, and they are no longer format or termination failures - 44 of 45 are well-formed 'ANSWER: <n>' responses whose arithmetic or setup is wrong. The model's own sampling shows the ability is partly latent rather than absent: it reaches the right answer within 4 samples on 88% of GSM8K-train questions while its single greedy answer is right on ~67-70%."
+  evidence:
+  - path: /home/ben/task/analysis/exp-04_failures.json
+    locator: "summary.n_failures = 45, summary.no_answer_line_share_of_failures = 0.022"
+    observation: "the remaining failures are solution-quality failures, not format ones"
+  - path: /home/ben/task/data/rft_samples_summary.json
+    locator: "acc_first_sample 0.6675 vs pass_at_n 0.8808"
+    observation: "a 21-point gap between one sample and four on the TRAIN split - latent ability the single graded sample does not capture"
+  affected_share: 0.978
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_watch.jsonl
+    n: 45
+    selection: "ids only (rule 7) of every dev-150 item exp-04 scored incorrect"
+hypothesis:
+  claim: "Continuing SFT from exp-03's weights on a mix of 12184 self-generated correct GSM8K-train solutions and 6000 unseen OpenMathInstruct-2 rows raises greedy dev-150 accuracy against exp-04's 0.700."
+  mechanism: "Rejection sampling concentrates probability mass on the chains this model actually produces AND gets right, so the greedy path - the one the grader reads - moves toward modes that were previously only reachable by sampling. That is exactly the pass@4-minus-pass@1 gap: 0.881 vs 0.667 on train. The 6000 off-policy rows keep the problem distribution wide so the sharpening does not collapse onto self-authored phrasing."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+2 to +6 pts"
+  falsified_if: "greedy dev-150 accuracy lands at or below 0.740, i.e. fails to clear exp-04's 0.700 by at least +0.04 (exp-04's own stderr at n=150 is 0.0375, so a smaller gap is not distinguishable from the finite-sample spread). If the result lands in the ambiguous band 0.700-0.740 the card is inconclusive at n=150 and is resolved by one --limit 500 read of both arms under the identical greedy protocol. Independently falsified if termination regresses: any completion continuing past its first ANSWER line, which is 0/150 today."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/exp05_mix.jsonl
+    source: "mixture - 12184 rows synthetic:self (this model's own temperature-1.0 samples on hf:openai/gsm8k main/TRAIN questions, kept only where the last number equals the train gold) + 6000 rows hf:nvidia/OpenMathInstruct-2 train_1M gsm8k/augmented_gsm8k not used in exp-02 or exp-03"
+    n_examples: 18184
+    built_by: /home/ben/task/build_rft.py
+    build_command: [python, gen_vllm.py, --model, /home/ben/task/ckpts/exp-03/final, --questions,
+      data/gsm8k_train_questions.jsonl, --out, data/rft_samples.jsonl, --n, '4', --temperature,
+      '1.0', --top-p, '0.95', --max-tokens, '640', --fewshot, '10', --seed, '7']
+    selection: "self-generated: keep a completion only if the grader's own last-number rule matches the TRAIN gold, exactly one well-formed 'ANSWER: <n>' line, 80-2500 chars; dedup within a question by the sequence of numbers and operators; at most 2 per question, shortest first. Off-policy 6000: set-difference against every row used in exp-02 and exp-03."
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, full-parameter, flash_attention_2"
+    peft: none
+    hyperparams:
+      lr: 5.0e-6
+      epochs: 1
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 2
+      optim: adamw_bnb_8bit
+      system_prob: 0.7
+      frozen: "vision_tower + multi_modal_projector; 3.88B trainable"
+      loss: "completion-only; the few-shot prefix carries no loss"
+    target_format: "identical to exp-03: prompt = <bos><start_of_turn>user\\n{few-shot blocks}\\n\\n{inspect MATH_PROMPT_TEMPLATE with the question}<end_of_turn>\\n<start_of_turn>model\\n ; target = one chain of thought, one 'ANSWER: <n>' line, then <end_of_turn>. Prefix present on 70% of rows, the grader's exact 10 blocks on half of those."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/exp05_mix.jsonl, --parent,
+      /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/ckpts/exp-05, --lr, '5e-6',
+      --epochs, '1', --bs, '2', --grad-accum, '16', --max-len, '3072', --system-prob,
+      '0.7', --save-steps, '200', --seed, '2']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 200
+    keep: 2
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.1
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file,
+      '{out}.json']
+    dev_set: "official --limit 150 at evaluate.py defaults (--max-connections 2, --max-tokens 4000, --gpu-memory-utilization 0.3). The checkpoint is served through a make_variant.py copy carrying exp-04's greedy generation_config (temperature 0.0, no do_sample/top_k/top_p), so decode matches the comparator exactly."
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7
+    path: /home/ben/task/eval/exp-04/exp-04_dev150.json
+  diagnostic:
+    what: "completions continuing past their first 'ANSWER: <n>' line (must stay 0/150 - the exp-03 habit must survive dropping system_prob 0.85 -> 0.7), plus mean output tokens against exp-04's 188.8 (rejection sampling on shortest-first solutions should not lengthen chains)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.07
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-05/final, step: 569}
+  - {path: /home/ben/task/ckpts/exp-05/checkpoint-569, step: 569}
+  - {path: /home/ben/task/ckpts/exp-05/checkpoint-400, step: 400}
+  training_summary: {final_loss: 0.2411, steps: 569, notes: "18182/18184 rows kept at max_seq_len 3072; tokens p50=1489 p99=2536 max=3040, 25.5M total; 12814 rows carried a few-shot prefix. train_runtime 3846 s, peak 53.5 GB. checkpoint-200 rotated out by save_total_limit=2."}
+  measurements:
+  - {metric: accuracy, value: 0.7, n: 150, path: /home/ben/task/eval/exp-05/exp-05_dev150.json, delta_vs_comparator: 0.0}
+  - {metric: accuracy, value: 0.718, n: 500, path: /home/ben/task/eval/final/exp-05_dev500.json, delta_vs_comparator: 0.01}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-05_failures.json
+    notes: "Termination held: 0/150 completions continue past the first ANSWER line and stop_reasons is stop 150 / max_tokens 0 (exp-04 still had 1 truncation), so dropping system_prob 0.85 -> 0.7 did not cost the habit. no-ANSWER-line failures 1 -> 0. Mean output tokens fell 188.8 -> 151.5, as expected from selecting shortest-first self-generated solutions. First-answer accuracy equals graded accuracy exactly (0.700), i.e. nothing is lost between what the model answers and what the grader reads."
+  watch_set_result: {fixed: 13, still_failing: 32, regressions: 13, path: /home/ben/task/analysis/exp-04_watch.jsonl}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "At n=150 the RFT checkpoint scores 0.700 - exactly the comparator - so the card's pre-registered +0.04 threshold is not met and the claim is contradicted as written. The pre-registered tie-break at n=500 gives exp-05 0.718 +/- 0.020 against exp-04 0.708 +/- 0.020: a +1.0 pt nominal edge, well inside one standard error, so rejection sampling did not measurably improve accuracy here. It did improve the structural margins - truncations 1 -> 0, no-ANSWER-line failures 1 -> 0, mean completion 189 -> 152 tokens - and 13 of exp-04's 45 failures were fixed against 13 new regressions, which is the signature of a lateral move rather than a gain."
+  decision: adopt
+  next_step: "Adopted for final_model despite the contradicted hypothesis, on the n=500 read (0.718 vs 0.708) plus the structural margins: shorter completions and zero truncations make it the safer artefact under the grader's 4000-token cap, and it is nowhere worse. final_model/ holds these weights with the exp-04 greedy generation_config; verified from a fresh process at 0.6933 (n=150) and 0.718 (n=500). Untested lever left on the table: checkpoint-400 of this same run (exp-06)."

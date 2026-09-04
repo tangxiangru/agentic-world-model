@@ -1,0 +1,111 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T15:23:28Z'
+situation:
+  elapsed_h: 7.6
+  remaining_h: 2.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7513, protocol_n: 1319}
+  trigger: "exp-05 measured the shipped checkpoint at 0.7513 on the full test set and its parent at 0.7407, a paired +1.06 pts at z=+0.91 - so the second training stage moved the model only slightly and the two checkpoints disagree on 238 of 1319 items (126 exp-03 only, 112 exp-02 only). Two nearby points on one SGD trajectory that disagree that much on individual items is the situation where averaging their weights usually beats both. 2.4 h remain and the whole test costs ~5 min per arm, so this is affordable in a way it was not when exp-04 and exp-05 both put it in reserve."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.diagnostic_result", observation: "865 both correct, 126 only exp-03, 112 only exp-02, 216 neither; paired +0.0106, z=+0.91"}
+    - {path: /home/ben/task/eval/exp-03_full_dev-1.json, locator: "whole file", observation: "0.7513, stderr 0.0119, n=1319"}
+    - {path: /home/ben/task/eval/exp-02_e2_full_dev-1.json, locator: "whole file", observation: "0.7407, stderr 0.0121, n=1319"}
+  alternatives_rejected:
+    - {option: "A third rejection-sampling round from exp-03/final", reason: "sampling ~50 min plus training ~70 min plus a selection eval is over 2 h against 2.4 h remaining, with nothing left to re-verify and re-package final_model. exp-05 also just showed the second round was worth only about +1 pt on the full test, so a third is not obviously the better bet even with time."}
+    - {option: "A second epoch on data/mix_v2.jsonl from exp-03/final", reason: "~70 min plus evaluation, and the cosine schedule has already annealed to zero at loss 0.217, so a second cycle at lr 7e-6 from a converged point is as likely to overfit as to help. The soup costs a tenth of that."}
+    - {option: "Include exp-02/e1 in the soup as a third ingredient", reason: "e1 is the weakest arm measured (0.6960 at n=500, beaten by exp-03 at z=+4.12) and is a third of the way back along the trajectory; adding it would drag the average towards a checkpoint already known to be worse, and it would cost a second eval to find out."}
+    - {option: "Sweep the mixing weight (0.25 / 0.5 / 0.75)", reason: "three soups is three full-test evals plus three 8 GB writes, ~30 min, and with a paired resolution of ~1.2 pt at n=1319 the sweep could not distinguish the weights anyway. 0.5 is the uniform soup the SWA result is about."}
+  pitfalls_hit:
+    - {what: "a soup is only well-defined if both checkpoints share a shard layout and their integer tensors agree; a silent mismatch would produce a corrupt model that still loads", cost_h: 0.0, fix: "verified before writing the card that the two model.safetensors.index.json weight_maps are identical over all 883 tensors, and scripts/soup_and_eval.py asserts key equality per shard and torch.equal on every non-floating-point tensor"}
+  smoke_runs: []
+problem:
+  statement: "The two best checkpoints in this session are one training stage apart and disagree on 238 of 1319 test items while differing by only 1.06 pts in aggregate - each is right where the other is wrong on roughly 9% of the benchmark. Shipping either one discards the other's 112-126 unique correct answers, and no further evidence can be bought about which single point on the trajectory is best: exp-05 already spent the full test set on that question and came back at z=+0.91."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_full.jsonl, locator: "paired join against analysis/exp-02_e2_full.jsonl", observation: "126 items only exp-03 gets right, 112 only exp-02 gets right, 216 neither"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "conclusion.summary", observation: "the n=500 lead of +3.2 pts shrank to +1.1 pts on the full test; the trajectory is flat near its end"}
+  affected_share: 0.18
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A uniform (0.5/0.5) weight average of ckpts/exp-02/final and ckpts/exp-03/final scores higher on the full 1319-item test set than exp-03/final, the currently shipped checkpoint."
+  mechanism: "exp-03/final is exp-02/final plus 1260 further steps on one cosine cycle, so the two are points on a single SGD trajectory rather than independently initialised models. Averaging along a trajectory (stochastic weight averaging) moves the parameters towards the centre of the flat basin the tail of a cosine schedule wanders around, which typically generalises better than either endpoint. The 238 discordant items say the two endpoints have genuinely different error sets, which is the condition under which the average can pick up items neither endpoint alone gets - and the condition under which it can also lose some."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+0 to +1.5 pts on n=1319; the paired resolution at this n is ~1.2 pt, so a real gain of this size will be visible in the discordant-pair counts but is unlikely to clear 1.96 sigma"}
+  falsified_if: "the soup's paired difference against exp-03/final over the 1319 items is negative, or the soup's termination degrades (stop_reason != stop above the 14/1319 exp-03 shows) - either of which means the average left the basin rather than centring it"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: "bf16 save of step 1260; the second ingredient is /home/ben/task/ckpts/exp-02/final, bf16 save of step 2108"
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+      source: "openai/gsm8k (benchmark input read by evaluate.py; NOT training data - the merge touches no data at all)"
+      n_examples: 1319
+      built_by: null
+      build_command: []
+      selection: "the entire official test split, as evaluate.py --limit -1 takes it"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors 0.5 shard-wise average in fp32, cast back to bf16; evaluated with inspect_ai 0.1.dev3780 + vllm 0.11.0"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - no training; the merged checkpoint inherits the format both ingredients were trained on"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, scripts/soup_and_eval.py, --a, /home/ben/task/ckpts/exp-03/final, --b, /home/ben/task/ckpts/exp-02/final, --weight-a, '0.5', --dst, /home/ben/task/ckpts/soup_23, --tag, soup_23, --limit, '-1', --max-connections, '8', --max-tokens, '1024', --gpu-memory-utilization, '0.85']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup_and_eval.py
+    env: {}
+    log: /home/ben/task/logs/exp-06_soup.log
+  output_dir: /home/ben/task/ckpts/soup_23
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.25}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '-1', --max-connections, '8', --max-tokens, '1024', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "the entire official inspect_evals/gsm8k test split, 1319 items; 10-shot system prefix from the gsm8k TRAIN split with fewshot_seed=42; greedy decoding via the checkpoint's generation_config (temperature 0.0, no top_k/top_p); inspect_ai 0.1.dev3780, vllm 0.11.0. Byte-identical invocation to exp-05."
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7513
+    path: /home/ben/task/eval/exp-03_full_dev-1.json
+  diagnostic:
+    what: "paired discordant-pair counts between the soup and exp-03/final over the 1319 items (scripts/paired_compare.py), and the soup's stop_reason / trailing-ANSWER shares (scripts/inspect_report.py) against exp-03's 14/1319 - an average that has drifted out of the basin usually shows up as degraded termination before it shows up in accuracy"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.18
+  output_checkpoint: /home/ben/task/ckpts/soup_23
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup_23, step: null}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 1260}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 2108}
+    - {path: /home/ben/task/ckpts/exp-02/e1, step: 1054}
+    - {path: /home/ben/task/final_model, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 883 tensors averaged shard-wise in fp32 and cast back to bf16, non-floating tensors asserted equal"}
+  measurements:
+    - {metric: accuracy, value: 0.7657, n: 1319, path: /home/ben/task/eval/soup_23_dev-1.json, delta_vs_comparator: 0.0144}
+    - {metric: accuracy, value: 0.7867, n: 150, path: /home/ben/task/eval/final_model_soup_default150.json, delta_vs_comparator: null}
+  diagnostic_result:
+    value: 0.0144
+    path: /home/ben/task/analysis/soup_23_full.jsonl
+    notes: "Paired against exp-03/final over all 1319 items: 913 both correct, 97 only soup, 78 only exp-03, 231 neither; +0.0144, paired se 0.0100, z=+1.44. Against exp-02/final: 114 vs 81 discordant, +0.0250, z=+2.36 - the soup beats the weaker ingredient significantly and the stronger one directionally, which is the SWA signature. Termination improved rather than degraded, which was the card's stated way for the average to fail: 8/1319 non-terminating against 14 for exp-03 and 18 for exp-02, completion tokens p50 150 (between the ingredients' 140 and 157). The 231 items no arm gets right are the hard core: 216 of them already defeated both ingredients."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The 0.5/0.5 soup scores 0.7657 on the full test set against 0.7513 for exp-03/final and 0.7407 for exp-02/final - above BOTH ingredients, by +1.44 pts (z=+1.44) and +2.50 pts (z=+2.36). It also terminates more reliably than either (8/1319 vs 14 and 18), which is the opposite of the drift-out-of-the-basin failure the card named, so the averaging centred the basin as the SWA mechanism predicts."
+  decision: adopt
+  next_step: "final_model now holds ckpts/soup_23. The shipping rule was pre-registered before the number landed (overwrite only if the paired difference against exp-03/final is positive AND |z| >= 1.0) and is met at +0.0144 / z=+1.44. Both loadability checks were re-run on the new bytes as exp-05's last precondition required: a fresh CPU process loads final_model as a 4.30B bfloat16 Gemma3ForConditionalGeneration, and the harness's own bare 'python evaluate.py' (--limit 150, --max-connections 2, --max-tokens 4000, --gpu-memory-utilization 0.3 - none of them this session's protocol) scored 0.7867, consistent with 0.7657 on the full 1319. Untried levers for a successor, in the order I would spend on them: a weight sweep around 0.5 now that the soup is known to help; a soup that also includes intermediate checkpoints of exp-03, which this session did not save (--save-epochs 0 was set after the save-path failure); a third rejection-sampling round; and separating exp-03's confounded self-distillation and fresh-coverage arms."

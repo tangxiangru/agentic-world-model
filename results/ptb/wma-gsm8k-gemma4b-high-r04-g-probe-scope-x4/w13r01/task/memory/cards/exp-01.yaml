@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T07:16:37Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.2
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Batch start: no measurement of the immutable base checkpoint exists yet, so no later card can have a comparator (memory/index.md table body is empty)."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "table body empty"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and train immediately", reason: "protocol rule 2 - without a comparator measured under this protocol every later delta is unfalsifiable"}
+    - {option: "Baseline at --limit 1319 (full test)", reason: "~9x the wall clock for a number used only as a comparator; 150 is the harness default"}
+    - {option: "Force greedy decode for the base read by copying the snapshot and rewriting generation_config.json", reason: "the starting revision must not drift during this batch; the base read is a reference point, not an arm. Later cards own their generation_config.json and will declare greedy there, and every trained arm will be compared against other trained arms under one frozen decode."}
+    - {option: "--max-connections 2 (the script default)", reason: "150 items x up to 4000 tokens at concurrency 2 costs materially more wall clock; 8 is the compromise and the completions are checked for the garbage-prefix signature that concurrency damage produces"}
+  pitfalls_hit:
+    - {what: "First lock's argv used --max-connections 16; the WMA verdict (exp-01.verdict.json e4/e7) records a controlled 0.2733-vs-0.8533 collapse with '!!!!' completions at 8-vs-2 connections on this harness, and an EngineDeadError at 16", cost_h: 0.1, fix: "re-locked at --max-connections 8 and added an explicit garbage-prefix count over the completions before the number is used as a comparator"}
+  smoke_runs:
+    - {command: [python, -c, "render templates/gemma3.jinja with the base tokenizer"], outcome: "renders '<bos><start_of_turn>user\\n{system}\\n\\n{q}<end_of_turn>\\n<start_of_turn>model\\n'; <end_of_turn>=106 and <eos>=1 are both in generation_config.eos_token_id"}
+    - {command: [python, -c, "load_dataset('openai/gsm8k','main')"], outcome: "train 7473 / test 1319 rows; network reachable"}
+    - {command: [grep, -n, "temperature|SamplingParams", /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_providers/vllm.py], outcome: "the provider starts a vLLM OpenAI-compatible server and sends only GenerateConfig fields; evaluate.py sets none, so decode falls back to the checkpoint's generation_config.json"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruction-tuned checkpoint. Its GSM8K accuracy under the harness protocol (10-shot system message, chat template templates/gemma3.jinja, scorer match(numeric=True, location='end')) is unknown, and so is its dominant failure mode: format/stopping behaviour versus arithmetic or reasoning error."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "MATH_PROMPT_TEMPLATE and scorer=match(numeric=True)", observation: "grading reads the LAST numeric whitespace token of the completion, so a base model that keeps generating after answering scores 0 even when the reasoning was right"}
+    - {path: /home/ben/task/memory/index.md, locator: "table body empty", observation: "no prior measurement exists in this session"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-01_items.jsonl
+    n: 150
+    selection: "per-item dump (id, gold, extracted answer, correct, completion tail, stop_reason, output tokens) extracted from the inspect .json log by scripts/dump_eval.py. --json-output-file writes metrics only, so the failing subset and the diagnostic must come from the inspect log."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Evaluating the immutable base snapshot under the harness protocol at --limit 150 yields a reproducible accuracy, and inspection of the completions shows whether the deficit is format/stopping behaviour or reasoning quality."
+  mechanism: "The 10-shot system message teaches the answer format in context, so a pretrained LM scores non-trivially; but a base LM has no <end_of_turn> habit and tends to continue with a fabricated next problem after answering, which moves the last number of the completion away from the intended answer."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "reference point, no directional claim; band expected 0.15-0.55"
+  falsified_if: "The run does not complete or no accuracy can be read from the inspect log. If the base already scores above 0.75, the premise that format/stopping is a material bottleneck is wrong and later cards must target reasoning quality only."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/exp-01_inputs.jsonl
+      source: "openai/gsm8k main test rows 0-149 (evaluation input only, never training data) + train rows used by the harness as the fixed 10-shot prefix (fewshot_seed=42)"
+      n_examples: 150
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '150']
+      selection: "no training data: this card trains nothing. The harness itself materialises the 150 graded items; the file records what was graded."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: 4096, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    decode: "sampling, NOT greedy: evaluate.py passes no temperature, so the vLLM server falls back to the snapshot's generation_config.json (do_sample true, top_k 64, top_p 0.95, temperature default 1.0), max_tokens 4000. n=150 sampling noise floor is therefore ~3.3pp, not ~1.3pp."
+    target_format: "n/a - evaluation only; the harness renders templates/gemma3.jinja and grades the last number of the completion"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --max-connections, '8', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '8', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (first 150 rows of openai/gsm8k main test, unshuffled); fewshot_seed 42 fixed by the task definition"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions that do not contain an 'ANSWER: <number>' line, i.e. format/stop failures rather than reasoning failures"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "evaluation-only card; nothing was trained"}
+  measurements:
+    - {metric: accuracy, value: 0.0667, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.7133
+    path: /home/ben/task/analysis/exp-01_items.jsonl
+    notes: "107 of 150 completions (0.7133) do not end on an 'ANSWER: <n>' line and 30 of 150 contain no such line at all. 80 of 150 hit the 4000-token cap (stop_reason max_tokens; output tokens p50 = 4000). 87 of 150 emit more than one ANSWER line. Of the 70 items where the model did stop, only 7 were correct. An 'ANSWER: <gold>' line appears somewhere in 21 of 150 completions while only 10 score correct, so at least 11 items were answered right and then thrown away by continued generation. Zero garbage-prefix completions, so --max-connections 8 did not damage decoding; stderr 0.020."
+  watch_set_result: {fixed: 0, still_failing: 140, regressions: 0, path: /home/ben/task/analysis/exp-01_watch.jsonl}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The immutable base snapshot scores 0.0667 +/- 0.020 on the harness protocol at n=150. The deficit is overwhelmingly stopping behaviour, not reasoning: 80 of 150 completions run to the 4000-token cap because the model answers the question and then fabricates further problems in the style of the 10-shot block, and the grader reads the last number of the completion, so a correct answer followed by a second fabricated problem scores 0."
+  decision: iterate
+  next_step: "exp-02: full-parameter SFT from the base snapshot on GSM8K-train-derived chains rendered through templates/gemma3.jinja with every target terminated by <end_of_turn>, so the model learns to stop. The floor to beat under this protocol is 0.0667."

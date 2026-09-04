@@ -1,8 +1,8 @@
 # Opus 4.8 cross-benchmark launch record
 
 Status: production acceptance passed; all **60 scientific jobs submitted** in
-15 four-cell manifests. At 16:01 UTC the WMA subqueue is ownership-clean,
-16/16 GPUs allocated, with 49 safely routed pending jobs. Allocation does not
+15 four-cell manifests. At 16:31 UTC the WMA subqueue is ownership-clean,
+16/16 GPUs allocated, with 46 safely routed pending jobs. Allocation does not
 measure GPU utilization. The study has zero completed scientific results and
 two incomplete terminal attempts; see the dated checks below.
 
@@ -177,3 +177,22 @@ control/WMA means are 74.9716%/72.3180%; they are not pooled with this study and
 do not constitute promotion evidence. Both new terminal attempts are harvested.
 Evidence, unchanged baseline ledger, full provenance and the accepted limits
 of the delegated diagnosis are in `evidence/2026-09-04-1600/`.
+
+## 16:30 UTC operator check
+
+The remaining three old G cells completed and were harvested after preview;
+total PTB/automatic-judge-clean completions are 85. G averages 73.5406% (n4)
+but fails four original scope flags and one separately confirmed semantic
+held-out-input exposure; see the Round 04 record and `evidence/2026-09-04-1630/`.
+No old flags/scorer are changed and G is not promoted.
+
+This is evidence about the old G runtime. Current frozen Opus4.8 input selection
+uses bounded explicit exports and does not automatically export session eval
+JSONL trees; already contaminated selected text remains a separate limitation.
+No current treatment is modified based on an inferred shared failure.
+
+The new study is still zero complete, two known incomplete raw attempts,
+12 RUNNING and 46 PENDING. BFCL jobs 92184/92185/92186 started by normal backfill.
+All routes remain on nodes 2–3; no submission or cancellation was added. H's
+four older cells continue. The existing hourly hook can use the upcoming
+six-hour tail threshold; no duplicate analysis window or timer is created.
