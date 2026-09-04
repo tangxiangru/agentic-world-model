@@ -162,3 +162,8 @@ not private credentials, actual models or benchmark items. The separate
 reservation and GPQA-access requests remain unanswered.
 Archive321,586 bytes, SHA256
 `916edf68c190b9b11711b87b4cb10daf017d6d78038994f321f74c2346ed78a2`.
+
+The [shared-data preparation](shared-data-preparation/README.md) adds verified
+offline shared-cache reads in both actual images, native concurrency-default
+checks,12 explicitly unsubmitted HumanEval drafts and the current node-login
+diagnosis. It does not waive compute-node admission or native release gates.

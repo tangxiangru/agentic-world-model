@@ -168,11 +168,18 @@ Actual scientist opus_5 image CPU original-scorer/log/private-visibility tests
 now pass too (five invented programs,52s). AWM independent expected-task checks
 are wired through all consumers including manual harvest;136 focused tests pass.
 Old guard8 and strict-control7+one quarantine remain unchanged in actual re-audits.
-Remaining: compute-node/GPU-enabled/outer-timeout acceptance, shared offline
-parquet/bwrap provisioning, common PTB pin adoption and full three-arm admission.
-On ondem0, cloud API host-key verification succeeded but both existing SSH
-identities were refused; do not generate/upload credentials or weaken host
-checks. Authorized node access is needed. No HumanEval receipt exists.
+Shared offline parquet is now provisioned and read/hash-checked in both images.
+The local ignored PTB .env contains the public bwrap path; the separate operator
+clone must receive that key when HumanEval is admitted.12 matched four-repeat
+drafts are in `experiments/posttrainbench/*humaneval*.draft.yaml`, explicitly
+unqueued and still rejected by the task allowlist. They contribute no held cells.
+Remaining: compute-node/GPU-enabled/outer-timeout acceptance, common PTB pin
+adoption and full three-arm admission. On ondem0, trusted host-key verification,
+OS Login username and existing key-pair/profile matches are established, but the
+node still refuses that identity. The other configured cloud identity cannot
+refresh its metadata credential. No IAM, key or login-policy changes occurred.
+See [preparation evidence](analysis-2026-09-04-opus48-onboarding/shared-data-preparation/README.md).
+Authorized node access is needed. No HumanEval receipt exists.
 
 ## Monitoring and trace review
 
@@ -181,6 +188,11 @@ next16:16:40. It predates the17 cancellations at15:16:47 onward; those are alrea
 harvested administrative terminals, not missing model results. Keep this live
 process/cumulative watched set until its real event, then archive/rearm the21
 remaining jobs, never trigger clean-cell analysis from administrative terminals.
+One-shot helper3676924 is waiting on the actual old process's pidfd to perform
+only that exact administrative handoff. It is in
+`/tmp/exp-protocol-admin-handoff.sTGNfhBs`, with waiting/error/completed evidence
+and the eventual new-monitor log; verify completed.json and new PID before
+claiming the handoff happened. Unexpected terminal/owner/state stops it.
 Args:all22 original legacy IDs plus92125–92140, threshold8,
 poll3600s. Log `/tmp/exp-protocol-opus48-monitor-yIxSYcTT/monitor.log`;
 [handoff](analysis-2026-09-04-opus48-onboarding/monitor-handoff.json)
