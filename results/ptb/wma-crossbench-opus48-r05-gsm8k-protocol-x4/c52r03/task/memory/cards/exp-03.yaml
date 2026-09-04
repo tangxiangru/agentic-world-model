@@ -1,0 +1,111 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T17:25:20Z'
+situation:
+  elapsed_h: 3.7
+  remaining_h: 6.3
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02
+    score: {metric: accuracy, value: 0.5868, protocol_n: 1319}
+  trigger: "exp-02 (SFT on MetaMathQA-GSM + GSM8K train) reaches 0.587 on the FULL GSM8K test (1319); epoch-1->epoch-2 was still rising (+4 pts), suggesting headroom. Rejection sampling (STaR) is the canonical next lever: self-generated correct traces on train questions add diverse, on-distribution reasoning the model can actually produce."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_epoch2_full.json, locator: "accuracy=0.5868"}
+    - {path: /home/ben/task/eval/exp-01_full.json, locator: "accuracy=0.5042 (full-set, shows data-augmentation lift)"}
+  alternatives_rejected:
+    - {option: "3rd epoch on the exp-02 corpus", reason: "train loss already ~0.11 (near-converged); more epochs on the same data risk overfitting more than adding coverage. RFT adds NEW correct traces instead."}
+    - {option: "retrain STaR from exp-02 checkpoint (not base)", reason: "continuing from exp-02 compounds any format overfit; STaR convention retrains from base on the augmented corpus for a clean fit; keeps base immutable-load guarantee"}
+    - {option: "generate on MetaMath rephrased questions too", reason: "more generations for marginal new coverage; start with the 7473 canonical GSM8K-train questions; expand only if this lifts accuracy"}
+  pitfalls_hit:
+    - {what: "gen_rft.py first run used stop=['<end_of_turn>'] (a STRING); vLLM detokenizes special token 106 to empty text under skip_special_tokens, so the stop string never matched and every sample ran to max_tokens=640 -- slow, and last_number() read trailing rambling so correct solutions were being rejected", cost_h: 0.3, fix: "stop on the token id via stop_token_ids=[106]; verified smoke 18/20 solved, clean short completions ending 'ANSWER: N'"}
+  smoke_runs:
+    - {command: [python, gen_rft.py, --limit, "20", --k, "4"], outcome: "18/20 q solved, 34 clean traces ending 'ANSWER: N' (<< max_tokens)"}
+    - {command: [python, train.py, --data, data/star_corpus.jsonl, --dry_run], outcome: "n=101215 p50=271 max=890 trunc(>1024)=0"}
+    - {command: [python, contamination_check.py, --input, data/star_corpus.jsonl, --reference, ../test_data.json], outcome: "0 contaminated / 101215 scanned"}
+problem:
+  statement: "exp-02 solves 58.7% of the full GSM8K test; the remaining 41% are harder multi-step problems and arithmetic slips. The SFT corpus (metamath + gsm8k-train golds) contains human/template traces but not traces the model itself finds easy to produce; RFT would add correct traces sampled from the model's own distribution."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_epoch2_full.json, locator: "accuracy=0.5868", observation: "41% still wrong on full test"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "SFT of gemma-3-4b-pt from base on the exp-02 corpus AUGMENTED with rejection-sampled correct traces (STaR: k=6 samples/train-question from exp-02, keep <=2 correct, deduped) will raise full-set GSM8K accuracy above exp-02's 0.5868."
+  mechanism: "Rejection sampling harvests multiple correct, self-consistent reasoning paths per training question in exactly the graded format; adding these to the SFT mix teaches the model reasoning styles it can reliably reproduce, improving generalization to unseen test problems (STaR effect)."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+1 to +6 pts on full-set (1319)"
+  falsified_if: "both epoch checkpoints score <= 0.5868 on the full GSM8K test (no gain over exp-02)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/star_corpus.jsonl
+      source: "exp-02 corpus (metamath_gsm.jsonl: MetaMathQA GSM_AnsAug+GSM_Rephrased + openai/gsm8k main:train) + rft_exp02.jsonl (rejection-sampled correct traces from ckpts/exp-02 on openai/gsm8k main:train questions)"
+      n_examples: 101215
+      built_by: /home/ben/task/build_star.py
+      build_command: [python, build_star.py, --metamath, data/metamath_gsm.jsonl, --rft, data/rft_exp02.jsonl, --out, data/star_corpus.jsonl]
+      selection: "concat exp-02 corpus (87473) + 13742 deduped correct RFT traces (k=4,temp0.8 from exp-02 on gsm8k train; 7114/7473 q solved; <=2 kept/q); all targets single 'ANSWER: N'; shuffle seed 0"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers.Trainer 4.57.3
+    peft: none
+    hyperparams: {lr: 2.0e-5, epochs: 2, batch_size: 8, grad_accum: 4, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "cleaned CoT then 'ANSWER: <n>' then <end_of_turn>; rendered via templates/gemma3.jinja; completion-only loss (prompt masked)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/star_corpus.jsonl, --out, /home/ben/task/ckpts/exp-03, --mode, full, --epochs, "2", --lr, "2e-5", --bs, "8", --grad_accum, "4", --max_seq_len, "1024", --optim, adamw_torch, --seed, "0", --save_each_epoch]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 2.8
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03, --limit, "-1", --max-connections, "32", --gpu-memory-utilization, "0.85", --json-output-file, /home/ben/task/eval/exp-03_full.json]
+    dev_set: "official openai/gsm8k test, full 1319 (10-shot, fewshot_seed=42)"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.5868
+    path: /home/ben/task/eval/exp-02_epoch2_full.json
+  diagnostic:
+    what: null
+    n: null
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.7
+  output_checkpoint: /home/ben/task/ckpts/exp-03
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/epoch-1, step: 3163}
+    - {path: /home/ben/task/ckpts/exp-03, step: 6326, note: "epoch-2 / final"}
+  training_summary: {final_loss: 0.11, steps: 6326, notes: "2 epochs, eff batch 32, 101215 ex, ~2h35m; loss 0.64 -> ~0.11 (same trajectory as exp-02)"}
+  measurements:
+    - {metric: accuracy, value: 0.3707, n: 1319, path: /home/ben/task/eval/exp-03_epoch1_full.json, delta_vs_comparator: -0.2161, note: "epoch-1; full test set"}
+    - {metric: accuracy, value: 0.4223, n: 1319, path: /home/ben/task/eval/exp-03_full.json, delta_vs_comparator: -0.1645, note: "epoch-2 / final; full test set"}
+  diagnostic_result: {value: null, path: null, notes: "0-shot greedy sanity on first 5 test items: 4/5 correct, format and CoT intact (Q2 profit problem wrong: dropped the repair cost). Format/stop are NOT the regression cause; it is a genuine accuracy drop on the harder tail."}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "STaR augmentation REGRESSED accuracy: exp-03 scored 0.371 (epoch-1) and 0.422 (epoch-2) on the full GSM8K test vs exp-02's 0.587 -- a ~16 pt drop, >12 stderr, not noise. Training loss (0.11) and completion lengths (349 vs 348 chars) matched exp-02, and reasoning/format are intact on easy items, so this is a real generalization loss, not a pipeline bug. Adding 13.7k self-generated correct traces (95% of train questions solved) over-weighted problem patterns the model already handles and added no coverage of the hard tail it fails; two epochs on this skewed mixture pulled the model off exp-02's better optimum. falsified_if met (both epochs <= 0.5868)."
+  decision: reject
+  next_step: "Discard exp-03; keep exp-02 (0.5868) as final_model (already in place). If more time: STaR variants that could help instead -- (a) keep only 1 trace/question and UP-weight questions exp-02 gets wrong (hard-focused), (b) mix RFT at low weight (<=5%) rather than full concat, (c) continue-train from exp-02 for <1 epoch on RFT only. None attempted due to budget."

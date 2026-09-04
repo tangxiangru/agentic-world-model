@@ -275,3 +275,19 @@ Validation92312 remains pending and S0 formal cells remain staged. The semantic
 guard is preregistered separately in
 `doc/spec/2026-09-04-humaneval-semantic-decontamination.md`; no current frozen
 treatment, scorer or WMA skill is changed.
+
+## 21:45 UTC complete BFCL P readout
+
+BFCL P c54r04 is clean at90/100. The completed protocol-only arm is
+**91/88/94/90 = 90.75% ±2.50pp sample SD**, n4. Scientist spend$70.021497 and
+allocation12.1992GPU-h exclude judges. Raw remains zero clean with two flagged
+scores91/92, one incomplete and one running; P–R primary remains undefined.
+
+GSM8K P c52r03 is the arm's first clean result at58.3017%; c52r02=49.5830%
+remains flagged and two cells run. Scientific complete/automatic-clean are97/94;
+new-study complete/clean8/5. All four GSM8K single-WMA cells now run.
+
+Queue is16RUNNING/33safePENDING, including validation-only92312; scientific
+pending alone is32. S0 formal remains staged. The unanalysed clean window is now
+above eight cells, so the existing hourly hook owns the next Opus5 analysis.
+No duplicate analysis or new scientific submission occurs in this check.
