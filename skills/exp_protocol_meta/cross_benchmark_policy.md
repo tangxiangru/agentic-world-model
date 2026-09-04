@@ -62,3 +62,31 @@ Official model-route reference checked2026-09-04:
 [Google Cloud Opus4.8](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/opus-4-8)
 documents `claude-opus-4-8`, a1M input context and the global endpoint; this does
 not establish this project's current entitlement or the pinned CLI's behavior.
+
+## Evaluator onboarding lessons
+
+Distinguish host/library unit acceptance, the actual image and compute-node
+deployment. Equal Python version strings do not establish binary equality.
+A nested bind can fail because the outer image mount is unbindable: inspect
+the source mount with a minimal public-file probe before changing isolation.
+A hash-checked public closure transport can preserve original image identity
+and isolation; a passing import does not justify a broad host/root bind. Record
+transport identity separately so session-specific scratch paths do not become
+an apparent treatment. The [HumanEval checkpoint](../../doc/exp_protocol_iterations/analysis-2026-09-04-opus48-onboarding/humaneval-runtime-checkpoint.md)
+records the exact evidence and remaining deployment gates.
+
+Preserve outcome semantics from executable scorer code, not README claims or
+untrusted generated stderr. A bad admitted program's error text is not proof
+the evaluator failed. Proven bootstrap/policy/cleanup failure requires a failed
+attempt; ordinary exits and scorer-defined timeouts follow the declared mapping.
+Establish public dependency completeness independently before launch, and freeze
+the changed common execution contract across all method arms.
+
+Do not assume custom exception attributes or in-memory backend records reach
+the trace. Test success, ordinary failure, timeout and evaluator failure through
+the persisted sample log. Formal publication must bind complete selection/counts,
+input/target/test metadata, actual scorer, executed code/runtime/limits, model
+and source identities. Recompute archive hashes and outcomes: matching saved
+hash labels alone does not validate bytes. Make verified raw bytes durable
+before atomic metrics publication, and preserve failed attempts. CPU fixtures
+never enter the scientist score table or clean-cell review trigger.

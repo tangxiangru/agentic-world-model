@@ -1,8 +1,8 @@
 # exp-protocol operator state and dependencies
 
-Mutable handoff, updated2026-09-04 after the approved Opus4.8 GSM8K registration.
-Receipt source remains immutable. Latest queue check13:02:57; per-job held/node
-checks followed; monitor verified live13:19 with tick13:16:40. Scope remains only
+Mutable handoff, updated2026-09-04 after the HumanEval CPU integration checkpoint.
+Receipt source remains immutable. Latest queue check14:16:46; monitor's
+14:16:40 tick still has0/38 terminals. Scope remains only
 `gangda_exp-protocol-evolve`, `slurm2-a3nodesetondem-[0-1]`; never AWM full.
 
 ## Approved study and actual scheduler state
@@ -148,26 +148,29 @@ was normalized by a trusted offline CPU converter, without displaying or
 executing dataset code. Actual164 rows/164 IDs; reference SHA
 85d6c3ab3a76590160695424d75d79e90049d5ceaaa809c9771d292054ad68a5.
 Files are in `/tmp/ptb-opus48-onboarding-oGLZFUf4/repo/src/eval/tasks/humaneval/`.
-The PTB working branch is `codex/opus48-cross-task-runtime` at the old pin plus
-uncommitted onboarding work; no new PTB/source/runtime has been admitted yet.
+The PTB working branch `codex/opus48-cross-task-runtime` is now clean at
+09c90b63ad4f9daa2259ab0137ac323e0e345605, pushed to the designated PTB fork.
+This is a construction checkpoint, not the operator's adopted PTB pin or task
+admission. See the [full checkpoint/evidence](analysis-2026-09-04-opus48-onboarding/humaneval-runtime-checkpoint.md).
 
-HumanEval's old local backend exposes trusted evaluator state and is not a
-safe code-execution boundary. Builder `/root/bundle_save_contract` owns the
-three new `src/eval/ptb_python_sandbox.{py,md}`/dedicated test files in that
-temporary PTB tree. Its initial native26-test versionb6bcd610 passed real
-namespace/NumPy/concurrency/resource/cleanup and original-scorer synthetic tests,
-but informed source review confirmed two defects: overwriting existing/local
-Inspect registration, and losing captured stdout/stderr on exceptions.
-Builder is repairing both; do not freeze/admit the initial version as complete.
-The review is **informed, not blind**; a fresh-context forward spawn hit the
-agent-thread limit. No fresh-context acceptance is claimed. Real vllm_debug
-image/compute-node permissions, public dependency parity, formal log retention,
-scored counts/data pinning and final integration remain required.
+Frozen helper94f41494 fixes initial registration/output loss, stderr-only
+misclassification and actual-image unbindable mounts without weakening isolation.
+49 native backend tests passed. Actual vllm_debug image CPU original-scorer
+C/I/import-I/timeout-I plus native sample-log/publication/revalidation passed;
+policy failure retained stdout/report and published no score. Host regression
+104 passed/22 native skips. Pinned data, one-epoch verify/count bindings, durable
+raw evidence, runtime/model/source/limit checks and formal retry/validator wiring
+are implemented. Reviews were **informed, not blind**. Zero model results.
+
+Remaining: actual scientist-image and compute-node/GPU-enabled/outer-timeout
+acceptance; shared offline parquet/bwrap site provisioning; adopting the common
+PTB pin and expected-task checks in AWM consumers, synthetic harvest/judge/placement
+tests and full three-arm manifest/site admission. No HumanEval receipt exists.
 
 ## Monitoring and trace review
 
-Current monitor **PID3564003**, verified alive13:19; tick13:16:40 shows0/38 terminal,
-next14:16:40. Args:all22 legacy held IDs plus92125–92140, threshold8,
+Current monitor **PID3564003**, tick14:16:40 shows0/38 terminal,
+next15:16:40. Args:all22 legacy held IDs plus92125–92140, threshold8,
 poll3600s. Log `/tmp/exp-protocol-opus48-monitor-yIxSYcTT/monitor.log`;
 [handoff](analysis-2026-09-04-opus48-onboarding/monitor-handoff.json)
 preserves the old state. Old2612586 was stopped only after the new watcher was

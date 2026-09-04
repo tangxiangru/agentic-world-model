@@ -67,8 +67,10 @@ Metadata/download check:
   MIT, metadata164 test examples. The pinned parquet was downloaded to the
   dedicated temporary cache:83,920 bytes, SHA256
   2f2871a15fbc95b6c683043359f4ed8e144c5a1c4f24f25f66bc51f598dfcfb6.
-  No questions/gold were displayed or used in planning. Actual data normalization,
-  reference freezing and safe executor/runtime acceptance remain to finish.
+  No questions/gold were displayed or used in planning. Data/reference freezing,
+  isolated execution and durable scoring evidence are now implemented at the
+  [HumanEval checkpoint](humaneval-runtime-checkpoint.md). Actual-image CPU tests
+  pass; compute-node/scientist-image/site and AWM admission remain incomplete.
 
 Full independent process-forward materials were copied byte-identically under
 `process-forward-raw/` (verified with diff -qr); original `/tmp/process-cross-task-forward.qLgkKz`
