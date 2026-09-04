@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T16:23:11Z'
+situation:
+  elapsed_h: 0.35
+  remaining_h: 9.78
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.08, protocol_n: 100}
+  trigger: "Base gemma-3-4b-pt scores 0.08 on BFCL exec_simple (eval/base_n100.json); it rarely emits a single well-formed <tool_call> in the grader's Hermes format."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/base_n100.json, locator: "accuracy=0.08"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full FT", reason: "full FT of 4B fits on the H100 and learns a new output format more reliably; can fall back to LoRA if OOM"}
+    - {option: "xLAM-60k gated dataset", reason: "gated on HF; argilla/apigen-function-calling is the ungated APIGen source, same format"}
+    - {option: "glaive-function-calling-v2", reason: "multi-turn chat format, needs heavy reshaping; APIGen already matches BFCL single-call structure"}
+  pitfalls_hit:
+    - {what: "xLAM Salesforce dataset gated -> auth error", cost_h: 0.05, fix: "use ungated argilla/apigen-function-calling mirror of same data"}
+    - {what: "first launch: loss lines invisible (stdout block-buffered to file, non-tty); training was correct but unmonitorable", cost_h: 0.2, fix: "re-lock with python -u + stderr loss callback + mid-run save_steps=400 for early eval"}
+  smoke_runs:
+    - {command: [python, -c, "render one apigen example through gemma3_tool_calling.jinja"], outcome: "prompt ends '<start_of_turn>model'; completion '<tool_call>..</tool_call><end_of_turn>', last token id 106; bos appears once"}
+problem:
+  statement: "gemma-3-4b-pt is a base (pre-trained, non-instruct) model. It does not reliably follow the tool-calling chat format the BFCL grader uses, so it seldom produces exactly one parseable Hermes <tool_call> with the correct function name and arguments."
+  evidence:
+    - {path: /home/ben/task/eval/base_n100.json, locator: "accuracy=0.08", observation: "8/100 correct with the base model"}
+  affected_share: 0.92
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/watch.jsonl
+    n: 100
+    selection: "100 held-out APIGen single-tool examples not in training (by query); contamination-checked clean; probe of format-following, not the benchmark"
+hypothesis:
+  claim: "Completion-only SFT of gemma-3-4b-pt on ~25.8k single-function-call APIGen examples, rendered with the grader's exact chat template, will raise BFCL exec_simple accuracy well above the base 0.08."
+  mechanism: "The base model already has the world knowledge and JSON ability; it lacks the format. Supervising on prompt/completion pairs whose prompt is byte-identical to the eval render and whose completion is a single Hermes <tool_call> ending in <end_of_turn> teaches exactly the behavior the grader scores."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+0.4 or more (region 0.5-0.8); any clear gain confirms the mechanism"
+  falsified_if: "n=100 accuracy is not clearly above base 0.08 (e.g. <=0.15), or the model fails to emit single parseable tool calls."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/train.jsonl
+      source: "local (derived from argilla/apigen-function-calling, HF)"
+      n_examples: 25766
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --max-examples, "30000", --out, data/train_raw.jsonl]
+      selection: "single-answer; gold function in tools; gold args subset of gold-tool params; <=6 tools; tools normalized to JSON-schema + OpenAI-wrapped; rendered with templates/gemma3_tool_calling.jinja; dedup by (function,query); dropped rows > 2048 tokens (13)"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3
+    peft: none
+    hyperparams: {lr: 2.0e-5, epochs: 2, batch_size: 8, grad_accum: 4, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant turn = '<tool_call> {json name+arguments} </tool_call><end_of_turn>'; completion-only loss (prompt tokens masked)"
+    stop_token: "<end_of_turn>"
+    answer_marker: null
+  command:
+    argv: [python, -u, train_sft.py, --data, data/train.jsonl, --out, work/sft1, --lr, "2e-5", --epochs, "2", --bs, "8", --grad-accum, "4", --max-seq-len, "2048", --save-steps, "400"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/train_sft1.log
+  output_dir: /home/ben/task/work/sft1
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.0
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --max-tokens, "512", --max-connections, "6", --json-output-file, "{out}"]
+    dev_set: "official exec_simple (full)"
+    n: 100
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.08
+    path: /home/ben/task/eval/base_n100.json
+  diagnostic:
+    what: "fraction of items producing exactly one parseable tool call (implicit in accuracy scorer)"
+    n: 100
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.6
+  output_checkpoint: /home/ben/task/work/sft1/final
+  checkpoints_kept:
+    - {path: /home/ben/task/work/sft1/checkpoint-400, step: 400}
+    - {path: /home/ben/task/work/sft1/checkpoint-800, step: 800}
+    - {path: /home/ben/task/work/sft1/checkpoint-1200, step: 1200}
+    - {path: /home/ben/task/work/sft1/checkpoint-1600, step: 1600}
+    - {path: /home/ben/task/work/sft1/checkpoint-1612, step: 1612}
+    - {path: /home/ben/task/work/sft1/final, step: 1612}
+  training_summary: {final_loss: 0.008, steps: 1612, notes: "2 epochs, 25766 rows, bs8 x grad_accum4 = eff 32; loss fell to ~0.01 by step ~800 and stayed low; cosine LR 2e-5->~0"}
+  measurements:
+    - {metric: accuracy, value: 0.08, n: 100, path: /home/ben/task/eval/base_n100.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.85, n: 100, path: /home/ben/task/eval/sft1_ckpt800.json, delta_vs_comparator: 0.77}
+    - {metric: accuracy, value: 0.87, n: 100, path: /home/ben/task/eval/sft1_ckpt1200.json, delta_vs_comparator: 0.79}
+    - {metric: accuracy, value: 0.87, n: 100, path: /home/ben/task/eval/sft1_final.json, delta_vs_comparator: 0.79}
+    - {metric: accuracy, value: 0.86, n: 100, path: /home/ben/task/eval/final_model.json, delta_vs_comparator: 0.78}
+  diagnostic_result: {value: 0.87, path: /home/ben/task/eval/sft1_final.json, notes: "accuracy scorer requires exactly one parseable Hermes tool call with correct name+args; 0.87 implies the model reliably emits well-formed single tool calls (base 0.08)"}
+  watch_set_result: {fixed: 0, still_failing: 0, regressions: 0, path: /home/ben/task/data/watch.jsonl}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Completion-only SFT of gemma-3-4b-pt on 25.8k single-call APIGen examples, rendered with the grader's exact chat template, raised BFCL exec_simple accuracy from 0.08 to 0.87 (n=100), far exceeding the +0.4 expectation. Mechanism confirmed: the base model had the knowledge/JSON ability and only lacked the Hermes tool-call format; supervising on eval-identical renders taught exactly the scored behavior. final and checkpoint-1200 tie at 0.87; checkpoint-800 at 0.85 — no late-training overfit regression."
+  decision: adopt
+  decision_notes: "Package work/sft1/final as final_model (verified loadable + 0.86 from its own path, within n=100 noise of 0.87). Keep it as the deliverable/incumbent."
+  next_step: "Optional further gains would need harder/multi-arg coverage or decoding tweaks; 0.87 is a strong incumbent. Any next experiment starts from base with a revised data mixture, not from this SFT checkpoint (format already learned)."

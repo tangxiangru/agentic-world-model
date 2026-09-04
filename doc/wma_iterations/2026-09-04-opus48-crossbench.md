@@ -254,3 +254,24 @@ This brings scientific complete/automatic-clean to93/91; new-study complete is4
 with only2 clean. Queue is16RUNNING/38safePENDING. S0 validation92312 is pending,
 formal S0 remains staged. Exact evidence and ranked lifecycle decision are in
 `evidence/2026-09-04-2000/operator-review.md`.
+
+## 21:00 UTC incremental readout
+
+BFCL protocol-only c54r02 is clean at88/100. With c54r01/r03, P is now
+**91.0% ±3.0pp sample SD**, n3. Raw c53r03 is complete at91/100 but, like
+c53r04, ends while a later background training round is unfinished; raw remains
+zero clean and its two scores91/92 are flagged sensitivities only.
+
+GSM8K P c52r02 remains the flagged49.5830% result recorded earlier. HumanEval
+protocol c56r03 is newly incomplete with contamination + general_anomaly: its
+locked110.7MB Magicoder-derived training file passed the existing n-gram check,
+but the semantic judge identified279 documents across67 HumanEval-like function
+families. Training reached only96/2250 before the same text-only end_turn killed
+background work; no checkpoint or score exists.
+
+Scientific complete/automatic-clean are now95/92; new-study complete6/clean3.
+Queue is16RUNNING/35safePENDING; two GSM8K single-WMA cells have started.
+Validation92312 remains pending and S0 formal cells remain staged. The semantic
+guard is preregistered separately in
+`doc/spec/2026-09-04-humaneval-semantic-decontamination.md`; no current frozen
+treatment, scorer or WMA skill is changed.
