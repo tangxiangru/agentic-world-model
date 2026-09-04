@@ -113,6 +113,29 @@ The [accepted E7 interface](../exp_protocol_iterations/2026-09-04-rendered-input
 adds independently checked g01r08 evidence and specifies the prepared-token
 artifact, supported modes, checked loader/collator and exact proof boundaries.
 
+E6 construction interface: CPU `prepare_prompts` tokenizes already-rendered
+strings with `add_special_tokens=False`, preserving typed source IDs plus ordinal
+and an explicit BOS policy. `record_vllm` checks a prior matching card/lock,
+rechecks tokens with the engine tokenizer, resolves required single-token stops
+from that tokenizer, and requires those IDs in the actual SamplingParams passed
+to the pinned native offline entrypoint. It does not choose decoding or silently
+chunk/reseed the call. Native vLLM0.11.0 returns final requests in input order;
+verify each returned prompt-token sequence as well as request/completion counts.
+Best-of/custom processors/streaming need explicit support, not presumed coverage.
+
+Write all returned generated text/token IDs and native finish/stop reasons into
+a new raw JSONL and flush/fsync it **before** any parser callback. Separate
+capture validation from a subsequent parser pass; one malformed numeric draw
+becomes an explicit parser-error record, not a lost generation batch or guessed
+score. Preserve raw evidence even on callback failure/interruption. A generation
+failure before the native call returns cannot be retroactively recovered by this
+wrapper. Requested parameters, observed request tokens/stops and resolved internal
+engine configuration are different evidence levels; do not label the first as
+the third. This never modifies the official grader, proves contamination absence,
+or turns developer parsing into an official score. Tests must include real pinned
+SamplingParams/RequestOutput objects without constructing/running an LLM, plus
+inert-backend boundary tests; a simulated inference is not a native GPU result.
+
 ## 4. Save contract chosen for construction
 
 Use a version-pinned, opt-in `GenerationSaveContract` and native Trainer save

@@ -11,7 +11,7 @@ first as4b14768. Construction is isolated in
 | label | source | change |
 |---|---|---|
 | reference |guard drift2f64581 / protocol tree189319d6|historical reference|
-| E in construction |commits carrying this record; not an approved frozen variant|H/J/K integration, honest comparator evidence, tested native-save adapter and foreground execution records|
+| E in construction |commits carrying this record; not an approved frozen variant|H/J/K, native saves, execution records, raw-first sampling and checked prepared inputs; E8 publication remains|
 | E+L / E+P / E+L+P |not constructed|distinct additions from the predeclared spec|
 
 This checkpoint incorporates H `b52e5f2`, J `549e25a`, K `58a6992`, B `9f294c3`
@@ -36,7 +36,7 @@ cells, benchmark scores or new-clean observations.
 No GPU outcome vector yet. Current official record remains g01r03's82.79%,
 which is unrelated to the effectiveness of this unrun package.
 
-CPU evidence through09:18 UTC:
+CPU evidence through10:46 UTC:
 
 -36 original K lifecycle tests passed after the first mechanical integration.
 -183 protocol/sandbox tests passed after H/J/K and revised guidance integration.
@@ -60,7 +60,7 @@ CPU evidence through09:18 UTC:
   network or GPU devices. They exercise real child exits/signals/observer death,
   fresh namespaces, stale inputs, same-card concurrency, incomplete receipts,
   allowed result-only card updates, and E3 failed closure.
--Final original-environment combined protocol/sandbox/PTB suite:
+-E5-stage original-environment combined protocol/sandbox/PTB suite:
   `365 passed,15 skipped in18.84s`. The15 skip reports are the known missing-Torch
   native save cases, not unknown E5 failures. Save's independent51-test pinned
   evidence above remains separate.
@@ -68,6 +68,29 @@ CPU evidence through09:18 UTC:
   real CPU attempts, seven honestly closed cards, no locked-open cards and no
   remaining owned child processes. Seventy original text artifacts were archived
   byte-identically, including unsuccessful/interrupted/unknown attempts.
+-E6 final pinned sampling suite has32 tests; E7 final suite has76 tests
+  (21 dependency-free,55 real tokenizer/consumer cases). Main independently ran
+  these together with80 schema/preflight tests: `188 passed in38.81s`.
+  Inert sampling returns are explicitly not real inference. Actual offline Gemma
+  tokenizer, fork/spawn CPU workers, both input modes and whole-source accounting
+  are tested without model forwards or GPU devices.
+-Independent [E6](trace-reviews/bundle-e6-forward/report.md) and
+  [E7](trace-reviews/bundle-e7-forward/report.md) forward workflows were selected
+  from public guides, not copied from implementation tests. Main read both full
+  reports and E6's actual interception fixture. Complete evidence is preserved
+  on the shared data volume; hashes/inclusion are in each archive index.
+-Main independently reverified the two E7 successful review receipts at10:41:
+  four source occurrences→three kept/one2,820-token drop;136 retained/40 supervised
+  tokens, stop1.0 and marker-bad0.0, with the two distinct template coverage states.
+-Builder's10,000 varied-row E7 measurement:3,492,790 tokens,32,588,994-byte token
+  artifact;15.96s preparation including verification,2.36s preflight,2.41s loader,
+  .027s first batch. Independent cold-process tiny-fixture costs include Python/
+  tokenizer startup and are not directly comparable or full-corpus predictions.
+-Final current original-environment protocol/sandbox/PTB regression, explicitly
+  excluding still-in-progress E8: `415 passed,73 skipped in23.19s`. Skips identify
+  absent Torch/Transformers/vLLM dependencies; the fixed-runtime tests above,
+  not those skips, supply the native verification. E6/E7 source/guide/adapter
+  corrections are included; E8 is not claimed tested by this count.
 
 The generic skill-creator validator exits1 on the repository's preexisting
 `exp_protocol` underscore name. Preserve that installed identity; do not rename
@@ -111,10 +134,11 @@ Keep the current baseline; continue constructing the **complete** E package.
 No submission, release, promotion, quality gain or restored useful-held floor
 is claimed. Eight new discovery cells alone would not satisfy16 running+8 held.
 
-E5 is accepted as a tested component, not a full E package. E7's
-[rendered-input interface](2026-09-04-rendered-input-design.md) is accepted for
-construction after original g03/g05/g08 source/trace checks; no token materializer
-or consumer is implemented yet. These CPU reviews add zero validator-clean cells.
+E5,E6 and E7 are accepted as tested components, not a full E package. E7's
+[rendered-input interface](2026-09-04-rendered-input-design.md) now has a prepared
+token artifact and checked consumer, with honest scope/cadence limits. E8's
+[publication contract](2026-09-04-serving-export-design.md) is in construction.
+These CPU reviews add zero validator-clean cells and authorize no GPU launch.
 
 ## Change
 
@@ -166,11 +190,31 @@ See spec components E1–E8 and Window04 D scope, card semantics, exit/timing an
 paired-count audits. The new tests intentionally cover unknown evidence,
 conflicts, absent helpers and combined consumers, not only matching headings.
 
+E6 uses native vLLM0.11.0 parameter/output/source checks, exact prepared prompt
+tokens and explicit stops, raw-first fsync, real returned counts/reasons, and
+separate parser failures/recovery. Main fixed ordinary Enum handling using actual
+native objects, accepted native generic token sequences, and added request/raw
+hash checks after parser execution. Requested settings and inert-call timings
+are not resolved-engine or GPU-performance proof.
+
+E7 checks every prepared row and declared source decision, preserving separate/
+joint tokenization, template tails, prompt masks and padding. Pre-rendered input
+does not require invented messages or claim applied-template equivalence. Only
+frozen95%/2% or stricter tolerances are allowed; scientist-selected weak settings
+cannot bypass the original discipline. Canonical live lock/script/token binding
+is required at loader open. First-use/explicit-flush records are lower bounds,
+not continuous lock monitoring or evidence of optimizer/model consumption.
+
+Independent review found no supported-path false block or fabricated success.
+Guide/setup gaps were corrected after those cases: nested recording parents,
+invalid-capture diagnostics, renderer settings dictionary and runtime routing.
+The parent's subsequent regressions cover the E6 behavior changes; no claim of
+an independent blind audit of later source edits. E7 core hashes stayed unchanged.
+
 ## Next round
 
-Integrate E4/E5 evidence with the remaining selected-artifact/export consumers;
-implement E6 real sampling helpers and E7's prepared-token/checked-consumer
-interface. Validate the whole package with independent forward cases.
+Complete E8's selected-artifact/export consumers with E4/E5 integration, then
+validate the whole E package and construct the predeclared L/P additions.
 Only afterward freeze complete variants and2-cell manifests, prepare L/P,
 replace scientifically obsolete holds through exact receipts, and revisit
 release with real native isolation/authority. A passing partial suite cannot

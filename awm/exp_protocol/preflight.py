@@ -5,12 +5,14 @@ fail / skip with one line of detail. Nothing here starts a process. The
 catalogue in ``skills/exp_protocol/pitfalls.yaml`` names which check covers
 which pitfall; pitfalls without a check are printed as reminders.
 
-Every data check reads the **first** ``SAMPLE_ROWS`` rows of each jsonl file,
+Legacy raw-text checks read the **first** ``SAMPLE_ROWS`` rows of each jsonl file,
 not a random sample, and says so in its detail: a file concatenated from a
 good source and a bad one passes on its head. The token estimate is
 ``chars / CHARS_PER_TOKEN``, an English-prose constant that under-counts CJK
 and dense code and ignores whatever the trainer's template adds at run time;
 both push toward a false pass, which the detail also states.
+Opted-in rendered-training evidence instead verifies every prepared token row;
+only complete valid evidence supersedes those raw heuristics.
 """
 
 from __future__ import annotations
@@ -57,6 +59,14 @@ class Context:
     card: dict[str, Any]
     session_dir: Path | None
     _rows: dict[str, list[dict[str, Any]]]
+    _rendered_training: dict[str, Any] | None = None
+
+    def rendered_training(self) -> dict[str, Any]:
+        if self._rendered_training is None:
+            from .rendered_training import check_card
+
+            self._rendered_training = check_card(self.card, self.session_dir)
+        return self._rendered_training
 
     def rows(self, path: str) -> list[dict[str, Any]]:
         """The first SAMPLE_ROWS rows of a jsonl file, parsed; cached per path."""
@@ -200,8 +210,24 @@ def _targets(ctx: Context) -> tuple[list[str], set[str]]:
     return texts, fields
 
 
+def _rendered_supersedes(ctx: Context, check_id: str) -> CheckResult | None:
+    if (get(ctx.card, "setup.rendered_training") is not None
+            and ctx.rendered_training().get("verified_preparation") is True):
+        return CheckResult(check_id, "skip", "raw heuristic superseded by complete all-row rendered token evidence; not a raw PASS")
+    return None
+
+
+@check("rendered_training_evidence", "verify actual prepared token arrays and bound sources/settings")
+def rendered_training_evidence(ctx: Context) -> CheckResult:
+    report = ctx.rendered_training()
+    return CheckResult("rendered_training_evidence", report["status"], report["detail"])
+
+
 @check("stop_token_consistent", "training targets end with the declared stop token")
 def stop_token_consistent(ctx: Context) -> CheckResult:
+    superseded = _rendered_supersedes(ctx, "stop_token_consistent")
+    if superseded is not None:
+        return superseded
     tok = get(ctx.card, "setup.method.stop_token")
     if not tok:
         return CheckResult("stop_token_consistent", "warn",
@@ -220,6 +246,9 @@ def stop_token_consistent(ctx: Context) -> CheckResult:
 
 @check("answer_marker_single", "each target contains the answer marker exactly once")
 def answer_marker_single(ctx: Context) -> CheckResult:
+    superseded = _rendered_supersedes(ctx, "answer_marker_single")
+    if superseded is not None:
+        return superseded
     marker = get(ctx.card, "setup.method.answer_marker")
     if not marker:
         return CheckResult("answer_marker_single", "warn",
@@ -236,6 +265,9 @@ def answer_marker_single(ctx: Context) -> CheckResult:
 
 @check("max_seq_len_headroom", "rows fit in max_seq_len (chars/4 estimate)")
 def max_seq_len_headroom(ctx: Context) -> CheckResult:
+    superseded = _rendered_supersedes(ctx, "max_seq_len_headroom")
+    if superseded is not None:
+        return superseded
     msl = get(ctx.card, "setup.method.hyperparams.max_seq_len")
     if not isinstance(msl, int) or msl <= 0:
         return CheckResult("max_seq_len_headroom", "warn",
@@ -394,8 +426,11 @@ def run_preflight(card: dict[str, Any], session_dir: Path | None = None,
         catalogue = pitfalls
     reminders = [{"id": p["id"], "symptom": p["symptom"], "guidance": p["guidance"]}
                  for p in catalogue if p.get("check") is None]
-    return {"ran_at": now(), "results": [asdict(r) for r in results],
-            "summary": summary, "reminders": reminders, "catalogue": catalogue_path}
+    report = {"ran_at": now(), "results": [asdict(r) for r in results],
+              "summary": summary, "reminders": reminders, "catalogue": catalogue_path}
+    if get(card, "setup.rendered_training") is not None:
+        report["rendered_training"] = ctx.rendered_training()
+    return report
 
 
 def render(report: dict[str, Any]) -> str:

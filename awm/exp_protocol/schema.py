@@ -334,6 +334,15 @@ def validate_plan(card: dict[str, Any], session_dir: Path | None = None) -> Repo
         elif execution_evidence["output_evidence"] == "fresh-directory":
             if not isinstance(out, str) or not Path(out).is_absolute():
                 r.error("setup.output_dir", "fresh-directory evidence requires an absolute output path")
+    rendered_evidence = get(card, "setup.rendered_training")
+    if rendered_evidence is not None:
+        if not isinstance(rendered_evidence, dict) or set(rendered_evidence) != {"receipt", "sha256"}:
+            r.error("setup.rendered_training", "optional evidence requires only receipt and sha256")
+        else:
+            if not isinstance(rendered_evidence["receipt"], str) or not rendered_evidence["receipt"]:
+                r.error("setup.rendered_training.receipt", "must be a nonempty receipt path")
+            if not isinstance(rendered_evidence["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", rendered_evidence["sha256"]):
+                r.error("setup.rendered_training.sha256", "must be a SHA256 of the actual receipt bytes")
     keep = get(card, "setup.checkpoints.keep")
     if keep is None:
         r.error("setup.checkpoints.keep", "required: all | last | best | <positive int>")

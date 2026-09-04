@@ -195,6 +195,27 @@ it. Keep the scientist-selected on-disk serving configuration separate from
 serializer normalization. Native save success is not model quality, complete
 artifact validation or proof that every free-form script used the adapter.
 
+## When preprocessing changes the raw representation
+
+Read `rendered-training.md` for the supported prepared-token artifact and checked
+loader/collator. It verifies actual input IDs and supervised labels, including
+template tails and padding; a raw target suffix alone is not that evidence.
+CPU-only preparation may precede lock, but model construction/forwards/training
+still require the matching locked command. Keep already-rendered prompts and
+separate/joint tokenization modes distinct. Complete valid declared evidence
+supersedes raw heuristics; missing/stale evidence is never relabelled as PASS.
+Preparation, observed data access and actual model consumption are different
+claims; the latter remains unknown from a preprocessing receipt alone.
+
+## When sampling offline
+
+Read `sampling-evidence.md` for the pinned native vLLM path. Prepare actual prompt
+tokens without adding a second set of special tokens, resolve explicit stops
+from the tokenizer, and preserve every returned draw before post-processing.
+Construct the model and call inference only inside the matching locked command.
+Keep requested settings, observed finish reasons, parsing failures and official
+scores distinct; a raw capture or parser summary is not scientific completion.
+
 ## Budget
 
 The protocol should cost you under five minutes per card. If it is costing
