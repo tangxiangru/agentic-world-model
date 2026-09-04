@@ -1,5 +1,7 @@
 # Window04 accumulation — 2026-09-04
 
+Superseded at the04:00 trigger by the [frozen14-cell review window](2026-09-04-trace-review-window04-local.md). The five-cell roster/collect files below remain historical checkpoints, not the current dispatch gate; these five are included once in the frozen14.
+
 Status: **5 new receipt-backed validator-clean cells; waiting for at least8 before local Claude dispatch**. This is a collection checkpoint, not a completed analysis window or a protocol decision. Original bundles were committed and pushed in `7043fa4`.
 
 | cell | job | arm | official accuracy |

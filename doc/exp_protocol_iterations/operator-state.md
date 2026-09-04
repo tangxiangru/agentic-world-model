@@ -1,6 +1,6 @@
 # exp-protocol operator state and dependencies
 
-Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 after the03:05 harvest: affected manifests revalidated; live queue03:02:42; monitor03:00:54. Unchanged older cohorts retain the2026-09-03 validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
+Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 after the04:00-trigger harvest: affected manifests revalidated; live queue04:04:23; replacement tail monitor04:06:32. Unchanged older cohorts retain the2026-09-03 validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
 
 ## Completed, running and held
 
@@ -11,12 +11,12 @@ Current receipt-aware `awm ptb results MANIFEST --json` revalidated the followin
 | [v3 baseline16](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3.yaml) |14|0; p00r08/p00r16 incomplete failures|none|none|
 | [null control8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-x8.yaml) |7|c00r02 complete with general_anomaly, separate from clean|none|none|
 | [null control B8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-b-x8.yaml) |8|0|none|none|
-| [old guard8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r01-guard-x8.yaml) |6|0|90649,90653 / g01r03,g01r07|none|
+| [old guard8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r01-guard-x8.yaml) |8|0|none|none|
 | [strict guard8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2.yaml) |8|0|none|none|
-| [strict control8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8.yaml) |1 (c01s06)|0|90813–90817,90819–90820 / c01s01–05,c01s07–08|none|
-| [strict baseline8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8.yaml) |0|0|90823–90825 / p00s01–03|90826–90830 / p00s04–08|
+| [strict control8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8.yaml) |6 (c01s01–04,06–07)|0|90817,90820 / c01s05,c01s08|none|
+| [strict baseline8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8.yaml) |2 (p00s01–02)|0|90825 / p00s03|90826–90830 / p00s04–08|
 
-These seven manifests now have45 validator-complete eligible results, **44 clean and1 flagged**, plus2 failed/incomplete attempts and12 currently running. Five NEW clean cells are accumulating for [Window04](2026-09-04-window04-accumulation.md); no new analysis window has been dispatched yet. The largest clean official score remains c00r03=0.7968157695223654; protocol maximum g01r02=0.7778620166793025. [p00r16 failure](2026-09-03-p00r16-scorer-failure.md) remains unscored; developer results do not fill the missing official metric.
+These seven manifests now have54 validator-complete eligible results, **53 clean and1 flagged**, plus2 failed/incomplete attempts and3 currently running. [Window04](2026-09-04-trace-review-window04-local.md) is frozen at14 NEW clean cells; five local Opus max reviewers are running, with synthesis/adjudication still pending. **Highest clean official score is now protocol g01r03=0.8278999241849886 (1092/1319,82.79%)**; control maximum remains c00r03=0.7968157695223654. A single-run maximum is not a variant-effect/promotion claim. [p00r16 failure](2026-09-03-p00r16-scorer-failure.md) remains unscored; developer results do not fill the missing official metric.
 
 Additional held Round02 blocks:
 
@@ -34,14 +34,14 @@ With the five strict-baseline jobs, this is **29 actual PENDING(JobHeldUser)**, 
 
 ## Gates and next-wave graph
 
-At03:02:42 UTC only **11/16 owned GPUs were allocated**, leaving five idle;12 running jobs include the outside-node90820. The held buffer is sufficient, but the independent ownership/native-isolation gates still prohibit release. Capacity is not being held idle for a scientific straggler or for local Claude analysis. Resolving90820 and restoring native two-node isolation requires the applicable operator/user authority; running work is not cancelled automatically.
+At04:04:23 UTC only **2/16 owned GPUs were allocated**, leaving fourteen idle;3 running jobs include the outside-node90820. The held buffer is sufficient, but the independent ownership/native-isolation gates still prohibit release. Capacity is not being held idle for a scientific straggler or for local Claude analysis. Resolving90820 and restoring native two-node isolation requires the applicable operator/user authority; running work is not cancelled automatically.
 
 ```text
 strict guard8 complete and fully reviewed
   └─ observed-no-harm gate PASSED (not promotion or universal compliance)
 
 OWNERSHIP OK + per-job frozen ReqNodeList + native two-node isolation
-  └─ NOT satisfied:90820 outside assigned nodes; registered12/16; reservation11 nodes
+  └─ NOT satisfied:90820 outside assigned nodes; registered3/16; reservation11 nodes
      └─ no new submissions (including held) or releases now
 
 when operational gates pass, independently of unrelated stragglers:
@@ -68,8 +68,8 @@ All three have recorded CPU/independent-forward validation and local/full manife
 
 ## Monitoring and analysis
 
-Hourly monitor PID2086813 is live, tracking the original17-job cohort (now five harvested terminals plus12 running), threshold8 terminal attempts, state `data/ptb/monitor/exp_protocol_goal.json`. Keep its original IDs while it is live so the next three terminal attempts reach the cumulative threshold; do not restart it to wait for eight additional attempts. Scientific NEW clean count is tracked separately in the Window04 roster. Harvest failed/cancelled/timeout spillover attempts as well, preserving quarantine. Do not restart a live monitor on an observation timeout.
+Original monitor2086813 completed normally at04:00:55 with14 terminal attempts; its ready event is preserved in Window04 `trigger.json`, and all14 are harvested/validator-clean. New hourly monitor **PID2446155** tracks only90817,90820,90825 with threshold3, the remaining original-cohort attempts. State remains `data/ptb/monitor/exp_protocol_goal.json`; log is `/tmp/exp-protocol-tail-monitor-l4_ww232/monitor.log`. This tail detector does not make three arrivals a new eight-clean window. Harvest all outcomes and track later clean evidence separately from the frozen14. Do not restart a live monitor on an observation timeout.
 
-Latest monitor tick2026-09-04 03:00:54 UTC:5/17 terminal, all five harvested and validator-clean; process verified live after that tick. The next nominal tick is04:00:54 UTC. This does not revalidate release gates or require a minute-scale Slurm check.
+Latest tail-monitor tick2026-09-04 04:06:32 UTC:0/3 terminal; process verified live. The next nominal tick is05:06:32 UTC. This does not revalidate release gates or require a minute-scale Slurm check. Window04 reviewer session IDs and their NEW/calibration mappings are in its launch record; do not dispatch duplicate reviewers on resume.
 
 The exact strict guard cohort has been fully reviewed, including seven incremental cells outside Window03; do not double-count it as another eight-new window. Supplemental P5 local Claude session `145e42ee-b904-4829-9380-e4534ccbc7bf` has completed its read-only Opus5[1m] max review and was stopped after delivery. The [planner adjudication](trace-reviews/p5-serving-audit/planner-decision.md) retains the observation but makes no new protocol candidate or GPU repeat. Three original developer Inspect logs were recovered/read from the data volume, with actual1319 counts and logged settings; official per-item evidence remains unresolved across a scratch-persistence boundary. This consumes zero new clean cells. A [prospective retention design](../spec/2026-09-03-ptb-official-eval-evidence-retention.md) scopes the remaining tested timeout/cleanup and opt-in launcher/harvest integration. The [isolated CPU prototype](2026-09-03-official-evidence-prototype.md) now passes159 tests, including the real Inspect→archive success path with two synthetic MockLLM samples, plus three original developer-log format replays. The helper remains unwired; next are timeout/cleanup, actual Inspect sink and launcher/harvest integration. Source/standalone-container tests do not prove those callers. Keep inference logging local and archive afterward; do not change current frozen attempts, the PTB pin or the evaluation contract.

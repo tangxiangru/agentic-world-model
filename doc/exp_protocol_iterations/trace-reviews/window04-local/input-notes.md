@@ -1,10 +1,11 @@
-# Window04 prepared inputs — not an analysis decision
+# Window04 frozen inputs — deep review in progress, not a decision
 
-The current five NEW clean cells have machine-generated facts and timelines in
-`prepared/`; [preparation.json](preparation.json) records tool/source identities,
-successful exit codes and output hashes. The [accumulation roster](accumulation.json)
-is still open at5/8, not a frozen analysis window. No reviewer or synthesis has
-been dispatched and no protocol/queue decision is based on these summaries.
+The window is now frozen at14 NEW clean cells plus one explicitly historical
+baseline calibration. [roster.json](roster.json) is the current authority and
+[inputs.json](inputs.json) records all prepared facts/timelines and hashes.
+The earlier `accumulation.json` and `preparation.json` preserve the five-cell
+checkpoint only; they are superseded, not the current dispatch gate. Reviewers
+are being dispatched, but no synthesis or protocol/queue decision is complete.
 
 At dispatch, follow `skills/exp_protocol_meta/trace_review.md` and `metrics.md`:
 
@@ -26,7 +27,8 @@ At dispatch, follow `skills/exp_protocol_meta/trace_review.md` and `metrics.md`:
   bootstrap SHA or card count alone. Keep these old guard identities separate
   from the exact previously reviewed strict-guard cohort when tabulating.
 
-Once at least eight NEW validator-clean cells accumulate, refresh/freeze the
-roster to include all eligible unreviewed arrivals, generate the additional
-inputs, and launch the prescribed local Opus5[1m] max reviewers plus synthesis.
-Do not count old reports or these prepared files as completed deep review.
+The minimum-eight gate is satisfied by all14 NEW eligible arrivals at the
+fixed04:00 trigger. The three then-running jobs are tracked separately; do not
+silently add late arrivals or calibration to this frozen denominator. Complete
+all assigned reports, then use an independent local Opus5[1m] max synthesis.
+Do not count prepared files as completed deep review.
