@@ -331,3 +331,59 @@ def test_archiver_cpu_fixture_in_pinned_evaluation_image(setup):
     record = json.loads(proc.stdout)["logs"][0]
     assert record["compact"]["status"] == "available"
     assert gzip.decompress((receipt_dir(setup) / record["archive"]["file"]).read_bytes()) == log.read_bytes()
+
+
+def test_real_inspect_json_sink_then_archive_with_local_mock_model(setup):
+    executable = Path("/rmeng_data/robtang/tools/apt-root/usr/bin/apptainer")
+    image = Path("/rmeng_data/robtang/ptb-containers/vllm_debug.sif")
+    if not executable.is_file() or not image.is_file():
+        pytest.skip("optional site image unavailable")
+    # The image's MockLLM provider returns a constant Python string. No network,
+    # model inference, PTB task/evaluator or benchmark dataset is used.
+    root = setup[1].parent
+    source = Path("/fixture") / setup[0].relative_to(root)
+    result = Path("/fixture") / setup[1].relative_to(root)
+    code = r'''
+import importlib.util,json,os,sys
+from pathlib import Path
+source,result=map(Path,sys.argv[1:])
+os.environ["INSPECT_LOG_DIR"]=str(source)
+runtime=Path("/fixture/inspect-runtime")
+for setting,leaf in (("XDG_DATA_HOME","data"),("XDG_CACHE_HOME","cache"),("XDG_CONFIG_HOME","config")):
+    directory=runtime/leaf
+    directory.mkdir(parents=True,exist_ok=True)
+    os.environ[setting]=str(directory)
+from inspect_ai import Task, eval
+from inspect_ai.dataset import Sample
+from inspect_ai.solver import generate
+from inspect_ai.scorer import match
+task=Task(dataset=[Sample(id=f"toy-{i}",input=f"SYNTHETIC fixture {i}",
+                         target="Default output from mockllm/model") for i in (1,2)],
+          solver=generate(),scorer=match(),name="synthetic_retention_fixture")
+logs=eval(task,model="mockllm/model",log_format="json",display="plain",log_samples=True,
+          log_realtime=False,score_display=False,max_connections=2,max_tokens=40)
+assert len(logs)==1 and logs[0].status=="success"
+assert Path(logs[0].location).parent.resolve()==source.resolve()
+assert len(list(source.glob("*.json")))==1
+module_spec=importlib.util.spec_from_file_location("evidence","/opt/ptb-evidence.py")
+module=importlib.util.module_from_spec(module_spec); module_spec.loader.exec_module(module)
+receipt=module.preserve_attempt(source,result,job_id="901",attempt=1,phase="post_attempt",exit_code=0)
+item=receipt["logs"][0]
+assert item["compact"]["status"]=="available"
+assert item["compact"]["metadata"]["observed_sample_rows"]==2
+assert item["compact"]["metadata"]["model"]=="mockllm/model"
+print("SYNTHETIC_RETENTION_RESULT="+json.dumps(receipt))
+'''
+    before = (setup[1] / "metrics.json").read_bytes()
+    proc = subprocess.run([
+        str(executable), "exec", "--cleanenv", "--no-home", "--containall",
+        "--bind", f"{SCRIPT}:/opt/ptb-evidence.py:ro", "--bind", f"{root}:/fixture",
+        "--pwd", "/fixture", str(image), "python", "-c", code, str(source), str(result),
+    ], capture_output=True, text=True, timeout=40)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    marker = "SYNTHETIC_RETENTION_RESULT="
+    line = next(line for line in proc.stdout.splitlines() if line.startswith(marker))
+    item = json.loads(line[len(marker):])["logs"][0]
+    raw = (setup[0] / item["source_name"]).read_bytes()
+    assert gzip.decompress((receipt_dir(setup) / item["archive"]["file"]).read_bytes()) == raw
+    assert (setup[1] / "metrics.json").read_bytes() == before

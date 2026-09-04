@@ -36,7 +36,7 @@
 | 26 | **GPU smoke 与锁卡覆盖范围冲突（J）** | strict g01s01/90791、g01s07/90797 的原始smoke训练早于exp-02创建/锁定 | card-matched计数漏掉probes；模板“非实验”标签与训练/评估前锁卡要求冲突 | **J `549e25a` / `7ae08ccf`已冻结，manifest已验证，未登记** | 仅rule1与模板注释；34测试、6场景forward review、local/full check通过；完整launch审计，固定floor0.673721；不叠#27 |
 | 27 | **卡内head-to-head的future comparator依赖（K）** | strict g01s02/03/06/07/08；override与pre-lock eval两类应对 | close未复查comparator，其他消费者只看conclusion；仅放宽preflight不够 | **K `58a6992` / `ec7d5f2a`已冻结，4-cell manifest local/full check通过；未登记** | 严格验证实际n/metric与失败结案，结案凭据贯穿index/collect/hook且可移植；legacy不变；与J/H/E独立 |
 | 28 | **训练prompt与grader few-shot分布不匹配** | g01s08灾难性首轮与g01s01小幅残差；g01s04渲染差异 | 值得调查，但一个灾难例不足以支持统一prefix比例；已存在template相关指导 | **观察，暂不建screen** | 先区分渲染可达性、训练分布与配方效果；不以≥20%prefix作为规程正确性判据 |
-| 29 | **正式逐题评测证据的scratch生命周期**（operator/harness，非protocol候选） | P5三个cell：developer大JSON仍在结果卷；official默认log在job-local frozen source | 镜像源码确认JSON周期性整文件重写；不能假定直接改共享盘是零行为影响 | **CPU归档原型43测试通过；全套158；尚未接线/启用** | 保持评测期本地I/O，attempt后归档、cleanup前补保全，raw+compact格式回放已验证，caller/harvest尚缺；新共同PTB代次，不混现有Round02，不加GPU实验 |
+| 29 | **正式逐题评测证据的scratch生命周期**（operator/harness，非protocol候选） | P5三个cell：developer大JSON仍在结果卷；official默认log在job-local frozen source | 镜像源码确认JSON周期性整文件重写；不能假定直接改共享盘是零行为影响 | **CPU原型含真实Inspect mock链路44测试通过；全套159；生产尚未接线/启用** | 保持评测期本地I/O，attempt后归档、cleanup前补保全，raw+compact格式回放已验证，caller/harvest尚缺；新共同PTB代次，不混现有Round02，不加GPU实验 |
 
 ## 二、决策日志
 

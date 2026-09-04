@@ -30,4 +30,14 @@ No old official log has been recovered, no PTB result made newly complete, and n
 
 ## Operational handoff
 
-The hourly monitor2086813 remains live. Last completed tick23:00:54 UTC had0/17 terminal. The last full queue check22:54 showed29 JobHeldUser and owned allocation16/16, with90820 outside its frozen nodes and registered demand17/16; native reservation still11 nodes. No submit/release/cancel or fresh Slurm poll was caused by this CPU prototype. Use the [operator dependency view](operator-state.md) for the existing waves and held-floor arithmetic.
+### Follow-up: real Inspect JSON sink, synthetic mock only
+
+An additional pinned-image test now calls the installed Inspect framework with two in-memory `SYNTHETIC` samples and its inspected `mockllm/model` provider (which returns a constant Python string, no real model/API). It sets `INSPECT_LOG_DIR` before imports, verifies the produced JSON is in the exact local attempt directory, and passes that actual recorder output through lossless archival and compact generation. Both rows survive, the metadata names the mock model, and the fixture's canonical metrics bytes are unchanged. No PTB task, benchmark dataset, GPU or real-model inference is invoked.
+
+The first fixture failed because `--no-home --containall` left Inspect's auxiliary trace/data location unwritable. Giving the fixture its own XDG data/cache/config directories and explicit `/fixture` cwd fixed the test; this was test-environment setup, not a discovered production bug. The real PTB runtime already binds a writable evaluation home. The added test proves the successful Inspect sink→archive path, **not** the still-unwired timeout/cleanup, failed-writer or launcher/harvest boundaries.
+
+Follow-up result:44 helper tests plus111 existing PTB and4 meta-file tests, **159 passed,0 skipped**. [Sink-probe evidence](trace-reviews/p5-serving-audit/inspect-sink-probe.json) records the test/source identities and the remaining integration boundaries; the original158-test format-probe record above remains historical evidence.
+
+Hourly operational recheck at23:54:57 UTC:29 actual JobHeldUser,17 running, no other pending reason and `awm ptb reconcile` reports nothing to do. Physical owned-node allocation remains16/16;90820 is RUNNING on `slurm2-a3nodeset-1` with `ReqNodeList=(null)`, registered requests17/16 and reservation11 nodes. No scheduler mutation was made.
+
+The hourly monitor2086813 remains live. Latest tick2026-09-04 00:00:54 UTC had0/17 terminal. The latest full queue check2026-09-03 23:54:57 showed29 JobHeldUser and owned allocation16/16, with90820 outside its frozen nodes and registered demand17/16; native reservation still11 nodes. No submit/release/cancel was caused by these CPU tests. Use the [operator dependency view](operator-state.md) for the existing waves and held-floor arithmetic.
