@@ -219,3 +219,5 @@
 - 2026-09-04T15:17:53+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r02-h-eval-only-data-x4-v1/h02r04 job=91071 CANCELLED incomplete (1 issue(s)) clean
 - 2026-09-04T15:17:54+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r02-guard-drift-b-x2-v1/g03r01 job=91072 CANCELLED incomplete (1 issue(s)) clean
 - 2026-09-04T15:17:54+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r02-guard-drift-b-x2-v1/g03r02 job=91073 CANCELLED incomplete (1 issue(s)) clean
+- 2026-09-04T22:35:07+00:00 release exp-protocol-opus48-gsm8k-none-x4-v1: 4 held job(s) 92125,92126,92127,92128
+- 2026-09-04T22:35:07+00:00 release exp-protocol-opus48-gsm8k-tools-x4-v1: 4 held job(s) 92133,92134,92135,92136
