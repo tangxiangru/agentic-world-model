@@ -133,6 +133,11 @@ directive of 2026-09-03, recorded in the iteration-basis spec §七 and in
 - A receipt's `state: held` records intent, not the current scheduler hold.
   Count the floor from live `JobHeldUser` reasons; investigate any external
   release that disagrees with the committed queue before a screen can start.
+- Keep `results/ptb/<batch>/*.json` for actual submission receipts. Put derived
+  verification/audit JSON under a subdirectory such as `audit/`: the operator
+  discovers every batch-root JSON as a receipt and correctly rejects other
+  schemas. After adding such artifacts, dry-run reconciliation before assuming
+  that the operator can continue.
 - Recompute the held floor after every planned release/withdrawal. Replacing
   an old four-cell block with a new four-cell receipt adds no net buffer; a
   large current backlog can still be insufficient for the following wave.
