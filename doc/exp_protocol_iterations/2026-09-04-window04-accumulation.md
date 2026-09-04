@@ -20,6 +20,12 @@ No local Claude session is started yet. Do not count old Window03/strict-addendu
 
 ## Operations and dependencies
 
+Preparation follow-up: the five cells now have mechanical facts/timelines in
+[prepared inputs](trace-reviews/window04-local/input-notes.md), with generator
+and output hashes. This is not deep trace review or a scientific decision;
+Window04 remains5/8 and undispatched. Future reviewers must use the named raw
+result directories when git-bundle size caps omit relevant evidence.
+
 03:02:42 UTC live queue: **11/16 owned GPUs allocated**,12 registered running jobs (one is the outside-node90820),29 actual `PENDING(JobHeldUser)`, no other pending reason. Five owned GPUs are idle in that snapshot. Native reservation still spans11 nodes. OWNERSHIP FAIL persists because90820 is outside `slurm2-a3nodesetondem-[0-1]`; no submit/release/cancel is authorized by this collection checkpoint. The earlier per-block shared-reservation exception applies only to the already-completed strict guard90791–90798.
 
 The five harvest actions were explicitly isolated from all submit/release/cancel actions; no existing bundle was overwritten. An initial orchestration call used a nonexistent display method and exited before mutation; the subsequent call used the actual `Action.line()` API and completed normal operator harvest/validation. Raw harvested evidence is preserved as emitted, including its formatting.
