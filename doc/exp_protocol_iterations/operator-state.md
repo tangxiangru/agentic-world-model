@@ -1,6 +1,6 @@
 # exp-protocol operator state and dependencies
 
-Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 after Window04 adjudication and D/E1 withdrawal/harvest; live queue06:54:54, reservation06:55:49. Unchanged older cohorts retain the2026-09-03 validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
+Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 for the user-directed bundle transition; live queue08:06:53, monitor process08:07:23, last reservation check06:55:49. Unchanged older cohorts retain the2026-09-03 validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
 
 ## Completed, running and held
 
@@ -23,17 +23,17 @@ Additional held Round02 blocks:
 
 | block | exact receipt-backed job IDs | next scientific role |
 |---|---|---|
-| A v2 |91046–91049|second wave|
-| B v2 |91050–91053|first wave|
-| drift A v2 |91058–91059|first-wave comparator|
-| H |91068–91071|first wave|
-| drift B |91072–91073|second-wave comparator|
+| A v2 |91046–91049|held; re-audit under bundle policy,not automatically funded|
+| B v2 |91050–91053|component for E; standalone funding superseded|
+| drift A v2 |91058–91059|no automatic drift top-up; replacement/withdrawal disposition needed|
+| H |91068–91071|component for E; standalone funding superseded|
+| drift B |91072–91073|no automatic drift top-up; replacement/withdrawal disposition needed|
 
-With the five strict-baseline jobs and control repair91965, this is **22 actual PENDING(JobHeldUser)**, zero ordinary runnable pending. C v2 91054–91057, D v1 91060–91063 and E v1 91064–91067 are cancelled and harvested, not counted. All D/E cells were wholly unstarted; no scores or scientist failure trajectories were produced. Window04 explicitly superseded E1's replacement-first timing because22 other useful held cells suffice. E2 remains unregistered with retention unresolved. Resolve jobs with `.venv/bin/awm slurm show JOB --json`; ownership authority remains `/rmeng_data/robtang/slurm-queue/registry.json`.
+With the five strict-baseline jobs and control repair91965, this is **22 actual PENDING(JobHeldUser)**, zero ordinary runnable pending. This physical count does **not** certify22 scientifically necessary cells under the new policy; controls/baseline top-ups and standalone micro-screens require renewed disposition before release. The useful/releasable floor is not proven merely by keeping them held. C v2 91054–91057, D v1 91060–91063 and E v1 91064–91067 are cancelled and harvested, not counted. All D/E cells were wholly unstarted; no scores or scientist failure trajectories were produced. E2 remains an unregistered component with its old retention claim unresolved. Resolve jobs with `.venv/bin/awm slurm show JOB --json`; ownership authority remains `/rmeng_data/robtang/slurm-queue/registry.json`.
 
 ## Gates and next-wave graph
 
-At06:54:54 UTC **0/16 owned GPUs were allocated**,0 jobs running,and OWNERSHIP OK. Reservation recheck06:55:49 still shows11 nodes; no native-isolation restoration or new release authorization has been received. Capacity is not idle for a scientific straggler or Claude. D1/E1 are withdrawn;22 held remain behind the operational gate. Control repair91965 is held,not released. No running work was cancelled.
+At08:06:53 UTC **0/16 owned GPUs were allocated**,0 jobs running,and OWNERSHIP OK. Reservation check06:55:49 showed11 nodes; no native-isolation restoration or new release authorization has been received. Capacity is not idle for a scientific straggler or Claude. D1/E1 are withdrawn;22 physical holds remain. Their scientific replacement audit and native release gate are separate. Control repair91965 is held,not automatically funded under the new policy. No running work was cancelled.
 
 ```text
 strict guard8 complete and fully reviewed
@@ -43,22 +43,22 @@ OWNERSHIP OK + per-job frozen ReqNodeList + native two-node isolation
   └─ NOT satisfied: OWNERSHIP OK, registered0/16, but reservation11 nodes
      └─ no releases; re-audit documented per-manifest held-registration gates
 
-when operational gates pass, independently of unrelated stragglers:
-  old D1 block withdrawn; D2 requires a new accepted design/test/manifest before any queue entry
-  select up to3 independently ready candidates per wave; prior D1/B/H order is obsolete
-  old E1 withdrawn; E2 registration requires its separate unresolved scientific gate
-  replenish with≥4 scientifically valid, validated independent held cells
-  B/H/J are next scientific priority; A/K/P4 and revised D/E need their recorded remaining preparation
-  winners → independent second4 cells → held-out confirmation before promotion
+new policy, independently of unrelated stragglers and native repair:
+  construct/test integrated E and E+L/E+P packages; test L×P before funding E+L+P
+  freeze complete six-path identities and new2-cell discovery manifests
+  register genuinely useful held replacements; audit old whole blocks by exact receipt IDs
+  release only after scientific,ownership,frozen-node,native-isolation and useful-floor gates
+  review completed declared6/8-cell discovery; add≤2 per config only for a specific decision
+  promotion requires predeclared quality tolerance and untouched held-out confirmation
 ```
 
-Check the useful held floor **after** every proposed release/withdrawal.22 actual held remain;D/E withdrawal did not reduce their already-excluded useful count. Releasing14 valid cells leaves8;adding control repair would leave7,so replenish first. Window04 advances frozenJ to fresh held-registration preparation; J4 would raise the pool to26 and leave11 after15 releases. K remains separate under its gates. Recompute exact IDs; a checked manifest is not a held receipt. This is not release authorization.
+Check the useful held floor **after** every proposed release/withdrawal. Old22-minus-release arithmetic is insufficient now that scientific priorities changed. Eight new discovery cells alone cannot supply16 running plus8 held,or even be released as a complete wave while preserving an8-cell-only useful buffer. Prepare genuinely independent downstream work and record the missing inventory; do not invent repetitions or count checked manifests as held receipts. The [bundle specification](../spec/2026-09-04-exp-protocol-bundle-discovery.md) fixes component scope and this transition gate. StandaloneJ4 is not a buffer top-up.
 
 Baseline-strict stragglers are not a fabricated dependency for independent screens. Genuine matched-arm/promotion requirements still need their designated evidence. The remaining5 baseline holds share a receipt with3 completed jobs: [CPU boundary audit](2026-09-04-mixed-receipt-release-boundary.md) confirms current `release_held` refuses mixed state even after mocked valid native gates. They require explicit receipt-backed state handling before selecting them for release; do not rewrite old job membership or release ad hoc. All-held independent receipts need not wait for that disposition. Source: [Round02 current decision](../spec/2026-09-02-exp-protocol-round02-independent-screens.md), sections10–11.
 
 ## Prepared but not registered
 
-**Policy reconciliation07:17–07:23 UTC:** concurrent user work updated meta to substantial bundles,limited repeats and no automatic standalone micro-screens. The task's saved objective still says single-item; clarification was requested before changing that planning scope. J's new execution clone passed source/site checks,but no J receipt existed and no J job was submitted. Its just-added unsubmitted queue entry was removed to prevent accidental execution of the old plan. Do not use the private763701c snapshot to submit J until strategy is reconciled. Existing22 held and the hourly monitor are unchanged; review their scientific need under the confirmed policy before release.
+**Policy reconciliation resolved:** the explicit2026-09-04 human direction in meta supersedes the saved objective's single-item wording. The earlier duplicate clarification request is not a planning blocker. J's clean clone passed source/site checks,but no J receipt existed and no J job was submitted; its unsubmitted queue entry was removed. Do not use the private763701c snapshot to execute that obsolete standalone plan. E/H/J/K and corrected B/D mechanisms feed complete bundles,with new identities and budgets. Existing22 physical holds and the hourly monitor are unchanged; review current scientific need before release.
 
 | candidate | frozen SHA / protocol tree | four-cell manifest |
 |---|---|---|
@@ -72,9 +72,9 @@ All three have recorded CPU/independent-forward validation and local/full manife
 
 Historical detectors:2086813 completed14/17 at04:00:55;2446155 completed3/3 at05:06:32. Both events were archived and outcomes harvested. Neither is a live detector now; do not restart a completed PID.
 
-**Current live monitor PID2612586** watches the22 remaining receipt-backed held IDs, threshold6 plus2 buffered clean tail cells; latest tick06:27:36 is0/22 terminal,next07:27:36. Log `/tmp/exp-protocol-held-monitor-expanded-wboe41dy/monitor.log`; exact settings/history in Window04 `launch.json`. PID2579442 was deliberately replaced to add91965 while retaining all21 previous IDs; this was not a timeout/counter reset. D/E were already excluded,so their withdrawal changes no watched IDs. Terminals still require harvest/validator review.
+**Current live monitor PID2612586**,verified by `ps` at08:07:23,watches the22 remaining receipt-backed held IDs, threshold6 plus2 buffered clean tail cells; latest tick07:27:36 is0/22 terminal,next08:27:36. Log `/tmp/exp-protocol-held-monitor-expanded-wboe41dy/monitor.log`; exact settings/history in Window04 `launch.json`. PID2579442 was deliberately replaced to add91965 while retaining all21 previous IDs; this was not a timeout/counter reset. D/E were already excluded,so their withdrawal changes no watched IDs. Terminals still require harvest/validator review.
 
-**Window04 is CLOSED by [planner adjudication](2026-09-04-round-02-window04-decision.md)** after full reads of14 NEW reports,five focused audits,both syntheses(507/532lines) and the planner prefix audit. Both Claude sessions completed/stopped;do not duplicate them. Keep guard baseline,no promotion,no new helper proposal accepted as written. B/H/J are next scientific priority; J's frozen screen advances to fresh source/site checks for held registration. D2 predicate and E2 retention remain unresolved; SE-derived hard count gating is rejected; comparator binding/P4 need separate designs; A needs missing-endpoint/clock categories before release. Original reports remain unaltered.
+**Window04 is CLOSED by [planner adjudication](2026-09-04-round-02-window04-decision.md)** after full reads of14 NEW reports,five focused audits,both syntheses(507/532lines) and the planner prefix audit. Both Claude sessions completed/stopped;do not duplicate them. Keep guard baseline,no promotion,no helper proposal accepted as written. Its old B/H/J standalone priority is superseded by bundle construction. D's actual save interface now has a focused technical review; implementation/combined tests remain. E2's historical retention proof is unresolved; SE-derived hard count gating remains rejected. Original reports remain unaltered.
 
 Concurrent worktree note: `doc/exp_protocol_iterations/analysis-2026-09-04-user-review/` is not part of this operator's changes. Preserve it and exclude it from operator commits. Use a genuinely clean source-frozen execution checkout if needed for new registration; never delete,hide or commit unrelated files just to satisfy the clean-tree gate. Independent source/design preparation can continue without release authority.
 
