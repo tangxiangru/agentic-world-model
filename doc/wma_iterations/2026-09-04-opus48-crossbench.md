@@ -33,3 +33,11 @@ At 2026-09-04T13:34:11.028776+00:00, the selected exp_protocol/WMA/sandbox/launc
 The common deployment changes add explicit study modes, keep current review/action/version checks, supervise each probe group without imposing a UID-wide NPROC=128, and register/hold/route validation jobs through the formal receipt lifecycle. Validation jobs are excluded from scientific harvesting. Opus4.8 formal WMA cells additionally require a matching real SIF/model/broker acceptance artifact; the receipt freezes its hash. The completion hook discovers all receipt-backed wma-prefixed study manifests within the same subqueue and stratifies reports by task/model/mode.
 
 Frozen implementation source: `31b854bbc5e1f7f66685a8ec0d43845a6c2472f1`. The final shared regression suite passed **430 tests**; the added multi-self test also proves that disabling joint comparison retains the selected-card review. PTB profiles and synthetic production acceptance are committed. Six R/P manifests (24 cells) are staged pending the real context gate; a separate validation-only manifest exercises the actual SIF and model/broker path.
+
+Production validation job **92160** was registered and released after its held
+route passed. On slurm2-a3nodesetondem-2 it verified one visible H100, exact
+Opus4.8/high/200k, CLI2.1.219, the image digest, OS canaries and real isolated
+joint+single-card calls (55.1s each). All retained model tool inventories contain
+only the four wma_probe MCP tools. Its public/private source is `31b854bb`.
+The eight GSM8K R/P cells passed full manifest checks and are activated first;
+BFCL/HumanEval await committing their downloaded task assets, not any outcome.
