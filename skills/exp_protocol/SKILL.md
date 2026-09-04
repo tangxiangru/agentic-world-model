@@ -195,6 +195,12 @@ it. Keep the scientist-selected on-disk serving configuration separate from
 serializer normalization. Native save success is not model quality, complete
 artifact validation or proof that every free-form script used the adapter.
 
+For a selected serving export, read `serving-artifacts.md`. Freeze its exact
+identity before relying on an evaluation, then verify the same selected bytes
+before publication. Stage to a new destination by default; explicit replacement
+requires an owned quiescent target and preserves the old incumbent. Local
+metadata/byte verification is not model loading or scientific validation.
+
 ## When preprocessing changes the raw representation
 
 Read `rendered-training.md` for the supported prepared-token artifact and checked

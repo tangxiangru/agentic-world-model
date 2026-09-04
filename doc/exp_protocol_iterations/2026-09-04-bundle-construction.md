@@ -1,6 +1,11 @@
 # Bundle construction checkpoint — 2026-09-04
 
-This records **partial construction, not a launched round or completed E**.
+This records **CPU-accepted E construction, not a launched round or scientific
+improvement**. L/P are designed but not implemented.
+Latest user discussion requests Opus4.8, other benchmarks plus a GSM8K comparison,
+and **four repeats per arm**. This supersedes the earlier2-cell launch proposal
+for that new study; no2-cell manifest was created or submitted. Benchmark
+selection and model/runtime onboarding still need a concrete frozen contract.
 The [bundle spec](../spec/2026-09-04-exp-protocol-bundle-discovery.md) was committed
 first as4b14768. Construction is isolated in
 `/rmeng_data/robtang/exp-protocol-bundle-work-5iV6EzGB/repo`, branch
@@ -11,8 +16,8 @@ first as4b14768. Construction is isolated in
 | label | source | change |
 |---|---|---|
 | reference |guard drift2f64581 / protocol tree189319d6|historical reference|
-| E in construction |commits carrying this record; not an approved frozen variant|H/J/K, native saves, execution records, raw-first sampling and checked prepared inputs; E8 publication remains|
-| E+L / E+P / E+L+P |not constructed|distinct additions from the predeclared spec|
+| E |commit carrying this record; freeze exact identities in the new manifest before submission|H/J/K, native saves, execution records, raw-first sampling, checked prepared inputs and selected-artifact publication|
+| E+L / E+P / E+L+P |designed, not constructed|distinct additions from the predeclared spec and linked interface designs|
 
 This checkpoint incorporates H `b52e5f2`, J `549e25a`, K `58a6992`, B `9f294c3`
 and the useful process guidance from E2 `c6f11d8`. It does not import D1's
@@ -22,7 +27,8 @@ The previous E2 source's claimed strict idle lower bounds are corrected, not
 reused as proof. B's historical stop IDs are examples, not universal constants.
 
 Repeat spend: zero new jobs/attempts; no standalone H/J/K/B funding. Final
-packages retain the2-cell discovery and decision-specific≤2 extension budget.
+packages were originally designed for2-cell discovery and decision-specific≤2
+extension; the newer requested cross-benchmark study uses4 repeats per arm.
 
 ## Cells
 
@@ -36,7 +42,7 @@ cells, benchmark scores or new-clean observations.
 No GPU outcome vector yet. Current official record remains g01r03's82.79%,
 which is unrelated to the effectiveness of this unrun package.
 
-CPU evidence through10:46 UTC:
+CPU evidence, with later E8 acceptance recorded below:
 
 -36 original K lifecycle tests passed after the first mechanical integration.
 -183 protocol/sandbox tests passed after H/J/K and revised guidance integration.
@@ -91,6 +97,30 @@ CPU evidence through10:46 UTC:
   absent Torch/Transformers/vLLM dependencies; the fixed-runtime tests above,
   not those skips, supply the native verification. E6/E7 source/guide/adapter
   corrections are included; E8 is not claimed tested by this count.
+-E8 adds56 tests. Main independently replayed E8+E4/save_trainer+E5:138 passed
+  in14.29s; the builder's post-freeze replay had138 passed in14.74s. Final E8
+  helper SHA256 is13e5befeb8177a3e0dd1e0289903677388392b4799651b72d38c014e3168174f.
+-Main's final pinned suite includes E4/E5/E6/E7/E8 plus schema/preflight:
+  **328 passed in41.78s**. Two new E6×E7 tests exercise the actual shared native
+  tokenizer, prompt tokens, masked prompt-side stop and supervised stop/tail in
+  separate and joint modes. No engine/model is created by those two tests.
+-Independent [E8 forward review](trace-reviews/bundle-e8-forward/report.md)
+  completed native tiny three-shard GPT2 A publication, selected B replacement
+  and exact backup-A revalidation. Main read the entire report and actual
+  build/publication scripts, then independently reverified both identities with
+  native metadata loaders. It did not independently exercise every crash case;
+  those remain the explicitly identified regression tests, not blind-test claims.
+  The first wrong-type argument attempt remains preserved. Main subsequently
+  clarified complete-manifest argument types and pre-journal error handling in
+  the guide; no helper behavior changed after the independent pass.
+-The17 selected archived texts are byte-identical; the full129-file381,102-byte
+  raw archive (including synthetic weights and failed attempts) was copied to
+  shared data and verified with `diff -qr`. Archive paths/hashes are recorded in
+  the [index](trace-reviews/bundle-e8-forward/archive-index.json); nothing was deleted.
+-Final original-env full protocol/sandbox/PTB regression after E8 guide fixes
+  and the two native cross-component tests: **464 passed,82 skipped in20.23s**.
+  The82 skips name unavailable native dependencies; the328-test pinned run,
+  not the skip count, is evidence for those native paths. Ruff and diff checks pass.
 
 The generic skill-creator validator exits1 on the repository's preexisting
 `exp_protocol` underscore name. Preserve that installed identity; do not rename
@@ -213,9 +243,17 @@ an independent blind audit of later source edits. E7 core hashes stayed unchange
 
 ## Next round
 
-Complete E8's selected-artifact/export consumers with E4/E5 integration, then
-validate the whole E package and construct the predeclared L/P additions.
-Only afterward freeze complete variants and2-cell manifests, prepare L/P,
-replace scientifically obsolete holds through exact receipts, and revisit
-release with real native isolation/authority. A passing partial suite cannot
-substitute for those remaining components.
+E's component/combined CPU and independent-forward acceptance is complete;
+there is no GPU outcome or promotion. Freeze its exact six-path source, then
+prepare the newly requested four-repeat Opus4.8 comparisons after benchmark,
+model-route, evaluator and source/site checks. Do not submit the superseded
+two-repeat proposal. Do not wait for L/P merely to prepare independently
+specified E, and do not release through the unmet native isolation/authority gate.
+
+Construct [L](2026-09-04-materialized-observation-design.md) and
+[P](2026-09-04-branch-paired-design.md) on separate branches from this same E
+core. P's actual E+L+P consumer is required for the combined variant, not a
+blocker on E+P's own acceptance. Freeze each complete addition only after its
+own combined/forward tests. Re-audit old whole held blocks through exact receipts
+and prepare scientifically justified inventory before releases; an8-cell
+discovery design still does not provide16 running plus8 useful held cells.

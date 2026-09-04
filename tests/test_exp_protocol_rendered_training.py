@@ -163,6 +163,44 @@ def native(tmp_path):
     return tok, raw, script, settings, prepare
 
 
+@pytest.mark.parametrize("mode", ["separate_concat", "joint_prefix"])
+def test_sampling_and_checked_training_share_actual_prompt_and_stop_boundary(native, tmp_path, mode):
+    """E6 x E7 CPU integration: no engine, model, or inference is constructed."""
+    from awm.exp_protocol.sampling import prepare_prompts, resolve_stop_ids
+
+    tok, _, script, _, prepare = native
+    row = {"q": "question", "body": "reason ANSWER: 2"}
+    settings = RenderedSettings(
+        mode=mode, max_seq_len=512, stop_token="<STOP>", answer_marker="ANSWER: ",
+        tail_text="\n",
+    )
+    bundle = prepare(rows=[row], settings_=settings)
+    path, card = make_card(tmp_path, bundle, script)
+    lock_card(path, card)
+    assert check_card(card, tmp_path)["verified_preparation"]
+    opened = RenderedTrainingBundle.open_for_training(path)
+    feature = opened.dataset[0]
+    prefix = tok.apply_chat_template(
+        [{"role": "user", "content": row["q"]}], chat_template=TEMPLATE,
+        tokenize=False, add_generation_prompt=True,
+    )
+    request = prepare_prompts(
+        [prefix], tok, item_ids=["independent-query"], bos_policy="single_at_start",
+    )[0]
+    boundary = feature["target_start"]
+    assert list(request.token_ids) == feature["input_ids"][:boundary]
+    assert feature["labels"][:boundary] == [-100] * boundary
+    stops = resolve_stop_ids(tok, [settings.stop_token])
+    assert stops == [tok.eos_token_id]
+    # The raw answer has no stop marker. Actual rendering adds supervised STOP
+    # plus the declared tail; prompt-side STOP is masked and not target evidence.
+    assert settings.stop_token not in row["body"]
+    assert stops[0] in feature["input_ids"][:boundary]
+    assert feature["labels"][boundary:].count(stops[0]) == 1
+    assert feature["labels"][boundary:] == feature["input_ids"][boundary:]
+    opened.flush_consumption()
+
+
 @pytest.mark.parametrize(
     "change",
     [
