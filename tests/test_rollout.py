@@ -493,7 +493,7 @@ def test_opencode_recorder_is_the_claude_recorder_with_the_cli_swapped() -> None
     rec = ROLLOUT / "agents/opencode_recorder"
     assert (rec / "api_keys.json").read_text() == (ROLLOUT / "agents/claude_recorder/api_keys.json").read_text()
     env = [l for l in (rec / "env_passthrough.txt").read_text().splitlines() if l and not l.startswith("#")]
-    assert env == ["AWM_VLLM_BASE_URL", "MODEL_TO_TRAIN"]
+    assert env == ["AWM_VLLM_BASE_URL", "MODEL_TO_TRAIN", "AWM_VLLM_CONTEXT"]
 
 
 def test_qwen_scientist_routes_to_the_opencode_recorder(tmp_path: Path) -> None:

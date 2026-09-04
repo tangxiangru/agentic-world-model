@@ -7,6 +7,8 @@
 
 AWM_ROOT=/home/ben/agent/awm-src
 VLLM_BASE_URL="${AWM_VLLM_BASE_URL:-http://127.0.0.1:8000/v1}"
+# Declaring the context limit lets opencode compact the conversation before it
+# overflows the server's max-model-len (a 1 h smoke hit 99k input + 32k output > 131k).
 MIN_REMAINING_MINUTES=30
 
 export BASH_MAX_TIMEOUT_MS="36000000"
@@ -22,7 +24,12 @@ cat > /home/ben/task/opencode.json <<JSON
       "npm": "@ai-sdk/openai-compatible",
       "name": "local vLLM",
       "options": { "baseURL": "${VLLM_BASE_URL}", "apiKey": "vllm" },
-      "models": { "qwen3.6-27b": { "name": "Qwen3.6-27B" } }
+      "models": {
+        "qwen3.6-27b": {
+          "name": "Qwen3.6-27B",
+          "limit": { "context": ${AWM_VLLM_CONTEXT:-262144}, "output": 32768 }
+        }
+      }
     }
   }
 }
