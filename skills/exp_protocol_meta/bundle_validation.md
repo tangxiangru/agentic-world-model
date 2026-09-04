@@ -64,3 +64,17 @@ belong in the [bundle specification](../../doc/spec/2026-09-04-exp-protocol-bund
   branch; they do not identify every component's causal effect or establish
   a small stable quality gain. Promotion still needs predeclared tolerances
   and untouched held-out confirmation.
+- Exercise installed native parameter/output/tokenizer types as well as inert
+  stand-ins. An ordinary Enum or generic token sequence can expose a false block
+  that a SimpleNamespace fixture misses. Keep native-type CPU integration,
+  intercepted inference and actual model execution labelled separately.
+- A superseding evidence path must not offer an unrecorded way to weaken frozen
+  semantic checks. Keep the existing stop/marker thresholds or stricter values;
+  legitimate exceptions remain reasoned overrides/unverified coverage, not a
+  receipt made green by permissive user-controlled tolerances.
+- Distinguish callback completion from a valid answer: all callbacks can return
+  JSON while one explicitly returns a null/nonfinite-answer status. Actual raw
+  request/draw counts, parser errors and official scores are different metrics.
+- Cold CLI/tokenizer startup, preparation/full verification, steady preflight,
+  loader opening and first batch costs are different phases. Report their actual
+  denominators and do not extrapolate a tiny or warmed test to a full-corpus gain.
