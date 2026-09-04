@@ -41,3 +41,14 @@ joint+single-card calls (55.1s each). All retained model tool inventories contai
 only the four wma_probe MCP tools. Its public/private source is `31b854bb`.
 The eight GSM8K R/P cells passed full manifest checks and are activated first;
 BFCL/HumanEval await committing their downloaded task assets, not any outcome.
+
+The eight GSM8K R/P jobs were submitted first: **92163..92170**. Their PTB
+source is 0bb448c. The next PTB revision adds only the BFCL/HumanEval task-data
+copies and their attribution; a direct diff confirms all runtime, scientist,
+judge, container and GSM8K files remain identical. Source/data assets are now
+tracked instead of bypassing the existing frozen-asset gate. All 15 study
+manifests retain identical public/private source `31b854bb`, image/model settings
+and per-task inputs; WMA manifests pin the successful acceptance artifact.
+The remaining 52 cells can be submitted after their full manifest checks.
+
+All remaining 13 manifest checks returned **0 issues**. Together with the two already-submitted GSM8K R/P manifests, the complete 60-cell study is ready. A scoped reconcile preview is used so the remaining validated submissions happen before unrelated legacy harvesting.

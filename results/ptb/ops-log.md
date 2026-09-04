@@ -527,3 +527,5 @@
 - 2026-09-03T21:31:04+00:00 peek wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4-v2/w09r01 job=91024 RUNNING: sidecar: log empty; 4 transcript(s); solve_out 1045 lines
 - 2026-09-03T21:31:05+00:00 peek wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4-v2/w09r02 job=91025 RUNNING: sidecar: log empty; 3 transcript(s); solve_out 921 lines
 - 2026-09-03T21:31:05+00:00 peek wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4-v2/w09r03 job=91026 RUNNING: sidecar: log empty; 4 transcript(s); solve_out 853 lines
+- 2026-09-04T13:48:02+00:00 submit wma-crossbench-opus48-r05-gsm8k-raw-x4: 4 job(s) 92163,92164,92165,92166 -> results/ptb/wma-crossbench-opus48-r05-gsm8k-raw-x4/formal-2026-09-04T134734.872385+0000.json
+- 2026-09-04T13:48:02+00:00 submit wma-crossbench-opus48-r05-gsm8k-protocol-x4: 4 job(s) 92167,92168,92169,92170 -> results/ptb/wma-crossbench-opus48-r05-gsm8k-protocol-x4/formal-2026-09-04T134801.355200+0000.json
