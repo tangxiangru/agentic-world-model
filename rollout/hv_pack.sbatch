@@ -20,6 +20,33 @@
 #SBATCH --error=/rmeng_data/robtang/ptb-hvrecipe/slurm_logs/%x-%j.err
 set -uo pipefail
 
+# ---- hard fence: never occupy froilanchoi's three a3 nodes ----------------------------
+# a3 is 23 nodes; 20 sit in reservations robtang-a3 and robtang-a3-ondem, and the
+# complement is exactly slurm2-a3nodeset0-[0-2], which are froilanchoi's. A job reaches
+# them only when the submit-side guard was bypassed: `--reservation=` with an EMPTY value
+# is a PIN onto those three, not a relaxation, and so is any --exclude naming all twenty
+# of mine. airs-ops/healthy_nodes.sh drops them from every exclude list it builds, but
+# that binds only the callers who ask it. On 2026-09-04 jobs 91755 and 91723 each ran two
+# hours on 0-0 and 0-1 before anyone noticed, and froilanchoi refilled all three within
+# twenty minutes of being given them back -- so this is contention, not spare capacity.
+# Refuse here instead. It forfeits nothing: the node was never ours to run on. Kept ahead
+# of every other statement so nothing is half-created on the way out.
+_fence_nodes="${SLURM_JOB_NODELIST:-}"
+if [ -n "$_fence_nodes" ] && command -v scontrol >/dev/null 2>&1; then
+    _fence_nodes="$(scontrol show hostnames "$_fence_nodes" 2>/dev/null | tr '\n' ' ' || true)"
+fi
+[ -n "${_fence_nodes// /}" ] || _fence_nodes="${SLURMD_NODENAME:-$(hostname -s)}"
+for _fence_n in $_fence_nodes; do
+    case "$_fence_n" in
+        slurm2-a3nodeset0-0|slurm2-a3nodeset0-1|slurm2-a3nodeset0-2)
+            echo "FATAL: allocated ${_fence_n}, which belongs to froilanchoi -- one of the three" >&2
+            echo "       a3 nodes outside reservations robtang-a3 / robtang-a3-ondem. Resubmit" >&2
+            echo "       WITH a reservation; never pass an empty --reservation= on partition a3." >&2
+            exit 1 ;;
+    esac
+done
+unset _fence_nodes _fence_n
+
 # The crossed rollout, executor half: one deterministic trainer, N recipes, one
 # GPU each on one exclusive node. Unlike ptb_pack.sbatch the ARM is the
 # AGENT_CONFIG, not the agent -- the agent is always hv_recipe, because holding
