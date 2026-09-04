@@ -147,3 +147,8 @@
 - 2026-09-03T21:33:18+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r02-c-eval-n-x4-v1/n02r04 job=90856 CANCELLED incomplete (1 issue(s)) clean
 - 2026-09-03T21:33:18+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r02-guard-drift-x2-v1/g02r01 job=90857 CANCELLED incomplete (1 issue(s)) clean
 - 2026-09-03T21:33:18+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r02-guard-drift-x2-v1/g02r02 job=90858 CANCELLED incomplete (1 issue(s)) clean
+- 2026-09-04T03:05:00+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r04 job=90650 COMPLETED acc=0.6907 complete clean
+- 2026-09-04T03:05:01+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r05 job=90651 COMPLETED acc=0.7612 complete clean
+- 2026-09-04T03:05:07+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r06 job=90652 COMPLETED acc=0.7081 complete clean
+- 2026-09-04T03:05:09+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r01-guard-x8-v1/g01r08 job=90654 COMPLETED acc=0.7028 complete clean
+- 2026-09-04T03:05:10+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8-v1/c01s06 job=90818 COMPLETED acc=0.7415 complete clean
