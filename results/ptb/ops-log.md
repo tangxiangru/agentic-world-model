@@ -781,3 +781,20 @@
 - 2026-09-04T22:52:28+00:00 peek wma-crossbench-opus48-r05-gsm8k-multi-self-x4/w58r01 job=92202 RUNNING: sidecar: log empty; 0 transcript(s); solve_out 236 lines
 - 2026-09-04T22:52:29+00:00 peek wma-crossbench-opus48-r05-gsm8k-multi-self-x4/w58r02 job=92203 RUNNING: sidecar: log empty; 0 transcript(s); solve_out 225 lines
 - 2026-09-04T22:52:29+00:00 peek wma-crossbench-opus48-r05-gsm8k-multi-self-x4/w58r03 job=92204 RUNNING: sidecar: log empty; 0 transcript(s); solve_out 83 lines
+- 2026-09-04T23:10:18+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r03 job=92165 RUNNING: no sidecar log; 0 transcript(s); solve_out 1827 lines
+- 2026-09-04T23:10:18+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r04 job=92166 RUNNING: no sidecar log; 0 transcript(s); solve_out 1811 lines
+- 2026-09-04T23:10:19+00:00 harvest wma-crossbench-opus48-r05-bfcl-raw-x4/c53r02 job=92182 COMPLETED acc=0.9400 complete clean
+- 2026-09-04T23:10:20+00:00 peek wma-crossbench-opus48-r05-humaneval-raw-x4/c55r01 job=92189 RUNNING: no sidecar log; 0 transcript(s); solve_out 1489 lines
+- 2026-09-04T23:10:20+00:00 peek wma-crossbench-opus48-r05-humaneval-raw-x4/c55r02 job=92190 RUNNING: no sidecar log; 0 transcript(s); solve_out 906 lines
+- 2026-09-04T23:10:20+00:00 peek wma-crossbench-opus48-r05-humaneval-raw-x4/c55r03 job=92191 RUNNING: no sidecar log; 0 transcript(s); solve_out 978 lines
+- 2026-09-04T23:10:20+00:00 peek wma-crossbench-opus48-r05-humaneval-protocol-x4/c56r01 job=92193 RUNNING: no sidecar log; 0 transcript(s); solve_out 874 lines
+- 2026-09-04T23:10:21+00:00 peek wma-crossbench-opus48-r05-humaneval-protocol-x4/c56r02 job=92194 RUNNING: no sidecar log; 0 transcript(s); solve_out 748 lines
+- 2026-09-04T23:10:21+00:00 peek wma-crossbench-opus48-r05-humaneval-protocol-x4/c56r04 job=92196 RUNNING: no sidecar log; 0 transcript(s); solve_out 590 lines
+- 2026-09-04T23:10:21+00:00 peek wma-crossbench-opus48-r05-gsm8k-single-x4/w57r01 job=92198 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 770 lines
+- 2026-09-04T23:10:22+00:00 peek wma-crossbench-opus48-r05-gsm8k-single-x4/w57r02 job=92199 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 833 lines
+- 2026-09-04T23:10:22+00:00 peek wma-crossbench-opus48-r05-gsm8k-single-x4/w57r03 job=92200 RUNNING: sidecar: log empty; 3 transcript(s); solve_out 735 lines
+- 2026-09-04T23:10:23+00:00 peek wma-crossbench-opus48-r05-gsm8k-single-x4/w57r04 job=92201 RUNNING: sidecar: log empty; 2 transcript(s); solve_out 670 lines
+- 2026-09-04T23:10:23+00:00 peek wma-crossbench-opus48-r05-gsm8k-multi-self-x4/w58r01 job=92202 RUNNING: sidecar: log empty; 1 transcript(s); solve_out 368 lines
+- 2026-09-04T23:10:24+00:00 peek wma-crossbench-opus48-r05-gsm8k-multi-self-x4/w58r02 job=92203 RUNNING: sidecar: log empty; 1 transcript(s); solve_out 312 lines
+- 2026-09-04T23:10:24+00:00 peek wma-crossbench-opus48-r05-gsm8k-multi-self-x4/w58r03 job=92204 RUNNING: sidecar: log empty; 0 transcript(s); solve_out 198 lines
+- 2026-09-04T23:10:24+00:00 peek wma-crossbench-opus48-r05-gsm8k-multi-self-x4/w58r04 job=92205 RUNNING: sidecar: log empty; 0 transcript(s); solve_out 77 lines

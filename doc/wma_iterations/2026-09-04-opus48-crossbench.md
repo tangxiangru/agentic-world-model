@@ -321,3 +321,22 @@ clean. Actual GPU utilization is not observable from this operator shell.
 Because pending remains above24 and the staged S0 cells will add four only after
 validation, no redundant batch is submitted. S0 w66r01–04 remain gated on
 92312. Promotion remains None.
+
+## 23:10 UTC first clean BFCL raw comparator
+
+BFCL raw c53r02/job92182 is validator- and judge-clean at **94/100**. It is the
+first primary-clean raw cell: scientist cost$20.53324425, agent time07:25:19,
+and one-H100 allocation07:35:54. The exact receipt → cell → manifest → spec →
+result chain and reconcile preview are in `evidence/2026-09-04-2310/`.
+
+Against protocol-only90.75% ±2.50pp(n4), raw94%(n1) gives descriptive
+P−R=−3.25pp. This is not a treatment effect because raw has one clean repeat.
+The two flagged raw scores91/92 remain sensitivity-only; all three scored raw
+completions average92.3333% ±1.5275pp and give sensitivity P−R=−1.5833pp.
+c53r01 remains incomplete, not zero.
+
+Totals are101 PTB complete/98 automatically clean, new study12/9. Normal
+backfill started GSM8K multi-self w58r04. The queue remains16/16 H100s
+allocated,16 RUNNING and29 safe PENDING; pending is above the24-job trigger.
+No new batch, skill edit or promotion is justified. Validation92312 and the
+four staged S0 cells keep their existing gate.
