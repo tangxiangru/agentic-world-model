@@ -40,9 +40,9 @@ Do not quietly use it for repeated discovery or choose tasks after seeing
 favorable treatment outcomes. A new-benchmark exploration is not held-out
 promotion evidence once it informs further method changes.
 
-Readiness requires more than an evaluator file: the pinned PTB tree has these
-tasks, but `awm.ptb_experiments.APPROVED_TASKS` currently permits only GSM8K and
-AIME2025, and the approved scientist profiles currently name Opus5. Validate
+Readiness requires more than an evaluator file. New task/model admission must
+be explicit; the verified Opus4.8 high/1M profiles do not automatically admit
+GPQA or HumanEval. Validate
 the actual Opus4.8 route/context, task data access, evaluator metric/schema,
 judge/contamination coverage and any local code-execution isolation before
 freezing manifests. An allowlist edit alone is not task acceptance.
@@ -54,8 +54,9 @@ Retain matched item evidence when available; do not feed test items into
 training/watch sets. No automatic extra repeats or post-hoc task selection.
 
 The new scientific plan does not waive ownership, frozen node placement,
-native two-node isolation or the useful held floor. No new-study receipt or
-release has been made. This update is planning memory, not a launch declaration.
+native two-node isolation or the useful held floor. Receipts establish scheduler
+registration, not execution. Consult the [operator state](../../doc/exp_protocol_iterations/operator-state.md)
+for the actual held/running inventory; do not infer launch from this policy.
 
 Official model-route reference checked2026-09-04:
 [Google Cloud Opus4.8](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/opus-4-8)

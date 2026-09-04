@@ -12,6 +12,19 @@ any new manifest; the earlier two-cell proposal is superseded for that study.
   An explicit newer human search decision supersedes historical defaults;
   asking for the same strategy approval again is not an operational gate.
   It does not grant native infrastructure changes or Slurm release exceptions.
+- A new task needs its real data/scorer/execution boundary, not only an
+  allowlist entry. Verify the executable metric/epoch/count path; documentation
+  can describe a different route. Licensed access and isolated generated-code
+  execution are readiness gates, not reasons to fabricate reference files.
+- Preserve failure evidence through exception and cleanup paths, not only
+  successful returns. Bounded stdout/stderr, category and capture completeness
+  must survive a failed verifier if later trace analysis is to diagnose it.
+  Registry adapters also need coexistence tests: a new name must not silently
+  replace an existing or built-in backend.
+- Missing PID or executable in a restricted context is not global absence.
+  Check the same approved host/process context and configured tool path before
+  restart. When new receipts change monitor scope, retain the prior state and
+  verify the replacement's first live tick before stopping the old watcher.
 - Old held jobs retain physical scheduler state, not perpetual scientific
   priority. Re-audit whole blocks for current decision value before release.
   Report physical held and currently justified/releasable inventory separately.

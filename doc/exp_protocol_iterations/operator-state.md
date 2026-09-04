@@ -1,93 +1,193 @@
 # exp-protocol operator state and dependencies
 
-Mutable handoff view; historical receipts/specs remain immutable. Updated2026-09-04 after E construction freeze and the user's new Opus4.8/four-repeat discussion; live queue11:02:55, reservation10:15:12, monitor process11:26:33 / tick11:27:36. Unchanged older cohorts retain their previous validation baseline. Scope is only `gangda_exp-protocol-evolve` on `slurm2-a3nodesetondem-[0-1]`.
+Mutable handoff, updated2026-09-04 after the approved Opus4.8 GSM8K registration.
+Receipt source remains immutable. Latest queue check13:02:57; per-job held/node
+checks followed; monitor verified live13:19 with tick13:16:40. Scope remains only
+`gangda_exp-protocol-evolve`, `slurm2-a3nodesetondem-[0-1]`; never AWM full.
 
-**Latest planning direction:** apply [cross-benchmark/four-repeat policy](../../skills/exp_protocol_meta/cross_benchmark_policy.md). The user requests other benchmarks, scientist Opus4.8, method variants plus a genuinely protocol-free baseline, four independent replicates per arm, and a latest-method GSM8K comparison. This supersedes earlier two-cell discovery preparation for that study. Suggested GSM8K/GPQA Main/HumanEval matrix is still discussion, not a manifest; AIME2025 remains reserved. Launcher currently allows only GSM8K/AIME2025 and Opus5 profiles, so new tasks/model require real onboarding checks. No new-study jobs, no two-cell manifests, no new source/queue release exceptions. Do not continue obsolete two-repeat submission preparation.
+## Approved study and actual scheduler state
 
-**Concurrent runtime change:** after the E acceptance, the user-owned process-knowledge skill update appeared in this checkout (`skills/exp_protocol/process_checks.md` and five modified runtime skill/template/example/hook/pitfalls files). Main read its change record, diff and complete process guide. E remains isolated atdcfa742; do not equate the working-tree skill with old guard or E, overwrite/stage those user changes, or claim the root's six-path bytes are still unchanged. This lightweight knowledge-only version is a separate candidate for the new comparison. Its supporting user draft is `doc/exp_protocol_iterations/2026-09-04-skill-process-knowledge-update.md`.
+User approved the [40-cell specification](../spec/2026-09-04-exp-protocol-opus48-cross-benchmark.md):
+GSM8K16, GPQA Main12, HumanEval12; scientist Opus4.8/high/1M, Gemma-3-4B-PT,
+10h, four independent sessions per included arm. AIME2025 remains held-out.
+[Current meta policy](../../skills/exp_protocol_meta/cross_benchmark_policy.md)
+supersedes earlier two-cell preparation. No unrequested L/P arm or repeat is funded.
 
-## Completed, running and held
-
-Current receipt-aware `awm ptb results MANIFEST --json` revalidated the following formal cohorts. `clean` means validator-complete, eligible and no judge flags; Slurm completion alone is not sufficient. Pilots and administrative withdrawals are not in these counts.
-
-| cohort / manifest | clean | other completed | running jobs | held jobs |
-|---|---:|---|---|---|
-| [v3 baseline16](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-baseline-x16-v3.yaml) |14|0; p00r08/p00r16 incomplete failures|none|none|
-| [null control8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-x8.yaml) |7|c00r02 complete with general_anomaly, separate from clean|none|none|
-| [null control B8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-b-x8.yaml) |8|0|none|none|
-| [old guard8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r01-guard-x8.yaml) |8|0|none|none|
-| [strict guard8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r01-guard-strict-x8-v2.yaml) |8|0|none|none|
-| [strict control8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-x8.yaml) |7 (c01s01–07)|c01s08/90820 complete but placement-quarantined|none|none|
-| [strict baseline8](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8.yaml) |3 (p00s01–03)|0|none|90826–90830 / p00s04–08|
-| [strict control repair1](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r00-nullctl-strict-tail-x1.yaml) |0|no result; independent eighth-repeat role, not a new variant|none|91965 / c02s01|
-
-The original seven cohort manifests have57 validator-complete results:56 eligible (55 clean,1 flagged) and1 placement-quarantined, plus2 failed/incomplete attempts and0 running. New control repair91965 contributes no result; if eligible it completes the explicitly mapped c01s01–07+c02s01 strict8, without relabelling90820. [Window04](2026-09-04-round-02-window04-decision.md) is CLOSED at14 NEW clean cells; two later clean tail cells remain buffered separately. Highest clean official score remains g01r03=0.8278999241849886(1092/1319,82.79%); no arm effect or promotion is established. [p00r16](2026-09-03-p00r16-scorer-failure.md) remains unscored. Administrative D/E1 withdrawals add zero clean results.
-
-Additional held Round02 blocks:
-
-| block | exact receipt-backed job IDs | next scientific role |
+| GSM8K arm | immutable receipt-backed jobs | current result |
 |---|---|---|
-| A v2 |91046–91049|held; re-audit under bundle policy,not automatically funded|
-| B v2 |91050–91053|component for E; standalone funding superseded|
-| drift A v2 |91058–91059|no automatic drift top-up; replacement/withdrawal disposition needed|
-| H |91068–91071|component for E; standalone funding superseded|
-| drift B |91072–91073|no automatic drift top-up; replacement/withdrawal disposition needed|
+| plain PTB, no protocol/WMA |92125–92128 / n03g01–04|4 JobHeldUser; no model results|
+| process-knowledge skill |92129–92132 / k03g01–04|4 JobHeldUser; no model results|
+| complete E tools/skill |92133–92136 / e03g01–04|4 JobHeldUser; no model results|
+| old guard bridge |92137–92140 / g03g01–04|4 JobHeldUser; no model results|
 
-With the five strict-baseline jobs and control repair91965, this is **22 actual PENDING(JobHeldUser)**, zero ordinary runnable pending. This physical count does **not** certify22 scientifically necessary cells under the new policy; controls/baseline top-ups and standalone micro-screens require renewed disposition before release. The useful/releasable floor is not proven merely by keeping them held. C v2 91054–91057, D v1 91060–91063 and E v1 91064–91067 are cancelled and harvested, not counted. All D/E cells were wholly unstarted; no scores or scientist failure trajectories were produced. E2 remains an unregistered component with its old retention claim unresolved. Resolve jobs with `.venv/bin/awm slurm show JOB --json`; ownership authority remains `/rmeng_data/robtang/slurm-queue/registry.json`.
+Four manifests are `experiments/posttrainbench/exp-protocol-opus48-gsm8k-{none,knowledge,tools,guard}-x4-v1.yaml`.
+Receipts are committed under the corresponding `results/ptb/<batch>/formal-*.json`
+in c45c944, pushed. Each freezes clean top75310e08fa9e75e454324b0116275a278cf9d6ef,
+PTBdcf5da031435c54e3680b6ec3f63e7e317efc13e and exact ondem0–1 site scope.
+All16 jobs were individually checked: PENDING, Reason=JobHeldUser,
+ReqNodeList=slurm2-a3nodesetondem-[0-1], one GPU/16 CPUs. OWNERSHIP OK.
+**0/16 GPUs allocated,0 running. Submitted held does not mean running.**
 
-## Gates and next-wave graph
+There are **38 physical held jobs**:16 newly specified/validated study cells plus
+22 legacy holds below. Only the16 new cells currently have an affirmative
+scientific purpose under this approved wave; retaining old jobs is not proof
+they remain useful. Do not release more than the justified buffer permits.
+With only16 justified held, releasing all16 would violate the eight-held floor.
 
-At11:02:55 UTC **0/16 owned GPUs were allocated**,0 jobs running,and OWNERSHIP OK; all22 remaining jobs were still JobHeldUser. The10:15:12 reservation check still showed11 nodes; no native-isolation restoration or new release authorization has been received. A subsequent read-only inventory found no already-available exact two-node reservation for this line; registry scope still names the broad reservation. No infrastructure was changed. Capacity is not idle for a scientific straggler or Claude. D1/E1 are withdrawn;22 physical holds remain. Their scientific replacement audit and native release gate are separate. Control repair91965 is held,not automatically funded under the new policy. No running Slurm work was cancelled.
+## Legacy holds and completed evidence
+
+| Legacy block | exact held IDs | disposition |
+|---|---|---|
+| strict baseline tail |90826–90830|mixed receipt with90823–90825 completed; explicit remaining-tail disposition needed|
+| old strict control repair |91965|no longer automatically funded|
+| A v2 |91046–91049|old standalone screen; re-audit/withdraw as a whole if obsolete|
+| B v2 |91050–91053|mechanism incorporated into E; no automatic standalone funding|
+| drift A |91058–91059|no automatic drift top-up|
+| H |91068–91071|mechanism incorporated into E; no automatic standalone funding|
+| drift B |91072–91073|no automatic drift top-up|
+
+No legacy hold was cancelled in this registration step. New useful inventory
+now permits a reasoned whole-block retirement audit. Use exact receipt IDs and
+live not-started state, never running/foreign work or outcome-selected cells.
+The old strict-baseline receipt has3 completed plus5 held; its mixed-state
+release refusal is documented in [boundary audit](2026-09-04-mixed-receipt-release-boundary.md).
+Do not rewrite receipt membership or release arbitrary IDs to bypass it.
+
+Previously C91054–91057,D91060–91063,E1 91064–91067 were wholly unstarted,
+withdrawn and harvested as administrative incomplete/null-score evidence.
+All spillovers/terminated attempts still require harvest; no clean result is
+created by cancellation, a CPU test or a Slurm terminal label.
+
+The original seven cohorts retain57 validator-complete results:56 eligible
+(55 clean,1 general-anomaly flagged),1 placement-quarantined;2 scientist failures
+p00r08/p00r16. Cohorts: v3 baseline16(14 clean),null8(7 clean+1 flagged),
+null-B8(8 clean),old guard8(8 clean),strict guard8(8 clean),strict control8
+(7 clean+90820 quarantined),strict baseline8(3 clean+5 held).
+Highest clean official remains **g01r03/90649=1092/1319=82.79%**, not a stable
+method effect; same old-guard8 mean73.76%. [p00r16](2026-09-03-p00r16-scorer-failure.md)
+has no official score; do not substitute its developer metric.
+
+## Release gate and next dependencies
+
+At11:55 the reservation `robtang-ptb-a3` still named11 nodes, not an exact
+native two-node subqueue reservation. No infrastructure change or new release
+exception has been authorized. The old09-03 exception only covered90791–90798;
+it does not authorize92125–92140. Ownership and frozen ReqNodeList passed for
+the new jobs; native isolation has not. No releases occurred.
 
 ```text
-strict guard8 complete and fully reviewed
-  └─ observed-no-harm gate PASSED (not promotion or universal compliance)
+approved40
+  GSM8K16: registered + held + ownership/node verified; native release gate unmet
+  GPQA12: existing HF credentials receive403; official access or lawful local source needed
+  HumanEval12: reference data prepared; isolated executor and formal pipeline not admitted
 
-OWNERSHIP OK + per-job frozen ReqNodeList + native two-node isolation
-  └─ NOT satisfied: OWNERSHIP OK, registered0/16, but reservation11 nodes
-     └─ no releases; re-audit documented per-manifest held-registration gates
-
-new policy, independently of unrelated stragglers and native repair:
-  E is CPU/forward accepted; onboard the requested Opus4.8/task comparison contract
-  freeze complete six-path identities and new4-repeat matched-arm manifests
-  register genuinely useful held replacements; audit old whole blocks by exact receipt IDs
-  release only after scientific,ownership,frozen-node,native-isolation and useful-floor gates
-  review each completed declared block; no automatic extra repeats
-  promotion requires predeclared quality tolerance and untouched held-out confirmation
+release: scientific readiness + ownership + frozen nodes + native isolation
+         + at least8 scientifically justified held after release
 ```
 
-Check the useful held floor **after** every proposed release/withdrawal. Old22-minus-release arithmetic is insufficient now that scientific priorities changed. Eight new discovery cells alone cannot supply16 running plus8 held,or even be released as a complete wave while preserving an8-cell-only useful buffer. Prepare genuinely independent downstream work and record the missing inventory; do not invent repetitions or count checked manifests as held receipts. The [bundle specification](../spec/2026-09-04-exp-protocol-bundle-discovery.md) fixes component scope and this transition gate. StandaloneJ4 is not a buffer top-up.
+Do not invent filler or count checked/unsubmitted cells as scheduler inventory.
+GSM8K onboarding did not wait for unrelated task construction. GPQA/HumanEval
+remaining24 are real required work, not replaced by the completed GSM8K portion.
 
-Baseline-strict stragglers are not a fabricated dependency for independent screens. Genuine matched-arm/promotion requirements still need their designated evidence. The remaining5 baseline holds share a receipt with3 completed jobs: [CPU boundary audit](2026-09-04-mixed-receipt-release-boundary.md) confirms current `release_held` refuses mixed state even after mocked valid native gates. They require explicit receipt-backed state handling before selecting them for release; do not rewrite old job membership or release ad hoc. All-held independent receipts need not wait for that disposition. Source: [Round02 current decision](../spec/2026-09-02-exp-protocol-round02-independent-screens.md), sections10–11.
+## Frozen methods, provider and source workspaces
 
-## Prepared but not registered
+- Knowledge-only:359de271b889f616995968097ddda2e2cf1741b0,
+  protocol tree0baf88005fa85d62bf3cef6a953a0a7e4fc317b2. This freezes the
+  user-authored process guide/skill/template/example/hook/pitfalls without E.
+  Main independently ran46 compatibility tests; non-math forward evidence is
+  [archived](analysis-2026-09-04-opus48-onboarding/process-skill-forward.md).
+- E:dcfa742dbc8813970192efe3fbf2bd30dfc38ea9,
+  protocol treeb33422364c70f4ea3c08ff83c97009a41438caa6; source at
+  `/rmeng_data/robtang/exp-protocol-bundle-work-5iV6EzGB/repo`,
+  branch `codex/exp-protocol-bundles-20260904`, pushed. Full E1–E8 is CPU/forward
+  accepted:328 pinned tests,464 original-env passes/82 explicit native skips.
+  No GPU method improvement/promotion follows from these tests.
+- Guard:4ae3d87c446bbda9732537a72b2f0fb3f96ac35a /189319d6.
+- Plain baseline uses `claude_vertex_high`, no AWM block, not an old Opus5 control.
 
-**Policy reconciliation resolved:** the explicit2026-09-04 human direction in meta supersedes the saved objective's single-item wording. The earlier duplicate clarification request is not a planning blocker. J's clean clone passed source/site checks,but no J receipt existed and no J job was submitted; its unsubmitted queue entry was removed. Do not use the private763701c snapshot to execute that obsolete standalone plan. E/H/J/K and corrected B/D mechanisms feed complete bundles,with new identities and budgets. Existing22 physical holds and the hourly monitor are unchanged; review current scientific need before release.
+Provider/CLI checks actually returned Opus4.8/high/1M via Vertex sercan-v1/global.
+The manifest's frozen [record](analysis-2026-09-04-opus48-onboarding/context/record.json)
+uses the exact image CLI in read-only bwrap and explicitly reports its scope.
+A separate **full Apptainer-image** probe subsequently succeeded too:
+[record](analysis-2026-09-04-opus48-onboarding/full-container-record.json),
+[raw stream](analysis-2026-09-04-opus48-onboarding/full-container-stream.json).
+Both use CLI2.1.219 and the pinned opus_5 image. No tools/model training or
+benchmark scoring occurred. Do not replace the already-receipted context file.
 
-| candidate | frozen SHA / protocol tree | four-cell manifest |
-|---|---|---|
-| E2 process wait; non-saturation proof reopened |`c6f11d8` / `ceb68549`|[E2](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r02-e-wait-on-process-x4-v2.yaml)|
-| J lock scope |`549e25a` / `7ae08ccf`|[J](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r02-j-lock-scope-x4.yaml)|
-| K deferred comparator |`58a6992` / `ec7d5f2a`|[K](../../experiments/posttrainbench/exp-protocol-gsm8k-gemma4b-high-r02-k-deferred-comparator-x4.yaml)|
+The initial bare-apptainer failure was PATH resolution, not absence of an
+installation: configured binary is `/rmeng_data/robtang/tools/apt-root/usr/bin/apptainer`
+and its library path is in the existing PTB configuration. The original failed
+record remains. A restricted shell also cannot see the host PID/controller;
+use approved host reads, not a duplicate monitor or fabricated terminal state.
 
-All three have recorded CPU/independent-forward validation and local/full manifest checks; none has a scheduler receipt. They are historical separate baseline-relative variants,now components rather than automatic standalone funding; the host shipped tree is guard drift `2f64581`. P1 v1 must not be registered as written; G remains a future direction, not E's replacement. P5 is read-only investigation, not a candidate or queue entry.
+The shared clean submitting clone is
+`/rmeng_data/robtang/exp-protocol-opus48-submit-ob4GmM8N/repo`, currentlyc45c944.
+It has independent Git objects, correct fork/upstream remotes, the shared data
+link and the same600-mode non-secret site configuration (path references, not
+copied auth-file contents). Auto-review initially rejected unknown .env copying;
+after content-class/ownership checks it approved the copy. No bypass was used.
+The earlier `/tmp/exp-protocol-opus48-submit-HDEYY15Q/repo` is not the worker
+submission source. Root's unrelated user meta/analysis drafts remain untouched.
 
-**Bundle construction:** accepted E checkpoint is dcfa742 on `codex/exp-protocol-bundles-20260904`,in `/rmeng_data/robtang/exp-protocol-bundle-work-5iV6EzGB/repo`; PTB remainsdcf5da0. H/J/K/B guidance,E4 saves,E5 execution records,E6 raw-first sampling,E7 prepared-token/checked-consumer paths and E8 selected-artifact publication are implemented and CPU/forward accepted. No new experiment manifests/receipts exist. L/P interface designs are committed, but no L/P implementation has begun; the newer benchmark/Opus4.8 discussion takes priority over blindly continuing the old2-cell wave. Keep the operator's runtime tree unchanged and preserve concurrent user meta/analysis drafts.
+## GPQA and HumanEval onboarding
 
-**Validation/evidence:** earlier original-env protocol/sandbox/PTB regression excluding E8 had415 passed/73 expected dependency skips. Main independently ran pinned E6(32)+E7(76)+schema/preflight(80):188 passed in38.81s. Earlier E4's51 pinned tests and E5's31 Python3.10 tests remain applicable. E6/E7 independent reviewers completed public-guide-selected CPU workflows; main read their full reports,verified E6's only-inert-call interception and independently reverified both E7 successful receipts. Builder's10k-row/3,492,790-token E7 measurement is15.96s prepare+verify,2.36s preflight,2.41s loader,.027s first batch—not a full-corpus or GPU prediction. Generic quick_validate still rejects the established underscore name; preserve it. Full histories/counts and proof limits are in the candidate's `2026-09-04-bundle-construction.md`.
+See [audit](analysis-2026-09-04-opus48-onboarding/new-task-eval-audit.md).
+Only GSM8K/AIME2025 currently pass the task allowlist; Opus4.8 high/1M profiles
+are admitted. The110-test operator/manifest/probe suite passes; all four GSM8K
+full source/site checks returned0 issues. No new-task allowlist bypass exists.
 
-**E8 accepted checkpoint:** helper13e5bef,56 tests; main's final pinned E4/E5/E6/E7/E8+schema/preflight suite is328 passed in41.78s, including2 new native sampling/prepared-input interaction cases. Final original-env protocol/sandbox/PTB suite:464 passed,82 expected native dependency skips in20.23s. Independent public-guide reviewer completed A publication/B replacement/exact backup-A verification without implementation/test reads. Main read the whole report and actual scripts and independently reverified both artifacts. The first wrong-type argument failure is preserved; two guide clarifications followed, without helper changes. Full129-file381,102-byte raw review archive is byte-compared at shared `data/ptb/review-artifacts/e8-serving-forward.lQggAi`;17 selected identical texts and an all-file index are committed under candidate `trace-reviews/bundle-e8-forward/`. Original temp artifacts remain. No inference, scientific result, gain or promotion follows from this acceptance.
+GPQA Main:Idavidrein/gpqa revision633f5ee89ab8ad4522a9f850766b73f62147ffdd,
+official gpqa_main.csv download returned403 despite an existing HF token.
+User was asked asynchronously to authorize the account or supply a legally
+authorized local path; never ask for a token in chat, accept terms implicitly
+or substitute a mirror. No GPQA reference/manifest/receipt exists.
 
-**Persistence:** lightweight byte-identical E6/E7 review files and per-file archive indices are committed under `doc/exp_protocol_iterations/trace-reviews/bundle-e6-forward/` and `bundle-e7-forward/` in the candidate branch. Full byte-compared copies,including E7's123MB of tokenizer snapshots,are retained at `/home/robtang_google_com/gangda_workspace/agentic-world-model/data/ptb/review-artifacts/e6-forward-sampling.ntRxXE` and `.../e7-forward-review.zLMH5o`; original temporary sessions were not deleted. The fixed CPU runtime remains `/tmp/exp-protocol-save-runtime.JEZlHo` (~14GB); exact reproduction is in save-safety.md. Reusable lessons are in committed meta/bundle_validation.md. Reviews add zero validator-clean cells; no new GPU jobs,receipts,releases or standalone micro-screen top-ups occurred.
+HumanEval:openai/openai_humaneval revision7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544.
+Pinned parquet83920 bytes/SHA2f2871a15fbc95b6c683043359f4ed8e144c5a1c4f24f25f66bc51f598dfcfb6
+was normalized by a trusted offline CPU converter, without displaying or
+executing dataset code. Actual164 rows/164 IDs; reference SHA
+85d6c3ab3a76590160695424d75d79e90049d5ceaaa809c9771d292054ad68a5.
+Files are in `/tmp/ptb-opus48-onboarding-oGLZFUf4/repo/src/eval/tasks/humaneval/`.
+The PTB working branch is `codex/opus48-cross-task-runtime` at the old pin plus
+uncommitted onboarding work; no new PTB/source/runtime has been admitted yet.
 
-## Monitoring and analysis
+HumanEval's old local backend exposes trusted evaluator state and is not a
+safe code-execution boundary. Builder `/root/bundle_save_contract` owns the
+three new `src/eval/ptb_python_sandbox.{py,md}`/dedicated test files in that
+temporary PTB tree. Its initial native26-test versionb6bcd610 passed real
+namespace/NumPy/concurrency/resource/cleanup and original-scorer synthetic tests,
+but informed source review confirmed two defects: overwriting existing/local
+Inspect registration, and losing captured stdout/stderr on exceptions.
+Builder is repairing both; do not freeze/admit the initial version as complete.
+The review is **informed, not blind**; a fresh-context forward spawn hit the
+agent-thread limit. No fresh-context acceptance is claimed. Real vllm_debug
+image/compute-node permissions, public dependency parity, formal log retention,
+scored counts/data pinning and final integration remain required.
 
-Historical detectors:2086813 completed14/17 at04:00:55;2446155 completed3/3 at05:06:32. Both events were archived and outcomes harvested. Neither is a live detector now; do not restart a completed PID.
+## Monitoring and trace review
 
-**Current live monitor PID2612586**,verified by `ps` at11:26:33,watches the22 remaining receipt-backed held IDs, threshold6 plus2 buffered clean tail cells; latest tick11:27:36 is0/22 terminal,next12:27:36. Log `/tmp/exp-protocol-held-monitor-expanded-wboe41dy/monitor.log`; exact settings/history in Window04 `launch.json`. PID2579442 was deliberately replaced to add91965 while retaining all21 previous IDs; this was not a timeout/counter reset. D/E were already excluded,so their withdrawal changes no watched IDs. Terminals still require harvest/validator review. The SessionStart event helper now recognizes either8 NEW clean cells or a scientifically complete predeclared block under current meta; it never equates its terminal threshold with either condition. The live detector was not restarted.
+Current monitor **PID3564003**, verified alive13:19; tick13:16:40 shows0/38 terminal,
+next14:16:40. Args:all22 legacy held IDs plus92125–92140, threshold8,
+poll3600s. Log `/tmp/exp-protocol-opus48-monitor-yIxSYcTT/monitor.log`;
+[handoff](analysis-2026-09-04-opus48-onboarding/monitor-handoff.json)
+preserves the old state. Old2612586 was stopped only after the new watcher was
+confirmed alive and wrote all38 IDs; old terminal count was0. This was a real
+scope expansion, not a restart after a missing PID/observation timeout.
 
-**Window04 is CLOSED by [planner adjudication](2026-09-04-round-02-window04-decision.md)** after full reads of14 NEW reports,five focused audits,both syntheses(507/532lines) and the planner prefix audit. Both Claude sessions completed/stopped;do not duplicate them. Keep guard baseline,no promotion,no helper proposal accepted as written. Its old B/H/J standalone priority is superseded by bundle construction. D's replacement actual-save interface is implemented as candidate E4 and has native combined CPU tests; the complete E package still awaits export forward acceptance. E2's historical retention proof is unresolved; SE-derived hard count gating remains rejected. Original reports remain unaltered.
+New Opus4.8 clean count0. Old c01s05 and p00s03 remain separately buffered legacy
+evidence, not new-study samples. Slurm terminals only wake the loop: harvest,
+validate, filter eligibility/judges and then invoke local Claude Opus5[1m]/max
+after eight NEW clean or a completed predeclared comparison block. Scientist
+Opus4.8 and analyst Opus5 are different roles. Keep the long-running goal active.
 
-Concurrent worktree note: `doc/exp_protocol_iterations/analysis-2026-09-04-user-review/` is not part of this operator's changes. Preserve it and exclude it from operator commits. Use a genuinely clean source-frozen execution checkout if needed for new registration; never delete,hide or commit unrelated files just to satisfy the clean-tree gate. Independent source/design preparation can continue without release authority.
+[Window04](2026-09-04-round-02-window04-decision.md) is closed at14 NEW clean,
+all traces/syntheses/focused audits read; do not launch a duplicate synthesis.
+L/P designs remain in the E branch, not implementations or funded new arms.
+E2/J/K old standalone drafts are historical; J had no receipt and its queue
+entry was removed. Never use the old763701c J submission clone.
 
-The exact strict guard cohort has been fully reviewed, including seven incremental cells outside Window03; do not double-count it as another eight-new window. Supplemental P5 local Claude session `145e42ee-b904-4829-9380-e4534ccbc7bf` has completed its read-only Opus5[1m] max review and was stopped after delivery. The [planner adjudication](trace-reviews/p5-serving-audit/planner-decision.md) retains the observation but makes no new protocol candidate or GPU repeat. Three original developer Inspect logs were recovered/read from the data volume, with actual1319 counts and logged settings; official per-item evidence remains unresolved across a scratch-persistence boundary. This consumes zero new clean cells. A [prospective retention design](../spec/2026-09-03-ptb-official-eval-evidence-retention.md) scopes the remaining tested timeout/cleanup and opt-in launcher/harvest integration. The [isolated CPU prototype](2026-09-03-official-evidence-prototype.md) now passes159 tests, including the real Inspect→archive success path with two synthetic MockLLM samples, plus three original developer-log format replays. The helper remains unwired; next are timeout/cleanup, actual Inspect sink and launcher/harvest integration. Source/standalone-container tests do not prove those callers. Keep inference logging local and archive afterward; do not change current frozen attempts, the PTB pin or the evaluation contract.
+Earlier E5/E6/E7/E8 native/forward evidence and full persistent raw archives are
+recorded in the candidate's `2026-09-04-bundle-construction.md` and
+`data/ptb/review-artifacts/`. The extracted CPU runtime remains
+`/tmp/exp-protocol-save-runtime.JEZlHo`. Preserve all original traces, receipts,
+failed probes and user drafts; no artifact or running Slurm work was deleted.

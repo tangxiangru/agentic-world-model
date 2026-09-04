@@ -1,8 +1,9 @@
 # Approved Opus4.8 study: initial onboarding evidence
 
 User approved40 cells in the [spec](../../spec/2026-09-04-exp-protocol-opus48-cross-benchmark.md).
-This checkpoint prepares the independent16-cell GSM8K wave. It does not say
-the new tasks are ready or that any job has been submitted/released.
+The independent16-cell GSM8K wave is registered held as92125–92140, with
+receipts committed inc45c944. This does not say GPQA/HumanEval are ready or
+that any job has been released.
 
 ## Frozen methods and model route
 
@@ -29,12 +30,19 @@ The original record is retained separately; the archive record relocates its
 raw-trace pointer while preserving the original path and raw hash.
 
 The first existing `context_probe.sh` attempt stopped before an API call because
-this host lacks apptainer. Its verified:false record/error are preserved. It
+bare apptainer was absent from PATH. Its verified:false record/error are preserved. It
 was not interpreted as model rejection or replaced by fabricated success.
 The bounded fallback tool/tests live in `tools/ptb_opus48_context_probe.py` and
 its dedicated test. The actual success costs about$0.020 in the raw stream.
 
 ## Readiness and limits
+
+Supplementary [full-container probe](full-container-record.json) also passed,
+using the existing configured Apptainer binary/library paths. Its
+[raw stream](full-container-stream.json) confirms the same CLI/model/context;
+no tool call or model experiment occurred. This supplements, not rewrites, the
+already-receipted extracted-CLI record. Initial failure was PATH, not an absent
+installation or model rejection.
 
 All four GSM8K manifests (none/knowledge/tools/guard, each4) passed the full
 `awm ptb check` with0 issues, including actual image hashes, frozen method
