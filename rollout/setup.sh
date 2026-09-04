@@ -39,7 +39,7 @@ if [ -f "${SRC}/${TEST_DATA_REL}" ]; then
     install -D -m 0644 "${SRC}/${TEST_DATA_REL}" "${DST}/${TEST_DATA_REL}"
 fi
 
-for agent in claude_recorder claude_noprior_noawm claude_fulltraj_noawm claude_wm; do
+for agent in claude_recorder opencode_recorder claude_noprior_noawm claude_fulltraj_noawm claude_wm; do
     install -d "${DST}/agents/${agent}"
     install -m 0755 "${HERE}/agents/${agent}/solve.sh" "${DST}/agents/${agent}/solve.sh"
     install -m 0644 "${HERE}/agents/${agent}/api_keys.json" "${DST}/agents/${agent}/api_keys.json"
@@ -49,7 +49,7 @@ done
 # The recorder (for `awm wm submit` and the card template) and the retired
 # C2/C3 agent receive the awm code. The narrow payload hook copies this
 # directory to /home/ben/agent inside those cells.
-for payload_agent in claude_recorder claude_wm; do
+for payload_agent in claude_recorder opencode_recorder claude_wm; do
     PAYLOAD="${DST}/agents/${payload_agent}/payload/awm-src"
     install -d "${PAYLOAD}"
     git -C "${AWM_SOURCE_DIR}" archive --format=tar "${AWM_REPO_COMMIT}" awm input wma \

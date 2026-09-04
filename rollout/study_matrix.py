@@ -27,6 +27,9 @@ SCIENTIST_MODELS = (
     "claude-opus-4-8",
     "claude-opus-5",
 )
+# qwen3.6-27b is the RPM paper's frozen backbone, served locally by vLLM and
+# driven through PTB's opencode scaffold; select it with --scientists.
+KNOWN_SCIENTISTS = SCIENTIST_MODELS + ("qwen3.6-27b",)
 # healthbench is LLM-graded (gpt-5-mini via OPENAI_API_KEY) and is parked until a
 # grader key exists; the launcher still accepts it for individual cells.
 TASKS = ("gpqamain",)
@@ -82,18 +85,22 @@ class Cell:
         }
 
 
-def recorder_matrix(repetitions: int = DEFAULT_REPETITIONS) -> tuple[Cell, ...]:
-    """Scientists x tasks x base models x repetitions; half the cells per scientist."""
+def recorder_matrix(repetitions: int = DEFAULT_REPETITIONS,
+                    scientists: tuple[str, ...] = SCIENTIST_MODELS) -> tuple[Cell, ...]:
+    """Scientists x tasks x base models x repetitions; equal cells per scientist."""
     if not 1 <= repetitions <= MAX_REPETITIONS:
         raise ValueError(f"repetitions must be 1..{MAX_REPETITIONS}, got {repetitions}")
+    unknown = sorted(set(scientists) - set(KNOWN_SCIENTISTS))
+    if unknown or not scientists:
+        raise ValueError(f"unknown scientists {unknown}; known: {list(KNOWN_SCIENTISTS)}")
     cells = tuple(
         Cell(RECORDER_CONDITION, model, task, base, repetition)
         for repetition in range(1, repetitions + 1)
         for task in TASKS
         for base in BASE_MODELS
-        for model in SCIENTIST_MODELS
+        for model in scientists
     )
-    expected = len(SCIENTIST_MODELS) * len(TASKS) * len(BASE_MODELS) * repetitions
+    expected = len(scientists) * len(TASKS) * len(BASE_MODELS) * repetitions
     per_model = Counter(cell.scientist_model for cell in cells)
     if (
         len(cells) != expected
@@ -149,6 +156,11 @@ def main(argv: list[str] | None = None) -> int:
         help=f"repetitions per (scientist, task, base) cell, 1..{MAX_REPETITIONS} (default {DEFAULT_REPETITIONS})",
     )
     parser.add_argument(
+        "--scientists",
+        default=",".join(SCIENTIST_MODELS),
+        help=f"comma-separated scientists (default: the two Claude models; known: {', '.join(KNOWN_SCIENTISTS)})",
+    )
+    parser.add_argument(
         "--validate",
         action="store_true",
         help="validate that the positional specs are exactly the matrix",
@@ -162,7 +174,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        matrix = c0_matrix() if args.c0 else recorder_matrix(args.reps)
+        scientists = tuple(x for x in args.scientists.split(",") if x)
+        matrix = c0_matrix() if args.c0 else recorder_matrix(args.reps, scientists)
     except ValueError as exc:
         parser.error(str(exc))
     if args.validate:

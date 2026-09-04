@@ -427,10 +427,10 @@ def test_c0_pack_rejects_scoped_or_out_of_range_specs(tmp_path: Path, bad: str) 
 
 def test_setup_and_prompt_file_patch_cover_the_recorder_and_c0_agents() -> None:
     setup = (ROLLOUT / "setup.sh").read_text()
-    assert "for agent in claude_recorder claude_noprior_noawm claude_fulltraj_noawm claude_wm; do" in setup
-    assert "for payload_agent in claude_recorder claude_wm; do" in setup
+    assert "for agent in claude_recorder opencode_recorder claude_noprior_noawm claude_fulltraj_noawm claude_wm; do" in setup
+    assert "for payload_agent in claude_recorder opencode_recorder claude_wm; do" in setup
     patched = apply_prompt_file.apply('x\necho "$PROMPT" > "${EVAL_DIR}/prompt.txt"\ny\n')
-    assert "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder" in patched
+    assert "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder|opencode_recorder)" in patched
 
 
 def test_prompt_env_guard_blanks_the_prompt_for_study_agents_only() -> None:
@@ -444,7 +444,7 @@ def test_prompt_env_guard_blanks_the_prompt_for_study_agents_only() -> None:
     assert '--env PROMPT="${AGENT_PROMPT_ENV}"' in patched
     assert '--env PROMPT="${PROMPT}"' not in patched
     assert 'AGENT_PROMPT_ENV="${PROMPT}"' in patched
-    assert "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder)" in patched
+    assert "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder|opencode_recorder)" in patched
     assert apply_prompt_env_guard.apply(patched) == patched
 
 
@@ -471,3 +471,65 @@ def test_eval_hf_token_patch_targets_only_the_evaluation_exec() -> None:
 
 def test_setup_installs_the_eval_hf_token_patch() -> None:
     assert "apply_eval_hf_token.py" in (ROLLOUT / "setup.sh").read_text()
+
+
+def test_opencode_recorder_is_the_claude_recorder_with_the_cli_swapped() -> None:
+    solve = (ROLLOUT / "agents/opencode_recorder/solve.sh").read_text()
+    for fragment in (
+        "bash /home/ben/update_agent_cli.sh opencode",
+        'opencode run --model "$AGENT_CONFIG" --format json',
+        "opencode run --continue",
+        "python3 -m awm.cli wm init",
+        "--mode record",
+        "--arm null",
+        "@ai-sdk/openai-compatible",
+        "AWM_VLLM_BASE_URL",
+        "/home/ben/task/instruction.md",
+    ):
+        assert fragment in solve
+    for forbidden in ("prior_runs", "wm-memory", "SendMessage", "ANTHROPIC_API_KEY", "VERTEX"):
+        assert forbidden not in solve
+    subprocess.run(["bash", "-n", str(ROLLOUT / "agents/opencode_recorder/solve.sh")], check=True)
+    rec = ROLLOUT / "agents/opencode_recorder"
+    assert (rec / "api_keys.json").read_text() == (ROLLOUT / "agents/claude_recorder/api_keys.json").read_text()
+    env = [l for l in (rec / "env_passthrough.txt").read_text().splitlines() if l and not l.startswith("#")]
+    assert env == ["AWM_VLLM_BASE_URL", "MODEL_TO_TRAIN"]
+
+
+def test_qwen_scientist_routes_to_the_opencode_recorder(tmp_path: Path) -> None:
+    ptb, capture, env_capture = _fake_ptb(tmp_path)
+    env = {**os.environ, "HV_PTB_DIR": str(ptb), "CAPTURE_ARGS": str(capture),
+           "CAPTURE_ENV": str(env_capture), "PTB_RUN_ID": "test", "PTB_GPU_SLOTS": "5"}
+    subprocess.run(["bash", str(ROLLOUT / "wm_pack.sbatch"), "r:qwen3.6-27b:gpqamain:qwen3-4b:1"],
+                   cwd=REPO, env=env, check=True, capture_output=True, text=True)
+    args = capture.read_text().splitlines()
+    assert args[0:3] == ["gpqamain", "opencode_recorder", "Qwen/Qwen3-4B-Base"]
+    assert args[4:] == ["10", "vllm/qwen3.6-27b", "1"]
+    assert "POST_TRAIN_BENCH_PROMPT=prompt_record\n" in env_capture.read_text()
+
+
+def test_c0_refuses_the_locally_served_scientist(tmp_path: Path) -> None:
+    ptb, capture, env_capture = _fake_ptb(tmp_path)
+    env = {**os.environ, "HV_PTB_DIR": str(ptb), "CAPTURE_ARGS": str(capture),
+           "CAPTURE_ENV": str(env_capture), "PTB_RUN_ID": "test", "PTB_GPU_SLOTS": "0"}
+    r = subprocess.run(["bash", str(ROLLOUT / "wm_pack.sbatch"), "c0:qwen3.6-27b:1"],
+                       cwd=REPO, env=env, capture_output=True, text=True)
+    assert r.returncode == 2 and not capture.exists()
+
+
+def test_matrix_scientists_are_selectable_and_validated() -> None:
+    cells = study_matrix.recorder_matrix(3, ("qwen3.6-27b",))
+    assert len(cells) == 6 and {c.scientist_model for c in cells} == {"qwen3.6-27b"}
+    with pytest.raises(ValueError):
+        study_matrix.recorder_matrix(2, ("gpt-5",))
+    assert len(study_matrix.recorder_matrix()) == 8   # default unchanged
+
+
+def test_setup_and_bridges_cover_the_opencode_recorder() -> None:
+    setup = (ROLLOUT / "setup.sh").read_text()
+    assert "claude_recorder opencode_recorder claude_noprior_noawm" in setup
+    assert "for payload_agent in claude_recorder opencode_recorder claude_wm; do" in setup
+    for mod in (apply_prompt_file, apply_prompt_env_guard):
+        patched = mod.apply('x\n' + ('echo "$PROMPT" > "${EVAL_DIR}/prompt.txt"\n' if mod is apply_prompt_file else
+                            '    timeout --signal=TERM --kill-after=30s "$((NUM_HOURS * 60 + 5))m" \\\n        --env PROMPT="${PROMPT}" \\\n') + 'y\n')
+        assert "opencode_recorder" in patched

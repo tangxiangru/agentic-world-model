@@ -25,8 +25,11 @@ IFS=: read -r CONDITION SCIENTIST FIELD3 FIELD4 FIELD5 EXTRA <<EOF
 ${SPEC}
 EOF
 
+# Claude scientists run through PTB's Claude scaffold; qwen3.6-27b is served
+# locally by vLLM and driven through PTB's opencode scaffold.
 case "${SCIENTIST}" in
-    claude-opus-4-8|claude-opus-5) ;;
+    claude-opus-4-8|claude-opus-5) RECORDER_AGENT=claude_recorder; RECORDER_CONFIG="${SCIENTIST}" ;;
+    qwen3.6-27b) RECORDER_AGENT=opencode_recorder; RECORDER_CONFIG="vllm/${SCIENTIST}" ;;
     *) echo "unsupported scientist model in ${SPEC}" >&2; exit 2 ;;
 esac
 
@@ -36,6 +39,7 @@ case "${CONDITION}" in
         # mounted and there is no scope factor.
         REPETITION="${FIELD3}"
         [ -z "${FIELD4}${FIELD5}${EXTRA}" ] || { echo "invalid C0 spec (c0:<model>:<rep>): ${SPEC}" >&2; exit 2; }
+        [ "${RECORDER_AGENT}" = claude_recorder ] || { echo "C0 is Claude-only: ${SPEC}" >&2; exit 2; }
         AGENT=claude_noprior_noawm
         AGENT_CONFIG="${SCIENTIST}"
         PROMPT_NAME=prompt_noprior
@@ -60,8 +64,8 @@ case "${CONDITION}" in
             qwen3-4b)  MODEL_TO_TRAIN=Qwen/Qwen3-4B-Base ;;
             *) echo "unsupported base model in ${SPEC} (gemma3-4b, qwen3-4b)" >&2; exit 2 ;;
         esac
-        AGENT=claude_recorder
-        AGENT_CONFIG="${SCIENTIST}"
+        AGENT="${RECORDER_AGENT}"
+        AGENT_CONFIG="${RECORDER_CONFIG}"
         PROMPT_NAME=prompt_record
         [ "${SMOKE}" != 1 ] || PROMPT_NAME=prompt_record_smoke
         BINDS=()

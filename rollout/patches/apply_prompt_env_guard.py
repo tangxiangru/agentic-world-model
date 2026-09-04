@@ -21,7 +21,7 @@ from pathlib import Path
 
 
 MARK = "# --- awm: keep the long study prompt out of the container environment ---"
-STUDY_AGENTS = "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder"
+STUDY_AGENTS = "claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder|opencode_recorder"
 ANCHOR = '    timeout --signal=TERM --kill-after=30s "$((NUM_HOURS * 60 + 5))m" \\\n'
 OLD_ENV = '        --env PROMPT="${PROMPT}" \\\n'
 NEW_ENV = '        --env PROMPT="${AGENT_PROMPT_ENV}" \\\n'

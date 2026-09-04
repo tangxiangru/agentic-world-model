@@ -17,7 +17,7 @@ MARK = "# --- awm: prompt file for study agents ---"
 ANCHOR = 'echo "$PROMPT" > "${EVAL_DIR}/prompt.txt"\n'
 BLOCK = f'''{MARK}
 case "$AGENT" in
-    claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder)
+    claude_noprior_noawm|claude_fulltraj_noawm|claude_wm|claude_recorder|opencode_recorder)
         cp "${{EVAL_DIR}}/prompt.txt" "${{JOB_DIR}}/task/instruction.md"
         ;;
 esac
