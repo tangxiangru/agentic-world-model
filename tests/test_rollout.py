@@ -10,7 +10,8 @@ import pytest
 
 from rollout import build_prompts, study_matrix
 from rollout.patches import (apply_eval_results_bind, apply_extra_binds, apply_prompt_file,
-                             apply_prompt_env_guard, apply_wm_checkpoint_eval)
+                             apply_eval_hf_token, apply_prompt_env_guard,
+                             apply_wm_checkpoint_eval)
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -449,3 +450,24 @@ def test_prompt_env_guard_blanks_the_prompt_for_study_agents_only() -> None:
 
 def test_setup_installs_the_prompt_env_guard() -> None:
     assert "apply_prompt_env_guard.py" in (ROLLOUT / "setup.sh").read_text()
+
+
+def test_eval_hf_token_patch_targets_only_the_evaluation_exec() -> None:
+    original = (
+        '        --env VLLM_API_KEY="inspectai" \\\n'
+        '        --env PYTHONNOUSERSITE="1" \\\n'
+        'agent exec above, evaluation exec below\n'
+        '        --env OPENROUTER_API_KEY="${OPENROUTER_API_KEY}" \\\n'
+        '        --env VLLM_API_KEY="inspectai" \\\n'
+        '        --env PYTHONNOUSERSITE="1" \\\n'
+    )
+    patched = apply_eval_hf_token.apply(original)
+    assert patched.count('--env HF_TOKEN="${MY_HF_TOKEN}"') == 1
+    assert patched.count('--env HUGGING_FACE_HUB_TOKEN="${MY_HF_TOKEN}"') == 1
+    # the token must land after the evaluation-only OPENROUTER line, never in the agent exec
+    assert patched.index("OPENROUTER_API_KEY") < patched.index("HF_TOKEN")
+    assert apply_eval_hf_token.apply(patched) == patched
+
+
+def test_setup_installs_the_eval_hf_token_patch() -> None:
+    assert "apply_eval_hf_token.py" in (ROLLOUT / "setup.sh").read_text()

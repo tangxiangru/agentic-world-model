@@ -67,6 +67,7 @@ python3 "${HERE}/patches/apply_env_passthrough.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_agent_payload.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_prompt_file.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/patches/apply_prompt_env_guard.py" "${DST}/src/run_task.sh"
+python3 "${HERE}/patches/apply_eval_hf_token.py" "${DST}/src/run_task.sh"
 python3 "${HERE}/build_prompts.py" --no-review "${DST}"
 
 mkdir -p "${RESULTS}"
