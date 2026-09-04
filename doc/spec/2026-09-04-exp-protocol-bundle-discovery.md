@@ -81,12 +81,37 @@ LLM-gated state machine. A shell leader's exit does not prove internally
 detached children finished; document the foreground-child contract and audit
 bypasses. An optional wrapper cannot prevent arbitrary raw Bash launches.
 
+E5 construction interface: `awm exp_protocol run --dir SESSION exp-NN` runs
+only the locked `setup.command.argv`/cwd (no shell interpolation), after fresh
+plan/preflight and complete live script/data hash checks. It never re-locks or
+closes the card. A per-card OS lock rejects concurrent duplicate invocation;
+each attempt gets a new directory with no-clobber launch/process/exit records
+and stdout/stderr. Interrupts target only the new child process group, retain
+its known wait result, and never manufacture a result after observer death.
+The child must keep scientific descendants in the foreground. Detached children
+and arbitrary unlisted script dependencies remain outside the coverage claim.
+
+Optional v2 `setup.execution.output_evidence: fresh-directory` requires the
+declared absolute `setup.output_dir` not to exist, reserves it exclusively before
+launch, and hashes its regular non-symlink files after the command exits. This
+proves a fresh output namespace and observed file identity, not model validity
+or that gold data were unused. It does not delete/reuse an existing directory.
+Without that mode, output identity stays explicitly unverified; ordinary
+evaluation/reuse cards are not falsely blocked. File-count/byte inventory limits,
+hashing errors, symlinks and interrupts leave incomplete/unsupported evidence,
+never a quiet PASS. No mode supplies semantic/PTB validation or automatically
+starts a dependent command. Late changed locks/sources are recorded distinctly
+from the already-observed child exit code.
+
 E7 must exercise the same formatter used by training, including prompt masks,
 terminal supervised tokens and truncation. CPU preprocessing before lock is
 allowed; a model-forward evaluation is not. Missing adapter coverage stays
 explicitly unknown. Do not turn a scientist-authored JSON declaration into a
 claim that the training script executed those inputs. Any required schema
 change needs a separately documented v3 migration; optional evidence may stayv2.
+The [accepted E7 interface](../exp_protocol_iterations/2026-09-04-rendered-input-design.md)
+adds independently checked g01r08 evidence and specifies the prepared-token
+artifact, supported modes, checked loader/collator and exact proof boundaries.
 
 ## 4. Save contract chosen for construction
 
