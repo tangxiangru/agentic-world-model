@@ -239,3 +239,18 @@ the one-point flagged-R/clean-P difference as a treatment effect.
 Total PTB-complete is91, automatic-judge-clean90. The queue has16RUNNING and
 41 safe PENDING; validation92312 remains pending and S0 science remains staged.
 Full evidence and disposition are in `evidence/2026-09-04-1900/`.
+
+## 20:00 UTC incremental readout
+
+BFCL P c54r03 is clean at94/100. P now has clean scores91/94, mean **92.5%**,
+sample SD2.1213pp,n2. Raw still has zero clean results, so P–R is undefined.
+
+GSM8K P c52r02 has a valid final model at49.5830% but is flagged: a later
+exp04 was killed after a text-only waiting end_turn. HumanEval raw c55r04 repeats
+the lifecycle failure before any model existed and has no score. Keep c52r02 as
+flagged sensitivity and c55r04 incomplete; no selective retry or synthetic zero.
+
+This brings scientific complete/automatic-clean to93/91; new-study complete is4
+with only2 clean. Queue is16RUNNING/38safePENDING. S0 validation92312 is pending,
+formal S0 remains staged. Exact evidence and ranked lifecycle decision are in
+`evidence/2026-09-04-2000/operator-review.md`.

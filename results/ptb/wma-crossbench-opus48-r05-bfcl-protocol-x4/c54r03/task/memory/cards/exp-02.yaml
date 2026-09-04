@@ -1,0 +1,103 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T18:01:49Z'
+situation:
+  elapsed_h: 0.75
+  remaining_h: 9.25
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp-01
+    score: {metric: accuracy, value: 0.915, protocol_n: 100}
+  trigger: "exp-01 reaches 0.91/0.92 (two evals); its 9 misses are argument-fidelity errors (percent->decimal, enum exactness, verbatim strings, arg ordering), suggesting the small 2.5k dataset limits generalization of careful argument extraction."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-01_n100.json, locator: "accuracy=0.91"}
+    - {path: /home/ben/task/eval/exp-01_n100_rerun.json, locator: "accuracy=0.92"}
+  alternatives_rejected:
+    - {option: "fewer epochs on the same 2.5k data", reason: "format is already learned; the limiter is data diversity for argument fidelity, not overfitting per se"}
+    - {option: "synthetic calculator data targeting the exact failure modes", reason: "higher contamination-optics risk and narrow; prefer broad real diverse data first"}
+    - {option: "keep exp-01 as final", reason: "kept as fallback in final_model; but 9.25h budget justifies a diversity experiment"}
+  pitfalls_hit:
+    - {what: "saved checkpoint lacked preprocessor_config.json/processor_config.json so vLLM (multimodal arch) refused to load exp-01", cost_h: 0.1, fix: "copy the two processor configs from the base snapshot into the output dir at save time (now in train_sft.py)"}
+    - {what: "eval samples (temp~1.0, top_p 0.95, top_k 64 from generation_config); scores are stochastic ~+-1-2 pts", cost_h: 0.1, fix: "re-run evals; require a clear (>=3-4 pt) gain to adopt"}
+  smoke_runs: []
+problem:
+  statement: "exp-01 (SFT on 2.5k ToolACE+hermes examples) leaves 9/100 argument-fidelity errors: percent-vs-decimal, enum exactness, verbatim string copying, and commutative arg ordering. The dataset is small and web-API-skewed, under-covering calculator/scientific-style calls."
+  evidence:
+    - {path: /home/ben/task/eval/exp-01_n100.json, locator: "accuracy=0.91", observation: "9 misses are wrong-arg, not format failures (100/100 parseable)"}
+  affected_share: 0.09
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Full SFT of gemma-3-4b-pt on a larger, more diverse function-calling set (8611 examples: ToolACE all-turns + hermes + 6k glaive, spanning calculator/scientific + web-API domains) will raise BFCL exec_simple accuracy above exp-01's ~0.915."
+  mechanism: "Broader coverage of tool schemas, enums, numeric arguments and query phrasings improves faithful argument extraction and generalization to the calculator-style exec_simple items."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-01, magnitude: "+2 to +5 pts"}
+  falsified_if: "exec_simple accuracy (n=100) is <= 0.92, i.e. not clearly above the exp-01 range."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/fc_big.jsonl
+      source: local
+      n_examples: 8611
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/fc_big.jsonl, --mode, all, --max-glaive, "6000"]
+      selection: "single-turn single-call examples: ToolACE all-turns (2133) + hermes (478) + glaive-function-calling-v2 first functioncall (6000); dedup by (user,name,args); valid tool names only"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 (full FT, vision tower + projector frozen)
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 8, grad_accum: 2, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant turn = '<tool_call>\\n{\"name\": .., \"arguments\": {..}}\\n</tool_call><end_of_turn>', rendered by templates/gemma3_tool_calling.jinja"
+    stop_token: "<end_of_turn>"
+    answer_marker: null
+  command:
+    argv: [python, train_sft.py, --data, data/fc_big.jsonl, --out, ckpts/exp-02, --epochs, "2", --lr, "1e-5", --bs, "8", --grad-accum, "2", --max-seq-len, "2048", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-02_run.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/exp-02, --limit, "100", --max-tokens, "2048", --max-connections, "8", --json-output-file, eval/exp-02_n100.json]
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.915
+    path: /home/ben/task/eval/exp-01_n100.json
+  diagnostic:
+    what: "number of the exp-01 failure categories fixed vs new regressions"
+    n: 100
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.43
+  output_checkpoint: /home/ben/task/ckpts/exp-02
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02, step: 1078}
+  training_summary: {final_loss: 0.018, steps: 1078, notes: "2 epochs on 8611 diverse examples; train_loss avg 0.038"}
+  measurements:
+    - {metric: accuracy, value: 0.94, n: 100, path: /home/ben/task/eval/exp-02_n100.json, delta_vs_comparator: 0.025}
+    - {metric: accuracy, value: 0.91, n: 100, path: /home/ben/task/eval/exp-02_n100_r2.json, delta_vs_comparator: -0.005}
+  diagnostic_result: {value: null, path: null, notes: "two evals 0.94 and 0.91 (avg 0.925) vs exp-01 0.91/0.92 (avg 0.915); difference within sampling noise"}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Adding glaive+ToolACE-all diversity (8611 ex, 2 epochs) gave 0.94/0.91 (avg 0.925) vs exp-01 avg 0.915. A small positive shift but within the ~+-1.5pt eval sampling noise; not a clear win."
+  decision: iterate
+  next_step: "exp-03: train on the same diverse 8611 data for 3 epochs (more peaked outputs, like exp-01's regime) to seek a more stable/higher score; then compare all three with multiple evals."

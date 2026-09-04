@@ -1,0 +1,101 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T17:35:55Z'
+situation:
+  elapsed_h: 0.2
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.05, protocol_n: 100}
+  trigger: "Base gemma-3-4b-pt scores 0.05 on BFCL exec_simple: it is a pretrained (non-instruct) model that does not know the <tool_call> chat format the grader parses."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/base_n100.json, locator: "accuracy=0.05"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full FT", reason: "teaching a brand-new output format+behavior to a base model; full FT of 4B fits on the H100 and learns format more reliably"}
+    - {option: "Salesforce/xlam-function-calling-60k (ideal single-turn source)", reason: "gated on the Hub, no HF token available"}
+    - {option: "train on all turns incl. multi-call", reason: "exec_simple requires exactly one assistant message with one tool_call; single-call single-turn data matches the grader"}
+  pitfalls_hit:
+    - {what: "xlam-function-calling-60k is gated; had to switch to ToolACE+hermes", cost_h: 0.1, fix: "used ungated Team-ACE/ToolACE and NousResearch/hermes-function-calling-v1"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/smoke.jsonl, --out, work/smoke, --epochs, "1", --bs, "4"], outcome: "24 ex, loss 0.24, forward/backward/save OK; saved dir has Gemma3ForConditionalGeneration arch + tokenizer + 2 safetensors shards (vLLM-loadable)"}
+problem:
+  statement: "The base model does not emit a single well-formed <tool_call>{...}</tool_call> for a given tool set and user query, so the BFCL grader (which needs exactly one parseable tool call with matching name + canonicalized args) marks nearly everything incorrect."
+  evidence:
+    - {path: /home/ben/task/eval/base_n100.json, locator: "accuracy=0.05", observation: "5/100 correct at base"}
+  affected_share: 0.95
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Full-parameter SFT of gemma-3-4b-pt on ~2.5k single-turn, single-call function-calling examples (ToolACE + hermes), rendered with the grader's exact gemma3_tool_calling template and trained completion-only, will raise BFCL exec_simple accuracy well above the base 0.05."
+  mechanism: "The base model already occasionally produces parseable calls (0.05); SFT teaches it to reliably (a) emit exactly one <tool_call> JSON block ending in <end_of_turn>, and (b) select the right function and fill arguments from the tool schema."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "+30 pts or more"}
+  falsified_if: "exec_simple accuracy (n=100) does not exceed 0.20, i.e. the model still fails to produce parseable, correct single tool calls."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/fc_raw.jsonl
+      source: local
+      n_examples: 2549
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/fc_raw.jsonl]
+      selection: "single-turn (first user + first assistant), assistant is exactly ONE function call with a valid-identifier name whose args are literals; from Team-ACE/ToolACE (2071) and NousResearch/hermes-function-calling-v1 (478)"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 (full FT, vision tower + projector frozen)
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 3, batch_size: 8, grad_accum: 2, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant turn = '<tool_call>\\n{\"name\": .., \"arguments\": {..}}\\n</tool_call><end_of_turn>', rendered by templates/gemma3_tool_calling.jinja"
+    stop_token: "<end_of_turn>"
+    answer_marker: null
+  command:
+    argv: [python, train_sft.py, --data, data/fc_raw.jsonl, --out, ckpts/exp-01, --epochs, "3", --lr, "1e-5", --bs, "8", --grad-accum, "2", --max-seq-len, "2048", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/ckpts/exp-01
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/exp-01, --limit, "100", --max-tokens, "2048", --max-connections, "8", --json-output-file, eval/exp-01_n100.json]
+    dev_set: "official --limit 100"
+    n: 100
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.05
+    path: /home/ben/task/eval/base_n100.json
+  diagnostic:
+    what: "share of the 100 items where a single parseable tool_call is emitted"
+    n: 100
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.26
+  output_checkpoint: /home/ben/task/ckpts/exp-01
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-01, step: 480}
+  training_summary: {final_loss: 0.005, steps: 480, notes: "3 epochs, train_loss avg 0.023; completion-only loss on short structured targets so low loss expected"}
+  measurements:
+    - {metric: accuracy, value: 0.91, n: 100, path: /home/ben/task/eval/exp-01_n100.json, delta_vs_comparator: 0.86}
+  diagnostic_result: {value: 1.0, path: /home/ben/task/eval/exp-01_n100.json, notes: "all 100 emitted a single parseable tool_call; the 9 misses are wrong-arg/name, not format failures"}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/eval/exp-01_n100.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "SFT lifted BFCL exec_simple 0.05 -> 0.91 (+86). Format is fully learned (100/100 parseable single calls). Remaining 9 failures are subtle arg-fidelity cases: percent->decimal conversion (2), commutative arg ordering in math_lcm (2), enum exactness (1), verbatim string fidelity (2), lambda var naming (2)."
+  decision: adopt
+  next_step: "exp-02: increase data volume/diversity (more single-call examples) and reduce overfitting (loss->0.005 at 3 epochs) to improve argument fidelity; keep exp-01 as incumbent/final_model fallback."
