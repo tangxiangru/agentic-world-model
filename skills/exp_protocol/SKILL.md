@@ -173,6 +173,22 @@ and says so — rename the field or check by hand.
 When you lose time to something not in the list, record it in the next card's
 `situation.pitfalls_hit`. That is how the list grows.
 
+## When the command saves a model
+
+Read `save-safety.md` before implementing a native Transformers/Trainer save,
+including a merge or a final save when periodic checkpoints are disabled. For
+the supported pinned paths, use `GenerationSaveContract` and `SaveSafeTrainer`:
+check the actual model after in-code repairs and before costly work, then
+protect the actual save call. Put these calls inside the already-declared,
+locked experiment command; an early check alone does not cover later saves.
+
+Do not block a pure evaluation from a parent's serialization settings. An
+unsupported custom/distributed save path is not certified by this adapter;
+record that boundary and establish its behavior explicitly before relying on
+it. Keep the scientist-selected on-disk serving configuration separate from
+serializer normalization. Native save success is not model quality, complete
+artifact validation or proof that every free-form script used the adapter.
+
 ## Budget
 
 The protocol should cost you under five minutes per card. If it is costing
