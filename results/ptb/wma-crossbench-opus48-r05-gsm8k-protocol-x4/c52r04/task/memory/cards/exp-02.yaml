@@ -1,0 +1,149 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T16:04:52Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 1.6
+  remaining_h: 8.4
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp-01/checkpoint-468
+    score: {metric: accuracy, value: 0.447, protocol_n: 150}
+  trigger: "exp-01 greedy plateaus ~0.447 at epochs 1-2; failure inspection shows genuine arithmetic/reasoning slips remain even after the rambling was fixed by greedy decoding."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp01_checkpoint-468_greedy_dev150.json, locator: "accuracy=0.447"}
+  alternatives_rejected:
+    - {option: "More SFT epochs on gold only", reason: "exp-01 epoch 3 overfit (0.413 greedy); more gold-only epochs will not add reasoning diversity"}
+    - {option: "External corpus (MetaMathQA) now", reason: "carries double-answer-format risk and domain drift; try in-domain self-improvement (RFT) first, it is cheaper and format-matched"}
+    - {option: "Continue-train from exp-01 ckpt instead of base", reason: "STaR-style retrain from base on gold+correct-samples avoids compounding overfit from double-training the same rows"}
+  pitfalls_hit:
+    - {what: "vLLM 0.11 LLM.generate no longer takes prompt_token_ids kwarg", cost_h: 0.05, fix: "pass [{'prompt_token_ids': ids}] list"}
+    - {what: "orphaned vLLM EngineCore held 66GB after a script error, blocking the next run", cost_h: 0.1, fix: "pkill EngineCore / kill pid before relaunch; verify nvidia-smi shows 0 MiB"}
+  smoke_runs:
+    - {command: [python, scripts/gen_rft.py, --k, "6", --temperature, "0.9"], outcome: "44838 gens in ~11 min at ~8700 tok/s; 83.4% of train Qs covered, 19276 correct samples kept"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "After greedy decoding fixed formatting, the SFT model still fails ~55% of dev items, predominantly on arithmetic/multi-step reasoning it can sometimes get right when sampled but not greedily."
+  evidence:
+    - {path: /home/ben/task/eval/exp01_checkpoint-468_greedy_dev150.json, locator: "accuracy=0.447", observation: "83 of 150 still wrong under greedy"}
+    - {path: /home/ben/task/logs/gen_rft1.log, locator: "covered=6236 (83.4%)", observation: "with sampling the model can produce a correct chain for 83% of TRAIN questions, far above its greedy 0.447 — headroom exists to distill self-correct reasoning"}
+  affected_share: 0.55
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Retraining gemma-3-4b-pt from base on the union of gold GSM8K-train solutions and correct self-sampled rationales (RFT/STaR) will raise greedy GSM8K accuracy above exp-01's 0.447."
+  mechanism: "Rejection-sampled correct chains give multiple valid reasoning paths per question in the model's own style; SFT on them reinforces reasoning that actually reaches the right answer, converting sample-time competence into greedy competence."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: "+5 to +15 pts (0.447 -> 0.50-0.60)"
+  falsified_if: "best-epoch greedy dev-150 accuracy <= 0.447."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_round1_combined.jsonl
+      source: derived:exp-01
+      n_examples: 23284
+      built_by: /home/ben/task/scripts/gen_rft.py
+      build_command: [python, scripts/gen_rft.py, --model, ckpts/exp-01/checkpoint-468, --out, data/rft_round1_raw.jsonl, --k, "6", --temperature, "0.9", --cap_per_q, "4"]
+      selection: "7473 gold train solutions + up to 3 distinct self-sampled solutions per train question whose last-number answer matches gold (dedup; 2 double-marker rows dropped)"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 3, batch_size: 8, grad_accum: 4, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "model turn = reasoning + '\\n\\nANSWER: <int>' terminated by <end_of_turn>; prompt rendered with templates/gemma3.jinja; completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/rft_round1_combined.jsonl, --out, ckpts/exp-02, --epochs, "3", --lr, "1e-5", --bs, "8", --grad_accum, "4", --max_seq_len, "1024", --save_strategy, epoch]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "8", --json-output-file, "{out}"]
+    dev_set: "official gsm8k test --limit 150; checkpoint generation_config set to greedy (do_sample=false)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.447
+    path: /home/ben/task/eval/exp01_checkpoint-468_greedy_dev150.json
+  diagnostic:
+    what: null
+    n: null
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.98
+  output_checkpoint: /home/ben/task/ckpts/exp-02/checkpoint-2184
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-728, step: 728}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1456, step: 1456}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-2184, step: 2184}
+  training_summary: {final_loss: 0.241, steps: 2184, notes: "train_loss 0.24 final, runtime 3537s (~59 min), 3 epochs, 19.7 samples/s; loss curve healthy (nothing anomalous in training)"}
+  measurements:
+    - {metric: accuracy, value: 0.013, n: 150, path: /home/ben/task/eval/exp02_checkpoint-728_greedy_dev150.json, delta_vs_comparator: -0.434}
+    - {metric: accuracy, value: 0.060, n: 150, path: /home/ben/task/eval/exp02_checkpoint-1456_greedy_dev150.json, delta_vs_comparator: -0.387}
+    - {metric: accuracy, value: 0.073, n: 150, path: /home/ben/task/eval/exp02_checkpoint-2184_greedy_dev150.json, delta_vs_comparator: -0.374}
+  diagnostic_result:
+    value: 0.026
+    path: /home/ben/task/scripts/probe_ptail.py
+    notes: >-
+      Root-caused the collapse. Under the grader's 10-shot prompt the model emits the correct
+      'ANSWER: N' but then, instead of <end_of_turn>, continues by hallucinating NEW problems
+      (149/150 samples ramble), so the grader's last-number match reads a wrong later number.
+      Measured P(<end_of_turn>) right after the correct answer IN the 10-shot context:
+      exp-01 ckpt-234/468/702 = 0.999/0.996/0.997 (robust stop); exp-02 ckpt-728 = 0.026
+      (P('\n\n')=0.918), ckpt-2184 = 0.215 (P('\n\n')=0.750). In a ZERO-shot probe exp-02 DOES
+      stop (P(eot)=1.0) — the failure is specifically loss of few-shot stop-robustness. It is the
+      RFT/self-distillation data, not overtraining: exp-01 epoch-3 (more steps) still stops fine,
+      while exp-02 breaks already at epoch 1. Training data itself is clean (all 23284 completions
+      end in <end_of_turn>, 0 rows with a leaked problem or double ANSWER marker).
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    RFT/STaR from base on gold+correct-self-samples CRASHED greedy accuracy to 0.013/0.060/0.073
+    (ep1/2/3) vs incumbent 0.447 — falsified (best 0.073 <= 0.447). Cause: self-distillation data
+    destroys few-shot stop-robustness; the model no longer emits <end_of_turn> after the answer under
+    the grader's 10-shot context and rambles into new problems. The mechanism (convert sample-time
+    competence to greedy competence) is refuted here because the intervention broke output termination
+    before any reasoning gain could be measured.
+  decision: reject
+  next_step: >-
+    Keep incumbent exp-01 ckpt-468 (0.447, robust stop) in final_model. exp-01 failure analysis shows
+    ~85% of its errors are genuine math/reasoning (not rambling), so reasoning quality is the real
+    ceiling. exp-03: to add correct reasoning WITHOUT the self-distillation stop-collapse, continue-train
+    from the robust exp-01 ckpt-468 (not base) at low LR with dense early checkpoints and greedy-eval
+    each, stopping before the stop-robustness cliff.

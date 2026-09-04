@@ -291,3 +291,33 @@ Queue is16RUNNING/33safePENDING, including validation-only92312; scientific
 pending alone is32. S0 formal remains staged. The unanalysed clean window is now
 above eight cells, so the existing hourly hook owns the next Opus5 analysis.
 No duplicate analysis or new scientific submission occurs in this check.
+
+## 23:05 UTC GSM8K first comparator and Claude handoff
+
+Three new judge-clean GSM8K results were harvested after an inspected
+reconcile preview: raw c51r02=54.8143% and protocol-only
+c52r01/c52r04=62.6232%/42.8355%. Together with clean c52r03=58.3017%, the
+protocol-only primary is **54.5868% ±10.4038pp sample SD (n3)**. Flagged
+c52r02=49.5830% remains sensitivity-only; all four complete protocol cells are
+53.3359% ±8.8554pp. Raw primary is only n1, so the descriptive P−R difference
+of −0.2274pp is not an effect estimate. Exact provenance, adaptive recipe
+differences, cost and allocation are preserved in
+`evidence/2026-09-04-2245/`.
+
+The 21:46 hook event completed successfully with Claude Opus5/max/ultracode.
+The operator reproduced its H claims: retained L3 is yes25/25, all four
+truth-reject cards are L3 misses, 38 sidecar responses cover26 cards but only25
+final verdicts, and one rejected verdict cost$1.733 beyond the retained
+$49.117 ledger cost. Its no-promotion conclusion is accepted. Corrections are
+that the later refresh now has GSM8K raw clean n1 and protocol clean n3, and
+the current ledger already surfaces rejected paid verdicts separately. The
+suggested reject-truth and retention tools remain unaccepted instrument ideas;
+no scorer, runtime, guard or WMA skill changed.
+
+Current totals are100 PTB complete/97 automatically clean, with11/8 in the new
+study. The queue is ownership-clean with16/16 H100s allocated,16 RUNNING and30
+safe PENDING (29 science plus validation92312); all routes and dependencies are
+clean. Actual GPU utilization is not observable from this operator shell.
+Because pending remains above24 and the staged S0 cells will add four only after
+validation, no redundant batch is submitted. S0 w66r01–04 remain gated on
+92312. Promotion remains None.

@@ -1,0 +1,95 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T22:15:16Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 1.15
+  remaining_h: 8.85
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.5667, protocol_n: 150}
+  trigger: "exp-01/02 trained only on 7.3k GSM8K-train solutions and plateaued at 0.5667 (greedy). More diverse in-domain worked solutions should improve coverage of question phrasings and solution paths."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy 0.5667"}
+  alternatives_rejected:
+    - {option: "RFT self-distillation from exp-01", reason: "Requires generating+filtering ~tens of thousands of samples (GPU time); MetaMathQA gives ready, diverse, contamination-clean GSM8K-derived solutions now."}
+    - {option: "Include MetaMath SV/FOBAR (solve-for-x) types", reason: "Those ask for an unknown variable, a different task shape than GSM8K forward word problems; kept only forward GSM_Rephrased + GSM_AnsAug."}
+    - {option: "Full-parameter fine-tune", reason: "LoRA already gave +51 pts; keep the reliable/mergeable LoRA path while testing the data lever; revisit full FT if data plateaus."}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, "(smoke on 32 rows earlier)"], outcome: "training+merge+save validated in exp-01; script now also bakes greedy generation_config"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The GSM8K-only SFT model (greedy) tops out at 0.5667; its errors likely reflect limited exposure to varied phrasings and multi-step solution styles present in the broader GSM8K-derived distribution."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy 0.5667", observation: "plateau on 7.3k unique train solutions"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/watch_set.jsonl
+    n: 150
+    selection: "150 held-out GSM8K TRAIN items, EXCLUDED from both this data file and exp-01/02 training"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "LoRA SFT from base on 47.3k contamination-clean GSM8K-derived solutions (7.3k original GSM8K-train + 40k MetaMathQA forward GSM, reformatted to a single 'ANSWER: N' marker) with greedy decoding will raise GSM8K test accuracy (n=150) above exp-02's greedy 0.5667."
+  mechanism: "More diverse correct worked solutions over the same domain teach broader phrasing/solution coverage while the exact target format and stop token are preserved; greedy decoding is retained."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+3 to +12 pts"}
+  falsified_if: "greedy accuracy is not higher than exp-02's 0.5667 under the same protocol."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/meta_gsm_sft.jsonl
+      source: "openai/gsm8k train + meta-math/MetaMathQA (GSM_Rephrased, GSM_AnsAug)"
+      n_examples: 47323
+      built_by: /home/ben/task/scripts/build_metamath.py
+      build_command: [python, scripts/build_metamath.py, --out, data/meta_gsm.jsonl, --n_meta, "40000", --seed, "0", "then exclude 150 holdout -> meta_gsm_sft.jsonl"]
+      selection: "forward GSM types only; numeric finals; strip '#### N'/'The answer is: N' tails; exactly one 'ANSWER: N'<end_of_turn>; exact-dedup on prompt; MetaMathQA is bootstrapped from GSM8K/MATH TRAIN (test never used)"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 + peft 0.18.1 (LoRA), merged
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=q,k,v,o,gate,up,down (language_model only)"
+    hyperparams: {lr: 2.0e-4, epochs: 2, batch_size: 16, grad_accum: 1, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "reasoning then blank line then 'ANSWER: N', terminated by <end_of_turn> (id 106); completion-only loss; greedy generation_config baked into the merged model"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --base, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/meta_gsm_sft.jsonl, --out, ckpts/exp-03, --epochs, "2", --lr, "2e-4", --bs, "16", --grad_accum, "1", --max_seq_len, "1024", --lora_r, "32", --lora_alpha, "64", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/exp-03, --limit, "150", --json-output-file, eval/exp-03_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.5667
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: null
+    n: null
+    metric: accuracy
+    direction: higher

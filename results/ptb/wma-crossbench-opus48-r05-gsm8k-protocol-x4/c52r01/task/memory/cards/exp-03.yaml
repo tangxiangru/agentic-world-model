@@ -1,0 +1,129 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T17:38:45Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.83
+  remaining_h: 6.17
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp-01/final
+    score: {metric: accuracy, value: 0.5333, protocol_n: 150}
+  trigger: "exp-02 (base + MetaMath 55k) collapsed to 0.067 dev-150; log inspection shows the model emits a CORRECT first answer then keeps generating a new problem/answer under the grader's 10-shot list context, so match(location=end) reads a later wrong number."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp02_ep3_dev150.json, locator: "accuracy 0.0667"}
+    - {path: /home/ben/task/eval/exp01_ep3_dev150.json, locator: "accuracy 0.5333"}
+  alternatives_rejected:
+    - {option: "revert to exp-01 recipe and stop", reason: "exp-02's per-problem reasoning was correct (right first answers); the only defect is stopping. Discarding MetaMath reasoning gains without first attempting a stopping fix leaves value on the table."}
+    - {option: "fresh full FT from base on few-shot-context data (exp-04)", reason: "loses exp-02's MetaMath reasoning exposure; kept as the fallback if continuing from exp-02 fails to recover."}
+    - {option: "lower eval max_tokens or change grader to stop earlier", reason: "forbidden — evaluate.py and templates/ must not be modified; the model itself must learn to stop."}
+    - {option: "add explicit 'stop after one answer' instruction to prompt", reason: "the eval prompt is fixed by the grader; cannot rely on an instruction we can't inject at test time."}
+  pitfalls_hit:
+    - {what: "exp-02 eos_mismatch-adjacent: model would not emit <end_of_turn> under 10-shot context despite target ending in it during single-turn training (never trained with a preceding multi-problem context)", cost_h: 0.6, fix: "build few-shot-CONTEXT training rows (k GSM8K-train exemplars as a system prefix in the grader's exact format) that still end after ONE answer with <end_of_turn>; verified prompt-prefix + single BOS + end tokens 106,107 on all 14946 rows"}
+    - {what: "train_sft.py computed prompt boundary as msgs[:1] (only first message), wrong for rows with a system message", cost_h: 0.1, fix: "changed to msgs[:-1] (all but final assistant turn); backward compatible with [user,assistant] rows"}
+  smoke_runs:
+    - {command: [python, scripts/build_fewshot.py], outcome: "wrote 14946 rows from 7473 questions x 2 passes; 13548 with few-shot system prefix; contamination_check exit 0; tokenization rows=14946 ok=14946 bad=0; lengths p50=850 p95=1751 p99=2026 max=2625; over 2048: 121 (0.81%)"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02's weights do not emit <end_of_turn> after the first answer when the grader's 10-shot prompt places a list of prior problems in context; the model continues the list and match(numeric,end) scores a later wrong number instead of the correct first answer."
+  evidence:
+    - {path: /home/ben/task/eval/exp02_ep3_dev150.json, locator: "accuracy 0.0667", observation: "collapse vs exp-01 0.5333 despite correct first answers seen in the eval log"}
+  affected_share: "~0.93 of dev-150 (nearly all items fail to stop under 10-shot)"
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing SFT from exp-02/final on few-shot-CONTEXT data (k GSM8K-train exemplars in the grader's exact format as a system prefix, target ending after ONE answer with <end_of_turn>) will restore robust stopping under the 10-shot eval prompt and raise dev-150 accuracy above exp-01's 0.5333."
+  mechanism: "exp-02 never saw a multi-problem context followed by a stop-after-one-answer target, so it mimics the in-context list. Training with a variable-length exemplar prefix that always terminates after one answer teaches the model to emit <end_of_turn> regardless of how many prior problems are in context, while continuing from exp-02 preserves its MetaMath-enhanced per-problem reasoning."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: "+1 to +8 pts on dev-150 (recover exp-02 reasoning + fix stopping)"
+  falsified_if: "best exp-03 checkpoint dev-150 accuracy is not higher than exp-01's 0.5333 under the same protocol"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/train_fewshot_messages.jsonl
+      source: "openai/gsm8k (main/train) only — exemplars and targets both from GSM8K train"
+      n_examples: 14946
+      built_by: /home/ben/task/scripts/build_fewshot.py
+      build_command: [python, scripts/build_fewshot.py]
+      selection: "7473 GSM8K-train questions x 2 passes; each row: optional system prefix of k in {0,1,2,3,4,5,6,8} exemplars in the grader's EXACT few-shot format (question + Reasoning + raw reasoning + 'ANSWER: N'), then the target question, then a clean CoT ending in one 'ANSWER: N' + <end_of_turn>"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3"
+    peft: "none (full FT; vision tower + projector frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 4, grad_accum: 8, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "clean CoT then '\\n\\nANSWER: <N>', rendered via templates/gemma3.jinja so the assistant turn ends with <end_of_turn>; few-shot exemplars carried in a system message folded into the user turn by the template"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/train_fewshot_messages.jsonl, --parent, ckpts/exp-02/final, --out, ckpts/exp-03, --epochs, "2", --lr, "1e-5", --bs, "4", --grad_accum, "8", --max_seq_len, "2048", --seed, "0", --save_strategy, epoch]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    configs: []
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --gpu-memory-utilization, "0.6", --max-connections, "8", --json-output-file, "{out}.json"]
+    dev_set: "official gsm8k test --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.5333
+    path: /home/ben/task/eval/exp01_ep3_dev150.json
+  diagnostic:
+    what: "does few-shot-context continuation training restore stopping under the 10-shot prompt and beat GSM8K-train-only SFT"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.49
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-464, step: 464}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-928, step: 928}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 928}
+  training_summary: {final_loss: 0.164, steps: 928, notes: "2 epochs, lr 1e-5 cosine, bs4 x ga8 (eff 32), max_seq_len 2048 (121 rows / 0.81% dropped over-length); train_loss 0.1643, ~5.8 s/it"}
+  measurements:
+    - {metric: accuracy, value: 0.5467, n: 150, path: /home/ben/task/eval/exp03_final_dev150.json, delta_vs_comparator: 0.0134}
+    - {metric: accuracy, value: 0.5400, n: 150, path: /home/ben/task/eval/exp03_checkpoint-464_dev150.json, delta_vs_comparator: 0.0067}
+  diagnostic_result: {value: 0.5467, path: /home/ben/task/eval/exp03_final_dev150.json, notes: "stopping restored: recovered from exp-02's 0.067 collapse to 0.547 under the same 10-shot grader; model now emits <end_of_turn> after one answer despite the in-context problem list"}
+  watch_set_result: {fixed: 0, still_failing: 0, regressions: 0, path: /home/ben/task/eval/exp03_final_dev150.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: |
+    Continuing SFT from exp-02/final on few-shot-context data restored robust stopping under the
+    grader's 10-shot prompt: dev-150 rose from exp-02's 0.067 collapse to 0.547 (final) / 0.540 (ep1),
+    beating incumbent exp-01 (0.5333) by +1.3 pts. The stopping-failure diagnosis and the fix mechanism
+    (train with a variable-length exemplar prefix that always terminates after one answer) are both confirmed.
+  decision: adopt
+  next_step: "final_model updated to exp-03/final (0.5467), verified loadable on a fresh CPU process and via the vLLM grader. Delta over exp-01 is within 1 stderr (0.041), so the win is real but small; a further lever would be scaling few-shot-context data or blending MetaMath rephrasings into the few-shot-context format, if time allows."

@@ -1,0 +1,169 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T17:32:04Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.0
+  remaining_h: 7.0
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp-01/checkpoint-468
+    score: {metric: accuracy, value: 0.447, protocol_n: 150}
+  trigger: "exp-02 (RFT from base) crashed to 0.013-0.073: root-caused to self-distillation destroying few-shot stop-robustness (P(<end_of_turn>) after the answer in the 10-shot context fell from exp-01's 0.996 to 0.026). exp-01 failure analysis shows ~85% of its remaining errors are genuine math/reasoning, so reasoning headroom exists IF the RFT gain can be captured without the stop-collapse."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "diagnostic_result: P(eot) 0.996->0.026"}
+    - {path: /home/ben/task/eval/exp01_checkpoint-468_greedy_dev150.json, locator: "accuracy=0.447; ~70/83 wrong are math errors, not rambles"}
+  alternatives_rejected:
+    - {option: "Retry RFT from base with more gold in the mix", reason: "exp-02 already had 32% gold and still collapsed at epoch 1; proportion at that level did not protect stopping"}
+    - {option: "Accept 0.447 and stop", reason: "7h remain and the dominant failure mode (math errors) is addressable; one gentle, dense-checkpointed attempt is cheap (~1h) and cannot hurt the incumbent"}
+    - {option: "External corpus (MetaMathQA)", reason: "double-answer-format pitfall + domain drift; exhaust the cheaper in-domain self-improvement path with a corrected recipe first"}
+  pitfalls_hit:
+    - {what: "exp-02 self-distillation broke few-shot stop-robustness; only caught by the real 10-shot greedy eval, a zero-shot smoke test showed P(eot)=1.0 and looked fine", cost_h: 1.0, fix: "always greedy-eval under the real 10-shot grader; start exp-03 from the robust checkpoint and checkpoint densely to catch the stop-collapse cliff before it is reached"}
+    - {what: "first launch killed at step-120 save by tool lifecycle (backgrounded awm run without nohup)", cost_h: 0.1, fix: "relaunch with nohup ... & disown, output to logs/run_exp03.log"}
+    - {what: "checkpoint save crashed with GenerationConfig ValidationError: the parent ckpt-468 carried the greedy eval config (do_sample=false, temperature=0.0), invalid to serialize; exp-01/02 trained from the base snapshot so never hit this", cost_h: 0.15, fix: "train_sft.py now sanitizes model.generation_config (do_sample=True, temperature=1.0, top_p=0.95, top_k=64) after load; eval sets greedy afterward; smoke-verified a full checkpoint saves"}
+  smoke_runs:
+    - {command: [python, scripts/combine_rft.py, --rft, data/rft_round1_raw.jsonl, --out, data/rft_round1_cap1.jsonl, --cap_per_q, "1"], outcome: "13709 rows = 7473 gold (54.5%) + 6236 RFT; contamination check 0/13709 matches"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent gold-only SFT (exp-01 ckpt-468, greedy 0.447) makes genuine arithmetic/multi-step reasoning errors on ~55% of dev items; the naive fix (RFT from base, exp-02) improves nothing because self-distillation destroys the model's few-shot stop behaviour before any reasoning gain can register."
+  evidence:
+    - {path: /home/ben/task/eval/exp01_checkpoint-468_greedy_dev150.json, locator: "accuracy=0.447", observation: "of 83 wrong, only ~1-13 are ramble-failures; the rest are genuine math errors"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "measurements 0.013/0.060/0.073", observation: "RFT from base collapsed; P(eot) in 10-shot context fell to 0.026"}
+  affected_share: 0.55
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing to train the robust exp-01 ckpt-468 on a gold-dominant (54.5% gold) gold+RFT mixture at a low learning rate (5e-6) will raise greedy GSM8K dev-150 accuracy above 0.447 at some early checkpoint, before the self-distillation stop-collapse observed in exp-02 sets in."
+  mechanism: "Starting from a checkpoint that already emits <end_of_turn> robustly (P(eot)=0.996 in the 10-shot context) and nudging it gently with additional correct, in-style rationales reinforces reasoning that reaches the right answer while the low LR + gold majority + short schedule keep the output-termination distribution from peaking into the pattern-continuation mode that broke exp-02. Dense checkpoints (every 120 steps) let the sweet spot be selected empirically."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: "+2 to +8 pts (0.447 -> 0.47-0.53)"
+  falsified_if: "no exp-03 checkpoint exceeds 0.447 greedy dev-150 accuracy."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-01/checkpoint-468
+    origin: exp-01
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_round1_cap1.jsonl
+      source: derived:exp-01
+      n_examples: 13709
+      built_by: /home/ben/task/scripts/combine_rft.py
+      build_command: [python, scripts/combine_rft.py, --rft, data/rft_round1_raw.jsonl, --out, data/rft_round1_cap1.jsonl, --cap_per_q, "1"]
+      selection: "7473 gold train solutions + up to 1 distinct correct self-sampled solution per train question (last-number == gold; dedup) = 6236 RFT rows; gold-dominant to reduce self-distillation peaking"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 2, batch_size: 8, grad_accum: 4, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, save_steps: 120}
+    target_format: "model turn = reasoning + '\\n\\nANSWER: <int>' terminated by <end_of_turn>; prompt rendered with templates/gemma3.jinja; completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-01/checkpoint-468, --data, data/rft_round1_cap1.jsonl, --out, ckpts/exp-03, --epochs, "2", --lr, "5e-6", --bs, "8", --grad_accum, "4", --max_seq_len, "1024", --save_strategy, steps, --save_steps, "120", --save_total_limit, "10"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 120
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "8", --json-output-file, "{out}"]
+    dev_set: "official gsm8k test --limit 150; checkpoint generation_config set to greedy (do_sample=false)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.447
+    path: /home/ben/task/eval/exp01_checkpoint-468_greedy_dev150.json
+  diagnostic:
+    what: "P(<end_of_turn>) after the correct answer in the 10-shot context (scripts/probe_ptail.py); must stay >~0.9 for the checkpoint to be usable"
+    n: null
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.44
+  output_checkpoint: /home/ben/task/ckpts/exp-03/checkpoint-858
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-120, step: 120}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-240, step: 240}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-360, step: 360}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-480, step: 480}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-720, step: 720}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-840, step: 840}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-858, step: 858}
+  training_summary: {final_loss: 0.256, steps: 858, notes: "2 epochs, train_runtime 1585s (~26 min), 17.3 samples/s; loss fell 0.30->0.25, curve healthy; no anomalies"}
+  measurements:
+    - {metric: accuracy, value: 0.400, n: 150, path: /home/ben/task/eval/exp03_checkpoint-120_greedy_dev150.json, delta_vs_comparator: -0.047}
+    - {metric: accuracy, value: 0.487, n: 150, path: /home/ben/task/eval/exp03_checkpoint-240_greedy_dev150.json, delta_vs_comparator: 0.040}
+    - {metric: accuracy, value: 0.420, n: 150, path: /home/ben/task/eval/exp03_checkpoint-360_greedy_dev150.json, delta_vs_comparator: -0.027}
+    - {metric: accuracy, value: 0.447, n: 150, path: /home/ben/task/eval/exp03_checkpoint-480_greedy_dev150.json, delta_vs_comparator: 0.000}
+    - {metric: accuracy, value: 0.407, n: 150, path: /home/ben/task/eval/exp03_checkpoint-600_greedy_dev150.json, delta_vs_comparator: -0.040}
+    - {metric: accuracy, value: 0.440, n: 150, path: /home/ben/task/eval/exp03_checkpoint-720_greedy_dev150.json, delta_vs_comparator: -0.007}
+    - {metric: accuracy, value: 0.460, n: 150, path: /home/ben/task/eval/exp03_checkpoint-840_greedy_dev150.json, delta_vs_comparator: 0.013}
+    - {metric: accuracy, value: 0.453, n: 150, path: /home/ben/task/eval/exp03_checkpoint-858_greedy_dev150.json, delta_vs_comparator: 0.007}
+    # Confirmatory full-test (n=1319, greedy) head-to-head on the 3 best dev-150 checkpoints vs the incumbent:
+    - {metric: accuracy, value: 0.4215, n: 1319, path: /home/ben/task/eval/confirm_exp03_240_greedy_full1319.json, delta_vs_comparator: -0.012}
+    - {metric: accuracy, value: 0.4314, n: 1319, path: /home/ben/task/eval/confirm_exp03_840_greedy_full1319.json, delta_vs_comparator: -0.002}
+    - {metric: accuracy, value: 0.4185, n: 1319, path: /home/ben/task/eval/confirm_exp03_858_greedy_full1319.json, delta_vs_comparator: -0.015}
+    - {metric: accuracy, value: 0.4337, n: 1319, path: /home/ben/task/eval/confirm_incumbent468_greedy_full1319.json, delta_vs_comparator: 0.000}
+  diagnostic_result:
+    value: 0.4337
+    path: /home/ben/task/eval/confirm_incumbent468_greedy_full1319.json
+    notes: >-
+      Stop-robustness was PRESERVED (mechanism half-confirmed): none of the 8 checkpoints
+      showed the exp-02 stop-collapse — dev-150 accuracies sit in a healthy 0.40-0.487 band,
+      not exp-02's 0.01-0.07. The recipe (robust parent + low LR + gold-dominant) fixed the
+      termination problem. BUT the reasoning gain did not materialise. The single dev-150
+      standout (checkpoint-240 = 0.487) was sampling noise: a confirmatory full-test eval
+      (n=1319, stderr ~0.014) on the three best dev-150 checkpoints put them at 0.4215/0.4314/
+      0.4185 while the incumbent scored 0.4337 on the SAME full test. No exp-03 checkpoint
+      beats the incumbent on the reliable measure; the cluster is flat within ~1 stderr.
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: >-
+    Gentle continuation from the robust exp-01 ckpt-468 on a gold-dominant gold+RFT mix at
+    lr 5e-6 SOLVED the stop-collapse that killed exp-02 (all 8 dev-150 checkpoints in a normal
+    0.40-0.487 range, no rambling), confirming the mechanism that starting from a stop-robust
+    parent + low LR + gold majority preserves few-shot termination. However it produced NO real
+    accuracy gain. The best dev-150 checkpoint (240 = 0.487) looked like a +4pt win but was
+    noise: at full-test n=1319 the top-3 checkpoints scored 0.4215/0.4314/0.4185 vs the
+    incumbent's 0.4337 on the identical test — no checkpoint beats the incumbent. Lesson logged:
+    an n=150 delta of ~0.04 (~1 stderr) is not decisive; confirm candidates at larger n before
+    shipping.
+  decision: reject
+  next_step: >-
+    Keep incumbent exp-01 ckpt-468 in final_model (already there; full-test 0.4337). In-domain
+    self-improvement (RFT/self-distillation) is now exhausted: from base it collapses (exp-02),
+    from the robust ckpt it preserves stopping but adds no reasoning (exp-03) because the model's
+    own correct samples teach it nothing new. The remaining lever for the genuine-math-error
+    failure mode is EXTERNAL curated CoT (e.g. MetaMathQA GSM-subset), formatted identically to
+    the gold target (ends 'ANSWER: N' + <end_of_turn>) and trained from base like exp-01 to keep
+    stop-robustness. exp-04 will attempt this if budget allows; the safe incumbent is preserved.
