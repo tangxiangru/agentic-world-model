@@ -129,3 +129,26 @@ first-wave settings are fixed independently of unfinished G/H/c10r08 tails.
 The nominal budget remains 600 GPU-hours plus preparation/grading; actual
 scientist/WMA time, spend, wait overhead, within-arm variance and failed-cell
 costs are pending and must be recorded in the readout.
+
+## 15:00 UTC operator check
+
+The queue remains ownership-clean with 16/16 GPUs allocated and 51 safe pending
+jobs. GSM8K protocol c52r04 (92170) and BFCL raw c53r01 (92181) started as two
+allocations ended. All remaining jobs keep their frozen treatments; no scheduler
+dependencies or replenishment are needed. Utilization coverage remains partial.
+
+New raw GSM8K c51r01 (92163) is **incomplete**, not a zero or valid accuracy:
+the CLI ended after a final reply promising to wait for a background monitor,
+then background tasks stopped before a final model was delivered. PTB reports
+four missing-artifact/metrics issues and general_anomaly. Its scientist cost
+was $3.50933425 and allocation 0.7244 GPU-h. The exact responsibility between
+scientist waiting behavior and CLI lifecycle remains unconfirmed; no selective
+retry or change to the frozen runtime is applied. The failure stays in the
+four-replicate denominator, with three raw GSM8K cells still running.
+
+Separately, old Opus5 G/w13r04 completed at 75.0569% (1/4 G replicates); it is
+recorded in the Round 04 record and not pooled with this study. Overall PTB
+validator/judge-clean completions are now 81, with zero in the new study.
+Both terminal attempts and the 16 current snapshots have been harvested after
+an inspected reconcile preview. See `evidence/2026-09-04-1500/operator-review.md`
+for the direct failure evidence, unchanged G ledger, costs and disposition.

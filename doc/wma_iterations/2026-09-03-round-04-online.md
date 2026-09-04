@@ -107,3 +107,22 @@ The hourly completion hook remains alive; the 30-minute operator timer already
 queued the next continuation and suppressed a duplicate at 19:30. The shared
 event receives an executed handoff marker so later checks do not repeat this
 analysis or submit these immutable manifests again.
+
+## First G completion — 2026-09-04 15:00 UTC
+
+G/w13r04 (job 91444) is validator-complete and automatic-judge-clean at
+**75.0569%**, standard error 1.1918 percentage points. Coverage is G 1/4 and
+H 0/4; replicate variance and a matched effect are not yet estimable. This is
+not promotion evidence and is separate from the new Opus4.8 crossbench cohort.
+
+The original skill `e4402ffa6bca` ledger has five scored cards: L0/L1 hit 1.0,
+L2 coverage 0.5 (four scorable), mean width 0.1276, width/noise 4.2534, L3 hit
+0.5, scanner-suspected leaks 0, and saved/wrongly-killed GPU-h both 0. All five
+retained locks record delivered, with 1796.9 seconds of waiting; this is not an
+independent audit of every actual launch version or every semantic access.
+
+WMA reported cost is $9.9815 and scientist reported cost $42.52521025, excluding
+judges. Agent time is 06:22:09; allocated time 06:46:37. Slurm exit FAILED/2:0
+is preserved alongside the successful PTB completion verdict; no retry occurs.
+The full receipt/cell/manifest/spec/result chain, unchanged ledgers and bounded
+review are in `evidence/2026-09-04-1500/`. Existing exclusions remain in force.

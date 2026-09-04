@@ -1,0 +1,156 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T10:07:00Z'
+situation:
+  elapsed_h: 2.05
+  remaining_h: 7.95
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.70, protocol_n: 150}
+  trigger: "exp-02 reached 0.700 on a fifth of the available data with the loss still falling (0.511@10 -> 0.324@100 -> 0.330 final, ckpts/exp-02/checkpoint-200/trainer_state.json), and its remaining 45 dev failures are arithmetic errors rather than format errors (analysis/exp-02_diag.json)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "report.accuracy=0.70, hit_token_cap=1, no_answer_line=1", observation: "format is solved; what is left is reasoning"}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-200/trainer_state.json, locator: "log_history", observation: "loss still descending at the end of the 24k-row epoch"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.training_summary", observation: "7.5k tok/s measured, so all 120k rows (60.5M tokens) fit in ~2.4 h"}
+  alternatives_rejected:
+    - {option: "Two epochs over the same 24k rows", reason: "the 24k slice is 20% of the file; a second pass over seen problems is strictly weaker than a first pass over 96k unseen ones at the same token cost, and it risks memorising the 405B solutions"}
+    - {option: "Raise the learning rate to 2e-5 at the same time", reason: "exp-02's loss curve is healthy at 1e-5 and this card changes one thing (data volume). A lr change on top would make the delta unattributable, and there is no evidence of underfitting."}
+    - {option: "Add the augmented_math rows of OpenMathInstruct-2 (832k available)", reason: "off-target: the benchmark is grade-school word problems, and gsm8k-family rows are the ones whose style and difficulty match. Worth a card only if the gsm8k-family data is exhausted."}
+    - {option: "Raise the 10-shot fraction from 8% towards the eval's 100%", reason: "the fewshot rows cost 2044 prompt tokens each; going to 25% would take the run from 60M to 102M tokens (~4 h) and exp-02 shows no sign of a prefix problem - 149/150 completions stop cleanly under the 10-shot prompt. Revisit only if a diagnostic points at it."}
+    - {option: "Rejection fine-tuning from exp-02 instead of more SFT", reason: "needs a sampling pipeline (~1 h to build, ~1 h to sample) and its gain is on top of a well-fit SFT model, not instead of one. Deferred to a later card if time remains after exp-03."}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, evaluate.py, --model-path, ckpts/smoke/final, --limit, '20'], outcome: "0.50 on 20 items from a 256-row checkpoint; 0/20 completions continued past the ANSWER line, proving the Trainer-saved Gemma3ForConditionalGeneration -> vLLM -> greedy generation_config -> stop-at-106 chain end to end"}
+problem:
+  statement: "exp-02's checkpoint is trained on 24000 of the 120000 available rows, and its loss was still falling when the cosine schedule ended. 45 of 150 dev items are still wrong, and the diagnostic attributes them to arithmetic and reasoning errors inside otherwise well-formed answers, which is what more and more varied worked solutions address."
+  evidence:
+    - path: /home/ben/task/analysis/exp-02_diag.json
+      locator: "wrong[*].gold vs wrong[*].answer"
+      observation: "gold/parsed pairs such as (60, 7.5), (12, 6), (72, 360), (25000, 34167): the model produces a confident, well-formatted, wrong number"
+    - path: /home/ben/task/ckpts/exp-02/checkpoint-200/trainer_state.json
+      locator: "log_history[-1]"
+      observation: "loss 0.324 at step 100 of 226 and 0.330 average - no plateau reached"
+  affected_share: 0.30
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Training the same recipe from the base checkpoint on all 120000 rows instead of 24000 raises dev-150 accuracy above exp-02's 0.700."
+  mechanism: "Everything about the format is already solved, so the remaining error is the model's arithmetic and multi-step reasoning on grade-school word problems. Five times as many distinct verified worked solutions, spread over five times as many distinct problems, is the standard way that error falls for a model this size; the token budget is the only reason exp-02 did not have them."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+3 to +10 pts; 5x data at a fixed model size and one epoch typically buys a single-digit gain, and the n=150 sampling floor is ~3 pts, so anything under +3 is not readable"
+  falsified_if: >-
+    dev-150 accuracy is at or below exp-02's 0.700 AND the tie-break read below does not put exp-03
+    ahead. Pre-committed reading plan, fixed before the run because n=150 has stderr 0.0375 and the
+    bottom half of the predicted band is smaller than that: if the dev-150 gap against 0.700 is
+    5 pp or less, the comparison is NOT decided on that number - both exp-02/final and exp-03/final
+    are re-read with `evaluate.py --limit -1` (all 1319 items, same other flags) and the decision is
+    made on that pair. A gap above 5 pp is read directly.
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, train_1M split, problem_source in {gsm8k, augmented_gsm8k} - augmentations of the gsm8k TRAIN split only"
+      n_examples: 120000
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, data/sft_v1.jsonl, --n, '120000', --max-per-problem, '2', --fewshot-frac, '0.08', --seed, '0']
+      selection: >-
+        identical to exp-02 - the same file, read in full instead of its first 24000 lines. Numeric
+        gold only; one boxed expression unwrapped; no pre-existing 'ANSWER:'/'####'; <=2 solutions
+        per problem; duplicate targets dropped; every row re-scored with the grader's own
+        match(numeric=True) before being written. 8% carry the grader's 10-shot prefix.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129)"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: "token-budget micro-batches of 14000 padded tokens or 64 rows; grad_accum 4", grad_accum: 4, max_seq_len: 3328, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit, gradient checkpointing, sdpa; loss at supervised positions only, in checkpointed 2048-row chunks", seed: 0}
+    target_format: "prompt '<bos><start_of_turn>user\\n{grader MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n' ; target 'solution\\n\\nANSWER: <n><end_of_turn>\\n' ; loss on the target only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_v1.jsonl, --out, /home/ben/task/ckpts/exp-03, --lr, '1e-5', --epochs, '1', --grad-accum, '4', --max-seq-len, '3328', --seed, '0', --save-steps, '400', --token-budget, '14000', --ce-chunk, '2048']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-03_train.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 400
+    keep: 2   # train_sft.py hardcodes save_total_limit=2, so over ~1138 steps this keeps {800, 1120} plus final
+  budget: {gpu: H100-80GB, planned_h: 2.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03/final, --limit, '150', --max-connections, '8', --max-tokens, '4000', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-03_dev150.json]
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test split, no shuffle)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.70
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "checkpoint-800 and checkpoint-1120 are scored alongside final under the same protocol before anything is adopted (a one-epoch cosine tail is not automatically the best point). scripts/analyze_eval.py again: cap-hits and no-ANSWER share must stay at ~0 (a regression there would mean the longer schedule broke the stop behaviour), and the wrong-item list is re-read to confirm the residue is still arithmetic. The checkpoint's generation_config.json is copied into section 5."
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.16
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-800, step: 800}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1137, step: 1137}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 1137}
+    - {path: /home/ben/task/ckpts/exp-03/ck800, step: 800}
+  training_summary:
+    final_loss: 0.2924
+    steps: 1137
+    notes: >-
+      120000 rows, 60.53M tokens, 7774.9 s = 7.8k tok/s, no OOM, 0 rows dropped over max_seq_len 3328.
+      Loss: 0.601@10, 0.324@130, 0.307@250, 0.291@490, 0.281@730, 0.261@850, 0.267@1090; train_loss
+      0.292 against exp-02's 0.330 on the same data distribution.
+      As predicted by the WMA note, save_total_limit=2 with --save-steps 400 left {800, 1137} on disk.
+  measurements:
+    - {metric: accuracy, value: 0.780, n: 150, path: /home/ben/task/eval/exp-03_dev150.json, delta_vs_comparator: 0.080}
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp-03_ck800_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 0.0067
+    path: /home/ben/task/analysis/exp-03_diag.json
+    notes: >-
+      Checkpoint sweep (the C5 lever, run before adopting anything): step 800 = 0.7133, final
+      (step 1137, end of the cosine schedule) = 0.780. The tail of the schedule is worth +6.7 pts
+      here, so 'trained to the end is often worse' does not apply to this run and final is adopted.
+      checkpoint-800 was re-saved through scripts/finalize_ckpt.py first so it carried the same
+      tokenizer, processor configs and greedy generation_config as final - otherwise the two would
+      have been read under different decode.
+      Format held: cap-hits 1/150, no-ANSWER 1/150, mean completion 193 tokens (exp-02: 1/150, 1/150,
+      190). The 33 remaining failures are all wrong arithmetic in a well-formed answer, e.g. gold/parsed
+      (400, 280), (72, 432), (25000, 52500), (75, 105), (26, 18).
+      Decode for this read, from ckpts/exp-03/final/generation_config.json:
+      {"bos_token_id": 2, "eos_token_id": [1,106], "pad_token_id": 0, "do_sample": false,
+       "temperature": 0.0, "top_p": 1.0, "top_k": 0} - identical to exp-02's, so the +8.0 pts against
+      exp-02 is a pure training effect with no decode change riding along (unlike exp-02 vs base).
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    dev-150 0.700 -> 0.780 (+8.0) from training on all 120k rows instead of 24k, at the top of the
+    predicted +3..+10 band and above the 5 pp threshold the card pre-committed to, so the full-test
+    tie-break was not needed. Comparator and candidate ship identical generation_config, so the delta
+    is training, not decode. Format metrics are unchanged; the failures that remain are arithmetic.
+  decision: adopt
+  next_step: >-
+    exp-04: rejection fine-tuning from exp-03/final on the gsm8k TRAIN split. The residue is the
+    model's own arithmetic, and on-policy samples that it verified itself are the standard next
+    lever; the data volume lever is now spent (151858 rows exist in total, 120000 were used).
