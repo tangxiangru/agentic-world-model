@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T17:30:00Z'
+situation:
+  elapsed_h: 7.45
+  remaining_h: 2.55
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7067, protocol_n: 150}
+  trigger: "exp-05 is the only card in this batch whose gain exceeded its own measurement noise, and it did so on both reads at once (probe 0.7167 -> 0.7333, dev-150 0.680 -> 0.7067) purely by averaging three checkpoints. Nine further checkpoints of the same trajectory are still on disk and cost nothing but a CPU merge."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.diagnostic_result"}
+    - {path: /home/ben/task/analysis/exp-05_soup3_probe.json, locator: "accuracy"}
+  alternatives_rejected:
+    - {option: "Stop here and spend the remaining 2.5 h only on verifying final_model/", reason: "verification needs ~15 min, not 2.5 h. The soup lever has an established effect on this trajectory and two more merges cost ~20 min of CPU+GPU, so stopping would leave the one working lever unexplored."}
+    - {option: "Any further training card", reason: "no training run in this batch has beaten its own noise, and none would finish plus be evaluated inside 2.5 h without putting the verified artefact at risk."}
+    - {option: "Search many soup weightings and keep the best on the probe", reason: "selecting over many variants on one n=300 read is how a probe gets overfitted. Exactly two pre-specified variants are tried - one widening the span, one restricting to the later half - and the winner must beat the incumbent on BOTH reads, not just the probe."}
+  pitfalls_hit:
+    - {what: "exp-05's merge command was first run before the card was locked, as a structural check on the tensor sets", cost_h: 0.0, fix: "its output was deleted and the locked command re-run to produce the artefact; the merge is deterministic so the two are identical. Recorded here so the sequence is on the record."}
+  smoke_runs:
+    - {command: [python, finalize_model.py, --src, ckpts/soup3, --dst, ckpts/soup3_eval, --verify], outcome: "merged weights load on CPU: 4.3B params, Gemma3ForConditionalGeneration, tokenizer and greedy generation_config present - so the merge path produces a model the grader can load"}
+problem:
+  statement: "The shipped model (the three-way soup) reaches 0.7067 on dev-150 and 0.7333 on the 300-item probe, and 80 of 300 probe items and 44 of 150 dev-150 items are still wrong, essentially all of them wrong reasoning or arithmetic. Averaging exactly three checkpoints was an arbitrary choice made because those three happened to be the cards' final states; nine more checkpoints of the same trajectory exist and were not used, so the amount of variance the soup could cancel has not been explored at all."
+  evidence:
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "whole file", observation: "0.7067, stderr 0.0373"}
+    - {path: /home/ben/task/analysis/exp-05_diag.json, locator: "failure_tags", observation: "43 of 44 dev-150 errors are wrong_arithmetic_or_reasoning; format is not the bottleneck"}
+    - {path: /home/ben/task/analysis/exp-05_soup3_probe.json, locator: "accuracy", observation: "0.7333, 80 of 300 probe items still wrong"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe_train300.jsonl
+    n: 300
+    selection: "the same 300 held-out GSM8K-TRAIN items (seed 1234) used by every card in this batch; absent from sft_v1, sft_v2 and the RFT question pool, and not from the benchmark test copy (rule 7). The incumbent soup leaves 80 wrong."
+hypothesis:
+  claim: "Averaging more checkpoints of the same SFT trajectory cancels more of the arm-to-arm variance than the three-way soup does, so at least one of two pre-specified wider merges scores above 0.7333 on the 300-item probe."
+  mechanism: "exp-05 established that these checkpoints pool rather than churn: the three-way soup gained net +12 / +7 / +5 against its members with fixes roughly double regressions in each pairing. If that is variance cancellation, adding more members from the same connected trajectory should cancel more of it, with diminishing returns. Variant A widens the span (six members, two from each run, reaching back to exp-02 step 1200); variant B restricts to the later half (four members from exp-03 and exp-04 only), testing whether the weakest member exp-02, at probe 0.6933, is dragging the average down."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "probe 0.7333 -> 0.735-0.755 for the better variant; diminishing returns expected, so a flat result is a plausible outcome"
+  falsified_if: "both variants score at or below 0.7333 on the 300-item probe"
+  adoption_rule: "Pre-registered. (1) Both variants are scored on the n=300 probe first; only a variant that strictly beats the incumbent soup's 0.7333 there is taken to dev-150 - this caps the GPU cost and stops the probe from being searched over more than two candidates. (2) final_model/ is replaced only if that variant ALSO scores at least 0.7067 on the identical dev-150 protocol, i.e. it must be at least as good as the incumbent on both reads and strictly better on at least one. (3) If neither variant clears the probe, or the probe winner falls below 0.7067 on dev-150, final_model/ keeps the exp-05 three-way soup and this card is closed as contradicted or inconclusive. (4) No third variant is tried whatever the outcome."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/soup3
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe_train300.jsonl
+      source: "openai/gsm8k (config main, split train) - the held-out probe slice, NOT the benchmark test split"
+      n_examples: 300
+      built_by: null
+      build_command: [python, -c, 'shuffle openai/gsm8k train with seed 1234 and take the first 300']
+      selection: "no training data is read - merging consumes weights only. The probe is declared because it is the only data this card reads, as the arbiter of the adoption rule."
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors uniform average on CPU, fp32 accumulation, bf16 output (merge_models.py)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged - no training; the merged weights inherit the members shared format: chain of thought, one 'ANSWER: <n>' line, <end_of_turn>."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_exp06.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_exp06.sh
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-tokens, '4000', --max-connections, '4', --gpu-memory-utilization, '0.85']
+    checkpoint_prep: "{checkpoint} is `python finalize_model.py --src ckpts/<soup> --dst ckpts/<soup>_eval --verify`, the same path every arm in this batch was scored through: tokenizer/processor files copied from the immutable base snapshot and a greedy generation_config pinned (do_sample false, temperature 0.0, top_p 1.0, eos_token_id [1, 106])."
+    decode: "greedy, identical to every other arm in this batch."
+    dev_set: "official --limit 150 - the FIRST 150 items of the gsm8k test split"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7067
+    path: /home/ben/task/eval/exp-05_dev150.json
+  diagnostic:
+    what: "probe_eval.py greedy accuracy on the 300 held-out GSM8K-TRAIN items for both variants (this is also the gate in the adoption rule), plus the paired item-level comparison of the winner against the incumbent soup. Pooling predicts fixes clearly outnumber regressions; roughly equal counts mean the extra members only reshuffled which items are right."
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.28
+  output_checkpoint: /home/ben/task/ckpts/soup3_eval
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soupA, step: 0}
+    - {path: /home/ben/task/ckpts/soupA_eval, step: 0}
+    - {path: /home/ben/task/ckpts/soupB, step: 0}
+    - {path: /home/ben/task/ckpts/soupB_eval, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training. Variant A: uniform 1/6 average of exp-02/checkpoint-1200, exp-02/final, exp-03/checkpoint-1000, exp-03/final, exp-04/checkpoint-300, exp-04/final. Variant B: uniform 1/4 average of the exp-03 and exp-04 members only. Both merged and finalized without error."}
+  measurements:
+    - {metric: accuracy, value: 0.7, n: 150, path: /home/ben/task/eval/final_model_dev150.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 0.7233
+    path: /home/ben/task/analysis/exp-06_soupA_probe.json
+    notes: "Both variants land on exactly 0.7233 on the 300-item probe, BELOW the incumbent three-way soup's 0.7333, so adoption_rule (1) stops both before dev-150 and no GPU was spent scoring them there. Paired against the incumbent: soupA 10 fixed / 13 regressed (net -3), soupB 15 fixed / 18 regressed (net -3) - a reshuffle, not a loss of ability, and consistent with the verdict's pre-launch measurement that soupA sits 0.0139 from soup3 against a member spread of 0.24-0.45, i.e. variant A was always going to be nearly the same model. Variant B, which dropped the weakest member exp-02, did no better, so exp-02 was not dragging the average down. The measurement recorded above is NOT a variant: it is the deliverable check the exp-05 next_step called for - the shipped final_model/ directory scored from a fresh process by its own path rather than as ckpts/soup3_eval, giving 0.700 against 0.7067 for the byte-identical source directory (105 vs 106 of 150; greedy vLLM is not bit-reproducible across engine restarts). It confirms evaluate.py resolves final_model/ to templates/gemma3.jinja through config.json architectures and that the directory loads and scores as expected."
+  watch_set_result: {fixed: 10, still_failing: 83, regressions: 13, path: /home/ben/task/analysis/exp-06_soupA_probe.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Both pre-specified wider soups scored 0.7233 on the probe against the incumbent three-way soup's 0.7333, which is exactly the falsification condition written before launch. Averaging more checkpoints of this trajectory does not cancel more variance: the extra members are near-duplicates of ones already in the average (soupA is 0.0139 from soup3 while the members are 0.24-0.45 apart), and dropping the weakest member did not help either, so the exp-05 soup is at the useful limit of this lever rather than at the start of a trend."
+  decision: reject
+  next_step: "final_model/ keeps the exp-05 three-way soup, as adoption_rule (3) requires; adoption_rule (4) forbids a third variant and none was tried. The batch ends here: base 0.080 -> 0.700-0.7067 on dev-150 (105-106 of 150) and 0.7333 on the 300-item held-out probe. The one thing a successor should start from is that on this trajectory the soup of the three cards' final states was worth more (+2.7 pts dev-150 over the best member) than either of the two training cards that produced those states (+0.0 and -2.7 pts), so cheap weight-space combination deserves to be tried before a third data or RFT card, not after."

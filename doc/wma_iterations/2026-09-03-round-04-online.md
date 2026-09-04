@@ -1,8 +1,9 @@
 # WMA online Round 04 — scoped probes and candidate selection
 
 Status (2026-09-04 16:30 UTC): G is complete at 4/4 but fails its original
-scope guard and a separate manual semantic audit; it is not promoted. H remains
-running at 0/4 complete. Frozen design and launch history are retained below.
+scope guard and a separate manual semantic audit; it is not promoted. At 17:31
+UTC H has one completion, with two original scope flags and insufficient soup
+opportunities; three H cells remain running. Frozen launch history is retained.
 
 The frozen design and gates are in
 `doc/spec/2026-09-03-wma-round04-probe-selection.md`. Completed evidence and
@@ -161,3 +162,27 @@ under its own original contract. The different Opus4.8 runtime is not judged
 by G's older export path. Full scores, cost bounds, provenance, unchanged ledgers,
 manual flag, two delegated audits and operator verification are preserved in
 `evidence/2026-09-04-1630/`.
+
+## H first completion and verified Claude handoff — 2026-09-04 17:30 UTC
+
+H/w14r04 (91448) passes PTB/automatic judges at **68.4610%**, but retains two
+original WMA scope flags. Coverage 1/4, no within-arm variance estimate. There
+are two eligible soup cards, below the three-card mechanism threshold; neither
+positively invokes the time-short default, but no H-caused selection change is
+established. Nine request completions, six delivered final locks, terminal WMA
+cost $11.9022 plus missing superseded costs; scientist cost $55.70025725. The
+remaining three cells continue under their original frozen source.
+
+Claude event `20260904T164313Z-792dc7f482` finished with actual Opus5, reported
+$23.09177025. The operator accepted its no-promotion conclusion but corrected
+its deployed-client split, universal compliance, 14h/3% gate-cost and causal
+training-hours claims. All20 relevant cells use identical public ae46724 client
+bytes; the n8 baseline/control comparisons remain unchanged with batch strata
+preserved. No measurement rewrite is made to obtain a perfect compliance target.
+Detailed H evidence, the original advisory, two independent bounded checks and
+completed operator disposition are in `evidence/2026-09-04-1730/`.
+
+A separate four-cell legacy-policy reference in the new Opus4.8 runtime is
+preregistered in `doc/spec/2026-09-04-opus48-wma-policy-comparison.md`. It compares
+old versus new policy without changing G/H or the original crossbench receipts;
+its scientific launch remains gated on its exact production acceptance.

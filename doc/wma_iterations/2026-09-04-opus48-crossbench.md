@@ -1,8 +1,8 @@
 # Opus 4.8 cross-benchmark launch record
 
 Status: production acceptance passed; all **60 scientific jobs submitted** in
-15 four-cell manifests. At 16:31 UTC the WMA subqueue is ownership-clean,
-16/16 GPUs allocated, with 46 safely routed pending jobs. Allocation does not
+15 four-cell manifests. At 17:31 UTC the WMA subqueue is ownership-clean,
+16/16 GPUs allocated, with 45 safely routed pending jobs. Allocation does not
 measure GPU utilization. The study has zero completed scientific results and
 two incomplete terminal attempts; see the dated checks below.
 
@@ -196,3 +196,20 @@ The new study is still zero complete, two known incomplete raw attempts,
 All routes remain on nodes 2–3; no submission or cancellation was added. H's
 four older cells continue. The existing hourly hook can use the upcoming
 six-hour tail threshold; no duplicate analysis window or timer is created.
+
+## 17:30 UTC operator check and independent policy reference
+
+Old H/w14r04 completed at 68.4610%; total PTB/automatic-judge-clean completions
+are 86, with WMA scope/manual flags kept separate. The initial Opus4.8 study
+still has no valid completed score and two known incomplete raw attempts.
+BFCL protocol c54r03 (92187) started through normal backfill. Queue reserve is
+45 safe pending, with 16 allocated GPUs and no scheduler dependencies.
+
+The seven-cell Opus5 report was reviewed with corrections: no G promotion,
+no unverified perfect-compliance target, no3% gate-cost claim, and no deployed
+client split that contradicts actual frozen bytes. Its useful old/new policy
+comparison is separately preregistered as S0, four GSM8K repeats on the same
+new runtime as S. This adds a reference arm, not a change to any original
+receipt; it is not a replacement for failed raw attempts. Exact validation must
+return before S0 scientific submission. See the policy-comparison spec/record
+and `evidence/2026-09-04-1730/operator-review.md`.
