@@ -1,0 +1,242 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T04:05:00Z'
+situation:
+  elapsed_h: 4.05
+  remaining_h: 5.95
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score:
+      metric: accuracy
+      value: 0.7933
+      protocol_n: 150
+  trigger: exp-02 fixed format and termination (token-cap rate 91/150 -> 1/150) but
+    still misses 31 of 150 dev items, and none of those 31 is a format failure; what
+    is left is reasoning. Sampling k=4 at T=1.0 over 45k training problems shows the
+    incumbent solves 92.6% of them at least once but 3308 not at all, so there is a
+    measurable band of problems it can reach and a smaller band it cannot.
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp-02_diag_2026-09-04T02-46-17.json
+    locator: capped=1, no_answer_line=1, multi_answer=0 of n=150
+  - path: /home/ben/task/logs/rft_sample.log
+    locator: 'correct-of-k histogram: nok_0 3308, nok_1 3739, nok_2 5114, nok_3 8401,
+      nok_4 24438 over 45000 problems'
+  - path: /home/ben/task/analysis/exp-02_watch400.json
+    locator: summary.accuracy 0.835 on 400 held-out gsm8k-train problems
+  alternatives_rejected:
+  - option: A second epoch over data/sft_v1.jsonl
+    reason: same rows the model has already fit to loss 0.267; no new signal
+  - option: Continue on the 200k fresh teacher solutions (data/sft_v2_moresols.jsonl)
+      for the same problems
+    reason: 'the cheaper half of that lever is already inside this card: teacher rows
+      are used exactly where the model fails. Spending 2.6 h on all 200k would leave
+      no time for a third card, and it is the fallback if this one loses.'
+  - option: Pure RFT with no teacher rows
+    reason: self-samples only exist for problems the model can already solve, so a
+      pure-RFT file is biased toward easy problems; the 3448 unsolved problems would
+      get no gradient at all
+  - option: DPO on correct/incorrect sample pairs from the same generation run
+    reason: the generation was not stored per-sample (only the accepted ones), and a
+      preference stage on top of a 0.79 model is a bigger swing than 5.95 h can absorb
+  pitfalls_hit:
+  - what: OpenMathInstruct-2's train_5M split adds almost no new GSM8K-derived *problems*
+      over train_1M (1187 new unique problems out of 80k) - the extra 4M rows are extra
+      solutions to the same problems
+    cost_h: 0.1
+    fix: stopped planning a data-scaling card around more OMI-2 shards; the fresh rows
+      are used as extra solutions instead
+  smoke_runs:
+  - command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final,
+      --problems, data/rft_problems.jsonl, --k, '4']
+    outcome: 180000 generations in 63 min at ~8.1k output tok/s; 79245 accepted rows
+  - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json,
+      --input, /home/ben/task/data/contam_rft.jsonl]
+    outcome: 85808 documents scanned, 0 contaminated, exit 0
+problem:
+  statement: The incumbent's remaining errors are reasoning errors, not format errors.
+    On its own training-problem pool it fails 3448 of 45000 problems in all 4 samples
+    and is inconsistent (1-3 of 4 correct) on a further 17254; on the 400-problem held-out
+    probe it is at 0.835, so roughly one problem in six is still wrong.
+  evidence:
+  - path: /home/ben/task/logs/rft_sample.log
+    locator: 'correct-of-k histogram'
+    observation: 3308 problems 0/4 correct, 17254 problems partially correct, 24438
+      fully correct
+  - path: /home/ben/task/analysis/exp-02_diag_2026-09-04T02-46-17.json
+    locator: capped/no_answer_line
+    observation: only 1 of the 31 dev failures is a format or termination failure, so
+      the format lever is spent
+  - path: /home/ben/task/analysis/exp-02_watch400.json
+    locator: summary
+    observation: 66 of 400 held-out gsm8k-train problems wrong under greedy decode
+  affected_share: 1.0
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/sft_v1.jsonl.holdout
+    n: 400
+    selection: the same 400 openai/gsm8k *train* problems held out of every training
+      file, so exp-02's 0.835 and exp-03's number are measured on identical items.
+      Not benchmark test items - rule 7.
+hypothesis:
+  claim: Continuing training from exp-02's checkpoint on a mixture of its own verified-correct
+    samples (79245 rows over 41552 problems it can solve) and unseen teacher solutions
+    for the 3448 problems it cannot (6563 rows) will move accuracy on the 150-item protocol
+    and on the 400-item watch set upward relative to exp-02.
+  mechanism: The self-samples are on-policy, so they sharpen the paths the model already
+    takes without pulling its style toward a distribution it must first learn; keeping
+    only samples whose final number matches gold is a correctness filter that removes
+    the reasoning slips. The teacher rows cover exactly the region self-sampling cannot
+    reach, which is what stops a pure-RFT file from shifting the mixture toward easy
+    problems.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: +1 to +5 points on the 150-item protocol; +2 to +6 on the 400-item watch
+      set
+  falsified_if: accuracy on the 400-item watch set is at or below exp-02's 0.835 (n=400
+    is the sensitive read; at n=150 a +2 point move is inside the noise floor), or the
+    150-item protocol falls below 0.76.
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/rft_mix.jsonl
+    source: 'synthetic:self (79245 rows sampled from /home/ben/task/ckpts/exp-02/final)
+      + nvidia/OpenMathInstruct-2 @ 469216e3f46f4dacf476b382e192485ea51a143e (6563 teacher
+      rows, solutions exp-02 never saw)'
+    n_examples: 85808
+    built_by: /home/ben/task/scripts/build_rft_mix.py
+    build_command: [python, scripts/build_rft_mix.py, --rft, data/rft_raw.jsonl, --problems,
+      data/rft_problems.jsonl, --teacher, data/sft_v2_moresols.jsonl, --out, data/rft_mix.jsonl,
+      --teacher-per-problem, '2']
+    selection: 'k=4 samples at T=1.0 / top_p 0.95 / max_tokens 512 over 45000 training
+      problems (all 6970 real gsm8k-train problems in the SFT pool plus 38030 augmented-gsm8k
+      problems; the 400 watch-set problems are excluded from the pool). Keep a sample
+      only if its last numeric token equals gold, it did not hit the length cap, it
+      contains "ANSWER: " exactly once and ends on the gold string; dedup on whitespace-normalised
+      text; keep the 2 shortest per problem. For the 3448 problems with no accepted
+      sample, take up to 2 OpenMathInstruct-2 solutions that were not in data/sft_v1.jsonl.
+      10% of rows carry a k-shot prefix (k in 1,2,3,4,10) from openai/gsm8k train.'
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: rft
+    framework: custom loop, transformers 4.57.3 + liger-kernel 0.8.2 + bitsandbytes
+      0.49.1
+    peft: none
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1
+      batch_size: 8192
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: fp32 master weights, bf16 autocast, AdamW8bit
+      seed: 0
+    target_format: 'identical to exp-02: worked chain, then a final line "ANSWER: <n>",
+      then <end_of_turn>; prompt rendered by scripts/render.py through templates/gemma3.jinja
+      (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4); loss
+      on completion tokens only; saved checkpoint ships do_sample false / temperature
+      0.'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/rft_mix.jsonl,
+      --parent, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-03,
+      --epochs, '1', --lr, '5e-6', --max-seq-len, '3072', --micro-tokens, '8192', --grad-accum,
+      '8', --warmup, '0.03', --seed, '0', --save-every-frac, '0.5', --log-every, '25']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env:
+      PYTHONPATH: /home/ben/task/pylibs
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      HF_HOME: /home/ben/hf_cache
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.2
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '16', --max-tokens, '1024', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150 (first 150 items of openai/gsm8k main test split)
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7933
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: greedy accuracy on the 400-problem watch set (same items as exp-02's 0.835)
+      - this is the sensitive read that decides adopt/reject, since n=150 cannot resolve
+      a 2-point move; plus a confirmation read of the winner and of exp-02 at --limit
+      500 before packaging final_model
+    n: 400
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.09
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-03/checkpoint-272
+    step: 272
+  - path: /home/ben/task/ckpts/exp-03/final
+    step: 545
+  training_summary:
+    final_loss: 0.2209
+    steps: 545
+    notes: 85806 rows / 34.3M total tokens / 14.1M target tokens, 2 rows dropped at
+      max_seq_len 3072; loss 0.225 (step 25) -> 0.221 (step 500), i.e. essentially flat
+      from the start - the model was already fitting its own accepted samples.
+  measurements:
+  - metric: accuracy
+    value: 0.82
+    n: 150
+    path: /home/ben/task/eval/exp-03_final_dev150.json
+    delta_vs_comparator: 0.0267
+  - metric: accuracy
+    value: 0.766
+    n: 500
+    path: /home/ben/task/eval/exp-03_final_dev500.json
+    delta_vs_comparator: -0.018
+  diagnostic_result:
+    value: 0.8275
+    path: /home/ben/task/analysis/exp-03_watch400.json
+    notes: 'watch-400 0.835 (exp-02) -> 0.8275 (exp-03 final) -> 0.8125 (exp-03 checkpoint-272),
+      same script, same items, same greedy decode. The C5 checkpoint lever points the
+      same way as the score: neither exp-03 checkpoint beats the parent.'
+  watch_set_result:
+    fixed: 331
+    still_failing: 69
+    regressions: null
+    path: /home/ben/task/analysis/exp-03_watch400.json
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: 'The n=150 read moved up (+2.7) and both sensitive reads moved down: watch-400
+    0.835 -> 0.8275 and the n=500 confirmation 0.784 -> 0.766. The +2.7 at n=150 was
+    noise inside a 500-item read that fell; the WMA''s pre-registered adopt margin (watch400
+    >= 0.855 and dev150 >= 0.7933) is not met, so exp-02 stays the incumbent.'
+  decision: reject
+  next_step: 'The informative part is why it is flat: training loss started at 0.225
+    and ended at 0.221, so the mixture carried almost no new signal - 79k of the 86k
+    rows were the model''s own accepted outputs on problems it already solves, and
+    the 6.5k teacher rows on hard problems were too few to move anything. Together
+    with the finding that OpenMathInstruct-2''s train_5M adds only 1187 new GSM8K-derived
+    problems over train_1M, the bottleneck is the size of the *problem* pool (~80k),
+    not the number of solutions per problem. Next card therefore has to bring new problems,
+    not new solutions: microsoft/orca-math-word-problems-200k is 200k distinct grade-school
+    word problems, contamination-checked before use. final_model is unchanged (exp-02).'

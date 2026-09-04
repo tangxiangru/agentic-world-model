@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T15:22:31Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.1
+  remaining_h: 9.9
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Batch start: no number exists for the starting checkpoint under this harness, so no later card can have a valid comparator (protocol rule 2)."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty table, 0 cards"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and quote a published gemma-3-4b-pt GSM8K number", reason: "published numbers use a different prompt and decoder; rule 2 requires the comparator measured under THIS protocol"}
+    - {option: "Baseline at --limit 500 for a tighter CI", reason: "eval wall-clock scales with n and 150 is the harness default that every later card will reuse, so the comparator must be at 150"}
+    - {option: "--max-connections 8 to halve the wall-clock (the pre-verdict plan)", reason: "WMA e5 records 0.2733 -> 0.8533 on identical greedy weights from this parameter alone, with 99/150 outputs beginning '!!!!', plus EngineDeadError at 8/16. The probe below showed n=150 costs only ~13 min at the harness default 2, so the speed is not worth anchoring the whole batch to a possibly corrupted number. Frozen at 2 for every card."}
+    - {option: "Force greedy decoding for the baseline by editing a copy of generation_config.json", reason: "the shipped sampling config (do_sample true, top_k 64, top_p 0.95) IS part of the starting checkpoint; changing it makes this a decode-config intervention rather than a baseline. Greedy is tested separately in a later card, against this comparator."}
+  pitfalls_hit:
+    - {what: "evaluation.diagnostic as first written had no producer: evaluate.py --json-output-file writes only the scorer metrics dict (L88-96), so format-compliance and cap-hit share would have closed as null and the eval would have had to be re-run to recover them (WMA e6/p2)", cost_h: 0.05, fix: "wrote scripts/diag.py, which reads the inspect json log, and added it to setup.command.argv as a second step"}
+    - {what: "scripts/diag.py first read usage['completion_tokens']; the inspect log calls it 'output_tokens', so mean/max completion length silently reported 0 on the probe", cost_h: 0.02, fix: "read output_tokens with completion_tokens as fallback"}
+  smoke_runs:
+    - command: [python, evaluate.py, --model-path, "$PTB_BASE_MODEL_SNAPSHOT", --limit, '20', --max-connections, '2', --gpu-memory-utilization, '0.85']
+      outcome: "3 min wall for 20 items (so n=150 is ~13 min at connections 2, which kills the reason to raise concurrency). accuracy 0.050, format_ok 0.15, cap_hit 0.60, 54,191 output tokens for 20 items. No '!!!!' prefix corruption. Completions degenerate into a repeating '<<3*4*4-7=...>> ... Reasoning: ... ANSWER: <<' loop that never emits <end_of_turn>: the eos_mismatch regime, confirmed before the real run. Log logs/probe20/, diag analysis/probe20_diag.json."
+    - command: [python, -c, "read generation_config.json + tokenizer of the snapshot"]
+      outcome: "eos_token_id [1, 106]; tokenizer maps <end_of_turn> -> 106, so the template's terminator IS a stop id and vLLM will honour it once the model learns to emit it. generation_config also ships do_sample true, top_k 64, top_p 0.95 and no temperature, so vLLM's --generation-config auto decodes this baseline by SAMPLING at temperature 1.0 (vllm/config/model.py get_diff_sampling_param L1344-1384). Recorded, not changed: see alternatives_rejected."
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruction-tuned checkpoint. Under the harness prompt it is unknown whether it terminates its turn, whether it emits the required 'ANSWER: $ANSWER' final line, and what fraction of GSM8K it solves. Without that number every later delta is unmeasurable."
+  evidence:
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/tokenizer_config.json, locator: "chat_template key absent", observation: "the -pt checkpoint ships no chat template; the harness supplies templates/gemma3.jinja, so the model has never been trained on the <start_of_turn>/<end_of_turn> framing it is graded in"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L27-35, L50-66, L77", observation: "10-shot system message plus an 'ANSWER: $ANSWER' instruction, scored by match(numeric=True) which reads the LAST numeric token of the completion"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null   # no failures observed yet - this card is the measurement that produces them
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Measuring the immutable base snapshot under evaluate.py --limit 150 yields a finite accuracy strictly below what a format-matched post-trained checkpoint reaches under the same protocol; this number becomes the comparator for every later card."
+  mechanism: "The base model is not instruction-tuned and has never seen the gemma3 turn framing, so it should under-comply with the 'ANSWER: N' format and/or fail to stop; both cost accuracy that post-training can recover."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "base expected in the 0.15-0.55 band; wide because 10-shot prompting can carry an un-tuned base a long way"
+  falsified_if: "the base scores above 0.55 at n=150 with format_ok above 0.9 and cap_hit below 0.05 - i.e. it already terminates and already complies with the answer format. Then the headroom is small and the plan (format-matched SFT, then RFT) is attacking a problem the model does not have. Threshold moved down from 0.75 on WMA advice: no untouched base in the corpus has come near 0.75 under this harness, so 0.75 was unfalsifiable."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    # No TRAINING data: this card trains nothing. The only corpus the command reads is the
+    # benchmark itself (as evaluation input, never as a training target - protocol rule 7).
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      source: "openai/gsm8k main/test split, loaded by the task definition; EVALUATION INPUT ONLY, never a training target"
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "first 150 items of the official test split (evaluate.py --limit 150, no shuffle)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect-ai 0.1.dev3780 + vllm 0.11.0 via evaluate.py (unmodified)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - measurement only, no training targets"
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    # two steps: the frozen harness eval, then the diagnostic producer over its inspect log
+    argv: [bash, -lc, "INSPECT_LOG_DIR=/home/ben/task/logs/exp-01 python evaluate.py --model-path /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d --limit 150 --max-connections 2 --gpu-memory-utilization 0.85 --json-output-file /home/ben/task/eval/exp-01_base_dev150.json && python scripts/diag.py --log-dir /home/ben/task/logs/exp-01 --out /home/ben/task/analysis/exp-01_diag.json --dump-failures /home/ben/task/analysis/exp-01_fails.jsonl"]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/logs/exp-01}
+    log: /home/ben/task/logs/exp-01_base_dev150.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    # FROZEN for every card in this batch. --max-connections 2 and --max-tokens 4000 are the
+    # harness defaults; --gpu-memory-utilization 0.85 only enlarges the KV cache. Two arms
+    # measured under different invocation parameters are not a comparison.
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '2', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: null   # evaluate.py exposes no --seed and the shipped generation_config decodes by sampling, so this read is unseeded: ~3 pp reproducibility spread at n=150
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions whose last line matches 'ANSWER: <number>' (format compliance) and share that hit the 4000-token cap without stopping"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.31
+  # measurement card: nothing was trained, so the incumbent stays the base snapshot
+  output_checkpoint: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training"}
+  measurements:
+    - {metric: accuracy, value: 0.0867, n: 150, path: /home/ben/task/eval/exp-01_base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.2467
+    path: /home/ben/task/analysis/exp-01_diag.json
+    notes: "format_ok 0.2467 (last line is 'ANSWER: <number>'), cap_hit 0.42 (stopped on the 4000-token cap, never emitted <end_of_turn>), mean completion 1972 tokens, max 4000. Decisive split: 93.7% of the CAPPED completions contain 'ANSWER:' somewhere in the text. The model knows the answer format and cannot stop - it emits an answer and then keeps re-generating the prompt and further 'Reasoning:/ANSWER:' blocks until the cap, so the end-anchored scorer reads the LAST number, which belongs to a later degenerate repeat. stderr 0.0230; unseeded sampling at t=1.0 (vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config')."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-01_fails.jsonl}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The base snapshot scores 0.0867 +/- 0.0230 on dev-150 under the frozen protocol - inside the 0.09-0.50 band the WMA predicted for untouched bases, at its bottom. The mechanism is exactly the one predicted: 42% of completions never terminate and 94% of those already contain 'ANSWER:', so this is a stop-token and turn-framing failure sitting on top of whatever math ability the model has, not primarily a math failure."
+  decision: adopt
+  next_step: "exp-02: completion-only SFT on GSM8K-train-derived CoT rendered through templates/gemma3.jinja, every target ending in '\\n\\nANSWER: N<end_of_turn>'. That teaches the terminator and the single-answer-at-the-end format the scorer needs. Comparator: 0.0867 at n=150, /home/ben/task/eval/exp-01_base_dev150.json."

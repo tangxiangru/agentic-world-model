@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T22:56:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.15
+  remaining_h: 2.85
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.754, protocol_n: 500}
+  trigger: "final_model is packaged and verified end-to-end at 0.754 (n=500) under the grader's own command, so the deliverable is safe. 2.85 h remain, which is not enough for another training stage plus its evaluation but is comfortably enough for one config-only lever, and exp-02/final and exp-04/final sit on a single training trajectory - exp-04 is a continuation of exp-02 - which is the situation weight averaging is for."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/final_model_dev500.json, locator: "accuracy=0.754, stderr=0.0193"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.measurements: 0.7500 (exp-04 arm) vs 0.7340 (exp-02 arm) at n=500"}
+  alternatives_rejected:
+    - {option: "A third supervised stage on the 25034 fresh rows left over", reason: "exp-04 measured the marginal value of 70000 more off-policy rows at +1.6 points and not separable from zero; 25000 more is a smaller version of a lever already measured near-null, and it would not leave room to evaluate and repackage safely"}
+    - {option: "Rejection-sampling fine-tuning, revisited", reason: "measured at ~2.3 h for sampling alone under the 10-shot prefix (exp-04 situation); it does not fit in 2.85 h with training, evaluation and repackaging still to come"}
+    - {option: "Spend the time on a --limit 1319 read of final_model instead", reason: "it would tighten the estimate but cannot raise the score; a lever that might raise it is worth more, and the 1319 read is what to do with whatever time is left afterwards"}
+    - {option: "Weight the average towards exp-04 (e.g. 0.25/0.75)", reason: "that is a hyperparameter sweep and each point costs a 13-min read; an equal average is the standard soup and the only point that can be tested and acted on inside the remaining budget"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, merge_models.py, --a, ckpts/exp-02/final, --b, ckpts/exp-04/final, --weight-b, '0.5', --dst, ckpts/exp-06-soup], outcome: "883 float tensors averaged in fp32 and cast back to bf16 across both shards; integer tensors copied unchanged; 8.1 G written with the tokenizer, processor and index sidecars"}
+    - {command: [python, make_variant.py, --src, ckpts/exp-06-soup, --dst, ckpts/exp-06-soup-greedy, --temperature, '0'], outcome: "greedy variant built; the assertion that eos_token_id still contains 106 passed, so the merged config kept <end_of_turn>"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The two trained checkpoints each get items the other misses - 25 vs 17 discordant wins over the same 500 graded items - so neither is uniformly better and roughly 8% of items are decided by which one is picked. A single point on the trajectory is being submitted when the trajectory has two measured points."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_paired.json, locator: "A_only=17, B_only=25, discordant=42 of 500", observation: "42 items flip between the two checkpoints; the net is only 8, so the disagreement is much larger than the difference"}
+    - {path: /home/ben/task/eval/exp-02-greedy_dev500.json, locator: "accuracy=0.734", observation: "the earlier checkpoint is only 1.6 points behind and wins 17 items outright"}
+  affected_share: 0.084
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/watch100.jsonl
+    n: 100
+    selection: "GSM8K TRAIN rows 7173-7272, held out from every training file this session. No test-split item is used."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "An equal-weight parameter average of ckpts/exp-02/final and ckpts/exp-04/final, decoded greedily, scores higher on the --limit 500 protocol than either parent."
+  mechanism: "exp-04 was initialised from exp-02 and trained one cosine epoch at 5e-6, so the two sit in the same loss basin and the straight-line midpoint is a valid model. Averaging along a trajectory cancels the part of each endpoint's error that is optimisation noise while keeping what both agree on, which is why the 42 discordant items are the budget this can draw on."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0 to +2 points over the 0.750 exp-04 arm; a soup of two points on one trajectory is a small lever, not a large one"
+  falsified_if: "the merged model scores at or below 0.750 (the exp-04 arm's n=500 value), or it fails to load at all, in which case the two endpoints are far enough apart that the midpoint is not in the basin"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe300.jsonl
+      source: "openai/gsm8k main/train rows 7173-7472 (held-out probe; NOT training data - this card trains nothing, it averages two existing checkpoints)"
+      n_examples: 300
+      built_by: /home/ben/task/build_probe.py
+      build_command: [python, build_probe.py]
+      selection: "held-out probe reserved at session start; the two parents read 0.7467 and 0.7767 on it"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors load/save; per-tensor average in fp32, cast back to bf16"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged; no training, the merged weights inherit exp-02's format behaviour"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-06-soup-greedy, --limit, '500', --max-connections, '2', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-06-soup_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/eval/logs/exp-06}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06-soup
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '2', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 500 (inspect_evals/gsm8k takes the first 500 test items; deterministic). Greedy decode from generation_config, as adopted in exp-03."
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.75
+    path: /home/ben/task/eval/exp-04-greedy_dev500.json
+  diagnostic:
+    what: "paired comparison against both parents over the same 500 items: a soup that is working should recover items from BOTH parents' win sets rather than simply reproducing one of them"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.42
+  output_checkpoint: /home/ben/task/ckpts/exp-06-soup-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06-soup, step: 0}
+    - {path: /home/ben/task/ckpts/exp-06-soup-greedy, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 883 float tensors averaged in fp32 and cast back to bf16"}
+  measurements:
+    - {metric: accuracy, value: 0.7620, n: 500, path: /home/ben/task/eval/exp-06-soup_dev500.json, delta_vs_comparator: 0.0120}
+    - {metric: accuracy, value: 0.7533, n: 300, path: /home/ben/task/analysis/exp-06_probe300.json, delta_vs_comparator: -0.0234}
+  diagnostic_result:
+    value: 0.762
+    path: /home/ben/task/analysis/exp-06_paired.json
+    notes: "the merge mechanism did work: over the same 500 items the soup keeps 12 of the 17 wins exclusive to exp-02 and 17 of the 25 exclusive to exp-04, and solves 10 of the 108 items both parents got wrong. Paired it is +14 net over exp-02 (27 vs 13) and +6 net over exp-04 (22 vs 16, 38 discordant, p ~ 0.42). Format compliance 0.984, 7 non-terminating failures, between the two parents on both. So the average is a real model in the same basin, not a broken interpolation - it just is not reliably better than its better parent."
+  watch_set_result:
+    fixed: 5
+    still_failing: 20
+    regressions: 3
+    path: /home/ben/task/analysis/exp-06_watch100.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "The soup reads 0.7620 at n=500 against the exp-04 arm's 0.7500 and the packaged final_model's 0.7540 on byte-identical weights - so +1.2 or +0.8 depending on which read of the same parent you compare to, and paired it is 22 wins to 16 with p ~ 0.42. The independent held-out read then went the other way: probe300 0.7533 against exp-04's 0.7767, i.e. -2.3. Two reads, opposite signs, neither separated: the same pattern as exp-04, and the card's falsification clause (beat 0.750 outright) is not cleanly met once final_model's own 0.754 on the same weights is taken as the honest comparator."
+  decision: reject
+  next_step: "final_model is NOT repackaged; it stays as ckpts/exp-04/final with the greedy generation_config, verified end-to-end at 0.754 (n=500) under the grader's own command. Two decision rules were set before the numbers existed and both say keep: (a) the WMA precondition, pre-registered before this eval ran, required the soup to beat final_model's 0.754 by more than the ~2 pp n=500 floor, i.e. 0.774, and 0.762 does not; (b) after seeing 0.762 but before running it, probe300 was pre-registered as an independent confirmation and it disagreed. The merged checkpoint is kept on disk at ckpts/exp-06-soup. What would actually settle exp-04 vs exp-06 is a paired --limit 1319 read of both, ~70 min, which does not fit the 2 h remaining alongside safe repackaging."

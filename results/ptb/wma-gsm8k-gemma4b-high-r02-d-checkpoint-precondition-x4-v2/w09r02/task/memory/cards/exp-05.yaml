@@ -1,0 +1,122 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T00:00:00Z'
+situation:
+  elapsed_h: 7.1
+  remaining_h: 2.9
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7667, protocol_n: 150}
+  trigger: "exp-04 beat exp-03 by 1.3 points at n=150 (0.7667 vs 0.7533) with a stderr of 0.035 on each read. The gap is inside the noise, so the batch has no defensible answer to the only remaining question: which checkpoint to ship."
+  trigger_evidence:
+    - path: /home/ben/task/eval/exp-04_final_dev150.json
+      locator: "accuracy 0.7666666666666667, stderr 0.03464962582372408"
+    - path: /home/ben/task/eval/exp-03_final_dev150.json
+      locator: "accuracy 0.7533333333333333, stderr 0.035314713763569344"
+  alternatives_rejected:
+    - option: "Ship exp-04 on the n=150 point estimate and stop"
+      reason: "A 1.3-point gap at n=150 is a coin flip; 2.9 h remain and a 500-item read on both candidates costs about 30 min and cuts the standard error roughly in half."
+    - option: "Repeat the n=150 eval on byte-identical weights to price the noise instead"
+      reason: "Same GPU cost as going to n=500 but it measures the noise rather than reducing it; a larger n both reduces the error and gives a number closer to the full test distribution."
+    - option: "Another training round (a second RFT pass, or a soup that includes exp-02)"
+      reason: "2.9 h minus this card's ~50 min leaves no room for a training round plus its evaluation and the final packaging; exp-02 at 0.687 is far enough behind that including it in the average is more likely to drag than to help."
+    - option: "Score all four exp-04 step checkpoints as well"
+      reason: "Four extra 500-item reads do not fit. The three candidates here are the only ones that can actually be shipped."
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "Three shippable checkpoints exist and the batch cannot tell them apart. exp-03/final (0.7533) and exp-04/final (0.7667) differ by less than one standard error at n=150, and the uniform weight average of the two - which costs no training at all, since exp-04 is a continuation of exp-03 from the same initialisation - has never been measured. Shipping on the n=150 ordering is shipping on noise."
+  evidence:
+    - path: /home/ben/task/memory/cards/exp-04.yaml
+      locator: "conclusion.verdict: inconclusive"
+      observation: "the previous card could not adjudicate its own hypothesis at n=150."
+    - path: /home/ben/task/eval/exp-03_ck1000_dev150.json
+      locator: "accuracy 0.7266666666666667"
+      observation: "the exp-03 trajectory was still improving at its end (0.727 at step 1000 vs 0.753 at 1580), so neither candidate is obviously past its peak."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Under a 500-item read, the uniform weight average of exp-03/final and exp-04/final will score at least as high as the better of its two ingredients, and the three-way comparison will separate the candidates by more than the n=500 standard error."
+  mechanism: "exp-04 is exp-03 continued for 196 steps on on-policy data, so the two sit on one low-loss path from a shared initialisation and their midpoint is a valid model rather than a broken interpolation. Averaging along such a path cancels the part of each endpoint's error that is optimisation noise while keeping what both agree on, which is the standard model-soup result. Independently, tripling n from 150 to 500 cuts the standard error from about 0.035 to about 0.019, which is what makes the 1.3-point exp-03/exp-04 gap readable at all."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "0 to +2 points for the soup over the better ingredient; the main deliverable is the ranking, not the gain"
+  falsified_if: "The soup scores below both ingredients at n=500, i.e. averaging the two endpoints destroys rather than preserves what they agree on."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: "openai/gsm8k[main/test][:500]"
+      source: "openai/gsm8k"
+      n_examples: 500
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '500']
+      selection: "no training data: this card trains nothing. The weight average is computed from two existing checkpoints and the rows named here are the evaluation set the harness loads. Never used as training input."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "scripts/soup.py (parameter-wise weighted average in fp32, cast to bf16) + inspect-ai/vLLM 0.11.0 for the reads"
+    peft: none
+    hyperparams: {seed: 0}
+    target_format: "unchanged from the ingredients: chain of thought, blank line, 'ANSWER: <integer>', then '<end_of_turn>'"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --models, /home/ben/task/ckpts/exp-03/final, /home/ben/task/ckpts/exp-04/final, --weights, '0.5', '0.5', --out, /home/ben/task/ckpts/soup_e03e04]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-05_soup.log
+  output_dir: /home/ben/task/ckpts/soup_e03e04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, deterministic order)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: null
+    path: null
+  diagnostic:
+    what: "wrong_number count and format-failure share at n=500 for each of the three candidates, to check the soup does not reintroduce the malformed final lines that reappeared in exp-04"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/soup_e03e04
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup_e03e04, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; a parameter-wise 0.5/0.5 average of exp-03/final and exp-04/final computed in fp32 and saved in bf16. All three candidates were read with byte-identical invocations (--limit 500 --max-connections 16, evaluate.py defaults otherwise), as the WMA precondition required."}
+  measurements:
+    - {metric: accuracy, value: 0.774, n: 500, path: /home/ben/task/eval/exp-05_exp-04_n500.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.762, n: 500, path: /home/ben/task/eval/exp-05_soup_n500.json, delta_vs_comparator: -0.012}
+    - {metric: accuracy, value: 0.756, n: 500, path: /home/ben/task/eval/exp-05_exp-03_n500.json, delta_vs_comparator: -0.018}
+  diagnostic_result:
+    value: null
+    path: null
+    notes: "Paired McNemar over the same 500 items (exact two-sided): exp-04 vs exp-03 45/36 discordant in exp-04's favour, p=0.374; exp-04 vs soup 37/31, p=0.545; exp-03 vs soup 33/30 for the soup, p=0.801. No pair separates. The paired test the WMA asked for was run and it agrees with the unpaired reads on the ordering while showing that none of the three gaps is resolvable even at n=500."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "The soup landed between its ingredients (0.762 against exp-04's 0.774 and exp-03's 0.756), not above the better one, so averaging the two endpoints of one trajectory bought nothing here; the strict falsification clause (below both) did not trigger, but the expected effect did not appear. The card's other purpose succeeded: at n=500 the ordering exp-04 > soup > exp-03 is the same as at n=150 and the paired McNemar puts every gap at p>0.37, so exp-04/final is the best point estimate under two protocols and is what ships."
+  decision: reject
+  next_step: "final_model holds exp-04/final. With the soup ruled out and ~2.5 h left, the remaining budget goes to a second on-policy rejection-sampling round from exp-04 under a regression guard: it only replaces final_model if it beats exp-04's n=500 read."

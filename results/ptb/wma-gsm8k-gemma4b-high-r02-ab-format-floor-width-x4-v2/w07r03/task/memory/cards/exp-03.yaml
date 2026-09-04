@@ -1,0 +1,178 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T18:15:26Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.1
+  remaining_h: 6.9
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "exp-02 fixed termination but left 85 of 300 held-out probe items wrong, and those remaining failures are reasoning errors, not format errors: max_tokens is down to 3.3% and 145/150 transcripts stop cleanly. Separately 6k rows scored 0.613 and 101k rows scored 0.720, so the corpus-size curve had not flattened where exp-02 stopped."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_watch_rerun.json, locator: "still_failing=85 of 300, regressions=2"}
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "truncation_rate=0.0333, no_answer_marker=5, output_tokens.p50=180"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "situation.smoke_runs (6000 rows -> 0.613) vs result.measurements (101k rows -> 0.720)"}
+  alternatives_rejected:
+    - {option: "Second epoch over the same data/sft_pool.jsonl", reason: "OpenMathInstruct-2 has 2.57M gsm-type rows and exp-02 used 4% of them, so unseen solutions are available where re-reading seen ones mostly buys memorisation of the same 101k targets."}
+    - {option: "Rejection-sampling fine-tuning (sample from exp-02, keep correct, retrain)", reason: "sampling k=4 over ~30k problems plus filtering plus training does not fit the 7.35 h left beside an eval budget, and the corpus-size curve says plain SFT data has not run out yet. Kept as the exp-04 line if this card flattens."}
+    - {option: "GSM-only corpus of further OpenMathInstruct-2 solutions (the first version of this card, data/sft_pool_v3.jsonl)", reason: "the exp-03 WMA verdict's probe p2 showed 0 of its 110 000 augmented rows sit on problems exp-02 had not already seen, and re-running the extraction confirmed why: the whole gsm+augmented_gsm8k slice of OpenMathInstruct-2 contains only 81 069 distinct problems (2.57 M rows at ~32 solutions each), all of which exp-02 covered. That corpus could only have tested solution diversity, which the verdict priced at [-0.03, +0.04]. v3 is kept on disk but not used."}
+    - {option: "Reject the math / augmented_math subsets on format grounds", reason: "the earlier draft of this card rejected them because MATH answers are LaTeX. Filtering expected_answer to a plain integer removes that objection entirely and leaves 7.29 M rows over 323 381 distinct problems - the only large source of problems this model has genuinely never seen. Capped at 1 solution per problem and 34 000 rows so GSM-style stays the majority."}
+    - {option: "MetaMathQA for the new problems instead", reason: "its bodies carry gsm8k's own '#### N' line, a second answer marker beside the required one (pitfall double_answer_format), and it is GPT-3.5-generated where OpenMathInstruct-2 is 405B-generated. The integer-answer MATH slice gives new problems from the corpus already downloaded and already validated by exp-02."}
+    - {option: "Train from the base checkpoint on all 240k rows under one cosine schedule", reason: "cleaner schedule, but it discards exp-02's 1.59 h and leaves no fallback if it lands lower. Continuing keeps 0.720 on disk."}
+    - {option: "150 339 rows (60 000 MATH + 62 000 augmented-gsm8k + 28 339 gsm8k)", reason: "measured at 102.9 M tokens = ~2.9 h against the 7.0 h left, which would leave no room for a follow-up card. Trimmed to 114 339 rows / 74.9 M tokens / ~2.1 h."}
+    - {option: "Raise the few-shot share above 20% to match the grader's always-10-shot prompt", reason: "measured, not assumed: exp-02 scores 0.710 on the held-out 300 with the grader's exact 10-shot prefix and 0.700 with none. There is no prefix-sensitivity left to buy, so the share stays at 20%."}
+  pitfalls_hit:
+    - {what: "A continuation run from a checkpoint this script itself produced would have died at the first mid-run save with no weights written: the parent's generation_config.json carries do_sample False + temperature 0.0 for vLLM, and transformers' GenerationConfig.save_pretrained refuses that pair, on the Trainer._save -> model.save_pretrained path that runs at every checkpoint. At --save-steps 300 that is ~0.7 h of GPU lost for nothing.", cost_h: 0.0, fix: "train_sft.py resets model.generation_config to a valid default right after loading the parent; the greedy json.dump at the end is unaffected. Predicted by the exp-03 WMA verdict, reproduced on CPU, then verified with a 2-step save smoke run."}
+    - {what: "eval_heldout.py crashed on gold answers carrying a thousands separator ('4,582') after the generation had already finished", cost_h: 0.03, fix: "strip , and $ from the gold before float(); the run was repeated"}
+    - {what: "The first locked version of this card claimed its 110 000 augmented rows were on 'problems the model has never seen'. They were not: data/omi2_gsm_byprob.pkl caps solutions per problem, not problems, and the gsm slice of OpenMathInstruct-2 holds only 81 069 distinct problems in total, every one of which exp-02 already trained on. The card would have measured solution diversity while claiming to measure problem diversity.", cost_h: 0.15, fix: "caught by the exp-03 WMA verdict (probe p2) before launch; corpus rebuilt as sft_pool_v4.jsonl around 34 000 integer-answer MATH problems that are genuinely new, and the hypothesis rewritten to match"}
+    - {what: "The first locked version recorded a build_command naming data/sft_pool_v2.jsonl while setup.data[].path named sft_pool_v3.jsonl, so the corpus was not reproducible from the card", cost_h: 0.0, fix: "build_command now names the file it writes"}
+  smoke_runs:
+    - {command: [python, eval_heldout.py, --model, "$PTB_BASE_MODEL_SNAPSHOT", --out, analysis/base_heldout300.json], outcome: "base checkpoint under GREEDY decode on the 300-item probe: 0.0233, with 300/300 truncated at 1024 tokens. Greedy decoding does not fix the base's non-termination, so exp-02's +0.68 is attributable to training and not to the temperature 0.0 its generation_config also introduced. This closes the confound the exp-02 verdict asked to be recorded."}
+    - {command: [python, eval_heldout.py, --model, ckpts/exp-02/final, --nshot, "0", --out, analysis/exp-02_heldout300_0shot.json], outcome: "0.700 with no exemplar prefix vs 0.710 with the grader's 10-shot prefix. exp-02 is not prefix-sensitive, so the 20% few-shot hedge is already sufficient and is not the lever."}
+    - {command: [python, -c, "extract math/augmented_math rows of OpenMathInstruct-2 whose expected_answer is a plain integer"], outcome: "7 288 273 rows over 323 381 distinct problems, none of which appear in exp-02's corpus"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/decon_input_v4.jsonl], outcome: "114 339 documents scanned, 0 contaminated, exit 0"}
+    - {command: [python, -c, "tokenise a 2500-row sample of sft_pool_v4.jsonl"], outcome: "mean 655 tokens, 0.76% over max_seq_len 2560, 74.9 M tokens total -> ~2.1 h at exp-02's measured 56.5 M tokens / 1.59 h"}
+    - {command: [python, eval_heldout.py, --model, "ckpts/exp-02/checkpoint-{400,600}", --out, "analysis/exp-02_ckpt*_heldout300.json"], outcome: "checkpoint-selection sweep, flagged twice by the WMA as the highest effect-per-minute lever, run rather than assumed: 0.690 at step 400, 0.7033 at step 600, 0.710 at step 789/final. Monotone, so the annealed endpoint IS the best exp-02 checkpoint and there is no free gain here; this also makes ckpts/exp-02/final the right parent for this card. Cost 0.1 h. (The checkpoint dirs needed the tokenizer files copied in from final/ before vLLM would load them - Trainer does not write them for intermediate checkpoints.)"}
+    - {command: [python, -c, "GenerationConfig.from_pretrained('ckpts/exp-02/final').save_pretrained(tmp)"], outcome: "raises ValueError 'do_sample is set to False. However, temperature is set to 0.0' - the exp-03 verdict's predicted crash reproduced on CPU in 10 s"}
+    - {command: [python, train_sft.py, --parent, ckpts/exp-02/final, --out, ckpts/savecheck, --limit, "800", --max-steps, "2", --save-steps, "1"], outcome: "after the fix, checkpoint-2/ lands with both .safetensors shards and a valid generation_config.json. The save path from a greedy-config parent is proven before spending 2.1 h; ckpts/savecheck deleted"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02 sits at 0.720 on dev-150 and 0.710 on the 300-item held-out probe, and its remaining failures are wrong arithmetic or wrong problem set-up inside an otherwise well-formed, correctly terminated answer - 85 of 300 probe items. The formatting and termination levers are spent (max_tokens 3.3%, 145/150 clean stops, 0 garbage prefixes), so further gain has to come from the model solving more problems correctly."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_watch_rerun.json, locator: "whole file", observation: "base 7/300 -> exp-02 213/300; 208 fixed, 2 regressions, 85 still failing"}
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "stop_reasons, truncation_rate, garbage_prefix", observation: "stop 145 / max_tokens 5; garbage_prefix 0; no_answer_marker 5 - the format channel is nearly saturated"}
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy", observation: "0.72 against the exp-01 comparator's 0.04 under the same protocol"}
+  affected_share: 0.283
+  failure_examples:
+    - {id: trdev-7183, source: /home/ben/task/analysis/exp-02_heldout300.json, question: "samples[] entry with this id", gold: "recorded in the file", model_output: "recorded in the file - a well-formed chain of thought ending in a single ANSWER line with the wrong number", failure: "arithmetic or set-up error, not a format error"}
+    - {id: trdev-7205, source: /home/ben/task/analysis/exp-02_heldout300.json, question: "samples[] entry with this id", gold: "recorded in the file", model_output: "recorded in the file", failure: "arithmetic or set-up error"}
+    - {id: trdev-7241, source: /home/ben/task/analysis/exp-02_heldout300.json, question: "samples[] entry with this id", gold: "recorded in the file", model_output: "recorded in the file", failure: "arithmetic or set-up error"}
+  watch_set:
+    path: /home/ben/task/data/heldout_dev300.jsonl
+    n: 300
+    selection: "the same 300 held-out openai/gsm8k train rows exp-01 and exp-02 used, excluded from sft_pool.jsonl, sft_pool_v2.jsonl and sft_pool_v3.jsonl at build time. Not benchmark test items."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing exp-02 for one epoch over 114 339 further OpenMathInstruct-2 solutions - 34 000 of them on integer-answer MATH problems the model has never seen, 52 000 fresh solutions to augmented-GSM problems it has, and a second pass over the 28 339 original-GSM8K rows - raises dev-150 accuracy above exp-02's 0.720."
+  mechanism: "exp-02 is out of format errors and its remaining 85/300 probe failures are arithmetic and set-up errors inside well-formed answers, so what is missing is reasoning, and reasoning is what unseen problems train. The gsm+augmented_gsm8k slice cannot supply them - it holds 81 069 distinct problems and exp-02 saw all of them - but the integer-answer MATH slice holds 323 381 problems that are new, harder and multi-step, in the same 405B-generated solution style and the same 'ANSWER: <integer>' shape. The 52 000 fresh GSM solutions add reference-solution diversity on seen problems, and the 28 339 original-GSM8K rows anchor the style to the real benchmark distribution so a harder, more algebraic corpus does not pull it away."
+  mechanism_note: "Continuation, not a restart: exp-02's cosine annealed to ~0, so this stage warms up over 1% of steps to 5e-6 (half exp-02's peak) and anneals again. Target format, stop token, answer marker, batch shape, max_seq_len, loss masking and the 20% few-shot share are all unchanged from exp-02, so corpus content is the only variable. GSM-style rows remain the majority (80 339 of 114 339)."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+0.01 to +0.05 (0.72 -> 0.73-0.77). Bounded well below exp-02's +0.68: format was worth most of that and is now spent, 6k -> 101k of in-domain data was worth +0.107, and a third of this corpus is out-of-domain MATH whose transfer to grade-school word problems is the uncertain part."
+  falsified_if: "dev-150 accuracy is at or below 0.720 AND the held-out-300 probe is at or below 0.710. Both reads flat or down would mean neither new MATH problems nor further GSM solutions buy anything on top of exp-02, and the exp-04 line should be rejection sampling on the model's own outputs rather than more public corpus. A drop of more than 0.05 on either read is the specific signal that the MATH third pulled the model off the GSM8K distribution, in which case exp-02 stays the submission."
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_pool_v4.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e: 34 000 rows from the math/augmented_math slice filtered to a plain-integer expected_answer (1 solution per problem; all 34 000 problems absent from exp-02's corpus), 52 000 augmented_gsm8k solutions whose target text is absent from sft_pool.jsonl, and the 28 339 gsm8k-source rows exp-02 used. Few-shot exemplars from openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 train."
+      n_examples: 114339
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_pool_v2.jsonl, --sols-orig, "2", --skip-orig, "4", --sols-aug, "2", --skip-aug, "1", --seed, "1", "&&", python, build_v4.py]
+      selection: "same filters as exp-02 (numeric answer, exactly one 'ANSWER: ' marker, gold is the last number of the target, \\boxed unwrapped, the 300 held-out probe questions removed); MATH rows additionally require a plain-integer answer and a target under 4000 characters; 20.1% carry a 2-10-shot exemplar prefix in the grader's layout, calculator annotations included"
+      contamination_check: passed
+      mixture_weight: 1.0   # 0.702 GSM-style (gsm8k + augmented_gsm8k), 0.298 integer-answer MATH
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom SparseLossTrainer (LM head applied only at supervised positions)"
+    peft: "none - full fine-tune of the 3.88B text decoder; vision_tower and multi_modal_projector (420M) frozen"
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 16, grad_accum: 8, max_seq_len: 2560, scheduler: cosine, warmup: 0.01, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "OpenMathInstruct-2 chain of thought with \\boxed removed, then a blank line, then 'ANSWER: <n>', then <end_of_turn>. Loss on the completion only; prompt tokens are -100. Identical to exp-02."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_pool_v4.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, ckpts/exp-03, --bs, "16", --accum, "8", --lr, "5e-6", --epochs, "1", --max-seq-len, "2560", --warmup, "0.01", --grad-ckpt, --optim, adamw_bnb_8bit, --save-steps, "300", --save-total-limit, "4"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 300
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.1}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test split, in dataset order) - the same 150 items exp-01 and exp-02 used"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.72
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "held-out-300 probe (eval_heldout.py, greedy, same prompt and scoring rule) as a second lower-variance read: exp-02 scored 0.710 there, base 0.0233. Plus the exp-02 termination panel (truncation rate, garbage prefixes) to confirm the second stage did not undo the format gain."
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.02
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-300, step: 300}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-888, step: 888}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 888}
+  training_summary:
+    final_loss: 0.2996
+    steps: 888
+    notes: "train_loss 0.3198, 15.64 samples/s, 7259 s. 113 543 of 114 339 rows kept (796 over 2560 tokens). grad_norm 1.3-1.5 throughout. Mid-run checkpoints saved with weights, so the generation-config fix held."
+  measurements:
+    - {metric: accuracy, value: 0.6867, n: 150, path: /home/ben/task/eval/exp-03_dev150.json, delta_vs_comparator: -0.0333}
+    - {metric: accuracy, value: 0.716, n: 500, path: /home/ben/task/eval/exp-03_dev500.json, delta_vs_comparator: 0.008}
+    - {metric: accuracy, value: 0.7367, n: 300, path: /home/ben/task/analysis/exp-03_heldout300.json, delta_vs_comparator: 0.0267}
+  diagnostic_result:
+    value: 0.7367
+    path: /home/ben/task/analysis/exp-03_diag.json
+    notes: >-
+      Held-out-300 probe 0.710 -> 0.7367. Termination did not regress and slightly improved:
+      max_tokens 5/150 -> 2/150 (0.033 -> 0.013), no-ANSWER-line 5 -> 2, garbage prefixes 0, mean
+      output 321 -> 230 tokens. So the 30% MATH share did not pull the model off the GSM8K output
+      shape, which was the specific failure mode the falsifier named. To break the tie between the
+      two disagreeing n=150/n=300 reads, both checkpoints were additionally scored at --limit 500
+      under the identical protocol (exp-02 0.708 vs exp-03 0.716); pooling the two independent
+      samples, 500 test items + 300 held-out items, gives exp-02 567/800 = 0.709 and exp-03
+      579/800 = 0.724.
+  watch_set_result:
+    fixed: 27
+    still_failing: 60
+    regressions: 19
+    path: /home/ben/task/analysis/exp-03_watch_rerun.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The three reads disagree and every move is inside the noise floor: dev-150 0.720 -> 0.6867
+    (-0.033), dev-500 0.708 -> 0.716 (+0.008), held-out-300 0.710 -> 0.7367 (+0.027). On the card's
+    own stated metric - dev-150 above 0.720 - the claim is not met; on the card's own falsifier -
+    both dev-150 AND held-out-300 at or below exp-02 - it is not falsified either. 27 probe items
+    flipped to correct against 19 that regressed, which is churn, not a shift.
+  decision: adopt
+  next_step: >-
+    exp-03/final is copied to final_model/ because it leads on the two larger reads (n=500 and
+    n=300, pooled 0.724 vs 0.709 over 800 items) and has the better termination panel, while
+    trailing only on the 150-item subset of the 500. This is a point-estimate decision inside the
+    noise band, not a demonstrated improvement, and the card is recorded as inconclusive for that
+    reason. ckpts/exp-02/final is kept as the fallback. Because a second stage of public-corpus SFT
+    bought at most ~1.5 pp, exp-04 should stop adding corpus and try a weight average of the two
+    checkpoints, which are consecutive points on one training trajectory.

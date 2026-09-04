@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T02:19:45Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.15
+  remaining_h: 9.85
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Start of the batch: no number exists yet for the immutable parent on the grader's own protocol, so no later card can have a legal comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "the card table is empty"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and compare later SFT runs against a published gemma-3-4b-pt GSM8K number", reason: "protocol rule 2 - a comparator must be measured under this exact protocol; published numbers use a different harness, prompt and decode config"}
+    - {option: "Baseline at --limit 500 for a tighter CI", reason: "10-shot prompts are ~1.7k tokens; 150 is the harness default and keeps every later comparison on one protocol at roughly 10 min per eval"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruction-tuned checkpoint. Its GSM8K accuracy under the grader's 10-shot 'ANSWER: $ANSWER' protocol is unknown, and so is its dominant failure mode: wrong arithmetic, never emitting the ANSWER line, or never stopping."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L30-40 MATH_PROMPT_TEMPLATE; L75 scorer=match(numeric=True)", observation: "the scorer takes the LAST whitespace-delimited numeric token of the completion, so any text emitted after the answer can change the score"}
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json, locator: "eos_token_id, do_sample, top_k, top_p", observation: "eos_token_id is [1, 106] = <eos>,<end_of_turn>; do_sample true with top_k 64 / top_p 0.95, so decoding may be sampled rather than greedy"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Evaluating the immutable parent snapshot under the grader's own protocol (evaluate.py --limit 150) yields a non-trivial accuracy floor, and the inspect log's completions show whether the parent's dominant failure is reasoning error or format/termination error."
+  mechanism: "The 10-shot system message demonstrates the target format, so a pretrained model can imitate it by induction; whether it also terminates cleanly on <end_of_turn>/<eos> instead of running on into a new fabricated problem is exactly what the completions will show."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "0.20-0.50; wide, because this is a pt checkpoint with unknown termination behaviour"
+  falsified_if: "Accuracy is at or near 0.0, or the eval fails to load the snapshot at all - either would mean I am measuring the protocol rather than the model."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    # No training data: this card only evaluates. The one "data" the command reads is
+    # the grader's own input, declared here so the record shows exactly what was scored.
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+      source: "openai/gsm8k @ 740312add88f781978c0658806c59bc2815b9866"
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "inspect_evals/gsm8k: openai/gsm8k main test split, first 150 items (--limit 150); 10-shot system message drawn from the TRAIN split with seed 42"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0 via evaluate.py"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "grader side only - the completion must end with 'ANSWER: <number>'; the scorer reads the last numeric token of the completion"
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, "150", --json-output-file, /home/ben/task/eval/exp-01_base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --json-output-file, "{out}.json"]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k openai/gsm8k test split, first 150 items, 10-shot system message seeded 42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions that contain the literal 'ANSWER:' and that stop before max_tokens=4000"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.3
+  output_checkpoint: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  checkpoints_kept:
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.08, n: 150, path: /home/ben/task/eval/exp-01_base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.853
+    path: /home/ben/task/analysis/exp-01_diagnostic.json
+    notes: "85.3% of completions contain 'ANSWER:', but only 56.7% stop at all: 43.3% run to max_tokens=4000 and 60.7% keep generating past their own first ANSWER line, inventing further problems. Median completion is 5340 chars. Graded on the FIRST ANSWER line instead of the last number, accuracy would be 0.127 rather than 0.080 - so roughly a third of the measured failures are pure run-on, and the rest are genuine reasoning error under temperature-1.0 sampling."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base gemma-3-4b-pt scores 0.080 +/- 0.022 on dev-150. The log shows the dominant failure is not arithmetic but termination: the pt checkpoint has never been taught to stop, so it answers and then fabricates new problems, and match(numeric=True) reads the last number in that tail. Decoding is also sampled (vLLM picks up the snapshot's generation_config: top_k 64, top_p 0.95, no temperature override), which the log's top-p/top-k sampler line confirms."
+  decision: adopt
+  next_step: "exp-02: SFT on GSM8K-derived CoT whose every target ends with 'ANSWER: <n><end_of_turn>', which fixes format and termination at once. Then a separate decode-config card for greedy vs the snapshot's sampled default, since that is a second independent lever worth several points."

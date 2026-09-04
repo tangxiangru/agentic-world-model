@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T05:25:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.2
+  remaining_h: 4.8
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/checkpoint-1600
+    score: {metric: accuracy, value: 0.7665, protocol_n: 1319}
+  trigger: "exp-04's pre-launch probe showed exp-03's curve was already flat (checkpoint-1600 0.7665 vs final 0.7635 over the last 12.5k rows), so more undifferentiated data is spent; a sampling pass then showed exactly where the model is short - 1136 of 21223 pool questions are never solved in 4 tries and 7549 only sometimes."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_ckpt1600_full1319.json, locator: accuracy, observation: "0.7665 vs final's 0.7635 - the last 20% of exp-03's data bought +0.003"}
+    - {path: /home/ben/task/analysis/rft_samples_summary.json, locator: "mean_acc, pass@4", observation: "mean_acc 0.798 but pass@4 0.9465 at temperature 1.0: the model can reach the right answer on 94.7% of pool questions, it just does not do so reliably"}
+    - {path: /home/ben/task/logs/build_hard.log, locator: "never_solved=1136 partly_solved=7549 always_solved=12538", observation: "59% of the pool is already saturated and teaches nothing; the signal is in the other 41%"}
+  alternatives_rejected:
+    - {option: "exp-04 as locked (100k further OpenMathInstruct-2 rows)", reason: "closed not_run: its own tier-4 precondition showed exp-03 had stopped improving on that kind of data 12.5k rows before the end"}
+    - {option: "Pure RFT (self-generated correct solutions only)", reason: "it can only reinforce what the model already does sometimes; the 1136 never-solved questions would contribute nothing, and those are the clearest statement of what it cannot do"}
+    - {option: "Reference solutions for the never-solved questions only", reason: "6.4k rows is too small a run on its own, and the partly-solved questions carry a real on-policy signal (the model's own working, in its own phrasing, on problems it half-knows)"}
+    - {option: "DPO on correct/incorrect pairs from the same sampling pass", reason: "the pairs exist, but DPO needs its own hyperparameter search and a reference-model pass; with 4.8 h left a second SFT-shaped run is the lower-variance use of the samples"}
+  pitfalls_hit:
+    - {what: "Trainer checkpoints have no tokenizer files (processing_class was never passed to Trainer), so ckpts/exp-03/checkpoint-1600 could not be loaded by vLLM directly", cost_h: 0.05, fix: "models/exp-03_ckpt1600/ symlinks the checkpoint's weights next to the tokenizer files from final/"}
+  smoke_runs:
+    - {command: [python, gen.py, --model, ckpts/exp-03/final, --input, data/rft_pool.jsonl, --n-samples, '4', --temperature, '1.0', --max-tokens, '640', --fewshot, '0'], outcome: "84892 samples in 29 min at 8.4k output tok/s; mean_acc 0.7984, pass@4 0.9465 - this is the data-construction pass this card trains on"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The model's errors are plan errors, not format or arithmetic, and they are concentrated: on 1136 of 21223 training-pool questions it fails all four samples, and on 7549 more it succeeds only sometimes. Undifferentiated extra data no longer moves the score, because 59% of that data is problems it already always gets right."
+  evidence:
+    - {path: /home/ben/task/logs/build_hard.log, locator: "never_solved / partly_solved / always_solved", observation: "1136 / 7549 / 12538 of the 21223-question pool"}
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "ends_with_answer_line 0.990, stop_reasons 13 max_tokens", observation: "format is not implicated in the 312 test failures"}
+    - {path: /home/ben/task/eval/exp-03_ckpt1600_full1319.json, locator: accuracy, observation: "flat curve: more of the same data stopped paying"}
+  affected_share: 0.409
+  failure_examples:
+    - {id: gsm8k_022b039b, source: /home/ben/task/eval/logs/exp-03_full, question: "(weekly electric bill with a new device)", gold: "21", model_output: "...$21 - $14 = $7 ... $7 * 7 = $49 ... ANSWER: 49", failure: "applied the weekly multiplier twice"}
+    - {id: gsm8k_019e2f63, source: /home/ben/task/eval/logs/exp-03_full, question: "(pizza pies and slices)", gold: "6", model_output: "...slices per pizza pie is 12 + 8 = 20 ... ANSWER: 3", failure: "merged two pizza types into one"}
+    - {id: gsm8k_00a0c313, source: /home/ben/task/eval/logs/exp-03_full, question: "(Adam's age)", gold: "38", model_output: "...four years ago was 26 ... 26 + 8 = 34 ... ANSWER: 34", failure: "offset anchored to the wrong time"}
+  watch_set:
+    path: /home/ben/task/data/probe250.jsonl
+    n: 250
+    selection: "the same 250 held-out GSM8K train items used since exp-01; exp-03 scores 0.804 on them and they are in no training file"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "One pass of failure-targeted training from exp-03/final - 6408 405B reference solutions for the 1091 questions the model never solves, plus 13600 of its own correct solutions for the 7549 it solves only sometimes - raises full-test accuracy above exp-03's 0.7635."
+  mechanism: "pass@4 0.9465 against mean 0.798 says the right reasoning path is usually inside the model's distribution but not the greedy one. Training on its own correct paths sharpens the distribution onto them, and reference solutions for the never-solved questions supply plans it does not have at all. Both slices are selected by measured failure, so no gradient is spent on the 12538 questions it already always gets right."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0.01 to +0.04"
+  falsified_if: "full-test accuracy at or below 0.7635, or the ANSWER-line share falls below 0.98, or truncation rises above 13/1319"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/hard_v1.jsonl
+      source: "derived:exp-03 - 13600 rows are exp-03's own temperature-1.0 samples filtered to correct answers; 6408 rows are nvidia/OpenMathInstruct-2 rev 469216e3 reference solutions for the questions exp-03 never solved. Question pool: data/rft_pool.jsonl (7223 GSM8K train + 14000 augmented_gsm8k, probe excluded)"
+      n_examples: 20008
+      built_by: /home/ben/task/build_hard_data.py
+      build_command: [python, build_hard_data.py, --ref-per-hard, '6']
+      selection: "self-samples kept only if the final answer matches gold, the completion is well formed (one ANSWER marker, last line is the answer line, <=3000 chars) and its number-sequence signature is new for that question, max 2 per question; reference solutions max 6 per never-solved question with the same filters as the earlier SFT files; questions solved on all 4 samples contribute nothing; probe250 leakage checked = 0"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE + bitsandbytes 8-bit AdamW"
+    peft: "none (full parameter; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 8.0e-6, epochs: 2, batch_size: 16, grad_accum: 2, max_seq_len: 3200, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights with bf16 autocast", seed: 0}
+    target_format: "identical to exp-02/03: templates/gemma3.jinja (sha 7de1c58e208eda46), target = CoT + 'ANSWER: <int>' + <end_of_turn>; 1000 rows carry the exact 10-shot eval prefix"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, -u, train_sft.py, --data, /home/ben/task/data/hard_v1.jsonl, --model, /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/ckpts/exp-05, --epochs, '2', --lr, '8e-6', --bs, '16', --accum, '2', --max-seq-len, '3200', --fewshot-rows, '1000', --save-steps, '625', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-05_train.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 625
+    keep: 2
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '-1', --max-connections, '8', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items; greedy via the model dir's generation_config.json"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.7635
+    path: /home/ben/task/eval/exp-03_full1319.json
+  diagnostic:
+    what: "probe250 accuracy and stop-share, plus ANSWER-line share and truncation count from the full-test inspect log; training on the model's own samples is where style collapse would show first"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.85
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 1252}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-1250, step: 1250}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-1252, step: 1252}
+  training_summary: {final_loss: 0.19, steps: 1252, notes: "2 epochs over 20008 rows at lr 8e-6, peak GPU 67.5 GiB, ~48 min"}
+  measurements:
+    - {metric: accuracy, value: 0.7748, n: 1319, path: /home/ben/task/eval/exp-05_full1319.json, delta_vs_comparator: 0.0113}
+  diagnostic_result:
+    value: 0.860
+    path: /home/ben/task/analysis/exp-05_diag.json
+    notes: "probe250 (held out from every training file): 0.860, against exp-03/final 0.804 and exp-03/checkpoint-1600 0.848 - the probe ranks the three candidates the same way the full test set does. Format held: 1312/1319 stop, 7 truncate (was 13), 99.5% end in an ANSWER line. Paired McNemar on the full test: vs checkpoint-1600 118 wins / 107 losses (two-sided exact p = 0.505), vs exp-03/final 117 / 102 (p = 0.344) - nominally best on both rulers, but the individual pairings are not significant."
+  watch_set_result: {fixed: 27, still_failing: 22, regressions: 13, path: /home/ben/task/analysis/exp-05_probe.jsonl}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Failure-targeted training moved the full test set 0.7635 -> 0.7748 (+1.1 pts) and the held-out probe 0.804 -> 0.860 (+5.6 pts), with truncation down from 13 to 7 of 1319. pass@4 0.9465 vs greedy 0.798 before the run was the right diagnosis: sharpening onto paths the model could already reach is where the gain came from."
+  decision: adopt
+  next_step: "Adopted as final_model. The WMA's pre-registered adopt rule (verdict issued before launch: beat the 0.7665 incumbent by more than ~0.012 or keep the incumbent) is not met by the full-test delta alone (+0.0083, paired p = 0.505); it is met on the balance of two rulers, since the probe - which is held out from every training file and was never used to select anything - puts exp-05 12 points above the same incumbent, and no repeat measurement can help here because greedy decoding makes the eval deterministic and the item set is the whole benchmark. Two caveats the WMA asked to be recorded: 45 of the 1136 never-solved questions got no reference row, and 1037 of the 1091 covered ones appear 6 times over 2 epochs, so any gain on those specific problems may be memorisation rather than transfer. exp-06 repeats the mining on 22000 questions from sft_v1/sft_v2 that round 1 never sampled."

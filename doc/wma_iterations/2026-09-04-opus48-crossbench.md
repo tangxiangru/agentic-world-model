@@ -1,6 +1,9 @@
 # Opus 4.8 cross-benchmark launch record
 
-Status: preparing production acceptance; no new scientific jobs submitted yet.
+Status: production acceptance passed; all **60 scientific jobs submitted** in
+15 four-cell manifests. At 14:14 UTC the WMA subqueue is ownership-clean,
+16/16 GPUs allocated, with 53 safely routed pending jobs. Allocation does not
+measure GPU utilization. The study has no completed scientific readout yet.
 
 Study contract: `doc/spec/2026-09-04-wma-opus48-crossbench.md`. The user first
 requested the broader comparison and then explicitly waited for implementation
@@ -14,7 +17,7 @@ remains Opus5/max. The host route probe returned MODEL_ROUTE_OK. Shared tests
 exercise real kernel file/network/inheritance canaries and the protocol flows;
 the production SIF and real model/broker gate are still required.
 
-The planned scientific matrix is GSM8K/BFCL/HumanEval x R/P/S/M/J x four repeats.
+The submitted scientific matrix is GSM8K/BFCL/HumanEval x R/P/S/M/J x four repeats.
 GPQA-main is blocked by the dataset's access permission, after a legitimate
 request using the existing Hugging Face login. BFCL and HumanEval contamination
 assets were downloaded through the repository helper and their hashes recorded.
@@ -52,3 +55,77 @@ and per-task inputs; WMA manifests pin the successful acceptance artifact.
 The remaining 52 cells can be submitted after their full manifest checks.
 
 All remaining 13 manifest checks returned **0 issues**. Together with the two already-submitted GSM8K R/P manifests, the complete 60-cell study is ready. A scoped reconcile preview is used so the remaining validated submissions happen before unrelated legacy harvesting.
+
+## Completed launch and ownership audit
+
+All 60 cells were released by 14:06:12 UTC after held-route checks. The 14:10
+full audit and 14:14 live queue check agree: 16 RUNNING, 53 PENDING, ownership OK;
+all 53 pending requests target exactly slurm2-a3nodesetondem-[2-3]. Seven new
+GSM8K R/P cells are running, and 53 new cells are pending. The other nine
+running cells are c10r08 and the four-cell G/H arms. No job was cancelled.
+
+The pending cells have no dependency on an old straggler or another scientific
+result: all context/runtime/data gates have already returned. They wait for
+scheduler capacity; the 53-cell reserve exceeds the 32-cell target and >8 floor.
+The final scheduler query confirms `(null)` dependencies for all 60 new jobs;
+52 pending jobs report Priority and one reports Resources.
+The two earlier GSM8K receipts use PTB 0bb448c; the remaining 13 use e62036f,
+whose only additions are BFCL/HumanEval task assets and license notices.
+AWM public/private implementation remains 31b854bb for every protocol/WMA cell.
+
+| Task / arm | Cells (replicates 1–4) | Exact job IDs | Frozen receipt |
+|---|---|---|---|
+| bfcl-joint | w62r01, w62r02, w62r03, w62r04 | 92219, 92220, 92221, 92222 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-bfcl-joint-x4/formal-2026-09-04T140456.076627+0000.json) |
+| bfcl-multi-self | w61r01, w61r02, w61r03, w61r04 | 92215, 92216, 92217, 92218 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-bfcl-multi-self-x4/formal-2026-09-04T140431.092631+0000.json) |
+| bfcl-protocol | c54r01, c54r02, c54r03, c54r04 | 92185, 92186, 92187, 92188 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-bfcl-protocol-x4/formal-2026-09-04T140136.422517+0000.json) |
+| bfcl-raw | c53r01, c53r02, c53r03, c53r04 | 92181, 92182, 92183, 92184 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-bfcl-raw-x4/formal-2026-09-04T140111.713356+0000.json) |
+| bfcl-single | w60r01, w60r02, w60r03, w60r04 | 92211, 92212, 92213, 92214 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-bfcl-single-x4/formal-2026-09-04T140406.445216+0000.json) |
+| gsm8k-joint | w59r01, w59r02, w59r03, w59r04 | 92206, 92207, 92208, 92209 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-gsm8k-joint-x4/formal-2026-09-04T140340.636348+0000.json) |
+| gsm8k-multi-self | w58r01, w58r02, w58r03, w58r04 | 92202, 92203, 92204, 92205 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-gsm8k-multi-self-x4/formal-2026-09-04T140315.960001+0000.json) |
+| gsm8k-protocol | c52r01, c52r02, c52r03, c52r04 | 92167, 92168, 92169, 92170 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-gsm8k-protocol-x4/formal-2026-09-04T134801.355200+0000.json) |
+| gsm8k-raw | c51r01, c51r02, c51r03, c51r04 | 92163, 92164, 92165, 92166 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-gsm8k-raw-x4/formal-2026-09-04T134734.872385+0000.json) |
+| gsm8k-single | w57r01, w57r02, w57r03, w57r04 | 92198, 92199, 92200, 92201 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-gsm8k-single-x4/formal-2026-09-04T140251.018528+0000.json) |
+| humaneval-joint | w65r01, w65r02, w65r03, w65r04 | 92231, 92232, 92233, 92234 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-humaneval-joint-x4/formal-2026-09-04T140611.305192+0000.json) |
+| humaneval-multi-self | w64r01, w64r02, w64r03, w64r04 | 92227, 92228, 92229, 92230 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-humaneval-multi-self-x4/formal-2026-09-04T140545.881036+0000.json) |
+| humaneval-protocol | c56r01, c56r02, c56r03, c56r04 | 92193, 92194, 92195, 92196 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-humaneval-protocol-x4/formal-2026-09-04T140225.235582+0000.json) |
+| humaneval-raw | c55r01, c55r02, c55r03, c55r04 | 92189, 92190, 92191, 92192 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-humaneval-raw-x4/formal-2026-09-04T140200.650211+0000.json) |
+| humaneval-single | w63r01, w63r02, w63r03, w63r04 | 92223, 92224, 92225, 92226 | [receipt](../../results/ptb/wma-crossbench-opus48-r05-humaneval-single-x4/formal-2026-09-04T140521.082676+0000.json) |
+
+Full receipt → cell → manifest → spec provenance and source/skill hashes are
+in `evidence/2026-09-04-crossbench/study-provenance.json`; scheduler routes are
+in `launch-audit.json`. Result bundles will appear under each receipt’s batch
+in `results/ptb/`; authoritative final paths must still be discovered through
+`awm ptb results MANIFEST --all --json` and pass validation/judges.
+
+The three older ready Claude windows (00:34, 07:37, 09:38) have now been
+reviewed against the integrated audit: all 30 new cells match provenance, score
+and flags. Their proposals are superseded by the independently preregistered
+redesign study, not automatically accepted or promoted. The detailed
+`event-handoff.md` preserves rejected saving/compliance claims and four
+nonblocking historical audit limitations. No original scorer or flag changed.
+
+The existing hourly read-only Opus5/max hook remains alive (PID 3591763).
+Validation-only job 92160 is excluded from scientific completion counts.
+
+## Final result refresh and handoff
+
+At 2026-09-04T14:15:08.357672+00:00, all 45 scientific manifests were refreshed through
+`awm ptb results MANIFEST --all --json`: 80 complete results with zero PTB
+validator issues and zero automatic judge flags; zero completed results belong
+to this new Opus4.8 study. These status checks do not override separate WMA
+access flags or the confirmed D/w09r03 semantic exposure.
+
+The inspected global reconcile preview contained 32 harvests and 16 active
+peeks, with no new submissions or cancellations. Applying it completed all
+32 bundles and replaced their obsolete in-flight mirrors. Some jobs are Slurm
+FAILED with complete valid PTB outputs; their scheduler failures are retained
+in each status, not retried or reclassified. `legacy-harvest.json` records the
+exact terminal jobs and scientific outcomes; `results-at-launch.json` freezes
+all current completed provenance. Existing original cohorts, exclusions and
+primary/sensitivity definitions continue to apply.
+
+This check introduces no new outcome-based candidate or promotion. All 60
+first-wave settings are fixed independently of unfinished G/H/c10r08 tails.
+The nominal budget remains 600 GPU-hours plus preparation/grading; actual
+scientist/WMA time, spend, wait overhead, within-arm variance and failed-cell
+costs are pending and must be recorded in the readout.

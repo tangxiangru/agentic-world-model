@@ -1,0 +1,142 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T01:12:44Z'
+situation:
+  elapsed_h: 0.25
+  remaining_h: 9.75
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0667, protocol_n: 150}
+  trigger: "exp-01's diagnostic: 76/150 base completions hit the 4000-token cap and keep inventing new problems past a correct 'ANSWER: N', so the scorer reads the last number of the ramble (analysis/exp-01_diagnostic.json)."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-01_diagnostic.json
+      locator: "stopped_share=0.493, accuracy_if_truncated_at_first_ANSWER=0.133 vs accuracy=0.067"
+    - path: /home/ben/task/logs/2026-09-04T01-06-24+00-00_gsm8k_PkjQsNE5Bks2krLgpFaJ5m.json
+      locator: "sample gsm8k_010d0010: emits 'ANSWER: 20' (gold 20) then continues for 4000 tokens and is scored incorrect"
+  alternatives_rejected:
+    - option: "Go straight to the 180k-row augmented mixture (data/sft_mix160k.jsonl, already built)"
+      reason: "~2.5 h per epoch. If the rendering, masking, stop token or the vLLM reload of a saved Gemma3ForConditionalGeneration is wrong, that is 2.5 h lost. GSM8K-train-only is ~25 min and exercises every one of those paths end to end."
+    - option: "LoRA instead of full fine-tune"
+      reason: "3.9B trainable params fit on the H100 with bf16 + fused AdamW + gradient checkpointing (measured in the smoke run); LoRA would only add an adapter-merge failure mode with no memory need."
+    - option: "Prompt/decode-only fix (stop strings) without training"
+      reason: "evaluate.py may not be modified and it passes no stop strings; the terminator has to come from the model."
+  pitfalls_hit:
+    - what: "train_sft.py was edited (added an --attn flag, default flash_attention_2) while this locked run was already in flight; the run itself used the pre-edit code path, which was eager attention. The card's argv now pins --attn eager so the recorded command reproduces what actually ran."
+      cost_h: 0.05
+      fix: "do not touch a locked script until its run has been closed; stage the next card's changes in a copy"
+    - what: "intermediate checkpoint-N/ directories have no tokenizer or processor files, so vLLM refuses to load them"
+      cost_h: 0.05
+      fix: "copied tokenizer.*/special_tokens_map/added_tokens/preprocessor_config/processor_config/generation_config from final/ into each checkpoint before evaluating"
+    - what: "OOM on the first real launch at batch 16: gemma-3's 262k vocab makes the fp32 logits tensor ~24 GiB for a long-row batch, and group_by_length puts the longest rows together"
+      cost_h: 0.05
+      fix: "liger-kernel 0.8.2 fused linear cross-entropy (TrainingArguments.use_liger_kernel) never materialises the full logits tensor; batch 16 then fits with ~5 GiB to spare. Also PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True."
+    - what: "Trainer.save_model does not copy preprocessor_config.json / processor_config.json, which vLLM needs to load a multimodal Gemma3ForConditionalGeneration"
+      cost_h: 0.05
+      fix: "train_sft.py copies both files from the base snapshot into the saved directory"
+    - what: "awm preflight answer_marker_single reads the field named 'target'; the fewshot probe file had the bare gold number there and failed the check"
+      cost_h: 0.02
+      fix: "renamed that field to 'gold' so the full text is what is checked"
+  smoke_runs:
+    - command: [python, train_sft.py, --train-file, data/sft_gsm8k.jsonl, --output-dir, ckpts/smoke, --epochs, '1', --max-rows, '64', --batch-size, '8', --grad-accum, '1']
+      outcome: "8 steps in 5 s, train_loss 0.708, 3.88B trainable / 420M vision frozen, saved and reloaded; no OOM"
+    - command: [python, train_sft.py, --train-file, data/sft_gsm8k.jsonl, --output-dir, ckpts/smoke2, --epochs, '1', --max-rows, '1024', --batch-size, '16', --grad-accum, '2']
+      outcome: "with liger fused-linear-CE: 32 steps in 62 s, 16.4 samples/s, loss 0.59 -> 0.43, no OOM"
+    - command: [python, -c, "render_prompt() vs jinja2 render of templates/gemma3.jinja"]
+      outcome: "byte-for-byte identical for both the zero-shot and the 10-shot rendering (kills the template_unreachable pitfall)"
+problem:
+  statement: "The base model does not terminate its answer: it produces a chain of thought and 'ANSWER: N', then keeps generating further invented problems until the 4000-token cap, so match(numeric=True) reads the last number in the ramble. On top of that it has never been trained to produce the grader's 'ANSWER: N' shape at all (21.3% of completions never emit one)."
+  evidence:
+    - path: /home/ben/task/analysis/exp-01_diagnostic.json
+      locator: "no_answer_marker_share=0.213, stopped_share=0.493"
+      observation: "half the completions never emit a stop token; a fifth never emit the answer marker"
+    - path: /home/ben/task/eval/base_dev150.json
+      locator: "accuracy"
+      observation: "0.0667 on dev-150"
+  affected_share: 0.507
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Completion-only SFT of gemma-3-4b-pt on the 7,473 GSM8K train solutions, rendered through the grader's own template and with every target terminated by <end_of_turn>, raises dev-150 accuracy above the base model's 0.0667."
+  mechanism: "Loss is placed only on the model turn, whose last tokens are 'ANSWER: <n>' followed by <end_of_turn> (id 106, one of the model's two eos ids), so the model learns both the marker the scorer reads and the terminator vLLM stops on. The prompt strings were verified byte-for-byte against jinja2's rendering of templates/gemma3.jinja, so training and grading see the same text. That alone recovers the 6.7 pts failure-to-stop destroys; learning the GSM8K solution style should recover more."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+25 to +45 pts on dev-150"
+  falsified_if: "dev-150 accuracy is at or below 0.10, or the share of completions ending in a stop token stays below 0.90."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_gsm8k.jsonl
+      source: "openai/gsm8k main/train (7473 rows, the official train split only)"
+      n_examples: 7473
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_gsm8k.jsonl, --gsm8k-repeat, '1', --fewshot-frac, '0.05', --seed, '0']
+      selection: "every train row; '#### N' replaced by 'ANSWER: N'; <<a*b=c>> calculator spans kept because the grader's own fewshot block contains them; 5% of rows get a 1-6 shot prefix drawn from other train rows so the model is robust to the grader's 10-shot system message; exact dedup"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE, custom completion-only collator"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 3, batch_size: 16, grad_accum: 2, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "<gsm8k chain of thought> + blank line + 'ANSWER: <n>' + <end_of_turn>; loss on the model turn only (prompt masked to -100)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --train-file, data/sft_gsm8k.jsonl, --output-dir, /home/ben/task/ckpts/exp-02, --lr, '1e-5', --epochs, '3', --batch-size, '16', --grad-accum, '2', --max-seq-len, '2560', --save-epochs, --seed, '0', --attn, eager]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '16', --gpu-memory-utilization, '0.8']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, 10-shot seed 42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0667
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "share of completions whose stop_reason is 'stop' (model emitted <end_of_turn>) rather than 'max_tokens'"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.34
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-234, step: 234}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-468, step: 468}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-702, step: 702}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 702}
+  training_summary: {final_loss: 0.348, steps: 702, notes: "1238 s, 18.1 samples/s, bf16, no divergence; loss 0.59 -> 0.35"}
+  measurements:
+    - {metric: accuracy, value: 0.5467, n: 150, path: /home/ben/task/eval/exp-02_final_dev150.json, delta_vs_comparator: 0.48}
+    - {metric: accuracy, value: 0.5400, n: 150, path: /home/ben/task/eval/exp-02_ck468_dev150.json, delta_vs_comparator: 0.4733}
+    - {metric: accuracy, value: 0.5067, n: 150, path: /home/ben/task/eval/exp-02_ck234_dev150.json, delta_vs_comparator: 0.44}
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-02_final_diagnostic.json
+    notes: "stop_reason='stop' on 149/150 (base: 74/150). Completions that never emit the answer marker: 0.7% (base 21.3%). Median completion 260 chars vs 6348 for the base. Truncating at the first ANSWER would now give 0.527, i.e. LOWER than the scored 0.547 - the model no longer rambles past its answer, so there is nothing left to recover from stopping."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.0667 -> 0.5467 (+48.0 pts, ~12 stderr). The mechanism is confirmed directly: the stop-token share went 0.493 -> 0.993 and the missing-marker share 0.213 -> 0.007, so format and termination were the whole of the first 6.7 pts and the GSM8K solution style supplied the rest. Per-epoch: 0.507 / 0.540 / 0.547 - flat after epoch 2, so 7.5k examples are exhausted as a signal."
+  decision: adopt
+  next_step: "exp-03: the epoch curve is flat, so the bottleneck is data volume/diversity, not optimisation. Train from base on the 180k-row GSM8K-style mixture (OpenMathInstruct-2 augmented_gsm8k + gsm8k + a math slice + gsm8k train), same rendering and terminator."

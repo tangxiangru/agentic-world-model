@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T17:13:07Z'
+situation:
+  elapsed_h: 2.9
+  remaining_h: 7.1
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.06, protocol_n: 150}
+  trigger: "exp-03 trained well but scored 0.06: 149/150 completions contain 'ANSWER: <n>' and scoring the FIRST one gives 0.573, yet only 0.02 END with it - under the harness's 10-shot prompt the model answers and then writes a new invented problem instead of <end_of_turn>."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_dev150_diag.json, locator: "ends_with_answer_marker 0.02, stop_reason 118 stop / 32 max_tokens, chars_p95 13248"}
+    - {path: /home/ben/task/eval/exp-03_dev150_log.json, locator: "samples[0..2].output.choices[0].message.content - each ends '...ANSWER: 20\\n\\nSolve the following math problem step by step...'"}
+  alternatives_rejected:
+    - {option: "Retrain from base with the few-shot prefix mixed into the whole corpus", reason: "~2.5 h with 7.1 h left, and it would discard a checkpoint whose latent accuracy is already 0.573; the missing behaviour is one narrow thing (end the turn after the first answer) that a short continuation can install"}
+    - {option: "Cut --max-tokens at eval so the run-on is truncated", reason: "changes the harness invocation rather than the model, is not available at final grading, and the last number would still sit inside the invented problem"}
+    - {option: "Post-process with a stop string", reason: "the graded artefact is final_model/ loaded by vLLM from a fresh process; there is no post-processing hook, so the stop has to be in the weights"}
+    - {option: "Train only on 10-shot rows (the exact k the grader uses)", reason: "+~1450 prompt tokens on every row and it would tie the fix to one k; k drawn in 2..10 with 20% zero-shot costs less and covers k=10 as one case"}
+  pitfalls_hit:
+    - {what: "exp-03's whole run graded at the base-model floor because every training row was zero-shot while the grader prompts with 10 in-context examples - 1.35 h of training plus a 12 min eval bought no score movement", cost_h: 1.6, fix: "this card: k-shot prefixes rendered exactly as inspect_evals.gsm8k.sample_to_fewshot writes them, folded into the first user turn by templates/gemma3.jinja"}
+    - {what: "exp-02 OOM from 262k-vocab logits forced a batch reshape", cost_h: 0.35, fix: "keep tokens per microbatch under ~8k: bs 3 x 2560 = 7680"}
+  smoke_runs:
+    - command: [python, -c, "CPU dry run of data/sft_fewshot.jsonl through SFTData at max_seq_len 2560"]
+      outcome: "kept 2970/3000, 1.0% dropped as too long, tok p50 1262 / p95 2275 / max 2559; rendered rows still end (106,107)"
+    - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_fewshot_full.jsonl]
+      outcome: "12000 documents scanned with the FULL prompt (few-shot prefix included) in the question field, 0 contaminated, 0 matches"
+problem:
+  statement: "The incumbent solves GSM8K items but does not terminate its turn in the graded context: it emits the answer, then continues with a freshly invented problem, so match(location=end, numeric=True) reads a number from the invented text. Graded accuracy 0.06 against a latent 0.573."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_dev150_diag.json, locator: "ends_with_answer_marker", observation: "0.02 of 150 completions end in the answer marker; the base model managed 0.24"}
+    - {path: /home/ben/task/eval/exp-03_dev150_failures.jsonl, locator: "141 failures", observation: "the answer the scorer reads belongs to the model's own follow-up problem"}
+  affected_share: 0.98
+  failure_examples:
+    - {id: dev-1, source: /home/ben/task/eval/exp-03_dev150_log.json, question: "Amir/Cody cookies (harness item 1)", gold: "20", model_output: "'...Thus, together they eat 20 cookies.\\n\\nANSWER: 20\\n\\nSolve the following math problem step by step...There are two identical stacks of paper...'", failure: "correct answer given, then a new problem is generated; the scorer reads the tail"}
+    - {id: dev-2, source: /home/ben/task/eval/exp-03_dev150_log.json, question: "oranges in a basket (harness item 2)", gold: "17", model_output: "'...the number of good oranges is 25 - 8 = 17.\\n\\nANSWER: 17\\n\\nSolve the following math problem step by step...'", failure: "same run-on"}
+    - {id: dev-3, source: /home/ben/task/eval/exp-03_dev150_log.json, question: "worker bees (harness item 3)", gold: "400", model_output: "long algebraic attempt, then a new invented problem", failure: "same run-on, and the reasoning itself is weaker on this item"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing SFT from ckpts/exp-03/final on 12k rows whose prompt carries a k-shot prefix (k in 2..10 from GSM8K train, 20% zero-shot), with the turn still ending at <end_of_turn>, raises the share of dev-150 completions ending in 'ANSWER: <number>' from 0.02 towards ~1.0 and lifts graded accuracy from 0.06 towards the 0.573 the incumbent already reaches on its first answer."
+  mechanism: "The model completes the pattern it sees in context - ten Q/A pairs in a row imply an eleventh problem follows. Rows that show the same in-context pattern and then stop after the first answer make turn-ending conditional on the turn, not on the absence of in-context examples."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+45 to +55 pts (0.06 -> 0.50-0.62); the ceiling is the incumbent's latent 0.573 plus whatever the extra 12k solutions add"}
+  falsified_if: "the share of completions ending in 'ANSWER: <number>' stays below 0.90, or graded accuracy stays below 0.35."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_fewshot.jsonl
+      source: "derived:exp-03 - solutions from nvidia/OpenMathInstruct-2 (gsm8k-derived rows) that exp-03 did not use, re-prompted with k-shot prefixes built from the GSM8K train split"
+      n_examples: 12000
+      built_by: /home/ben/task/prep_fewshot.py
+      build_command: [python, prep_fewshot.py, --n, '12000', --out, data/sft_fewshot.jsonl]
+      selection: "12000 rows sampled from the 71981 OpenMathInstruct-2 solutions exp-03 did not see; 20% keep the zero-shot prompt, the rest get k in [2,10] worked GSM8K *train* examples rendered exactly as inspect_evals.gsm8k.sample_to_fewshot renders them, joined with blank lines ahead of the harness prompt; rows over 2560 tokens dropped at load (1.0%)"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full parameters, bf16, sdpa, gradient checkpointing"
+    peft: "none"
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 3, grad_accum: 10, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-03: <CoT>\\n\\nANSWER: <n><end_of_turn>, loss on the model turn only, rendered with templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-03/final, --data, /home/ben/task/data/sft_fewshot.jsonl, --out, /home/ben/task/ckpts/exp-04, --epochs, '1', --lr, '5e-6', --bs, '3', --grad-accum, '10', --max-seq-len, '2560', --save-steps, '200', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 200
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6', --max-tokens, '4000']
+    dev_set: "official inspect_evals/gsm8k test, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.06
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "share of the 150 completions ending in 'ANSWER: <number>' (0.02 for exp-03, 0.24 for base) and the gap between first-marker accuracy (0.573 for exp-03) and graded accuracy - the mechanism is confirmed only if that gap closes"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.75
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-04/final
+    step: 397
+  - path: /home/ben/task/ckpts/exp-04/checkpoint-200
+    step: 200
+  - path: /home/ben/task/ckpts/exp-04/checkpoint-397
+    step: 397
+  training_summary:
+    final_loss: 0.2716
+    steps: 397
+    notes: 2484 s, 4.79 samples/s at bs 3 x grad_accum 10 x 2560 tokens; 110/12000 rows (0.9%) dropped as too long; saved generation_config keeps eos_token_id [1, 106]
+  measurements:
+  - metric: accuracy
+    value: 0.6733
+    n: 150
+    path: /home/ben/task/eval/exp-04_dev150.json
+    delta_vs_comparator: 0.6133
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-04_dev150_diag.json
+    notes: ends_with_answer_marker 0.02 -> 1.00 (150/150); stop_reason 150/150 'stop', zero max_tokens (was 32); output length collapsed from chars_p95 13248 to 960, p50 452. Graded accuracy 0.673 now EXCEEDS the parent's 0.573 first-marker latent, so the extra 12k solutions added reasoning on top of closing the format gap. Decode was still the as-shipped sampling config.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: '0.06 -> 0.673 (+61.3 pts) with 150/150 completions ending in the answer marker and no output hitting the token cap. The mechanism was exactly as stated: the model needed to see the in-context Q/A pattern followed by a turn end, not more math. Inspection of the 49 remaining failures shows arithmetic and problem-modelling errors (averaging over the wrong denominator, rounding, unit confusion), not format.'
+  decision: adopt
+  next_step: 'exp-05: read the same weights with temperature 0 pinned in generation_config.json - the incumbent is still decoded by the snapshot''s sampling defaults (top_k 64, top_p 0.95, t=1.0), which both adds ~3 pp of noise and probably costs points. Then spend the remaining GPU on reasoning quality (more few-shot-formatted OpenMathInstruct-2 solutions and/or a rejection-sampling round), since the residual failures are reasoning, not format.'

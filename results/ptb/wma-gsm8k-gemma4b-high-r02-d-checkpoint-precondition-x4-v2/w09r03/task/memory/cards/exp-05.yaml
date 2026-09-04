@@ -1,0 +1,113 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T22:15:00Z'
+situation:
+  elapsed_h: 5.0
+  remaining_h: 5.0
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy-ep1
+    score: {metric: accuracy, value: 0.7467, protocol_n: 150}
+  trigger: "Three measurements now say the same thing about this model: one pass over 74946 rows scored 0.7467 greedy, a second pass over the same rows dropped it to 0.7067, and a further pass over 47480 rejection-sampled rows dropped it to 0.6933 at both 0.75 and 1.0 epochs. Extra passes cost; the only regime that has paid is a single pass over data it has not seen."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "result.measurements: 0.7467 ep1 vs 0.7067 ep2, both greedy"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.measurements: 0.6933 at step 1110 and at step 1484"}
+    - {path: /home/ben/task/memory/index.md, locator: "whole file"}
+  alternatives_rejected:
+    - {option: "Re-sample the RFT set with random instead of shortest selection and repeat exp-04", reason: "exp-04's 133 -> 120 token shortening makes that the right diagnosis, but it is ~0.6 h of sampling plus ~0.5 h of training for an effect whose corpus base rate is near zero, and it would still be a second pass on top of a parent that punishes second passes"}
+    - {option: "Ship the incumbent and stop", reason: "5 h remain, final_model already holds 0.7467, so the downside of one more card is bounded at the GPU time; a fully annealed single pass has never been tried on this model"}
+    - {option: "Add OpenMathInstruct-2's MATH and augmented_math rows for diversity", reason: "their solutions are LaTeX-heavy with non-integer answers; the format discipline that got 150/150 clean stops is worth more here than reasoning breadth on a GSM8K-only benchmark"}
+    - {option: "Raise the few-shot mix-in above 10% to match the grader's 10-shot prompt more closely", reason: "it multiplies token cost per row by roughly 15x on the affected rows, and the incumbent already stops correctly on 150/150 items, so format alignment is not what is failing"}
+  pitfalls_hit:
+    - {what: "vLLM failed to start with 'ValueError: bad marshal data' from a corrupted gguf/vocab .pyc in site-packages, which surfaced as 'Failed to start vLLM server' and made analyze_eval.py silently re-read the previous run's log", cost_h: 0.15, fix: "deleted the corrupt .pyc; analyze_eval.py picks the newest log by name, so always check the 'log' field it prints matches the run you just did"}
+    - {what: "save_total_limit=3 is hardcoded in train_sft.py and silently evicted the 370 and 740 checkpoints in exp-04", cost_h: 0.0, fix: "choose save_steps so that the surviving 3 are the ones worth grading"}
+  smoke_runs: []
+problem:
+  statement: "The incumbent is the epoch-1 checkpoint of a 2-epoch cosine run, so its learning rate was still near half of peak when it was written: it is an un-annealed snapshot that happened to be graded, not a trained-to-completion model. Every attempt to continue training it has lost accuracy, so the remaining headroom is not in more steps on the same parent but in a single pass that both anneals properly and covers more distinct problems."
+  evidence:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-2342/trainer_state.json, locator: "log_history, learning_rate at step 2342", observation: "written mid-cosine over 4686 steps, so the LR had not annealed"}
+    - {path: /home/ben/task/eval/exp03_greedy_ep1_dev150.json, locator: "accuracy", observation: "0.7467 at n=150 greedy"}
+    - {path: /home/ben/task/analysis/exp03_greedy_wrong.json, locator: "44 items", observation: "all failures are well-formed single-answer chains with wrong arithmetic"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: exp03-wrong-0, source: /home/ben/task/analysis/exp03_greedy_wrong.json, question: "item 0 of the dump", gold: "item 0 target", model_output: "clean chain, one ANSWER line, wrong number", failure: "arithmetic/reasoning slip"}
+    - {id: exp03-wrong-1, source: /home/ben/task/analysis/exp03_greedy_wrong.json, question: "item 1 of the dump", gold: "item 1 target", model_output: "clean chain, one ANSWER line, wrong number", failure: "arithmetic/reasoning slip"}
+    - {id: exp03-wrong-2, source: /home/ben/task/analysis/exp03_greedy_wrong.json, question: "item 2 of the dump", gold: "item 2 target", model_output: "clean chain, one ANSWER line, wrong number", failure: "arithmetic/reasoning slip"}
+  watch_set: null
+hypothesis:
+  claim: "One fully annealed pass from the base snapshot over the union of both datasets (122426 rows, 76k distinct problems) raises greedy accuracy on the official 150-item slice above the incumbent's 0.7467."
+  mechanism: "Two things change against exp-02's epoch-1 snapshot, both in the direction the run's own measurements point. The cosine schedule completes, so the weights are annealed rather than caught mid-descent. And the single pass covers 25454 problems the incumbent never saw, as first-time data rather than as the second helping that exp-04 showed this model punishes - the RFT rows failed as a second stage, but as fresh rows inside one pass they are 47480 additional verified-correct chains."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+1 to +5 pp"}
+  falsified_if: "the best greedy checkpoint of this run scores at or below 0.7467 at n=150, or mean output tokens land outside roughly 90-200 against the incumbent's 133.2"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/union_train.jsonl
+      source: "derived:exp-02 + derived:exp-04 (concatenation of data/sft_train.jsonl and data/rft_train.jsonl, shuffled with seed 0)"
+      n_examples: 122426
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, -c, "concatenate data/sft_train.jsonl and data/rft_train.jsonl, random.Random(0).shuffle, write data/union_train.jsonl"]
+      selection: "no new selection: 74946 OpenMathInstruct-2/gsm8k-train rows exactly as exp-02 read them, plus 47480 answer-verified self-samples exactly as exp-04 read them. Both components already passed the contamination checker (50477 and 25454 unique documents, 0 matches each)."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom MaskedLossTrainer (completion-only loss, chunked lm_head)"
+    peft: "none"
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02 and exp-04; graded only after 'python finalize.py --src <ckpt> --dst <ckpt>-greedy --greedy' rewrites generation_config.json to do_sample false / temperature 0.0 and back-fills the tokenizer and preprocessor files Trainer omits."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/union_train.jsonl, --out, ckpts/exp-05, --epochs, '1', --bs, '16', --accum, '2', --lr, '1e-5', --max-seq-len, '3072', --save-steps, '950']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints: {every_steps: 950, keep: 3}   # 3826 steps total; save_total_limit=3 keeps 1900/2850/3800 alongside final/
+  budget: {gpu: H100-80GB, planned_h: 2.5}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator: {ref: exp-03, value: 0.7467, path: /home/ben/task/eval/exp03_greedy_ep1_dev150.json}
+  diagnostic:
+    what: "mean output tokens read two-sided against the incumbent's 133.2, plus the stop-reason share; the RFT half of the mixture is what shortened exp-04's chains to 120, so a repeat of that shortening would say the union is being dominated by the wrong half"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.49
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-2850, step: 2850}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-3800, step: 3800}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 3826}
+  training_summary:
+    final_loss: 0.2931
+    steps: 3826
+    notes: "5354 s, 22.9 samples/s, 44.49M tokens, 0 rows dropped at max_seq_len 3072. As in exp-04, save_total_limit=3 evicted the 950 and 1900 checkpoints, and 3800 vs 3826 are 26 steps apart, so the surviving independent sweep is 2850 and final. I did not spend the WMA's suggested C18 repeat read of the 0.7467 comparator: greedy decoding on fixed weights is deterministic up to vLLM batching, and the >3 pp adoption guard already absorbs the ruler's width - but that does mean 'best of two new checkpoints vs the better of two old ones' stays slightly biased toward this card, and it still lost."
+  measurements:
+    - {metric: accuracy, value: 0.74, n: 150, path: /home/ben/task/eval/exp05_greedy_dev150.json, delta_vs_comparator: -0.0067}
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp05_greedy_2850_dev150.json, delta_vs_comparator: -0.02}
+  diagnostic_result:
+    value: 161.8
+    path: /home/ben/task/logs/2026-09-04T00-15-05+00-00_gsm8k_S5xhDPuZMBKVWrWDe4ziiW.json
+    notes: "Mean output 161.8 tokens against the incumbent's 133.2 - inside the 90-200 band, and notably it moved AWAY from exp-04's 120, so the RFT half did not dominate the mixture; the union produced longer chains, not shorter ones. One completion of 150 ran to the 4000-token cap without an ANSWER line (149/150 stop on <end_of_turn>), the first non-clean stop since exp-02, which is a small regression in format reliability against the incumbent's 150/150."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "A fully annealed single pass over 122426 rows and 76k distinct problems scores 0.740 greedy at its best checkpoint, 0.7 pp below the un-annealed epoch-1 snapshot it was meant to beat and far inside the ruler. Neither of the two mechanisms paid: completing the cosine schedule did not help, and the 47480 extra problems did not help even when delivered as first-time data rather than as the second stage that cost 5.3 pp in exp-04."
+  decision: reject
+  next_step: "Together with exp-03 and exp-04 this closes the data-and-schedule line for this budget: on this model 0.74-0.75 greedy is where one pass of GSM8K-derived SFT lands, and neither more unique data, more passes, nor a proper anneal moves it. final_model keeps exp-03's 0.7467 weights under the >3 pp guard. The one lever still outstanding is exp-06's weight average, which is already built and needs no training."

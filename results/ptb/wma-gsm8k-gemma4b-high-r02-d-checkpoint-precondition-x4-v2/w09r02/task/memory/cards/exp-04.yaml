@@ -1,0 +1,142 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T22:40:00Z'
+situation:
+  elapsed_h: 5.5
+  remaining_h: 4.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.7533, protocol_n: 150}
+  trigger: "Every one of exp-03's 37 remaining failures at n=150 is a well-formed single answer with the wrong number - format is solved, arithmetic is not. Sampling exp-03 eight times per GSM8K train question shows pass@8 = 0.959 against a mean per-sample accuracy of 0.712, so the model can already reach the right chain on 96% of training problems but does not do so reliably."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-03_final_tags.json
+      locator: "tags: correct 113, wrong_number 37, no format failures"
+    - path: /home/ben/task/analysis/rft_v2_stats.json
+      locator: "pass_at_8 0.9588, mean_sample_accuracy 0.7122, rows_kept 10818"
+  alternatives_rejected:
+    - option: "Another SFT scale-up on the OpenMathInstruct-2 train_2M/train_5M splits"
+      reason: "The gsm8k-derived pool of train_1M is already exhausted by sft_v2; a larger split means a download, a rebuild, a decontamination pass and another ~2.6 h of training, which does not fit in 4.5 h alongside anything else."
+    - option: "A second full epoch over sft_v2 from exp-03"
+      reason: "~2.6 h for a re-read of rows already seen, against ~0.5 h for on-policy data the model has never been trained on."
+    - option: "DPO on correct-vs-incorrect self-samples"
+      reason: "The pairs exist for free from the same sampling run, but a preference stage is new machinery under 4.5 h of remaining budget and the SFT-shaped RFT round is the lower-variance use of the same data."
+    - option: "Running with no intermediate checkpoints (the first version of this card)"
+      reason: "The mixture is only ~21818 rows, about 243 optimizer steps, so the script's default save cadence of 500 would never fire and a late-epoch over-sharpen would leave nothing to fall back to inside the run. --save-steps 60 keeps four points on the trajectory for the cost of disk only."
+    - option: "Rejection samples only, without replay"
+      reason: "10818 rows of the model's own text at 1 epoch is a narrow diet after a 141871-row corpus; an equal slice of sft_v2 is mixed in to hold the distribution. This does make the card a two-part intervention (on-policy rows + replay) rather than a single knob, which is recorded here deliberately."
+  pitfalls_hit:
+    - {what: "the first launch of this card died at step 60 in Trainer's checkpoint save: transformers' GenerationConfig validator rejects the parent's greedy config (do_sample False with temperature 0.0), so every save_pretrained raised ValueError. The same trap had already bitten scripts/soup.py an hour earlier and was not carried across to train_sft.py, whose earlier runs started from the base snapshot and never hit it.", cost_h: 0.85, fix: "reset model.generation_config to a neutral GenerationConfig(bos 2, eos [1,106], pad 0) right after loading the parent; save_final and finalize_ckpt.py write the greedy config afterwards. Note the --save-steps 60 added on the WMA's advice is what turned a failure at minute 19 into a failure at minute 6."}
+    - {what: "polling the dead run with an unbounded `while ! grep ...; do sleep 60; done` burned the remaining 44 minutes of a tool timeout before the crash was noticed", cost_h: 0.73, fix: "bounded polling loops only"}
+  smoke_runs:
+    - command: [python, scripts/rft_sample.py, --model, ckpts/exp-02/final, --out, data/rft_v1.jsonl, --k, '4']
+      outcome: "first rejection-sampling pass, run from the exp-02 checkpoint during exp-03's lock wait to prove the script: 7473 questions, pass@4 0.870, 11984 rows, every row ends in <end_of_turn> with exactly one 'ANSWER:' line, decontamination clean. Superseded by the on-policy rft_v2 sampled from exp-03."
+problem:
+  statement: "exp-03 scores 0.7533 and all 37 of its failures at n=150 are arithmetic or reasoning slips inside a correctly formatted answer. Its own sampling shows the gap is reliability rather than capability: 95.9% of GSM8K train problems are solved by at least one of eight samples while only 71.2% of individual samples are right, so the correct chain is inside the model's distribution but is not the one greedy decoding picks."
+  evidence:
+    - path: /home/ben/task/analysis/exp-03_final_tags.json
+      locator: "tags.wrong_number = 37, no malformed or runaway samples"
+      observation: "100% of remaining failures are well-formed wrong numbers."
+    - path: /home/ben/task/analysis/rft_v2_stats.json
+      locator: "pass_at_8 0.9588 vs mean_sample_accuracy 0.7122"
+      observation: "a 24-point gap between what the model can reach and what a single sample reaches."
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-03 for one epoch at lr 7e-6 on 10818 of its own verified-correct solutions (sampled at k=8 with an adaptive per-problem keep) mixed with an 11000-row replay slice of sft_v2 will raise accuracy on the official n=150 protocol above exp-03's 0.7533."
+  mechanism: "Rejection-sampling fine-tuning concentrates probability mass on the reasoning chains the model itself produces when it happens to be right, which is exactly the pass@8-minus-pass@1 gap measured above; it is on-policy, so it sharpens rather than shifts the distribution. The adaptive keep gives at most one sample to problems solved 8/8 and up to four to problems solved rarely, so the gradient goes to the unreliable problems rather than to the easy ones. The replay slice holds the model on the OpenMathInstruct-2 style it was trained on and guards against collapsing onto its own narrower phrasing."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +5 points (0.753 -> roughly 0.76-0.80)"
+  falsified_if: "Accuracy at n=150 is at or below exp-03's 0.7533, i.e. on-policy rejection samples add nothing over the checkpoint that generated them."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "synthetic:self (exp-03 checkpoint, k=8, temperature 1.0, top_p 0.95, on openai/gsm8k train questions) + derived:exp-03 replay slice of /home/ben/task/data/sft_v2.jsonl"
+      n_examples: 21818
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-03/final, --out, data/rft_v2.jsonl, --k, '8', --temperature, '1.0', --top-p, '0.95', --max-tokens, '640', --max-keep, '4', --adaptive-keep]
+      selection: "keep only samples whose final 'ANSWER: <n>' line equals the gold answer of the GSM8K train item; drop whitespace-identical duplicates within a problem; adaptive keep - 1 sample if 8/8 correct, 2 if >=4/8, up to 4 otherwise; drop any sample with more than one 'ANSWER:'; 10818 rows result. Mixed with 11000 rows drawn uniformly from sft_v2.jsonl (seed 7) as replay, then shuffled."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler, torch 2.8.0, flash_attention_2; vLLM 0.11.0 for the sampling stage"
+    peft: none
+    hyperparams:
+      lr: 7.0e-6
+      epochs: 1.0
+      batch_size: 6144
+      grad_accum: 8
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit; the saved checkpoint is cast to bf16"
+      seed: 0
+    target_format: "chain of thought, blank line, 'ANSWER: <integer>', then '<end_of_turn>'. Loss on the completion only; the prompt is masked with -100."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_mix_v1.jsonl, --parent, /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/ckpts/exp-04, --lr, '7e-6', --epochs, '1', --grad-accum, '8', --token-budget, '6144', --max-seq-len, '2560', --attn, flash_attention_2, --seed, '0', --save-steps, '60', --save-total-limit, '4']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04_train.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 60
+    keep: 4
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, deterministic order). {checkpoint} is /home/ben/task/ckpts/exp-04/final."
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7533333333333333
+    path: /home/ben/task/eval/exp-03_final_dev150.json
+  diagnostic:
+    what: "wrong_number count among the 150 items (37 for exp-03): the reliability failures the on-policy rows are supposed to remove"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 196}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-180, step: 180}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-120, step: 120}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-60, step: 60}
+  training_summary:
+    final_loss: null
+    steps: 196
+    notes: "train_loss 0.2510 over 1255 s (17.4 rows/s); 21817 of 21818 rows kept. This is the second launch: the first died at step 60 in Trainer's checkpoint save (see situation.pitfalls_hit) and cost 1.6 h of the budget between the crash and an unbounded polling loop that hid it. Two WMA preconditions were not carried out and the reasons are recorded here rather than in the pinned sections: (a) re-measuring pass@8 under the grader's 10-shot system prefix instead of the zero-shot prompt - the sampling prompt does differ from the grading prompt, so the 0.959/0.712 figures describe the zero-shot regime, but with 3 h left this would have refined the mechanism number without changing the intervention; (b) the intermediate checkpoints were kept as promised but only `final` was scored, because the remaining budget was spent on a higher-powered selection between candidates (exp-05) rather than on a within-run curve."
+  measurements:
+    - {metric: accuracy, value: 0.7666666666666667, n: 150, path: /home/ben/task/eval/exp-04_final_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 33
+    path: /home/ben/task/analysis/exp-04_final_tags.json
+    notes: "wrong_number 37 -> 33 of 150, the direction the on-policy rows were meant to move; two malformed final lines reappeared (0 for exp-03), so the format margin narrowed very slightly. Mean output length 154 -> 207 tokens."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "0.7533 -> 0.7667 at n=150 (+1.3 points). The direction and the diagnostic both go the hypothesised way (arithmetic failures 37 -> 33) but +1.3 is inside the n=150 noise floor of about 3 points and inside this eval's own stderr of 0.035, so n=150 cannot adjudicate the claim as written; the falsification clause was set at a resolution the protocol does not have."
+  decision: iterate
+  next_step: "Decide the shipped checkpoint with a higher-powered read rather than on this delta: exp-05 scores exp-03/final, exp-04/final and their uniform weight average at n=500 under one protocol. final_model is set to exp-04/final in the meantime as the best current point estimate."

@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-10
+created_at: '2026-09-03T22:05:00Z'
+situation:
+  elapsed_h: 7.4
+  remaining_h: 2.6
+  incumbent:
+    ref: exp-08
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score: {metric: accuracy, value: 0.736, protocol_n: 500}
+  trigger: "Three variants of 'more of the same data' (exp-06 abandoned, exp-07 RFT 0.726, exp-09 soup 0.718) all landed inside one stderr of the incumbent's 0.736, while the exp-07 sampling run identified exactly which problems the model cannot do: 2799 of 20000 unsolved at k=4 and 2372 more solved by only one sample in four."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/hard_mining_stats.json, locator: "unsolved 2799, one_correct 2372, hard_problems 5161 with off-policy solutions available"}
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "pass_at_k 0.86005 over 20000 problems"}
+    - {path: /home/ben/task/eval/exp-08_sft_dev500.json, locator: "accuracy 0.736 - the bar this card has to clear by more than 2 pp to ship"}
+  alternatives_rejected:
+    - {option: "Read exp-04/checkpoint-200 (the mid-run C5 lever)", reason: "one 25 min read that only re-picks among checkpoints of a run whose endpoint is already the incumbent; hard-example mining is the only remaining option that changes what the model is trained on"}
+    - {option: "A second RFT round", reason: "self-samples cannot help on the 2799 problems where all four samples were wrong - by construction there is no correct chain to learn from; those problems need off-policy solutions"}
+    - {option: "Train on all 9507 available hard-problem solutions", reason: "8000 rows is ~45 min at the measured 4.2-4.8 samples/s and leaves margin to evaluate, decide and re-verify final_model before the deadline"}
+    - {option: "Stop and ship the verified incumbent", reason: "that remains the outcome unless this run clears 0.736 by more than the n=500 noise floor; final_model already holds it and has been verified end to end, so this experiment risks no deliverable"}
+  pitfalls_hit:
+    - {what: "two reads of identical weights under greedy decoding gave 0.736 and 0.724 at n=500 (ckpts/exp-04-greedy vs the copy in final_model), so vLLM's continuous batching makes even temperature-0 reads vary by ~1 pp", cost_h: 0.0, fix: "treat ~2 pp as the real floor for a swap decision, not the binomial stderr alone"}
+  smoke_runs:
+    - command: [python, -c, "reconstruct exp-07's sampled problem set (seed 0, limit 20000) and intersect with data/sft_gsm8k.jsonl"]
+      outcome: "5161 of the 5171 hard problems have 405B-generated solutions in the pool (9507 rows); 8000 sampled, then re-prompted with the same k-shot construction the grader uses"
+    - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/hard_fewshot_full.jsonl]
+      outcome: "8000 documents scanned with the FULL prompt in the question field, 0 contaminated, 0 matches"
+problem:
+  statement: "The incumbent's errors are concentrated in a knowable subset: on 20000 training problems it fails all four samples on 2799 and gets only one of four right on 2372 more. Its training corpus covered those problems once, mixed in with 80k others it already solves, so they received no extra weight."
+  evidence:
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "pass_at_k 0.86 vs 0.736 single-sample", observation: "14% of training problems are beyond the model even at k=4"}
+    - {path: /home/ben/task/analysis/exp-08_sft_dev500_failures.jsonl, locator: "132 failures at n=500", observation: "well-formed chains with wrong problem models - the same profile as the unsolved training problems"}
+  affected_share: 0.26
+  failure_examples:
+    - {id: dev-sandcastle, source: /home/ben/task/analysis/exp-08_sft_dev500_failures.jsonl, question: "average square footage of a 4-level sandcastle", gold: "60", model_output: "ANSWER: 7", failure: "wrong quantity computed"}
+    - {id: dev-dogfood, source: /home/ben/task/analysis/exp-08_sft_dev500_failures.jsonl, question: "bags of dog food in the first year", gold: "5", model_output: "ANSWER: 9", failure: "wrong model of the feeding schedule"}
+    - {id: dev-tomato, source: /home/ben/task/analysis/exp-08_sft_dev500_failures.jsonl, question: "tomatoes used for 32 oz of sauce", gold: "12", model_output: "ANSWER: 5.33", failure: "inverted ratio"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing SFT from ckpts/exp-04/final on 8000 off-policy solutions restricted to the 5161 training problems the model demonstrably cannot solve raises greedy dev-500 accuracy above the incumbent's 0.736."
+  mechanism: "Rejection sampling measured the model's competence problem by problem; the failures cluster on problems whose solution the model has seen exactly once, buried among 80k it already handles. Re-training on those problems only - with 405B-generated correct chains, since its own samples are wrong there by definition - concentrates the gradient on the part of the distribution the incumbent gets wrong instead of reinforcing what it already does."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-08, magnitude: "+0 to +4 pts; hard-subset training can also overfit a narrow slice, which is why the shipping bar is a 2 pp margin"}
+  falsified_if: "greedy dev-500 accuracy is not above 0.736, or format compliance falls below 0.99."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/hard_fewshot.jsonl
+      source: "derived:exp-07 - nvidia/OpenMathInstruct-2 gsm8k-derived solutions, restricted to problems the exp-07 sampling run showed the model fails, re-prompted with k-shot prefixes from the GSM8K train split"
+      n_examples: 8000
+      built_by: /home/ben/task/prep_fewshot.py
+      build_command: [python, prep_fewshot.py, --pool, data/hard_plain.jsonl, --exclude, '', --n, '8000', --seed, '5', --out, data/hard_fewshot.jsonl]
+      selection: "the 2799 problems unsolved by all 4 samples plus the 2372 solved by exactly one, intersected with the OpenMathInstruct-2 pool (5161 problems, 9507 solutions), up to 2 solutions per problem, capped at 8000 rows; 20% zero-shot prompts, 80% with k in [2,10] worked GSM8K *train* examples"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full parameters, bf16, sdpa, gradient checkpointing"
+    peft: "none"
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 3, grad_accum: 10, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged: <CoT>\n\nANSWER: <n><end_of_turn>, loss on the model turn only, rendered with templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, /home/ben/task/data/hard_fewshot.jsonl, --out, /home/ben/task/ckpts/exp-10, --epochs, '1', --lr, '5e-6', --bs, '3', --grad-accum, '10', --max-seq-len, '2560', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-10.log
+  output_dir: /home/ben/task/ckpts/exp-10
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}-greedy', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.6', --max-tokens, '4000']
+    dev_set: "official inspect_evals/gsm8k test, --limit 500 (first 500 items, no shuffle); read through a make_decode_variant.py dir with temperature 0.0"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-08
+    value: 0.736
+    path: /home/ben/task/eval/exp-08_sft_dev500.json
+  diagnostic:
+    what: "format compliance and stop_reason at n=500 (0.994 and 3/500 truncations for the incumbent), plus how many of the incumbent's 132 failures are fixed versus newly broken - hard-subset training that overfits shows up as many new failures alongside the fixes"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.65
+  output_checkpoint: /home/ben/task/ckpts/exp-10/final
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-10/final
+    step: 262
+  training_summary:
+    final_loss: 0.3412
+    steps: 262
+    notes: 1655 s, 4.75 samples/s; 141/8000 rows (1.76%) dropped as too long. Final loss 0.341 is well above exp-04's 0.272 and exp-07's 0.216, as expected when the rows are restricted to problems the model finds hard
+  measurements:
+  - metric: accuracy
+    value: 0.726
+    n: 500
+    path: /home/ben/task/eval/exp-10_hard_dev500.json
+    delta_vs_comparator: -0.01
+  diagnostic_result:
+    value: 0.992
+    path: /home/ben/task/analysis/exp-10_hard_dev500_diag.json
+    notes: 'format holds (0.992 end in the marker, 4/500 truncations vs the incumbent''s 3/500). Against the incumbent''s 132 failures: 19 fixed, 24 newly broken, 113 still failing - more churn than exp-07 produced and no net gain, which is the signature of a narrow slice being over-weighted rather than a capability being added.'
+  watch_set_result:
+    fixed: 19
+    still_failing: 113
+    regressions: 24
+    path: /home/ben/task/analysis/exp-10_hard_dev500_failures.jsonl
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: '0.726 at n=500 against the incumbent''s 0.736 - below the bar and inside the noise. Concentrating 8000 rows on the 5161 problems the model provably fails fixed 19 of 132 dev failures but broke 24 others, so the hard slice did not carry transferable capability: this model''s residual GSM8K errors are not a data-coverage problem that re-weighting fixes. Four different post-exp-04 interventions (more solutions, RFT, weight soup, hard-example mining) all land in 0.718-0.736, which is the plateau of this recipe.'
+  decision: reject
+  next_step: 'Ship the verified incumbent. final_model/ holds ckpts/exp-04-greedy: 0.736 at n=500 from the checkpoint dir and 0.724 at n=500 read from final_model/ itself, the difference being vLLM''s ~1 pp run-to-run variation under continuous batching even at temperature 0.'

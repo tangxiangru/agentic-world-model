@@ -1,0 +1,135 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T15:53:26Z'
+
+situation:
+  elapsed_h: 0.2
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: null
+      protocol_n: null
+  trigger: "Batch start: nothing has been measured yet. Reading /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py shows the grader is match(numeric=True, location='end') over a 10-shot prompt, i.e. only the LAST number of the completion is read; a base (non-instruct) checkpoint that keeps generating after its answer will be graded wrong even when its reasoning was right. No comparator exists for any later card."
+  trigger_evidence:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      locator: "L27-35 prompt template, L77 scorer=match(numeric=True)"
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py
+      locator: "match_str L44-95: location='end' reverses whitespace tokens and takes the first numeric one"
+  alternatives_rejected:
+    - option: "Skip the baseline and train first"
+      reason: "Rule 2 of the protocol: every later card needs a comparator measured under the identical protocol. Without it no delta is interpretable."
+    - option: "Use --limit 150 (the evaluate.py default)"
+      reason: "200 items halves the binomial stderr per point (~3.5pp -> ~3.2pp) at ~30% more wall clock; cheap at this stage and used for every later card."
+    - option: "Hold out part of the GSM8K train split as the dev set instead of the official test prefix"
+      reason: "The grading pipeline (10-shot system prompt, vLLM server, match scorer) is only reproduced faithfully by evaluate.py itself; a hand-rolled dev loop would measure a different thing. Train-split holdout is still used to filter training data, not to select checkpoints."
+  pitfalls_hit: []
+  smoke_runs: []
+
+problem:
+  statement: "google/gemma-3-4b-pt is a raw pretrained checkpoint with no instruction tuning and no chat template of its own. Under the grader's 10-shot 'ANSWER: $ANSWER' prompt it is expected to (a) not terminate its turn, so the last number in the completion is from a hallucinated follow-up problem rather than from its own answer, and (b) decode at temperature 1.0 because generation_config.json ships do_sample=true / top_k=64 / top_p=0.95 and vLLM adopts those defaults. Both are format failures, not reasoning failures, and neither is visible without a measurement."
+  evidence:
+    - path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json
+      locator: "whole file"
+      observation: "do_sample=true, top_k=64, top_p=0.95, eos_token_id=[1,106]; no temperature key, so vLLM's OpenAI server falls back to temperature=1.0 for requests that do not set it, and inspect_ai's vllm provider does not set it."
+    - path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/tokenizer_config.json
+      locator: "chat_template key"
+      observation: "chat_template is absent from the -pt tokenizer; the grader supplies templates/gemma3.jinja instead, whose turns end with <end_of_turn> (id 106)."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: "Measuring google/gemma-3-4b-pt under the exact grading protocol will show that a substantial share of its wrong-scored completions contain the correct answer somewhere but not as the final number, i.e. termination/format is a first-order cause of the base score rather than arithmetic ability alone."
+  mechanism: "match(numeric=True, location='end') reads only the last numeric token of the completion. A base LM continued from a 10-shot prompt has learned to emit the next problem after finishing one, so it runs to max_tokens and buries its answer."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "baseline establishes the reference; no delta claimed"
+  falsified_if: "Among items scored incorrect, fewer than 15% have a first 'ANSWER:' line whose number equals the gold answer. (Tightened after the exp-01 WMA verdict: 'gold number appears anywhere in a 4000-token ramble' fires by chance and was nearly unfalsifiable.)"
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_eval_data.md
+      source: local
+      n_examples: 200
+      built_by: null
+      build_command: []
+      selection: "No training data: this card runs an evaluation only. The 200 items are the first 200 of the official openai/gsm8k test split as loaded by inspect_evals with --limit 200; they are never used for training."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0 (evaluate.py, unmodified)"
+    peft: none
+    hyperparams:
+      seed: null
+    target_format: "grader-supplied: 10-shot system message, then MATH_PROMPT_TEMPLATE asking for a final line 'ANSWER: $ANSWER'"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '200', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-01_base_n200.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.4
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "Read the per-sample inspect_ai eval log (logs/*.json, log_format='json' -- NOT the --json-output-file metrics dump, which carries aggregates only) and report, over all 200 items: (a) share of completions containing an 'ANSWER:' line at all; (b) among items scored incorrect, the share whose FIRST 'ANSWER:' line number equals gold -- this is the format-vs-arithmetic split; (c) share of completions with stop_reason max_tokens (hit the 4000 cap); (d) count of completions whose first 40 characters are a repeated single character such as '!!!!', with the request index where it starts, as a corruption check on --max-connections 16; (e) the sampling parameters vLLM actually served (temperature/top_k/top_p), read from the vLLM server banner in the run log."
+    n: 200
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.08
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "no training in this card"
+  measurements:
+    - metric: accuracy
+      value: 0.055
+      n: 200
+      path: /home/ben/task/eval/exp-01_base_n200.json
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.111
+    path: /home/ben/task/analysis/exp-01_diag.json
+    notes: "(a) 84.5% of completions contain an ANSWER: line. (b) Of the 189 items scored incorrect, 21 (11.1%) have a FIRST ANSWER: line equal to gold -- below the 15% falsification threshold, so the 'format is the first-order cause' claim is contradicted: 168 of 189 failures are wrong at the model's own first answer too. (c) 48% of completions stopped on max_tokens (4000); mean completion 7.0k chars, p95 16.3k -- non-termination is real and large, it just is not what most of the loss is. (d) 5/200 completions are degenerate repeats, but each repeats a DIFFERENT token ('/******/', '<<<<', a CJK word, an emoji), which is temperature-1.0 repetition collapse in the model, not the identical-'!!!!' server-side corruption seen in history at --max-connections 32; --max-connections 16 is kept. (e) served decode = the checkpoint generation_config (do_sample true, top_k 64, top_p 0.95, temperature defaulting to 1.0); the vLLM banner in logs/exp-01.log confirms 'Default sampling parameters have been overridden by the model HF generation config'. Eval-side generate config carried only max_tokens=4000 / max_connections=16, i.e. inspect set no temperature. THIS COMPARATOR IS A SAMPLING READ: later deltas against 0.055 carry roughly 5pp of decode noise on top of the n=200 binomial floor (+/-1.6pp stderr here)."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Baseline is 0.055 (11/200) under the locked protocol -- at the very bottom of the 0.05-0.35 band the estimator expected. The hypothesis that format/termination is the first-order cause is contradicted: only 11.1% of failures have a correct first ANSWER: line (threshold was 15%), so 168 of 189 failures are genuinely wrong answers, not buried right ones. Non-termination is nonetheless severe and independently worth fixing (48% hit the 4000-token cap, mean completion 7k chars, and the model drifts into inventing follow-up problems)."
+  decision: iterate
+  next_step: "exp-02: completion-only SFT from the base snapshot on 97k GSM8K-train-derived rows (OpenMathInstruct-2 gsm8k + augmented_gsm8k, plus the GSM8K train split itself), rendered through the grader's own templates/gemma3.jinja, targets ending 'ANSWER: <n><end_of_turn>', and shipping a greedy generation_config. That attacks all three of arithmetic, format and decode at once; exp-01 says arithmetic is the biggest of the three."

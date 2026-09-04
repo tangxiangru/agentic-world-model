@@ -1,0 +1,139 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T02:09:18Z'
+situation:
+  elapsed_h: 2.9
+  remaining_h: 7.1
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.5933333333333334, protocol_n: 150}
+  trigger: "exp-02 reached 0.5933 with 60 of its 61 failures tagged wrong_number, and it was decoded by sampling: vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config', which for this checkpoint means top_p 0.95 / top_k 64 / temperature 1.0, inherited unchanged from gemma-3-4b-pt."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-02_failures.json
+      locator: "failure_tags: wrong_number 60, truncated 1"
+    - path: /home/ben/task/ckpts/exp-02/final/generation_config.json
+      locator: "do_sample true, top_k 64, top_p 0.95, no temperature key"
+    - path: /home/ben/task/logs/exp-02_eval.log
+      locator: "'Default sampling parameters have been overridden by the model's Hugging Face generation config'"
+  alternatives_rejected:
+    - option: "Go straight to a rejection-sampling round and leave the decode alone"
+      reason: "an RFT round costs ~1.5 h and would be measured against a noisy sampling read; the decode change costs 5 minutes of GPU and, per the WMA's evidence, is worth more than the whole RFT round is likely to be"
+    - option: "Sweep temperature 0.2 / 0.4 / 0.7 as well"
+      reason: "single-sample greedy is the standard best decode for grade-school math and each extra arm is another locked card; if greedy loses, the sweep becomes worth its cost"
+    - option: "Set the decode by passing arguments to evaluate.py"
+      reason: "evaluate.py must not be modified and exposes no temperature flag; vLLM runs with --generation-config auto, so the checkpoint's own generation_config.json is the only place the decode can be set - which also means the final_model directory carries it into the graded run"
+    - option: "Retrain with a lower-entropy objective instead"
+      reason: "a training change cannot be attributed if the decode is still sampling; fix the measurement instrument first"
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, work/make_variant.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-02-greedy, --temperature, '0.0']
+      outcome: "weights hard-linked (7.3 GB, no copy); generation_config.json rewritten to temperature 0.0, do_sample false, top_p and top_k removed; eos_token_id asserted still [1, 106]"
+problem:
+  statement: "exp-02's weights are graded through a temperature-1.0 nucleus sample. Every one of its 61 failures is a single stochastic draw, so a chain that the model's own argmax would get right can be lost to one unlucky token; and the measurement itself carries sampling noise on top of the n=150 binomial floor."
+  evidence:
+    - path: /home/ben/task/analysis/exp-02_failures.json
+      locator: "failure_tags"
+      observation: "60 of 61 failures are wrong_number - the formatting problem is gone, so what remains is exactly the class a bad sample can create"
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_providers/vllm.py
+      locator: "VLLMAPI - evaluate.py sets only max_tokens and max_connections, so no temperature is sent and the server falls back to its defaults"
+      observation: "vllm/config get_diff_sampling_param takes those defaults from the checkpoint's generation_config.json, which is therefore the only lever over the decode"
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/dev300_gsm8ktrain.jsonl
+    n: 300
+    selection: "300 held-out GSM8K TRAIN questions (seed 7), removed from the exp-02 training file. No benchmark test item is used."
+hypothesis:
+  claim: "Grading exp-02's identical weights with temperature 0.0 in generation_config.json raises accuracy at n=150 above the 0.5933 that the same weights scored under the inherited sampling decode."
+  mechanism: "Greedy decoding takes the argmax chain instead of one draw from a temperature-1.0 nucleus. For a short arithmetic chain a single low-probability token derails the whole answer, and the grader reads only the final number, so removing sampling noise removes a class of failure that has nothing to do with what the model knows."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+5 to +25 points; the corpus records 0.4267 -> 0.8133 for this exact change on one prior run, which is the upper end"
+  falsified_if: "accuracy at n=150 is at or below exp-02's 0.5933"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "nvidia/OpenMathInstruct-2 (train_1M) + microsoft/orca-math-word-problems-200k, datasets==4.5.0 - the file exp-02 was trained on; this card trains nothing"
+      n_examples: 122514
+      built_by: /home/ben/task/work/build_sft_data.py
+      build_command: [python, work/build_sft_data.py, --out, data/sft_pool.jsonl]
+      selection: "unchanged from exp-02; no gradient step is taken in this card, only the decode is altered"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 via inspect_ai; --generation-config auto"
+    peft: "none"
+    hyperparams:
+      temperature: 0.0
+      do_sample: false
+      top_p: "removed"
+      top_k: "removed"
+      max_tokens: 4000
+      max_connections: 2
+      gpu_memory_utilization: 0.85
+    target_format: "unchanged from exp-02: chain of thought, blank line, 'ANSWER: <n>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02-greedy, --limit, '150', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json, --max-connections, '2', --gpu-memory-utilization, '0.85']
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env:
+      INSPECT_LOG_DIR: /home/ben/task/eval/inspect_logs/exp-03
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-02-greedy
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '2', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (fewshot=10, fewshot_seed=42), --max-tokens 4000. Identical to exp-01 and exp-02 in every respect except the checkpoint's generation_config.json, which is the intervention."
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.5933333333333334
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "confirm from the vLLM startup lines that temperature 0.0 was actually applied (not silently dropped as a null field), and re-read the failure-tag split from work/analyse_eval.py against exp-02's {wrong_number 60, truncated 1} - greedy must not reintroduce truncation via repetition loops"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/ckpts/exp-02-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02-greedy, step: 1913}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card; the safetensors shards are hard links to ckpts/exp-02/final (inodes 145424462 / 145424463 identical on both sides) and config.json is byte-identical (md5 230fb6fc0175a9ba3bbc0783d4fb1aa4), so the weights are provably the same and only generation_config.json differs"}
+  measurements:
+    - metric: accuracy
+      value: 0.6533333333333333
+      n: 150
+      path: /home/ben/task/eval/exp-03_greedy_dev150.json
+      delta_vs_comparator: 0.06
+  diagnostic_result:
+    value: 0.06
+    path: /home/ben/task/analysis/exp-03_failures.json
+    notes: "vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config' - that warning only fires when get_diff_sampling_param returns a non-empty dict, and with top_p and top_k removed the only remaining field is temperature 0.0, so greedy was applied and not silently dropped. Failure tags {wrong_number 49, truncated 3} against exp-02's {wrong_number 60, truncated 1}: 11 fewer wrong numbers, and greedy did reintroduce 2 extra repetition-loop truncations, a small cost worth watching. Mean output 252 -> 280 tokens; stderr 0.0402 -> 0.0390."
+  watch_set_result: {fixed: 0, still_failing: 0, regressions: null, path: /home/ben/task/analysis/exp-03_failures.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Identical weights, decode changed from the inherited temperature-1.0 / top_p 0.95 / top_k 64 sample to greedy: 0.5933 -> 0.6533 (+6.0 points) at n=150. Eleven of exp-02's 60 wrong-number failures were sampling noise rather than missing knowledge; greedy costs 2 extra repetition-loop truncations."
+  decision: adopt
+  next_step: "Greedy is now the decode for every later card and for final_model. The remaining 49 wrong-number failures are genuine reasoning errors, so exp-04 buys reasoning: continued SFT from exp-02/final on fresh supervision - additional distinct OpenMathInstruct-2 solutions for problems seen only once in epoch 1, plus MetaMathQA GSM rephrasings."

@@ -1,0 +1,151 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T21:11:33Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.6
+  remaining_h: 4.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.716, protocol_n: 500}
+  trigger: "exp-03 closed inconclusive: a second stage of public-corpus SFT moved the pooled 800-item read from 0.709 to 0.724, inside the noise band, and its three reads disagreed in sign. A third corpus stage would cost 2 h for the same size of effect, while the two checkpoints on hand are consecutive points on one trajectory and can be averaged for minutes of CPU."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "result.measurements: dev-150 -0.033, dev-500 +0.008, heldout-300 +0.027"}
+    - {path: /home/ben/task/analysis/exp-03_watch_rerun.json, locator: "fixed=27, regressions=19"}
+  alternatives_rejected:
+    - {option: "A third SFT stage on ~110k further rows", reason: "2.1 h of the 4.4 h left for an effect exp-03 measured at ~+1.5 pp inside the noise band, and it would leave no room to verify the submission. The soup costs ~0.4 h."}
+    - {option: "Rejection-sampling fine-tuning on the model's own correct samples", reason: "generation over ~20k problems plus filtering plus a training stage plus an eval does not fit 4.4 h with the verification budget reserved, and a failed attempt would burn the margin that protects final_model."}
+    - {option: "Ship exp-03 without trying the soup", reason: "exp-03's own lead is inside the noise band, so a cheap third candidate scored under the same protocol is worth 0.4 h; if it loses, exp-03 still ships."}
+    - {option: "Soup exp-03's own checkpoint-300/600/888 instead", reason: "those three are ~0.3 epochs apart on one cosine annealing to zero, so they are far more correlated than exp-02/final and exp-03/final, which are separated by a full 114k-row stage. Less diversity to average over."}
+    - {option: "Search alpha over {0.25, 0.5, 0.75}", reason: "each alpha costs a full n=500 read (~9 min) plus a held-out read; with 4.4 h left and verification reserved, one principled midpoint is scored rather than a sweep whose winner would be selected on noise."}
+  pitfalls_hit:
+    - {what: "make_soup.py as first locked would have died at save_pretrained: exp-02/final's generation_config carries do_sample False + temperature 0.0 for vLLM, which transformers refuses to write, so the command would have loaded both 4B models and then left ckpts/exp-04-soup holding only config.json. Same trap train_sft.py already had to fix for exp-03.", cost_h: 0.0, fix: "reset ma.generation_config to a valid default before saving; the greedy json.dump afterwards is unaffected"}
+    - {what: "Gemma3 ties lm_head.weight to embed_tokens.weight, so state_dict() returns two keys over one storage. The in-place average would have hit that tensor twice and left the 262208 x 2560 embedding at 0.25*exp-02 + 0.75*exp-03 while every other tensor sat at 0.5/0.5 - the card would have measured an alpha it does not name.", cost_h: 0.0, fix: "deduplicate by tensor .data_ptr() before averaging and print the count of skipped tied duplicates"}
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Two checkpoints score within the noise floor of each other and neither is clearly better: over the 800 items where both were measured under identical protocols (500 official test + 300 held-out train), exp-02 gets 567 right and exp-03 gets 579. Their disagreement is churn rather than a shift - on the 300-item probe exp-03 fixes 27 items exp-02 missed and breaks 19 it had right - so each checkpoint holds something the other has lost, and shipping either one alone discards that."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_watch_rerun.json, locator: "fixed=27, regressions=19, still_failing=60", observation: "46 of 300 probe items change verdict between the two checkpoints while the net moves by only 8"}
+    - {path: /home/ben/task/eval/exp-02_dev500.json, locator: "accuracy=0.708, stderr=0.0204", observation: "the n=500 reads differ by 0.008 against a per-read stderr of 0.020"}
+    - {path: /home/ben/task/eval/exp-03_dev500.json, locator: "accuracy=0.716, stderr=0.0202", observation: "same"}
+  affected_share: 0.153
+  failure_examples:
+    - {id: "19 regressed probe items", source: /home/ben/task/analysis/exp-03_watch_rerun.json, question: "ids where exp-02 is correct and exp-03 is wrong", gold: "recorded per item in analysis/exp-02_heldout300.json", model_output: "recorded per item in analysis/exp-03_heldout300.json", failure: "exp-03 lost an item exp-02 had right - the cost side of the second SFT stage"}
+    - {id: "27 fixed probe items", source: /home/ben/task/analysis/exp-03_watch_rerun.json, question: "ids where exp-02 is wrong and exp-03 is correct", gold: "recorded per item", model_output: "recorded per item", failure: "exp-02 misses an item exp-03 has right - the cost side of shipping exp-02"}
+    - {id: "60 jointly-failing probe items", source: /home/ben/task/analysis/exp-03_watch_rerun.json, question: "ids wrong under both checkpoints", gold: "recorded per item", model_output: "recorded per item", failure: "beyond the reach of either checkpoint, and so beyond the reach of their average"}
+  watch_set:
+    path: /home/ben/task/data/heldout_dev300.jsonl
+    n: 300
+    selection: "the same 300 held-out openai/gsm8k train rows used by exp-01, exp-02 and exp-03, excluded from every training corpus in this session. Not benchmark test items."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A uniform (alpha=0.5) weight average of ckpts/exp-02/final and ckpts/exp-03/final scores higher on the official 500-item read than either ingredient."
+  mechanism: "exp-03 was initialised from exp-02 and trained one further epoch at half the learning rate, so the two sit in the same loss basin, close enough for a linear interpolation to stay inside it. The 27-fixed / 19-regressed churn on the probe says each has fitted item-level detail the other lost; averaging weights along a single trajectory keeps the shared, well-determined directions and cancels the stage-specific noise, which is the standard reason a soup beats its ingredients."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0.00 to +0.02 on the n=500 read (0.716 -> 0.716-0.736). A soup of two points on one trajectory is a small, reliable effect, not a large one."
+  falsified_if: "the average scores at or below both ingredients on the n=500 read (<= 0.708), or it loses the termination panel (max_tokens share above 0.05, or any garbage prefixes) - either would mean the interpolation left the basin."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_pool_v4.jsonl
+      source: "no new data: this card trains on nothing. The file is named because it is the corpus that produced the second ingredient (exp-03) and the lock should pin it."
+      n_examples: 114339
+      built_by: /home/ben/task/build_v4.py
+      build_command: [python, build_v4.py]
+      selection: "unchanged from exp-03; not read by this card's command"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "torch 2.8.0 tensor arithmetic over two Gemma3ForConditionalGeneration state dicts"
+    peft: "none"
+    hyperparams: {lr: null, epochs: 0, batch_size: null, grad_accum: null, max_seq_len: 2560, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 0}
+    target_format: "unchanged - the merge does not touch the output format. Both ingredients emit a chain of thought, then 'ANSWER: <n>', then <end_of_turn>."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, make_soup.py, --a, /home/ben/task/ckpts/exp-02/final, --b, /home/ben/task/ckpts/exp-03/final, --alpha, "0.5", --out, /home/ben/task/ckpts/exp-04-soup]
+    cwd: /home/ben/task
+    script: /home/ben/task/make_soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04-soup
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 500 (first 500 items of openai/gsm8k main test split, in dataset order) - the same 500 both ingredients were scored on"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.716
+    path: /home/ben/task/eval/exp-03_dev500.json
+  diagnostic:
+    what: "held-out-300 probe (eval_heldout.py, greedy, same prompt and scoring rule): exp-02 0.710, exp-03 0.7367. Plus the termination panel (max_tokens share, garbage prefixes, no-ANSWER count) to confirm the interpolation did not leave the basin."
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.33
+  output_checkpoint: /home/ben/task/ckpts/exp-04-soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04-soup, step: 0}
+  training_summary: {final_loss: null, steps: 0, notes: "no training. 883/884 float tensors averaged at alpha=0.5, 1 skipped as a tied duplicate - the dedup fired, so the tied embed_tokens/lm_head storage was averaged once, not twice."}
+  measurements:
+    - {metric: accuracy, value: 0.702, n: 500, path: /home/ben/task/eval/exp-04_dev500.json, delta_vs_comparator: -0.014}
+    - {metric: accuracy, value: 0.7233, n: 300, path: /home/ben/task/analysis/exp-04_heldout300.json, delta_vs_comparator: -0.0134}
+  diagnostic_result:
+    value: 0.7233
+    path: /home/ben/task/analysis/exp-04_diag.json
+    notes: >-
+      The interpolation stayed in the basin - the soup is a working model, not a broken one:
+      stop 488/500, max_tokens 0.024 (falsifier threshold 0.05), 0 garbage prefixes, mean output
+      279 tokens. It is simply not better. Pre-run self-checks all passed: both safetensors shards
+      present, generation_config carries temperature 0.0 and eos_token_id [1,106], and it was
+      scored with the byte-identical invocation both ingredients used.
+  watch_set_result:
+    fixed: null
+    still_failing: null
+    regressions: null
+    path: /home/ben/task/analysis/exp-04_heldout300.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: >-
+    The falsifier fired exactly as written: at n=500 the soup scores 0.702, at or below both
+    ingredients (exp-02 0.708, exp-03 0.716), and it is below both on the held-out 300 as well
+    (0.7233 vs 0.710 / 0.7367). Pooled over the same 800 items the ordering is exp-03 0.724,
+    soup 0.710, exp-02 0.709 - averaging recovered exp-02's level rather than beating both.
+    Interpolation did not leave the basin (max_tokens 0.024, 0 garbage prefixes), so the merge
+    was sound and the hypothesis was just wrong for this pair.
+  decision: reject
+  next_step: >-
+    final_model/ stays at exp-03/final, verified through the shipping path at 0.714 (n=500) and
+    load-checked from a fresh process. Two consecutive points on one SFT trajectory were evidently
+    too correlated for a soup to add anything - exp-05 goes back to adding unseen data instead.

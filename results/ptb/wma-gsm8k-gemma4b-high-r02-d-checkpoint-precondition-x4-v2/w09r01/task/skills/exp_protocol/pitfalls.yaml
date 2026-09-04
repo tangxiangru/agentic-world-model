@@ -1,0 +1,57 @@
+# Known ways a training run produces a clean-looking wrong answer and exits 0.
+# Each entry names the preflight check that catches it mechanically, or
+# `check: null` when only the scientist can check it — those are printed by
+# `awm exp_protocol preflight` as reminders. Add an entry when a run is lost
+# to something new; move it from null to a check id once the check exists.
+#
+# Fields: id, symptom (what you see), cause (what actually happened),
+#         check (preflight check id or null), guidance (what to do), source.
+
+- id: eos_mismatch
+  symptom: The model never emits a stop token at grading; answers are buried in a long tail; the score sits at the base model's floor.
+  cause: Training targets ended with the tokenizer's eos (e.g. <|endoftext|> on a Base checkpoint) while the grading chat template — and therefore vLLM — stops on a different token (e.g. <|im_end|>).
+  check: stop_token_consistent
+  guidance: Read the terminator from the same chat template the grader uses and end every training target with it. Declare it in setup.method.stop_token so preflight can verify the data.
+  source: main@529fc11 doc/split-redesign.md, "Three defects the CPU dry run caught" (2026-08-30)
+
+- id: seq_len_truncation
+  symptom: Loss is flat or zero from step one; every arm scores the base floor; the run exits 0.
+  cause: max_seq_len was smaller than the prompt (a 10-shot system message alone can be ~1700 tokens). Under completion-only loss the completion is what gets truncated, so every row carries zero loss tokens.
+  check: max_seq_len_headroom
+  guidance: Measure the token length of your longest rows before training (p50 and max), set max_seq_len above the max, and fail the run if more than 2% of rows truncate.
+  source: main@529fc11 doc/split-redesign.md (2026-08-30)
+
+- id: template_unreachable
+  symptom: Training and grading render different strings for the same conversation; the model is trained on one format and graded on another.
+  cause: The grader passes templates/<model>.jinja from src/eval/templates/, which run_task.sh does not copy into the sandbox; whatever the tokenizer shipped was used instead.
+  check: null
+  guidance: Embed the exact template the grader uses (byte-for-byte, hash-checked) in your training code and render one example both ways before launching.
+  source: main@529fc11 doc/split-redesign.md (2026-08-30)
+
+- id: double_answer_format
+  symptom: The grader reads the wrong number; accuracy drops although reasoning looks fine.
+  cause: Training data carried two answer formats (e.g. MetaMathQA bodies with gsm8k's own "#### N" line plus a boxed answer), teaching the model a second marker the grader picks up first.
+  check: answer_marker_single
+  guidance: Decide on one answer marker the grader reads, declare it in setup.method.answer_marker, and make every target contain it exactly once.
+  source: main@529fc11 doc/split-redesign.md (2026-08-30)
+
+- id: comparator_protocol_mismatch
+  symptom: A delta that looks like an improvement is really two different evaluations being compared.
+  cause: The comparator was scored with a different --limit, seed, or dev set than the candidate.
+  check: comparator_same_protocol
+  guidance: Score the parent under the exact protocol in evaluation.protocol before launching and record the path; a comparator measured on a different --limit is not a comparator.
+  source: doc/spec/experiment-card-v1.md (jerry-dev), "Evaluation"
+
+- id: final_model_not_loadable
+  symptom: The final evaluation scores the base model or fails to load; hours of training count for nothing.
+  cause: final_model/ was a LoRA adapter directory, lacked the tokenizer, or had a config.json the grader's vLLM could not load.
+  check: null
+  guidance: Merge adapters, save the tokenizer alongside the weights, and load final_model/ once on CPU with transformers before the deadline. The grader loads final_model/ with vLLM from a fresh process.
+  source: doc/reference/harness_facts/posttrainbench.md §4 (final evaluation)
+
+- id: datasets_version_drift
+  symptom: A dataset that downloaded fine elsewhere fails to load, or loads with a different schema.
+  cause: The datasets library's 3.x and 4.x are mutually incompatible for some hubs (features types, trust_remote_code); the sandbox pins one version.
+  check: null
+  guidance: "Use the datasets version the harness ships (PostTrainBench container: datasets==4.5.0) and pin dataset revisions in setup.data[].source."
+  source: "doc/reference/harness_facts/airs_bench.md §6; PR #8 commit message (2026-09-01)"

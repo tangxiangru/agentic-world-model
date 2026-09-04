@@ -1,0 +1,170 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T21:36:08Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.1
+  remaining_h: 3.9
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.716, protocol_n: 500}
+  trigger: "exp-04 rejected: averaging exp-02 and exp-03 scored 0.702 at n=500, at or below both ingredients, so the free lever is spent. The only line that has actually moved this model is unseen SFT data (0.04 -> 0.709 -> 0.724 pooled), and 3.9 h remain with the incumbent already verified and shipped, so a third stage is a bounded bet with the fallback already on disk."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-04_dev500.json, locator: "accuracy=0.702 vs exp-02 0.708 and exp-03 0.716"}
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "result.measurements - the only intervention since exp-02 that moved the pooled read"}
+    - {path: /home/ben/task/eval/final_model_dev500.json, locator: "accuracy=0.714 - the incumbent already verified through the shipping path"}
+  alternatives_rejected:
+    - {option: "Stop and ship exp-03", reason: "final_model/ already holds exp-03 and is verified, so the remaining 3.9 h are otherwise idle. This card cannot lower the submission - it only replaces it if it wins on the pooled read."}
+    - {option: "Alpha sweep around the exp-04 soup", reason: "the soup lost to BOTH ingredients at n=500, so the interpolation path is not merely mis-tuned; a sweep would be selecting on noise along a line that is already below the endpoints."}
+    - {option: "Retrain from base on the union of v1+v4 in one clean cosine", reason: "215k rows is ~3.3 h, over budget, and it would discard 3.6 h of accumulated training for an untested schedule argument."}
+    - {option: "Rejection-sampling fine-tuning", reason: "still does not fit: generation, filtering, training and evaluation inside 3.9 h with a 1 h safety margin reserved for finalisation."}
+    - {option: "Sweep ckpts/exp-03/checkpoint-300 and -600 on the held-out 300 before launching (the exp-05 verdict's tier-3 suggestion)", reason: "0.25 h of the 3.8 h left, and the identical sweep on exp-02's trajectory was monotone (0.690 / 0.7033 / 0.710 at steps 400 / 600 / 789). exp-03 has the same one-epoch cosine-to-zero shape at half the lr, so an interior checkpoint beating the annealed endpoint is unlikely, and the 0.25 h is worth more as end-of-session margin. Recorded as a knowingly skipped check."}
+    - {option: "104 000 rows (the first v5 build)", reason: "measured at 70.1 M tokens = ~1.97 h, which left under 1 h of end-of-session margin. Trimmed to 92 000 rows / ~1.75 h."}
+    - {option: "Re-show all 28 339 original-gsm8k rows a third time", reason: "they would be on their third epoch while everything else is on its first; halved to 14 000 to keep the GSM8K style anchor without pushing 7 129 problems toward memorisation."}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/decon_input_v5.jsonl], outcome: "92 000 documents scanned, 0 contaminated, exit 0"}
+    - {command: [python, -c, "tokenise a 2500-row sample of sft_pool_v5.jsonl"], outcome: "mean 674 tokens, 1.0% over max_seq_len 2560, ~62 M tokens -> ~1.75 h at exp-02's measured rate"}
+    - {command: [python, -c, "load final_model/ on CPU with transformers and md5 it against ckpts/exp-03/final"], outcome: "Gemma3ForConditionalGeneration, 4.3 B params, tokenizer and greedy generation_config present, byte-identical to the checkpoint; scored 0.714 at n=500 through the shipping path"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent is at 0.716 (n=500) / 0.7367 (held-out 300) and its remaining failures are reasoning errors inside well-formed answers - 79 of 300 probe items still wrong, with truncation at 1.3% and no garbage prefixes. Every non-data lever tried has returned nothing: checkpoint selection was monotone (0.690/0.7033/0.710), the few-shot share is not binding (0.700 vs 0.710), greedy decoding was already adopted, and weight averaging lost to both its ingredients."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_watch_rerun.json, locator: "exp03_correct=221 of 300", observation: "79 probe items still wrong after two SFT stages"}
+    - {path: /home/ben/task/analysis/final_model_diag.json, locator: "truncation_rate=0.016, garbage_prefix=0, no_answer_marker=8", observation: "the format channel is saturated at n=500; what is left is solving the problems"}
+    - {path: /home/ben/task/eval/exp-04_dev500.json, locator: "accuracy=0.702", observation: "the cheapest non-data lever returned less than the incumbent"}
+  affected_share: 0.263
+  failure_examples:
+    - {id: "79 probe items wrong under exp-03", source: /home/ben/task/analysis/exp-03_heldout300.json, question: "samples[] entries with correct=false", gold: "recorded per item", model_output: "recorded per item - well-formed chain of thought, single ANSWER line, wrong number", failure: "arithmetic or set-up error"}
+    - {id: "60 items wrong under BOTH exp-02 and exp-03", source: /home/ben/task/analysis/exp-03_watch_rerun.json, question: "still_failing set", gold: "recorded per item", model_output: "recorded per item", failure: "not moved by the second stage either - the hard core"}
+    - {id: "19 items exp-03 regressed", source: /home/ben/task/analysis/exp-03_watch_rerun.json, question: "regressions set", gold: "recorded per item", model_output: "recorded per item", failure: "lost between stage 1 and stage 2; a third stage risks the same churn"}
+  watch_set:
+    path: /home/ben/task/data/heldout_dev300.jsonl
+    n: 300
+    selection: "the same 300 held-out openai/gsm8k train rows used by every card in this session, excluded from sft_pool.jsonl, v2, v3, v4 and v5 at build time. Not benchmark test items."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A third SFT stage from exp-03/final over 92 000 rows it has never seen - 46 000 fresh augmented-GSM solutions, 32 000 integer-answer MATH problems absent from every previous corpus, and 14 000 original-GSM8K rows as a style anchor - at lr 3e-6 raises the n=500 accuracy above exp-03's 0.716."
+  mechanism: "Data volume is the only intervention that has moved this model, and each stage has had a smaller lr and a smaller effect (stage 1 +0.67, stage 2 +0.015 pooled). If that curve has not yet reached zero, a third stage on strictly unseen rows should buy a little more; if it has, this run is the measurement that says so."
+  mechanism_note: "Same continuation shape as exp-03: warmup over 1% of steps to 3e-6 (0.6x exp-03's peak), cosine to zero, identical target format, stop token, answer marker, loss masking, batch shape, max_seq_len and 20% few-shot share. Corpus content is again the only variable. 32 000 of the MATH problems are new even relative to exp-03's 34 000."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0.00 to +0.02 on the n=500 read (0.716 -> 0.716-0.736). Bounded below stage 2's +0.008 on this same read, since this stage is 0.8x the rows at 0.6x the lr."
+  falsified_if: "the n=500 read is at or below 0.716 AND the held-out 300 is at or below 0.7367 - both flat or down would say the public-corpus SFT line is exhausted for this model, and exp-03 remains the submission."
+  adoption_rule: "Pre-registered before launch, because the expected effect (+0.00 to +0.02) sits at or below this read's own stderr (0.0202) and a post-hoc rule would be selection on noise. final_model/ is overwritten ONLY if exp-05 beats exp-03 on the POOLED 800 items - the 500 official test items plus the 300 held-out probe items, counted as raw correct/800, which is the same rule exp-03 was adopted under (exp-03 579/800 = 0.724 vs exp-02 567/800 = 0.709). A win on one read and a loss on the other leaves final_model/ untouched at exp-03."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_pool_v5.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e: 46 000 augmented_gsm8k solutions whose target text appears in neither sft_pool.jsonl nor sft_pool_v4.jsonl, 32 000 integer-answer math/augmented_math rows on problems used by neither, and 14 000 of the gsm8k-source rows. Few-shot exemplars from openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 train."
+      n_examples: 92000
+      built_by: /home/ben/task/build_v5.py
+      build_command: [python, build_v5.py]
+      selection: "same filters as exp-02/exp-03 (numeric answer, exactly one 'ANSWER: ' marker, gold is the last number, \\boxed unwrapped, the 300 held-out probe questions removed); MATH rows require a plain-integer answer, a target under 4000 characters, and a problem absent from sft_pool_v4.jsonl; 19.7% carry a 2-10-shot exemplar prefix in the grader's layout"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom SparseLossTrainer (LM head applied only at supervised positions)"
+    peft: "none - full fine-tune of the 3.88B text decoder; vision_tower and multi_modal_projector (420M) frozen"
+    hyperparams: {lr: 3.0e-6, epochs: 1.0, batch_size: 16, grad_accum: 8, max_seq_len: 2560, scheduler: cosine, warmup: 0.01, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "OpenMathInstruct-2 chain of thought with \\boxed removed, then a blank line, then 'ANSWER: <n>', then <end_of_turn>. Loss on the completion only; prompt tokens are -100. Identical to exp-02 and exp-03."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_pool_v5.jsonl, --parent, /home/ben/task/ckpts/exp-03/final, --out, ckpts/exp-05, --bs, "16", --accum, "8", --lr, "3e-6", --epochs, "1", --max-seq-len, "2560", --warmup, "0.01", --grad-ckpt, --optim, adamw_bnb_8bit, --save-steps, "350", --save-total-limit, "3"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 350
+    keep: 3    # --save-total-limit 3 at 718 total steps: checkpoint-350, checkpoint-700, and final/
+  budget: {gpu: H100-80GB, planned_h: 1.75}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 500 (first 500 items of openai/gsm8k main test split, in dataset order) - the same 500 exp-02, exp-03 and exp-04 were scored on"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.716
+    path: /home/ben/task/eval/exp-03_dev500.json
+  diagnostic:
+    what: "held-out-300 probe (eval_heldout.py, greedy, same prompt and scoring rule): base 0.0233, exp-02 0.710, exp-03 0.7367, soup 0.7233. Plus the termination panel (truncation rate, garbage prefixes, no-ANSWER count) to confirm a third stage did not undo the format gain."
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.65
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-350, step: 350}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-700, step: 700}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-713, step: 713}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 713}
+  training_summary:
+    final_loss: 0.3220
+    steps: 713
+    notes: "train_loss 0.3220, 15.39 samples/s, 5927 s. 91 223 of 92 000 rows kept (777 over 2560 tokens). Saved generation_config.json diffed against the greedy dict before evaluating: temperature 0.0, eos_token_id [1, 106], no top_k/top_p - so this arm was read greedily, like its comparator."
+  measurements:
+    - {metric: accuracy, value: 0.718, n: 500, path: /home/ben/task/eval/exp-05_dev500.json, delta_vs_comparator: 0.002}
+    - {metric: accuracy, value: 0.7333, n: 300, path: /home/ben/task/analysis/exp-05_heldout300.json, delta_vs_comparator: -0.0034}
+    - {metric: accuracy, value: 0.7238, n: 800, path: /home/ben/task/analysis/pooled800_summary.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.7333
+    path: /home/ben/task/analysis/exp-05_diag.json
+    notes: >-
+      No style drift from raising the MATH share to 35%: stop 490/500, truncation 0.020 (exp-03
+      0.016 at n=500 via final_model, exp-04 0.024), garbage prefixes 0, no-ANSWER 10/500, mean
+      output 261 tokens. The termination panel is flat, so the flat score is a capability result
+      and not a formatting regression - which was the specific confound this diagnostic was
+      declared to rule out.
+  watch_set_result:
+    fixed: null
+    still_failing: 80
+    regressions: null
+    path: /home/ben/task/analysis/exp-05_heldout300.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    A dead heat. exp-05 and exp-03 both get 579 of the same 800 items right (exp-05 359/500 test
+    + 220/300 probe, exp-03 358/500 + 221/300), and the two reads move in opposite directions by
+    one item each: n=500 0.716 -> 0.718, held-out 0.7367 -> 0.7333. The falsifier as written did
+    not fire, because it required BOTH reads to be flat or down and n=500 rose by 0.002 - but
+    0.002 is one sample out of 500 and is not a result. A third stage of public-corpus SFT, on
+    92 000 rows the model had never seen, bought nothing.
+  decision: reject
+  next_step: >-
+    final_model/ is left untouched at exp-03/final, exactly as the pre-registered adoption rule
+    required: the rule said overwrite only if exp-05 BEATS exp-03 on the pooled 800, and a tie is
+    not a win. Writing that rule before the number landed is what made this an easy call rather
+    than a coin flip over a 1-item difference. Taken with exp-04, the reading is that this model
+    saturated on public GSM-style SFT at ~0.72 somewhere in exp-02/exp-03: stage 1 bought +0.67,
+    stage 2 +0.015, stage 3 +0.000, and neither weight averaging nor checkpoint selection adds
+    anything. The next line worth trying is not more corpus but on-policy data - rejection
+    sampling or preference optimisation over the 80 probe items still failing - which needs more
+    hours than this session had left.

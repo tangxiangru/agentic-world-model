@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T20:22:51Z'
+
+situation:
+  elapsed_h: 5.9
+  remaining_h: 4.1
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7467, protocol_n: 150}
+  trigger: "exp-03 (107k unique rows, 1 epoch) scored 0.680 against exp-02's 0.747, so scaling the corpus did not pay off - but the two checkpoints are independent fine-tunes of the same base snapshot on overlapping data, which is exactly the situation where a uniform weight average usually lands at or above the better parent."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: "accuracy 0.680, stderr 0.038", observation: "below exp-02's 0.747; the gap is ~1.3 sigma so it is 'no evidence of gain', not a proven regression"}
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy 0.7467, stderr 0.036", observation: "incumbent"}
+  alternatives_rejected:
+    - {option: "Train exp-03 for a second epoch to match exp-02's epoch count", reason: "2.2 h of GPU and only 4.1 h remain; the merge costs 5 min of CPU and answers a different, cheaper question"}
+    - {option: "Weighted soup, e.g. 0.7 exp-02 / 0.3 exp-03", reason: "with one eval slot per candidate and a 0.036 stderr I cannot tune a mixing weight; the uniform average is the single defensible default"}
+    - {option: "Declare exp-02 the winner now and stop", reason: "an eval slot is 12 min and the soup is already built; the cost of checking is small against a possible 1-2 point gain"}
+  pitfalls_hit:
+    - {what: "merge_models.py crashed in save_pretrained: transformers refuses to re-serialise the greedy generation_config the checkpoints carry (temperature 0.0 with do_sample False)", cost_h: 0.1, fix: "reset model.generation_config from the base snapshot before save_pretrained and write generation_config.json by hand afterwards"}
+    - {what: "Trainer log lines never reached the log file in exp-02 and exp-03 - stdout is block-buffered under nohup and transformers' PrinterCallback does not flush", cost_h: 0.0, fix: "read losses from trainer_state.json after the run; use python -u next time"}
+  smoke_runs:
+    - {command: [ls, -la, /home/ben/task/ckpts/soup23], outcome: "two safetensors shards (4.96 GB + 3.64 GB), index, processor and tokenizer files, and a greedy generation_config.json - same file set the graded exp-02 directory had"}
+
+problem:
+  statement: "There are now two fine-tunes of the same base snapshot, 0.747 and 0.680 on dev-150, and no way to tell from n=150 alone whether the difference is real; neither is clearly the best model this session can produce."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: accuracy, observation: "0.7467 +/- 0.036"}
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: accuracy, observation: "0.680 +/- 0.038"}
+  affected_share: null
+  failure_examples:
+    - {id: dev150-w1, source: /home/ben/task/eval/exp-02_dev150_samples.json, question: "(four-level structure, average square footage per level)", gold: "60", model_output: "... 30 / 4 = 7.5 ... ANSWER: 7.5", failure: "misread set-up, non-integer answer"}
+    - {id: dev150-w2, source: /home/ben/task/eval/exp-02_dev150_samples.json, question: "(bags of puppy food over the first year)", gold: "5", model_output: "rounds 1.64 -> 2 and 6.64 -> 7 separately, ANSWER: 9", failure: "rounds each part instead of the total"}
+    - {id: dev150-w5, source: /home/ben/task/eval/exp-02_dev150_samples.json, question: "(volume of three boxes with walls)", gold: "72", model_output: "'volume of the walls is 1*1*4 = 4' ... ANSWER: 348", failure: "invented geometric decomposition"}
+  watch_set:
+    path: /home/ben/task/data/probe200.jsonl
+    n: 200
+    selection: "200 items from the gsm8k TRAIN split held out of every training file this session (seed 1234); an off-benchmark probe, so no test item is copied into the task dir"
+
+hypothesis:
+  claim: "A uniform weight average of the exp-02 and exp-03 checkpoints scores at least as well as exp-02 (0.7467) on dev-150."
+  mechanism: "Both checkpoints start from the same base snapshot and are trained on overlapping GSM8K-derived data, so they should lie in the same loss basin; averaging their weights cancels part of the independent fine-tuning noise while keeping the shared solution, which is the standard model-soup effect."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "0 to +3 points; a soup rarely beats the better parent by much but rarely falls below it either"}
+  falsified_if: "dev-150 accuracy is below 0.7467, i.e. the average is worse than its better parent."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe200.jsonl
+      source: "no training data - this card averages two existing checkpoints; the probe file is listed because the schema requires an entry"
+      n_examples: 200
+      built_by: null
+      build_command: [python, scripts/merge_models.py, --models, /home/ben/task/ckpts/exp-02/final, /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/ckpts/soup23]
+      selection: "n/a"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "transformers 4.57.3, float32 state-dict average then cast to bf16 (scripts/merge_models.py)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from the parents: reasoning, then a single 'ANSWER: <integer>' line, then the terminator"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/soup23, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6', --json-output-file, /home/ben/task/eval/soup23_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/eval-soup23.log
+  output_dir: /home/ben/task/ckpts/soup23
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.25}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, unshuffled); 10-shot system message drawn from the gsm8k TRAIN split with fewshot_seed=42"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.7467
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "share of the 150 responses that end with an 'ANSWER: <number>' line - averaging weights must not break the learned stop behaviour"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.3
+  output_checkpoint: /home/ben/task/ckpts/soup23
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup23, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; uniform float32 average of the two parents' state dicts, cast back to bf16"}
+  measurements:
+    - {metric: accuracy, value: 0.720, n: 150, path: /home/ben/task/eval/soup23_dev150.json, delta_vs_comparator: -0.0267}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/soup23_format.json
+    notes: "150/150 responses end with an 'ANSWER: <number>' line, so averaging the weights did not damage the stop behaviour; the loss is in reasoning accuracy only"
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The soup scores 0.720 against exp-02's 0.747 (-2.7 points, well inside the 0.036 stderr) and against exp-03's 0.680. It lands between its parents rather than above the better one, so averaging bought nothing here - consistent with exp-03 being a genuinely weaker parent rather than an equally good one whose noise could be cancelled."
+  decision: reject
+  next_step: "exp-05: rejection-sampling fine-tuning on top of exp-02. Sampling k=4 at temperature 1.0 over the 7173 non-holdout gsm8k train questions already gave pass@4 = 0.854 and 11262 correct, deduped solutions (analysis/rft_stats.json); mix them with 10k rows of the exp-02 corpus and continue training at a low LR."

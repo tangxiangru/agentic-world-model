@@ -1,0 +1,1 @@
+Decode-config card exp-03: no training data. The intervention changes only generation_config.json of a byte-copy of ckpts/exp-02/final; the weights are unchanged. Evaluation uses the official gsm8k test split inside inspect_evals/gsm8k (--limit 150). No gsm8k test item is used for training anywhere in this session.

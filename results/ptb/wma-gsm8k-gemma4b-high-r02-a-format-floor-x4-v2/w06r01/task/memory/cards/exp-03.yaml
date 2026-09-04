@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T16:08:24Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 1.6
+  remaining_h: 8.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6667, protocol_n: 150}
+  trigger: "exp-02's +59.3 points confounds two changes. The base was read under sampling (vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config' and the snapshot ships do_sample true / top_k 64 / top_p 0.95 with no temperature, so t=1.0), while exp-02's checkpoint ships its own generation_config.json with temperature 0.0. Neither number tells me which decode the final model should carry."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-01.log, locator: "'Default sampling parameters have been overridden by the model's Hugging Face generation config'", observation: "vLLM 0.11 takes its server-side defaults from generation_config.json"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py, locator: "line 233: 'if config.temperature is not None'", observation: "evaluate.py never sets a temperature, so nothing overrides the server default - the checkpoint's own generation_config.json is the only decode lever available"}
+    - {path: /home/ben/task/memory/cards/exp-02.verdict.json, locator: "suggestions.preconditions[4] (tier 4)", observation: "the WMA asked for exactly this attribution before more compute is spent"}
+  alternatives_rejected:
+    - {option: "Re-read the BASE snapshot at pinned greedy instead (the WMA's literal suggestion)", reason: "the snapshot is the immutable starting revision in a shared HF cache, and the number I actually need to act on is which decode MY checkpoint should ship. Re-reading the trained checkpoint under the base's sampling config answers the same C1a question and directly decides the artefact"}
+    - {option: "Skip the attribution and just keep greedy", reason: "greedy is the usual winner for math, but 'usual' is what the corpus's 0.02/0.127 generation_config failures were also assumed to be; this costs 0.15 h against a ~90 min exp-04 that would inherit the wrong choice"}
+    - {option: "Copy the 8.6 GB of weights to make the variant", reason: "symlinked the safetensors and every tokenizer file into ckpts/exp-02-sampled/ and dropped in the base's generation_config.json, so the two arms differ in exactly one file and nothing else"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The measured delta of +59.3 points is attributed in exp-02's conclusion to the training, but the two evaluations also differed in decode: the base was sampled at t=1.0 with top_k 64 / top_p 0.95, the trained checkpoint was greedy. The size of that decode term is unmeasured, so (a) exp-02's effect is overstated by an unknown amount, and (b) I do not know whether shipping temperature 0.0 in the final model helps or hurts."
+  evidence:
+    - {path: /home/ben/task/memory/cards/exp-01.yaml, locator: "conclusion.next_step", observation: "the base read is sampled; recorded at the time but not priced"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample false, temperature 0.0, no top_k/top_p", observation: "the candidate is greedy"}
+    - {path: /home/ben/task/analysis/exp-02_dev150_diag.json, locator: "stop_reasons {stop: 150}", observation: "with format failures already at 0.0067, anything left on the table is reasoning or sampling noise, not termination"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Evaluating the unchanged exp-02 weights under the base snapshot's sampling generation_config (do_sample true, top_k 64, top_p 0.95, t=1.0) scores LOWER than the same weights under greedy decoding, so part of exp-02's +59.3 is a decode effect and greedy is the right config for the final artefact."
+  mechanism: "GSM8K is a single-path exact-answer task: one bad token anywhere in an arithmetic chain propagates to a wrong final number, and there is no self-consistency pass to average it away because the harness takes one sample per item. Temperature 1.0 with top_k 64 puts real mass on those tokens at every step of a ~250-token chain, so sampling should cost several points relative to the argmax path."
+  expected_effect: {metric: accuracy, direction: lower, against: exp-02, magnitude: "-3 to -15 points (0.667 -> 0.52-0.64)"}
+  falsified_if: "The sampled arm scores at or above 0.6667, which would mean greedy buys nothing and exp-02's gain is purely the training - in which case the final model's decode config is a free choice rather than a lever."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/eval_data_note.txt
+      source: "openai/gsm8k test split via inspect_evals; evaluation input only"
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "identical to exp-01 and exp-02: evaluate.py --limit 150"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "inspect_ai + vllm 0.11.0 via evaluate.py (unmodified)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - generation only. ckpts/exp-02-sampled/ symlinks every file of ckpts/exp-02/final except generation_config.json, which is the base snapshot's (do_sample true, top_k 64, top_p 0.95, eos_token_id [1,106]). Weights are bit-identical to the incumbent."
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02-sampled, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, /home/ben/task/eval/exp-03_sampled_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03_sampled_dev150.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, scripts/run_eval.sh, /home/ben/task/ckpts/exp-02-sampled, exp-03_sampled_dev150, "150"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6667
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "scripts/analyze_log.py on the sampled arm's inspect log: format/termination failure rate and stop_reason counts. If sampling also breaks termination (a run-on that greedy avoided) the loss is a format loss, not a reasoning loss, and that distinction changes what exp-04 should do."
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 493}
+  training_summary: {final_loss: null, steps: null, notes: "no training - the weights are bit-identical to exp-02; only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.5933, n: 150, path: /home/ben/task/eval/exp-03_sampled_dev150.json, delta_vs_comparator: -0.0734}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-03_sampled_dev150_diag.json
+    notes: "format/termination failure rate 0.0 and stop_reasons {stop: 150} - identical output discipline to the greedy arm, so the 7.3-point loss is not a termination failure. garbage-prefix 0. The sampled arm's vLLM log carries the 'Default sampling parameters have been overridden by the model's Hugging Face generation config' line, confirming top_k 64 / top_p 0.95 with temperature falling back to 1.0 (verdict precondition 1). stderr 0.0402."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The same weights score 0.5933 sampled against 0.6667 greedy: -7.3 points, inside the WMA's predicted [-24, -5]. Formatting is untouched in both arms (0.0 vs 0.0067 failure rate, {stop: 150} both times), so the loss is exactly the predicted mechanism - sampled tokens derailing arithmetic chains with no self-consistency pass to average them out."
+  decision: adopt
+  next_step: "Ship temperature 0.0 / do_sample false / no top_k or top_p in every checkpoint's generation_config.json, including final_model - scripts/fix_ckpt.py does this for Trainer-written intermediate checkpoints, which otherwise inherit gemma's sampled defaults. Attribution for exp-02's headline: of +59.3, about 7 points are decode and about 52 are the training. As the WMA's precondition 3 notes, evaluate.py passes no seed, so the sampled arm is one draw with a ~3.3 pp spread - the 7.3 should be read as approximate, not subtracted to the digit."

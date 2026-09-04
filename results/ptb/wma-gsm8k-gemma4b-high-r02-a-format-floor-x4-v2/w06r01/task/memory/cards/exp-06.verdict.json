@@ -1,0 +1,199 @@
+{
+  "schema_version": "awm-wma-verdict-v1",
+  "card_id": "exp-06",
+  "wma_skill": "b6cc80891de4",
+  "backend": "claude",
+  "mode": "online",
+  "issued_at": "2026-09-03T21:58:25Z",
+  "change_types": [
+    "C6"
+  ],
+  "levels": {
+    "L0_runs": {
+      "answer": "yes",
+      "confidence": 0.93,
+      "basis": [
+        "e1",
+        "e2",
+        "e3",
+        "e9",
+        "e10"
+      ],
+      "note": "Pure C6, no GPU, no training, one clean code path. Probe p3 ran the scientist's own scripts/soup.py verbatim on three architecture-identical miniature Gemma3 checkpoints in a scratch dir and it exited 0. Probe p1 shows the three real ingredients carry byte-identical tensor inventories (883 tensors each, all BF16, same keys and shapes), so the `acc[k] += sd[k]` loop cannot KeyError and `load_state_dict` (strict) cannot mismatch; probe p2 shows the state_dict holds 884 entries (the 883 on disk plus the tied lm_head) and **no non-float entries**, so the `acc[k] /= len(srcs)` in-place divide has no integer-buffer trap. Memory and disk are non-constraints: 1.84 TB RAM against a ~34 GB fp32 peak (accumulator + one loaded model), 4.0 TB free against an 8.6 GB output. The only config difference among ingredients is `use_cache` true/false on checkpoint-1600, which does not touch weights and is not the config that gets saved (srcs[0] supplies it). Residual 7 %: a ~10 min unattended CPU job on a shared box, and the full-size safetensors path was not itself exercised."
+    },
+    "L1_valid": {
+      "answer": "yes",
+      "confidence": 0.88,
+      "basis": [
+        "e1",
+        "e2",
+        "e4",
+        "e5",
+        "e9",
+        "e10"
+      ],
+      "note": "The soup will be loadable and scoreable by the same run_eval.sh the comparator used. The one non-obvious risk here was key naming: transformers 4.57.3 renames Gemma3 multimodal weights internally (`language_model.model.*` on disk -> `model.language_model.*` in state_dict, probe p2), so a save that wrote the new names would be a valid-looking directory vLLM could reject. Probe p3 settles it: save_pretrained in this exact version reverses the mapping and wrote `language_model.model.layers.0.mlp.up_proj.weight`, the same style the already-graded exp-04/final carries, and the averaged tensors were bit-exact against a hand-computed fp32-mean-cast-to-bf16 (embeddings included). The output dir got config.json, tokenizer (from srcs[0], which unlike checkpoint-1600 has chat_template.jinja), preprocessor_config.json and processor_config.json. generation_config.json is not left to save_pretrained: soup.py:46-49 rewrites it wholesale with eos_token_id [1,106], do_sample false, temperature 0.0 - byte-identical to all three ingredients (e5) - which sidesteps both manual-\u00a74 config traps (fields collapsed to `1`, fields written as `null`). The chat template is not a risk at all: evaluate.py:121-135 passes templates/gemma3.jinja to vLLM explicitly and never reads the model dir's template; model_type falls through to config.json architectures -> 'gemma', which is present. Residual 12 %: the grader loads the full 8.6 GB soup, not the 34 MB stand-in, and the diagnostic's completion_tokens fields read p50/p95/max = 0 on every card so far (e6), so truncation cannot be read from analyze_log.py - stop_reasons still can."
+    },
+    "L2_effect": {
+      "metric": "accuracy",
+      "direction": "flat",
+      "interval": [
+        -0.04,
+        0.05
+      ],
+      "confidence": 0.75,
+      "basis": [
+        "e5",
+        "e6",
+        "e7",
+        "e8",
+        "e11"
+      ],
+      "note": "Against exp-04 = 0.7467 at n=150. Manual \u00a73 C6: uniform souping is ~0 on average, a variance-reduction move. The one same-shape precedent pair in history is r-426bd770 exp-07 / exp-10 (e7, e8): a uniform checkpoint soup scored 0.8522, +1.02 pp over its comparator and above every ingredient - and a second soup on the same run scored 0.848, -0.42 pp. Both were read at n=1319, where a 1 pp move is resolvable; at this card's n=150 the floor is ~0.03 (manual \u00a75 rule of thumb; the eval JSONs' own stderr is 0.036), so the honest expectation is 'indistinguishable from the incumbent'. I put the centre at about +0.005 and keep the interval at floor width in both directions. The mechanism argument in the card is sound and cheap to believe - checkpoint-1600 and final are 172 steps apart on one run, exp-05 is a low-LR continuation of final, so all three are in one basin and the linear-connectivity assumption is the ordinary case rather than the exotic one - and probe p1 confirms they are literally the same tensor inventory. The negative merge precedents in history (r-c1110c15 exp-12/26/28/29/35, -4 to -13 pp) are C16 non-uniform interpolations across *different data mixtures*, i.e. exactly the case this card rejected when it excluded exp-02/final; they are not evidence against this soup. Format collapse is unlikely: all three ingredients score format_fail_rate 0.0/0.0/0.0067 with stop_reasons all `stop`, and they share one target contract. I hold ~10 % for the tail where averaging across the exp-04 -> exp-05 leg costs more than a point or two. Confidence 0.75 is capped below what the mechanism would justify because no precedent exists on gemma-3-4b-pt at n=150."
+    },
+    "L3_worth_now": {
+      "answer": "yes",
+      "confidence": 0.78,
+      "expected_cost_h": 0.3,
+      "basis": [
+        "e6",
+        "e7",
+        "e11",
+        "e12"
+      ],
+      "note": "2.7 h left, no GPU training, ~10 min CPU for the merge plus ~4 min for the eval (exp-05's dev150 eval took 28 s of generation inside a ~3 min run, e12) - about 0.3 h against the card's planned 0.35, leaving ~2.4 h. The manual names this exact move as the default when time is short, and exp-05's own verdict already held it as the fallback use of leftover time. There is no candidate-destruction risk (C17): the output goes to ckpts/soup3, and final_model already holds a scored artefact, so a bad soup costs 20 minutes and nothing else. The one thing that keeps this off 0.9 is that the card does not state a decision rule. Its stated problem is that a 1.3 pp spread at n=150 is noise; if it then adopts or rejects the soup on whether 150 items put it above 0.7467, it repeats the error it opened with. The soup is worth shipping on the a-priori variance-reduction argument unless it drops below the floor - that has to be pre-committed, not read off afterwards. Cheaper alternatives do not dominate: a C5 checkpoint sweep is what exp-04/exp-05 already are, and the rejected n=500 re-read buys precision about a coin flip at 40 min."
+    }
+  },
+  "evidence": [
+    {
+      "id": "e1",
+      "path": "/home/ben/task/scripts/soup.py",
+      "locator": "lines 10-50",
+      "note": "loads each source as Gemma3ForConditionalGeneration in fp32 on CPU, sums state_dicts, divides by n, casts to bf16, load_state_dict into a bf16 copy of srcs[0], saves; then tokenizer from srcs[0], copies preprocessor/processor configs, and overwrites generation_config.json explicitly"
+    },
+    {
+      "id": "e2",
+      "path": "/home/ben/task/ckpts/exp-04/final/model.safetensors.index.json",
+      "locator": "weight_map, compared against exp-04/checkpoint-1600 and exp-05/final",
+      "note": "883 tensors, all BF16, identical key sets and shapes across all three ingredients; 439 vision-tower keys; lm_head absent (tied)"
+    },
+    {
+      "id": "e3",
+      "path": "/home/ben/task/memory/cards/exp-06.preflight.json",
+      "locator": "summary",
+      "note": "5 pass / 2 warn / 0 fail; both warns (stop_token, max_seq_len) are training-shaped checks that do not apply to a merge card"
+    },
+    {
+      "id": "e4",
+      "path": "/home/ben/task/evaluate.py",
+      "locator": "lines 98-135",
+      "note": "model_type falls back to config.json architectures -> 'gemma'; chat_template is passed to vLLM as templates/gemma3.jinja, so the model dir's own template is never used by the grader"
+    },
+    {
+      "id": "e5",
+      "path": "/home/ben/task/ckpts/exp-04/final/generation_config.json",
+      "locator": "whole file, compared with checkpoint-1600, exp-05/final and final_model",
+      "note": "eos_token_id [1,106], do_sample false, temperature 0.0 - identical in all four, and identical to what soup.py:46-49 writes for soup3"
+    },
+    {
+      "id": "e6",
+      "path": "/home/ben/task/analysis/exp-04_dev150_diag.json",
+      "locator": "format_fail_rate, stop_reasons, completion_tokens",
+      "note": "0.0 fail, 150/150 stop_reason=stop (exp-05 diag: 0.0067, one max_tokens). completion_tokens p50/p95/max are all 0 on every card - the token stats in analyze_log.py do not populate, so truncation is not readable from the diagnostic"
+    },
+    {
+      "id": "e7",
+      "path": "history/r-426bd770/exp-07.yaml",
+      "locator": "result.measurements",
+      "note": "uniform checkpoint soup, accuracy 0.8522 at n=1319, delta_vs_comparator +0.0102, verdict supported - the positive same-type precedent"
+    },
+    {
+      "id": "e8",
+      "path": "history/r-426bd770/exp-10.yaml",
+      "locator": "result.measurements",
+      "note": "a second uniform soup on the same run, 0.848 at n=1319, delta -0.0042, verdict contradicted - the matching negative; together they bracket C6 at roughly +-1 pp"
+    },
+    {
+      "id": "e9",
+      "path": "/home/ben/task/ckpts/exp-04/checkpoint-1600/config.json",
+      "locator": "diff against exp-04/final/config.json",
+      "note": "the only difference is use_cache false vs true; exp-05/final's config is byte-identical to exp-04/final's after key sorting"
+    },
+    {
+      "id": "e10",
+      "path": "/home/ben/task/ckpts/exp-04/final",
+      "locator": "directory listing vs exp-04/checkpoint-1600 and exp-05/final",
+      "note": "checkpoint-1600 has no chat_template.jinja, but soup.py takes the tokenizer from srcs[0] = exp-04/final, which has one; all three carry preprocessor_config.json and processor_config.json"
+    },
+    {
+      "id": "e11",
+      "path": "/home/ben/task/eval/exp-04_dev150.json",
+      "locator": "accuracy 0.7467, stderr 0.0356",
+      "note": "the comparator and its own reported standard error; exp-04_ck1600 and exp-05 both read 0.7333 with stderr 0.0362 - the spread is a third of one standard error"
+    },
+    {
+      "id": "e12",
+      "path": "/home/ben/task/logs/exp-05_dev150.log",
+      "locator": "total time 0:00:28, exit=0",
+      "note": "the n=150 gsm8k eval under run_eval.sh costs well under 5 min wall including vLLM startup"
+    }
+  ],
+  "probes": [
+    {
+      "id": "p1",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 0.2
+      },
+      "result": "read the safetensors headers of all three ingredients without materialising weights: 883 tensors each, all BF16, set(keys) and every shape identical across the three; no lm_head on disk (tied)",
+      "changed": "L0"
+    },
+    {
+      "id": "p2",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 0.3
+      },
+      "result": "instantiated Gemma3ForConditionalGeneration on the meta device from exp-04/final's config: state_dict has 884 entries (883 + tied lm_head.weight), zero non-floating-point entries (so the in-place /= is safe), and the keys are the new `model.language_model.*` names while disk carries the old `language_model.model.*` names - transformers 4.57.3 remaps on load",
+      "changed": "L1"
+    },
+    {
+      "id": "p3",
+      "kind": "dry_run",
+      "cost": {
+        "cpu_min": 2.5
+      },
+      "result": "built three randomly-initialised 2-layer Gemma3ForConditionalGeneration checkpoints with the real tokenizer/processor files in /tmp/wma_scratch and ran the scientist's scripts/soup.py on them unmodified: exit 0; output tensors bit-exact against a hand-computed uniform fp32 mean cast to bf16 (mlp and embed_tokens both); saved keys came back in the OLD `language_model.model.*` style, i.e. the same format vLLM already loaded for exp-04; generation_config.json written with eos [1,106]/do_sample false/temperature 0.0; tokenizer, chat_template.jinja, preprocessor_config.json and processor_config.json all present in the output",
+      "changed": "L1"
+    }
+  ],
+  "suggestions": {
+    "preconditions": [
+      "[tier 1, 1 min] pre-commit the decision rule before the eval is read: the soup ships unless it falls more than 0.03 (the n=150 floor) below 0.7467. Choosing whichever of soup3 / exp-04 posts the higher 150-item number is the same noise-selection the card was written to stop.",
+      "[tier 1, 1 min] after the merge, diff ckpts/soup3/generation_config.json against ckpts/exp-04/final/generation_config.json and confirm the shard count and index file are present - the merge writes the config twice (save_pretrained then the explicit json.dump) and only the second write is the one that must survive.",
+      "[tier 1, 1 min] confirm the checkpoint-1600 ingredient is the fix_ckpt.py-repaired copy, not a raw Trainer save: its generation_config.json currently reads temperature 0.0 / do_sample false, but the merge inherits nothing from it except weights, so this only matters if the ingredient list is ever changed.",
+      "[tier 2, 2 min] have run_eval.sh reach the first scored sample before walking away - a soup that vLLM cannot load fails at load time, not at score time, and 2.4 h of margin is only margin if the failure is seen early."
+    ],
+    "cheaper_variants": [
+      "[tier 1, 0 min] the 2-checkpoint soup of exp-04/final + exp-04/checkpoint-1600 is the strictly same-run variant if the exp-04 -> exp-05 leg is ever suspected; it costs one fewer load and removes the only cross-run ingredient. Not recommended over the 3-way - listed as the fallback if soup3 reads badly.",
+      "[tier 3, 4 min] score soup3 at n=150 first, and only spend a second eval if it lands within the floor of 0.7467; a C18 repeat or an n=500 read is the only thing that can separate them, and it is worth buying only for the artefact actually being shipped.",
+      "[tier 1, 2 min] package soup3 into final_model behind a regression guard rather than an unconditional copy (manual \u00a73 C9: an unconditional overwrite once put 0.567 over 0.627); exp-04's weights are what final_model holds today and are the thing being risked."
+    ]
+  },
+  "cost": {
+    "cpu_min": 4,
+    "gpu_min": 0,
+    "wall_min": 5.605483,
+    "usd": 1.8722,
+    "turns": 29
+  },
+  "model": "claude-opus-5",
+  "effort": "high",
+  "access": {
+    "files": 9,
+    "outside": [
+      "bash: free -g; echo \"---df---\"; df -h /session /tmp /home 2>/dev/null; echo \"---cpu---\"; nproc; echo \"---gpu---\"; nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv 2>&1 | head"
+    ]
+  },
+  "leak_suspected": true
+}

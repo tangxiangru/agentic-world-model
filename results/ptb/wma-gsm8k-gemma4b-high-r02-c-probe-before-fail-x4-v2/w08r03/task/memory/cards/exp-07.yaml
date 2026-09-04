@@ -1,0 +1,125 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T22:53:49Z'
+situation:
+  elapsed_h: 6.9
+  remaining_h: 3.1
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-04/final_greedy
+    score: {metric: accuracy, value: 0.6399, protocol_n: 1319}
+  trigger: "exp-06's full-test read: the shipped model gets 844 of 1319 and misses 475, and 370 of those 475 are also missed by the other checkpoint - so most of the gap is not a selection problem but a capability problem. Every training corpus used so far is off-policy text written by other models; the model has never been trained on its own correct reasoning."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-06_exp04_greedy_full.json, locator: "accuracy 0.6399 over 1319", observation: "475 failures"}
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "result.diagnostic_result", observation: "721 both correct, 105 only arm A, 123 only arm B, 370 neither"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: conclusion, observation: "the two models' complementary competence cannot be merged in weight space - the soup lost 3.3 pts - so if it is to be banked at all it has to be through data"}
+  alternatives_rejected:
+    - {option: "Sample from BOTH checkpoints and pool the correct solutions, which was the design this card started from", reason: "measured throughput is 6.5k output tok/s, so one model over 11973 problems at k=4 takes ~53 min; two would take 1.8 h of the 3.1 h left and leave no margin to train, package and score before the deadline. Cut to the shipped model only, which is also the on-policy half - the half RFT actually depends on."}
+    - {option: "Retrain from the base snapshot on sft_v3 plus the RFT rows", reason: "~2 h, which does not fit; continuing from the shipped checkpoint keeps the 0.6399 behaviour as the starting point and only costs the ~15 min the RFT pass itself needs"}
+    - {option: "Keep only problems the model solves rarely (hard-example mining)", reason: "at k=4 the solve-rate estimate on a single problem is one of five values; selecting on it would filter mostly noise and would also strip the easy problems whose correct solutions are what stop the model drifting"}
+    - {option: "Stop here and ship the 0.6399 artifact", reason: "the genuinely safe option, and it stays available: final_model already holds that artifact, verified from disk, and this card only overwrites it if the pre-declared threshold is cleared. The cost of trying is time I would otherwise not use."}
+  pitfalls_hit:
+    - {what: "planned the RFT sampling at ~15 min per model from the eval's wall-clock; the real offline-generation rate over 47892 prompts was 6.5k output tok/s, i.e. ~53 min", cost_h: 0.1, fix: "dropped the second sampling pass rather than the training pass, and recorded the measured rate"}
+    - {what: "THE RUN'S WORST BUG. vLLM's offline LLM.generate stops on the tokenizer's eos (<eos>, id 1) only; <end_of_turn> (id 106) is a stop token solely because it is in generation_config's eos_token_id list, which the offline path does not apply to an explicitly constructed SamplingParams. So the sampler let every generation run past its answer into a freshly invented question, and final_answer() read the LAST ANSWER line - the continuation's, not the model's. 12895 of 17999 rows (74%) came out with two markers and were silently filtered, leaving 4660 biased rows and an understated pass@1 of 0.536. This is the eos_mismatch pitfall reappearing on the generation side, where no preflight check looks.", cost_h: 0.85, fix: "SamplingParams now passes stop=['<end_of_turn>'] and stop_token_ids=[1,106]; parsing takes the FIRST ANSWER line and the body before it, and any body still containing a marker is dropped. Re-sampled: 0 bad rows of 17999, pass@1 0.581, and generation ran 3x faster (45 min -> 15 min) because samples now stop when they are done."}
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model, ckpts/exp-04/final, --out, data/rft_b.jsonl, --n-gsm, '7473', --n-omi, '4500', --k, '4'], outcome: "FIRST ATTEMPT, DISCARDED (kept as data/rft_b_buggy.jsonl): no stop token, 45 min, pass@1 0.536, 74% of rows unusable"}
+    - {command: [python, scripts/rft_sample.py, --model, ckpts/exp-04/final, --out, data/rft_b.jsonl, --raw-out, analysis/rft_b_raw.jsonl, --n-gsm, '7473', --n-omi, '4500', --k, '4', --temperature, '1.0', --top-p, '0.95', --max-tokens, '512', --keep-per-problem, '2', --seed, '0'], outcome: "after the stop-token fix: 15 min, pass@1 27833/47892 = 0.581, 9907 of 11973 problems contributed at least one correct sample, 17999 rows written, 0 rows with a bad marker count or a missing terminator (asserted)"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/rft_b_decon.jsonl], outcome: "0 matches over all 17999 rows, exit 0"}
+problem:
+  statement: "The shipped checkpoint misses 475 of the 1319 test items, and every token it has been trained on was written by someone else: human GSM8K annotators and Llama-3.1-405B via OpenMathInstruct-2. Two rounds of adding more of that off-policy text (exp-02 -> exp-04) moved accuracy by less than a point, so more of the same is not the lever."
+  evidence:
+    - {path: /home/ben/task/eval/exp-06_exp04_greedy_full.json, locator: accuracy, observation: "0.6399 +/- 0.0132 over all 1319 items"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion", observation: "1.56x the OpenMathInstruct-2 rows changed nothing (0.6867 vs 0.6933 at n=150) - off-policy data scaling is exhausted at this budget"}
+    - {path: /home/ben/task/analysis/exp-06_exp04_full_items.json, locator: "the 475 items with correct=false; format_compliant 0.9894", observation: "failures are well-formed wrong answers, plus 12 greedy repetition loops that hit the 4000-token cap"}
+  affected_share: 0.36
+  failure_examples:
+    - {id: gsm8k_013c2fba, source: /home/ben/task/analysis/exp-06_exp04_full_items.json, question: "A basket contains 25 oranges among which 1 is bad, 20% are unripe, 2 are sour and the rest are good. How many oranges are good?", gold: '17', model_output: "well-formed, wrong number", failure: "multi-constraint subtraction"}
+    - {id: gsm8k_01a47d5c, source: /home/ben/task/analysis/exp-06_exp04_full_items.json, question: "There are 700 bees in a hive. There are twice as many worker bees as baby bees, and twice as many babies as queens. How many worker bees are there?", gold: '400', model_output: "well-formed, wrong number", failure: "nested ratio chain"}
+    - {id: gsm8k_044dddfd, source: /home/ben/task/analysis/exp-01_items.json, question: "A mechanic charges different rates to repair the tires of trucks and cars...", gold: '40', model_output: "'ANSWER: 60'", failure: "two-rate word problem"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-06_watch.jsonl
+    n: 475
+    selection: "every one of the 1319 test items the shipped checkpoint got wrong in exp-06 - the first watch set in this run measured on the full set rather than the 150-item prefix"
+hypothesis:
+  claim: "Continuing the shipped checkpoint for one epoch on its own rejection-sampled correct solutions to GSM8K TRAIN problems raises full-test greedy accuracy above 0.6399."
+  mechanism: "Rejection sampling keeps only chains whose final answer matches gold, so the gradient points at reasoning the model can already produce but does not produce reliably - it sharpens the correct mode instead of teaching a new style, which is why RFT works where more off-policy text has stopped working. Because the targets are the model's own phrasing at temperature 1.0, the update is small and local: the format, the terminator and the answer marker are already what the grader wants, so there is nothing for the model to unlearn."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: "+0.01 to +0.03 (0.6399 -> 0.65-0.67); published RFT gains on 4B-class models are a few points and this is a single short pass over ~12k problems"
+  falsified_if: "full-test greedy accuracy is below 0.6513, i.e. the run fails to clear the incumbent by at least one paired standard error (0.0114). A score below 0.6399 additionally means the extra pass damaged the model, which would show up as a drop in format compliance or a rise in the 4000-token-cap count."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_b.jsonl
+      source: synthetic:self
+      n_examples: 17999
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --out, data/rft_b.jsonl, --raw-out, analysis/rft_b_raw.jsonl, --n-gsm, '7473', --n-omi, '4500', --k, '4', --temperature, '1.0', --top-p, '0.95', --max-tokens, '512', --keep-per-problem, '2', --seed, '0']
+      selection: "Seeds are 7473 GSM8K TRAIN problems plus 4500 distinct augmented_gsm8k problems from OpenMathInstruct-2 (augmentations of TRAIN problems), 11973 in all. The gsm8k TEST split is not read by the sampler and the local ../test_data.json copy is only ever passed to the contamination checker. Four samples per problem at temperature 1.0 / top_p 0.95 / 512 max tokens; a sample is kept only if the number on its ANSWER line equals gold after normalisation; duplicates are removed and at most the 2 shortest surviving solutions per problem are written. Each target is re-rendered through scripts/fmt.py so the marker appears exactly once and the row ends in <end_of_turn>. Prompts are the grader's own zero-shot template - the exp-02 probe (0-shot 0.650 vs 10-shot 0.667) showed the model is not sensitive to prefix length, so the k-shot mixture is not reproduced here. Contamination checked against ../test_data.json before launch."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer with the padded-token-budget batch sampler from exp-02
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 8192, grad_accum: 8, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged: chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>; prompt masked out of the loss. Learning rate is halved from the 1e-5 used by exp-02/exp-04 because this continues an already-converged checkpoint rather than starting from the base snapshot, and a full-strength schedule on 12k self-generated rows is how a refinement pass turns into a regression. batch_size is the padded-token budget per micro-batch. Vision tower frozen; gradient checkpointing on."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, /home/ben/task/data/rft_b.jsonl, --out, /home/ben/task/ckpts/exp-07, --lr, '5e-6', --epochs, '1', --grad-accum, '8', --token-budget, '8192', --max-seq-len, '3072', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.45}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}_greedy', --limit, '-1', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official gsm8k test, all 1319 items"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.6399
+    path: /home/ben/task/eval/exp-06_exp04_greedy_full.json
+  diagnostic:
+    what: "format compliance, stop_reason split and the 4000-token-cap count against the parent's 0.9894 / 1307 stopped / 12 capped (scripts/analyze_log.py) - a refinement pass that overshoots shows up as degeneration before it shows up in accuracy - plus the paired McNemar read over the identical 1319 items and the watch-set count over the parent's 475 failures. PREDECLARED DECISION RULE, fixed before the number is seen: final_model is overwritten only if full-test greedy accuracy is at least 0.6513 (incumbent + one paired standard error); at anything below that the incumbent ckpts/exp-04/final_greedy stays, which is where final_model already points. HARD TIME RULE: if the packaged checkpoint has not been scored with 1.0 h left on the timer, the run is abandoned, this card is closed as inconclusive, and final_model is left untouched."
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.28
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 82}
+    - {path: /home/ben/task/ckpts/exp-07/final_greedy, step: 82}
+  training_summary:
+    final_loss: 0.2506
+    steps: 82
+    notes: "Preconditions read off the first log lines before walking away: '[data] kept 17999/17999 rows (0 over max_seq_len=3072)', p50 278 / p95 425 / max 717 tokens, 5.2M tokens total, '[batches] 651 micro-batches' -> 82 optimizer steps for the single epoch. 541 s wall, peak 55.3 GiB. Starting loss on self-generated targets was already low (final 0.2506 against exp-04's 0.3407 on off-policy text), which is what an on-policy refinement pass should look like."
+  measurements:
+    - {metric: accuracy, value: 0.649, n: 1319, path: /home/ben/task/eval/exp-07_greedy_full.json, delta_vs_comparator: 0.0091}
+  diagnostic_result:
+    value: 0.9894
+    path: /home/ben/task/analysis/exp-07_full_items.json
+    notes: "No degeneration: format compliance 0.9894 (identical to the parent), stop 1305/1319 vs 1307, 14 at the 4000-token cap vs 12, output p50 343 vs 362 chars. Paired over the same 1319 items: 757 both correct, 87 only the parent, 99 only the RFT model, 376 neither - a net +12 items. McNemar with continuity correction chi2 = 0.65 (p ~ 0.42), paired SE 0.0103, z = 0.88."
+  watch_set_result: {fixed: 99, still_failing: 376, regressions: 87, path: /home/ben/task/analysis/exp-07_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "The RFT pass scored 0.6490 against the parent's 0.6399: +0.91 pts, the right sign and inside the predicted +1 to +3 band, but below the 0.6513 the card required in advance, so final_model is NOT overwritten. The mechanism read is the more interesting half and it holds: nothing degraded (format, stop rate and length all unchanged), the model simply moved 99 items right and 87 wrong for a net 12, which at z = 0.88 is indistinguishable from drift."
+  decision: reject
+  next_step: "The decision rule did its job - a +0.9 pt read on 1319 items would have been adopted on enthusiasm and is not distinguishable from noise. RFT is worth continuing rather than abandoning: this was one epoch over 82 steps on 12k problems sampled k=4 from a single model, the cheapest possible version. The version that should be tried next is 3-4 rounds of it, or k=8-16 over the full train split so the harder problems contribute at all - 5751 of the 47892 samples came from problems the model never solved in 4 tries, and those items are exactly the 376 the pass did not touch. final_model stays ckpts/exp-04/final_greedy at 0.6399 full-test / 0.6867 on the 150-item prefix."

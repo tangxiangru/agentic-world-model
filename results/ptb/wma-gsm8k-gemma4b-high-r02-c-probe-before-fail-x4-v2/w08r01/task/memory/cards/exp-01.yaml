@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T15:52:30Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.1
+  remaining_h: 9.9
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Session start: the immutable base checkpoint has never been measured under this harness, so no later card could have a valid comparator (rule 2)."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty card table"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and use published gemma-3-4b-pt GSM8K numbers", reason: "a number from a different harness/prompt/limit is not a comparator under this protocol"}
+    - {option: "Baseline at --limit 500 for tighter error bars", reason: "eval throughput is still unknown; 150 is the harness default and keeps every later card comparable at low cost"}
+    - {option: "--max-connections 16 for speed (as first locked)", reason: "WMA verdict e3: 16 is the concurrency of two recorded incidents (garbage '!!!!' completions, 0.2733 vs 0.8533 on identical weights; EngineDeadError). Dropped to the harness default of 2 before launching."}
+    - {option: "Pin temperature 0 on the base snapshot to get a greedy comparator", reason: "the starting revision must stay immutable this batch. The base is measured under its own shipped decode (do_sample true, top_k 64, top_p 0.95, temperature unset -> vLLM samples at T=1); a separate later card measures the greedy-vs-sampling effect on a trained checkpoint, where the generation_config is mine to set."}
+  pitfalls_hit:
+    - {what: "first WMA-driven correction: the locked command used --max-connections 16, a concurrency with recorded garbage-output and EngineDead incidents", cost_h: 0.0, fix: "changed to --max-connections 2 (harness default) before any GPU time was spent"}
+    - {what: "PROTOCOL SLIP: sections 0-4 were edited after the first lock (max-connections 16->2, seed 42->null, INSPECT_LOG_DIR added) and the eval was launched from the edited card without running lock --relock first. The change was a correction, not a result-driven edit, and it was made before the GPU ran, but the re-lock should have preceded the launch.", cost_h: 0.0, fix: "lock --relock run after the fact with the reason recorded; from exp-02 on, every post-lock edit goes through --relock before launch"}
+    - {what: "the eval's vLLM server died on the first attempt with 'Free memory 41.03/79.19 GiB is less than desired GPU memory utilization (0.85)' because a leaked training smoke process still held 38 GB", cost_h: 0.05, fix: "nvidia-smi checked free before re-running the identical locked command; second attempt completed"}
+  smoke_runs:
+    - {command: [python, eval_format.py], outcome: "rendered the graded string end-to-end: 10-shot system block = 2044 tokens, prompt = 2157 tokens, assistant turn terminated by '<end_of_turn>'; templates/gemma3.jinja sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4"}
+    - {command: [cat, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json], outcome: "eos_token_id [1, 106] (so <end_of_turn> does stop vLLM); do_sample true, top_k 64, top_p 0.95, temperature unset -> this baseline is a SAMPLING read, not greedy"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruct checkpoint. Under the harness prompt it is expected to continue text rather than stop after an 'ANSWER: N' line, and the grader reads the LAST number in the completion, so run-on text scores 0 even when the reasoning is right. The size of that gap is unmeasured."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L20-33 MATH_PROMPT_TEMPLATE; L70 scorer=match(numeric=True)", observation: "match(location='end', numeric=True) reverses the words of the completion and takes the first number found, i.e. the last number emitted"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/watch100.jsonl
+    n: 100
+    selection: "first 100 rows of data/probe300.jsonl = GSM8K TRAIN rows 7173-7272, held out from all training data this session. No test-split item is used."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Measured under the harness protocol (10-shot system message, templates/gemma3.jinja, --limit 150), the unmodified base checkpoint scores well below an instruction-tuned model, and this measurement becomes the comparator for every later card in this session."
+  mechanism: "The 10-shot system message demonstrates the 'ANSWER: N' ending, so a pretrained model can partially imitate it; but without post-training it frequently runs on past the answer with further invented problems, and the last-number rule then reads the wrong number."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "baseline measurement, expected roughly 0.15-0.45"
+  falsified_if: "the eval does not run to completion on the base snapshot, or accuracy is above 0.75 (which would mean the base checkpoint already behaves like an instruct model and leaves little headroom for post-training)"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe300.jsonl
+      source: "openai/gsm8k main/train rows 7173-7472 (held-out probe, NOT training data; this card trains nothing)"
+      n_examples: 300
+      built_by: /home/ben/task/build_probe.py
+      build_command: [python, build_probe.py]
+      selection: "last 300 rows of the train split, reserved as a local probe and excluded from every training file built this session"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai (0.1.dev3780) + vllm 0.11.0 via evaluate.py"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "no training in this card; a scored completion must have its final answer as the last number of the text, per 'ANSWER: <number>'"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --max-connections, '2', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/eval/logs/exp-01}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '2', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k takes the first 150 test items; deterministic)"
+    n: 150
+    seed: null   # evaluate.py plumbs no seed into inspect_eval or vLLM; claiming one would be false. Decode is whatever the checkpoint's generation_config says.
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of completions that terminate right after an 'ANSWER: N' line (format compliance) rather than running on"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.31
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.0467, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.24
+    path: /home/ben/task/analysis/exp-01_diag.json
+    notes: "format compliance 0.24: only 36 of 150 completions end on an 'ANSWER: <number>' line. Mean completion 7291 chars, max 25003 (the 4000-token cap). 111 of the 143 failures are non-compliant, i.e. the model did not stop. Observed last lines include 'Remember to put your answer on its own line...' (the prompt being echoed onward) and '<h2>Comments</h2>' (web boilerplate continuation). Sample-level log: /home/ben/task/eval/logs/exp-01/2026-09-03T16-16-23+00-00_gsm8k_ZDD6HVeYLQfzJQkdUfw7oT.json"
+  watch_set_result:
+    fixed: 0
+    still_failing: 96
+    regressions: 0
+    path: /home/ben/task/analysis/exp-01_watch100.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The base checkpoint scores 0.0467 +/- 0.017 on the --limit 150 protocol, below the 0.15-0.45 the card expected and below the WMA's [0.10, 0.42] interval. The mechanism is confirmed rather than merely assumed: format compliance is 0.24 and 111 of 143 failures are run-on completions, so the dominant loss is failure to stop, not failure to reason."
+  decision: iterate
+  next_step: "exp-02: full-parameter SFT on 97k GSM8K-style pairs rendered through the grader's own template and terminated with <end_of_turn>, which attacks the stopping failure and the reasoning quality at once. This 0.0467 is the comparator for every later card at n=150; the held-out probe300 (0.030) and watch100 (4/100) are the same reading on GSM8K TRAIN items and can be re-run at any time without touching the test split."

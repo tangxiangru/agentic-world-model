@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T05:11:06Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.9
+  remaining_h: 3.1
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7165, protocol_n: 1319}
+  trigger: "exp-05 resolved the ranking between training runs but not within one: exp-04's checkpoint-900 (0.7165) and checkpoint-450 (0.7119) differ by a paired z of +0.45 on the same 1319 items, and two reads of bit-identical weights differ by 0.9 pp. Three checkpoints of one trajectory that cannot be separated is the textbook case for averaging them instead of picking one."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.diagnostic_result: 93/87 discordant, z=+0.45 between exp-04/900 and exp-04/450; 41/29, z=+1.43 between two reads of identical weights"}
+    - {path: /home/ben/task/eval/scoreboard.json, locator: "all four n=1319 scores, 0.6967-0.7165"}
+  alternatives_rejected:
+    - {option: "A second RFT round sampled from checkpoint-900", reason: "~1.5 h of the 3.1 h left for sampling plus training, and the first round only bought +2 pp at a paired z of 1.98; it would land with no time for the two reads needed to tell a 1 pp gain from read noise"}
+    - {option: "Souping across runs (exp-02 and exp-04 checkpoints together)", reason: "exp-04 started from exp-02/final, but 1335 optimiser steps and a different data mixture separate them; the three exp-04 checkpoints are the tight, genuinely-tied set"}
+    - {option: "Ship checkpoint-900 and stop", reason: "that is already done - final_model/ holds it and is verified at 0.7074-0.7165, so this card is a strictly guarded attempt to beat it; scripts/package_final.py refuses to overwrite final_model/ with a lower-scoring source"}
+    - {option: "Include the base or exp-02 weights in the average", reason: "averaging in a checkpoint that scores ~2-5 pp lower moves the soup off the good basin; soups work when the ingredients are near-equal"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Checkpoint selection along exp-04's trajectory is unresolvable: steps 450, 900 and 1335 score 0.7119 and 0.7165 at n=1319 and 0.6933 (step 1335, n=150), while the harness's own read-to-read swing on identical weights is 0.9 pp. Whichever is shipped, part of the choice is noise, and the shipped model inherits whatever idiosyncratic errors that one point on the trajectory happens to have."
+  evidence:
+    - {path: /home/ben/task/eval/scoreboard.json, locator: "exp-04/checkpoint-900 0.7165 vs exp-04/checkpoint-450 0.7119", observation: "0.46 pp apart at n=1319, paired z +0.45"}
+    - {path: /home/ben/task/eval/exp-05_final_model_full.json, locator: "0.7074 against the source checkpoint's 0.7165", observation: "0.9 pp read-to-read swing on bit-identical weights, 70 discordant items"}
+  affected_share: null
+  failure_examples:
+    - {id: "(aggregate, 87 items)", source: /home/ben/task/eval/exp-05_exp04-450_full.json, question: "items checkpoint-450 gets right and checkpoint-900 gets wrong", gold: "n/a", model_output: "correct under one checkpoint, wrong under the other", failure: "checkpoint-specific error, not a shared capability gap"}
+    - {id: "(aggregate, 93 items)", source: /home/ben/task/eval/exp-05_exp04-900_full.json, question: "items checkpoint-900 gets right and checkpoint-450 gets wrong", gold: "n/a", model_output: "correct under one checkpoint, wrong under the other", failure: "the mirror set; nearly the same size, which is why neither wins"}
+    - {id: "(aggregate, 16 items)", source: /home/ben/task/eval/exp-05_exp04-900_full.json, question: "1.21% of 1319 completions", gold: "n/a", model_output: "hits the 4000-token cap", failure: "the remaining non-termination at the best checkpoint"}
+  watch_set:
+    path: /home/ben/task/data/gsm8k_devheld.jsonl
+    n: 500
+    selection: "500 GSM8K train rows held out from RFT sampling; format diagnostic only (exp-05 records why it cannot select on accuracy)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A uniform float32 weight average of exp-04's checkpoint-450, checkpoint-900 and checkpoint-1335, decoded greedily, scores higher at n=1319 than checkpoint-900's own reads under the same protocol."
+  mechanism: "The three checkpoints lie on one SGD trajectory inside one basin, so much of what separates them is late-stage optimiser noise. Averaging cancels that component while keeping the shared solution, which is why trajectory averaging (EMA / LAWA / model soup) usually lands at or slightly above the best ingredient. The ~90 discordant items in each direction between steps 450 and 900 are the concrete evidence that the noise component is large."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0 to +1.5 pp over checkpoint-900's 0.7165; a soup below both ingredients would mean they are not in one basin"
+  falsified_if: "the soup's mean over two n=1319 reads is at or below checkpoint-900's mean over its two reads (0.7165 and 0.7074, mean 0.7120), or its format compliance drops below 0.98."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/checkpoint-900
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_gsm8k_targets.jsonl
+      source: "synthetic:self, sampled from ckpts/exp-02/final over the 6973-question GSM8K train pool"
+      n_examples: 17937
+      built_by: /home/ben/task/scripts/append_stop_token.py
+      build_command: [python, scripts/append_stop_token.py, --inp, data/rft_gsm8k.jsonl, --out, data/rft_gsm8k_targets.jsonl]
+      selection: "provenance of the ingredients only. NO training happens in this card; the command reads no training data."
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: torch 2.8.0 state-dict average in float32, cast to bfloat16 once, saved with transformers 4.57.3
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: '<chain>\\n\\nANSWER: <n><end_of_turn>'"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --ckpts, /home/ben/task/ckpts/exp-04/checkpoint-450, /home/ben/task/ckpts/exp-04/checkpoint-900, /home/ben/task/ckpts/exp-04/checkpoint-1335, --out, /home/ben/task/ckpts/exp-06-soup]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06-soup
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --json-output-file, '{out}', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 1319 (the whole GSM8K test split)
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.7165
+    path: /home/ben/task/eval/exp-05_exp04-900_full.json
+  diagnostic:
+    what: "paired McNemar count of the soup against checkpoint-900 on the same 1319 items (scripts/paired_compare.py), plus format compliance and token-cap share. The soup must be run through scripts/set_decode.py --mode greedy first, because soup.py calls train_sft.finalize(), which writes the BASE sampling generation_config."
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.45
+  output_checkpoint: /home/ben/task/ckpts/exp-06-soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06-soup, step: 900}
+  training_summary: {final_loss: null, steps: null, notes: "uniform float32 average of exp-04 checkpoint-450/900/1335, cast to bf16 once; set_decode.py --mode greedy applied and asserted (temperature 0.0, do_sample false, eos [1,106]) before the read"}
+  measurements:
+    - {metric: accuracy, value: 0.7013, n: 1319, path: /home/ben/task/eval/exp-06_soup_full.json, delta_vs_comparator: -0.0152}
+  diagnostic_result:
+    value: 0.0129
+    path: /home/ben/task/eval/exp-06_soup_full.json
+    notes: "token-cap share 0.0129, between checkpoint-900's two reads (0.0121 and 0.0152), so the output contract is intact and the loss is accuracy, not termination. Paired McNemar on the same 1319 items: soup vs checkpoint-900 read1 = 43 gained / 63 lost, -1.52 pp, z=-1.94; vs read2 = 46/54, -0.61 pp, z=-0.80. The pre-declared adopt rule (paired z > +1.0 against checkpoint-900) is not met against either read; both signs are negative."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  decision: reject
+  summary: "The soup scores 0.7013 at n=1319, below both of checkpoint-900's reads (0.7165 and 0.7074), and the paired counts are negative against each (z=-1.94 and z=-0.80). Trajectory averaging did not cancel noise here - the mean of the three ingredients is worse than the best single one, so the checkpoints are not simply noisy samples around a common optimum on the scale that matters. final_model/ is unchanged and still holds exp-04/checkpoint-900; package_final.py's scoreboard guard would have refused the soup anyway."
+  next_step: "Merging is a dead line for this trajectory. With ~2.7 h left the remaining cheap lever is more of the same data the last two cards profited from: exp-07 continues from checkpoint-900 on the ~30k OpenMathInstruct-2 rows that neither exp-02 nor exp-04 has seen."

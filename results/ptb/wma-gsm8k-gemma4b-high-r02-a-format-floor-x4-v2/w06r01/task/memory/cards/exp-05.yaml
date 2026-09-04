@@ -1,0 +1,130 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T19:52:38Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.4
+  remaining_h: 4.6
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7467, protocol_n: 150}
+  trigger: "exp-04 reached 0.7467 with formatting fully saturated (0 of 150 format failures), so the remaining 25% is pure reasoning error. Every card so far has fed the model off-policy solutions written by Llama-3.1-405B. Sampling exp-04 four times on 32,000 held-in problems shows it already solves 84.6% of them at least once (27,068/32,000) while scoring 74.7% on one greedy attempt - a 10-point gap between what it can do and what it does on its first try."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "final line: problems=32000 solved_at_least_once=27068 (0.846) rows_kept=49755", observation: "pass@4 0.846 vs greedy pass@1 0.747 - the knowledge is there but the first-try path is not reliably the right one"}
+    - {path: /home/ben/task/analysis/exp-04_dev150_diag.json, locator: "accuracy 0.7467, format_fail_rate 0.0, stop_reasons {stop: 150}", observation: "nothing left to win on output discipline"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion.next_step", observation: "exp-04 named on-policy data as the one axis neither exp-02 nor exp-04 touched"}
+  alternatives_rejected:
+    - {option: "Another volume increase (3rd solutions per problem, ~300k rows, ~3.2 h)", reason: "does not fit in 4.6 h alongside eval and packaging, and the OMI2 shard census already showed there are no new gsm8k problems to buy - it would be a third helping of the same off-policy distribution"}
+    - {option: "Train on RFT rows alone, continuing from exp-04", reason: "self-distillation on 100% of its own output for a full epoch is where entropy collapse and style lock-in live. Half the mixture is held-out-of-this-epoch OMI2 gsm8k rows, which keeps the 405B teacher signal present and re-focuses on grade-school after exp-04's 20% math"}
+    - {option: "Restart from the base model on SFT+RFT combined (the Yuan et al. RFT recipe)", reason: "that is the cleaner recipe but it is a ~2.5 h run from scratch; with 4.6 h left and a working 0.7467 artefact already packaged, continuing from exp-04 at a lower LR is the version that fits and cannot lose the incumbent"}
+    - {option: "Keep exp-04's lr 1e-5", reason: "this is a continuation from an already-annealed checkpoint, not a fresh fit. 6e-6 with a fresh cosine and warmup moves the weights without erasing what exp-04 learned; the same LR as a from-scratch run would risk exactly that"}
+    - {option: "Sample at temperature 0 to build the RFT set", reason: "greedy would only reproduce the solutions the model already gets right, so the set would carry no new information. t=1.0 / top_p 0.95 with k=4 is what surfaces the 10-point pass@4-minus-pass@1 gap this card is trying to convert"}
+  pitfalls_hit:
+    - {what: "the first launch died at step 300 of 791 (21.5 min in) inside Trainer's checkpoint save: transformers 4.57 validates GenerationConfig on save and refuses temperature 0.0 together with do_sample False. exp-02 and exp-04 never hit it because their parent was the base snapshot, whose config is do_sample true; exp-05 is the first card whose PARENT is one of my own greedy checkpoints", cost_h: 0.36, fix: "clear temperature/top_k/top_p on the in-memory generation_config right after loading the model - the greedy generation_config.json is written explicitly at the end of training anyway, and scripts/fix_ckpt.py writes it for intermediates"}
+    - {what: "the RFT generation pass took 47.6 min rather than the ~35 min estimated: vLLM expands n=4 into 128,000 sequences and sustained ~8.5k output tok/s, not the ~15k assumed", cost_h: 0.2, fix: "budget generation at ~8k output tok/s for this model on this GPU"}
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/data/rft_raw.jsonl, --n-problems, "32000", --k, "4", --temperature, "1.0", --top-p, "0.95", --keep-per-problem, "2"], outcome: "the data build itself: 84.6% of problems solved at least once, 49,755 rows kept after exact-duplicate removal and the 2-per-problem cap; median target 424 chars"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent's single greedy attempt is worse than its own ability: it solves 84.6% of 32,000 problems within four temperature-1.0 samples but only 74.7% of the 150 test items on the one greedy attempt the harness allows. The failures are therefore not missing knowledge but an unreliable first-choice reasoning path, and no amount of further off-policy Llama-405B data addresses that directly - it teaches a distribution the model is not sampling from."
+  evidence:
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "solved_at_least_once=27068 (0.846)", observation: "pass@4 0.846 against greedy 0.7467 - a ~10 pp headroom"}
+    - {path: /home/ben/task/analysis/exp-04_dev150_diag.json, locator: "format_fail_rate 0.0, stop_reasons {stop: 150}", observation: "the residual 25.3% is entirely wrong answers, cleanly formatted"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.measurements + exp-04 result.measurements", observation: "off-policy volume gave +59.3 then +8.0; the curve is flattening, so a different kind of data is the better next bet"}
+  affected_share: 0.253
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing exp-04's checkpoint for one epoch at lr 6e-6 over 99,755 rows - 49,755 rejection-sampled solutions the model itself produced and that reach the correct answer, mixed 50/50 with GSM8K-domain OMI2 rows - raises n=150 accuracy above exp-04's 0.7467."
+  mechanism: "Rejection sampling reweights the model's own output distribution towards its correct modes: each kept row is a path this model actually generates, with the wrong branches removed. That directly raises the probability mass on the correct first-choice path, which is what greedy decoding takes, so it should convert part of the 10-point pass@4-minus-pass@1 gap into pass@1. The 50% off-policy half is a regulariser, not a lever: it keeps the 405B-written solutions present so the epoch cannot collapse onto the model's own phrasing, and it restores a pure grade-school mix after exp-04's 20% math."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+2 to +6 points (0.747 -> 0.77-0.81). The n=150 floor is ~3 pp and 1 se here is ~3.6 pp, so a gap under 5 pp will be re-read at a larger n before anything is adopted on it"}
+  falsified_if: "Accuracy is at or below 0.7467, or format_fail_rate rises above 0.02. A gap of 0 to +5 points is inconclusive and triggers a larger-n re-read rather than an adoption."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/train_exp05.jsonl
+      source: "synthetic:self (49,755 rows sampled from /home/ben/task/ckpts/exp-04/final, itself a fine-tune of google/gemma-3-4b-pt only) mixed with 50,000 rows of nvidia/OpenMathInstruct-2 revision 469216e3f46f4dacf476b382e192485ea51a143e, problem_source gsm8k or augmented_gsm8k"
+      n_examples: 99755
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/data/rft_raw.jsonl, --n-problems, "32000", --k, "4", --temperature, "1.0", --top-p, "0.95", --keep-per-problem, "2"]
+      selection: "Prompts are the 32,000-problem sample of the 80,101 distinct gsm8k-derived OMI2 problems (data/pool2.jsonl, GSM8K TRAIN-derived, dev-set questions already excluded), rendered through templates/gemma3.jinja exactly as the grader does. A sample is kept only if it contains one 'ANSWER:' marker and its last number equals the gold answer to 1e-6; exact duplicates dropped; the two shortest kept per problem. The off-policy half is drawn with seed 7 from data/train_full.jsonl. Every target ends <end_of_turn>. The GSM8K TEST split is not an input to any step - not as a prompt, not as a gold answer. Checker: 0 of 99,755 documents flagged (logs/contam_exp05.log)."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "vllm 0.11.0 for sampling; transformers 4.57.3 Trainer + liger-kernel 0.8.2 + bitsandbytes 8-bit AdamW + flash-attn 2.8.3 for the fit"
+    peft: "none - full fine-tune of the 3.88B language tower; vision_tower and multi_modal_projector frozen"
+    hyperparams: {lr: 6.0e-6, epochs: 1.0, batch_size: 10, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02 and exp-04: <bos><start_of_turn>user\\n{MATH_PROMPT_TEMPLATE around the question}<end_of_turn>\\n<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: {number}<end_of_turn>, 10% of rows carrying a K-shot exemplar prefix (K uniform on 1-10, GSM8K TRAIN only). Packed into 3072-token blocks, prompt tokens labelled -100."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/train_exp05.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/ckpts/exp-05, --epochs, "1", --lr, "6e-6", --block, "3072", --micro-bs, "10", --grad-accum, "2", --fewshot-frac, "0.10", --fewshot-kmax, "10", --optim, adamw_8bit, --liger, --attn, flash_attention_2, --save-steps, "300", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 300
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/exp-05/final, exp-05_dev150, "150"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.7467
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "scripts/analyze_log.py on the inspect log: format/termination failure rate (must stay <=0.02), stop_reason counts, garbage-prefix count. The mechanism check is whether the win, if any, comes with formatting untouched - an on-policy epoch that damaged termination would show up here rather than as a clean reasoning gain."
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.96
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-300, step: 300}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-791, step: 791}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 791}
+  training_summary:
+    final_loss: 0.2645
+    steps: 791
+    notes: "train_loss 0.2640 over 3453 s. examples=99754 dropped_too_long=1, 15,816 blocks, 48.6M total tokens, 16.7M loss-bearing - all four within a percent of the verdict's precondition-1 sanity figures, so the right data file and parent were used. Loss is well below exp-04's 0.346, as expected when half the targets are the model's own output."
+  measurements:
+    - {metric: accuracy, value: 0.7333, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: -0.0134}
+  diagnostic_result:
+    value: 0.0067
+    path: /home/ben/task/analysis/exp-05_dev150_diag.json
+    notes: "format/termination failure rate 0.0067 (1 of 150) against exp-04's 0.0; stop_reasons {stop: 149, max_tokens: 1}, so one completion ran on where exp-04 had none. garbage_prefix 0, no EngineDeadError. Nothing here indicates the on-policy epoch damaged output discipline in any material way - the single run-on is one item. Note the WMA's precondition 5: analyze_log.py's completion_tokens field reads 0/0/0 because the instrumentation is not wired, so stop_reasons is the only real termination signal in this diagnostic."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "0.7467 -> 0.7333, a 1.3-point DECREASE where the claim required an increase, so the card is falsified on its own stated condition. The magnitude is well inside one standard error (3.6 pp), so the honest reading is 'no effect', not 'RFT hurts': a 10-point pass@4-minus-pass@1 gap did not convert into pass@1 here. The verdict's own interval, [-0.02, +0.05], contained this outcome."
+  decision: reject
+  next_step: "final_model/ keeps exp-04/final and is NOT overwritten - the pre-committed rule was to overwrite only above 0.7467 + 0.03, and 0.7333 is below the incumbent, let alone the threshold (verdict precondition 4). Why it may have failed, for whoever picks this up: the RFT set was built from problems the model already solves 84.6% of the time, so most kept rows teach it what it already does; a set restricted to problems solved in only 1 of 4 samples, or a filter on the reasoning chain rather than only on the final number, would test the mechanism properly. The remaining cheap move with no training cost is a weight average over the checkpoints already on disk (exp-06)."

@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-09
+created_at: '2026-09-03T21:35:00Z'
+situation:
+  elapsed_h: 6.4
+  remaining_h: 3.6
+  incumbent:
+    ref: exp-08
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score: {metric: accuracy, value: 0.736, protocol_n: 500}
+  trigger: "exp-08 left two statistically indistinguishable candidates (0.736 and 0.726 at n=500) that fail on overlapping but different items - 13 fixed and 9 newly broken between them at n=150 - and ~3.6 h remain, too little for another sample-train-evaluate cycle but ample for a weight average."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-08_sft_dev500.json, locator: "accuracy 0.736, stderr 0.0197"}
+    - {path: /home/ben/task/eval/exp-08_rft_dev500.json, locator: "accuracy 0.726, stderr 0.0197"}
+    - {path: /home/ben/task/memory/cards/exp-07.yaml, locator: "result.watch_set_result - 13 fixed, 9 newly broken, 33 still failing"}
+  alternatives_rejected:
+    - {option: "A second rejection-sampling round from exp-07", reason: "~2 h of sampling plus training plus evaluation against 3.6 h left, and exp-08 just showed the first round was a wash; it would leave no margin to verify the shipped artefact"}
+    - {option: "Ship exp-04-greedy and stop", reason: "that is the fallback and final_model already holds it; the soup costs ~10 min to build and one 25 min read, and is the only remaining lever that can use both checkpoints"}
+    - {option: "Weighted soup or a sweep over mixing ratios", reason: "each ratio costs a full read; with one read available, the uniform average is the single defensible choice"}
+    - {option: "Average in exp-03/final as well", reason: "exp-03 is the pre-format-fix checkpoint that scored 0.06 graded; averaging it in would drag the turn-ending behaviour back toward run-on"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "Neither surviving checkpoint dominates: exp-04-greedy 0.736 and exp-07-greedy 0.726 at n=500, a gap inside one stderr, and their failure sets differ (9 items exp-07 breaks that exp-04 answers, 13 the other way at n=150). Whichever is shipped leaves the other's advantages on the table."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-08_sft_dev500_diag.json, locator: "accuracy 0.736, n_failures 132"}
+    - {path: /home/ben/task/analysis/exp-08_rft_dev500_diag.json, locator: "accuracy 0.726, n_failures 137"}
+  affected_share: null
+  failure_examples:
+    - {id: dev-sandcastle, source: /home/ben/task/analysis/exp-08_sft_dev500_failures.jsonl, question: "average square footage of a 4-level sandcastle", gold: "60", model_output: "ANSWER: 7", failure: "both candidates fail"}
+    - {id: dev-dogfood, source: /home/ben/task/analysis/exp-08_sft_dev500_failures.jsonl, question: "bags of dog food in the first year", gold: "5", model_output: "ANSWER: 9", failure: "both candidates fail"}
+    - {id: dev-tomato, source: /home/ben/task/analysis/exp-08_sft_dev500_failures.jsonl, question: "tomatoes used for 32 oz of sauce", gold: "12", model_output: "ANSWER: 5.33", failure: "both candidates fail"}
+  watch_set: null
+hypothesis:
+  claim: "The uniform weight average of ckpts/exp-04/final and ckpts/exp-07/final, read greedy at n=500, scores higher than the better of its two parents (0.736)."
+  mechanism: "exp-07 is a continuation of exp-04 on the same objective and format, so the two sit in the same loss basin and their difference is one 528-step SGD trajectory. Averaging weights inside a basin cancels trajectory-specific noise and usually lands at or above the better endpoint, which is why it is worth one read when two endpoints tie."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-08, magnitude: "+0 to +2 pts; a soup rarely beats both parents by much, and a fall below both would mean the checkpoints are not in a shared basin"}
+  falsified_if: "the soup scores at or below 0.736 at n=500, or its format compliance drops below 0.99."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/datasets/openai___gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866/gsm8k-test.arrow
+      source: openai/gsm8k
+      n_examples: 500
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '500']
+      selection: "no training data in this card; the harness's own evaluation input (gsm8k test split, first 500 items)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors shard-wise uniform average in fp32, cast back to bf16; configs copied from exp-04/final"
+    peft: "none"
+    hyperparams: {weight_a: 0.5, weight_b: 0.5, temperature: 0.0}
+    target_format: "unchanged from both parents"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, -c, "python make_soup.py --a ckpts/exp-04/final --b ckpts/exp-07/final --out ckpts/exp-09-soup && python make_decode_variant.py --src ckpts/exp-09-soup --dst ckpts/exp-09-soup-greedy --temperature 0.0 && bash run_eval.sh ckpts/exp-09-soup-greedy exp-09_soup_dev500 500"]
+    cwd: /home/ben/task
+    script: /home/ben/task/make_soup.py
+    env: {}
+    log: /home/ben/task/logs/eval_exp-09_soup_dev500.log
+  output_dir: /home/ben/task/ckpts/exp-09-soup
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.6', --max-tokens, '4000']
+    dev_set: "official inspect_evals/gsm8k test, --limit 500 (first 500 items, no shuffle)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-08
+    value: 0.736
+    path: /home/ben/task/eval/exp-08_sft_dev500.json
+  diagnostic:
+    what: "format compliance and stop_reason at n=500 (0.994 and 3/500 max_tokens for the better parent); a soup that broke the basin would show up first as run-on or truncation"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.55
+  output_checkpoint: /home/ben/task/ckpts/exp-09-soup
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-09-soup
+    step: 0
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: no training; shard-wise fp32 uniform average of 883 tensors, cast back to bf16
+  measurements:
+  - metric: accuracy
+    value: 0.718
+    n: 500
+    path: /home/ben/task/eval/exp-09_soup_dev500.json
+    delta_vs_comparator: -0.018
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-09_soup_dev500_diag.json
+    notes: 500/500 completions end in the answer marker and 500/500 stop cleanly - better format behaviour than either parent (0.994, 3/500 and 2/500 truncations), so the basin is intact and the accuracy number is a capability read, not an artefact. Length sits between the parents (chars p50 449 vs 461 and 424).
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: The soup scores 0.718 at n=500 against parents at 0.736 and 0.726 - below both, though all three sit within about one stderr of each other. The averaging did not break anything (format compliance actually improved to 1.000) but it did not recover either parent's strengths. Under the shipping rule fixed before the read (swap only on a margin above the 2.0 pp floor), the soup does not ship.
+  decision: reject
+  next_step: 'final_model keeps ckpts/exp-04-greedy (0.736 at n=500). Verify the shipped directory end to end by evaluating final_model/ itself under the same protocol, then use what remains on the one untried cheap lever: reading exp-04''s mid-run checkpoint-200, since ''trained to the end is often worse'' is the only strictly controlled contrast left.'

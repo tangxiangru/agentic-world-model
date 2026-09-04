@@ -1,0 +1,216 @@
+{
+  "schema_version": "awm-wma-verdict-v1",
+  "card_id": "exp-02",
+  "wma_skill": "959fbdd5bbb2",
+  "backend": "claude",
+  "mode": "online",
+  "issued_at": "2026-09-04T00:57:10Z",
+  "change_types": [
+    "C3",
+    "C4",
+    "C2",
+    "C1b"
+  ],
+  "levels": {
+    "L0_runs": {
+      "answer": "yes",
+      "confidence": 0.85,
+      "basis": [
+        "e1",
+        "e2",
+        "e3",
+        "e11",
+        "e12"
+      ],
+      "note": "Both failure modes that would kill this launch have already been hit and fixed in smoke runs on the same script and the same token budget: the lm_head fp32 OOM (chunked masked CE, verified equal to the built-in loss to 6 dp) and the fp32-forward slowdown (autocast inside masked_sum_ce + flash_attention_2, 3.2 s/step at 32768 padded tokens). Preflight is 9 pass / 0 fail. 5.1 TB free on the volume, so three fp32 checkpoints (~17 GB weights + ~9 GB 8-bit optimizer state each) and the final save fit easily; 1.8 TB host RAM absorbs the 120k-row tokenized dataset and its fork into 4 dataloader workers (smoke2 only exercised 40k rows). My own step arithmetic on the file (189.0 M characters, ~52.5 M tokens/epoch at 3.6 chars/token, 1600-1760 optimizer steps/epoch at 10 % padding waste) gives 3.1 h of pure step time for 2 epochs, consistent with planned_h 3.2; add ~10 min for tokenizing 120k rows, model load and two saves, so expect 3.2-3.5 h. Residual risk is the ordinary 42 %-of-launches-die-early base rate discounted by the two smoke runs, plus a modest overrun of the planned hours."
+    },
+    "L1_valid": {
+      "answer": "yes",
+      "confidence": 0.76,
+      "basis": [
+        "e1",
+        "e4",
+        "e8",
+        "e9",
+        "e10"
+      ],
+      "note": "The two silent-failure mechanisms this card is most exposed to are both addressed in code. (a) Stop token: all 120000 targets (not just preflight's first 500) end in '<end_of_turn>' and contain 'ANSWER: ' exactly once; train_sft.py asserts targets end in eot before training, and after trainer.save_model it copies the base generation_config.json over the one Trainer rewrites and asserts eos_token_id == [1, 106] - exactly the collapse-to-single-eos trap exp-01 predicted. (b) Format alignment: make_sft.py renders prompts with templates/gemma3.jinja (the same file evaluate.py hands vLLM) and inspect_evals' MATH_PROMPT_TEMPLATE copied verbatim, and the rendered rows I read end '...Reasoning:<end_of_turn>\\n<start_of_turn>model\\n', which is what the eval-side render produces. The unverified residue: the checkpoint is saved from a model loaded with dtype=torch.float32, so config dtype is float32 and vLLM's auto-dtype resolution for a gemma3 architecture is not exercised anywhere yet (gemma3 is on vLLM's float16-not-supported list; I did not read the vLLM source, which is outside my allowed paths). evaluate.py's model_type() also falls through to the config.json architectures string because 'gemma' does not appear in the output path - benign, but untested for this directory. Nothing between the 15-step smoke and 3.2 h of GPU has ever exercised the save -> vLLM-load -> score path; that is the whole of my 0.24 doubt and it is what precondition 1 buys."
+    },
+    "L2_effect": {
+      "metric": "accuracy",
+      "direction": "higher",
+      "interval": [
+        0.28,
+        0.6
+      ],
+      "confidence": 0.6,
+      "basis": [
+        "e5",
+        "e6",
+        "e7",
+        "e8"
+      ],
+      "note": "The card's mechanism story is only half right, and the half that is wrong matters for the size. I re-scored exp-01's 150 completions taking the FIRST 'ANSWER: <n>' line instead of the last number: 26/150 = 0.173. That is the ceiling of a perfect termination fix on the base weights under this decode - +0.087, not +0.4. So the claimed +0.4 to +0.6 has to come from the 405B-generated chains teaching arithmetic, not from formatting; the diagnostic (clean-termination rate) will move to ~1.0 almost regardless of whether accuracy does. The prior for the training itself is strong: history/r-4463b5d3/exp-02.yaml is a near-twin - same OpenMathInstruct-2 gsm8k+augmented_gsm8k core at 117,650 examples, full FT, 2 epochs, lr 1.4e-5, token-budget sampler, ~9 % of rows carrying few-shot system prefixes - and it reached 0.695 at n=200 from a 0.207 base, with the epoch-1 checkpoint at 0.690 and 10-shot vs no-system prompting worth nothing either way (0.680 / 0.6875 at n=400). Two further gsm8k SFT runs land at 0.567-0.647 at n=150 (history/r-5ca84abf, history/r-94f796fd). Gemma-3-4b-pt is a stronger base than SmolLM3-3B-Base (published 38.4 at 8-shot), which argues up; the decode argues down - exp-01 pinned the base generation_config, so this checkpoint is read on a single unseeded sampled draw at T=1.0 / top_k 64 / top_p 0.95, typically several points below greedy for a freshly SFT'd 4B, and the n=150 sampled noise floor is 3.3 pp. Centre of my belief is ~0.55-0.62 absolute, i.e. +0.46 to +0.53. The interval is wide on the low side for the case where termination generalises to the 10-shot prefix but arithmetic transfer is weaker on this base. Precedents are on a different base model, so per the skill I hold the confidence at 0.6."
+    },
+    "L3_worth_now": {
+      "answer": "yes",
+      "confidence": 0.86,
+      "expected_cost_h": 3.4,
+      "basis": [
+        "e6",
+        "e11",
+        "e5",
+        "e1"
+      ],
+      "note": "9.45 h left, no trained candidate exists, and the incumbent is the base at 0.0867. The cheap levers the manual normally puts ahead of a C3/C4 launch are unavailable or already spent: C2 alignment is built into the data build and verified; C5 needs checkpoints that do not exist yet; a C1b config-only stop-token edit cannot help because the base has eos_token_id [1, 106] already and still does not stop - the termination has to be trained. 3.4 h of the 9.45 buys the run's first real candidate and leaves ~6 h for a checkpoint sweep, a decode read and packaging. The one L3 deduction I would name is exposure, not value: for the next 3.2 h the session holds nothing submittable, and the manual prices an absent C9 guard as the costliest single deduction in the corpus (a run holding 80 % submitted 61 %). Also note train_sft.py hard-codes save_total_limit=3 while the card declares checkpoints.keep: all - with ~3400 total steps and save_steps 1737 that costs nothing, but it is a mismatch between the plan and the code."
+    }
+  },
+  "evidence": [
+    {
+      "id": "e1",
+      "path": "/home/ben/task/train_sft.py",
+      "locator": "lines 227-230, 248-273, 285-300",
+      "note": "loaded with dtype=torch.float32 (so the saved config is float32); save_total_limit=3 hard-coded; after save_model it copies the base preprocessor/processor/generation_config over the checkpoint and asserts eos_token_id == [1, 106]"
+    },
+    {
+      "id": "e2",
+      "path": "/home/ben/task/memory/cards/exp-02.preflight.json",
+      "locator": "summary + results",
+      "note": "9 pass, 0 warn, 0 fail; stop_token_consistent 500/500, answer_marker_single 0/500 bad, max_seq_len_headroom 0/500 over 3072 (longest ~1809 est.), parent checkpoint loadable"
+    },
+    {
+      "id": "e3",
+      "path": "/home/ben/task/memory/cards/exp-02.yaml",
+      "locator": "situation.smoke_runs, situation.pitfalls_hit",
+      "note": "chunked masked CE == built-in loss to 6 dp (0.590567); 3.2 s/step at 32768 tokens/step with fp32 master weights + 8-bit Adam; lm_head OOM and fp32-forward slowdown both already hit and fixed; contamination check 152194 docs, 0 matches"
+    },
+    {
+      "id": "e4",
+      "path": "/home/ben/task/data/sft_120k.jsonl",
+      "locator": "all 120000 rows",
+      "note": "0 targets not ending in '<end_of_turn>'; 0 targets with != 1 'ANSWER: '; 14621 rows (12.2 %) carry a few-shot system prefix; sources 106781 augmented_gsm8k / 7374 gsm8k_human / 5845 gsm8k; 189.0 M chars total, longest row ~2652 est. tokens (under max_seq_len 3072, so the drop-on-overlength path takes ~nothing)"
+    },
+    {
+      "id": "e5",
+      "path": "/home/ben/task/analysis/exp-01_items.jsonl",
+      "locator": "completion field, all 150 items, re-scored on the first ANSWER line",
+      "note": "13/150 scored correct as run; 24 clean-terminating (9 of those correct); 30 items emit no ANSWER marker at all; taking the FIRST 'ANSWER: <n>' instead of the last number gives 26/150 = 0.173, and any-ANSWER-line gives 29/150 = 0.193. So a perfect termination fix on the base weights is worth ~+0.087, not +0.4"
+    },
+    {
+      "id": "e6",
+      "path": "history/r-4463b5d3/exp-02.yaml",
+      "locator": "setup.data, result.measurements, result.diagnostic_result",
+      "note": "closest precedent: SmolLM3-3B-Base, 117,650 OpenMathInstruct-2 gsm8k/augmented + gsm8k train (+MetaMathQA), full FT, lr 1.4e-5, 2 epochs, token-budget sampler, ~9 % few-shot system prefixes -> 0.695 at n=200 vs base 0.207; epoch-1 checkpoint 0.690; 10-shot system prefix vs none 0.680 vs 0.6875 at n=400. Different base model and n=200 vs n=150"
+    },
+    {
+      "id": "e7",
+      "path": "history/r-5ca84abf/index.md",
+      "locator": "exp-03, exp-04, exp-07 rows; cross-checked against history/r-94f796fd/index.md exp-05/exp-07",
+      "note": "other gsm8k SFT candidates at comparable n: 0.647 and 0.573 and 0.627 at n=150, 0.64 at n=100, 0.5667 at n=150 - the post-SFT band for a 3B-class base is ~0.57-0.70"
+    },
+    {
+      "id": "e8",
+      "path": "/home/ben/task/memory/cards/exp-01.yaml",
+      "locator": "situation.smoke_runs (DECODE PIN) and result.diagnostic_result",
+      "note": "evaluate.py passes no sampling parameters, so vLLM inherits the checkpoint's generation_config: do_sample true, top_k 64, top_p 0.95, no temperature key (=1.0). Every score this session, comparator included, is one unseeded sampled draw; the n=150 sampled noise floor is 3.3 pp. Base clean-termination 0.16, 0 % hit the 1024 cap"
+    },
+    {
+      "id": "e9",
+      "path": "/home/ben/task/evaluate.py",
+      "locator": "model_type() lines 98-119, template_kwargs() lines 121-135",
+      "note": "the output path ckpts/exp-02/final contains no 'gemma', so model_type falls through to reading config.json architectures; Gemma3For... matches 'gemma' and templates/gemma3.jinja is passed to vLLM. Works, but this fallback branch has not been exercised in this session"
+    },
+    {
+      "id": "e10",
+      "path": "/home/ben/task/make_sft.py",
+      "locator": "MATH_PROMPT_TEMPLATE lines 25-33, apply_chat_template lines 79-89; templates/gemma3.jinja",
+      "note": "prompt rendered with the same jinja file evaluate.py hands vLLM and inspect's own MATH_PROMPT_TEMPLATE verbatim; rendered rows end '...Reasoning:<end_of_turn>\\n<start_of_turn>model\\n'. Eval always prepends a 10-exemplar system message; training gives one to only 12 % of rows with k uniform in 1-10, so ~1 % of rows see the exact eval shape"
+    },
+    {
+      "id": "e11",
+      "path": "/home/ben/task/memory/cards/exp-02.yaml",
+      "locator": "situation.remaining_h, setup.budget.planned_h, setup.checkpoints",
+      "note": "9.45 h left, 3.2 h planned, save_steps 1737 keep: all; df on the volume shows 5.1 TB free and the machine has 1.8 TB RAM / 16 cores, so neither disk nor host memory bounds the run"
+    },
+    {
+      "id": "e12",
+      "path": "/home/ben/task/data/sft_120k.jsonl",
+      "locator": "derived step count",
+      "note": "~52.5 M tokens/epoch estimated at 3.6 chars/token -> 1602 optimizer steps/epoch at zero padding waste, 1762 at 10 %. save_steps 1737 sits inside that bracket, so it is the scientist's epoch-1 boundary; 2 epochs at 3.2 s/step is 3.1 h of step time"
+    }
+  ],
+  "probes": [
+    {
+      "id": "p1",
+      "kind": "data_probe",
+      "cost": {
+        "cpu_min": 1.5
+      },
+      "result": "all 120000 rows of sft_120k.jsonl: 0 targets missing '<end_of_turn>', 0 with != 1 'ANSWER: ', 14621 few-shot rows, longest row ~2652 est. tokens. Extends preflight's 500-row sample to the whole file",
+      "changed": "L1"
+    },
+    {
+      "id": "p2",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 0.5
+      },
+      "result": "train_sft.py overwrites the Trainer-written generation_config.json with the base one and asserts eos_token_id == [1, 106]; make_sft.py and evaluate.py both route through templates/gemma3.jinja; evaluate.py's model_type falls back to config.json architectures for a path with no 'gemma' in it. Open item: the checkpoint is saved fp32 and vLLM's auto-dtype path for gemma3 is unexercised",
+      "changed": "L1"
+    },
+    {
+      "id": "p3",
+      "kind": "data_probe",
+      "cost": {
+        "cpu_min": 0.5
+      },
+      "result": "re-scored exp-01's 150 completions on the first ANSWER line rather than the last number: 26/150 = 0.173 (any-ANSWER 0.193). A perfect stop-token fix alone is worth ~+0.087 on these weights, so the card's +0.4 to +0.6 rests on the 405B chains improving arithmetic, not on formatting",
+      "changed": "L2"
+    },
+    {
+      "id": "p4",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 0.5
+      },
+      "result": "step-count and wall-time arithmetic from the data file: 1602-1762 steps/epoch, ~3.1 h of step time for 2 epochs at the smoke-measured 3.2 s/step; save_steps 1737 is the epoch-1 boundary. planned_h 3.2 is honest, expect 3.2-3.5 h with tokenization and saves",
+      "changed": "L0"
+    },
+    {
+      "id": "p5",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 0.2
+      },
+      "result": "5.1 TB free on the volume, 1.8 TB RAM, 16 cores - three fp32 checkpoints plus optimizer state and the 120k tokenized dataset are all comfortably inside limits",
+      "changed": "none"
+    }
+  ],
+  "suggestions": {
+    "preconditions": [
+      "[tier 2, ~8 min] Push the 15-step smoke checkpoint through the real save path (trainer.save_model + the generation_config copy) and run `python evaluate.py --model-path ckpts/smoke2/final --limit 20`. PASS = vLLM loads the fp32 gemma3 directory without a dtype error, the 20 items produce non-empty completions, and final/generation_config.json still has eos_token_id [1, 106]. FAIL = 3.2 h of GPU would land on an unscoreable candidate. This is the only link in the chain that neither smoke run nor preflight has touched, and it covers the fp32-vs-gemma3 dtype question, evaluate.py's architectures fallback, whether the vision tower survived AutoModelForCausalLM, and the eos copy in one shot. Changes L1 (and the save half of L0).",
+      "[tier 1, ~2 min] `python train_sft.py --dry-run --train-file data/sft_120k.jsonl --token-budget 16384 --grad-accum 2` and check that batches/epoch / 2 really is ~1737. If it is nearer 1602, save_steps 1737 lands 135 steps into epoch 2 and only one intermediate checkpoint ever exists. Changes L0 and the C5 lever behind L3.",
+      "[tier 1, ~1 min] train_sft.py line 264 hard-codes save_total_limit=3 while the card declares checkpoints.keep: all. Confirm the intended saves survive, or raise the limit before launch - the checkpoint sweep is the highest-effect-per-minute follow-up this run has and it is worth not trimming by accident.",
+      "[tier 1, ~1 min] Note for L2 accounting: e5 shows a perfect termination fix is worth only ~+0.087 on the base weights. Record the first-ANSWER-line accuracy alongside the clean-termination rate when the card closes, so a large diagnostic move with a small accuracy move can be attributed to the right mechanism."
+    ],
+    "cheaper_variants": [
+      "[tier 3, ~5 min] Evaluate the step-1737 checkpoint the moment it lands (~1.6 h in) instead of waiting for both epochs. The near-twin precedent scored 0.690 at epoch 1 against 0.695 at epoch 2 (history/r-4463b5d3/exp-02.yaml), so most of the gain is readable at half the GPU cost, and if it is there the second epoch becomes an optional refinement rather than a commitment.",
+      "[tier 2, ~1 min] Package that epoch-1 checkpoint into final_model as soon as it exists (C9). For the next 3.2 h the session has nothing submittable but the base at 0.0867; the manual prices a missing submission guard as the costliest deduction in the corpus.",
+      "[tier 3, ~6 min] After training, read the same weights once at greedy against the pinned T=1.0 / top_k 64 / top_p 0.95 decode (C1a). Every number this session rests on one unseeded sampled draw with a 3.3 pp floor at n=150, and a freshly SFT'd 4B usually gives up several points to T=1.0 sampling - the cheapest available lift on this card's own metric, and it costs no training.",
+      "[tier 2, ~25 min] If the dry run shows the run overrunning 3.5 h, `--epochs 1` on the same data: the precedent's epoch-1/epoch-2 gap was 0.005, well under this protocol's noise floor."
+    ]
+  },
+  "cost": {
+    "cpu_min": 3.2,
+    "gpu_min": 0,
+    "wall_min": 7.027691,
+    "usd": 1.8441,
+    "turns": 27
+  },
+  "model": "claude-opus-5",
+  "effort": "high",
+  "access": {
+    "files": 13,
+    "outside": []
+  }
+}

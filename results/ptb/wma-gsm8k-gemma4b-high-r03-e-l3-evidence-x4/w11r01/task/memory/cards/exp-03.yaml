@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T01:57:45Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.1
+  remaining_h: 6.9
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.64, protocol_n: 150}
+  trigger: "exp-02's 0.64 was produced by sampling at T=1.0/top_p 0.95/top_k 64, because the SFT card deliberately shipped the parent's generation_config untouched. evaluate.py never sends a temperature, so decoding is a property of the checkpoint directory and is a free lever that has not been pulled."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "whole file", observation: "do_sample true, top_p 0.95, top_k 64, no temperature -> vLLM samples at T=1.0"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py, locator: "L233-236", observation: "temperature and top_p are only sent when set in GenerateConfig; evaluate.py sets neither"}
+  alternatives_rejected:
+    - {option: "Leave decoding alone and spend the time on another training round", reason: "training rounds cost hours and this costs one 4-minute eval; and until the decode config is settled every later comparison carries the ~3.9 pp sampling noise this eval's stderr reports"}
+    - {option: "Self-consistency / majority vote over k samples", reason: "the harness scores one completion per item; there is no place to put a vote"}
+    - {option: "Tune temperature on a grid (0.2/0.4/0.7)", reason: "for a model graded on a single sample, greedy dominates a positive temperature except when it degenerates into a loop; one eval tells me whether it degenerates, and a grid costs four"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/make_variant.py, --src, /home/ben/task/ckpts/exp-02/final, --dst, /home/ben/task/ckpts/exp-02/final_greedy, --greedy], outcome: "hardlinked weights, generation_config rewritten to do_sample false / temperature 0.0 / top_p 1.0 / top_k 0 with eos_token_id still [1,106]; no second copy of the 8.1 GB of safetensors"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent is scored on one sample drawn at temperature 1.0. On a task where the model has a single shot at a long arithmetic chain, every token sampled off the mode is a chance to derail a chain the model would otherwise get right, and it also inflates the measurement noise of every comparison in this batch (stderr 0.0393 at n=150)."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: "whole file", observation: "accuracy 0.64, stderr 0.0393"}
+    - {path: /home/ben/task/analysis/exp-02_diagnostic.json, locator: "whole file", observation: "147/150 terminate cleanly, so the remaining 54 errors are chain errors - exactly the kind sampling noise adds to"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Serving the same exp-02 weights with a greedy generation_config (do_sample false, temperature 0.0) scores higher on dev-150 than the same weights served with the parent's sampled config."
+  mechanism: "The grader reads one completion. Sampling at T=1.0 with top_p 0.95 leaves real probability mass on tokens that break an arithmetic step, and one broken step loses the item; taking the argmax at every step removes that variance. The model is now well enough tuned (147/150 clean terminations) that greedy looping - the usual reason greedy loses - is unlikely."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +6 points"}
+  falsified_if: "greedy scores at or below 0.64, or the share of completions hitting the 4000-token cap rises above exp-02's 3/150 (which would be greedy degeneration into a repeat loop)"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/datasets/openai___gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866/gsm8k-test.arrow
+      source: openai/gsm8k
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "nothing is trained in this card; this is the benchmark the eval reads (first 150 unshuffled test items)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 with generation_config=auto
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "weights are unchanged from exp-02; only generation_config.json differs"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/final_greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.55', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.55']
+    dev_set: official --limit 150 (first 150 items of openai/gsm8k test, unshuffled)
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.64
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "share of completions hitting the 4000-token cap (greedy degeneration into a repeat loop would show up here before it shows up in accuracy)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.09
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 2516}
+  training_summary: {final_loss: null, steps: null, notes: "no training; identical weights to exp-02/final, hardlinked"}
+  measurements:
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.0867}
+  diagnostic_result:
+    value: 0.0267
+    path: /home/ben/task/analysis/exp-03_diagnostic.json
+    notes: "4/150 hit the 4000-token cap against the sampled arm's 3/150, so greedy did not degenerate into a repeat loop. vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config', which is the server-side receipt that temperature 0.0 was actually in force."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "0.6400 -> 0.7267 (+8.7) on identical weights, which is above the predicted +2 to +6 band and well outside the ~3.3 pp sampling floor. The degeneration risk the hypothesis flagged did not materialise (cap share 3/150 -> 4/150), so the whole gain is sampling noise that greedy removes."
+  decision: adopt
+  next_step: "Greedy is now part of every later comparison and must be pinned into whatever ships as final_model. exp-04: contrast checkpoint-1258 (end of epoch 1) against the epoch-2 weights, both greedy, before spending the remaining budget on a third training round."

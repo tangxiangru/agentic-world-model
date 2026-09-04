@@ -1,0 +1,132 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T02:01:03Z'
+situation:
+  elapsed_h: 1.05
+  remaining_h: 8.95
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.5467, protocol_n: 150}
+  trigger: "exp-02's per-epoch curve is flat: 0.507 / 0.540 / 0.547 over epochs 1-3 on the same 7,473 rows, while its stop-token and format diagnostics are already saturated (0.993 / 0.007). Optimisation is not the bottleneck any more; the 7.5k GSM8K train solutions are exhausted as a signal."
+  trigger_evidence:
+    - path: /home/ben/task/eval/exp-02_ck234_dev150.json
+      locator: "accuracy 0.5067 (epoch 1)"
+    - path: /home/ben/task/eval/exp-02_ck468_dev150.json
+      locator: "accuracy 0.5400 (epoch 2)"
+    - path: /home/ben/task/analysis/exp-02_final_diagnostic.json
+      locator: "stopped_share 0.993, no_answer_marker_share 0.007, accuracy_if_truncated_at_first_ANSWER 0.527 < accuracy 0.547"
+  alternatives_rejected:
+    - option: "More epochs / higher LR on the same 7.5k rows"
+      reason: "epochs 2 and 3 differ by 0.7 pts, a fifth of one stderr; the curve is flat, so more passes buy nothing."
+    - option: "Continue training exp-02/final on the mixture instead of restarting from base"
+      reason: "the mixture already contains all 7,473 GSM8K train rows; continuing would give them 4 extra passes at the tail of a schedule and risks style lock-in from the short human-written GSM8K rationales. One cosine schedule from base over the whole mixture is the cleaner comparison, and exp-02/final is kept either way."
+    - option: "RFT (sample from exp-02, keep correct, retrain) before scaling the data"
+      reason: "self-generated data is bounded by exp-02's own 0.547; a 180k-row corpus of verified solutions written by a much stronger model is the larger and cheaper step. RFT is the natural follow-up card once the SFT ceiling is found."
+    - option: "MetaMathQA instead of OpenMathInstruct-2"
+      reason: "MetaMathQA bodies carry both '#### N' and a boxed answer (pitfalls.yaml double_answer_format); OpenMathInstruct-2 has one \\\\boxed tail per solution which build_data.py strips and replaces with the single marker the grader reads."
+  pitfalls_hit:
+    - what: "editing train_sft.py while exp-02's locked run was in flight forced a re-lock at close time"
+      cost_h: 0.05
+      fix: "all script changes for this card (--attn flag) were made and smoke-tested before this card was locked"
+  smoke_runs:
+    - command: [python, -c, "eager vs flash_attention_2 forward loss on 8 rows of data/sft_gsm8k.jsonl"]
+      outcome: "1.0558 vs 1.0567 - identical to bf16 noise, so flash_attention_2 is safe for gemma-3 here (no logit softcapping in gemma-3)"
+    - command: [python, -c, "tokenise all 180,289 mixture rows and histogram the lengths"]
+      outcome: "mean 379, p50 319, p95 816, p99 1299, max 3823 tokens; at max_seq_len 2560 only 0.005% of rows would be dropped; 68.4M loss+prompt tokens per epoch"
+    - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_mix160k.jsonl]
+      outcome: "180,289 documents scanned, 0 contaminated, exit 0"
+problem:
+  statement: "exp-02 answers in the right format and stops correctly, but is wrong on 68 of 150 dev items: it has only ever seen 7,473 short human-written rationales, one per problem, so it has no diversity of problem phrasings and no worked examples of careful multi-step arithmetic."
+  evidence:
+    - path: /home/ben/task/analysis/exp-02_final_diagnostic.json
+      locator: "n_wrong=68, accuracy 0.5467"
+      observation: "68/150 wrong although 149/150 are well-formed and terminated, so essentially all remaining error is reasoning/arithmetic, not format"
+    - path: /home/ben/task/eval/exp-02_ck468_dev150.json
+      locator: "accuracy 0.5400 vs 0.5467 at epoch 3"
+      observation: "the training set is saturated"
+  affected_share: 0.453
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Training from the base snapshot on a 180k-row GSM8K-style mixture (OpenMathInstruct-2 augmented_gsm8k + gsm8k + a numeric-answer math slice + the GSM8K train split), same rendering and same terminator, moves dev-150 accuracy above exp-02's 0.5467."
+  mechanism: "The 24x larger corpus supplies many distinct phrasings per problem schema and step-by-step solutions written by a far stronger model and verified against the gold answer, which is the standard way small models pick up reliable multi-step arithmetic. Format and termination are already solved by the identical target shape, so any change in accuracy is attributable to the reasoning data."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+8 to +20 pts on dev-150"
+  falsified_if: "dev-150 accuracy of the best exp-03 checkpoint is at or below exp-02's 0.5467, or the stop-token share falls below 0.95 (which would mean the new target style broke termination)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_mix160k.jsonl
+      source: "nvidia/OpenMathInstruct-2 split train_1M (138,060 augmented_gsm8k + 14,756 gsm8k + 19,629 augmented_math + 371 math) mixed with openai/gsm8k main/train (7,473). Both are built from GSM8K/MATH TRAIN problems only."
+      n_examples: 180289
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_mix160k.jsonl, --gsm8k-repeat, '1', --n-omi-gsm8k, '155000', --n-omi-math, '20000', --fewshot-frac, '0.04', --seed, '0']
+      selection: "OpenMathInstruct-2 rows kept only if expected_answer is a plain number (the grader reads the last number) and the final '$\\boxed{..}$' sentence can be stripped cleanly, leaving no \\boxed anywhere in the body; that tail is replaced by the single 'ANSWER: N' line. GSM8K train rows keep their <<a*b=c>> spans and have '#### N' replaced by 'ANSWER: N'. 4% of rows get a 1-6 shot prefix drawn from GSM8K train. Exact dedup on (question, reasoning, answer)."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE + flash_attention_2, custom completion-only collator"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 32, grad_accum: 2, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "<chain of thought> + blank line + 'ANSWER: <n>' + <end_of_turn>; loss on the model turn only (prompt masked to -100)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --train-file, data/sft_mix160k.jsonl, --output-dir, /home/ben/task/ckpts/exp-03, --lr, '1e-5', --epochs, '2', --batch-size, '32', --grad-accum, '2', --max-seq-len, '2560', --save-epochs, --seed, '0', --attn, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 3.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '16', --gpu-memory-utilization, '0.8']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, 10-shot seed 42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.5467
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "share of completions whose stop_reason is 'stop' (termination must survive the new target style)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 3.70
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-2817, step: 2817}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-5634, step: 5634}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 5634}
+  training_summary: {final_loss: 0.291, steps: 5634, notes: "13413 s, 26.9 samples/s, 68.4M tokens/epoch, 9 of 180289 rows dropped for exceeding max_seq_len (0.005%); no divergence, grad_norm ~1.7-1.9 throughout"}
+  measurements:
+    - {metric: accuracy, value: 0.7400, n: 150, path: /home/ben/task/eval/exp-03_ck2817_dev150.json, delta_vs_comparator: 0.1933}
+    - {metric: accuracy, value: 0.7200, n: 150, path: /home/ben/task/eval/exp-03_final_dev150.json, delta_vs_comparator: 0.1733}
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-03_final_diagnostic.json
+    notes: "stop_reason='stop' on 149/150, missing-marker share 0.007 - termination survived the new target style unchanged. accuracy_if_truncated_at_first_ANSWER now equals accuracy exactly (0.72), i.e. no completion contains a stray number after its answer line. Median completion grew 260 -> 424 chars: the OpenMathInstruct-2 rationales are longer and more explicit than the human GSM8K ones."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.5467 -> 0.7400 (epoch 1) / 0.7200 (epoch 2), +19.3 / +17.3 pts against exp-02, ~5 stderr. Scaling from 7.5k human rationales to 180k verified model-written ones is worth about 18 pts, and it costs nothing in format or termination. The two epochs are 3 items apart on n=150, i.e. indistinguishable, so a second pass over this corpus adds nothing - the same saturation exp-02 showed, one order of magnitude further along."
+  decision: adopt
+  next_step: "exp-04: a second epoch on this corpus is worthless and more of the same OpenMathInstruct-2 data would be more of the same, so switch signal type - rejection-sampling fine-tuning on the model's own verified-correct solutions, upweighting the questions it finds hard, mixed with a slice of unseen augmented_gsm8k to stop the distribution narrowing."

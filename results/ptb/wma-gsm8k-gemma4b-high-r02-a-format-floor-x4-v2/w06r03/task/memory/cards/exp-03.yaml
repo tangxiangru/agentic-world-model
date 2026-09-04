@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T18:05:00Z'
+situation:
+  elapsed_h: 3.3
+  remaining_h: 6.7
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.58, protocol_n: 150}
+  trigger: "exp-02's candidate is served under the base model's shipped generation_config (do_sample true, top_k 64, top_p 0.95, no temperature), so vLLM samples it at T=1.0; evaluate.py never sends a temperature, so that file is the only thing deciding decoding, and the WMA verdict on exp-02 records one same-weights greedy-vs-sampling contrast in its corpus worth 7.5 pts."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample, top_k, top_p"}
+    - {path: /home/ben/task/memory/cards/exp-02.verdict.json, locator: "levels.L2_effect.note"}
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: "accuracy, stderr", observation_note: "0.58 with inspect stderr 0.0404"}
+  alternatives_rejected:
+    - {option: "Skip this and go straight to a second training round", reason: "this costs ~6 min of GPU against ~1.5 h for a training round, and it also decides which decode config every later card and final_model must carry; getting it wrong silently costs points on the graded run"}
+    - {option: "Ship greedy without measuring it", reason: "greedy is not automatically better - a model trained on sampled-looking targets can degenerate into repetition under greedy; the corpus contrast is a single data point on a different base"}
+    - {option: "Set temperature to a small non-zero value (0.2-0.3) instead of exact greedy", reason: "an extra free parameter that would need its own sweep; greedy is the deterministic end point and also removes the 3.3 pp sampling noise floor from every later comparison, which is worth more than a fractional tuning gain"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The incumbent's score is a sampling read at T=1.0 with top_k 64 / top_p 0.95. Every arithmetic chain is ~144 tokens long and a single unlucky token anywhere in it flips the final answer, so sampling both loses accuracy and puts a ~3.3 pp noise floor under every comparison in the rest of this session. It is not known whether greedy decoding of the same weights is better, worse, or the same."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: "accuracy, stderr", observation: "0.58, inspect stderr 0.0404 at n=150 under sampling"}
+    - {path: /home/ben/task/analysis/exp-02_diag.txt, locator: "mean approx output tokens", observation: "mean ~144 output tokens per completion, so ~144 independent sampling opportunities to derail a correct chain"}
+    - {path: /home/ben/task/analysis/exp-01_diag.txt, locator: "whole file", observation: "the base model's degeneration under the same T=1.0 config (code-switching, repetition to the cap) shows this decode config is not innocuous on this model family"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Serving a byte-identical copy of ckpts/exp-02/final whose generation_config.json requests greedy decoding (do_sample false, temperature 0.0, top_k 1, top_p 1.0) instead of the shipped sampling triple raises accuracy on the official --limit 150 protocol relative to the same weights served with the shipped config."
+  mechanism: "Under completion-only SFT the model's argmax path is the mode of the trained solution distribution; sampling at T=1.0 draws off-mode tokens, and because a single wrong digit in a ~144-token arithmetic chain propagates to the graded final number, off-mode draws convert correct chains into wrong answers far more often than the reverse."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+3 to +10 pts; the delta must clear ~5 pts to be distinguishable from the sampling noise floor at n=150, which is why a repeat sampling read is taken as the diagnostic"
+  falsified_if: "greedy accuracy at n=150 is at or below the sampling reads (i.e. not above the maximum of the two sampling measurements), or greedy transcripts show a rise in cap-hit / repetition (degeneration under argmax)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_exp03_data.md
+      source: local
+      n_examples: 150
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '150']
+      selection: "no training data: this card changes only generation_config.json. The 150 items are the first 150 of the official gsm8k test split inside inspect_evals/gsm8k and are never used for training."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 via inspect_ai, default_sampling_params taken from the served generation_config.json
+    peft: none
+    hyperparams: {seed: 42}
+    target_format: "unchanged from exp-02: worked solution, blank line, 'ANSWER: <n>', <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03_greedy, --limit, '150', --max-connections, '2', --max-tokens, '4000', --gpu-memory-utilization, '0.3', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '2', --max-tokens, '4000', --gpu-memory-utilization, '0.3']
+    dev_set: "official --limit 150 (first 150 items of the gsm8k test split as loaded by inspect_evals/gsm8k)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.58
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "a REPEAT sampling read of the identical exp-02/final weights under the identical protocol, to bound the sampling noise floor this delta has to clear; plus the exp-01/exp-02 transcript counts (cap-hit, no-'ANSWER:', mean output tokens) on the greedy transcripts to rule out argmax degeneration"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# The greedy artefact is produced by copying ckpts/exp-02/final and rewriting only
+# generation_config.json (scripts/prep_ckpt.py --decode greedy). eos_token_id stays the
+# list [1, 106] and bos/pad are unchanged; nothing else in the directory differs, which is
+# what makes this a decode-only comparison. Per the WMA precondition on exp-02, the
+# incumbent's own generation_config was diffed against the base's first and found
+# byte-identical except transformers_version, so no restore was performed on it.
+
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03_greedy, step: 2110}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are byte-identical to ckpts/exp-02/final (md5 of both shards matches), only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.71333, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.13333}
+  diagnostic_result:
+    value: 0.61333
+    path: /home/ben/task/eval/exp-02_final_dev150_repeat.json
+    notes: "REPEAT SAMPLING READ of the identical exp-02/final weights under the identical protocol: 0.61333 (stderr 0.03990) against the original 0.58000. So the sampling noise on this protocol is ~3.3 pp, exactly the floor the WMA predicted, and greedy at 0.71333 clears the better of the two sampling reads by 10.0 pp. Greedy transcript counters (analysis/exp-03_diag.txt): cap-hit 3/150, no-'ANSWER:' 3/150, '!!!!' 0/150, mean ~190 output tokens - a small rise from sampling's 1/150 and ~144 tokens, i.e. a trace of argmax looping but nowhere near degeneration. WMA precondition receipt: logs/exp-03.log contains vLLM's 'Default sampling parameters have been overridden by the model's Hugging Face generation config' line, so the greedy triple was the served config."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy decoding of byte-identical weights scores 0.71333 against 0.58000 and 0.61333 for two sampling reads of the same checkpoint: +10.0 pts over the better sampling read, against a measured ~3.3 pp sampling noise floor. Argmax degeneration did not happen (cap-hit 3/150, no repetition signature), so the whole gain is off-mode sampling draws derailing otherwise correct ~144-token arithmetic chains."
+  decision: adopt
+  next_step: "Greedy is now the decode config for every later card and for final_model: it is worth ~10 pts and it drops the per-comparison noise floor from 3.3 pp to ~1.3 pp, which is what makes the remaining comparisons readable. Next is exp-04, a rejection-sampling (STaR) round from ckpts/exp-02/final mixed with unseen OpenMathInstruct-2 problems; data/rft_v1.jsonl is already built (36,589 rows, solve-rate-at-4 0.873)."
+

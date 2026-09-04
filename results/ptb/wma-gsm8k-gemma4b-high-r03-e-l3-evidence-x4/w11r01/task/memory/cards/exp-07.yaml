@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-04T05:22:55Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.7
+  remaining_h: 3.3
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.7293, protocol_n: 1319}
+  trigger: "exp-06 scored the two candidates on all 1319 items and got 0.7293 and 0.7309 - a dead heat. Two checkpoints that are statistically indistinguishable but demonstrably different in weight space (277 of 884 tensors differ) is the textbook setting for a weight-space average, and exp-06 also showed a full-set read costs 4 minutes rather than the 20 I had budgeted."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-06_diagnostic.json, locator: "whole file", observation: "0.7293 vs 0.7309 at n=1319, se 0.0122 each"}
+    - {path: /home/ben/task/eval/exp-06_exp03_full1319.json, locator: "whole file", observation: "incumbent 0.7293 - the comparator for this card, under the same invocation"}
+  alternatives_rejected:
+    - {option: "Stop here and ship the incumbent", reason: "that is the fallback and final_model already holds it; a soup costs one 4-minute eval and cannot damage the fallback, which stays on disk untouched"}
+    - {option: "Sweep the mixing weight (0.25/0.5/0.75)", reason: "three arms for a lever whose whole expected effect is 1-2 points; the parents are equal in score, so the uniform average is the only point on the line I can justify without a validation set separate from the thing I am measuring on"}
+    - {option: "Soup in exp-02/checkpoint-1258 and 1887 as well", reason: "1258 measured 1.3 points behind, and the intermediate checkpoints are earlier points on the same trajectory rather than independent runs: they add correlation, not diversity"}
+    - {option: "Another training round with the time left", reason: "3.3 h minus the packaging margin is one 1-hour round at best, and the last two data interventions - a second epoch, then rejection sampling - both landed inside the noise band. A merge is the one remaining lever that needs no new data."}
+  pitfalls_hit:
+    - {what: "the first version of soup.py averaged in place per state_dict key, so the tied embedding/lm_head pair got the update twice and landed on 0.25*a + 0.75*b instead of the uniform average - the WMA review of the first lock caught it", cost_h: 0.1, fix: "dedupe by tensor.data_ptr(), not id(): with tie_word_embeddings the two entries are distinct Python objects over one storage, so an id() check silently misses it. Verified after the fix: ||soup - uniform|| = 0.0048 against ||soup - 0.25/0.75|| = 0.0400 on the embedding."}
+  smoke_runs:
+    - {command: [python, scripts/soup.py, --a, /home/ben/task/ckpts/exp-02/final, --b, /home/ben/task/ckpts/exp-05/final, --weight-a, '0.5', --out, /home/ben/task/ckpts/exp-07/soup], outcome: "883 distinct tensors averaged (1 tied alias skipped), 276 of them actually differing between the parents; the ~165 that did not are the per-layer norms, whose lr 5e-6 updates round away in bf16. Saved with tokenizer and processor configs."}
+    - {command: [python, scripts/finalize_ckpt.py, --ckpt, /home/ben/task/ckpts/exp-07/soup, --greedy], outcome: "architectures Gemma3ForConditionalGeneration, eos_token_id [1,106], do_sample False, temperature 0.0"}
+    - {command: [python, -c, "compare the souped embedding against the uniform average and against the 0.25/0.75 skew"], outcome: "distance to uniform 0.0048 (bf16 rounding), distance to the skew 0.0400: the saved artefact is the uniform average the hypothesis names"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Both post-training lines have converged on the same score, about 0.73, and the two candidates disagree on which items they get right without either being better overall. Neither line has anywhere left to go inside the remaining budget, so the only accuracy still on the table is whatever their errors do not share."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_diagnostic.json, locator: "whole file", observation: "0.7293 vs 0.7309 at n=1319 - a two-item difference over 1319"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "conclusion", observation: "one epoch of rejection-sampled self-training moved nothing measurable"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion", observation: "a second epoch over the same corpus moved nothing measurable"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A uniform weight-space average of the exp-02 and exp-05 checkpoints, served greedily, scores higher on the full 1319-item test set than either parent."
+  mechanism: "exp-05 was produced by continuing exp-02, so the two sit in one basin and their parameters can be averaged without an alignment step. Each parent's errors carry an independent component - one epoch of self-generated data moved 277 tensors without moving the score - and averaging cancels the part of that difference that is noise while keeping what both agree on. Standard model-souping, on the smallest possible soup."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "+0.5 to +2 points over the better parent's 0.7309; the honest prior is that most two-model soups of a checkpoint and its own continuation land inside +/-1"}
+  adoption_margin: "pre-registered before the number exists, from this card's first verdict: adopt the soup into final_model only if it clears the better parent's 0.7309 by at least 0.010 (about 13 items at n=1319, the greedy floor at this n). Anything less is a tie and the incumbent ships."
+  falsified_if: "the soup scores below 0.7293, the weaker parent - which would mean the two are not in a shared basin after all and averaging is destroying rather than denoising"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/datasets/openai___gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866/gsm8k-test.arrow
+      source: openai/gsm8k
+      n_examples: 1319
+      built_by: null
+      build_command: []
+      selection: "nothing is trained in this card; the full GSM8K test split that --limit -1 evaluates"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: torch parameter average via scripts/soup.py, served by vllm 0.11.0
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "0.5 * ckpts/exp-02/final + 0.5 * ckpts/exp-05/final over every tensor, saved as a full Gemma3ForConditionalGeneration checkpoint with the greedy decode config"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-07/soup, --limit, '-1', --max-connections, '16', --gpu-memory-utilization, '0.55', --json-output-file, /home/ben/task/eval/exp-07_soup_full1319.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '-1', --max-connections, '16', --gpu-memory-utilization, '0.55']
+    dev_set: official --limit -1 (all 1319 openai/gsm8k test items)
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.7293
+    path: /home/ben/task/eval/exp-06_exp03_full1319.json
+  diagnostic:
+    what: "clean-termination share and median completion length against the two parents - a badly formed average shows up as broken generation long before it shows up as a slightly lower score"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.07
+  output_checkpoint: /home/ben/task/ckpts/exp-07/soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/soup, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 883 distinct tensors averaged, 276 of them differing between the parents"}
+  measurements:
+    - {metric: accuracy, value: 0.7248, n: 1319, path: /home/ben/task/eval/exp-07_soup_full1319.json, delta_vs_comparator: -0.0045}
+  diagnostic_result:
+    value: 0.9864
+    path: /home/ben/task/analysis/exp-07_diagnostic.json
+    notes: "1301/1319 terminate cleanly and the median completion is 493 chars, between the two parents (exp-02 510, exp-05 438). The average is a perfectly well-formed model - it is simply not a better one, so this is a flat result and not a degeneration."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The soup scores 0.7248 against parents at 0.7293 and 0.7309: below both, and below the weaker one, which is the falsification condition as written - though the 0.6-point shortfall against the better parent is itself inside the ~1-point floor at n=1319. The denoising mechanism did not fire; generation quality is intact (98.6% clean terminations, median length between the parents), so averaging did not break anything, it just bought nothing."
+  decision: reject
+  next_step: "The pre-registered margin was +0.010 over 0.7309 and the soup is 0.0061 below it, so final_model keeps the exp-03 greedy weights at 0.7293. Three interventions in a row - a second epoch, rejection sampling, and a weight average - have now all landed inside this protocol's noise floor, which says the 0.73 plateau is a property of gemma-3-4b-pt on GSM8K-derived data rather than of any one recipe. Remaining budget goes to exp-08: verifying the shipped directory itself."

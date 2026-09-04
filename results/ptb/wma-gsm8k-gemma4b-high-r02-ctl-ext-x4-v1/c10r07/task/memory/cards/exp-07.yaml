@@ -1,0 +1,126 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-04T10:10:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.85
+  remaining_h: 2.15
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.8267, protocol_n: 150}
+  trigger: "exp-06 showed a second rejection-training round stacked on top of the first makes the model worse (dev-150 0.8267 -> 0.8067, probe 0.868 -> 0.856) while its training loss kept falling - the signature of a third consecutive pass over the model's own outputs narrowing the distribution. The round-2 data itself was never shown to be bad; only the stacking was."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "result.measurements, result.diagnostic_result", observation: "-2.0 on dev-150 and -1.2 on the 500-question probe, with final loss 0.176 -> 0.154"}
+    - {path: /home/ben/task/analysis/exp-06_sampling.txt, locator: "pass_at_k 0.9629", observation: "the round-2 chains are verified-correct and cover 18,000 problems round 1 never touched"}
+  alternatives_rejected:
+    - {option: "Stop and keep exp-05", reason: "final_model already holds exp-05 and is verified end to end at 0.8200, so this card cannot cost anything banked - only time, of which there is enough for exactly one more run"}
+    - {option: "Weight-average exp-04/exp-05/exp-06 (model soup)", reason: "cheap and sometimes worth a point, but the plausible effect is within this protocol's noise at n=150, so I would be choosing on noise; the union retrain has an actual mechanism behind it"}
+    - {option: "A third RFT round with larger k", reason: "sampling alone is 35 min; there is not enough time left for sample-plus-train-plus-eval"}
+    - {option: "Raise n to 500 for the decision", reason: "would cost ~50 min per candidate and leave no time to train anything; instead the promotion rule below requires the independent 500-question probe to agree, which is nearly free"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The 51,317 verified-correct self-generated chains produced across both sampling rounds have never been trained on in a single pass. Round 1's 27,281 went into exp-05; round 2's 24,036 went into exp-06, which stacked a third schedule on an already twice-trained model and lost 2 points. So the best available RFT corpus has only ever been used in a configuration known to be harmful."
+  evidence:
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "conclusion.summary", observation: "the stacked round regressed on two independent measurement sets"}
+    - {path: /home/ben/task/data/rft_union.jsonl, locator: "build output: rft rows 51317, teacher kept 10000, 24.06M tokens", observation: "the combined corpus, never trained on as one pass"}
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "accuracy", observation: "the incumbent to beat, 0.8267"}
+  affected_share: null
+  failure_examples:
+    - {id: exp06-regression, source: /home/ben/task/eval/exp-06_dev150.json, question: "(the configuration, not an item)", gold: "n/a", model_output: "0.8067", failure: "third consecutive pass over own outputs; loss down, accuracy down"}
+    - {id: dev150-remaining-26, source: /home/ben/task/analysis/exp-05_diagnostic.json, question: "(the 26 dev-150 items exp-05 gets wrong)", gold: "n/a", model_output: "n/a", failure: "the population this card has to move"}
+    - {id: rft2-unused, source: /home/ben/task/data/rft_samples2_k6.jsonl, question: "(24,036 verified chains over 18,000 problems from round 2)", gold: "n/a", model_output: "n/a", failure: "currently only reachable through the configuration that regressed"}
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "One epoch from exp-04 on all 51,317 verified self-generated chains from both rounds plus 10,000 teacher rows - one rejection-training pass instead of two stacked ones - gives higher greedy dev-150 accuracy than exp-05's 0.8267."
+  mechanism: "exp-05 established that one RFT pass over 27k chains is worth +4.0; exp-06 established that a second pass on top of it is worth -2.0. If the cost in exp-06 was the extra pass rather than the extra data, then folding both rounds' chains into the single pass that is known to help should keep the gain and add round 2's problem coverage. Starting from exp-04 also means only two cosine schedules total, the same depth as exp-05."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0 to +3 points; the extra 24k chains are 1.9x the RFT corpus but they were sampled from exp-05, so they are slightly off-policy for exp-04"
+  falsified_if: "greedy dev-150 accuracy is at or below 0.8267 - which would mean exp-06's regression was not about stacking, and that RFT here saturates at roughly the 27k chains exp-05 already used."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_union.jsonl
+      source: "synthetic:self (round 1 from ckpts/exp-04/final seed 1, round 2 from ckpts/exp-05/final seed 2; both k=6, temperature 1.0, top_p 0.95) over nvidia/OpenMathInstruct-2 @ 469216e3 questions; plus teacher rows from data/sft_v2.clean.jsonl"
+      n_examples: 61317
+      built_by: /home/ben/task/build_rft_data.py
+      build_command: [python, -c, "concatenate the kind=='rft' rows of data/rft_v1.jsonl and data/rft_v2.jsonl, add 10000 random teacher rows from the same two files, shuffle with seed 3, write data/rft_union.jsonl"]
+      selection: "all 51,317 rows that build_rft_data.py kept as self-generated and verified-correct across the two disjoint 20,000- and 18,000-problem slices of data/rft_pool.clean.jsonl, under the same rule (4 chains where pass rate <= 0.67, 1 otherwise, deduped by the chain's sequence of numbers), plus 10,000 of the teacher rows those two builds had mixed in. Both source files were already decontaminated: 0 of 51,317 self-generated rows flagged at word-8-gram containment 0.25 against the 1319 test questions."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3, ChunkedLossTrainer in train_sft.py"
+    peft: "none - full parameter over the 3.88B text tower"
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 32, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "bf16 weights + adamw_bnb_8bit + flash_attention_2 + gradient checkpointing", seed: 0}
+    target_format: "<reasoning> then a blank line then 'ANSWER: <number>' then <end_of_turn>, rendered inside templates/gemma3.jinja (sha256[:12] = 7de1c58e208e); completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/rft_union.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, ckpts/exp-07, --epochs, "1", --lr, "7e-6", --bs, "32", --accum, "2", --max-seq-len, "2816", --save-strategy, "no"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.75}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --json-output-file, "{out}.json"]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k openai/gsm8k test split, first 150 items, 10-shot system message seeded 42); the checkpoint carries the greedy generation_config.json adopted in exp-03"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.8267
+    path: /home/ben/task/eval/exp-05_dev150.json
+  diagnostic:
+    what: "greedy accuracy on the 500 held-out GSM8K TRAIN questions excluded from every corpus in this batch (exp-04 0.860, exp-05 0.868, exp-06 0.856). PROMOTION RULE, fixed before the run: final_model is only replaced if dev-150 >= 0.8467 (i.e. +2 points, three items, over the incumbent) AND this probe is >= 0.868. Anything smaller than that is inside this protocol's noise and I would be selecting on it."
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.67
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 959}
+  training_summary: {final_loss: null, steps: 959, notes: "train_loss 0.1722, 2406 s wall, 25.5 samples/s, no incidents"}
+  measurements:
+    - {metric: accuracy, value: 0.8000, n: 150, path: /home/ben/task/eval/exp-07_dev150.json, delta_vs_comparator: -0.0267}
+  diagnostic_result:
+    value: 0.868
+    path: /home/ben/task/analysis/exp-07_diagnostic.json
+    notes: "0.868 on the 500 held-out train questions - identical to exp-05, against exp-06's 0.856. So this checkpoint is NOT damaged the way exp-06 was; it is simply not better. The promotion rule (dev-150 >= 0.8467 and probe >= 0.868) fails on the first clause, so final_model was not touched."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.8267 -> 0.8000 (-2.7) with the probe unchanged at 0.868. Folding both sampling rounds into one pass from exp-04 does not recover what exp-06 lost, so exp-06's regression was not simply the extra schedule: RFT here saturates near the ~27k chains exp-05 already used, and adding round-2 chains sampled from a different parent does not help either way."
+  decision: reject
+  next_step: "Read the three RFT descendants together rather than one at a time: exp-05 0.8267, exp-06 0.8067, exp-07 0.8000, with probe values 0.868 / 0.856 / 0.868. Two of the three sit within one standard error (0.032 at n=150) of each other, so part of exp-05's lead over exp-07 is likely dev-150 noise and this batch does not have the evidence to call exp-05 the best of the three at any confidence - only that none of its successors beat it. The honest next step, with more time, is a single 500-item or full-test evaluation of exp-05 and exp-07 before choosing; with 1.3 h left that does not fit, so final_model keeps the checkpoint that leads on the only protocol all three share."

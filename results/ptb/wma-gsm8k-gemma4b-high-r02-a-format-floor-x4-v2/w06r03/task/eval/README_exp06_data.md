@@ -1,0 +1,1 @@
+Merge/selection card exp-06: no training data. The intervention averages two existing checkpoints; the 1319 evaluation items are the full official gsm8k test split inside inspect_evals/gsm8k and are never used for training.

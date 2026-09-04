@@ -1,0 +1,285 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T00:51:18Z'
+situation:
+  elapsed_h: 0.35
+  remaining_h: 9.65
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: 0.1
+      protocol_n: 150
+  trigger: 'exp-01 smoke probe at --limit 10 scored 0/10: the pt checkpoint never
+    emits <end_of_turn>, it keeps generating fresh question/Reasoning/ANSWER blocks
+    in the few-shot style until the 4000-token cap, so the grader reads a number from
+    a hallucinated later problem.'
+  trigger_evidence:
+  - path: /home/ben/task/logs/2026-09-04T00-47-16+00-00_gsm8k_i9c4PJPEQ8AWT7k9ZFPfBL.json
+    locator: samples[0..9], stop_reason
+  alternatives_rejected:
+  - option: Decode-config only fix (stop strings / lower max_tokens) instead of training
+    reason: evaluate.py is immutable and passes no stop strings; only generation_config.json
+      inside the checkpoint is reachable, and it cannot teach the model to stop after
+      the ANSWER line.
+  - option: LoRA instead of full fine-tuning
+    reason: The model must learn a new turn-termination behaviour and a new answer
+      style from 112k examples; full FT of a 4B fits in 80 GB with 8-bit Adam and
+      grad checkpointing, so the cheaper option buys nothing here.
+  - option: Self-generated RFT/STaR on GSM8K train as the first step
+    reason: The base model scores 0 under this harness, so rejection sampling from
+      it would yield almost nothing; RFT needs a competent parent and is the natural
+      exp-03, not exp-02.
+  - option: MetaMathQA-395K instead of OpenMathInstruct-2
+    reason: MetaMathQA bodies carry GSM8K's own '#### N' line as well as a final answer,
+      which is pitfalls.yaml double_answer_format; OpenMathInstruct-2 solutions are
+      405B-generated and answer-verified and reformat cleanly to a single ANSWER marker.
+  pitfalls_hit:
+  - what: 'first card written with an unquoted YAML scalar containing a colon-space
+      (the grader prompt text); awm exp_protocol check died in the yaml scanner'
+    cost_h: 0.03
+    fix: quote any scalar containing a colon-space
+  smoke_runs:
+  - command:
+    - python
+    - evaluate.py
+    - --model-path
+    - <base snapshot>
+    - --limit
+    - '10'
+    outcome: accuracy 0.000; 9/10 hit max_tokens; base model continues the few-shot
+      pattern instead of terminating; 53 s of generation plus ~2 min vLLM startup
+  - command:
+    - python
+    - scripts/train_sft.py
+    - --dry-run
+    - --limit
+    - '8000'
+    outcome: rows=7981 dropped_too_long=19 p50=336 p99=2483 max=2809 at max_seq_len
+      2816; decoded example confirms the prompt is byte-identical to the grader rendering
+      and the labelled span is exactly the completion
+  - command:
+    - python
+    - /home/ben/contamination_check.py
+    - --reference
+    - /home/ben/test_data.json
+    - --input
+    - data/sft_v1_docs.jsonl
+    outcome: 112473 documents scanned, 0 contaminated, exit 0
+problem:
+  statement: The base checkpoint produces no usable GSM8K answer under this harness.
+    It has never been trained to end a model turn, so with the 10-shot prefix it rolls
+    on past its own answer into invented follow-up problems and the numeric-end grader
+    scores the last of those. Accuracy is 0.0 at n=10 and the failure is termination
+    and output shape, not arithmetic.
+  evidence:
+  - path: /home/ben/task/logs/2026-09-04T00-47-16+00-00_gsm8k_i9c4PJPEQ8AWT7k9ZFPfBL.json
+    locator: samples[1].output.choices[0].stop_reason
+    observation: max_tokens; the completion restates the ten few-shot exemplars verbatim
+      and then continues inventing problems
+  - path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py
+    locator: match_str L60-95
+    observation: location=end takes the last numeric whitespace token of the whole
+      completion, so drifting past the answer converts a right answer into a wrong
+      score
+  affected_share: 1.0
+  failure_examples:
+  - id: probe10-1
+    source: /home/ben/task/logs/2026-09-04T00-47-16+00-00_gsm8k_i9c4PJPEQ8AWT7k9ZFPfBL.json
+    question: harness item 2 of the first 10 test rows
+    gold: '18'
+    model_output: restates the 10 exemplars, then invents new problems; final numeric
+      token 4
+    failure: no end_of_turn emitted; hit the 4000-token cap
+  - id: probe10-0
+    source: /home/ben/task/logs/2026-09-04T00-47-16+00-00_gsm8k_i9c4PJPEQ8AWT7k9ZFPfBL.json
+    question: harness item 1 of the first 10 test rows
+    gold: '540'
+    model_output: a degenerate pretraining-corpus completion about missing files, no
+      reasoning at all
+    failure: no chain of thought, no numeric answer
+  - id: probe10-agg
+    source: /home/ben/task/logs/2026-09-04T00-47-16+00-00_gsm8k_i9c4PJPEQ8AWT7k9ZFPfBL.json
+    question: all 10 probe items
+    gold: mixed
+    model_output: 15521 output tokens for 10 samples, i.e. ~1552 each against a 4000
+      cap; 9 of 10 stop_reason max_tokens
+    failure: the model never terminates its turn, so the grader never reads the number
+      it actually computed
+  watch_set: null
+hypothesis:
+  claim: Full-parameter SFT of gemma-3-4b-pt on 112k GSM8K-style chain-of-thought
+    solutions, rendered with the grader's own templates/gemma3.jinja and every target
+    terminated by end_of_turn after a single ANSWER line, changes accuracy on the
+    official --limit 150 protocol in the positive direction relative to the base
+    model, and drives the share of completions that hit the token cap to near zero.
+  mechanism: The grader scores the last number in the completion, so the model must
+    stop and put the right number last. Completion-only loss on targets ending in
+    end_of_turn - a token already in the checkpoint's generation_config eos list -
+    teaches termination directly, and 90k answer-verified 405B solutions to GSM8K-augmented
+    problems supply the arithmetic-chain competence.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: large, +0.5 or more, since the comparator is at the floor and the failure
+      being fixed accounts for essentially all of it
+  falsified_if: dev-150 accuracy stays below 0.30, or more than 20% of completions
+    still end with stop_reason max_tokens
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/sft_v1.jsonl
+    source: nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e
+      (train_1M) plus openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 (train
+      split only)
+    n_examples: 112473
+    built_by: /home/ben/task/scripts/build_data.py
+    build_command:
+    - python
+    - scripts/build_data.py
+    selection: OpenMathInstruct-2 rows with a numeric expected_answer; 90000 from problem_source
+      gsm8k/augmented_gsm8k and 15000 from math/augmented_math, at most 2 solutions
+      per unique problem, solutions over 3000 chars dropped, boxed macro unwrapped;
+      plus all 7473 original GSM8K train problems with their official reasoning and
+      calculator annotations stripped. Every target reshaped to reasoning, blank line,
+      one ANSWER line, then end_of_turn.
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer, torch 2.8.0
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      optim: adamw_bnb_8bit
+      gradient_checkpointing: true
+      attn: flash_attention_2
+      fewshot_p: 0.06
+    target_format: completion-only loss on chain of thought, blank line, one ANSWER
+      line, then the stop token; the prompt is rendered by templates/gemma3.jinja exactly
+      as the grader renders it, and 6% of rows carry the grader's literal 10-shot system
+      prefix so the model sees the eval condition itself
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - scripts/train_sft.py
+    - --data
+    - /home/ben/task/data/sft_v1.jsonl
+    - --out
+    - /home/ben/task/ckpts/exp-02
+    - --lr
+    - '1e-5'
+    - --epochs
+    - '1'
+    - --bs
+    - '4'
+    - --grad-accum
+    - '8'
+    - --max-seq-len
+    - '2816'
+    - --fewshot-p
+    - '0.06'
+    - --save-steps
+    - '1000'
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 1000
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.8
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '150'
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.1
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: share of the 150 completions with stop_reason max_tokens, and share whose
+      last line is an ANSWER line
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 3.17
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-02/checkpoint-2000, step: 2000}
+  - {path: /home/ben/task/ckpts/exp-02/checkpoint-3000, step: 3000}
+  - {path: /home/ben/task/ckpts/exp-02/checkpoint-3507, step: 3507}
+  - {path: /home/ben/task/ckpts/exp-02/final, step: 3507}
+  training_summary:
+    final_loss: 0.2809
+    steps: 3507
+    notes: 'train_loss 0.3146 over 1 epoch, 11409 s (3.25 s/step, 9.84 samples/s);
+      loss 0.589 at step 20 -> 0.281 at step 3507; flash_attention_2 loaded (no eager
+      fallback in the log); peak GPU 73 GB of 80. 112219 of 112473 rows kept, 254
+      dropped for exceeding max_seq_len 2816. setup.checkpoints.keep said "all" but
+      save_total_limit=3 in the script pruned checkpoint-1000 when checkpoint-3507
+      landed; 2000/3000/3507/final survive. Before evaluating, preprocessor_config.json
+      and processor_config.json were copied from the base snapshot into final/ - the
+      Trainer writes neither and the checkpoint declares the multimodal
+      Gemma3ForConditionalGeneration architecture (WMA precondition). checkpoint-1000''s
+      generation_config.json was checked at save time and still carried
+      eos_token_id [1, 106].'
+  measurements:
+  - metric: accuracy
+    value: 0.5867
+    n: 150
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+    delta_vs_comparator: 0.4867
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-02_final150.json
+    notes: '150/150 completions stop_reason=stop (base: 58/150 hit max_tokens) and
+      150/150 end in a well-formed ANSWER line (base: 32%). Mean completion length
+      fell from 5372 to 488 chars. Generation for the whole 150-item eval took 1:24
+      versus 14:39 for the base model.'
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: 'dev-150 accuracy 0.100 -> 0.587 (+48.7 pts, stderr 0.040). The mechanism
+    is confirmed exactly as stated: the termination and output-shape failure is gone
+    (max_tokens share 39% -> 0%, ANSWER-line share 32% -> 100%), so what remains is
+    reasoning error rather than format error.'
+  decision: adopt
+  next_step: 'Two levers left. (1) Decode: evaluate.py sets no temperature, so vLLM
+    samples from generation_config (top_k 64, top_p 0.95, T=1.0); re-scoring the same
+    weights with temperature 0 is free and is the next card. (2) On-policy RFT: sample
+    k solutions per GSM8K *train* problem from this checkpoint, keep the ones whose
+    final number matches gold, and continue training on them mixed with a replay slice
+    of sft_v1.'

@@ -1,0 +1,160 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T02:24:49Z'
+situation:
+  elapsed_h: 3.3
+  remaining_h: 6.7
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.6533333333333333, protocol_n: 150}
+  trigger: "Under greedy decoding the incumbent's remaining errors are 49 wrong numbers and 3 repetition-loop truncations - no formatting failures left - so what is missing is reasoning. Inspecting the epoch-1 build reveals why there is cheap headroom: build_sft_data.py deduplicated on the question, so each of the 80,812 GSM8K-source OpenMathInstruct-2 problems contributed exactly ONE of the several distinct solutions the dataset holds, and roughly 72k alternative solutions were discarded unseen."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-03_failures.json
+      locator: "failure_tags: wrong_number 49, truncated 3"
+    - path: /home/ben/task/work/build_sft_data.py
+      locator: "add(): key = md5(question); if key in seen: return False"
+    - path: /home/ben/task/logs/probe_omi.log
+      locator: "Counter({'augmented_math': 831985, 'augmented_gsm8k': 138547, 'gsm8k': 14764, 'math': 14704})"
+  alternatives_rejected:
+    - option: "Rejection-sampling round (sample k solutions from exp-02 on 44k train questions, keep the correct ones)"
+      reason: "measured at 6,000 output tok/s the 43k-generation sweep needs ~73 min of GPU before a single gradient step, and it distils the 4B model into itself; the discarded OpenMathInstruct-2 solutions are the same 'many correct chains per problem' signal from a 405B teacher, and cost 2 min of CPU instead. Kept as the fallback if this card fails."
+    - option: "Retrain from base on 200k rows instead of continuing from exp-02/final"
+      reason: "~3 h against ~1 h, and it throws away a checkpoint already measured at 0.6533"
+    - option: "Two more epochs over the same sft_v1.jsonl"
+      reason: "repeating identical (question, solution) pairs is the memorisation path; every row here is a pair exp-02 never saw"
+    - option: "Raise the learning rate back to 1e-5"
+      reason: "the parent has already converged to loss 0.605; a second pass at the original LR risks washing out the format behaviour that took the score from 0.073 to 0.593. 5e-6 with a short warmup is the conservative continuation."
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, work/build_round2.py, --out, data/sft_v2.jsonl]
+      outcome: "77,000 rows: 45,000 alternative OpenMathInstruct-2 solutions, 22,000 MetaMathQA GSM rephrasings, 10,000 unused Orca-Math. Every row is checked against the 122,514 (question||target) pairs of epoch 1 and none repeats. 0 targets fail to end with <end_of_turn>, 0 contain 'ANSWER: ' other than exactly once; character p50 1127 / p99 2425."
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/contam_v2.jsonl]
+      outcome: "see result.diagnostic_result; run before launch, and the launch is conditional on 0 matches"
+problem:
+  statement: "The incumbent solves 98 of 150 and fails 49 on arithmetic/reasoning inside an otherwise well-formed chain. It has seen exactly one worked solution per training problem, so for any given problem it has been shown one path and no alternatives - the regime where a small model memorises a path instead of learning the method."
+  evidence:
+    - path: /home/ben/task/analysis/exp-03_failures.json
+      locator: "failure_tags"
+      observation: "49 of 52 failures are wrong_number under greedy decoding; the stop/format failure class is gone"
+    - path: /home/ben/task/data/sft_v1.jsonl
+      locator: "122,514 rows / 122,514 distinct questions"
+      observation: "one solution per problem, by construction of the epoch-1 dedup"
+  affected_share: 0.94
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/dev300_gsm8ktrain.jsonl
+    n: 300
+    selection: "300 held-out GSM8K TRAIN questions (seed 7), excluded from both sft_v1.jsonl and sft_v2.jsonl. No benchmark test item is used."
+hypothesis:
+  claim: "Continuing SFT from ckpts/exp-02/final on 77,000 rows that pair already-seen GSM8K problems with different correct solutions (plus fresh MetaMathQA rephrasings) raises greedy accuracy at n=150 above exp-03's 0.6533."
+  mechanism: "Several distinct correct derivations of the same problem force the model onto the shared method rather than one memorised token path - the mechanism OpenMathInstruct-2 and rejection-sampling fine-tuning both rely on - and the MetaMathQA rephrasings decouple the method from the surface wording of the question. Both act on the wrong_number class, which is 94% of what is left."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +8 points"
+  falsified_if: "greedy accuracy at n=150 is at or below exp-03's 0.6533, or repetition-loop truncations rise above 8 of 150"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2 (train_1M) + meta-math/MetaMathQA + microsoft/orca-math-word-problems-200k, datasets==4.5.0"
+      n_examples: 77000
+      built_by: /home/ben/task/work/build_round2.py
+      build_command: [python, work/build_round2.py, --out, data/sft_v2.jsonl]
+      selection: "45,000 OpenMathInstruct-2 gsm8k/augmented_gsm8k rows whose (question, solution) pair is absent from sft_v1.jsonl - i.e. the alternative solutions epoch 1's question-level dedup threw away; 22,000 MetaMathQA rows of type GSM* with the answer parsed out of 'The answer is: N'; 10,000 Orca-Math rows whose question epoch 1 never used. Same target contract as epoch 1: calculator annotations and boxed markup stripped, every pre-existing answer marker removed, exactly one 'ANSWER: n' line last, then <end_of_turn>. dev300 questions excluded. All provenance is GSM8K/MATH TRAIN; the benchmark test copy is used only as the contamination checker's reference."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer subclassed for chunked cross-entropy; torch 2.8.0+cu129; flash_attention_2"
+    peft: "none"
+    hyperparams:
+      lr: 5.0e-6
+      epochs: 1.0
+      batch_size: 32
+      grad_accum: 2
+      max_seq_len: 1536
+      scheduler: "cosine_with_min_lr (min_lr_rate 0.1)"
+      warmup: 0.02
+      weight_decay: 0.0
+      precision: bf16
+      seed: 1
+      optim: adamw_torch_fused
+      adam_beta2: 0.95
+      max_grad_norm: 1.0
+      gradient_checkpointing: true
+      loss: "completion-only; cross-entropy in 4096-token re-materialised chunks"
+    target_format: "unchanged from exp-02: the grader's MATH_PROMPT_TEMPLATE rendered through templates/gemma3.jinja; model turn = chain of thought, blank line, 'ANSWER: <n>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, work/train_sft.py, --data, data/sft_v2.jsonl, --out, /home/ben/task/ckpts/exp-04, --parent, /home/ben/task/ckpts/exp-02/final, --bs, '32', --accum, '2', --lr, '5e-6', --epochs, '1', --max-seq-len, '1536', --warmup, '0.02', --save-steps, '600', --seed, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/work/train_sft.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 600
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}-greedy', --limit, '150', --max-connections, '2', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (fewshot=10, fewshot_seed=42), --max-tokens 4000. Before evaluation the checkpoint is passed through work/make_variant.py --temperature 0.0, which hard-links the weights and rewrites generation_config.json to greedy - exactly the transform exp-03 applied to its parent, so both sides of the comparison decode identically and only the weights differ."
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6533333333333333
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "failure-tag split from work/analyse_eval.py against exp-03's {wrong_number 49, truncated 3}: the claim predicts the wrong_number count falls, and predicts truncations do not rise (a second epoch at low LR is the regime where repetition loops appear). Also compare checkpoint-600 with the final checkpoint before adopting, so an over-trained final does not get shipped."
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.05
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1200, step: 1200}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1204, step: 1204}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1204}
+  training_summary:
+    final_loss: 0.4444
+    steps: 1204
+    notes: "76,999 of 77,000 rows kept (one row over 1536 tokens), 27.3M tokens, 1 epoch at 5e-6. Loss 0.6245 (step 10) -> 0.5453 (step 610) -> 0.4444 (step 1200); grad_norm 3.8-7.6. 3.3 s/step. The saved tokenizer was checked against the base model's on three adversarial strings and produces identical ids, so the transformers 'incorrect regex pattern' warning it emits is spurious."
+  measurements:
+    - metric: accuracy
+      value: 0.6933333333333334
+      n: 150
+      path: /home/ben/task/eval/exp-04_final_dev150.json
+      delta_vs_comparator: 0.04
+    - metric: accuracy
+      value: 0.6666666666666666
+      n: 150
+      path: /home/ben/task/eval/exp-04_ck600_dev150.json
+      delta_vs_comparator: 0.0133
+  diagnostic_result:
+    value: 0.6933333333333334
+    path: /home/ben/task/analysis/exp-04_final.json
+    notes: "final: 44 wrong_number, 2 truncated, mean 242 tokens. checkpoint-600: 48 wrong_number, 2 truncated, mean 257 tokens. Against exp-03's {49, 3}: the gain is on the wrong_number class as predicted and truncations did not rise, so the continuation did not induce repetition loops. But the final checkpoint is identical, 104/150, to exp-05's exp-02 step-1800 checkpoint, which cost no training at all."
+  watch_set_result: {fixed: 0, still_failing: 0, regressions: null, path: /home/ben/task/analysis/exp-04_final.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Against its locked comparator, exp-03's 0.6533, the continuation scores 0.6933 (+4.0 points) with the gain in the wrong_number class and no rise in truncations - inside the +2 to +8 the card predicted. But exp-05, which ran after this card was locked, reached the same 104/150 by simply grading exp-02's step-1800 checkpoint, so an hour of H100 bought a model that ties a free one."
+  decision: iterate
+  next_step: "Two candidates now sit at exactly 0.6933 on n=150 and the ruler cannot separate them. dev300 cannot break the tie either: exp-04 trained on MetaMathQA rephrasings of GSM8K train problems, so held-out train items leak to this arm but not to exp-02's. exp-06 averages the three checkpoints (exp-02 step 1800, exp-02 final, exp-04 final) - they are points on one trajectory, which is the regime where a weight average beats its members - and exp-07 then resolves the survivors at --limit -1, where the floor is 0.01 instead of 0.03."

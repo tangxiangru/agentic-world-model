@@ -529,3 +529,71 @@
 - 2026-09-03T21:31:05+00:00 peek wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4-v2/w09r03 job=91026 RUNNING: sidecar: log empty; 4 transcript(s); solve_out 853 lines
 - 2026-09-04T13:48:02+00:00 submit wma-crossbench-opus48-r05-gsm8k-raw-x4: 4 job(s) 92163,92164,92165,92166 -> results/ptb/wma-crossbench-opus48-r05-gsm8k-raw-x4/formal-2026-09-04T134734.872385+0000.json
 - 2026-09-04T13:48:02+00:00 submit wma-crossbench-opus48-r05-gsm8k-protocol-x4: 4 job(s) 92167,92168,92169,92170 -> results/ptb/wma-crossbench-opus48-r05-gsm8k-protocol-x4/formal-2026-09-04T134801.355200+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-bfcl-raw-x4: 4 job(s) 92181,92182,92183,92184 -> results/ptb/wma-crossbench-opus48-r05-bfcl-raw-x4/formal-2026-09-04T140111.713356+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-bfcl-protocol-x4: 4 job(s) 92185,92186,92187,92188 -> results/ptb/wma-crossbench-opus48-r05-bfcl-protocol-x4/formal-2026-09-04T140136.422517+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-humaneval-raw-x4: 4 job(s) 92189,92190,92191,92192 -> results/ptb/wma-crossbench-opus48-r05-humaneval-raw-x4/formal-2026-09-04T140200.650211+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-humaneval-protocol-x4: 4 job(s) 92193,92194,92195,92196 -> results/ptb/wma-crossbench-opus48-r05-humaneval-protocol-x4/formal-2026-09-04T140225.235582+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-gsm8k-single-x4: 4 job(s) 92198,92199,92200,92201 -> results/ptb/wma-crossbench-opus48-r05-gsm8k-single-x4/formal-2026-09-04T140251.018528+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-gsm8k-multi-self-x4: 4 job(s) 92202,92203,92204,92205 -> results/ptb/wma-crossbench-opus48-r05-gsm8k-multi-self-x4/formal-2026-09-04T140315.960001+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-gsm8k-joint-x4: 4 job(s) 92206,92207,92208,92209 -> results/ptb/wma-crossbench-opus48-r05-gsm8k-joint-x4/formal-2026-09-04T140340.636348+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-bfcl-single-x4: 4 job(s) 92211,92212,92213,92214 -> results/ptb/wma-crossbench-opus48-r05-bfcl-single-x4/formal-2026-09-04T140406.445216+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-bfcl-multi-self-x4: 4 job(s) 92215,92216,92217,92218 -> results/ptb/wma-crossbench-opus48-r05-bfcl-multi-self-x4/formal-2026-09-04T140431.092631+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-bfcl-joint-x4: 4 job(s) 92219,92220,92221,92222 -> results/ptb/wma-crossbench-opus48-r05-bfcl-joint-x4/formal-2026-09-04T140456.076627+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-humaneval-single-x4: 4 job(s) 92223,92224,92225,92226 -> results/ptb/wma-crossbench-opus48-r05-humaneval-single-x4/formal-2026-09-04T140521.082676+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-humaneval-multi-self-x4: 4 job(s) 92227,92228,92229,92230 -> results/ptb/wma-crossbench-opus48-r05-humaneval-multi-self-x4/formal-2026-09-04T140545.881036+0000.json
+- 2026-09-04T14:06:12+00:00 submit wma-crossbench-opus48-r05-humaneval-joint-x4: 4 job(s) 92231,92232,92233,92234 -> results/ptb/wma-crossbench-opus48-r05-humaneval-joint-x4/formal-2026-09-04T140611.305192+0000.json
+- 2026-09-04T14:06:12+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r01 job=92163 RUNNING: no sidecar log; 0 transcript(s); solve_out 208 lines
+- 2026-09-04T14:06:12+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r02 job=92164 RUNNING: no sidecar log; 0 transcript(s); solve_out 159 lines
+- 2026-09-04T14:06:12+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r03 job=92165 RUNNING: no sidecar log; 0 transcript(s); solve_out 187 lines
+- 2026-09-04T14:06:13+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r04 job=92166 RUNNING: no sidecar log; 0 transcript(s); solve_out 203 lines
+- 2026-09-04T14:06:13+00:00 peek wma-crossbench-opus48-r05-gsm8k-protocol-x4/c52r01 job=92167 RUNNING: no sidecar log; 0 transcript(s); solve_out 189 lines
+- 2026-09-04T14:06:13+00:00 peek wma-crossbench-opus48-r05-gsm8k-protocol-x4/c52r02 job=92168 RUNNING: no sidecar log; 0 transcript(s); solve_out 237 lines
+- 2026-09-04T14:06:13+00:00 peek wma-crossbench-opus48-r05-gsm8k-protocol-x4/c52r03 job=92169 RUNNING: no sidecar log; 0 transcript(s); solve_out 206 lines
+- 2026-09-04T14:13:38+00:00 harvest wma-gsm8k-gemma4b-high-r02-ctl-x4-v2/c10r04 job=91001 COMPLETED acc=0.6876 complete clean
+- 2026-09-04T14:13:41+00:00 harvest wma-gsm8k-gemma4b-high-r02-a-format-floor-x4-v2/w06r01 job=91002 COMPLETED acc=0.6922 complete clean
+- 2026-09-04T14:13:44+00:00 harvest wma-gsm8k-gemma4b-high-r02-a-format-floor-x4-v2/w06r02 job=91003 COMPLETED acc=0.7020 complete clean
+- 2026-09-04T14:13:47+00:00 harvest wma-gsm8k-gemma4b-high-r02-a-format-floor-x4-v2/w06r03 job=91004 COMPLETED acc=0.7172 complete clean
+- 2026-09-04T14:13:49+00:00 harvest wma-gsm8k-gemma4b-high-r02-a-format-floor-x4-v2/w06r04 job=91005 COMPLETED acc=0.6520 complete clean
+- 2026-09-04T14:13:53+00:00 harvest wma-gsm8k-gemma4b-high-r02-ab-format-floor-width-x4-v2/w07r01 job=91007 COMPLETED acc=0.7278 complete clean
+- 2026-09-04T14:13:56+00:00 harvest wma-gsm8k-gemma4b-high-r02-ab-format-floor-width-x4-v2/w07r02 job=91008 COMPLETED acc=0.7293 complete clean
+- 2026-09-04T14:13:58+00:00 harvest wma-gsm8k-gemma4b-high-r02-ab-format-floor-width-x4-v2/w07r03 job=91009 COMPLETED acc=0.7142 complete clean
+- 2026-09-04T14:14:01+00:00 harvest wma-gsm8k-gemma4b-high-r02-ab-format-floor-width-x4-v2/w07r04 job=91010 COMPLETED acc=0.6998 complete clean
+- 2026-09-04T14:14:04+00:00 harvest wma-gsm8k-gemma4b-high-r02-c-probe-before-fail-x4-v2/w08r01 job=91014 COMPLETED acc=0.7324 complete clean
+- 2026-09-04T14:14:08+00:00 harvest wma-gsm8k-gemma4b-high-r02-c-probe-before-fail-x4-v2/w08r02 job=91021 COMPLETED acc=0.6983 complete clean
+- 2026-09-04T14:14:11+00:00 harvest wma-gsm8k-gemma4b-high-r02-c-probe-before-fail-x4-v2/w08r03 job=91022 COMPLETED acc=0.6475 complete clean
+- 2026-09-04T14:14:14+00:00 harvest wma-gsm8k-gemma4b-high-r02-c-probe-before-fail-x4-v2/w08r04 job=91023 COMPLETED acc=0.7938 complete clean
+- 2026-09-04T14:14:17+00:00 harvest wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4-v2/w09r01 job=91024 COMPLETED acc=0.7657 complete clean
+- 2026-09-04T14:14:20+00:00 harvest wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4-v2/w09r02 job=91025 COMPLETED acc=0.7445 complete clean
+- 2026-09-04T14:14:23+00:00 harvest wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4-v2/w09r03 job=91026 COMPLETED acc=0.6884 complete clean
+- 2026-09-04T14:14:26+00:00 harvest wma-gsm8k-gemma4b-high-r02-d-checkpoint-precondition-x4-v2/w09r04 job=91027 FAILED acc=0.7111 complete clean
+- 2026-09-04T14:14:28+00:00 harvest wma-gsm8k-gemma4b-high-r03-e-l3-evidence-x4/w11r01 job=91173 FAILED acc=0.7286 complete clean
+- 2026-09-04T14:14:30+00:00 harvest wma-gsm8k-gemma4b-high-r03-e-l3-evidence-x4/w11r02 job=91174 FAILED acc=0.6967 complete clean
+- 2026-09-04T14:14:34+00:00 harvest wma-gsm8k-gemma4b-high-r03-e-l3-evidence-x4/w11r03 job=91175 FAILED acc=0.7142 complete clean
+- 2026-09-04T14:14:36+00:00 harvest wma-gsm8k-gemma4b-high-r03-e-l3-evidence-x4/w11r04 job=91176 FAILED acc=0.7081 complete clean
+- 2026-09-04T14:14:39+00:00 harvest wma-gsm8k-gemma4b-high-r03-f-decisive-precondition-x4/w12r01 job=91177 FAILED acc=0.7096 complete clean
+- 2026-09-04T14:14:45+00:00 harvest wma-gsm8k-gemma4b-high-r03-f-decisive-precondition-x4/w12r02 job=91178 FAILED acc=0.7574 complete clean
+- 2026-09-04T14:14:48+00:00 harvest wma-gsm8k-gemma4b-high-r03-f-decisive-precondition-x4/w12r03 job=91179 FAILED acc=0.7718 complete clean
+- 2026-09-04T14:14:51+00:00 harvest wma-gsm8k-gemma4b-high-r03-f-decisive-precondition-x4/w12r04 job=91180 FAILED acc=0.7945 complete clean
+- 2026-09-04T14:14:54+00:00 harvest wma-gsm8k-gemma4b-high-r02-v02-baseline-ext-x4-v1/w10r05 job=91425 FAILED acc=0.6884 complete clean
+- 2026-09-04T14:14:57+00:00 harvest wma-gsm8k-gemma4b-high-r02-v02-baseline-ext-x4-v1/w10r06 job=91426 FAILED acc=0.7202 complete clean
+- 2026-09-04T14:15:00+00:00 harvest wma-gsm8k-gemma4b-high-r02-v02-baseline-ext-x4-v1/w10r07 job=91427 FAILED acc=0.7718 complete clean
+- 2026-09-04T14:15:02+00:00 harvest wma-gsm8k-gemma4b-high-r02-v02-baseline-ext-x4-v1/w10r08 job=91428 FAILED acc=0.7513 complete clean
+- 2026-09-04T14:15:09+00:00 harvest wma-gsm8k-gemma4b-high-r02-ctl-ext-x4-v1/c10r05 job=91429 FAILED acc=0.7407 complete clean
+- 2026-09-04T14:15:11+00:00 harvest wma-gsm8k-gemma4b-high-r02-ctl-ext-x4-v1/c10r06 job=91430 FAILED acc=0.7604 complete clean
+- 2026-09-04T14:15:14+00:00 harvest wma-gsm8k-gemma4b-high-r02-ctl-ext-x4-v1/c10r07 job=91431 FAILED acc=0.7938 complete clean
+- 2026-09-04T14:15:14+00:00 peek wma-gsm8k-gemma4b-high-r02-ctl-ext-x4-v1/c10r08 job=91432 RUNNING: no sidecar log; 0 transcript(s); solve_out 1463 lines
+- 2026-09-04T14:15:14+00:00 peek wma-gsm8k-gemma4b-high-r04-g-probe-scope-x4/w13r01 job=91441 RUNNING: sidecar: log empty; 5 transcript(s); solve_out 1355 lines
+- 2026-09-04T14:15:15+00:00 peek wma-gsm8k-gemma4b-high-r04-g-probe-scope-x4/w13r02 job=91442 RUNNING: sidecar: log empty; 6 transcript(s); solve_out 1322 lines
+- 2026-09-04T14:15:15+00:00 peek wma-gsm8k-gemma4b-high-r04-g-probe-scope-x4/w13r03 job=91443 RUNNING: sidecar: log empty; 4 transcript(s); solve_out 1248 lines
+- 2026-09-04T14:15:15+00:00 peek wma-gsm8k-gemma4b-high-r04-g-probe-scope-x4/w13r04 job=91444 RUNNING: sidecar: log empty; 5 transcript(s); solve_out 1715 lines
+- 2026-09-04T14:15:15+00:00 peek wma-gsm8k-gemma4b-high-r04-h-soup-ingredients-x4/w14r01 job=91445 RUNNING: sidecar: log empty; 4 transcript(s); solve_out 1601 lines
+- 2026-09-04T14:15:16+00:00 peek wma-gsm8k-gemma4b-high-r04-h-soup-ingredients-x4/w14r02 job=91446 RUNNING: sidecar: log empty; 4 transcript(s); solve_out 1334 lines
+- 2026-09-04T14:15:16+00:00 peek wma-gsm8k-gemma4b-high-r04-h-soup-ingredients-x4/w14r03 job=91447 RUNNING: sidecar: log empty; 4 transcript(s); solve_out 1049 lines
+- 2026-09-04T14:15:16+00:00 peek wma-gsm8k-gemma4b-high-r04-h-soup-ingredients-x4/w14r04 job=91448 RUNNING: sidecar: log empty; 3 transcript(s); solve_out 1103 lines
+- 2026-09-04T14:15:16+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r01 job=92163 RUNNING: no sidecar log; 0 transcript(s); solve_out 266 lines
+- 2026-09-04T14:15:17+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r02 job=92164 RUNNING: no sidecar log; 0 transcript(s); solve_out 199 lines
+- 2026-09-04T14:15:17+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r03 job=92165 RUNNING: no sidecar log; 0 transcript(s); solve_out 254 lines
+- 2026-09-04T14:15:17+00:00 peek wma-crossbench-opus48-r05-gsm8k-raw-x4/c51r04 job=92166 RUNNING: no sidecar log; 0 transcript(s); solve_out 278 lines
+- 2026-09-04T14:15:17+00:00 peek wma-crossbench-opus48-r05-gsm8k-protocol-x4/c52r01 job=92167 RUNNING: no sidecar log; 0 transcript(s); solve_out 207 lines
+- 2026-09-04T14:15:17+00:00 peek wma-crossbench-opus48-r05-gsm8k-protocol-x4/c52r02 job=92168 RUNNING: no sidecar log; 0 transcript(s); solve_out 291 lines
+- 2026-09-04T14:15:17+00:00 peek wma-crossbench-opus48-r05-gsm8k-protocol-x4/c52r03 job=92169 RUNNING: no sidecar log; 0 transcript(s); solve_out 308 lines

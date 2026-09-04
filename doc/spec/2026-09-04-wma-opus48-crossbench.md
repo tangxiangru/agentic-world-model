@@ -1,7 +1,7 @@
 # WMA Opus 4.8 cross-benchmark study
 
-Status: implementation complete; production acceptance and immutable launch
-preparation. The user requested other benchmarks, Opus 4.8, four repeats per
+Status: implementation and production acceptance complete; all 60 first-wave
+cells submitted (see the launch record for receipts). The user requested other benchmarks, Opus 4.8, four repeats per
 setting, a raw baseline and the newest method variants; then explicitly asked
 to wait for implementation completion before enqueuing. Completion is recorded
 in `doc/wma_iterations/2026-09-04-decision-review-implementation.md`.

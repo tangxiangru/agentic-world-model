@@ -1,0 +1,278 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T22:31:40Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 7.5
+  remaining_h: 2.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.67, protocol_n: 200}
+  trigger: >-
+    The packaging verification at the end of exp-05 re-ran the locked invocation on
+    final_model - byte-identical to work/sft_v1_greedy (sha256 matches on config.json,
+    generation_config.json, both safetensors shards, tokenizer.json) under the identical
+    greedy decoder - and read 0.640 where exp-03 read 0.670. Only 131 of 200 completions came
+    back byte-identical. Greedy decoding through vLLM is therefore NOT reproducible run to
+    run, which is the assumption exp-03, exp-04 and exp-05 all leaned on when they called
+    their comparisons "paired" and "deterministic".
+  trigger_evidence:
+    - path: /home/ben/task/logs/final_model-n200.json
+      locator: "accuracy 0.64 on byte-identical weights to the 0.67 in logs/exp-03-greedy-n200.json"
+    - path: /home/ben/task/memory/cards/exp-05.yaml
+      locator: "result.diagnostic_result, 'LATE AND IMPORTANT' paragraph: 131/200 identical completions, 4 fixed / 10 regressed, net -6"
+  alternatives_rejected:
+    - option: Leave it - the deliverable is already chosen and a variance number changes nothing that ships.
+      reason: >-
+        It changes what the session is entitled to claim. Two cards (exp-04, exp-05) were
+        decided on paired splits of -9 and -5 against a bar of +6, and the same-weights repeat
+        just produced -6. Without a variance estimate those verdicts are unfalsifiable
+        assertions, and the next reader would inherit them as facts.
+    - option: A --limit 500 read instead, for a tighter estimate of the shipped model.
+      reason: >-
+        It answers a different question (sampling error over items) and would not isolate the
+        run-to-run component at all, because a single n=500 read is still a single draw. It
+        also costs ~45 min of the 2.5 h left and would not be comparable to any existing
+        number, since the whole session is measured at n=200.
+    - option: Three more repeats for a proper variance estimate.
+      reason: >-
+        Each is ~20 min. One more gives three draws, which is enough to say whether 0.640 was
+        an outlier or the 0.670 was, and to put a floor under the spread; the remaining time
+        is better kept as margin for the final verification than spent narrowing an error bar
+        that is already known to be non-zero.
+    - option: Swap final_model to exp-05's checkpoint now that 0.670 looks less solid.
+      reason: >-
+        The incumbent has two draws (0.670, 0.640) against the candidate's one (0.645), and it
+        reasons 20% longer on a trend that predicts accuracy across three training runs. The
+        evidence does not favour the swap, and swapping on noise is exactly the error this
+        card exists to prevent.
+  pitfalls_hit:
+    - what: >-
+        Believing vLLM greedy is bit-repeatable. It is reproducible only up to batch
+        composition: continuous batching changes the reduction order in the matmuls, and on a
+        4B model in bf16 that is enough to flip tokens and therefore items. exp-03's card
+        asserted "greedy is bit-repeatable, so the noise floor collapses" and exp-04/exp-05
+        both inherited it in their falsified_if.
+      cost_h: 0.0
+      fix: >-
+        Measure it instead of assuming it. The correction is recorded in exp-05's result and
+        this card quantifies it; nothing was actually lost, because the two decisions that
+        matter (exp-02 +0.45, exp-03 +0.14) are an order of magnitude above any plausible
+        value of it.
+  smoke_runs:
+    - command: [sha256sum, "final_model/*", "work/sft_v1_greedy/*"]
+      outcome: >-
+        config.json, generation_config.json, model-00001-of-00002.safetensors,
+        model-00002-of-00002.safetensors and tokenizer.json all match between the two
+        directories, so the 0.670 vs 0.640 difference cannot be a weights or decode
+        difference. generation_config in both: temperature 0.0, top_p 1.0, top_k -1,
+        eos_token_id [1, 106].
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: >-
+    Every comparison in this session is a difference between two n=200 reads, and the size of
+    the noise on such a difference is unknown. Under sampling (exp-01, exp-02) it was assumed
+    to be ~4-5 pp; under greedy (exp-03 onward) it was assumed to be ~0, on the belief that
+    greedy is deterministic. That belief is now known to be false, and the one same-weights
+    repeat available gives -6 items - which is larger than exp-05's -5 and comparable to
+    exp-04's -9. Until the spread is measured, neither of those two verdicts is supportable
+    and the shipped model's accuracy has no error bar.
+  evidence:
+    - path: /home/ben/task/logs/exp-03-greedy-n200.json
+      locator: "accuracy 0.67, stderr 0.0333"
+      observation: "First draw of the shipped weights under the locked invocation."
+    - path: /home/ben/task/logs/final_model-n200.json
+      locator: "accuracy 0.64, stderr 0.0340"
+      observation: "Second draw of the SAME weights and decoder: -6 items, 69 of 200 completions textually different."
+    - path: /home/ben/task/memory/cards/exp-04.yaml
+      locator: "conclusion: net -9 paired, verdict contradicted"
+      observation: "Decided on a split only 3 items larger than what identical weights produce."
+  affected_share: 1.0
+  failure_examples:
+    - id: train-7275
+      source: /home/ben/task/work/probe_set.jsonl
+      question: "John gives $20, Slurpees cost $2 each, he got $8 change. How many Slurpees?"
+      gold: "6"
+      model_output: "He bought 10 Slurpees because 20-8=12 and 12/2=6\n\nANSWER: 10"
+      failure: "Carried forward from exp-04/exp-05 as a tracked item; this card measures the protocol, not new model failures."
+    - id: train-7277
+      source: /home/ben/task/work/probe_set.jsonl
+      question: "Jeff bought 6 pairs of shoes and 4 jerseys for $560; jerseys cost 1/4 the price of a pair of shoes. Total shoe price?"
+      gold: "480"
+      model_output: "... 7*x = 560 ... x = 80 ... ANSWER: 80"
+      failure: "Tracked item, carried forward."
+    - id: train-7288
+      source: /home/ben/task/work/probe_set.jsonl
+      question: "A boat crosses a square lake at 10 MPH; 2 hours along the length, 30 minutes across the width. Area?"
+      gold: "100"
+      model_output: "... 20 miles * 0.5 miles = 10 square miles ... ANSWER: 10"
+      failure: "Tracked item, carried forward."
+  watch_set:
+    path: /home/ben/task/work/clean_probe.jsonl
+    n: 200
+    selection: >-
+      The 200 MetaMathQA-derived, question-disjoint problems built in exp-04 (absent from all
+      98895 questions this session trained or sampled on). Listed for continuity; this card
+      trains nothing and changes no weights, so there is nothing for it to watch. The
+      measurement is the spread across repeated reads of the official dev set.
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: >-
+    Repeating the locked invocation a third time on the same byte-identical weights produces
+    a third distinct accuracy, and the spread across the three reads is of the same order as
+    the paired splits exp-04 (-9 items) and exp-05 (-5 items) were decided on - i.e. the
+    protocol's run-to-run noise, not the weights, explains those two verdicts.
+  mechanism: >-
+    vLLM batches requests continuously, so which requests share a forward pass depends on
+    arrival and scheduling. That changes the reduction order inside the bf16 matmuls, which
+    changes low-order bits of the logits, which flips the argmax wherever the top two tokens
+    are close. One flipped token early in a chain re-routes the whole solution. Greedy removes
+    the sampling noise but not this, so repeated reads of fixed weights are correlated but not
+    identical - consistent with the 131/200 byte-identical completions already observed.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "no directional expectation - the quantity of interest is |spread| across three reads of identical weights, expected 4-8 items (2-4 pp)"
+  falsified_if: >-
+    The third read returns exactly 0.640 or exactly 0.670 with all 200 completions
+    byte-identical to that earlier run - that would mean the difference came from something
+    about the two directories rather than from run-to-run nondeterminism, and the search would
+    move to the harness rather than to the engine.
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-03
+    hash: "sha256(model-00001)=c30db933d36e9590..., sha256(model-00002)=a35132ec39aa70cc..."
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/work/clean_probe.jsonl
+      source: local
+      n_examples: 200
+      built_by: /home/ben/task/work/build_clean_probe.py
+      build_command: [python, work/build_clean_probe.py]
+      selection: "Held-out MetaMathQA GSM problems. Not read by this card's command; listed because the schema requires a data entry and this card trains nothing."
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: vLLM 0.11.0 via evaluate.py
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bfloat16, seed: null}
+    target_format: "n/a - no training; a C18 repeat of an existing invocation on unchanged weights"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, final_model, --limit, '200', --max-connections, '8', --max-tokens, '4000', --gpu-memory-utilization, '0.6', --json-output-file, /home/ben/task/logs/exp-06-repeat3-n200.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {HF_HOME: /home/ben/hf_cache, INSPECT_LOG_DIR: /home/ben/task/logs/inspect_exp06}
+    log: /home/ben/task/logs/exp-06-eval.log
+  output_dir: /home/ben/task/logs
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: 1xH100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '<MODEL>', --limit, '200', --max-connections, '8', --max-tokens, '4000', --gpu-memory-utilization, '0.6', --json-output-file, '<OUT>.json']
+    dev_set: official --limit 200
+    n: 200
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.67
+    path: /home/ben/task/logs/exp-03-greedy-n200.json
+    decode: >-
+      Identical in every respect - same weights by sha256, same greedy generation_config, same
+      argv apart from --model-path (final_model vs work/sft_v1_greedy, byte-identical dirs)
+      and the output paths. That is the point: any difference observed IS the noise.
+  diagnostic:
+    what: >-
+      Across the three reads of identical weights: min/max/mean accuracy, the pairwise
+      fixed/regressed splits, the number of byte-identical completions in each pair, and how
+      many of the 200 items are unstable (not scored the same way in all three). Then the
+      aggregate over all 600 item-reads as the session's best estimate of the shipped model,
+      and a restatement of which of this session's deltas survive the resulting error bar.
+    n: 200
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.33
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 1112}
+    - {path: /home/ben/task/work/sft_v1, step: 1112}
+  training_summary: {final_loss: null, steps: null, notes: "no training; a C18 repeat on unchanged weights"}
+  measurements:
+    - {metric: accuracy, value: 0.655, n: 200, path: /home/ben/task/logs/exp-06-repeat3-n200.json, delta_vs_comparator: -0.015}
+  diagnostic_result:
+    value: 3.0
+    path: /home/ben/task/logs/exp-06-variance.txt
+    notes: >-
+      GPU was idle at launch (nvidia-smi --query-compute-apps returned no rows), so all three
+      reads are exchangeable on the confound the WMA raised.
+      THREE READS OF BYTE-IDENTICAL WEIGHTS under the identical invocation: 0.670, 0.640,
+      0.655. Mean 0.6550, spread 6 items (3.0 pp), per-read sd 3.00 items (1.50 pp).
+      Pairwise: read1->read2 net -6 (14 discordant, 131/200 completions byte-identical);
+      read1->read3 net -3 (13 discordant, 127/200); read2->read3 net +3 (19 discordant,
+      113/200). Only 100 of 200 items produce the same text in all three reads, and 23 items
+      are not even scored the same way in all three.
+      PRE-REGISTERED PREDICTION CONFIRMED. The card's own falsified_if was, as the WMA pointed
+      out before the read, effectively unfalsifiable (it required all 200 completions to match
+      an earlier run when 69 were already known to differ) - that is a defect in this card and
+      is recorded as such rather than quietly reinterpreted. The number the read was actually
+      held to is the one the verdict derived from the two existing logs BEFORE the third
+      existed: per-read sd ~2.6 items and pairwise-difference sd ~3.7 items. Observed: 3.00
+      and 4.58. The mechanism is confirmed at the level it was stated.
+      AGGREGATE, the session's best estimate of the shipped model: 393 correct out of 600
+      item-reads = 0.6550.
+      WHAT SURVIVES THE ERROR BAR, restated for the record:
+        exp-02  0.080 -> 0.530, +90 items  - survives by more than an order of magnitude
+        exp-03  0.530 -> 0.670, +28 items  - survives by ~5x the observed spread
+        exp-04  net -9 items               - just outside the observed pairwise range (max 6);
+                                             likely real but marginal, not the clean refutation
+                                             its card claimed
+        exp-05  net -5 items               - inside the noise; that card already says so, and
+                                             this measurement is why
+  watch_set_result:
+    fixed: 0
+    still_failing: 0
+    regressions: 0
+    path: /home/ben/task/logs/exp-06-variance.txt
+    notes: "No weights changed, so the watch set has nothing to report; the 23 unstable items above are the analogous quantity for a repeatability card."
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    Greedy decoding through vLLM is not reproducible run to run: three reads of byte-identical
+    weights under the identical invocation give 0.670 / 0.640 / 0.655, with pairwise net
+    differences of -6, -3 and +3 items and only 100 of 200 completions stable across all
+    three. The protocol's run-to-run noise is therefore ~3 items sd and up to ~6 items
+    peak-to-peak at n=200, which is the same size as the splits exp-04 (-9) and exp-05 (-5)
+    were decided on and vastly smaller than exp-02 (+90) and exp-03 (+28). The session's two
+    load-bearing results stand; its two negative results are downgraded from refutations to
+    "not separated by this evidence", exp-04 marginally and exp-05 entirely.
+  decision: adopt
+  next_step: >-
+    Stop. final_model is unchanged - exp-02's weights with exp-03's greedy generation_config -
+    and its accuracy is reported as 0.655 over 600 item-reads (single-read range 0.640-0.670),
+    not as the 0.670 of its luckiest draw. Nothing further is trained or swapped with 2.1 h
+    left, because no candidate on disk is separated from it by more than the noise this card
+    just measured. For a future session the operational lesson is cheap and concrete: at
+    n=200 a delta under ~7 items means nothing on this harness, so either budget two reads per
+    arm or raise --limit before designing a card around a small effect.

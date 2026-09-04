@@ -1,0 +1,125 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T06:20:00Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 5.7
+  remaining_h: 4.3
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04_greedy
+    score: {metric: accuracy, value: 0.7067, protocol_n: 150}
+  trigger: "exp-04's two measurements disagree: +4.67 pts on the official 150 but flat (+0.4) on the 250 held-out TRAIN items, with 16 fixed against 15 regressions. Both are consistent with the last epoch adding churn rather than skill, which is what an over-trained final checkpoint looks like; three mid-run checkpoints were kept and none has been scored."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.diagnostic_result", observation: "dev250 0.692 -> 0.696 with 16 fixed / 15 regressions while the official set moved +4.67"}
+    - {path: /home/ben/task/ckpts/exp-04, locator: "checkpoint-500, checkpoint-750, checkpoint-886, final", observation: "checkpoints at 1.13, 1.69 and 2.0 epochs exist and cost nothing to score"}
+  alternatives_rejected:
+    - {option: "A third training run (continue exp-04 on rejection-sampled data only, ~50 min + eval)", reason: "with 4.3 h left it fits, but exp-04 already showed this data line is near its ceiling (dev250 flat); an unscored checkpoint that is already trained is a strictly better use of the same GPU hour"}
+    - {option: "Ship exp-04/final without scoring the earlier checkpoints", reason: "the corpus is 62% novel relative to exp-02 and nothing has tested whether 2 epochs is past the optimum; the sweep is two evals and the downside of guessing wrong is the whole submission"}
+    - {option: "Score all three mid-run checkpoints", reason: "checkpoint-886 is the same weights as final; checkpoint-750 sits 0.3 epochs from final and would mostly re-measure noise. checkpoint-500 (1.13 epochs) is the one that actually tests the over-training question, and the time budget wants the final-verification slot protected"}
+  pitfalls_hit:
+    - {what: "mid-run checkpoint-*/ dirs carry no tokenizer/processor files (Trainer got no processing_class), so vLLM cannot load them as saved", cost_h: 0.0, fix: "scripts/make_final.py --fill-from copies tokenizer*, preprocessor_config.json, processor_config.json and added_tokens.json from the base snapshot before writing the greedy generation_config"}
+  smoke_runs: []
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "The checkpoint that will be submitted was chosen by default, not by measurement. exp-04 trained 2 full epochs over a corpus that is 62% new relative to exp-02's, and its own held-out dev signal did not improve over exp-03, so the last 0.87 epochs may have cost accuracy rather than added it. Nothing in the session has scored a mid-run checkpoint."
+  evidence:
+    - {path: /home/ben/task/analysis/dev250_watch_exp04.json, locator: "fixed=16, regressions=15", observation: "the final epoch trades items rather than winning them, the signature of training past the optimum"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy=0.7067, stderr=0.0373", observation: "the only number supporting exp-04/final over exp-03 is a single n=150 measurement"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/dev_train.jsonl
+    n: 250
+    selection: "the same 250 gsm8k TRAIN problems held out of every training corpus this session (seed 0)"
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "exp-04's checkpoint-500 (1.13 epochs) and its final checkpoint (2.0 epochs) differ in accuracy under the official greedy protocol; specifically the earlier checkpoint is not worse, because the second epoch produced churn (16 fixed / 15 regressions on held-out items) rather than net skill."
+  mechanism: "A second epoch over a corpus this size sharpens the model on training chains it has already fit; past the optimum this raises confidence on memorised phrasings while degrading generalisation, which shows up as equal numbers of fixed and broken held-out items."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "-3 to +4 pts on the official 150 for checkpoint-500 against final's 0.7067; the point of the card is to measure the sign, not to assume it"
+  falsified_if: "checkpoint-500 scores more than 1.3 pp BELOW final on the official 150 (i.e. under 0.693) while also scoring below final on dev250 -- that would say the second epoch was straightforwardly useful and the churn reading was wrong"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/checkpoint-500
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/mix_train.jsonl
+      source: "derived:exp-04 -- the corpus this checkpoint was produced from; this card trains nothing and reads it only to identify the parent"
+      n_examples: 74802
+      built_by: /home/ben/task/scripts/build_mix.py
+      build_command: [python, scripts/build_mix.py, --max-rft, '40000']
+      selection: "unchanged from exp-04"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "scripts/make_final.py (file assembly only); graded by evaluate.py + vllm 0.11.0"
+    peft: "none - weights are copied byte-for-byte from ckpts/exp-04/checkpoint-500"
+    hyperparams: {lr: null, epochs: 1.13, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-04"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/make_final.py, --src, /home/ben/task/ckpts/exp-04/checkpoint-500, --dst, /home/ben/task/ckpts/exp-05_ck500_greedy, --greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/make_final.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05_ck500_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, 10-shot, fewshot_seed=42), greedy decode"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7067
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "held-out dev250 greedy accuracy via scripts/dev_eval.py, the same command that scored exp-03 at 0.692 and exp-04 at 0.696; it is the tie-breaker if the official numbers land within 1.3 pp of each other"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/exp-05_ck500_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05_ck500_greedy, step: 500}
+  training_summary: {final_loss: null, steps: 500, notes: "no training; weights copied byte-for-byte from ckpts/exp-04/checkpoint-500. WMA precondition 1: --fill-from was passed explicitly, so the tokenizer/processor files the checkpoint lacks were copied from the base snapshot and the assert did not fire. WMA precondition 2: generation_config.json diffs IDENTICAL against exp-04_greedy's. WMA precondition 3: --verify-load CPU-loaded the directory, 4.30B params, vocab 262145. WMA precondition 4: eval argv byte-identical to exp-04's apart from paths."}
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.668
+    path: /home/ben/task/analysis/dev250_exp05_greedy.json
+    notes: "the tie-breaker breaks against the earlier checkpoint: dev250 greedy 0.668 for checkpoint-500 against 0.696 for final, -2.8 pts on 250 items. The official 150 is an exact tie (106/150 both), so the only discriminating measurement favours training the full 2 epochs."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "checkpoint-500 (1.13 epochs) scores exactly what final scores on the official 150 -- 0.7067, 106/150 for both -- and 2.8 pts worse on the 250-item held-out set. The claim that the earlier checkpoint is 'not worse' therefore fails on the only measurement that separates them, and the over-training reading of exp-04's 16-fixed/15-regressed churn is wrong: the second epoch was not harmful."
+  decision: reject
+  next_step: "Keep ckpts/exp-04/final (greedy) as final_model. Next: verify the deliverable under evaluate.py's DEFAULT invocation (--max-connections 2, --gpu-memory-utilization 0.3), since the whole session was scored at concurrency 16 and the corpus records that concurrency alone can move a score."

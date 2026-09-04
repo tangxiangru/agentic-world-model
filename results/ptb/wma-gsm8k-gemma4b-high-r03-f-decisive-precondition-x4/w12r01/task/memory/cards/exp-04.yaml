@@ -1,0 +1,149 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T05:00:00Z'
+situation:
+  elapsed_h: 5.0
+  remaining_h: 5.0
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.6725, protocol_n: 1319}
+  trigger: "Paired on the same 1319 items, exp-03 fixed 128 of exp-02's failures and broke 99 of its successes for a net of +29. Two checkpoints two points apart disagree on 17% of the test set, so a large share of items sit on the model's decision boundary and single-sample greedy accuracy - not problem coverage - is what limits the score."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-03.yaml
+      locator: "result.diagnostic_result: 128 fixed, 99 broken, net +29; McNemar p=0.063"
+    - path: /home/ben/task/logs/rft_gsm.log
+      locator: "[rft] sample-level correct 25863/44838 (0.577); questions with >=1 correct 6527/7473 (0.873)"
+  alternatives_rejected:
+    - option: "A second epoch of sft_v2 from base (2 x 900 steps)"
+      reason: "2.9 h of the 5.0 h left for a lever the corpus reports as negative on scaled-up mixtures, and it would not touch the boundary-item problem this card is aimed at. The RFT round costs 0.7 h of training on data already generated."
+    - option: "DPO / preference pairs from the correct-vs-incorrect samples"
+      reason: "the samples are there and pairs would be cheap to form, but a DPO run is a new trainer, a new loss and a new set of failure modes with 5 h left and no smoke; RFT reuses the exact SFT path that has now produced two working checkpoints."
+    - option: "RFT rows only, with no replay of the supervised mixture"
+      reason: "on-policy-only continuation narrows the output distribution and risks losing the few-shot-prefixed rows entirely (RFT prompts are all 0-shot, while the graded prompt carries 10 shots). 24000 sft_v2 rows are mixed back in, which keeps ~12% few-shot rows in the stream."
+    - option: "The first mix (scripts/mix_data.py, unstratified 24000-row replay)"
+      reason: "the WMA verdict's tier-1 precondition caught it: because every RFT row is generated 0-shot, that mix carried only 4.9% k-shot rows (462 at 10 shots) while the grader always prompts with 10 shots, so the card's own rationale for the replay slice was not met. Rebuilt with scripts/remix_v3.py to 12.77% (1223 at 10 shots) and re-locked before launch."
+    - option: "Keep every correct sample rather than capping per question"
+      reason: "it would weight the corpus toward the easy questions the model already solves 6/6 times. --adaptive-keep instead keeps 1 chain when the pass rate is >=0.75, 2 in the middle band and 3 when it is <=0.25, spending the budget on the boundary."
+  pitfalls_hit:
+    - what: "First exp-04 launch died at the step-200 checkpoint save, 19 min in, and sat dead for another 35 min before it was noticed. Cause: the parent ckpts/exp-03/final ships the greedy generation_config this pipeline writes on purpose ({do_sample: false, temperature: 0.0}); transformers loads it into model.generation_config and GenerationConfig.validate then refuses to SAVE it, because temperature is a sample-only field. So the very config that makes the grader decode greedily makes any further training from that checkpoint unable to checkpoint. It only bites when the parent is one of our own outputs, which is why exp-02 and exp-03 (both from the base snapshot) never hit it."
+      cost_h: 0.9
+      fix: "train_sft.py now neutralises temperature/top_k/top_p/min_p and sets do_sample=True on model.generation_config right after loading; the greedy config is still written by hand into final/ after training. Also: watch the log for a stall, not just for a traceback in the first 60 s - this run printed its traceback and then left a tqdm bar frozen at 200/379 that looked like slow progress."
+    - what: "exp-03's first launch was killed at step 37: PYTORCH_CUDA_ALLOC_CONF was exported after the process had been started rather than passed into it, so the run did not match the locked env."
+      cost_h: 0.1
+      fix: "the env goes in front of the command on the same line, and the launch uses setsid so nothing in the agent's process group can take it down."
+  smoke_runs:
+    - command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-03/final, --questions, gsm8k, --limit, '400', --k, '8']
+      outcome: "3200 generations in 55 s (58 gen/s, 8465 output tok/s); sample-level correct 0.559; 354/400 questions solved at least once. Used to size the full sampling job."
+    - command: [python, '-c', 'spot-check 4 kept chains from 1-chain gsm8k questions']
+      outcome: "verdict precondition 2: the accept filter is 'last number equals gold', so a right-answer/wrong-reasoning chain would pass. Read 4 chains sampled from the 3806 rows whose question yielded only one surviving chain (per-question counts: 3806 at 1, 2721 at 2 - no question reaches 3, so --adaptive-keep is only capping the easy band here, not boosting the hard one). All 4 arithmetically sound end to end. Not a proof, but no evidence of the failure mode." 
+problem:
+  statement: "exp-03 solves 87% of GSM8K-train questions at least once in 6 samples at temperature 1.0 but only 67.3% of test items on a single greedy pass. The knowledge is in the model; the single sampled chain it commits to is what fails."
+  evidence:
+    - path: /home/ben/task/logs/rft_gsm.log
+      locator: "[rft] line"
+      observation: "6527/7473 (87.3%) of gsm8k train questions get at least one correct chain in k=6; per-sample correctness is only 57.7%."
+    - path: /home/ben/task/logs/rft_aug.log
+      locator: "[rft] line"
+      observation: "20828/25000 (83.3%) of augmented_gsm8k questions solved at least once in k=4; per-sample 60.4%."
+    - path: /home/ben/task/eval/exp-03_final_full1319.json
+      locator: "accuracy"
+      observation: "0.6725 single-pass greedy on the test split."
+  affected_share: 0.2
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-03/final for one epoch on its own correct chains (33719 rejection-sampled rows, per-question count weighted toward questions it rarely solves) mixed with 24000 replayed supervised rows raises full-test accuracy above exp-03's 0.6725."
+  mechanism: "Rejection-sampling FT raises the probability mass of the reasoning paths that actually reach the right answer, in the model's own phrasing, for the exact questions where its sampled chains disagree with each other. That is a sharpening of the greedy path rather than new problem coverage, which is what the 128-fixed/99-broken churn says is limiting. The replay slice keeps the supervised distribution - and the 12% few-shot-prefixed rows the graded 10-shot prompt needs - from being trained away."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +4 pts. The published RFT effect on GSM8K is of this size, and the gap between 87% pass@6 and 67% greedy is the headroom it draws on; the paired ruler at n=1319 resolves about 1.3 pts."
+  falsified_if: "full-test (n=1319) accuracy is at or below exp-03's 0.6725."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3_rft.jsonl
+      source: "synthetic:self (ckpts/exp-03/final) over openai/gsm8k main/train and nvidia/OpenMathInstruct-2 augmented_gsm8k questions, plus a replay slice of derived:exp-03's data/sft_v2.jsonl"
+      n_examples: 57719
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/remix_v3.py]
+      selection: "Two sampling passes from ckpts/exp-03/final at temperature 1.0 / top_p 0.95 / max_tokens 640, stop_token_ids [1,106]: all 7473 gsm8k train questions at k=6 (44838 generations, 9248 rows kept) and 25000 distinct augmented_gsm8k questions at k=4 (100000 generations, 24471 rows kept). A chain is kept only if the last number in it equals the gold answer AND it contains an 'ANSWER:' marker; chains are deduped per question on the normalised body prefix; --adaptive-keep sets the per-question cap to 1 / 2 / 3 for pass rates >=0.75 / middle / <=0.25, and when more chains survive than the cap the picks are evenly spaced along the length order so a short and a long chain both survive. Mixed with 24000 replay rows drawn from data/sft_v2.jsonl stratified 4000 k-shot / 20000 0-shot, and 10% of the RFT rows re-rendered behind a k-shot prefix (k in 1,2,3,4,8,10 drawn from gsm8k TRAIN) so the stream carries 7371 few-shot rows = 12.77%, of which 1223 at exactly the eval's 10 shots. Final composition: 24471 rft_omi_aug / 19240 omi2_augmented_gsm8k / 9248 rft_gsm8k_train / 2635 gsm8k_train / 2125 omi2_gsm8k. No test item is read at any stage; questions come from the train split and from OMI-2 only."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, custom SparseLossTrainer + TokenBudgetBatches (identical to exp-02/exp-03)"
+    peft: none
+    hyperparams:
+      lr: 7.0e-6
+      epochs: 1.0
+      batch_size: 0
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      max_tokens_per_batch: 16384
+      max_bs: 64
+      attn: flash_attention_2
+      frozen: "model.vision_tower, model.multi_modal_projector"
+    target_format: "identical to exp-02/exp-03: chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>, prompt from scripts/fmt.py (template sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4). RFT rows are 0-shot; the replay slice carries the 12% k-shot rows."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-03/final, --data, /home/ben/task/data/sft_v3_rft.jsonl, --out, /home/ben/task/ckpts/exp-04, --lr, '7e-6', --epochs, '1.0', --grad-accum, '4', --max-tokens-per-batch, '16384', --max-seq-len, '3072', --save-steps, '200', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 200
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.75}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 1319 (the whole gsm8k test split)"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6725
+    path: /home/ben/task/eval/exp-03_final_full1319.json
+  diagnostic:
+    what: "paired churn against exp-03 on the same 1319 items (fixed / broken / net) plus the McNemar exact p. exp-03 vs exp-02 was 128/99/+29 at p=0.063; if RFT sharpens the greedy path rather than trading items, the broken count should fall relative to the fixed count. Termination must hold at >=1301/1319 stop_reason 'stop'."
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.61
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-200, step: 200}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-379, step: 379}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 379}
+  training_summary: {final_loss: 0.2857, steps: 379, notes: "2192 s wall, 26.3 samples/s. Loss 0.286 against exp-03's 0.338, as expected when a model is trained on its own accepted outputs - lower loss here is a sign the targets are on-policy, not a sign of a better model. Sampling cost 0.65 h on top: 44838 generations over gsm8k train and 100000 over augmented_gsm8k at ~58 gen/s."}
+  measurements:
+    - {metric: accuracy, value: 0.6770, n: 1319, path: /home/ben/task/eval/exp-04_final_full1319.json, delta_vs_comparator: 0.0045}
+  diagnostic_result:
+    value: 6
+    path: /home/ben/task/logs/2026-09-04T06-42-58+00-00_gsm8k_cnzkorFXZ8wTAg5VvNpzqh.json
+    notes: "paired on the same 1319 items: 101 fixed, 95 broken, net +6. McNemar exact two-sided p = 0.721; paired bootstrap +0.0045, 95% CI [-0.0167, +0.0258]. The prediction that RFT would sharpen the greedy path rather than trade items is contradicted: the churn is as large as exp-03-vs-exp-02's (196 vs 227 discordant items) but the net is +6 instead of +29. Termination and format held: 1305/1319 stop, 1305 ANSWER lines, median 370 chars (exp-03: 422)."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: "0.6725 -> 0.6770 (+0.45 pts), p = 0.72 - indistinguishable from zero on a ruler that resolves 1.3 pts. One RFT round on 33719 self-generated correct chains bought nothing measurable."
+  decision: iterate
+  next_step: "Promoted on the point estimate only (0.6770 > 0.6725 at the same n=1319), which is a tie-break and not a demonstrated improvement; the honest reading is that exp-03 and exp-04 are the same model to within measurement. Why the mechanism failed is the useful part: the accept filter keeps chains that reach the gold number, so on boundary questions it also keeps chains that are right by luck, and the model is trained to reproduce reasoning it cannot rely on - which is consistent with 101 fixed against 95 broken. A second gate (agreement between the ANSWER line and a recomputed intermediate, or majority-vote filtering across the k samples) is what the next RFT round would need. With 3 h left that is not the best use of the time: exp-03 and exp-04 are two nearby minima on the same basin (one is a continuation of the other), which is the textbook case for a weight average, and that costs minutes rather than an hour."

@@ -1,0 +1,129 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T00:15:00Z'
+
+situation:
+  elapsed_h: 7.7
+  remaining_h: 2.3
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/greedy
+    score: {metric: accuracy, value: 0.79, protocol_n: 500}
+  trigger: "2.3 h left and no training round fits. The one cheap variance-reduction move this batch never used is weight averaging over the tail of the exp-05 cosine schedule, and exp-05 kept the checkpoints for it (WMA cheaper_variant, raised on both exp-05 locks)."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.checkpoints_kept", observation: "steps 1080, 1620, 2145 and final all survive on disk"}
+    - {path: /home/ben/task/analysis/n500_paired_exp04_vs_exp05.json, locator: "paired_se 0.0178", observation: "the deltas this batch is deciding on are ~1 sigma; a variance-reduction move is worth more than another 2-point chase"}
+    - {path: /home/ben/task/memory/cards/exp-05.verdict.json, locator: "suggestions.cheaper_variants", observation: "'take the C6 uniform soup ... no training, one eval, and this run has not yet used the variance-reduction move the manual calls the default when time is short'"}
+  alternatives_rejected:
+    - {option: "A second RFT round targeting the 5.9% of train problems unsolved at pass@4", reason: "sampling alone was 53 min last time and training another 70 min; it does not fit in 2.3 h with the packaging and verification still to do"}
+    - {option: "Soup exp-04/final with exp-05/final", reason: "those are a full RFT epoch apart and exp-04 is the measurably weaker of the two (0.768 vs 0.790 at n=500); averaging across that gap pulls toward the weaker parent rather than reducing noise around the better one"}
+    - {option: "Include checkpoint-540", reason: "at 25% of a cosine schedule the LR is still high and the weights are far from the tail; SWA works on the low-LR tail, and exp-04's step-2980 read (0.6933 vs 0.7533) is a direct measurement of how much a mid-trajectory point can cost"}
+    - {option: "Ship exp-05 and stop", reason: "that remains the fallback and final_model/ is not touched unless the soup wins under the identical protocol; this card costs one merge and one eval"}
+  pitfalls_hit:
+    - {what: "The first soup.py built a model object and called load_state_dict on raw on-disk keys; under transformers 4.57.3 the checkpoints are stored in the CONVERTED form (language_model.model.*) while the live module uses model.language_model.*, so 0 of 883 keys would have matched and the assert would have fired after ~43 GB of streaming. The WMA caught it at lock time (L0_runs=no@0.85) - preflight cannot exercise a merge", cost_h: 0.1, fix: "soup.py no longer builds a model: it writes the averaged tensors back under the same on-disk names next to a copy of the source config.json and lets from_pretrained convert at load time, then reloads the result on CPU to prove it"}
+    - {what: "Trainer's intermediate checkpoints are fp32 and carry no tokenizer/processor/generation_config, so a soup over them must re-attach those files and write the greedy generation_config or it silently grades under the base sampled decode (~8 pts, measured in exp-03)", cost_h: 0.0, fix: "scripts/soup.py writes tokenizer, processor configs and the greedy generation_config itself, and asserts the key sets of all sources match"}
+  smoke_runs:
+    - {command: [free, -g], outcome: "1776 GB RAM available; streaming the shards keeps peak RSS at one fp32 copy (~17 GB), so the 3-way average is not memory bound"}
+
+problem:
+  statement: "Every decision left in this batch turns on differences of about 2 points measured with a paired standard error of 1.78 points. The incumbent is a single point on a training trajectory and inherits whatever SGD noise the last few hundred steps happened to leave in the weights; nothing has been done to average that out."
+  evidence:
+    - {path: /home/ben/task/analysis/n500_paired_exp04_vs_exp05.json, locator: "paired_delta 0.022, paired_se 0.0178", observation: "the exp-04 -> exp-05 gain is 1.24 sigma"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: "accuracy", observation: "0.720 and 0.7333 on byte-identical weights - 1.3 pts of pure run-to-run noise at n=150"}
+    - {path: /home/ben/task/analysis/exp-05_watch_rerun.json, locator: "whole file", observation: "13 fixed / 24 still failing / 10 regressions: errors churn between adjacent checkpoints rather than sitting still"}
+  affected_share: null
+  failure_examples:
+    - {id: "(32 items)", source: /home/ben/task/analysis/exp-05_failure_tags.json, question: "dev-150 items tagged wellformed_but_wrong under exp-05", gold: "(various)", model_output: "well-formed 'ANSWER: n', wrong n", failure: "reasoning error"}
+    - {id: "(10 items)", source: /home/ben/task/analysis/exp-05_watch_rerun.json, question: "items exp-04 got right and exp-05 got wrong", gold: "(various)", model_output: "(wrong under exp-05)", failure: "regression that a tail average is exactly the move for"}
+    - {id: "(24 items)", source: /home/ben/task/analysis/exp-05_watch_rerun.json, question: "items wrong under both exp-04 and exp-05", gold: "(various)", model_output: "(wrong under both)", failure: "hard core no averaging will touch"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-05_watch.jsonl
+    n: 34
+    selection: "every dev-150 item the incumbent (exp-05 greedy) got wrong"
+
+hypothesis:
+  claim: "A uniform weight average of the last three exp-05 checkpoints (steps 1080, 1620 and the end-of-run final/, which is step 2145 saved in bf16 rather than the fp32 checkpoint-2145 of the same step - one of the three ingredients is therefore bf16-rounded) scores at least as well as exp-05's final weights on dev-150 under the identical greedy protocol, and does so with fewer of the 10 items exp-05 regressed against exp-04."
+  mechanism: "Over the low-LR tail of a cosine schedule the iterates sit in one basin and differ mostly by SGD noise. Averaging them cancels that noise component while leaving the shared solution intact, which is why tail averaging is a variance reduction rather than a new model."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "0 to +2 points; the realistic outcomes are 'a little better' and 'indistinguishable', and either is informative"
+  falsified_if: "dev-150 accuracy below 0.7533 (i.e. the average is worse than exp-04, meaning the checkpoints are not in one basin and averaging destroyed the solution)"
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "unchanged from exp-05; no training happens in this card, the weights being averaged are exp-05's own checkpoints"
+      n_examples: 68922
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --pool, data/rft_pool.jsonl, --k, "4", --out, data/rft_v1.jsonl]
+      selection: "no rows are read by this card; recorded so the lineage of the averaged weights is explicit"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors streaming + transformers 4.57.3 save_pretrained"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: "averaged in fp32, saved bf16", seed: null}
+    target_format: "unchanged: chain of thought, one 'ANSWER: <n>' line, closed with <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --srcs, /home/ben/task/ckpts/exp-05/final, /home/ben/task/ckpts/exp-05/checkpoint-1620, /home/ben/task/ckpts/exp-05/checkpoint-1080, --dst, /home/ben/task/ckpts/exp-06/soup3]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.85", --json-output-file, "{out}"]
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items in dataset order, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7733
+    path: /home/ben/task/eval/exp-05_greedy_dev150.json
+  diagnostic:
+    what: "of the 10 dev-150 items exp-04 got right and exp-05 got wrong, how many the average recovers; a tail average should recover regressions without giving back exp-05's gains"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/exp-06/soup3
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/soup3, step: 2145}
+  training_summary: {final_loss: null, steps: null, notes: "no training. 883 tensors accumulated from each of exp-05/final (bf16, step 2145), checkpoint-1620 and checkpoint-1080 (both fp32), averaged in fp32, saved bf16 under the source key names next to the source config.json. The script reloaded the result on CPU as Gemma3ForConditionalGeneration (4.300B params) before it was ever put on a GPU, which is the check the previous version of the script could not have passed."}
+  measurements:
+    - {metric: accuracy, value: 0.7733, n: 150, path: /home/ben/task/eval/exp-06_soup3_dev150.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.774, n: 500, path: /home/ben/task/eval/exp-06_soup3_dev500.json, delta_vs_comparator: -0.016}
+  diagnostic_result:
+    value: 1
+    path: /home/ben/task/analysis/exp-06_diagnostic.json
+    notes: "Of the 10 dev-150 items exp-04 got right and exp-05 got wrong, the average recovers 1. The n=150 taxonomy is identical to exp-05's to the item count (correct 116, wellformed_but_wrong 32, no_termination_hit_cap 2). Paired at n=500 (analysis/n500_paired_exp05_vs_soup.json): the soup fixes 18 and breaks 26, net -8 items = -1.60 pts, paired SE 1.33 pts, -1.21 sigma."
+  watch_set_result: {fixed: 0, still_failing: 34, regressions: 0, path: /home/ben/task/analysis/exp-06_failure_tags.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The average is a dead tie with exp-05 at n=150 (0.7733 both, same taxonomy item for item) and 1.6 pts worse on the better-powered n=500 read, paired -1.21 sigma. falsified_if (below 0.7533) was not reached, so the checkpoints are in one basin and averaging did not destroy the solution - but the predicted direction did not appear, and the mechanism's own prediction is what fails: it recovered 1 of the 10 regressions it was supposed to average away. Over 1065 steps of a low-LR cosine tail the iterates differ by more than noise, so the average is a genuinely different and slightly worse model rather than a cleaner version of the same one. The WMA's L2 of flat [-0.02, 0.027] was the accurate call."
+  decision: reject
+  next_step: "final_model/ keeps the exp-05 greedy build, untouched throughout this card - the regression guard held. If a future batch retries tail averaging, average over a much shorter window (the last few hundred steps) or use a proper EMA during training rather than three checkpoints spanning half the schedule."
