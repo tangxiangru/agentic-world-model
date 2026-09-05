@@ -235,3 +235,5 @@
 - 2026-09-05T16:57:02+00:00 release exp-protocol-opus48-gsm8k-e-repair-x2-v1: 2 held job(s) 93051,93052
 - 2026-09-05T17:04:34+00:00 harvest exp-protocol-opus48-gsm8k-e-repair-x2-v1/e04g01 job=93051 FAILED incomplete (1 issue(s)) judges-unverified
 - 2026-09-05T17:04:34+00:00 harvest exp-protocol-opus48-gsm8k-e-repair-x2-v1/e04g02 job=93052 FAILED incomplete (1 issue(s)) judges-unverified
+- 2026-09-05T17:19:37+00:00 submit exp-protocol-opus48-gsm8k-e-repair-x2-v2 (held): 2 job(s) 93070,93071 -> results/ptb/exp-protocol-opus48-gsm8k-e-repair-x2-v2/formal-2026-09-05T171936.643852+0000.json
+- 2026-09-05T17:22:18+00:00 release exp-protocol-opus48-gsm8k-e-repair-x2-v2: 2 held job(s) 93070,93071
