@@ -246,3 +246,6 @@
 - 2026-09-05T18:16:24+00:00 submit exp-protocol-humaneval-environment-ondem0-v3 (held): 1 job(s) 93133 -> results/ptb/exp-protocol-humaneval-environment-ondem0-v3/environment-acceptance-2026-09-05T181623.803673+0000.json
 - 2026-09-05T18:17:01+00:00 release exp-protocol-humaneval-environment-ondem0-v3: 1 held job(s) 93133
 - 2026-09-05T18:21:40+00:00 harvest exp-protocol-humaneval-environment-ondem0-v3/h04env01 job=93133: environment failed (not scientific)
+- 2026-09-05T18:27:53+00:00 submit exp-protocol-opus48-humaneval-none-a-x2-v1 (held): 2 job(s) 93139,93140 -> results/ptb/exp-protocol-opus48-humaneval-none-a-x2-v1/formal-2026-09-05T182709.835487+0000.json
+- 2026-09-05T18:27:53+00:00 submit exp-protocol-opus48-humaneval-knowledge-a-x2-v1 (held): 2 job(s) 93141,93142 -> results/ptb/exp-protocol-opus48-humaneval-knowledge-a-x2-v1/formal-2026-09-05T182731.731057+0000.json
+- 2026-09-05T18:27:53+00:00 submit exp-protocol-opus48-humaneval-e-repair-a-x2-v1 (held): 2 job(s) 93143,93144 -> results/ptb/exp-protocol-opus48-humaneval-e-repair-a-x2-v1/formal-2026-09-05T182753.449124+0000.json
