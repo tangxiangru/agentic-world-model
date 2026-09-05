@@ -231,3 +231,4 @@
 - 2026-09-05T12:12:46+00:00 harvest exp-protocol-opus48-gsm8k-tools-x4-v1/e03g04 job=92136 COMPLETED acc=0.5830 complete clean
 - 2026-09-05T15:15:17+00:00 release exp-protocol-opus48-gsm8k-knowledge-x4-v1: 4 held job(s) 92129,92130,92131,92132
 - 2026-09-05T15:15:17+00:00 release exp-protocol-opus48-gsm8k-guard-x4-v1: 4 held job(s) 92137,92138,92139,92140
+- 2026-09-05T16:53:08+00:00 submit exp-protocol-opus48-gsm8k-e-repair-x2-v1 (held): 2 job(s) 93051,93052 -> results/ptb/exp-protocol-opus48-gsm8k-e-repair-x2-v1/formal-2026-09-05T165308.035627+0000.json
