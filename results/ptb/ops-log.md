@@ -237,3 +237,6 @@
 - 2026-09-05T17:04:34+00:00 harvest exp-protocol-opus48-gsm8k-e-repair-x2-v1/e04g02 job=93052 FAILED incomplete (1 issue(s)) judges-unverified
 - 2026-09-05T17:19:37+00:00 submit exp-protocol-opus48-gsm8k-e-repair-x2-v2 (held): 2 job(s) 93070,93071 -> results/ptb/exp-protocol-opus48-gsm8k-e-repair-x2-v2/formal-2026-09-05T171936.643852+0000.json
 - 2026-09-05T17:22:18+00:00 release exp-protocol-opus48-gsm8k-e-repair-x2-v2: 2 held job(s) 93070,93071
+- 2026-09-05T17:37:43+00:00 submit exp-protocol-humaneval-environment-ondem0-v1 (held): 1 job(s) 93104 -> results/ptb/exp-protocol-humaneval-environment-ondem0-v1/environment-acceptance-2026-09-05T173743.092547+0000.json
+- 2026-09-05T17:42:23+00:00 release exp-protocol-humaneval-environment-ondem0-v1: 1 held job(s) 93104
+- 2026-09-05T17:47:16+00:00 harvest exp-protocol-humaneval-environment-ondem0-v1/h04env01 job=93104: environment failed (not scientific)
