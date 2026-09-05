@@ -88,3 +88,17 @@ K construction decision (09-03 22:54 UTC): freeze `58a6992` / `ec7d5f2a`, restor
 
 - Round 01 与 Round 02 的结果记录（`<date>-round-01.md`、`-round-02.md`）在各自的 cell 落地后另起。
 - `exp_protocol_meta/iteration_record.template.md` 目前没有"方向台账"一节；三轮后的 meta 回顾时加上，并把 `metrics.md` 补上 `hours_used`、"greedy 是否交付"、"最大评估 n"三项。
+
+
+## 2026-09-05 E repair candidate (construction only)
+
+Status: prepared from frozen E dcfa742; new treatment, no promotion or queue action.
+[Component spec](../spec/2026-09-05-exp-protocol-e-repair.md) records source cells,
+multiple outcomes and limited planner-owned discovery. Accepted components are
+phase-aware pre-engine readiness (e02 failure/e04 successful phase separation),
+native API plus bounded failure observation (e01/e03), and served-decode evidence
+(e02/e03 do_sample-only misclassification). Rejected alternatives: waiving future
+training hashes, automatic greedy rewrite, global process cleanup, mandatory
+few-shot/RFT/precision recipes, or claiming CPU tests establish score gains.
+Existing E remains frozen. Readiness and decode evidence preserve unknown runtime
+boundaries; independent forward validation and actual GPU discovery remain due.

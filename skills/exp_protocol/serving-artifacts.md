@@ -3,6 +3,8 @@
 Use these helpers to preserve an already chosen artifact and decoder. They do
 not choose a checkpoint, change generation settings, launch inference, or prove
 quality. Keep model execution/evaluation under its prior matching card and lock.
+For evidence about which decoder those bytes request, read `decode-evidence.md`.
+Artifact identity and effective decoding are separate claims.
 
 ## Freeze before relying on a measurement
 

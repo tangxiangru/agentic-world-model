@@ -158,33 +158,135 @@ def _card_evidence(card_path):
     }
 
 
-def _native_identity(llm, params):
+def _native_runtime(params):
+    """Inspect the pinned adapter without constructing an engine or loading weights."""
     import vllm
     from vllm import LLM, SamplingParams
 
-    if (
-        vllm.__version__ != VLLM_VERSION
-        or type(llm) is not LLM
-        or type(params) is not SamplingParams
-    ):
+    if vllm.__version__ != VLLM_VERSION or type(params) is not SamplingParams:
         raise SamplingEvidenceError("requires pinned native vLLM 0.11.0 LLM and SamplingParams")
     root = Path(vllm.__file__).parent
     for relative, digest in VLLM_SOURCES.items():
         if _sha((root / relative).read_bytes()) != digest:
             raise SamplingEvidenceError(f"pinned vLLM source mismatch: {relative}")
     if (
-        getattr(llm.generate, "__func__", None) is not LLM.generate
-        or getattr(llm.get_tokenizer, "__func__", None) is not LLM.get_tokenizer
-        or Path(inspect.getsourcefile(LLM.generate)).resolve()
+        Path(inspect.getsourcefile(LLM.generate)).resolve()
         != (root / "entrypoints/llm.py").resolve()
     ):
-        raise SamplingEvidenceError("native offline generate/tokenizer entrypoint was replaced")
+        raise SamplingEvidenceError("native offline generate entrypoint was replaced")
+    # Bind the actual supported invocation on CPU; never probe by running a model.
+    inspect.signature(LLM.generate).bind(None, [], params, use_tqdm=False)
     return {
         "vllm": VLLM_VERSION,
         "sources": dict(VLLM_SOURCES),
         "order_contract": "native offline generate returns requests in input order",
         "resolved_engine_configuration": "not_independently_verified",
     }
+
+
+def _native_identity(llm, params):
+    from vllm import LLM
+
+    native = _native_runtime(params)
+    if type(llm) is not LLM:
+        raise SamplingEvidenceError("requires pinned native vLLM 0.11.0 LLM and SamplingParams")
+    if (
+        getattr(llm.generate, "__func__", None) is not LLM.generate
+        or getattr(llm.get_tokenizer, "__func__", None) is not LLM.get_tokenizer
+    ):
+        raise SamplingEvidenceError("native offline generate/tokenizer entrypoint was replaced")
+    return native
+
+
+def sampling_ready(prepared, params, output_dir, *, tokenizer, card_path, required_stop_tokens):
+    """CPU readiness for THIS locked sampling stage, not a model/GPU validation.
+
+    An override of a preflight heuristic does not waive live input hashes.
+    Generated training inputs belong in a later card, after they are persisted.
+    """
+    card = _card_evidence(card_path)
+    native = _native_runtime(params)
+    prepared = tuple(prepared)
+    if not prepared or any(
+        not isinstance(item, PreparedPrompt) or item.ordinal != ordinal
+        for ordinal, item in enumerate(prepared)
+    ):
+        raise SamplingEvidenceError("use nonempty ordered prepare_prompts output")
+    for item in prepared:
+        actual = prepare_prompts(
+            [item.text], tokenizer, item_ids=[item.item_id], bos_policy=item.bos_policy
+        )[0]
+        if actual.token_ids != item.token_ids:
+            raise SamplingEvidenceError("CPU tokenizer does not reproduce prepared prompt tokens")
+    stops = resolve_stop_ids(tokenizer, required_stop_tokens)
+    requested = _parameters(params, stops)
+    if Path(output_dir).exists() or Path(output_dir).is_symlink():
+        raise FileExistsError("recording destination already exists; retain it and use a new path")
+    return {
+        "status": "ready_before_engine",
+        "checked_at": schema.now(),
+        "card": card,
+        "native": native,
+        "requested_parameters": requested,
+        "model_loading": "not_performed",
+        "scientific_validation": "not_performed",
+    }
+
+
+def record_vllm_from_factory(
+    engine_factory,
+    prepared,
+    params,
+    output_dir,
+    *,
+    tokenizer,
+    card_path,
+    required_stop_tokens,
+    close_engine=None,
+):
+    """Reject CPU-detectable defects before calling the scientist's engine factory.
+
+    Factory/cleanup run in the caller's process. This is NOT a timeout manager.
+    Run it in a stage with an owned deadline/exit observer. Optional cleanup sees
+    only the returned engine; a factory failing midway must manage its own state.
+    """
+    if not callable(engine_factory) or (close_engine is not None and not callable(close_engine)):
+        raise SamplingEvidenceError("engine factory and optional cleanup must be callable")
+    prepared = tuple(prepared)
+    required_stop_tokens = tuple(required_stop_tokens)
+    params = copy.deepcopy(params)
+    sampling_ready(
+        prepared,
+        params,
+        output_dir,
+        tokenizer=tokenizer,
+        card_path=card_path,
+        required_stop_tokens=required_stop_tokens,
+    )
+    engine = engine_factory()
+    failure = None
+    try:
+        # Recheck the live card, tokenizer and native instance after construction.
+        return record_vllm(
+            engine,
+            prepared,
+            params,
+            output_dir,
+            card_path=card_path,
+            required_stop_tokens=required_stop_tokens,
+        )
+    except BaseException as exc:
+        failure = exc
+        raise
+    finally:
+        if close_engine is not None:
+            try:
+                close_engine(engine)
+            except BaseException as cleanup_error:
+                if failure is None:
+                    raise
+                if hasattr(failure, "add_note"):
+                    failure.add_note(f"engine cleanup also failed: {cleanup_error}")
 
 
 def _parameters(params, required_stops):

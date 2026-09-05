@@ -7,9 +7,10 @@ plain SamplingParams with explicit n/max_tokens and required single-token stops.
 It does not implement or modify the official benchmark grader.
 
 ```python
-from vllm import SamplingParams
+from vllm import LLM, SamplingParams
 from awm.exp_protocol.sampling import (
-    prepare_prompts, resolve_stop_ids, record_vllm, parse_recording, finite_float,
+    prepare_prompts, resolve_stop_ids, record_vllm_from_factory,
+    parse_recording, finite_float,
 )
 
 # These strings must already be rendered by your actual selected template.
@@ -18,10 +19,15 @@ prompts = prepare_prompts(rendered_strings, tokenizer, item_ids=training_row_ids
 stop_ids = resolve_stop_ids(tokenizer, [actual_template_stop_token])
 params = SamplingParams(n=k, temperature=chosen_temperature, max_tokens=chosen_cap,
                         stop_token_ids=stop_ids, seed=chosen_seed)
-# Check/lock before this part; llm is constructed inside that locked command.
-capture = record_vllm(llm, prompts, params, new_recording_directory,
-                      card_path=locked_card_path,
-                      required_stop_tokens=[actual_template_stop_token])
+# Inside the checked/locked sampling command, with a CPU-loaded tokenizer:
+def engine_factory():
+    return LLM(model=selected_checkpoint, **selected_engine_options)
+
+capture = record_vllm_from_factory(
+    engine_factory, prompts, params, new_recording_directory,
+    tokenizer=tokenizer, card_path=locked_card_path,
+    required_stop_tokens=[actual_template_stop_token],
+)
 # Only after raw output was flushed/fsynced and structurally checked:
 parsed = parse_recording(new_recording_directory, your_parser)
 ```
@@ -30,6 +36,66 @@ parsed = parse_recording(new_recording_directory, your_parser)
 It must not run inference. A parser can use `finite_float` to reject NaN, infinity
 or numeric overflow before conversions such as int. This is only a finite-number
 conversion, not a claimed reproduction of a benchmark's answer grammar.
+
+## Sampling output is a later training input
+
+For a sample/filter/train route, use this stage pattern:
+
+1. The sampling card names the sampler checkpoint and **existing input** rows.
+   Its `setup.command` runs sampling and may parse the returned draws. The new
+   recording and filtered data are outputs, not future `setup.data` inputs.
+2. Read the actual exit/capture/parser evidence and persist the training data.
+   A failed sampling attempt remains failed even if partial raw data survives.
+3. Prepare the training card with the resulting existing data paths. Its lock
+   pins their hashes; its parent checkpoint is the model you chose to train.
+   The scientific choice to continue, restart or abandon remains yours.
+
+`lock --override data_files_exist=...` cannot authorize missing live input
+hashes. `sampling_ready(...)` exposes the factory's CPU readiness checks if a
+separate diagnostic is useful: live card/lock/source/input integrity, native
+adapter signature, actual prepared tokens/stops/parameters and fresh output path.
+It does not mutate the card, load a model, prove future consumption or waive the
+same checks at inference time. If inputs change after readiness, capture rejects
+them again. Do not replace a rejected wrapper with direct inference to bypass it.
+
+## Native call and bounded failure observation
+
+The adapter uses vLLM0.11's native positional prompt input. Equivalent native
+syntax, if your explicitly uninstrumented route needs it, is:
+
+```python
+from vllm import TokensPrompt
+outputs = llm.generate(
+    [TokensPrompt(prompt_token_ids=list(p.token_ids)) for p in prompts],
+    params, use_tqdm=False,
+)
+```
+
+`llm.generate(prompt_token_ids=...)` is not this API. The factory checks the
+pinned source and binds the supported signature without constructing an engine;
+it preserves your batch boundaries, temperature, seed and sample count.
+
+Keep factory/capture in a dedicated command stage. For example, the **locked
+script** can use an explicitly planned stage deadline with GNU timeout:
+
+```bash
+set -eu
+# Set this from the card's stage budget, including startup and observation margin.
+sample_stage_limit=1800s
+timeout --signal=TERM --kill-after=10s "$sample_stage_limit" python sample_stage.py
+# Reached only on successful exit; still inspect capture/parser status before use.
+```
+
+The value is an example, not a universal budget. `awm exp_protocol run` retains
+that script's real exit result. A timeout/nonzero exit stops dependent training;
+retain raw files and investigate the exact owned producer. Test the chosen
+deadline/cleanup path in your environment before trusting it for long work.
+This bounds the directly launched stage's wait, not descendants that deliberately
+escape its process group. No tool here discovers or kills unrelated engines.
+Factory errors before returning an engine cannot be cleaned up by this helper.
+Optional `close_engine=your_cleanup` receives only the returned engine; cleanup
+may itself fail or hang, so it is not a substitute for the outer stage bound.
+Already-durable raw capture stays available if later validation/cleanup fails.
 
 ## What is checked and recorded
 

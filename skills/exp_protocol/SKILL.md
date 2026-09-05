@@ -21,8 +21,11 @@ run; that is your call.
 ## The unit: one card, one experiment
 
 One card = one problem, one hypothesis, one intervention, one result. A sweep
-is several cards. A three-stage pipeline is three cards, each naming the
-previous card's output as `setup.parent_checkpoint`. Cards live in
+is several cards. When sampling produces later training data, lock the sampling
+stage against its existing inputs, persist the result, then lock a new training
+card against those actual data hashes. Name model ancestry in
+`setup.parent_checkpoint` and input data in `setup.data`; a generated dataset is
+not a checkpoint. See the working pattern in `sampling-evidence.md`. Cards live in
 `{dir}/memory/cards/exp-NN.yaml`; `{dir}/memory/index.md` is one line per card.
 
 Seven sections. **0–4 are written before the launch command runs; 5–6 after.**
@@ -143,8 +146,12 @@ that disagreement is the record the estimator learns from.
    your turn ends the session ends, and every background process you started
    dies with it — a training run included. There is no next turn. Never end
    the turn while training, sampling or evaluation is alive. Wait on the
-   producing process, not its ETA: keep the command, its exit-status check and
-   follow-up evaluation in one foreground script with a long Bash timeout.
+   producing process, not its ETA: retain the command's actual exit status and
+   inspect it before dependent work. A long outer timeout is not a liveness
+   check: give failure-prone sampling stages a budgeted deadline and bounded
+   cleanup grace (see `sampling-evidence.md`), rather than waiting the entire
+   research budget after an early error. Quiet logs alone do not justify killing
+   a live producer.
    If backgrounding is necessary, capture the actual producer's PID and
    `wait "$pid"` in the same shell that launched it; another Bash call cannot
    wait on that shell's child. Otherwise use the tool's task-completion result
@@ -200,6 +207,9 @@ identity before relying on an evaluation, then verify the same selected bytes
 before publication. Stage to a new destination by default; explicit replacement
 requires an owned quiescent target and preserves the old incumbent. Local
 metadata/byte verification is not model loading or scientific validation.
+Read `decode-evidence.md` when assigning a decode mode to that artifact: in the
+pinned vLLM path, `do_sample:false` alone does not establish greedy decoding.
+Keep selected file fields, actual request fields and native observations separate.
 
 ## When preprocessing changes the raw representation
 
@@ -218,7 +228,9 @@ claims; the latter remains unknown from a preprocessing receipt alone.
 Read `sampling-evidence.md` for the pinned native vLLM path. Prepare actual prompt
 tokens without adding a second set of special tokens, resolve explicit stops
 from the tokenizer, and preserve every returned draw before post-processing.
-Construct the model and call inference only inside the matching locked command.
+Use the factory entrypoint to reject CPU-detectable live-card/input/API failures
+before constructing the engine. Construct the model and call inference only
+inside the matching locked command; a readiness result is not a launch exemption.
 Keep requested settings, observed finish reasons, parsing failures and official
 scores distinct; a raw capture or parser summary is not scientific completion.
 
