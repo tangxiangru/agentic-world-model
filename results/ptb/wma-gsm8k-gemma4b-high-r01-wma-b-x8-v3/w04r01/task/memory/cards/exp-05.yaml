@@ -1,0 +1,236 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T02:55:00Z'
+situation:
+  elapsed_h: 5.05
+  remaining_h: 4.95
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/final_model
+    score:
+      metric: accuracy
+      value: 0.68
+      protocol_n: 150
+  trigger: 'After exp-04 all 48 remaining failures at n=150 are wrong numbers with a well-formed
+    ANSWER line and zero are format/stop failures, so nothing is left to win on formatting; the
+    solver itself is the constraint. Sampling 4 completions per training question from the
+    exp-03 weights gives pass@4 0.9021 against sample accuracy 0.6994, i.e. the model can
+    usually reach the right chain but does not reliably pick it.'
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp-04_tags.json
+    locator: 'counts.wrong_number=48, counts.format_or_stop=0'
+  - path: /home/ben/task/analysis/rft_v1_stats.json
+    locator: 'pass_at_k 0.9021 vs sample_accuracy 0.6994 over 17441 questions, k=4, t=1.0'
+  alternatives_rejected:
+  - option: 'Another SFT pass on more OpenMathInstruct-2 data'
+    reason: 'exp-02 already trained twice over 85k rows of it; the marginal row is another
+      405B-generated solution in a style the model has already absorbed. The gap the stats
+      identify (pass@4 0.90 vs single-sample 0.70) is a mode-selection gap, which is what
+      rejection sampling on the model own outputs targets.'
+  - option: 'DPO on correct-vs-incorrect self-samples'
+    reason: 'The pairs exist (30% of samples are wrong) but a DPO implementation, a reference
+      model and a hyperparameter search do not fit in 4.9 h alongside the eval and the final
+      packaging; RFT reuses the trainer that has now run twice without incident.'
+  - option: 'Train on all 29525 kept solutions'
+    reason: '~46M tokens, about 1.6 h at the observed 30M tokens/h; 25034 rows fits the budget
+      with room for the eval, the packaging and a failure.'
+  - option: 'Sample with the 10-shot prefix instead of zero-shot'
+    reason: '10x the prompt tokens for the same targets; the target text does not depend on the
+      prefix, and the output rows are rendered with the k-shot mix regardless.'
+  pitfalls_hit:
+  - what: 'rft_sample.py originally wrote zero-shot prompts for the kept rows, which would have
+      undone exp-03 fix by training the model back onto zero-shot prompts only.'
+    cost_h: 0.0
+    fix: '--kshot renders every kept row prompt with the same k in {0,3,6,10} mix, weights
+      {0.30,0.10,0.15,0.45}, that exp-03 trained on.'
+  smoke_runs:
+  - command: [python, scripts/train_sft.py, --data, data/rft_train_v1.jsonl, --max-len, '3456',
+      --dry-run]
+    outcome: 'p50 1483, p99 2678, max 3263 tokens; 0 of 25034 rows truncated; every target ends
+      in token 106.'
+  - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json,
+      --input, data/rft_decon_input.jsonl]
+    outcome: '25034 documents scanned, 0 contaminated, 0 matches (prompt including the k-shot
+      prefix plus the target were both submitted).'
+problem:
+  statement: 'The model reaches the correct chain of thought for 90% of training questions
+    within 4 samples but only 70% of individual samples are correct, and the grader scores one
+    completion per item. On the benchmark that shows up as 48 of 150 items answered in the
+    right format with the wrong number: arithmetic slips and wrong set-ups inside otherwise
+    plausible chains.'
+  evidence:
+  - path: /home/ben/task/analysis/rft_v1_stats.json
+    locator: 'pass_at_k 0.9021, sample_accuracy 0.6994, n_questions 17441'
+    observation: 'a 20-point gap between what the model can do and what it does in one shot'
+  - path: /home/ben/task/analysis/exp-04_tags.json
+    locator: 'counts: correct 102, wrong_number 48, format_or_stop 0'
+    observation: 'every remaining failure is a number error, not a formatting error'
+  - path: /home/ben/task/analysis/probe_exp03_final.json
+    locator: 'ten_shot.accuracy 0.74 on gsm8k train items the model was trained on'
+    observation: 'even on seen training questions the greedy solver is only at 0.74, so this is
+      a capability gap and not test-set novelty'
+  affected_share: 1.0
+  failure_examples:
+  - id: 'exp-04 aggregate'
+    source: /home/ben/task/analysis/exp-04_tags.json
+    question: '48 items at n=150'
+    gold: 'various'
+    model_output: 'well-formed "ANSWER: N" with N wrong'
+    failure: 'wrong number, correct format'
+  - id: 'rft sampling aggregate, solved-but-unreliable'
+    source: /home/ben/task/analysis/rft_v1_stats.json
+    question: '15734 of 17441 training questions produced at least one correct sample'
+    gold: 'various'
+    model_output: '30% of individual samples still land on a wrong number'
+    failure: 'the correct chain is inside the model distribution but is not the modal one'
+  - id: 'rft sampling aggregate, unsolved'
+    source: /home/ben/task/analysis/rft_v1_stats.json
+    question: '1707 of 17441 questions produced no correct sample in 4 draws'
+    gold: 'various'
+    model_output: 'all four samples wrong'
+    failure: 'beyond the current model; contributes no training signal here'
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_tags.json
+    n: 48
+    selection: 'the 48 wrong-number items from exp-04 at n=150 under greedy decode'
+hypothesis:
+  claim: 'Continuing training from ckpts/exp-03/final on 22034 of the model own answer-verified
+    solutions (plus 3000 replay rows from data/sft_fewshot_v1.jsonl) will raise accuracy at
+    n=150 under greedy decode against exp-04 0.68.'
+  mechanism: 'Every kept target is a chain this model actually produced and that reached the
+    gold answer, so the update sharpens the model onto its own correct modes rather than
+    teaching a new style. That converts part of the pass@4-minus-single-sample gap into
+    single-sample accuracy. The replay rows and the unchanged k-shot prompt mix keep the
+    stopping behaviour exp-03 bought.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: '+0.02 to +0.06'
+  falsified_if: 'Accuracy at n=150 under greedy decode is at or below exp-04 0.68, or
+    format/stop failures reappear above 2 of 150.'
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/rft_train_v1.jsonl
+    source: 'synthetic:self (sampled from ckpts/exp-03/final) over openai/gsm8k split=train and
+      nvidia/OpenMathInstruct-2 augmented_gsm8k problems, plus replay from derived:exp-03'
+    n_examples: 25034
+    built_by: /home/ben/task/scripts/rft_sample.py
+    build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-03/final,
+      --out, data/rft_v1.jsonl, --k, '4', --temp, '1.0', --top-p, '0.95', --max-tokens, '640',
+      --keep-per-q, '2', --n-omi2, '10000', --kshot, --seed, '0']
+    selection: 'Sample k=4 at t=1.0/top_p 0.95 for each of 7473 gsm8k train questions and 9968
+      distinct OpenMathInstruct-2 augmented_gsm8k problems; keep a sample only if the number on
+      its ANSWER line equals gold (gsm8k #### answer, or OMI2 expected_answer); drop exact
+      duplicate bodies; prefer the shortest correct chains; at most 2 per question. Then one
+      solution per question for all 15734 solved questions plus 6300 random second solutions
+      (22034 rft rows), plus 3000 rows drawn at random from data/sft_fewshot_v1.jsonl as replay.
+      Every prompt is re-rendered with k in {0,3,6,10}, weights {0.30,0.10,0.15,0.45}. Targets
+      end in one "ANSWER: N" line and <end_of_turn>.'
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: rft
+    framework: 'transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE; sampling with
+      vllm 0.11.0'
+    peft: none
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 3456
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      optim: adamw_bnb_8bit
+      attn: eager
+      gradient_checkpointing: true
+      frozen: 'vision_tower + multi_modal_projector'
+    target_format: 'chain of thought, blank line, "ANSWER: <number>", <end_of_turn>; prompt
+      (including the k-shot prefix) masked out of the loss'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-03/final, --data,
+      data/rft_train_v1.jsonl, --out, /home/ben/task/ckpts/exp-05, --lr, '5e-6', --epochs, '1',
+      --bs, '8', --accum, '4', --max-len, '3456', --attn, eager, --liger, --save-steps, '390',
+      --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 390
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '8', --gpu-memory-utilization, '0.85']
+    dev_set: 'official inspect_evals/gsm8k test split --limit 150 (first 150, no shuffle)'
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.68
+    path: /home/ben/task/eval/exp04_greedy_dev150.json
+  diagnostic:
+    what: 'format/stop count must stay at 0-2 of 150 (the exp-03 fix must survive the RFT
+      update), tagged by scripts/analyze_eval.py'
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.3
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final_greedy
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-05/checkpoint-780, step: 780}
+  - {path: /home/ben/task/ckpts/exp-05/checkpoint-783, step: 783}
+  - {path: /home/ben/task/ckpts/exp-05/final, step: 783}
+  - {path: /home/ben/task/ckpts/exp-05/final_greedy, step: 783}
+  training_summary:
+    final_loss: 0.2292
+    steps: 783
+    notes: 'train_runtime 4684 s, 5.34 samples/s, 0 rows truncated. checkpoint-390 was rotated
+      out by save_total_limit=2 before it could be copied, so setup.checkpoints.keep=all was
+      only partly honoured: 780, 783 and final are on disk, 390 is not. ckpts/exp-05/final was
+      packaged to final_greedy with temperature 0.0 before grading, since trainer.save_model
+      inherits the parent sampled generation_config and the comparator is a greedy read.'
+  measurements:
+  - metric: accuracy
+    value: 0.6733
+    n: 150
+    path: /home/ben/task/eval/exp05_greedy_dev150.json
+    delta_vs_comparator: -0.0067
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-05_tags.json
+    notes: 'format/stop failures 1 of 150, inside the 0-2 the card required, so the exp-03
+      stopping fix survived the RFT update. Mean completion length fell 295 -> 275 chars.
+      Correct 102 -> 101, wrong_number 48 -> 48.'
+  watch_set_result: {fixed: 9, still_failing: 39, regressions: 10, path: /home/ben/task/analysis/exp-05_tags.json}
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: '0.6733 vs the comparator 0.68 at n=150: a -0.7 pp difference against a per-arm
+    stderr of 3.8 pp, which the protocol cannot resolve in either direction. The stopping
+    behaviour survived (1 format failure) and the model got shorter, but 9 newly-fixed items
+    against 10 new regressions is the signature of noise, not of a change in the solver.'
+  decision: iterate
+  next_step: 'Neither n=150 read can separate these two candidates, so the choice between the
+    exp-04 and exp-05 weights has to be made on the full 1319-item test set, where the standard
+    error is 1.3 pp instead of 3.8. That comparison is exp-06.'

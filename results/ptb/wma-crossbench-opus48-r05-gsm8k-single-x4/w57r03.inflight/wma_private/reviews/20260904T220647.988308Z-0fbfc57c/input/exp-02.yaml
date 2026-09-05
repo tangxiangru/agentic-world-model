@@ -1,0 +1,93 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T22:05:38Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.95
+  remaining_h: 9.05
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp-01
+    score: {metric: accuracy, value: 0.4933, protocol_n: 150}
+  trigger: "The grader runs `vllm serve` with --generation-config auto, so it uses the model's generation_config.json as sampling defaults. exp-01's config has do_sample=true, top_p=0.95, top_k=64 => stochastic decoding, which is suboptimal for math and adds variance."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-01/generation_config.json, locator: "do_sample=true, top_p=0.95, top_k=64"}
+  alternatives_rejected:
+    - {option: "Ignore decoding and only add data", reason: "Decoding is a free, model-wide lever that also removes measurement noise; worth confirming once before spending training budget."}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/make_greedy.py, --src, ckpts/exp-01, --dst, ckpts/exp-02-greedy], outcome: "not yet run; script rewrites generation_config to do_sample=false, temperature=0"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-01 is evaluated with stochastic sampling (top_p 0.95, top_k 64), which for grade-school math produces avoidable errors and run-to-run variance."
+  evidence:
+    - {path: /home/ben/task/ckpts/exp-01/generation_config.json, locator: "sampling params", observation: "do_sample=true"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/watch_set.jsonl
+    n: 150
+    selection: "150 held-out GSM8K TRAIN items (carried from exp-01)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Switching exp-01's decoding to greedy (do_sample=false, temperature=0) via generation_config.json will raise GSM8K test accuracy (n=150) versus exp-01's sampled 0.4933."
+  mechanism: "Greedy picks the argmax token each step; for arithmetic/reasoning the most-likely path is usually correct, and it removes sampling noise that flips otherwise-correct chains."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-01, magnitude: "+2 to +8 pts"}
+  falsified_if: "greedy accuracy is not higher than exp-01's 0.4933 under the same protocol."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-01
+    origin: exp-01
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train_sft.jsonl
+      source: derived:exp-01
+      n_examples: 7323
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --split, train, --out, data/gsm8k_train.jsonl]
+      selection: "provenance only: the SFT data that produced the exp-01 parent; this decode-config card does NOT retrain"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm generation_config edit"
+    peft: "none"
+    hyperparams: {}
+    target_format: "unchanged from exp-01"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/make_greedy.py, --src, ckpts/exp-01, --dst, ckpts/exp-02-greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/make_greedy.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/exp-02-greedy, --limit, "150", --json-output-file, eval/exp-02_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.4933
+    path: /home/ben/task/eval/exp-01_dev150.json
+  diagnostic:
+    what: null
+    n: null
+    metric: accuracy
+    direction: higher

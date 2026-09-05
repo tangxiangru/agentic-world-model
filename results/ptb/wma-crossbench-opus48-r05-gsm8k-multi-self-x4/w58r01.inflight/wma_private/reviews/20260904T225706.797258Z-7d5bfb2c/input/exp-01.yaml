@@ -1,0 +1,82 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T22:47:28Z'
+situation:
+  elapsed_h: 0.6
+  remaining_h: 9.4
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0733, protocol_n: 150}
+  trigger: "Base gemma-3-4b-pt has never been shown the graded answer format; baseline eval shows it rambling to max_tokens instead of emitting 'ANSWER: N' then stopping."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/base_dev150.log, locator: "many 4000-token generations; slow eval"}
+  alternatives_rejected:
+    - {option: "Start directly with the large MetaMath mixture (candidate B)", reason: "unvalidated pipeline; a format/eos bug would waste multi-hour GPU. Validate cheaply first."}
+    - {option: "LoRA instead of full finetune", reason: "full finetune of a 4B base on H100 fits comfortably and imprints format better; keeps final_model a drop-in arch for vLLM."}
+  pitfalls_hit:
+    - {what: "baseline eval slow: base model generates to max_tokens (4000) at max-connections 2", cost_h: 0.4, fix: "accept for one-time baseline; SFT'd models stop at <end_of_turn> so their evals are fast"}
+  smoke_runs:
+    - {command: [python, scripts/check_render.py], outcome: "0 bad prefixes; all 7473 targets contain <end_of_turn>(106); full-len p100=552, 0% truncation at max_seq_len 1024"}
+problem:
+  statement: "The base model has no supervised exposure to the GSM8K grading format, so it does not produce a clean chain-of-thought terminated by 'ANSWER: N' and the <end_of_turn> stop token; it rambles and the last number read by the grader is often wrong."
+  evidence:
+    - {path: /home/ben/task/logs/base_dev150.log, locator: "generation requests hitting 4000-token max", observation: "base model does not stop cleanly at an answer"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Completion-only SFT on the 7473 GSM8K TRAIN rows reformatted to 'Reasoning ... ANSWER: N'<end_of_turn> raises GSM8K dev-150 accuracy well above the base model."
+  mechanism: "SFT teaches the model to produce a correct short CoT and to emit the ANSWER marker and stop token, so the grader's last-number match reads the intended answer."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "+20 pts or more"}
+  falsified_if: "dev-150 accuracy is not clearly higher than the base model's baseline under the same protocol."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: derived:openai/gsm8k (train split, main config)
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/build_gsm8k.py
+      build_command: [python, scripts/build_gsm8k.py]
+      selection: "GSM8K TRAIN only; <<..>> calculator annotations stripped; '#### N' replaced by single 'ANSWER: N' marker"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 3, batch_size: 16, grad_accum: 2, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "gemma3.jinja user turn (MATH_PROMPT_TEMPLATE) then model turn: reasoning + '\\n\\nANSWER: N' + <end_of_turn>; completion-only loss (prompt masked to -100)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/gsm8k_train.jsonl, --out, ckpts/exp-01, --lr, "1e-5", --epochs, "3", --bs, "16", --grad-accum, "2", --max-seq-len, "1024", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/ckpts/exp-01
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --json-output-file, "{out}"]
+    dev_set: "official openai/gsm8k test --limit 150 (grader-selected; used only for scoring, never for training)"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0733
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "fraction of dev-150 generations that stop cleanly at <end_of_turn> with an ANSWER line"
+    n: 150
+    metric: accuracy
+    direction: higher

@@ -1,0 +1,138 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T04:35:31Z'
+situation:
+  elapsed_h: 5.7
+  remaining_h: 4.3
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/hf
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "Two very different corpora (exp-02: 35k problems x2 solutions; exp-04: 81k problems x1) land on exactly the same dev-150 number, 0.7267. More off-policy OpenMathInstruct-2 data has stopped paying, so the next lever has to be on-policy. Sampling exp-04 four times on 29223 held-out-of-dev training questions gives pass@4 0.9377 against acc@1 0.8056 - a 13-point gap of problems the model can solve but usually does not."
+  trigger_evidence:
+    - path: /home/ben/task/logs/exp-05-data.log
+      locator: "gen_vllm summary: acc_first_sample 0.8056, pass@4 0.9377 over 29223 questions"
+    - path: /home/ben/task/eval/exp04_dev150.json
+      locator: "accuracy 0.7267, identical to eval/exp03_dev150.json"
+  alternatives_rejected:
+    - option: "A third off-policy SFT with even more OpenMathInstruct-2"
+      reason: "exp-04 already used every distinct gsm8k-sourced problem in the 2M slice and gained nothing on dev-150; more of the same is the arm that just failed."
+    - option: "DPO on correct/incorrect sample pairs from the same generation run"
+      reason: "the pairs exist, but DPO needs its own hyperparameter search and a reference-model forward pass; with 4.3 h left an untuned DPO run is likelier to lose ground than a well-understood RFT pass."
+    - option: "RFT on the RFT rows alone, no SFT ballast"
+      reason: "52939 rows of the model's own output at 1 epoch would narrow it onto its own modes; 25000 sft_v2 rows are mixed in as ballast."
+    - option: "Keep only problems the model failed at least once (--only-hard)"
+      reason: "tempting, but it biases the corpus toward long/odd problems and throws away 60% of the verified rows; with one shot left I take the standard RFT mixture."
+  pitfalls_hit:
+    - what: "Sampling 29223 questions x 4 took 45 min rather than the 25 min I budgeted (vLLM expands n=4 into 116892 independent requests)."
+      cost_h: 0.33
+      fix: "none needed, but the training epoch was cut to 1 to stay inside the remaining budget."
+  smoke_runs: []
+problem:
+  statement: "exp-04 solves 93.8% of held-out training questions in at least one of four samples but only 80.6% on its first sample, and scores 0.7267 on dev-150. The knowledge is in the model; the greedy path through it is not reliably the correct one."
+  evidence:
+    - path: /home/ben/task/logs/exp-05-data.log
+      locator: "final json: acc_first_sample 0.8056, pass@4 0.9377, n 29223"
+      observation: "a 13.2-point gap between what the model can do and what it does on the first try."
+    - path: /home/ben/task/analysis/exp04_probe_summary.json
+      locator: "exp04_probe 0.796, regressed 21"
+      observation: "even against exp-02 the improvement is not monotone - 21 probe items regressed - which is what an unsharpened output distribution looks like."
+  affected_share: 0.132
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe250.jsonl
+    n: 250
+    selection: "the same 250 held-out gsm8k TRAIN questions used since exp-03; excluded from sft_v1, sft_v2 and from data/rft_questions.jsonl, so they are held out of the RFT corpus too. exp-04 scores 0.796 on them."
+hypothesis:
+  claim: "Continuing exp-04 for one low-LR epoch on 52939 of its own verified-correct chains, mixed with 25000 sft_v2 rows as ballast, raises greedy dev-150 above exp-04's 0.7267 and probe250 above 0.796."
+  mechanism: "Rejection sampling keeps only chains that reached the right answer, so the gradient moves probability mass from the model's failing modes onto its own succeeding ones. That converts part of the pass@4 - acc@1 gap into first-sample accuracy, which is exactly what a single greedy decode is graded on. The chains are in the model's own phrasing, so this sharpens rather than teaches."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+2 to +5 points on greedy dev-150"
+  falsified_if: "greedy dev-150 accuracy <= 0.7267, or probe250 greedy accuracy <= 0.796."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/hf
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/exp05_mix.jsonl
+      source: "synthetic:self (52939 rows sampled from ckpts/exp-04/hf) + derived:exp-04 sft_v2 slice (25000 rows)"
+      n_examples: 77939
+      built_by: /home/ben/task/scripts/run_exp05_data.sh
+      build_command: [bash, scripts/run_exp05_data.sh, /home/ben/task/ckpts/exp-04/hf]
+      selection: "4 samples per question at T=1.0/top_p 0.95/top_k 64 with the grader's 10-shot prefix, over the 29223 questions of data/rft_questions.jsonl (7223 gsm8k TRAIN questions + 22000 OMI2 augmented_gsm8k problems, probe250 excluded). Keep samples whose last number matches gold under inspect_ai's own match_str(numeric, location=end); require exactly one 'ANSWER:' marker ending the text and 40-3500 chars; dedup; at most 2 per problem. 27394 of 29223 problems contributed. Ballast: 25000 rows drawn at random from sft_v2. No gsm8k test item anywhere in the chain."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE; sampling with vLLM 0.11.0"
+    peft: none
+    hyperparams:
+      lr: 5.0e-6
+      epochs: 1.0
+      batch_size: 128
+      grad_accum: 4
+      max_seq_len: 2432
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights, bf16 autocast, adamw_bnb_8bit"
+      seed: 0
+    target_format: "unchanged: chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the target only. LR halved to 5e-6 and one epoch only, because this is a continuation of an already-converged checkpoint rather than a fresh fine-tune."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_exp05_train.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_exp05_train.sh
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.3
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --max-tokens, "4000", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7267
+    path: /home/ben/task/eval/exp04_dev150.json
+  diagnostic:
+    what: "probe250 greedy accuracy (250 held-out gsm8k TRAIN questions, grader's 10-shot prefix); exp-04 = 0.796, exp-02 = 0.744"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.35
+  output_checkpoint: /home/ben/task/ckpts/exp-05/hf
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 731}
+    - {path: /home/ben/task/ckpts/exp-05/hf, step: 731}
+  training_summary: {final_loss: null, steps: 731, notes: "77290 of 77939 rows kept (649 over max_seq_len, 0.83%); one epoch at lr 5e-6 from ckpts/exp-04/hf. wall_h includes the 1.0 h first launch that trained the epoch and then lost it in save_pretrained - see the re-lock reason and exp-06 situation.pitfalls_hit."}
+  measurements:
+    - {metric: accuracy, value: 0.7733, n: 150, path: /home/ben/task/eval/exp05_dev150.json, delta_vs_comparator: 0.0466}
+  diagnostic_result:
+    value: 0.82
+    path: /home/ben/task/analysis/exp05_probe_summary.json
+    notes: "probe250 greedy 0.796 -> 0.820: 17 of exp-04's probe failures fixed against 11 regressions, 34 still failing. Both the benchmark slice and the held-out probe move in the same direction this time, unlike exp-04."
+  watch_set_result: {fixed: 17, still_failing: 34, regressions: 11, path: /home/ben/task/analysis/exp05_probe_summary.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "One low-LR epoch on 52939 of the model's own verified-correct chains plus 25000 sft_v2 ballast rows took greedy dev-150 from 0.7267 to 0.7733 (+4.7) and probe250 from 0.796 to 0.820 (+2.4). Converting part of the pass@4 - acc@1 gap into first-sample accuracy is exactly what the mechanism predicted, and it is the first intervention since exp-02 that moved the benchmark."
+  decision: adopt
+  next_step: "exp-05 is the incumbent to beat. exp-06 checks whether a uniform weight soup of exp-02/exp-04/exp-05 beats it before the checkpoint ships; a second RFT round would be the obvious next step with more time."

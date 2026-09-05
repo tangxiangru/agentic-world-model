@@ -1,0 +1,110 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T14:31:23Z'
+situation:
+  elapsed_h: 2.5
+  remaining_h: 7.5
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.4, protocol_n: 150}
+  trigger_secondary: "exp-02 scores 0.40 but would score 0.64 if the grader read its first ANSWER: line: 41.3% of completions continue past their own answer with invented problems (analysis/exp-02_dev150.json). Temperature-1.0 sampling is the cheapest suspect to eliminate."
+  trigger: "vLLM logs 'Default sampling parameters have been overridden by the model's Hugging Face generation config' on every eval (logs/exp-01.log). gemma-3-4b-pt ships generation_config.json with do_sample=true, top_k=64, top_p=0.95 and no temperature, and inspect_ai's GenerateConfig leaves temperature unset, so the benchmark is scored on a single temperature-1.0 sample rather than the greedy decode."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-01.log, locator: "vLLM startup warning about the HF generation config", observation: "server-side default sampling params come from the checkpoint's generation_config.json"}
+    - {path: /home/ben/task/analysis/exp-02_dev150.json, locator: "share_answer_marker_exactly_once, first_answer_line_accuracy", observation: "0.58 of completions carry exactly one ANSWER: line; reading the first one would give 0.64 instead of 0.40"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_generate_config.py, locator: "line 174: temperature: float | None = Field(default=None)", observation: "inspect never sends a temperature, so whatever the checkpoint declares is what is used"}
+  alternatives_rejected:
+    - {option: "Leave the sampling config alone", reason: "a single temperature-1.0 sample is strictly noisier than greedy for a task with one right answer; this is free accuracy if it holds"}
+    - {option: "Self-consistency / majority vote over k samples", reason: "the harness scores one completion per item; there is no way to aggregate votes without editing evaluate.py, which the rules forbid"}
+    - {option: "Lower temperature to 0.3 instead of 0", reason: "greedy is the limit case and the cheapest to test; if greedy wins, an intermediate value is unlikely to beat it on a single-sample metric"}
+  pitfalls_hit:
+    - {what: "awm wma review refused both cards with 'already has a result; a verdict now would be post-hoc' because I had pre-written the empty result/conclusion sections into the card before locking", cost_h: 0.05, fix: "leave result/conclusion out of the file until the run is done, as `awm exp_protocol new` does"}
+  smoke_runs: []
+problem:
+  statement: "The grader takes one sample per item at temperature 1.0 with top_p 0.95 / top_k 64, because those defaults come from the checkpoint's own generation_config.json. For a task scored by exact numeric match, any sampling noise inside the arithmetic chain turns a solvable item into a wrong one, and the model is not given a second chance."
+  evidence:
+    - {path: /home/ben/task/logs/exp-01.log, locator: "vLLM 'Default sampling parameters have been overridden' warning", observation: "top_k=64, top_p=0.95 taken from the model dir; temperature falls back to vLLM's 1.0"}
+    - {path: /home/ben/task/analysis/exp-01_base_diag.json, locator: failure_examples, observation: "base-model completions wander; some of that is sampling noise rather than lack of knowledge"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Setting temperature 0 (greedy) in the checkpoint's generation_config.json raises dev-150 accuracy relative to the same weights scored with the inherited temperature-1.0 sampling defaults."
+  mechanism: "Greedy decoding takes the argmax at every step of the arithmetic chain. On a single-sample exact-match metric that removes the variance term; the model's modal chain is on average better than a random draw from its distribution."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +15 points; the upper end if the continuation token is a low-probability draw that greedy never takes"
+  falsified_if: "greedy scores at or below the exp-02 sampled number on the same 150 items"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+      source: openai/gsm8k@740312add88f781978c0658806c59bc2815b9866
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "no training data: decode-config card. The grader reads gsm8k main/test (first 150 via --limit) with 10 few-shot exemplars from main/train, seed 42."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: inspect_ai + vllm 0.11.0
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02; only generation_config.json differs (temperature 0.0, do_sample false). Weights are symlinked, not copied, so the two arms are bit-identical models."
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03-greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.55', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.55']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.4
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "share of completions with exactly one ANSWER: line (0.58 under sampling) and share hitting max_tokens (0.153 under sampling)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 1182}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to ckpts/exp-02/final, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.4133, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 0.5867
+    path: /home/ben/task/analysis/exp-03_greedy_dev150.json
+    notes: "share with exactly one ANSWER: line 0.58 -> 0.587 (unchanged); share hitting max_tokens 0.153 -> 0.040; completion length p95 13169 -> 1690 chars. Reading the first ANSWER: line would give 0.687 under greedy vs 0.640 under sampling."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: "Greedy scores 0.413 against 0.400 sampled: +1.3 points, a quarter of one standard error on n=150, so the score difference is not measurable here. The mechanism I proposed is contradicted in an informative way: the run-on is not sampling noise. Greedy takes the same continuation deterministically, so the share of completions with more than one ANSWER: line is unchanged at 41%, while runaway generations shrink (max_tokens 0.153 -> 0.040, p95 length 13169 -> 1690 chars)."
+  decision: adopt
+  next_step: "Keep greedy as the final model's decode config - it is free, it bounds generation length, and it is weakly positive - but the real 27-point gap (0.413 graded vs 0.687 if the first ANSWER: line were read) is a training problem, not a decoding one. exp-04: second SFT stage from exp-02 with the grader's few-shot exemplars in the prompt, so the model learns to answer only the last question and emit <end_of_turn>."

@@ -145,14 +145,51 @@ def test_status_reports_pending_and_done(session, capsys) -> None:
     assert "exp-01" in out and "exp-02" in out and "no verdict" in out
 
 
-def test_the_cli_builds_and_serves_the_protocol_without_the_wma_package(monkeypatch) -> None:
-    """The ablation sandbox ships a checkout with no awm/wma; every other command must still work."""
+def test_the_cli_uses_the_thin_client_without_the_private_wma_package(monkeypatch) -> None:
     import awm.cli as cli
 
     real = cli.importlib.util.find_spec
     monkeypatch.setattr(cli.importlib.util, "find_spec",
                         lambda name, *a, **k: None if name == "awm.wma" else real(name, *a, **k))
     parser = cli.build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["wma", "status", "--dir", "x"])
+    assert parser.parse_args(["wma", "status", "--dir", "x"]).cmd == "status"
     assert parser.parse_args(["exp_protocol", "index", "--dir", "x"]).cmd == "index"
+
+
+def test_budget_accepts_turns() -> None:
+    from awm.wma.cli import _budget
+    b = _budget("wall=8,turns=25")
+    assert b.wall_min == 8 and b.max_turns == 25
+    with pytest.raises(ValueError):
+        _budget("steps=3")
+
+
+def test_effort_defaults_to_high_and_travels_with_a_background_review(session, monkeypatch) -> None:
+    """The WMA's effort is never inherited from the user's CLI settings: it is always on the command line."""
+    from awm.wma import cli as wma_cli
+
+    import awm.wma.review as review_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_review(session_dir, cid, backend, **kw):
+        seen.update(kw)
+        v = schema.empty_verdict(cid)
+        schema.dump_verdict(schema.verdict_path(lineage.cards_dir(session_dir) / f"{cid}.yaml"), v)
+        return v
+
+    monkeypatch.setattr(review_mod, "review", fake_review)
+    assert main(["wma", "review", "--dir", str(session), "exp-01", "--backend", "heuristic"]) == 0
+    assert seen["effort"] == "high"
+
+    class FakePopen:
+        pid = 4242
+
+        def __init__(self, argv, **kw):
+            seen["argv"] = argv
+
+    monkeypatch.setattr(wma_cli.subprocess, "Popen", FakePopen)
+    assert main(["wma", "review", "--dir", str(session), "exp-02", "--backend", "claude", "--model", "m-1",
+                 "--effort", "medium", "--background"]) == 0
+    argv = seen["argv"]
+    assert argv[argv.index("--effort") + 1] == "medium" and argv[argv.index("--model") + 1] == "m-1"

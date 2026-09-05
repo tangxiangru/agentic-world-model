@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T16:15:00Z'
+situation:
+  elapsed_h: 2.3
+  remaining_h: 7.7
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "exp-02's 0.7267 was produced under the base model's own sampling defaults. evaluate.py sends only max_tokens and max_connections, so vLLM (running --generation-config auto) takes temperature/top_k/top_p from the checkpoint's generation_config.json, which exp-02 inherited unchanged: do_sample true, top_k 64, top_p 0.95, temperature 1.0."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample, top_k, top_p", observation: "sampling defaults carried over from the base snapshot"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py, locator: "ModelConfig.get_diff_sampling_param / try_get_generation_config", observation: "with generation_config='auto' (the default) the non-default fields of the model's generation_config.json become the server's default sampling params"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py, locator: "openai_completion_params", observation: "temperature/top_p are only forwarded when set on GenerateConfig; evaluate.py sets neither"}
+  alternatives_rejected:
+    - {option: "Leave the decode alone and spend the time on more training", reason: "one eval (~7 min) against ~1.7h; and the decode question has to be answered anyway before the final artifact is written, because whatever generation_config.json ships in final_model decides how the grader samples it"}
+    - {option: "Try an intermediate temperature (0.3-0.7) as well", reason: "the eval draws one sample per item and the grader reads the final number; there is no self-consistency vote for sampling diversity to help, so the argmax path is the right target. If greedy loses, temperature sweeps become worth a card."}
+    - {option: "Pick a checkpoint (620/1240/1860) instead", reason: "worth doing, but it is a different intervention and it should be measured under whichever decode wins here; ordering decode first makes the checkpoint comparison cheaper and less noisy"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, -c, "GenerationConfig.from_pretrained(final_greedy).to_diff_dict()"], outcome: "temperature 0.0 survives the round-trip and is present in the diff dict vLLM reads; eos_token_id still [1, 106]; transformers warns 'generation flags are not valid' for temperature under do_sample=false, which is cosmetic"}
+problem:
+  statement: "The incumbent is graded with one sample per item at temperature 1.0 with top_k 64 / top_p 0.95, not at its argmax. Every token of a 200-token arithmetic chain is a chance for the sampler to pick a non-argmax digit, and a single wrong digit propagates to the final number that the grader reads. exp-02's failures include exactly this shape: 88000 / 11 written as 80000. This is a defect in the artifact's shipped decoding defaults, not in its weights."
+  evidence:
+    - {path: /home/ben/task/logs/2026-09-02T16-11-23+00-00_gsm8k_ZzWNjNajyQKBFYuMa7QBWA.json, locator: "41 incorrect samples; the '11x = 88,000 -> x = 80,000' item", observation: "the reasoning structure is right and the arithmetic step is wrong, the signature of a sampled digit rather than a missing skill"}
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: "stderr 0.0365", observation: "the measured spread already includes sampling noise on top of item noise"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Shipping the same exp-02 weights with a greedy generation_config.json (do_sample false, temperature 0.0, top_k/top_p removed) will score higher on dev-150 than the same weights with the inherited sampling defaults."
+  mechanism: "vLLM's default sampling params come from generation_config.json, so setting temperature to 0 makes every graded completion the argmax path. Sampling can only match the argmax path or diverge from it; on a task where a single divergent digit flips the graded number, and where there is no vote over multiple samples to recover diversity's benefit, divergence is on average a loss."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+1 to +6 points"
+  falsified_if: "greedy dev-150 accuracy is at or below exp-02's 0.7267."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+      source: "openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 (main/test)"
+      n_examples: 150
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '150']
+      selection: "READ-ONLY EVALUATION INPUT, NOT TRAINING DATA: the first 150 rows of the official test split. This card performs no gradient step at all."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "scripts/make_variant.py -> vllm 0.11.0 --generation-config auto"
+    peft: "none"
+    hyperparams: {}
+    target_format: "weights are byte-identical to exp-02/final (the safetensors are symlinks); only generation_config.json differs"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/final_greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official gsm8k test, first 150 items (evaluate.py --limit 150, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7267
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "serving-validity replicate: re-run the identical greedy artifact at --max-connections 4. Greedy decoding is deterministic, so a sane server must return the same accuracy; a gap would mean the score is a property of the concurrency (a documented vLLM failure mode) rather than of the model, and would invalidate the --max-connections 16 protocol used by exp-01 and exp-02."
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.25
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 1873}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to exp-02/final, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: -0.02}
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150_conn4.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 0.72
+    path: /home/ben/task/eval/exp-03_greedy_dev150_conn4.json
+    notes: |
+      The replicate did not do what the card assumed it would. The identical greedy artifact scored 0.7067 at --max-connections 16 and 0.7200 at --max-connections 4, and only 93 of 150 completions are byte-identical between the two runs (142/150 land on the same score). vLLM's greedy path is not reproducible across batch shapes -- different concurrency gives different reduction orders and occasionally a different argmax token.
+      Two things follow. First, there is no corrupted-serving artefact at concurrency 16: no completion begins with '!', stop_reason is 149 stop / 1 max_tokens in both runs, and the two scores differ by 2 items. The --max-connections 16 protocol used by exp-01 and exp-02 is valid.
+      Second, the run-to-run noise floor of this protocol is +/- 2-3 items even with sampling switched off, which is the same size as the effect this card set out to measure.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: |
+    Greedy scored 0.7067 (conn 16) and 0.7200 (conn 4) against the incumbent's 0.7267 under sampling defaults: not higher, so the claim as written is contradicted. But the honest reading is that the effect is unresolvable at n=150, and the diagnostic is the reason -- the same greedy artifact moved 2 items between two runs that differ only in server concurrency, and disagreed on 57 of 150 completions.
+    The mechanism claim was that temperature 0 makes every graded completion the argmax path. It does not: vLLM's argmax is batch-shape dependent, so 'greedy' buys much less determinism than assumed.
+  decision: iterate
+  next_step: |
+    Do not ship a decode change on this evidence, and do not spend another n=150 eval on it -- the protocol cannot see a 2-point effect. Keep the inherited sampling generation_config for now (it is what exp-02 and exp-04 are measured under, so the comparison chain stays consistent).
+    Two carry-overs. (a) Every accuracy in this batch carries a +/- 2-3 item run-to-run floor on top of the +/- 3.7 point binomial stderr; deltas smaller than about 5 points should not be treated as real. (b) If time remains after the training line is exhausted, settle the decode question once on the final candidate at a larger --limit, where the two configs can actually be separated, and let that decide what generation_config.json ships in final_model.

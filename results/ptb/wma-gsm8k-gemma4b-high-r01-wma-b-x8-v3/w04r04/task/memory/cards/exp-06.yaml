@@ -1,0 +1,120 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T03:43:15Z'
+situation:
+  elapsed_h: 5.6
+  remaining_h: 4.4
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "exp-05 came in at 0.7267 against exp-04's 0.7067 with a per-arm stderr of 0.037: the two candidates are not separated by the dev-150 protocol, and one of them has to be submitted as final_model."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "whole file", observation: "0.7267 +/- 0.0365"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "whole file", observation: "0.7067 +/- 0.0373"}
+    - {path: /home/ben/task/memory/cards/exp-05.verdict.json, locator: "suggestions.cheaper_variants", observation: "'uniform soup ... the standard move when the expected training gain sits inside the noise floor'"}
+  alternatives_rejected:
+    - {option: "Submit exp-05/final on the strength of the +2 pts and stop", reason: "a 2-point gap at stderr 0.037 is a coin flip; the whole batch would rest on an unresolved comparison when 36 minutes of GPU resolves it"}
+    - {option: "A third training round (another RFT pass, ~2 h)", reason: "4.4 h left and the round-2 gain was already inside the noise, so a round-3 gain would be too; the remaining budget buys more measurement certainty than it buys accuracy, and it must also cover packaging and verification of final_model"}
+    - {option: "Repeat the dev-150 eval on each arm instead of going to n=500", reason: "greedy decoding makes a repeat of the same 150 items deterministic - it would return the identical number and measure nothing. Only more items reduce the error bar."}
+    - {option: "Score at n=1319 (the whole test split)", reason: "~30 min per arm, 1.5 h for three arms, which does not leave enough margin for packaging; n=500 already cuts the stderr from ~0.037 to ~0.020"}
+  pitfalls_hit:
+    - {what: "Intermediate Trainer checkpoints keep the base sampling generation_config (do_sample/top_k/top_p) rather than the greedy one, so evaluating a checkpoint-N directory would silently measure a sampled model", cost_h: 0.0, fix: "only */final and the soup directory are candidates here; scripts/soup.py and scripts/package_final.py both write {temperature: 0.0} explicitly"}
+  smoke_runs:
+    - {command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-05/final, --limit, '500'], outcome: "0.7440 +/- 0.0195 - the comparator, scored under this card's protocol before the candidate"}
+    - {command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04/final, --limit, '500'], outcome: "0.7300 +/- 0.0199 - the second ingredient, same protocol"}
+    - {command: [python, scripts/soup.py, --inputs, ckpts/exp-04/final, ckpts/exp-05/final, --out, ckpts/soup45], outcome: "883 tensors averaged across 2 shards; config, tokenizer, processor copied; generation_config written with temperature 0.0 and eos_token_id [1, 106]"}
+problem:
+  statement: "Three candidate checkpoints exist and the protocol used to compare them cannot tell them apart. exp-04/final scored 0.7067 and exp-05/final 0.7267 at n=150, where the stderr of each arm is ~0.037, so the 2-point gap is well inside one standard error and picking the higher number is picking noise."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy, stderr", observation: "0.7067 +/- 0.0373"}
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "accuracy, stderr", observation: "0.7267 +/- 0.0365"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "conclusion.verdict", observation: "inconclusive - the card said in advance that under ~4 pts is not separable at n=150"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A uniform weight average of exp-04/final and exp-05/final scores at least as well as the better of its two ingredients on a 500-item read, and the 500-item protocol (stderr ~0.020 rather than ~0.037) separates the three candidates well enough to choose final_model on evidence rather than on a coin flip."
+  mechanism: "exp-05 was trained from exp-04, so the two sit in the same loss basin and their difference is dominated by the noise of a single 1598-step trajectory; averaging cancels part of that trajectory noise while keeping what both runs agree on. Independently, tripling n cuts the standard error by root-3-and-a-bit, which is what makes a 2-point gap readable at all."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "soup within -1 to +3 pts of exp-05; the point of the card is the ranking, not a large gain"
+  falsified_if: "the soup scores below both ingredients at n=500, which would mean the two checkpoints are not in a shared basin and averaging destroys rather than denoises - in that case the better ingredient is submitted"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/soup45/model.safetensors.index.json
+      source: "derived:exp-04 + derived:exp-05 - a 50/50 uniform average of the two checkpoints' weights, computed in fp32 and stored bf16"
+      n_examples: 883
+      built_by: /home/ben/task/scripts/soup.py
+      build_command: [python, scripts/soup.py, --inputs, ckpts/exp-04/final, ckpts/exp-05/final, --out, ckpts/soup45]
+      selection: "every tensor of both checkpoints, weight 0.5 each; no training data is read by this card"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: merge
+    framework: safetensors + torch (scripts/soup.py)
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - no training; the artefact is an averaged checkpoint with generation_config {temperature: 0.0, eos_token_id: [1, 106]}"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/soup45, --limit, '500', --json-output-file, /home/ben/task/eval/soup45_dev500.json, --max-connections, '16', --gpu-memory-utilization, '0.85']
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-06_soup_eval.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.7
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --json-output-file, '{out}', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 500
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.744
+    path: /home/ben/task/eval/exp-05_dev500.json
+  diagnostic:
+    what: "completions that terminate on a stop token and contain 'ANSWER:' exactly once, out of 500 - the format guard carried through from exp-04 (145/150) and exp-05 (149/150)"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.62
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 1598}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2327}
+    - {path: /home/ben/task/ckpts/soup45, step: 0, deleted_at: "2026-09-03T05:01Z", deleted_reason: "the soup was rejected (0.728 vs 0.744) and is exactly reproducible from its two ingredients, both of which are kept, via the recorded build_command"}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.728, n: 500, path: /home/ben/task/eval/soup45_dev500.json, delta_vs_comparator: -0.016}
+    - {metric: accuracy, value: 0.744, n: 500, path: /home/ben/task/eval/exp-05_dev500.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.730, n: 500, path: /home/ben/task/eval/exp-04_dev500.json, delta_vs_comparator: -0.014}
+  diagnostic_result:
+    value: 494
+    path: /home/ben/task/analysis/exp-06_soup_diag.json
+    notes: "494/500 completions stop and carry 'ANSWER:' exactly once, so the average is a well-formed model - it is simply less accurate than exp-05. Median completion 504 chars, i.e. exp-04's length rather than exp-05's 484."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "At n=500 (stderr ~0.020): exp-05/final 0.744, exp-04/final 0.730, uniform soup 0.728. The soup is at or below both ingredients, so the shared-basin denoising argument does not hold for these two checkpoints - averaging pulled exp-05 back towards its own parent rather than combining them, which is what a 1598-step continuation of the same run should have predicted. What the card did deliver is the ranking: exp-05 leads exp-04 by 1.4 pts at n=500 and by 2.0 pts at n=150, the same direction in both reads."
+  decision: reject
+  next_step: "Submit ckpts/exp-05/final as final_model - the soup is discarded. Package with scripts/package_final.py (which copies the tokenizer and processor files and writes generation_config {temperature: 0.0, eos_token_id: [1, 106]}), verify it loads on CPU from a fresh process, and re-score the packaged directory under the same n=500 protocol to confirm the copy reproduces 0.744."

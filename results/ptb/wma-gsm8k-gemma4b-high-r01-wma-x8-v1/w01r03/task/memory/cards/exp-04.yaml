@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T16:23:00Z'
+situation:
+  elapsed_h: 2.7
+  remaining_h: 7.3
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.4133, protocol_n: 150}
+  trigger: "exp-03 shows the run-on is not sampling noise: under greedy decoding 41% of completions still carry more than one ANSWER: line, and reading the first one would score 0.687 against the 0.413 actually graded (analysis/exp-03_greedy_dev150.json)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150.json, locator: "share_answer_marker_exactly_once=0.5867, first_answer_line_accuracy=0.6867, accuracy=0.4133", observation: "27 points sit between the model's first answer and what the grader reads"}
+    - {path: /home/ben/task/analysis/exp-02_dev150.json, locator: failures, observation: "tails show a fresh invented question in the few-shot exemplar style, several ending at a dangling 'Reasoning:'"}
+  alternatives_rejected:
+    - {option: "Force termination from the decode side (stop strings, shorter max_tokens)", reason: "vLLM only takes repetition_penalty/temperature/top_k/top_p/min_p/max_new_tokens from generation_config.json, and inspect sends max_tokens=4000 explicitly, which wins; there is no way in without editing evaluate.py"}
+    - {option: "Another epoch of the exp-02 recipe (no prefix) on fresh solutions", reason: "exp-02 already terminates 99% of the time when no exemplars precede the question; more of the same data would not touch the behaviour that is failing"}
+    - {option: "Train only on the grader's exact 10-shot block", reason: "risks fitting one 2043-token string rather than the rule 'answer the last question, then stop'; the mixed sampler keeps the exact block on half the rows and varies k and the exemplars on the other half"}
+    - {option: "RFT on the model's own correct samples", reason: "worth doing, but pointless before the termination bug is fixed: 41% of the samples I would filter carry the same defect"}
+  pitfalls_hit:
+    - {what: "exp-02 was trained with no few-shot prefix on the theory that an SFT'd model is robust to extra context. It is not: the exemplar block is itself a pattern the model continues", cost_h: 1.7, fix: "put the grader's exemplars into the training prompt"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/omi2_gsm_v2.jsonl, --output-dir, /tmp/dry, --dry-run, --max-seq-len, '2816', --fewshot-frac, '1.0', --fewshot-mode, mixed, --limit, '24000'], outcome: "23925/24000 rows fit; len p50=2293, p99=2685, max=3305; 0.31% dropped"}
+    - {command: [python, scripts/train_sft.py, --limit, '2000', --batch-size, '4', --grad-accum, '16', --max-seq-len, '2816', --fewshot-frac, '1.0', --parent, ckpts/exp-02/final], outcome: "16.0 s/step at 64 rows/step = 4.0 rows/s (9200 tok/s), 67 GB peak; ~100 min for 24k rows"}
+problem:
+  statement: "exp-02 learned to answer and stop, but only in the context it was trained in: a bare question. The grader always prepends a 2043-token block of ten question/Reasoning/ANSWER exemplars, and in that context the model treats its own answer as one more item in the list and starts the next problem instead of emitting <end_of_turn>. Because match(numeric=True) reads the last number of the completion, the score then comes from an invented follow-up problem. 41% of completions are affected and the cost is 27 accuracy points."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150.json, locator: share_answer_marker_exactly_once, observation: "0.5867 - 41.3% of completions contain two or more ANSWER: lines, under greedy decoding"}
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150.json, locator: "accuracy vs first_answer_line_accuracy", observation: "0.4133 graded vs 0.6867 if the first ANSWER: line were read"}
+    - {path: /home/ben/task/analysis/exp-02_dev150.json, locator: "failures[0], failures[1]", observation: "both completions end part-way through a newly invented problem, at the word 'Reasoning:'"}
+  affected_share: 0.413
+  failure_examples:
+    - {id: greedy-fail-a, source: /home/ben/task/analysis/exp-03_greedy_dev150.json, question: "dev-150 item with gold 17", gold: '17', model_output: "answers, then invents a toy-car problem and stops at 'Reasoning:'; the grader reads 10", failure: "continuation of the exemplar pattern"}
+    - {id: greedy-fail-b, source: /home/ben/task/analysis/exp-03_greedy_dev150.json, question: "dev-150 item with gold 40", gold: '40', model_output: "answers, then invents a fish-tank problem; the grader reads 80", failure: "continuation of the exemplar pattern"}
+    - {id: greedy-fail-c, source: /home/ben/task/analysis/exp-02_dev150.json, question: "dev-150 item with gold 45 (Marcell/Bea rolls)", gold: '45', model_output: "ANSWER: 90 then 'Let's compute the answer. SOLUTION:' and the same block again ending ANSWER: 90", failure: "duplicate answer block; the arithmetic was wrong too, but the second ANSWER: line is the pattern at issue"}
+  watch_set: null
+hypothesis:
+  claim: "A second SFT stage from ckpts/exp-02/final in which every training prompt carries a few-shot exemplar block (half the grader's exact 10-shot block, half k random GSM8K-train exemplars with k in {4,6,8,10}) raises dev-150 accuracy above exp-03's 0.4133 by collapsing the share of completions that carry more than one ANSWER: line."
+  mechanism: "The behaviour that fails is context-conditional: terminate after one answer even when exemplars precede the question. Training rows that reproduce that context, with targets that stop at <end_of_turn> after a single ANSWER: line, teach exactly that conditional. Varying k and the exemplars keeps the model from keying on one particular prefix string."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+15 to +27 points (0.41 -> 0.56-0.69); the ceiling is exp-03's first-answer accuracy of 0.687, since this card changes what the model stops at, not what it computes"
+  falsified_if: "the share of completions with exactly one ANSWER: line stays below 0.85, or dev-150 accuracy does not exceed 0.4133"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/omi2_gsm_v2.jsonl
+      source: nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e train_5M, problem_source in {gsm8k, augmented_gsm8k}
+      n_examples: 481988
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: [python, scripts/prep_data.py, --out, data/omi2_gsm_v2.jsonl, --split-glob, train_5M-*, --max-per-problem, '6', --exclude-pairs-from, data/omi2_gsm_v1.jsonl]
+      selection: "same filters as exp-02's corpus but over the train_5M split, with every (problem, completion) pair already used in exp-02 removed, so this stage sees solutions it has not been trained on. 80853 unique problems, at most 6 solutions each. The trainer reads the first 24000 rows (--limit 24000); the file was shuffled with seed 1 at build time so that prefix is a random sample. 75 of those 24000 rows exceed max_seq_len 2816 once the exemplar prefix is added and are dropped."
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/train-00000-of-00001.parquet
+      source: openai/gsm8k@740312add88f781978c0658806c59bc2815b9866 train split
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/common_fmt.py
+      build_command: [python, scripts/common_fmt.py]
+      selection: "prompt-side only: the pool the few-shot exemplar block is drawn from, rendered exactly as inspect_evals/gsm8k renders a few-shot item (question, 'Reasoning:', the chain with its calculator annotations, 'ANSWER: n'). No loss is taken on any of it. Train split only; the test split is never read."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer, pre-tokenised rows, completion-only loss
+    peft: none
+    hyperparams: {lr: 7.0e-06, epochs: 1.0, batch_size: 4, grad_accum: 16, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02 (reasoning, blank line, 'ANSWER: n', <end_of_turn>). What changes is the prompt: a system message carrying the exemplar block, which templates/gemma3.jinja folds into the front of the user turn exactly as it does at grading time."
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/omi2_gsm_v2.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --output-dir, /home/ben/task/ckpts/exp-04, --limit, '24000', --max-seq-len, '2816', --lr, '7e-6', --epochs, '1', --batch-size, '4', --grad-accum, '16', --fewshot-frac, '1.0', --fewshot-mode, mixed, --load-dtype, bfloat16, --attn, flash_attention_2, --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.55']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.4133
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "share of the 150 completions containing exactly one ANSWER: line (0.5867 for the comparator) and the gap between graded accuracy and first-ANSWER-line accuracy (0.274 for the comparator)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.49
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 374}
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 374}
+  training_summary: {final_loss: 0.2791, steps: 374, notes: "train_runtime 5351 s, 4.47 samples/s over 23925 prefixed rows, 1 epoch. ckpts/exp-04-greedy symlinks these weights with temperature 0.0 in generation_config.json, matching the comparator's decode config so the arms differ only in the weights."}
+  measurements:
+    - {metric: accuracy, value: 0.7, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.2867}
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-04_dev150.json
+    notes: "share with exactly one ANSWER: line 0.5867 -> 0.9933; max_tokens 0.040 -> 0.0067; completion p95 length 1690 -> 775 chars. Graded accuracy now equals first-ANSWER-line accuracy (0.700 = 0.700): the 27-point gap between what the model answers and what the grader reads is closed to zero."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.4133 -> 0.700 (+28.7 points, ~7 standard errors). The mechanism is confirmed exactly as stated: the run-on was a context-conditional behaviour, and 24k rows whose prompts carry a few-shot exemplar block taught the model to answer the last question and stop. The result slightly exceeds the 0.687 first-answer ceiling exp-03 implied, so the second SFT stage also improved the chains a little, not only the termination."
+  decision: adopt
+  next_step: "Format is no longer the bottleneck: the surviving failures are genuine reasoning errors (mis-set-up equations, a wrong unit conversion, a rate problem answered with the rate instead of the distance). exp-05: screen a large pool of OpenMathInstruct-2 problems with this checkpoint under the eval's own few-shot context, then train a third stage weighted toward the problems it fails, using the teacher's verified solutions for those problems."

@@ -1,0 +1,372 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T15:49:27Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 1.15
+  remaining_h: 8.85
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.08, protocol_n: 200}
+  trigger: >-
+    exp-01 measured the parent at 0.080 and split the loss: 48% of completions run to the
+    4000-token cap because the pt checkpoint continues the 10-shot pattern into new
+    problems, but only 18.5% of failures are recoverable by termination alone - in-line
+    accuracy (grading the model's own first ANSWER line) is 0.175. So both output
+    discipline AND reasoning quality have to move, and one SFT can move both.
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-01.yaml
+      locator: "result.diagnostic_result: end-anchored 0.080 vs in-line 0.175; 96/200 truncated; 142/184 wrong at the first answer"
+    - path: /home/ben/task/logs/exp-01-base-probe.json
+      locator: "summary: accuracy 0.085, clean_format_rate 0.285, truncation_rate 0.415"
+  alternatives_rejected:
+    - option: A termination-only fix (short format-SFT, or a decode-side stop string).
+      reason: exp-01 prices its ceiling at 0.175. Reasoning quality is 71% of the loss and the same SFT buys both, so a card spent on termination alone is a card wasted.
+    - option: LoRA instead of a full fine-tune.
+      reason: >-
+        The intervention has to turn a pretrained checkpoint into something that ends a turn
+        and answers in a fixed format - a large behavioural change, which is where full FT is
+        furthest ahead of a low-rank update. Memory allows it (3.88B trainable fits once
+        liger's fused linear CE stops the 262k-wide logits tensor being materialised), so the
+        cheaper method buys nothing here.
+    - option: MetaMathQA-395K or orca-math-200k as the scale source.
+      reason: >-
+        Both downloaded and inspected. orca-math has no separate answer field, so the label
+        would have to be scraped out of prose (noisy); MetaMathQA is 48% MATH-typed with
+        LaTeX answers. OpenMathInstruct-2's gsm8k slices carry a verified expected_answer
+        column and kept a generation only when it reached that answer, so the label is exact.
+        Held in reserve for a later diversity card.
+    - option: Two epochs.
+      reason: >-
+        Measured throughput is ~10.9k tok/s, so one epoch over ~54M tokens is ~1.5 h of the
+        9.2 h left. Two would eat the budget for the follow-up (rejection-sampled
+        self-training), which is where exp-01 says the remaining 71% lives. Checkpoints every
+        300 steps will show whether the curve had already flattened.
+    - option: max_seq_len 2048 (the first lock's value).
+      reason: >-
+        Raised to 3072 after measuring. The real eval prompt is 2177 input tokens (exp-01
+        inspect log, samples[0].output.usage), and once the training few-shot prefixes were
+        rebuilt to match the harness's (3-10 shots WITH the <<calc>> annotations) 5.4% of
+        rows exceeded 2048 - i.e. 2048 would have dropped exactly the rows that look most
+        like the prompt the model is graded on. At 3072 the drop rate is ~0% (p99 2444,
+        max 2913) and peak memory is unchanged, because the token-budget sampler caps
+        rows x longest_row, not rows.
+    - option: Writing final_model/ as soon as training ends.
+      reason: >-
+        Packaging is gated on the number, not on the run finishing: final_model/ is written
+        only from a checkpoint that beats the incumbent 0.08 under the same invocation. An
+        unguarded copy is how a session ships a worse model than one it already had.
+    - option: Evaluating checkpoint-300 while training is still running.
+      reason: >-
+        Attractive (it would price the one-epoch decision mid-flight) but not possible on one
+        GPU: training holds ~65 GB and vLLM needs its own allocation. The checkpoints are
+        kept instead, so the same read can be taken afterwards if the final model looks
+        over-trained.
+    - option: A fixed per-device batch size.
+      reason: >-
+        It OOM'd immediately at bs=8 (see pitfalls_hit). With a 262k-token vocabulary the
+        logits tensor decides peak memory, so a fixed row count blows up the moment a batch
+        of long rows comes round. Replaced by a token-budget batch sampler.
+  pitfalls_hit:
+    - what: >-
+        CUDA OOM at per_device_train_batch_size=8 x 2048: cross_entropy tried to allocate
+        12.13 GiB on top of 73 GiB already in use. The 262k-token vocabulary means the logits
+        tensor, upcast to fp32 inside the loss, is the binding constraint - not the weights.
+      cost_h: 0.1
+      fix: >-
+        Token-budget batch sampler (rows * longest_row <= 20480) so peak memory is flat
+        across the run, plus liger-kernel fused linear cross-entropy so the full logits
+        tensor is never materialised at all.
+    - what: "Protocol rule 7 caught a first draft whose watch set was the first 200 gsm8k TEST items."
+      cost_h: 0.05
+      fix: "Watch set rebuilt from the LAST 200 gsm8k TRAIN rows (7273-7472); build_data.py reads only [0:7273], so they stay held out."
+    - what: >-
+        The first lock's data file built its few-shot prefixes from gsm8k reasoning with the
+        <<3*4=12>> calculator annotations stripped and 2-8 shots, while the grader's own
+        system message keeps the annotations (37 of them) and always uses 10 shots. Every
+        training prefix was therefore out of distribution relative to the graded one.
+      cost_h: 0.15
+      fix: >-
+        fewshot_pool() now calls inspect_evals' own record_to_sample + sample_to_fewshot, so
+        the shots are byte-identical in form to the harness's, and k is drawn from 3-10.
+        Rebuilt as work/data/sft_v2.jsonl; 28296 rows (29.9%) carry a prefix and all of them
+        contain the annotations.
+  smoke_runs:
+    - command: [python, work/train_sft.py, --limit, '6000', --max-steps, '15', --token-budget, '16384', --grad-accum, '4', --liger]
+      outcome: >-
+        Clean. 15 optimizer steps / 60 micro-batches in 95 s => ~10.9k tok/s; frozen 0.420B
+        (vision tower + projector), trainable 3.880B; loss ~0.48; model saved and reloaded.
+        Extrapolates to ~1.5 h for one epoch over the full file.
+    - command: [python, work/train_sft.py, --max-steps, '6', --token-budget, '8192', --grad-accum, '1', --logging-steps, '1', "(run twice, with and without --liger)"]
+      outcome: >-
+        Liger parity check. Per-step losses with liger 0.5840 0.6327 0.4822 0.5139 0.4508
+        0.6110; without 0.5835 0.6321 0.4814 0.5123 0.4503 0.6118. Identical to ~1e-3, so the
+        fused kernel is not quietly changing the loss or the -100 masking.
+    - command: [python, work/train_sft.py, --data, work/data/_longest.jsonl, --max-seq-len, '3072', --max-steps, '3', --token-budget, '20480', --grad-accum, '3', --save-steps, '1', --liger]
+      outcome: >-
+        Worst-case memory + checkpoint smoke at the PRODUCTION token budget, run on the 400
+        longest rows in the file (longest row 10495 chars) so every micro-batch is the
+        biggest this config can ever build. No OOM; loss 0.68 -> 0.60; checkpoint-1/2/3 all
+        landed and the final save reloaded. Save overhead ~20 s per checkpoint, so
+        --save-steps 300 costs ~1 min over the run.
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, work/data/sft_v2.contamcheck.jsonl]
+      outcome: >-
+        94546 documents scanned, 0 contaminated, 0 matches, exit 0 (logs/contam_sft_v2.err).
+        Run on question + target text for the file actually being trained on; the same check
+        on the superseded sft_v1 was also 0/94546.
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: >-
+    The parent scores 0.080 on GSM8K under the grading protocol and fails in two distinct
+    ways at once. (i) Output discipline: it never learned to end a turn, so it continues the
+    10-shot prompt into an 11th, 12th ... problem; 48% of completions hit the 4000-token cap
+    and the end-anchored scorer then reads a number out of the continuation. (ii) Reasoning:
+    even reading its own FIRST answer line it is right on only 17.5% of items - 142 of the
+    184 failures are wrong at the first answer, not merely mis-formatted.
+  evidence:
+    - path: /home/ben/task/logs/inspect/2026-09-03T15-25-20+00-00_gsm8k_HhxBWd3hv7W83RzwJXJxqC.json
+      locator: "samples[0].output.choices[0].message.content; stop_reason over all 200 samples"
+      observation: >-
+        Sample 1 answers correctly and then emits five further "PROBLEM: ... ANSWER: ..."
+        blocks; mean output 2212 tokens against ~150 for a gsm8k solution; 96/200 stop_reason
+        = max_tokens; 0 completions with a garbage prefix.
+    - path: /home/ben/task/logs/exp-01-base-probe.json
+      locator: "records[*] with correct=false, ids train-7273..train-7279"
+      observation: >-
+        clean_format_rate 0.285 and truncation_rate 0.415 on held-out TRAIN items - the same
+        two failure modes, so they belong to the model and not to the test split.
+  affected_share: 0.92
+  failure_examples:
+    - id: train-7273
+      source: /home/ben/task/work/probe_set.jsonl
+      question: "Louie sells Dodge, Hyundai and Kia vehicles; 400 vehicles on the lot, half are Dodge, half as many Hyundai as Dodge. How many Kia?"
+      gold: "100"
+      model_output: "... 200 = 6x ... x = 33 1/3 ... Therefore there are 33 1/3 Kia vehicles on the lot. ANSWER: 33"
+      failure: "Terminated cleanly and in the right format - a pure reasoning error (wrong equation). This is the 71% bucket."
+    - id: train-7275
+      source: /home/ben/task/work/probe_set.jsonl
+      question: "John gives $20, Slurpees cost $2 each, he got $8 change. How many Slurpees?"
+      gold: "6"
+      model_output: "... [Answer: 28.0] [Answer: 15.0] [Answer: 80.0] [Answer: 24.0] ... (truncated at max_tokens)"
+      failure: "Degenerates into a stream of unrelated answer stubs and never stops; the scorer reads the last of them."
+    - id: train-7276
+      source: /home/ben/task/work/probe_set.jsonl
+      question: "Bowl of fruit: two more pears than apples, three more bananas than pears; total given. How many bananas?"
+      gold: "9"
+      model_output: "... in the form \"ANSWER: $ANSWER\" ... Reasoning:AutoScaleMode"
+      failure: "Echoes the instruction block back instead of solving, then emits a junk token - no answer line at all."
+    - id: train-7277
+      source: /home/ben/task/work/probe_set.jsonl
+      question: "Jeff bought 6 pairs of shoes and 4 jerseys for $560; jerseys cost 1/4 the price of a pair of shoes. Total shoe price?"
+      gold: "480"
+      model_output: "... was flatter and he was able to cover half the full hike distance ... Answer 15 Answer"
+      failure: "Drifts into a completely different, self-invented problem - the continuation failure mode."
+    - id: train-7278
+      source: /home/ben/task/work/probe_set.jsonl
+      question: "Mrs. Garcia pays insurance quarterly at $378. How much per year?"
+      gold: "1512"
+      model_output: "/******/ /******/ /******/ ... (truncated at max_tokens)"
+      failure: "Degenerate repetition to the token cap on a one-step problem."
+    - id: train-7279
+      source: /home/ben/task/work/probe_set.jsonl
+      question: "52 dairy cows, each gives 1000 oz of milk per day. Milk per week?"
+      gold: "364000"
+      model_output: "... ANSWER: sqrt(3V/piH) ... Calculate the volume of a cylinder with a height of 17.1 centimeters ..."
+      failure: "Answers a different, invented problem and carries on generating more."
+  watch_set:
+    path: /home/ben/task/work/probe_set.jsonl
+    n: 200
+    selection: >-
+      The LAST 200 rows of the gsm8k TRAIN split (7273-7472), held out from every training
+      file this session (build_data.py reads only [0:7273]). Not test items. Scored by
+      work/probe_eval.py, which exp-01 validated to land within 0.5 pp of the official
+      harness.
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: >-
+    One epoch of completion-only SFT on 94,546 GSM8K-style solutions whose targets end in
+    "ANSWER: n<end_of_turn>" raises GSM8K accuracy at n=200 above the parent's 0.080 by much
+    more than the +9.5 pp that fixing termination alone could buy - that is, it moves in-line
+    accuracy as well as end-anchored accuracy, and closes the gap between them.
+  mechanism: >-
+    Two effects from one intervention. (i) Every target ends in <end_of_turn> (token 106),
+    which vLLM carries in stop_token_ids via the model's generation_config, so the model
+    learns to stop instead of starting an 11th problem; that alone recovers the 34 items
+    exp-01 found termination-recoverable and stops the scorer reading a number out of a
+    continuation. (ii) 87k of the 94.5k targets are Llama-3.1-405B solutions to GSM8K-train
+    and GSM8K-augmented problems, kept only when they reached the verified expected_answer,
+    so the gradient falls on correct grade-school arithmetic chains - which is what the 142
+    first-answer-wrong items need.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: ">= +0.20 absolute (0.08 -> 0.28 or better); at or below 0.175 means only the format was learned"
+  falsified_if: >-
+    Accuracy at n=200 lands at or below 0.175 (the in-line ceiling a pure format fix could
+    reach), or the in-line minus end-anchored gap on the probe fails to close below 3 pp -
+    either would mean the run bought format and no reasoning.
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/work/data/sft_v2.jsonl
+      source: "openai/gsm8k train[0:7273] (x2) + nvidia/OpenMathInstruct-2 train_1M {gsm8k, augmented_gsm8k}"
+      n_examples: 94546
+      built_by: /home/ben/task/work/build_data.py
+      build_command: [python, work/build_data.py, --out, work/data/sft_v2.jsonl, --omi2-cap, '80000']
+      selection: >-
+        gsm8k: rows [0:7273] only (7273-7472 are the held-out probe set), calculator
+        annotations stripped, "#### n" rewritten as "ANSWER: n", included twice to weight the
+        exact eval style. OpenMathInstruct-2: train_1M rows with problem_source in
+        {gsm8k, augmented_gsm8k}; expected_answer must match a plain number after stripping
+        commas/$/%; \boxed{X} unwrapped to X; any row still containing \boxed or longer than
+        3000 chars dropped; deduplicated on normalised problem text; shuffled with seed 0 and
+        capped at 80000. Every target then carries exactly one "ANSWER: <number>" line and
+        exactly one "<end_of_turn>" (both verified over a 3000-row sample).
+        Prompts are pre-rendered with the grader's own templates/gemma3.jinja and
+        inspect_evals' own MATH_PROMPT_TEMPLATE - imported, not copied, in
+        work/common_eval.py. 28296 rows (29.9%) carry a system message of 3-10 gsm8k-train
+        few-shot examples built by inspect_evals' OWN record_to_sample + sample_to_fewshot,
+        so the shots keep the <<calc>> annotations and match the graded prefix in form as
+        well as content.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 (fused linear CE) + flash-attn 2.8.3
+    peft: "none"
+    hyperparams: {lr: 1.0e-05, epochs: 1.0, batch_size: 20480, grad_accum: 3, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bfloat16, seed: 0}
+    target_format: >-
+      Completion-only loss. input_ids = tok(prompt) + tok(completion) + [1]; labels are -100
+      over the prompt. The prompt is the full rendered string up to "<start_of_turn>model\n";
+      the completion is "<reasoning>\n\nANSWER: <number><end_of_turn>". A trailing <eos>
+      (token 1) follows <end_of_turn> so the run is still safe if a downstream
+      generation_config ever loses eos id 106. Rows longer than max_seq_len are DROPPED, not
+      truncated (measured 0.17% of rows). batch_size in hyperparams is the token budget per
+      micro-batch, not a row count - rows per micro-batch vary with row length by design.
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, work/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/work/data/sft_v2.jsonl, --out, /home/ben/task/work/sft_v1, --max-seq-len, '3072', --lr, '1e-5', --epochs, '1', --token-budget, '20480', --grad-accum, '3', --warmup-ratio, '0.03', --seed, '0', --save-steps, '300', --liger]
+    cwd: /home/ben/task
+    script: /home/ben/task/work/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-02-train.log
+  output_dir: /home/ben/task/work/sft_v1
+  checkpoints:
+    every_steps: 300
+    keep: 3
+  budget: {gpu: 1xH100-80GB, planned_h: 2.3}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '<MODEL>', --limit, '200', --max-connections, '8', --max-tokens, '4000', --gpu-memory-utilization, '0.6', --json-output-file, '<OUT>.json']
+    dev_set: official --limit 200
+    n: 200
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.08
+    path: /home/ben/task/logs/exp-01-base-n200.json
+    decode: >-
+      Both sides are graded under the parent's generation_config verbatim (do_sample true,
+      top_k 64, top_p 0.95, no temperature -> vLLM samples at T=1.0, eos_token_id [1, 106]),
+      because train_sft.py copies that file into the output dir. The delta is therefore
+      decode-clean, but the n=200 noise floor under sampling is ~4-5 pp, not 3. The
+      diagnostic's "gap closes below 3 pp" test is below that floor and is read as a
+      direction, not as a significant quantity; a greedy read is deferred to its own card.
+  diagnostic:
+    what: >-
+      The exp-01 cut repeated on the candidate: in-line accuracy (first "ANSWER: n" line)
+      minus end-anchored accuracy, truncation rate, and the share of failures that are
+      termination-recoverable - the claim is specifically that this gap closes. Plus
+      work/probe_eval.py on the 200 held-out TRAIN rows for the watch-set comparison against
+      the parent's 0.085 / 0.285 clean / 0.415 truncated.
+    n: 200
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.72
+  output_checkpoint: /home/ben/task/work/sft_v1
+  checkpoints_kept:
+    - {path: /home/ben/task/work/sft_v1/checkpoint-600, step: 600}
+    - {path: /home/ben/task/work/sft_v1/checkpoint-900, step: 900}
+    - {path: /home/ben/task/work/sft_v1/checkpoint-1112, step: 1112}
+    - {path: /home/ben/task/work/sft_v1, step: 1112}
+  training_summary:
+    final_loss: 0.3175
+    steps: 1112
+    notes: >-
+      94542 rows kept, 4 dropped for length (0.0042% - the 3072 decision was right),
+      66.12M tokens of which 15.97M supervised; 3336 micro-batches, 1112 optimizer steps,
+      ~4.8 s/step, 1h32m of training after ~10 min of tokenisation. Loss 0.648 -> 0.318
+      (curve at ~150-step intervals: 0.648, 0.387, 0.355, 0.328, 0.322, 0.348, 0.313, 0.334)
+      - flat from about step 450, which is evidence for the one-epoch decision.
+      checkpoint-300 was rotated out by save_total_limit=3, as setup.checkpoints promised
+      ("keep: 3").
+  measurements:
+    - {metric: accuracy, value: 0.53, n: 200, path: /home/ben/task/logs/exp-02-sft_v1-n200.json, delta_vs_comparator: 0.45}
+  diagnostic_result:
+    value: -0.025
+    path: /home/ben/task/logs/exp-02-diag.json
+    notes: >-
+      Decode contract for this measurement: work/sft_v1/generation_config.json is byte-equal
+      to the parent's (do_sample true, top_k 64, top_p 0.95, no temperature, eos_token_id
+      [1, 106]), so candidate and comparator were both sampled at T=1.0 and the +0.45 delta
+      is decode-clean.
+      GAP CLOSED AND OVERSHOT: end-anchored 0.530 vs in-line 0.505, gap -2.5 pp (was +9.5 pp
+      for the parent). It is negative because the end-anchored scorer now sometimes rescues
+      an item whose first ANSWER line was wrong; the point of the test - that the scorer is
+      no longer reading numbers out of a runaway continuation - is met.
+      TERMINATION IS SOLVED: truncation rate 0.000 (was 0.480), mean output 126 tokens (was
+      2212), max 464 (was 4000), clean_format_rate 1.000 on the probe (was 0.285). Only 1 of
+      the 94 remaining failures is termination-recoverable (was 34 of 184); 93 of 94 are
+      genuine reasoning errors. 0 garbage-prefix completions at concurrency 8.
+  watch_set_result:
+    fixed: 95
+    still_failing: 88
+    regressions: 4
+    path: /home/ben/task/logs/exp-02-sft_v1-probe.json
+    notes: >-
+      Probe on the 200 held-out TRAIN rows: 0.085 -> 0.540 accuracy, clean_format 0.285 ->
+      1.000, truncation 0.415 -> 0.000. Item-wise against the parent: 95 fixed, 4 regressed,
+      88 still failing, 13 correct in both. The probe again tracks the official read closely
+      (0.540 vs 0.530), so it stays usable as the cheap dev signal.
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: >-
+    0.530 at n=200 against the parent's 0.080 under the identical invocation and the
+    identical decoder - +0.45, far outside the ~4-5 pp sampled-decode floor and far above the
+    0.175 in-line ceiling that a format-only fix could have reached, so the run bought
+    reasoning and not just format. Both halves of the mechanism are confirmed separately:
+    truncation went 0.480 -> 0.000 and mean output 2212 -> 126 tokens (termination), while
+    in-line accuracy went 0.175 -> 0.505 (reasoning), with 95 of the 200 probe items flipped
+    to correct against only 4 regressions.
+  decision: adopt
+  next_step: >-
+    Packaged as final_model immediately (guard: 0.530 > incumbent 0.080) so the session is
+    never holding an unshipped better model. Two follow-ups, cheapest first. exp-03: the
+    decoder is still the parent's sampled config (T=1.0, top_k 64, top_p 0.95); a fine-tuned
+    math model is normally better greedy, and the shipped generation_config is the only thing
+    that decides it - a ~10 min probe sweep plus one official read prices it. exp-04:
+    rejection-sampled self-training on the 26054-problem pool already built and
+    contamination-checked (0/26054), which is the standard next lever for the 93 remaining
+    reasoning failures.

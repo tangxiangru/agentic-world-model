@@ -1,0 +1,132 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T13:39:39Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.6
+  remaining_h: 3.4
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-06-greedy
+    score: {metric: accuracy, value: 0.686, protocol_n: 500}
+  trigger: "exp-06's second low-LR pass was the first intervention since greedy decoding to move both reads in the same direction (dev-500 +0.8, probe-250 +1.6, pooled +1.1 over 750 items). Whether that is the start of a trend or a one-off is unknown, and a third pass is the direct test with 3.4 h left."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-06_greedy_dev500.json, locator: "accuracy 0.686"}
+    - {path: /home/ben/task/analysis/exp-06_probe250.json, locator: "summary.accuracy 0.696"}
+    - {path: /home/ben/task/analysis/exp-06_watch_rerun.json, locator: "pooled_dev500_plus_probe250: exp-04 0.6787 -> exp-06 0.6893"}
+    - {path: /home/ben/task/logs/exp-06.log, locator: "train_loss 0.2448 (was 0.2738 after the first pass)"}
+  alternatives_rejected:
+    - {option: "Stop and ship exp-06", reason: "still the default - final_model already holds exp-06-greedy and this card only replaces it on a win on BOTH reads; the downside is bounded at 1.6 h of the 3.4 h left"}
+    - {option: "Another soup", reason: "exp-05 already tested weight averaging in this setting and it landed below the better parent on both sets"}
+    - {option: "A second RFT round from exp-06", reason: "sampling alone is 42 min and the first round produced no measurable effect; a third pass costs the same time on the one axis that did move"}
+    - {option: "Same LR again (5e-6) for the third pass", reason: "the second pass already annealed 5e-6 to zero; halving to 2.5e-6 continues the decay rather than re-heating weights that are now close to a minimum (train_loss 0.245)"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-06 is the incumbent at 0.686 (dev-500) / 0.696 (probe-250), but 157 of 500 benchmark items and 76 of 250 probe items are still wrong, and I do not know whether the model is now fully fitted to this corpus or still has slack: the only evidence is a single +1.1-point step from one extra pass."
+  evidence:
+    - {path: /home/ben/task/eval/exp-06_greedy_dev500.json, locator: "accuracy 0.686", observation: "157/500 benchmark items still wrong"}
+    - {path: /home/ben/task/analysis/exp-06_probe250.json, locator: "summary.accuracy 0.696, truncated 1", observation: "76/250 probe items still wrong"}
+    - {path: /home/ben/task/analysis/exp-06_watch_rerun.json, locator: "fixed=18, still_failing=62, regressions=14", observation: "62 probe items are wrong under both exp-04 and exp-06 - the hard core is barely moving"}
+  affected_share: 0.314
+  failure_examples:
+    - {id: "hard-core probe failures", source: /home/ben/task/analysis/exp-06_watch_rerun.json, question: "(62 held-out GSM8K TRAIN probe items wrong under both exp-04 and exp-06)", gold: "in analysis/probe250.jsonl", model_output: "in analysis/exp-04_probe250.json and analysis/exp-06_probe250.json", failure: "unmoved by an extra pass over the corpus"}
+    - {id: "exp-06 probe regressions", source: /home/ben/task/analysis/exp-06_watch_rerun.json, question: "(14 probe items exp-04 answered and exp-06 does not)", gold: "in analysis/probe250.jsonl", model_output: "in the two probe result files", failure: "the cost side of the second pass; a third pass could make this larger if it is over-fitting"}
+    - {id: "exp-06 greedy truncation", source: /home/ben/task/analysis/exp-06_probe250.json, question: "(1 probe item whose greedy completion hit the 1024-token cap)", gold: "in analysis/probe250.jsonl", model_output: "finish_reason=length", failure: "residual repetition loop"}
+  watch_set:
+    path: /home/ben/task/analysis/probe250.jsonl
+    n: 250
+    selection: "same 250 held-out GSM8K TRAIN items used by exp-01..exp-06; no benchmark test item"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A third pass over the same 60k rows, continuing from ckpts/exp-06/final at lr 2.5e-6, raises greedy dev-500 accuracy above exp-06's 0.686."
+  mechanism: "If the +1.1-point pooled gain from the second pass came from the corpus still carrying un-extracted signal, a third pass at half the LR should extract a smaller amount of the same thing. If instead exp-06 is at the fitting limit, the extra pass will start memorising the 60k targets and the held-out reads will fall - which is the informative outcome either way, and is why the decision rule requires a win on both reads before anything ships."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "+0 to +1.5 pts, i.e. smaller than the second pass"}
+  falsified_if: "greedy dev-500 accuracy is at or below 0.686, or greedy probe-250 accuracy is at or below exp-06's 0.696"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-06/final
+    origin: exp-06
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "synthetic:self (48539 rows sampled from ckpts/exp-02/final) + derived:exp-02 (40000 rows of data/sft_v1.jsonl: openai/gsm8k train rev 740312a and nvidia/OpenMathInstruct-2 rev 469216e gsm8k/augmented_gsm8k)"
+      n_examples: 88539
+      built_by: /home/ben/task/rft_sample.py
+      build_command: [python, rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --questions, data/rft_questions.jsonl, --out, data/rft_v1.jsonl, --n-questions, '32000', -k, '4', --temperature, '1.0', --top-p, '0.95', --top-k, '64', --max-tokens, '640', --keep-per-question, '2']
+      selection: "identical corpus and identical slice to exp-06 - the first 60000 of the 88539 shuffled lines (--limit 60000) - so the only difference from exp-06 is that the model has now seen them twice. Probe-250 items and the 10 harness fewshot items are excluded from the underlying question pools."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused-linear-CE
+    peft: "none (full fine-tune; vision tower and multimodal projector frozen)"
+    hyperparams: {lr: 2.5e-6, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02/04/06: prompt through templates/gemma3.jinja (sha256 7de1c58e...), 12% of rows behind the exact 10-shot harness system message; target = worked solution, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the target only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-06/final, --data, data/sft_v2.jsonl, --out, /home/ben/task/ckpts/exp-07, --limit, '60000', --max-seq-len, '3072', --fewshot-frac, '0.12', --epochs, '1', --batch-size, '16', --grad-accum, '2', --lr, '2.5e-6', --attn, sdpa, --liger]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 500 (first 500 items, no shuffle)
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.686
+    path: /home/ben/task/eval/exp-06_greedy_dev500.json
+  diagnostic:
+    what: "greedy probe-250 accuracy against exp-06's 0.696 - the disjoint held-out read; the artefact only ships if both this and dev-500 improve"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.32
+  output_checkpoint: /home/ben/task/ckpts/exp-07-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 1875}
+    - {path: /home/ben/task/ckpts/exp-07-greedy, step: 1875}
+  training_summary: {final_loss: 0.2379, steps: 1875, notes: "third pass over the same 60k rows; train_loss 0.2738 (pass 1) -> 0.2448 (pass 2) -> 0.2379 (pass 3), i.e. the fit is flattening"}
+  measurements:
+    - {metric: accuracy, value: 0.696, n: 500, path: /home/ben/task/eval/exp-07_greedy_dev500.json, delta_vs_comparator: 0.01}
+  diagnostic_result:
+    value: 0.692
+    path: /home/ben/task/analysis/exp-07_probe250.json
+    notes: "probe-250 greedy 0.696 -> 0.692 (-0.4, one item), against dev-500's +1.0. The two reads disagree in sign, unlike exp-06 where they agreed. Pooled over the 750 disjoint items: exp-06 0.6893 vs exp-07 0.6947, a 4-item difference."
+  watch_set_result:
+    fixed: 4
+    still_failing: 72
+    regressions: 5
+    path: /home/ben/task/analysis/exp-07_watch_rerun.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-500 0.686 -> 0.696 but probe-250 0.696 -> 0.692, and on the probe set only 4 items were fixed against 5 regressed - the two checkpoints are almost the same function. The pre-registered falsification condition (probe-250 at or below 0.696) is met, so the third pass did not reproduce the second pass's agreeing-signs gain; train_loss fell only 0.2448 -> 0.2379, consistent with the corpus being nearly exhausted."
+  decision: iterate
+  next_step: "exp-06 and exp-07 are separated by 4 items over 750 and the two reads disagree, so the pre-registered rule keeps exp-06 in final_model. exp-08 breaks the tie with a properly powered read: both checkpoints scored on the same n=1000 benchmark slice, which is the metric the batch is actually graded on."

@@ -247,14 +247,174 @@ def test_result_audit_requires_full_official_flow(tmp_path: Path) -> None:
     assert "missing or empty: judgement_general.json or its _rerun variant" in issues
 
 
+def test_official_judge_recovery_selects_only_judge_only_failures(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ready = tmp_path / "ready"
+    broken = tmp_path / "broken"
+    ready.mkdir()
+    broken.mkdir()
+    monkeypatch.setattr(
+        ptb,
+        "receipt_status",
+        lambda _receipt: [
+            {"cell_id": "g01r1", "job_id": "101", "result_dir": str(ready)},
+            {"cell_id": "g02r1", "job_id": "102", "result_dir": str(broken)},
+        ],
+    )
+    monkeypatch.setattr(
+        ptb,
+        "audit_result",
+        lambda path: (
+            sorted(ptb.OFFICIAL_JUDGE_RECOVERY_ISSUES)
+            if path == ready
+            else ["missing or empty: metrics.json"]
+        ),
+    )
+
+    candidates, skipped = ptb.official_judge_recovery_candidates({"jobs": []})
+
+    assert candidates == [
+        {"cell_id": "g01r1", "source_job_id": "101", "result_dir": str(ready)}
+    ]
+    assert skipped == {"g02r1": ["missing or empty: metrics.json"]}
+
+
+def test_official_judge_recovery_rejects_a_requested_non_candidate(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ptb,
+        "official_judge_recovery_candidates",
+        lambda _receipt: (
+            [{"cell_id": "g01r1", "source_job_id": "101", "result_dir": "/result"}],
+            {},
+        ),
+    )
+
+    with pytest.raises(ptb.ExperimentError, match="not judge-only recovery candidates"):
+        ptb.submit_official_judge_recovery(
+            {"jobs": []}, cell_ids=["g02r1"]
+        )
+
+
+def test_official_judge_recovery_registers_held_jobs_before_release(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    ptb_root = repo / "third_party/PostTrainBench"
+    source_receipt = repo / "data/source.json"
+    result_dir = repo / "data/results/cell_101"
+    context = repo / "data/ptb/context-validation/claude-opus-5-1m-high.json"
+    spec = repo / "doc/spec/2026-09-02-ptb-official-claude-opus5-high-recovery.md"
+    container = tmp_path / "containers/opus_5.sif"
+    entrypoint = ptb_root / "src/commit_utils/slurm/official_judge_recovery.sbatch"
+    for path in (source_receipt, spec, container, entrypoint):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture", encoding="utf-8")
+    result_dir.mkdir(parents=True)
+    context.parent.mkdir(parents=True)
+    context.write_text(
+        json.dumps(
+            {
+                "requested_model": "claude-opus-5[1m]",
+                "effort": "high",
+                "provider": "vertex",
+                "verified": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ptb.paths, "REPO_ROOT", repo)
+    monkeypatch.setattr(ptb, "PTB_ROOT", ptb_root)
+    monkeypatch.setattr(
+        ptb,
+        "official_judge_recovery_candidates",
+        lambda _receipt: (
+            [
+                {
+                    "cell_id": "g01r1",
+                    "source_job_id": "101",
+                    "result_dir": str(result_dir),
+                }
+            ],
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        ptb,
+        "source_snapshot",
+        lambda: {
+            "top_branch": "gangda_wma_evolve",
+            "top_commit": "a" * 40,
+            "ptb_commit": "b" * 40,
+            "top_status": "",
+            "ptb_status": "",
+        },
+    )
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {
+            "POST_TRAIN_BENCH_SLURM_PARTITION": "ptb-a3",
+            "POST_TRAIN_BENCH_SLURM_NODELIST": "node-[2-3]",
+            "POST_TRAIN_BENCH_SLURM_SUBQUEUE": "gangda_wma_evolve",
+            "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(tmp_path / "registry.json"),
+            "POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "1",
+            "POST_TRAIN_BENCH_SLURM_RUN_AS_USER": "scientist",
+            "POST_TRAIN_BENCH_CONTAINERS_DIR": str(container.parent),
+        },
+    )
+    events: list[str] = []
+    calls: list[list[str]] = []
+
+    submitted_env: dict[str, str] = {}
+
+    def fake_run(command, **kwargs):
+        calls.append(list(command))
+        if "sbatch" in command:
+            submitted_env.update(kwargs["env"])
+            events.append("submit-held")
+            return subprocess.CompletedProcess(command, 0, "123\n", "")
+        events.append("release")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+    from awm import slurm_queue
+
+    monkeypatch.setattr(
+        slurm_queue,
+        "register_receipt",
+        lambda *_args, **_kwargs: events.append("register"),
+    )
+    receipt = {
+        "_path": str(source_receipt),
+        "batch_id": "batch-v1",
+        "manifest": "experiments/batch.yaml",
+    }
+
+    output = ptb.submit_official_judge_recovery(receipt)
+
+    assert events == ["submit-held", "register", "release"]
+    assert calls[0][:3] == ["sudo", "--preserve-env", "sbatch"]
+    assert "--hold" in calls[0]
+    assert not any(argument.startswith("--gres") for argument in calls[0])
+    assert calls[1] == ["sudo", "scontrol", "release", "123"]
+    assert submitted_env["POST_TRAIN_BENCH_SLURM_RUN_AS_USER"] == "scientist"
+    saved = json.loads(output.read_text(encoding="utf-8"))
+    assert saved["state"] == "submitted"
+    assert saved["contract"]["model"] == "claude-opus-5[1m]"
+    assert saved["contract"]["effort"] == "high"
+    assert saved["jobs"][0]["job_id"] == "123"
+
+
 def test_receipt_validation(tmp_path: Path) -> None:
     receipt = tmp_path / "receipt.json"
     receipt.write_text('{"schema_version": 1, "jobs": [{"cell_id": "b06", "job_id": "1"}]}')
     assert ptb.load_receipt(receipt)["jobs"][0]["cell_id"] == "b06"
 
 
+@pytest.mark.parametrize("context_smoke", [False, True])
 def test_formal_submit_holds_all_jobs_before_one_release(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, context_smoke: bool
 ) -> None:
     data = ptb.load_manifest(DUAL_MANIFEST)
     cell_ids = [
@@ -319,12 +479,15 @@ def test_formal_submit_holds_all_jobs_before_one_release(
         return subprocess.CompletedProcess(command, 0, f"Submitted Slurm job {job_id}\n", "")
 
     monkeypatch.setattr(ptb.subprocess, "run", fake_run)
-    receipt_path = ptb.submit(data)
+    receipt_path = ptb.submit(data, cell_ids=cell_ids if context_smoke else None,
+                              context_smoke=context_smoke)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
 
     submitted = [command for command in commands if command[0] == "fake-submit"]
     assert len(submitted) == 32
     assert all("--hold" in command for command in submitted)
+    assert all(("--runtime-smoke" in command) == context_smoke for command in submitted)
+    assert bool(receipt.get("validation_only")) == context_smoke
     assert commands[-1] == (
         "scontrol",
         "release",
@@ -343,6 +506,66 @@ def test_formal_submit_holds_all_jobs_before_one_release(
     assert len(registered["sources"][0]["jobs"]) == 32
 
 
+def test_pilot_receipt_is_registered_in_its_subqueue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = _two_repeats_manifest()
+    data["ownership"]["branch"] = "gangda_exp_protocol_evolve"
+    fake_launch = ptb.Launch(
+        cell_id="p01r1",
+        command=(
+            "fake-submit",
+            "p01r1",
+            "--job-name",
+            "gangda_exp_protocol_evolve.ptb.ep-r00.p01r1.pilot.r1",
+        ),
+        environment={
+            "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": "/evidence/p01r1.json",
+            "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256": "1" * 64,
+        },
+    )
+    monkeypatch.setattr(ptb, "local_issues", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ptb, "site_issues", list)
+    monkeypatch.setattr(
+        ptb,
+        "source_snapshot",
+        lambda: {
+            "top_branch": "gangda_exp_protocol_evolve",
+            "top_commit": "1" * 40,
+            "ptb_commit": "2" * 40,
+            "top_status": "",
+            "ptb_status": "",
+        },
+    )
+    monkeypatch.setattr(ptb, "dry_run", lambda *_args, **_kwargs: [])
+    ownership_registry = tmp_path / "slurm-ownership.json"
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {
+            "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(ownership_registry),
+            "POST_TRAIN_BENCH_SLURM_SUBQUEUE": "gangda_exp-protocol-evolve",
+        },
+    )
+    monkeypatch.setattr(ptb.paths, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(ptb, "build_launches", lambda *_args, **_kwargs: [fake_launch])
+    monkeypatch.setattr(
+        ptb.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 0, "Submitted Slurm job 9001\n", ""
+        ),
+    )
+
+    receipt_path = ptb.submit(data, pilot=True)
+
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    registry = json.loads(ownership_registry.read_text(encoding="utf-8"))
+    assert receipt["subqueue"] == "gangda_exp-protocol-evolve"
+    assert registry["sources"][0]["subqueue"] == "gangda_exp-protocol-evolve"
+    assert registry["sources"][0]["jobs"][0]["job_id"] == "9001"
+
+
 def test_root_owned_allocations_are_released_through_sudo() -> None:
     assert ptb._release_command({"POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "1"}, "10,11") == [
         "sudo",
@@ -351,6 +574,104 @@ def test_root_owned_allocations_are_released_through_sudo() -> None:
         "10,11",
     ]
     assert ptb._release_command({}, "10,11") == ["scontrol", "release", "10,11"]
+
+
+def test_held_job_routing_verifies_expanded_nodelist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outputs = {
+        ("scontrol", "show", "hostnames", "node-[2-3]"): "node-2\nnode-3\n",
+        ("scontrol", "show", "hostnames", "node-2,node-3"): "node-2\nnode-3\n",
+        ("scontrol", "show", "job", "10", "-o"): "JobId=10 JobState=PENDING ReqNodeList=node-2,node-3\n",
+        ("scontrol", "show", "job", "11", "-o"): "JobId=11 JobState=PENDING ReqNodeList=(null)\n",
+    }
+
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, outputs[tuple(command)], "")
+
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+    env = {"POST_TRAIN_BENCH_SLURM_NODELIST": "node-[2-3]"}
+    assert ptb.held_job_routing_issues(["10"], env) == []
+    assert ptb.held_job_routing_issues(["11"], env) == [
+        "job 11: held ReqNodeList=(null), expected node-[2-3]"
+    ]
+
+
+def test_site_gate_accepts_the_exp_protocol_two_node_subqueue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from awm import slurm_queue
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps(slurm_queue._default_registry()), encoding="utf-8")
+    nodes = ["slurm2-a3nodesetondem-0", "slurm2-a3nodesetondem-1"]
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {
+            "POST_TRAIN_BENCH_SLURM_GPU_MODE": "gres",
+            "POST_TRAIN_BENCH_SLURM_PARTITION": "ptb-a3",
+            "POST_TRAIN_BENCH_SLURM_NODELIST": "slurm2-a3nodesetondem-[0-1]",
+            "POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "0",
+            "POST_TRAIN_BENCH_SLURM_SUBQUEUE": "gangda_exp-protocol-evolve",
+            "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(registry),
+        },
+    )
+    monkeypatch.setattr(ptb, "current_top_branch", lambda: "gangda_exp_protocol_evolve")
+
+    def fake_check_output(command: list[str], **_kwargs: object) -> str:
+        if command[:3] == ["scontrol", "show", "partition"]:
+            return "PartitionName=ptb-a3 OverSubscribe=NO\n"
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            return "\n".join(nodes) + "\n"
+        if command[:3] == ["scontrol", "show", "node"]:
+            return f"NodeName={command[3]} CfgTRES=cpu=104,gres/gpu=8\n"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(ptb.subprocess, "check_output", fake_check_output)
+
+    assert ptb.site_issues() == []
+
+
+def test_site_gate_rejects_nodes_outside_the_named_subqueue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from awm import slurm_queue
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps(slurm_queue._default_registry()), encoding="utf-8")
+    monkeypatch.setattr(
+        ptb,
+        "read_ptb_env",
+        lambda: {
+            "POST_TRAIN_BENCH_SLURM_GPU_MODE": "gres",
+            "POST_TRAIN_BENCH_SLURM_PARTITION": "ptb-a3",
+            "POST_TRAIN_BENCH_SLURM_NODELIST": "slurm2-a3nodesetondem-[0,2]",
+            "POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "0",
+            "POST_TRAIN_BENCH_SLURM_SUBQUEUE": "gangda_exp-protocol-evolve",
+            "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": str(registry),
+        },
+    )
+    monkeypatch.setattr(ptb, "current_top_branch", lambda: "gangda_exp_protocol_evolve")
+
+    def fake_check_output(command: list[str], **_kwargs: object) -> str:
+        if command[:3] == ["scontrol", "show", "partition"]:
+            return "PartitionName=ptb-a3 OverSubscribe=NO\n"
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            return "slurm2-a3nodesetondem-0\nslurm2-a3nodesetondem-2\n"
+        if command[:3] == ["scontrol", "show", "node"]:
+            return f"NodeName={command[3]} CfgTRES=cpu=104,gres/gpu=8\n"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(ptb.subprocess, "check_output", fake_check_output)
+
+    assert ptb.site_issues() == [
+        (
+            "site nodelist for subqueue gangda_exp-protocol-evolve must be "
+            "slurm2-a3nodesetondem-0,slurm2-a3nodesetondem-1; got "
+            "slurm2-a3nodesetondem-0,slurm2-a3nodesetondem-2"
+        )
+    ]
 
 
 # ---- a batch is any set of approved cells (2026-09-01) ------------------------
@@ -464,7 +785,7 @@ def test_a_cell_task_outside_the_batch_tasks_is_rejected() -> None:
 
 def test_a_task_outside_the_approved_list_is_rejected() -> None:
     data = _two_repeats_manifest()
-    data["contract"]["task"] = "humaneval"
+    data["contract"]["task"] = "not-a-registered-benchmark"
     with pytest.raises(ptb.ExperimentError, match="subset"):
         ptb.validate_manifest(data)
 
@@ -513,6 +834,7 @@ def test_an_awm_cell_ships_its_checkout_read_only(tmp_path: Path, monkeypatch) -
     assert first.environment["AWM_CHECKOUT_SHA"] == sha
     assert checkout.is_relative_to(tmp_path / "ptb" / "awm-checkouts")
     assert (checkout / "awm" / "cli.py").is_file()
+    assert (checkout / "awm" / "wma_client.py").is_file()
     assert (checkout / "skills" / "exp_protocol" / "SKILL.md").is_file()
     assert not (checkout / "skills" / "exp_protocol_meta").exists()
     assert not (checkout / "doc").exists()
@@ -536,6 +858,73 @@ def test_a_plain_cell_gets_no_checkout_variables(tmp_path: Path, monkeypatch) ->
     launches = ptb.build_launches(_two_repeats_manifest())
     assert "POST_TRAIN_BENCH_EXTRA_BINDS" not in launches[0].environment
     assert launches[0].checkout is None
+    assert launches[0].wma_checkout is None
+
+
+def test_online_wma_uses_a_private_checkout_never_mounted_into_the_scientist(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(ptb.paths, "data_root", lambda *_a, **_k: tmp_path)
+    history = tmp_path / "history"
+    history.mkdir()
+    data = _awm_manifest()
+    sha = data["cells"][0]["awm"]["sha"]
+    for cell in data["cells"]:
+        cell.update(
+            {
+                "agent": "claude_vertex_high_awm",
+                "agent_model": "claude-opus-5[1m]",
+                "effort": "high",
+                "context_tokens": 1_000_000,
+                "wma": {
+                    "sha": sha,
+                    "backend": "claude",
+                    "model": "claude-opus-5",
+                    "effort": "high",
+                    "mode": "online",
+                    "budget": "cpu=10,gpu=0,wall=15,turns=40",
+                    "history": str(history),
+                },
+            }
+        )
+    ptb.validate_manifest(data)
+
+    first = ptb.build_launches(data)[0]
+
+    public = Path(first.checkout["dir"])
+    private = Path(first.wma_checkout["dir"])
+    assert public.is_relative_to(tmp_path / "ptb/awm-checkouts")
+    assert private.is_relative_to(tmp_path / "ptb/wma-private-checkouts")
+    assert (public / "awm/wma_client.py").is_file()
+    assert not (public / "awm/wma").exists()
+    assert not (public / "skills/wma").exists()
+    assert (private / "awm/wma/sidecar.py").is_file()
+    assert (private / "skills/wma/SKILL.md").is_file()
+    assert first.environment["POST_TRAIN_BENCH_WMA_SIDECAR_CHECKOUT"] == str(private)
+    assert first.environment["POST_TRAIN_BENCH_WMA_HISTORY"] == str(history)
+    assert str(private) not in first.environment["POST_TRAIN_BENCH_EXTRA_BINDS"]
+
+
+def test_online_wma_contract_is_fixed_and_requires_an_awm_scientist(tmp_path: Path) -> None:
+    data = _awm_manifest()
+    cell = data["cells"][0]
+    cell["wma"] = {
+        "sha": cell["awm"]["sha"],
+        "backend": "claude",
+        "model": "claude-opus-5",
+        "effort": "medium",
+        "mode": "online",
+        "budget": "cpu=10,gpu=0,wall=15,turns=40",
+        "history": str(tmp_path),
+    }
+    with pytest.raises(ptb.ExperimentError, match="wma.effort must be 'high'"):
+        ptb.validate_manifest(data)
+    cell["wma"]["effort"] = "high"
+    cell["agent"] = "claude_vertex_high"
+    cell["effort"] = "high"
+    del cell["awm"]
+    with pytest.raises(ptb.ExperimentError, match="requires an _awm scientist"):
+        ptb.validate_manifest(data)
 
 
 def test_an_awm_cell_needs_its_block_and_a_plain_cell_must_not_have_one() -> None:

@@ -1,0 +1,145 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T01:16:02Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.6
+  remaining_h: 7.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.71333, protocol_n: 150}
+  trigger: "exp-02's epoch-1 checkpoint scored 0.680 and its epoch-2 checkpoint 0.713 under the same protocol: a second pass over the same 56k distinct problems was still worth +3.3 points, so problem/solution exposure is not yet saturated."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_ep1_dev150.json, locator: accuracy, observation: "0.680 after 1 epoch"}
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: accuracy, observation: "0.713 after 2 epochs"}
+  alternatives_rejected:
+    - {option: "A third epoch on data/sft_v1.jsonl", reason: "the same 56k problems a third time; the ep1->ep2 curve is already flattening and repetition risks memorising the 405B teacher's phrasing rather than the arithmetic"}
+    - {option: "Run corpus-scaling and RFT as two separate cards", reason: "each full-size run costs ~2 h of the 7.4 h left; two sequential cards plus their evals would leave no margin for packaging and verification. They are combined here as one 'more exposure' intervention and the card does NOT resolve attribution between them - see conclusion."}
+    - {option: "Raise the few-shot-prefix fraction above 5%", reason: "measured and rejected: on the 300-item train holdout exp-02 scores 0.730 with the grader's 10-shot prefix and 0.723 without it, so prompt mismatch is costing nothing (analysis/exp-02_holdout_fs1.json vs _fs0.json)"}
+    - {option: "DPO/GRPO on preference or reward signal", reason: "no verifier-in-the-loop trainer is set up and RL on a 4b model inside 7 h is a poor risk against a well-understood SFT scaling step"}
+  pitfalls_hit:
+    - {what: "package_ckpt.py argparse bug wasted one eval launch (AttributeError before the eval started)", cost_h: 0.02, fix: "parse args into a variable before calling package()"}
+  smoke_runs:
+    - {command: [python, rft_sample.py, --model, ckpts/exp-02/final, --k, '6', --temp, '1.0', --keep-per-problem, '3', --out, data/rft_v1.jsonl], outcome: "6521/7173 GSM8K-train problems solved at least once in 6 samples (pass@6 = 0.909); 17,694 rows kept after per-problem dedup; 13 min"}
+    - {command: [python, eval_local.py, --model, ckpts/exp-02/final, --fewshot, '1', --n, '300'], outcome: "0.730 on the train holdout; 6/300 unterminated"}
+    - {command: [python, eval_local.py, --model, ckpts/exp-02/final, --fewshot, '0', --n, '300'], outcome: "0.723 on the train holdout; the 10-shot prefix is worth +0.007, i.e. nothing"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02 leaves 29% of the 150 protocol items wrong (43/150) and 27% of the 300-item train holdout wrong (81/300). The failures are no longer formatting - 0/150 completions carry a second 'ANSWER:' and 147/150 terminate - they are wrong arithmetic or a wrong plan inside an otherwise well-shaped chain. The training corpus covered only 56k distinct problems, each with at most 2 teacher solutions, and none of them written in the student's own idiom."
+  evidence:
+    - {path: /home/ben/task/logs/2026-09-03T00-36-28+00-00_gsm8k_NpXeJ4zXB9722kDLo67kGp.json, locator: "the 43 samples scored I", observation: "well-formed chains with a wrong number; 3 of the 150 are repetition loops that hit the token cap"}
+    - {path: /home/ben/task/analysis/exp-02_holdout_fs1.json, locator: "samples[*].correct == false", observation: "81/300 train-holdout items still wrong at temperature 0"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "final line", observation: "pass@6 on GSM8K train is 0.909 while greedy pass@1 is ~0.73: the model can reach the right chain, it just does not pick it greedily"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: holdout-agg, source: /home/ben/task/analysis/exp-02_holdout_fs1.json, question: "81 of the 300 held-out GSM8K-train items", gold: "various", model_output: "well-formed chain of thought ending in one 'ANSWER: N' with N wrong", failure: "reasoning/arithmetic error, not format"}
+    - {id: rft-unsolved, source: /home/ben/task/logs/rft_sample.log, question: "652 of the 7,173 GSM8K-train problems", gold: "various", model_output: "no correct answer in 6 samples at T=1.0", failure: "problem type the model cannot reach at all"}
+    - {id: loop-3, source: /home/ben/task/logs/2026-09-03T00-36-28+00-00_gsm8k_NpXeJ4zXB9722kDLo67kGp.json, question: "3 of the 150 protocol items", gold: "various", model_output: "degenerate repetition until the 4000-token cap", failure: "no termination; greedy decoding falls into a loop"}
+  watch_set:
+    path: /home/ben/task/data/dev_train_holdout.jsonl
+    n: 300
+    selection: "300 GSM8K *train* items (seed 12345) held out of every training file; no benchmark test item - protocol rule 7"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Widening exposure - from 56k to 87.7k distinct GSM8K-derived problems (two distinct teacher solutions each) plus 17,694 self-generated correct solutions to the 7,173 original GSM8K-train problems - and training one epoch from the same base raises accuracy on the 150-item protocol above exp-02's 0.713."
+  mechanism: "exp-02's remaining failures are reasoning errors on a model whose pass@6 (0.909) far exceeds its greedy pass@1 (~0.73): the right chain is inside the distribution but not on the greedy path. Two things move probability mass onto it. (a) 1.6x more distinct problems means fewer unseen problem schemas. (b) The rejection-sampled solutions are correct chains written in the model's own idiom on exactly the original-GSM8K problem distribution the benchmark is drawn from, which is the classic RFT sharpening effect; teacher solutions from Llama-3.1-405B cannot do this because they are off-policy."
+  mechanism_note: "This card deliberately changes two things at once (corpus width and on-policy RFT data) because the time budget allows only one more full-size run; it therefore cannot attribute the delta between them."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+1 to +6 points on the 150-item protocol (0.713 -> 0.72-0.77)"
+  falsified_if: "dev-150 accuracy is at or below exp-02's 0.713, or the train-holdout probe does not improve on exp-02's 0.730."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4.jsonl
+      source: "derived:exp-02 (17,694 rft rows) + nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e shards 0-19 (160,000 rows) + openai/gsm8k main/train (7,173 rows)"
+      n_examples: 184867
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --shards, '20', --per-problem, '2', --max-omi, '160000', --out, data/sft_v3.jsonl]
+      selection: "sft_v3 = OpenMathInstruct-2 GSM8K-derived rows over 20 shards, at most 2 solutions per distinct problem (80,512 distinct problems), plus the 7,173 non-holdout GSM8K train items. rft_v1 = rft_sample.py against ckpts/exp-02/final, k=6 at T=1.0 on the 7,173 non-holdout GSM8K train problems, keeping only samples whose graded last number equals gold and which contain exactly one 'ANSWER:' line, deduped and capped at 3 per problem. sft_v4 is the shuffled concatenation. Every target ends with '<end_of_turn>'. 11,740 rows matching a holdout question were dropped during the sft_v3 build."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE + flash_attention_2"
+    peft: "none (full fine-tune of the 3.88B language model; the 420M vision tower and projector are frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 32, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02: prompt rendered with templates/gemma3.jinja (md5 acabb12fa812ef3ab334ea6b817562f3) around inspect_evals' MATH_PROMPT_TEMPLATE; target = chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on completion tokens only; artifact saved with eos=<end_of_turn> and greedy generation_config.json"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v4.jsonl, --out, ckpts/exp-03, --epochs, '1', --lr, '1e-5', --bs, '32', --grad-accum, '2', --max-len, '2816', --fewshot-frac, '0.05', --save-steps, '1450']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 1450
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.1}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, unshuffled)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.71333
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "accuracy on the 300-item GSM8K-train holdout probe with the grader's 10-shot prefix (eval_local.py --fewshot 1), against exp-02's 0.730; plus the count of unterminated completions"
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.02
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1450, step: 1450}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-2889, step: 2889}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 2889}
+  training_summary:
+    final_loss: 0.3001
+    steps: 2889
+    notes: "72.0M tokens in one epoch (exp-02 saw 51.4M over two); 10 of 184,867 rows truncated at max_seq_len 2816; 25.4 samples/s; 7287 s wall."
+  measurements:
+    - {metric: accuracy, value: 0.71333, n: 150, path: /home/ben/task/eval/exp-03_final_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.76
+    path: /home/ben/task/analysis/exp-03_holdout_fs1.json
+    notes: "300-item GSM8K-train holdout probe, greedy, grader's 10-shot prefix: 0.760 vs exp-02's 0.730 (+3.0 points, 9 more items right; 30 fixed, 21 regressed, 51 wrong for both). Unterminated 4/300 vs exp-02's 6/300. On the protocol itself 148/150 terminate and 0/150 carry a second 'ANSWER:'."
+  watch_set_result:
+    fixed: 30
+    still_failing: 72
+    regressions: 21
+    path: /home/ben/task/analysis/exp-03_holdout_fs1.json
+    note: "corrected 2026-09-03T04:35Z: fixed/regressions were first written as 22/13 from a visual estimate; recomputed item-by-item from the two probe files they are 30 and 21 (net +9, which matches 0.760 vs 0.730). 51 of the 300 items are wrong for both models."
+
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "The pre-registered threshold was hit: dev-150 is 0.71333, exactly equal to exp-02, so the claim 'above 0.713 on the 150-item protocol' is not supported. The diagnostic disagrees - on the 300-item train holdout exp-03 scores 0.760 against exp-02's 0.730, fixing 30 items and regressing 21. The honest reading is that the falsification threshold was under-powered: at n=150 the protocol's stderr is 0.037, so it cannot resolve a 3-point effect, and a tie there is not evidence of no effect. Doubling unique problems and adding on-policy RFT data bought at most a few points, not the step change exp-02 delivered."
+  decision: iterate
+  next_step: "Two things follow. (1) Model selection must stop relying on n=150: score the finalists at --limit 500 before choosing. (2) exp-02 gained +3.3 from a second epoch on its corpus; exp-03 has had only one epoch on a corpus 1.4x larger in tokens, so exp-04 continues from ckpts/exp-03/final for a second epoch at lr 5e-6."

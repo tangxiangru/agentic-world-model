@@ -1,0 +1,144 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T11:45:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 4.8
+  remaining_h: 5.2
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7333, protocol_n: 150}
+  trigger: "Returns on off-policy OpenMathInstruct-2 rows have flattened: the first 151k rows bought +64 points (exp-02), the next 152k bought +1.3 (exp-04, inside a 3.6-point stderr). Every remaining failure is a content error, and the training loss is now 0.275 on data the model finds easy."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-02 0.70, exp-03 0.72, exp-04 0.7333"}
+    - {path: /home/ben/task/analysis/exp-04_failure_tags.json, locator: "failures=40, runon_share=0.0, stop_reasons stop=149/max_tokens=1"}
+    - {path: /home/ben/task/logs/exp-04.log, locator: "train_loss 0.276 vs exp-02's 0.322"}
+  alternatives_rejected:
+    - {option: "A third off-policy pass on more OpenMathInstruct-2 shards", reason: "exp-04 is the measurement that says this line is spent; a third pass would cost 2 h for an expected point or less"}
+    - {option: "DPO / preference training on correct-vs-incorrect chains", reason: "needs a pair-construction pass and a second training regime to debug with 5 h left; RFT reuses the SFT trainer exactly as it stands"}
+    - {option: "Keep every correct sample regardless of pass rate", reason: "questions the model already answers 4/4 supply chains it can already produce - they dilute the batch with gradient it does not need. The band keeps the frontier."}
+    - {option: "Model soup of exp-02 and exp-04", reason: "cheap and worth doing, but it is a variance play worth a point at best; queued behind RFT and only if time remains"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "All 40 remaining failures at n=150 are content errors from a model that stops correctly and formats correctly. It has been trained only on another model's solutions (Llama-3.1-405B via OpenMathInstruct-2), so its errors are in ITS OWN reasoning distribution and nothing in the corpus is targeted at them."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_failure_tags.json, locator: "whole file", observation: "40/150 wrong; 0 run-on; 0 missing ANSWER marker; median completion 454 chars"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy 0.7333, stderr 0.0362"}
+  affected_share: 0.27
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Training exp-04 for one epoch on its own correct chains, drawn at temperature 1.0 over gsm8k-TRAIN and OpenMathInstruct-2 augmented-gsm8k questions and kept only for questions with a pass rate in (0, 0.75], mixed 1:2 with replay of the off-policy corpus, will raise greedy accuracy at n=150 against exp-04's 0.7333."
+  mechanism: "Rejection sampling puts probability mass on chains the model can already reach but does not reliably produce, in its own phrasing rather than a 405B model's. Restricting to a pass-rate band aims that mass at questions that are on its frontier rather than ones it has solved. The replay mixture keeps the format and the off-policy knowledge from drifting under a small on-policy set."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +4 points"
+  falsified_if: "greedy accuracy at n=150 is <= 0.7333, or the run-on share of failures rises above 0.05"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: "synthetic:self - sampled from ckpts/exp-04/final; questions from openai/gsm8k rev 740312ad main/TRAIN (7473) + nvidia/OpenMathInstruct-2 rev 469216e3 augmented_gsm8k problems (20000), both with their own gold answers"
+      n_examples: 19751
+      built_by: /home/ben/task/rft_sample.py
+      build_command: [python, rft_sample.py, --model, ckpts/exp-04/final, --out, data/rft_v1.jsonl, --k, "4", --temperature, "1.0", --n-aug, "20000", --pass-rate-max, "0.75", --max-keep, "2"]
+      selection: "keep a sample only if its final 'ANSWER: n' equals gold and the body carries no second ANSWER/boxed/#### marker; dedup on the first 160 chars; drop questions with pass rate 0 or > 0.75; at most 2 (shortest) chains per surviving question; 15% few-shot prefixes from gsm8k TRAIN"
+      contamination_check: not_run
+      mixture_weight: 0.33
+    - path: /home/ben/task/data/sft_v1_clean.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3 train_1M shards (replay of the exp-02 corpus)"
+      n_examples: 151404
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, merge_npz.py, --out, data/rft_mix.npz, "data/rft_v1_tokens.npz:all", "data/sft_v1_tokens.npz:20000", "data/sft_v2_extra_tokens.npz:20000"]
+      selection: "a random REPLAY_N-row slice of each off-policy corpus, 20000 rows from each, so the 59695-row / 29.0M-token mixture is 33% on-policy"
+      contamination_check: passed
+      mixture_weight: 0.335
+    - path: /home/ben/task/data/sft_v2_extra_clean.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3 full-train shards 00000-00007 (replay of the exp-04 corpus)"
+      n_examples: 152227
+      built_by: /home/ben/task/build_data2.py
+      build_command: [python, merge_npz.py, --out, data/rft_mix.npz, "data/rft_v1_tokens.npz:all", "data/sft_v1_tokens.npz:20000", "data/sft_v2_extra_tokens.npz:20000"]
+      selection: "a random REPLAY_N-row slice of each off-policy corpus, 20000 rows from each, so the 59695-row / 29.0M-token mixture is 33% on-policy"
+      contamination_check: passed
+      mixture_weight: 0.335
+  # built and verified before the lock:
+  #   data/rft_v1_stats.json  pass@4 0.9218 over 27473 questions; band (0,0.75] = 11131 questions
+  #   contamination_check on data/rft_v1.jsonl: 0 of 19751 documents flagged
+  #   prepare_tokens.py: 19695 kept (56 dropped for length), 19695/19695 end in token 106
+  #   merge_npz.py:      59695 rows, 29.0M tokens, max len 2560
+  method:
+    family: rft
+    framework: "vLLM 0.11.0 for sampling; transformers 4.57.3 Trainer (chunked CE + token-budget batch sampler) for training"
+    peft: "none - full fine-tune of the language model; vision_tower and multi_modal_projector frozen"
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 64, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 2}
+    target_format: "identical to exp-02/exp-04: solution prose, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the target only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --npz, data/rft_mix.npz, --parent, ckpts/exp-04/final, --out, ckpts/exp-05, --lr, "7e-6", --epochs, "1", --warmup, "0.02", --token-budget, "16000", --bs, "64", --accum, "4", --seed, "2", --save-steps, "100000"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.9}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7333
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "pass@4 and the pass-rate histogram over the 27473-question sampling pool (data/rft_v1_stats.json) - how much headroom the band actually contains"
+    n: 27473
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.55
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 479}
+  training_summary: {final_loss: 0.254, steps: 479, notes: "train_loss 0.260 over 59695 rows / 29.0M tokens; 21.8 rows/s; 45 min. FIRST LAUNCH LOST: it trained the whole epoch and then died in save_pretrained (see result.failure); the re-launch after the one-line fix is the run reported here."}
+  measurements:
+    - {metric: accuracy, value: 0.76, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.0267}
+  diagnostic_result:
+    value: 0.9218
+    path: /home/ben/task/data/rft_v1_stats.json
+    notes: "pass@4 over the 27473-question pool = 0.9218. Pass-rate histogram: 0/4 for 2148 questions, 1/4 for 2511, 2/4 for 3396, 3/4 for 5224, 4/4 for 14194. So 52% of the pool was already saturated and was correctly excluded; the band (0,0.75] held 11131 questions and yielded 19695 usable chains. Failure tags after training: 36 failures, run-on share 0.00, stop_reasons stop=149/max_tokens=1."
+  watch_set_result: null
+  failure: "First launch (logs/exp-05.log), after the full epoch: ValueError: GenerationConfig is invalid: `temperature`: `do_sample` is set to `False`. However, `temperature` is set to `0.0` ... raised from Trainer._save_checkpoint -> save_pretrained -> generation_config.save_pretrained. The parent ckpts/exp-04/final carries the greedy generation_config adopted in exp-03, HF re-validates it on save, and the process died with the trained weights only in GPU memory. Cost: 0.75 h."
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "0.76 vs exp-04's 0.7333 at n=150 (+2.7 points, 36 failures vs 40), the largest single gain since the format fix and larger than what 152k additional off-policy rows bought. The mechanism holds: the pass-rate histogram shows 52% of the pool was already saturated, so the band did aim the 19695 on-policy chains at the frontier, and termination was untouched (run-on share 0.00)."
+  decision: adopt
+  next_step: "Package exp-05 as final_model with the greedy generation_config and confirm at a larger n. The obvious continuation is a second RFT round from exp-05 (the band would shift as the model improves), but at 2.7 h remaining that would leave no room to verify the artifact, so it is left as the recommendation rather than run."

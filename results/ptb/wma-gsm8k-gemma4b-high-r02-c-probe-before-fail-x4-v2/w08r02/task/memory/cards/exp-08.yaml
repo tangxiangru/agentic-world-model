@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T23:35:00Z'
+
+situation:
+  elapsed_h: 7.6
+  remaining_h: 2.4
+  incumbent:
+    ref: exp-07
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.70129, protocol_n: 1319}
+  trigger: "Every one of the nine full-test reads in exp-05, exp-06 and exp-07 used --max-connections 16 and --gpu-memory-utilization 0.85, and every one addressed a checkpoint under ckpts/. The grader runs evaluate.py with its shipped defaults -- model-path final_model, limit 150, max-connections 2, gpu-memory-utilization 0.3 -- and no configuration in that column has ever been exercised in this session. 0.3 of 80 GB is 24 GB for an 8.6 GB model plus its KV cache, which is the one default with an actual failure mode."
+  trigger_evidence:
+    - path: /home/ben/task/evaluate.py
+      locator: "parse_args L24-56: defaults are model-path final_model, limit 150, max-connections 2, max-tokens 4000, gpu-memory-utilization 0.3"
+    - path: /home/ben/task/analysis/exp-07_paired.json
+      locator: "all nine full reads share one (eval_config, model_args) pair, and it is not the default one"
+  alternatives_rejected:
+    - option: "Rely on the CPU load check package_model.py already does"
+      reason: "It proves the config, tokenizer and shards parse under transformers. It does not prove vLLM starts a Gemma3ForConditionalGeneration server from this directory inside a 24 GB budget, which is the thing the grader actually does and the thing that would turn 0.70 into a zero."
+    - option: "Re-run at --limit 1319 with default concurrency"
+      reason: "At max-connections 2 that is roughly 40 minutes against 2.4 h remaining, and the accuracy at n=1319 is already measured twice. This card is a deliverable check, not a measurement; the shipped --limit 150 is the right size for it."
+    - option: "Spend the remaining time on another soup ratio or another training run"
+      reason: "exp-07 measured the instrument's own run-to-run spread at 0.3-0.5 points per read, and the last four cards all produced deltas inside it. Another arm would add selection pressure, not accuracy. An unverified deliverable is the only remaining risk that is large rather than marginal."
+  pitfalls_hit: []
+  smoke_runs: []
+
+problem:
+  statement: "final_model holds the uniform exp-02+exp-03+exp-04 weight average and has been CPU-loaded once with transformers, but it has never been served by vLLM under the grader's own defaults. The two defaults that differ most from anything used here are --gpu-memory-utilization 0.3 (24 GB, against the 0.85 every eval used) and --max-connections 2. If the directory fails to serve under those, the session scores zero regardless of the 0.70 measured under other flags."
+  evidence:
+    - path: /home/ben/task/final_model/config.json
+      locator: "architectures: Gemma3ForConditionalGeneration"
+      observation: "vLLM builds a Gemma3Processor from this directory; the preprocessor and processor configs were copied from the base snapshot rather than saved by the trainer"
+    - path: /home/ben/task/final_model/generation_config.json
+      locator: "do_sample false, temperature 0.0, eos_token_id [1,106], no top_k"
+      observation: "hand-written; transformers' own save_pretrained refuses this pair, so it has never round-tripped through the library"
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: "final_model, invoked through evaluate.py with every flag at its shipped default and from a fresh process, serves under vLLM and scores in the same range as the flag-tuned reads, with the same answer format."
+  mechanism: "The directory carries the full Gemma3ForConditionalGeneration weight set with the base snapshot's key layout, the base tokenizer and processor configs, and a generation_config whose temperature key is what makes vLLM decode greedily. If any of those three is wrong the failure is loud -- the server does not start, the score collapses, or the completions lose their ANSWER: line -- and 8.6 GB of weights plus a 4000-token cap fit inside 24 GB comfortably."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "0.68-0.76 at n=150. The n=150 prefix is small and exp-07 measured 0.3-0.5 points of read-to-read decode noise on top, so the band is wide on purpose; this card is checking that the deliverable works, not measuring it."
+  falsified_if: "The eval fails to start or errors, or accuracy at the default n=150 falls below 0.60, or share_with_answer_line drops below 0.98, or any degenerate repeated-token completion appears."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-07
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_eval_data.md
+      source: local
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "No training data: this card runs one evaluation, on the first 150 items of the official test split as evaluate.py's own default --limit selects them. Never used for training."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0 via the unmodified evaluate.py, all flags default"
+    peft: none
+    hyperparams: {seed: null}
+    target_format: "unchanged: 'ANSWER: <n>' then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, verify_final.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/verify_final.sh
+    env: {}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --json-output-file, /home/ben/task/eval/exp-08_default.json]
+    dev_set: "official --limit 150 (evaluate.py's shipped default)"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "The eval_config and model_args recorded in the inspect log must show the DEFAULT invocation (max_connections 2, gpu_memory_utilization 0.3, max_tokens 4000) rather than this session's 16/0.85 -- that is the check that the card tested what it claims to have tested. Plus the usual gates: ANSWER:-line share, max_tokens share, degenerate completions, mean completion length."
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 0}
+    - {path: /home/ben/task/ckpts/soup234/served, step: 0}
+    - {path: /home/ben/task/ckpts/soup34/served, step: 0}
+    - {path: /home/ben/task/ckpts/exp-02/served, step: 1110}
+    - {path: /home/ben/task/ckpts/exp-03/served, step: 639}
+    - {path: /home/ben/task/ckpts/exp-04/served, step: 1553}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp-08_default.json, delta_vs_comparator: null}
+  diagnostic_result:
+    value: 0.7133
+    path: /home/ben/task/analysis/exp-08_default_diag.json
+    notes: "INVOCATION ASSERTED BEFORE THE ACCURACY WAS READ, as the verdict required: the inspect log records max_connections 2, max_tokens 4000, gpu_memory_utilization 0.3 -- evaluate.py's shipped defaults, and the one flag combination nothing in this session had exercised. The vLLM server started and shut down cleanly inside the 24 GB budget from a fresh process, with no model-path argument, so it resolved final_model by default and built its Gemma3Processor from the base-snapshot preprocessor/processor configs that package_model.py copied in. GPU was verified idle (0 MiB, no vllm or evaluate.py process) in the minute before launch, so the 0.3 fraction of TOTAL memory was not competing with a leftover server. Gates: garbage_prefix_indices empty; share_with_answer_line 0.980 and share_max_tokens 0.020, both exactly at their thresholds, which at n=150 is 3 completions running to the 4000-token cap against 0.8-1.0% at n=1319 -- small-sample variation on three items, not a regression. Mean completion 661 characters. As pre-committed: 0.7133 at the default n=150 is a DELIVERABLE CHECK, not an improvement. The first-N prefix of this dataset scores high for these weights (0.735-0.745 on the first 200 against 0.701-0.706 on all 1319), so the n=150 number is not comparable with, and does not re-rank anything against, the incumbent's 0.70129."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "final_model serves and scores under the grader's own defaults: 0.7133 at n=150 with max-connections 2 and gpu-memory-utilization 0.3, a fresh process, no flags overridden and no model path given. The copied processor configs, the hand-written greedy generation_config and the merged weight layout all survive the path the grader actually takes, which was the only large remaining risk in the session."
+  decision: adopt
+  next_step: "Nothing further. final_model holds the uniform weight average of exp-02, exp-03 and exp-04 -- all three descended from the immutable google/gemma-3-4b-pt snapshot cc012e0a6d0787b4adcc0fa2c4da74402494554d. Full-test accuracy 0.7058 and 0.7013 on two independent reads (two-run mean 0.7036) against the base checkpoint's 0.055; 0.7133 under the shipped defaults at n=150. Everything the run knows that the next one would want is in memory/index.md and the eight cards: the format-and-terminator fix is worth about 64 of those 65 points and everything after it is inside the measurement noise; the n=200 protocol misranked exp-04 above exp-03 and would have shipped a model 14 items worse; vLLM greedy decoding is not batch-invariant and flips 5-6% of items between reads of identical weights; and the cheapest real gain after the first SFT came from weight averaging, not from more training."

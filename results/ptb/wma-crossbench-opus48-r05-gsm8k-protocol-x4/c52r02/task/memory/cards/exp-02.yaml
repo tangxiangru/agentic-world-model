@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T14:30:57Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.75
+  remaining_h: 9.25
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp01/final
+    score: {metric: accuracy, value: 0.4533, protocol_n: 150}
+  trigger: "exp-01 (SFT on 7473 GSM8K-train) reached 0.453 greedy, but its dev-150 failures are genuine reasoning/arithmetic errors, not format errors (logs/2026-09-04T14-24-12+00-00_gsm8k...json). More and more-diverse GSM8K-style training data should improve reasoning."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp01_dev150_greedy.json, locator: "accuracy 0.4533"}
+    - {path: /home/ben/task/memory/cards/exp-01.yaml, locator: "result.diagnostic_result: failures are reasoning errors"}
+  alternatives_rejected:
+    - {option: "more epochs / higher LR on the 7473 GSM8K-train only", reason: "exp-01 loss already ~0.37 at epoch 3; data quantity/diversity is the bottleneck, not optimization"}
+    - {option: "full 395K MetaMathQA incl. MATH types, 3 epochs", reason: "too long for budget (~15h); MATH answers (boxed, non-numeric) are off-distribution for the numeric GSM8K grader"}
+    - {option: "RFT/self-generated data from exp-01", reason: "exp-01 only 45% correct; self-samples would be noisy; supervised MetaMath solutions are higher quality and faster to use first"}
+  pitfalls_hit:
+    - {what: "first launch (bs=16 grad_accum=1 max_len=1024) OOMed at epoch 0.21 on a long-sequence batch: tried 16GB, 15.5GB free", cost_h: 0.3, fix: "bs=8 grad_accum=2 (same effective batch 16) + PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True; re-lock"}
+  smoke_runs:
+    - {command: [python, build_metamath.py, --n_meta, "80000"], outcome: "87373 rows (79900 MetaMath GSM + 7473 GSM8K train), single ANSWER marker, 0 contaminated, max 778 tok / frac>768=0.07%"}
+    - {command: [python, train.py, "...bs 16..."], outcome: "ran to epoch 0.21 (loss 0.16, dropping) then CUDA OOM on a long batch; repaired to bs 8 grad_accum 2"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-01 plateaus at 0.453 because 7473 GSM8K-train solutions give limited coverage of problem phrasings and reasoning patterns; remaining dev-150 errors are reasoning/arithmetic mistakes."
+  evidence:
+    - {path: /home/ben/task/logs/2026-09-04T14-24-12+00-00_gsm8k_mrAG7t7LEdcnzv2EK5VhrA.json, locator: "wrong samples", observation: "misread problems and arithmetic slips; format/stop are correct"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Full SFT of gemma-3-4b-pt on 87K GSM8K-style solutions (MetaMathQA GSM subset rephrased/augmented from GSM8K TRAIN, reformatted to a single 'ANSWER: N' + <end_of_turn>, plus original GSM8K train) will raise dev-150 greedy accuracy above exp-01's 0.453."
+  mechanism: "MetaMathQA's rephrasings, self-verification and backward (FOBAR) augmentations expose the model to far more problem phrasings and solution paths derived from the same train distribution, improving generalization to GSM8K test; single answer marker avoids the double-marker pitfall."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: "+8 to +20 pts over 0.453"
+  falsified_if: "dev-150 greedy accuracy <= exp-01's 0.453"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/exp02_train.jsonl
+      source: meta-math/MetaMathQA (GSM_* types, derived from openai/gsm8k train) + derived:exp-01 gsm8k_train
+      n_examples: 87373
+      built_by: /home/ben/task/build_metamath.py
+      build_command: [python, build_metamath.py, --n_meta, "80000", --out, data/exp02_train.jsonl, --seed, "0"]
+      selection: "MetaMathQA GSM_* only (80k random, seed 0); strip '#### N' and 'The answer is:' lines; single 'ANSWER: N'; drop non-numeric; + all 7473 gsm8k_train rows; shuffled seed 0"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 (full fine-tune, Gemma3ForCausalLM)
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 8, grad_accum: 2, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "user = MATH_PROMPT_TEMPLATE(question); assistant = '{reasoning}\\n\\nANSWER: {N}' then <end_of_turn>; completion-only loss; model saved with GREEDY generation_config"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train.py, --data, data/exp02_train.jsonl, --out, ckpts/exp02, --epochs, "2", --lr, "1e-5", --bs, "8", --grad_accum, "2", --max_len, "1024", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp02
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "32", --gpu-memory-utilization, "0.85", --json-output-file, "{out}"]
+    dev_set: "official gsm8k test --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.4533
+    path: /home/ben/task/eval/exp01_dev150_greedy.json
+  diagnostic:
+    what: null
+    n: null
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.6
+  output_checkpoint: /home/ben/task/ckpts/exp02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp02/final, step: null}
+  training_summary: {final_loss: 0.143, steps: null, notes: "2 epochs on 87373 rows, bs 8 grad_accum 2 (eff 16), max_len 1024; loss much lower than exp-01 (0.44) -> the model learned the training distribution very well"}
+  measurements:
+    - {metric: accuracy, value: 0.0267, n: 150, path: /home/ben/task/eval/exp02_dev150.json, delta_vs_comparator: -0.4266}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/eval/exp02_dev150.json
+    notes: "150/150 eval completions run away (100%). ROOT CAUSE (verified): the model is NOT broken and NOT mis-configured. Given its own zero-shot training format it stops perfectly ('...ANSWER: 72<end_of_turn>', 68 tokens, correct). But the eval prepends a 10-shot system prompt (fewshot=10, seed 42) whose examples are gsm8k-train solutions WITH <<a=b>> calculator annotations, each flowing into the next with no stop token. exp-02's MetaMathQA training data is OFF-DISTRIBUTION from those few-shot examples (only 2% of MetaMath GSM responses contain <<>>; verbose 'To solve this problem...' style), so under few-shot pressure the model imitates the in-context continuation pattern (emits <<>>-style reasoning then restarts a new problem) instead of firing its trained stop. The grader reads the LAST number -> near-zero. Epoch count is NOT the cause: exp-02 saw the ANSWER->stop pattern 8x more often than exp-01 (10920 vs 1404 steps) and still runs away; exp-01 is robust because its pure gsm8k-train data matches the few-shot distribution."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "FALSIFIED: dev-150 greedy accuracy fell to 0.0267 (<< exp-01's 0.4533), so falsified_if is met. The MetaMath solutions did teach good reasoning (zero-shot answers are correct and clean), but the hypothesis's implicit assumption -- that off-distribution augmented data would generalize to the 10-shot eval -- is wrong. The 10-shot eval context (gsm8k-train few-shot with <<>> annotations) makes a model whose training distribution differs from that few-shot distribution imitate the in-context continuation and fail to stop (100% runaway). LESSON: for this few-shot eval, training data must MATCH the few-shot surface distribution (gsm8k-train style, keep <<>> annotations); raw exposure/epochs do not buy robustness."
+  decision: reject
+  next_step: "exp-03: keep the proven-robust on-distribution recipe (pure gsm8k-train, matches few-shot) but KEEP the <<a=b>> calculator annotations to match the few-shot format exactly and to make the model write out each computation (targets exp-01's residual arithmetic errors). Compare vs exp-01 greedy 0.4533."

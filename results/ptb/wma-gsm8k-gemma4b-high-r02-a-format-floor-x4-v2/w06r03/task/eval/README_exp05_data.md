@@ -1,0 +1,1 @@
+Merge card exp-05: no new training data. The intervention averages weights of three existing checkpoints; the 500 evaluation items are the first 500 of the official gsm8k test split inside inspect_evals/gsm8k and are never used for training.

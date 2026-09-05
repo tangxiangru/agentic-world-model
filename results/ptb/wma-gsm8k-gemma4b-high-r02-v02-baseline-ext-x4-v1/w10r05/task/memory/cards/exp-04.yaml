@@ -1,0 +1,143 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T04:05:00Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 3.6
+  remaining_h: 6.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.66, protocol_n: 150}
+  trigger: "exp-02 solved the formatting failure (share 0.60 -> 0.02) but 51 of 150 items still fail, and reading the failures shows they are reasoning errors, not format errors: mis-modelled word problems, arithmetic slips inside an otherwise sensible chain, and answers left as a fraction (analysis/exp-03_failures.jsonl)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "termination_format_failure=7 of 150, accuracy=0.66", observation: "formatting is no longer the binding constraint"}
+    - {path: /home/ben/task/analysis/exp-02_failures.jsonl, locator: "first 6 rows", observation: "56 failures, 53 of them well-formed answers that are simply wrong"}
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "pass_at_k=0.7472, sample_accuracy=0.4076", observation: "on 22000 held-in TRAIN problems the incumbent finds at least one correct chain in 74.7% of them at k=4, so there is a large pool of verified-correct on-policy chains it does not reliably produce greedily"}
+  alternatives_rejected:
+    - {option: "Scale the off-policy corpus instead (OpenMathInstruct-2 has ~152k gsm8k-derived rows in train_1M; only 54k were used)", reason: "more of the same 405B-written distribution; the 25 pp gap between the model's k=4 pass rate (0.747) and its single-sample rate (0.408) says the model already knows more than it reliably emits, which is what on-policy rejection sampling targets and more off-policy data does not"}
+    - {option: "DPO/GRPO on correct-vs-incorrect pairs from the same sampling run", reason: "the 52129 wrong samples are there and pairs could be built, but a preference/RL run is a new trainer, new failure modes and no time to debug one; RFT is the same SFT code path that is already validated"}
+    - {option: "Continue training from ckpts/exp-02/final on RFT data only", reason: "cheaper (~40 min) but it trains a converged checkpoint on a narrow corpus; retraining from the immutable base on the combined corpus keeps a single clean recipe and is the form of RFT with the stronger published result"}
+    - {option: "Raise the learning rate or the epoch count at the same time", reason: "that would confound the data change with a recipe change; every hyperparameter is held byte-identical to exp-02"}
+  pitfalls_hit:
+    - {what: "First rejection-sampling launch was projected at 2.4 h (124892 sequences, 14 it/s). Killed it.", cost_h: 0.1, fix: "dropped the per-request seed and the string stop condition, cut max_tokens 640 -> 400, max_model_len 2048 -> 1536, max_num_seqs 768, and cut the problem pool to 22000; 88000 sequences in 55 min at 8.4k output tok/s"}
+    - {what: "Dropping stop=['<end_of_turn>'] was wrong: vLLM's offline path then did NOT halt on token 106, so generation ran past the answer. 11902 of 35871 correct samples were discarded at sampling time for carrying more than one 'ANSWER:', and 4490 of the 20840 kept rows had a degenerate tail (the answer repeated dozens of times, or a stray 'model' turn).", cost_h: 0.15, fix: "scripts/build_mix.py truncates every rejection-sampled chain at its first 'ANSWER: <n>' and re-verifies it with the grader's own match_str; 20840 raw -> 20605 usable, 4255 of them truncated. The correct fix at sampling time is to keep the explicit stop string even when the token is in eos_token_id."}
+    - {what: "A killed vLLM run leaves an orphaned VLLM::EngineCore process holding 70 GB of the GPU; the next job would OOM.", cost_h: 0.02, fix: "kill -9 the EngineCore pid from nvidia-smi and confirm 0 MiB before relaunching"}
+  smoke_runs:
+    - {command: [python, scripts/build_mix.py, --max-rft, '40000'], outcome: "74802 rows (54197 sft + 5237 rft:gsm8k_train + 15368 rft:augmented); 0 rows fail the end-on-ANSWER-line, single-marker or ends-with-<end_of_turn> checks"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/mix_train_docs.jsonl], outcome: "74802 documents scanned, 0 contaminated, exit 0"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "With formatting solved, the incumbent's residual failures are reasoning failures: 51 of 150 official items are wrong while being well-formed. The same model, sampled 4 times at temperature 1.0 on 22000 held-in TRAIN problems, reaches a correct answer on 74.7% of them but only 40.8% of individual samples are correct -- so on a large set of problems it can find the right chain but does not reliably produce it."
+  evidence:
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "pass_at_k=0.7472 vs sample_accuracy=0.4076 over 88000 samples", observation: "a 34 pp gap between what the model can find and what it emits per sample"}
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "accuracy=0.66, termination_format_failure=7", observation: "the residual 51 failures are not format failures"}
+    - {path: /home/ben/task/analysis/dev250_exp03_greedy.json, locator: "summary.accuracy=0.692, n=250", observation: "the same picture on 250 held-out TRAIN items: 77 still wrong"}
+  affected_share: 0.34
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/dev_train.jsonl
+    n: 250
+    selection: "the same 250 gsm8k TRAIN problems held out of every training corpus in this session (seed 0); they are excluded from both sft_train.jsonl and the rejection-sampling problem pool"
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Adding 20605 of the incumbent's own verified-correct chains to the 54197-row off-policy corpus and retraining from the immutable base with byte-identical hyperparameters raises accuracy over exp-03, because on-policy chains concentrate probability mass on reasoning paths this model can actually execute."
+  mechanism: "Rejection sampling keeps only chains whose graded answer matches gold under the grader's own match_str, so every added target is a path the model already reaches at temperature 1.0. Training on them raises the likelihood of those paths, which converts pass@4 competence into single-sample competence -- the 34 pp gap measured above is exactly the quantity this should close."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 pts on the official 150 (0.66 -> 0.68-0.72), and +2 to +6 on the 250-item held-out dev"
+  falsified_if: "official accuracy at n=150 is not above 0.673 (exp-03's 0.66 plus the 1.3 pp greedy noise floor) AND the held-out dev250 greedy accuracy is not above exp-03's 0.692; either one alone at or below the incumbent would make the addition not worth adopting"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/mix_train.jsonl
+      source: "derived:exp-02 -- 54197 rows of the exp-02 corpus (OpenMathInstruct-2 @469216e gsm8k/augmented_gsm8k + openai/gsm8k @740312a TRAIN demos) plus 20605 rows sampled from ckpts/exp-02/final on gsm8k-TRAIN-derived problems. The gsm8k TEST split is never read."
+      n_examples: 74802
+      built_by: /home/ben/task/scripts/build_mix.py
+      build_command: [python, scripts/build_mix.py, --max-rft, '40000']
+      selection: "rejection-sampled rows: 4 samples per problem at T=1.0/top_p 0.95/top_k 64 on 22000 problems, keep only samples whose graded answer matches gold under inspect's own match_str, cap 2 per problem, dedup, truncate each chain at its first 'ANSWER: <n>' and re-verify. 250 held-out dev problems excluded from the problem pool."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, torch 2.8.0, flash_attention_2 (identical to exp-02)"
+    peft: "none (full fine-tune; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: "token-budget 4096 padded tokens per micro-batch", grad_accum: 16, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02: prompt rendered with templates/gemma3.jinja, completion = chain, blank line, 'ANSWER: <n>', then <end_of_turn>; loss on completion tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/mix_train.jsonl, --out, /home/ben/task/ckpts/exp-04, --max-seq-len, '2560', --lr, '1e-5', --epochs, '2', --token-budget, '4096', --accum, '16', --save-steps, '250', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 250
+    keep: 3
+  budget: {gpu: H100-80GB, planned_h: 1.9}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, scripts/make_final.py, --src, /home/ben/task/ckpts/exp-04/final, --dst, /home/ben/task/ckpts/exp-04_greedy, --greedy, '&&', python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04_greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, 10-shot, fewshot_seed=42), greedy decode as adopted in exp-03"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.66
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "held-out dev250 greedy accuracy via scripts/dev_eval.py, the same command that scored exp-03 at 0.692; it has 250 items instead of 150 and is the higher-powered half of the falsifier"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.75
+  output_checkpoint: /home/ben/task/ckpts/exp-04_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 886}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-886, step: 886}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-750, step: 750}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-500, step: 500}
+    - {path: /home/ben/task/ckpts/exp-04_greedy, step: 886}
+  training_summary:
+    final_loss: 0.2837
+    steps: 886
+    notes: "74801 of 74802 rows kept (1 over max_seq_len 2560), 27.2M tokens/epoch, 6310 s at 23.7 samples/s -- under the WMA's revised 2.2 h budget. WMA precondition 2 checked before launch: one rejection-sampled row and one OpenMathInstruct row both re-render byte-identically through tokenizer.apply_chat_template(templates/gemma3.jinja) and both completions end on token 106. WMA precondition 1: GPU confirmed at 0 MiB before launch. WMA precondition 3: the [data] header reported 74801 kept / 1 dropped as expected and no error appeared in the first 60 s."
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.0467}
+  diagnostic_result:
+    value: 0.696
+    path: /home/ben/task/analysis/dev250_exp04_greedy.json
+    notes: "held-out dev250 greedy 0.692 -> 0.696, i.e. FLAT (+0.4 pts on 250 items, well inside noise), against +4.67 pts on the official 150. The two halves of the falsifier disagree in magnitude: the official set clears its 0.673 bar, the higher-powered dev set does not move. Best reading is that the true effect is smaller than +4.7 -- somewhere around +1 to +3 -- and that part of the official gain is n=150 luck. Item-level on dev250: 16 fixed against 15 regressions, which is the signature of a small-or-zero effect plus churn, not of a large one."
+  watch_set_result:
+    fixed: 16
+    still_failing: 61
+    regressions: 15
+    path: /home/ben/task/analysis/dev250_watch_exp04.json
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: contradicted
+  summary: "Official 150: 0.66 -> 0.7067 (+4.67 pts), above the 1.3 pp greedy noise floor, and the pre-registered falsifier does not fire because neither of its two clauses holds. But the mechanism claim does not survive: the 34 pp pass@4-vs-single-sample gap was supposed to close, and on the 250 held-out TRAIN items the model moved 0.692 -> 0.696 with 16 fixed against 15 regressions -- churn, not conversion."
+  decision: adopt
+  next_step: "Adopt exp-04 as the incumbent on the official protocol while treating the effect as small. exp-05: checkpoint selection -- the corpus has ~62% novel content relative to exp-02 and 2 full epochs may be past the optimum, so score checkpoint-500 (1.13 epochs) against final under the identical greedy protocol before committing final_model."

@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T14:30:00Z'
+situation:
+  elapsed_h: 7.75
+  remaining_h: 2.25
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.686, protocol_n: 500}
+  trigger: "exp-07's soup was rejected (0.666 vs 0.686), so the incumbent is unchanged. The one lever left that costs a single 8-minute eval is checkpoint selection inside the exp-05 RFT run: checkpoint-600 of 890 exists on disk and has never been scored."
+  trigger_evidence:
+    - path: /home/ben/task/eval/exp-07_soup_dev500.json
+      locator: "accuracy 0.666"
+    - path: /home/ben/task/memory/cards/exp-05.yaml
+      locator: "result.checkpoints_kept: checkpoint-600, checkpoint-890, final"
+  alternatives_rejected:
+    - option: "A second RFT round (sample, filter, train, eval)"
+      reason: "~55 min sampling + ~50 min training + eval does not fit in 2.25 h with any margin to verify the shipped artifact, and exp-05's own gain over its parent was only 2 points"
+    - option: "Score exp-04/checkpoint-1400 as well"
+      reason: "the whole exp-04 line is 2 points behind exp-05 at n=500; spending the remaining eval slot inside the winning line is the better bet"
+    - option: "Stop now and ship exp-05"
+      reason: "that is the default outcome of this card if checkpoint-600 loses; the card costs 8 minutes and can only improve or confirm the shipped model"
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "final_model currently holds exp-05's end-of-epoch weights. A cosine schedule run to zero over self-generated data can pass its best point before the end - RFT on one's own samples narrows the output distribution as it goes - and the mid-run checkpoint of that same run has never been measured, so the shipped model may not be the best one this run produced."
+  evidence:
+    - path: /home/ben/task/memory/cards/exp-05.yaml
+      locator: "result.training_summary: masked loss 0.309 -> 0.237"
+      observation: "loss falls fast on self-generated text, the regime where the last checkpoint is not automatically the best"
+    - path: /home/ben/task/eval/exp-06_exp-05_final_dev500.json
+      locator: "accuracy 0.686"
+      observation: "the end-of-run point is the only one in this run with a number attached"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "ckpts/exp-05/checkpoint-600 scores higher at --limit 500 than exp-05's end-of-epoch 0.686."
+  mechanism: "Rejection-sampling fine-tuning sharpens the model onto its own modal chains; past some point that costs diversity on question shapes it solves only occasionally. If that point is before step 890, the 2/3-of-an-epoch checkpoint is the better model and the last 290 steps were over-sharpening."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "-2 to +2 points; n=500 stderr is 2.1, so only a gap above ~2 points justifies swapping the shipped model"
+  falsified_if: "checkpoint-600 scores at or below 0.686 at n=500, in which case the end-of-epoch checkpoint stays as final_model"
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-05/final, origin: exp-05, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_r1.jsonl
+      source: "unchanged from exp-05; no training happens in this card"
+      n_examples: 54067
+      built_by: /home/ben/task/scripts/build_rft_data.py
+      build_command: [python, scripts/build_rft_data.py, --samples, data/rft_samples.jsonl, --out, data/rft_r1.jsonl, --max-per-q, '2', --fewshot-frac, '0.10', --seed, '1']
+      selection: "no training data is read: this card scores an existing intermediate checkpoint"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0 via evaluate.py"
+    peft: none
+    hyperparams: {seed: 0}
+    target_format: "unchanged weights from exp-05 step 600"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-05/checkpoint-600, --limit, '500', --json-output-file, /home/ben/task/eval/exp-08_ckpt600_dev500.json, --max-connections, '16']
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-08_ckpt600_dev500.log
+  output_dir: /home/ben/task/eval
+  checkpoints: {every_steps: null, keep: all}
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16']
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator: {ref: exp-05, value: 0.686, path: /home/ben/task/eval/exp-06_exp-05_final_dev500.json}
+  diagnostic:
+    what: "null - a single selection eval, no separate mechanism probe fits the remaining budget"
+    n: null
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.2
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-890, step: 890}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 890}
+  training_summary: {final_loss: null, steps: null, notes: "no training; one greedy eval of an existing intermediate checkpoint"}
+  measurements:
+    - metric: accuracy
+      value: 0.696
+      n: 500
+      path: /home/ben/task/eval/exp-08_ckpt600_dev500.json
+      delta_vs_comparator: 0.01
+  diagnostic_result:
+    value: 0.487
+    path: /home/ben/task/analysis/exp-08_paired.json
+    notes: "Paired over the same 500 items: 348 correct vs 343, discordant 19/14, exact McNemar two-sided p = 0.487. Separately, re-running the shipped final_model (byte-identical safetensors to exp-05/final, sha256 prefix 9fcc01bbacc9a58c / 39a9a5ae6d757bfc) gave 0.694 where exp-06 gave 0.686 - so vLLM greedy decoding is not bit-reproducible across runs and carries about +/-0.8 points of jitter by itself. checkpoint-600's +1.0 is inside that."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "checkpoint-600 reads 0.696 against the end-of-epoch 0.686, but paired over the identical 500 items that is 348 vs 343 with McNemar p=0.487, and a re-run of the identical shipped weights moved 0.686 -> 0.694 on its own. The two checkpoints are indistinguishable and the over-sharpening hypothesis is neither supported nor refuted."
+  decision: reject
+  next_step: "Pre-registered rule applied: a gap under 2 points does not move the shipped model, so final_model stays at exp-05/final. Artifact verified end-to-end - evaluate.py loaded /home/ben/task/final_model in a fresh process and scored 0.694 at n=500 with no errors."

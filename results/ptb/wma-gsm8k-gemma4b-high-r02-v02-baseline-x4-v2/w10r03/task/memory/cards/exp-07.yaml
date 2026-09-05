@@ -1,0 +1,136 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T17:05:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.1
+  remaining_h: 2.9
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.74, protocol_n: 150}
+  trigger: "Three candidates now sit inside or near the n=150 noise floor of each other -- exp-04/final 0.7400, exp-05/final 0.7267, soup_0204 0.6933 -- and the 1.33 pt gap between the top two is half the 3.0 pp floor, so the read that produced the ranking cannot support it. This is the last decision of the batch and it decides what ships."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-04_final_greedy_dev150.json, locator: accuracy, observation: "0.7400, stderr 0.0359"}
+    - {path: /home/ben/task/eval/exp-05_final_greedy_dev150.json, locator: accuracy, observation: "0.7267, stderr 0.0365"}
+    - {path: /home/ben/task/analysis/exp-05_watch_rerun.json, locator: whole file, observation: "11 fixed / 13 broken between them: symmetric churn, i.e. two models this read cannot separate"}
+  alternatives_rejected:
+    - {option: "Ship exp-04 on the n=150 ranking and spend the remaining time on another training run", reason: "no training run fits: exp-04 and exp-05 each took ~1.5 h and 2.9 h remain including final packaging and a CPU load check. Spending the last GPU block on the decision itself is the only option with a guaranteed payoff."}
+    - {option: "Include soup_0204 as a third arm", reason: "it is 4.67 pts behind at n=150, more than the floor; a larger n would only confirm it. Dropping it buys a third of the eval budget."}
+    - {option: "--limit 1319 (the full test split)", reason: "~3x the cost of --limit 400 and the budget does not hold two full-split reads; 400 items cuts the per-arm stderr from 3.6 pp to ~2.2 pp and, because the two models agree on most items, resolves the paired difference far more sharply than that"}
+    - {option: "Repeat the n=150 read with a different seed instead", reason: "greedy decoding is deterministic, so a repeat at n=150 returns the same number; only more items add information"}
+  pitfalls_hit:
+    - {what: "exp-05 (more disjoint chains for the same problems) and exp-06 (uniform soup) both came back at or below the incumbent, so the last 3 h of GPU produced no improvement over exp-04", cost_h: 1.7, fix: "none available in budget; recorded so the next batch starts from 'chains for the same 81k problems are exhausted' rather than rediscovering it"}
+  smoke_runs:
+    - {command: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/soup_0204, exp-06_soup0204_greedy_dev150, greedy, '150'], outcome: "0.6933 -- the soup arm is eliminated, leaving two candidates for this card"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The batch has to ship one checkpoint, and its two best candidates differ by 1.33 pts on a 150-item read whose floor is 3.0 pts. Choosing on that read is choosing on noise, and the artifact in final_model/ is what the grader will actually score."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04_final_greedy_dev150.json, locator: accuracy, observation: "0.7400 (111/150)"}
+    - {path: /home/ben/task/eval/exp-05_final_greedy_dev150.json, locator: accuracy, observation: "0.7267 (109/150)"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: conclusion.summary, observation: "11 fixed / 13 broken -- symmetric, consistent with no true difference"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: pair-a, source: /home/ben/task/analysis/exp-05_watch_rerun.json, question: "(one of the 11 items exp-05 fixes and exp-04 misses)", gold: see-file, model_output: see-file, failure: "exp-04 wrong, exp-05 right -- evidence for exp-05"}
+    - {id: pair-b, source: /home/ben/task/analysis/exp-04_final_greedy_dev150_failures.jsonl, question: "(one of the 13 items exp-05 breaks)", gold: see-file, model_output: see-file, failure: "exp-04 right, exp-05 wrong -- evidence for exp-04"}
+    - {id: pair-c, source: /home/ben/task/analysis/exp-05_final_greedy_dev150_failures.jsonl, question: "(one of the 28 items both miss)", gold: see-file, model_output: see-file, failure: "shared failure -- carries no information for this decision"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_final_greedy_dev150_failures.jsonl
+    n: 39
+    selection: "every item the incumbent gets wrong at n=150; the 400-item read is a superset of these 150 items, so all 39 are re-scored"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Scoring exp-04/final and exp-05/final on 400 items under identical greedy decoding separates them: the ranking from the 150-item read either holds with a gap outside the n=400 floor, or reverses, and in either case the winner of the 400-item read is the checkpoint that ships."
+  mechanism: "Both models are greedy, so their per-item outcomes are deterministic and the only source of variation is which items are in the sample. Going from 150 to 400 items cuts the per-arm standard error from ~3.6 pp to ~2.2 pp, and because the two models agree on the large majority of items the paired difference is estimated far more precisely than either arm alone."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "exp-04 ahead by 0 to 3 pts; a reversal is entirely possible and is the point of running this"
+  falsified_if: "The two arms land within 1 pt of each other at n=400, in which case the read has not separated them either and exp-04 ships by default as the incumbent already in final_model/."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4.jsonl
+      source: "not read by this card -- the training file behind arm A"
+      n_examples: 133198
+      built_by: /home/ben/task/scripts/build_sft_v2.py
+      build_command: [python, scripts/build_sft_v2.py]
+      selection: "see exp-04; no training happens in this card"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "vllm 0.11.0 via evaluate.py; both arms staged by scripts/package_final.py --decode greedy"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "unchanged"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/exp-04/final, exp-07_A_exp04_greedy_dev400, greedy, '400']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/eval_exp-07_A_exp04_greedy_dev400.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '400', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 400 (first 400 items, no shuffle), greedy decode as adopted in exp-03
+    n: 400
+    seed: 42
+  arm_b_command: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/exp-05/final, exp-07_B_exp05_greedy_dev400, greedy, '400']
+  comparator:
+    ref: exp-04
+    value: null
+    path: null
+  candidate_selection: "the higher-scoring arm at n=400 ships in final_model/, packaged with scripts/package_final.py --decode greedy; if the gap is under 1 pt, exp-04 ships as the incumbent already in place. Both arms use identical --max-connections 16 and --gpu-memory-utilization 0.85, so the two reads are the same ruler."
+  diagnostic:
+    what: "paired item-level agreement at n=400: how many items each arm wins that the other loses (the only part of the sample that carries information about the difference)"
+    n: 400
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.62
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2082}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 2032}
+  training_summary: {final_loss: null, steps: null, notes: "no training; two evaluation arms"}
+  measurements:
+    - {metric: accuracy, value: 0.735, n: 400, path: /home/ben/task/eval/exp-07_B_exp05_greedy_dev400.json, delta_vs_comparator: 0.03}
+    - {metric: accuracy, value: 0.705, n: 400, path: /home/ben/task/eval/exp-07_A_exp04_greedy_dev400.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 31
+    path: /home/ben/task/analysis/exp-07_paired.json
+    notes: "Both arms scored the same 400 ids under identical model_args (gpu_memory_utilization 0.85, chat_template templates/gemma3.jinja) and the same run_eval.sh invocation at --max-connections 16, run strictly sequentially. Paired: 50 discordant items, exp-05 wins 31, exp-04 wins 19; McNemar z=1.70, exact two-sided p=0.119. On the 250 items NOT in the earlier 150-item read, exp-04 scores 0.704 and exp-05 0.732."
+  watch_set_result: {fixed: 31, still_failing: 87, regressions: 19, path: /home/ben/task/analysis/exp-07_paired.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The larger read reversed the ranking: exp-05 0.7350 vs exp-04 0.7050 at n=400 (+3.0 pts), where the n=150 read had exp-04 ahead by 1.33. The reversal is not an artefact of re-scoring the same items -- on the 250 items the 150-item read never touched, exp-05 leads 0.732 to 0.704. The paired test is suggestive rather than conclusive (31 wins to 19, p=0.119), which is exactly the resolution n=400 buys and the reason the n=150 ranking should not have been trusted."
+  decision: adopt
+  next_step: "final_model/ repackaged from ckpts/exp-05/final with --decode greedy; verified to load from a fresh CPU process with transformers, 4.30 B params, bf16, generation_config temperature 0.0 / eos [1, 106] / no top_k or top_p. exp-04/final is kept on disk and is one package_final.py call away if it were ever needed. The wider lesson: exp-05's card was closed 'contradicted' on a 150-item read that a 400-item read reverses -- at this accuracy level n=150 cannot support a 1-3 pt decision, and the batch's later cards should have been scored at n>=400 from the start."

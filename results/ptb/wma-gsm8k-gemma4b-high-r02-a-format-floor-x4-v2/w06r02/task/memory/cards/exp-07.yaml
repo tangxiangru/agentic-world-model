@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T19:26:51Z'
+situation:
+  elapsed_h: 4.8
+  remaining_h: 5.2
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score: {metric: accuracy, value: 0.6933, protocol_n: 150}
+  trigger: "exp-06's premise died on a probe - OpenMathInstruct-2's gsm8k pool holds only ~80.8k distinct problems and the incumbent has trained on all of them (56 unseen problems in a 5x larger split), so more of that corpus is second solutions to seen problems. The remaining 46/150 dev failures are reasoning errors, which needs a different kind of signal."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/prep_new.log, locator: "'wrote 56 rows with unseen problems' after filtering 805928 gsm8k-derived rows of train_5M"}
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "pass_at_k 0.86005 over 20000 problems at k=4, mean 2.62 correct chains per problem, 2799 unsolved"}
+    - {path: /home/ben/task/eval/exp-05_greedy_dev150_failures.jsonl, locator: "46 failures, all well-formed chains with wrong reasoning"}
+  alternatives_rejected:
+    - {option: "Train on 26k more OpenMathInstruct-2 solutions (the original exp-06 plan)", reason: "the probe showed they are second/third solutions to problems already trained on; the reviewer priced that at [-0.02, +0.05]"}
+    - {option: "Bring in a different corpus of new problems (Orca-Math etc.)", reason: "unverified answers would have to be parsed out of free text, and a download-plus-clean cycle is ~1 h of the 5.2 h left with no correctness guarantee; the rejection-sampled chains are answer-verified by construction"}
+    - {option: "Keep all 32030 correct chains", reason: "~2.5 h of training; 16k rows fit the budget with room for the final packaging and verification"}
+    - {option: "Mix rejection-sampled rows with fresh OpenMathInstruct-2 rows", reason: "two changes in one card; RFT alone is the claim being tested, and the mix is the fallback if this regresses"}
+  pitfalls_hit:
+    - {what: "exp-06 was written, locked and then abandoned because its data premise was only checked after the lock", cost_h: 0.3, fix: "the reviewer's precondition prompted the probe; the probe is now part of the data build for any 'more data' card"}
+  smoke_runs:
+    - command: [python, sample_rft.py, --model, ckpts/exp-04/final, --source, both, --limit, '20000', --k, '4', --kshot-min, '2', --kshot-max, '10', --temperature, '1.0']
+      outcome: "80000 generations in 47 min at 5.0k output tok/s; pass@4 0.860, 32030 unique correct chains kept over 17201 problems, 2799 problems unsolved by all 4 samples"
+    - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/rft_train_full.jsonl]
+      outcome: "16000 documents scanned with the FULL prompt (few-shot prefix included) in the question field, 0 contaminated, 0 matches"
+problem:
+  statement: "The incumbent gets 46/150 dev items wrong with well-formed but incorrect reasoning, and the corpus it was trained on is exhausted: every distinct gsm8k-derived problem in OpenMathInstruct-2 has already been seen. Off-policy 405B chains cannot be added; what has not been tried is training on the model's own verified-correct chains."
+  evidence:
+    - {path: /home/ben/task/logs/prep_new.log, locator: "56 unseen problems out of 805928 rows", observation: "the off-policy corpus is exhausted at the problem level"}
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "pass_at_k 0.86 vs single-sample accuracy 0.693", observation: "a 17-point gap between what the model can do in 4 tries and what it does in 1 - the headroom rejection sampling targets"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: dev-sandcastle, source: /home/ben/task/eval/exp-05_greedy_dev150_failures.jsonl, question: "average square footage of a 4-level sandcastle", gold: "60", model_output: "16+8+4+2 = 28 / 4 = 7 ... ANSWER: 7", failure: "wrong quantity computed"}
+    - {id: dev-dogfood, source: /home/ben/task/eval/exp-05_greedy_dev150_failures.jsonl, question: "bags of dog food in the first year", gold: "5", model_output: "'... 900 / 110 = 8.18 (round up to 9 bags) ... ANSWER: 9'", failure: "wrong model of the feeding schedule"}
+    - {id: dev-tomato, source: /home/ben/task/eval/exp-05_greedy_dev150_failures.jsonl, question: "tomatoes used for 32 oz of sauce", gold: "12", model_output: "'... 32 / 6 = 5 and 1/3 tomatoes ... ANSWER: 5.33'", failure: "inverted ratio"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing SFT from ckpts/exp-04/final on 16k of its own few-shot-prompted chains that reached the gold answer raises greedy dev-150 accuracy above the incumbent's 0.6933."
+  mechanism: "At k=4 the model solves 86% of problems but only 69% at one sample: the correct chain is inside its distribution but not the most likely one. Training on the correct chains it actually produced moves probability mass from the wrong-but-plausible modes to the right ones, in its own phrasing, without introducing a new style. Weighting towards problems where only one of four samples was correct concentrates the signal where the margin is thinnest."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-05, magnitude: "+2 to +6 pts; the pass@4 ceiling is 0.86 and single-sample RFT typically recovers a fraction of that gap"}
+  falsified_if: "greedy dev-150 accuracy is not above 0.6933, or format compliance falls below 0.95."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_train.jsonl
+      source: "synthetic:self - sampled from ckpts/exp-04/final over problems from the GSM8K *train* split and the OpenMathInstruct-2 gsm8k pool"
+      n_examples: 16000
+      built_by: /home/ben/task/sample_rft.py
+      build_command: [python, sample_rft.py, --model, ckpts/exp-04/final, --out, data/rft_raw.jsonl, --source, both, --limit, '20000', --k, '4', --keep-per-problem, '2', --kshot-min, '2', --kshot-max, '10', --temperature, '1.0', --top-p, '0.95', --max-tokens, '700']
+      selection: "k=4 samples per problem at T=1.0/top-p 0.95 with the same k-shot prompt construction the grader uses; a chain is kept only if its final 'ANSWER: <n>' equals the gold answer; exact duplicates dropped; shorter chains preferred; then one chain from each of the 2372 problems where only a single sample was correct, one from each of the 14829 easier problems, topped up with second chains to 16000 rows"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, full parameters, bf16, sdpa, gradient checkpointing; sampling by vllm 0.11.0"
+    peft: "none"
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 3, grad_accum: 10, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged: <CoT>\n\nANSWER: <n><end_of_turn>, loss on the model turn only, rendered with templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, /home/ben/task/data/rft_train.jsonl, --out, /home/ben/task/ckpts/exp-07, --epochs, '1', --lr, '5e-6', --bs, '3', --grad-accum, '10', --max-seq-len, '2560', --save-steps, '250', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: 250
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}-greedy', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6', --max-tokens, '4000']
+    dev_set: "official inspect_evals/gsm8k test, --limit 150 (first 150 items, no shuffle); read through a make_decode_variant.py dir with temperature 0.0, as adopted in exp-05"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.6933
+    path: /home/ben/task/eval/exp-05_greedy_dev150.json
+  diagnostic:
+    what: "share of completions ending in 'ANSWER: <number>' (0.9933 for the incumbent), mean output length, and how many of the incumbent's 46 failures are fixed versus newly broken"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.05
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-07/final
+    step: 528
+  - path: /home/ben/task/ckpts/exp-07/checkpoint-500
+    step: 500
+  - path: /home/ben/task/ckpts/exp-07/checkpoint-528
+    step: 528
+  training_summary:
+    final_loss: 0.216
+    steps: 528
+    notes: 3753 s, 4.22 samples/s; 168/16000 rows (1.05%) dropped as too long; loss is below exp-04's 0.2716 as expected when training on the model's own chains
+  measurements:
+  - metric: accuracy
+    value: 0.72
+    n: 150
+    path: /home/ben/task/eval/exp-07_greedy_dev150.json
+    delta_vs_comparator: 0.0267
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-07_greedy_dev150_diag.json
+    notes: 'format unchanged (0.9933 end in the marker, 149 stop / 1 max_tokens). Chains got shorter: chars p50 452 -> 403, p95 913 -> 754, consistent with training on the model''s own concise correct chains. Against the incumbent''s 46 failures: 13 fixed, 9 newly broken, 33 still failing - a real but partial shift, not a re-roll.'
+  watch_set_result:
+    fixed: 13
+    still_failing: 33
+    regressions: 9
+    path: /home/ben/task/analysis/exp-07_greedy_dev150_failures.jsonl
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: 0.6933 -> 0.7200 (+2.7 pts) on dev-150, greedy on both arms. The mechanism holds in the direction claimed - 13 of the incumbent's 46 failures are fixed and the chains shortened - but 9 new failures appeared and +2.7 pts sits inside the n=150 noise band (stderr 3.7 pp), so the delta is suggestive, not resolved.
+  decision: iterate
+  next_step: 'exp-08: decide the shipped artefact with a lower-noise read - both candidates at --limit 500 (noise floor ~2 pp) under the same greedy protocol - and then build final_model from the winner.'

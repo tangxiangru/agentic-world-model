@@ -1,0 +1,123 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-02T22:14:44Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.1
+  remaining_h: 9.9
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Batch start: no score exists for the immutable starting revision under the official protocol, so no later card can have a legitimate comparator until one is measured."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty table - zero closed cards"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and compare later SFT runs against a published GSM8K number for gemma-3-4b-pt", reason: "protocol rule 2 - a comparator must be measured under the same protocol; a paper number is not one"}
+    - {option: "Baseline at --limit 500 for a tighter CI", reason: "10-shot prompts at 4000 max_tokens make it ~3x the wall time; --limit 150 is the harness default and every later card will use it"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruction-tuned checkpoint. Under the harness's 10-shot GSM8K prompt it is expected to produce unterminated or mis-formatted continuations whose last number is not the final answer, but the size and shape of that failure are unmeasured."
+  evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty table", observation: "no measurement of the starting revision exists in this batch"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L72 scorer=match(numeric=True)", observation: "grader reads the LAST numeric token of the completion, so an unterminated ramble scores wrong even when the reasoning was right"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null   # protocol rule 7: no benchmark test item may enter a watch_set. A held-out dev set carved from the gsm8k TRAIN split is built in exp-02 and used from there on.
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Evaluating the immutable starting revision under evaluate.py --limit 150 yields a finite accuracy that becomes the comparator for every later card in this batch, and its errors are dominated by formatting/termination rather than by arithmetic."
+  mechanism: "gemma-3-4b-pt has no instruction tuning and no exposure to the 'ANSWER: $ANSWER' convention. The 10-shot system message supplies the convention in-context so some of it transfers, but a pretrained model tends to keep generating past the answer, and match(location='end') then reads whatever number came last."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "n/a - this run defines the comparator rather than a delta"}
+  falsified_if: "the eval does not complete, or the completions show the base model already terminating cleanly with 'ANSWER: N' as its final line in more than 90% of samples, which would mean formatting is not the problem and later cards must target arithmetic instead"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    # No training happens in this card. The only data the model is fed beyond the
+    # graded questions is the grader's own 10-shot system message, which inspect_evals
+    # builds from the gsm8k TRAIN split (shuffle seed 42, limit 10). Materialised here
+    # so later cards can render the exact prompt the grader renders.
+    - path: /home/ben/task/data/fewshot10.jsonl
+      source: "openai/gsm8k (data_dir=main, split=train, shuffle seed=42, limit=10)"
+      n_examples: 10
+      built_by: null
+      build_command: [python, -c, "inspect_evals.gsm8k.gsm8k fewshot block, seed 42, dumped to data/fewshot10.jsonl and data/fewshot10_system.txt"]
+      selection: "exactly the 10 exemplars inspect_evals/gsm8k puts in the system message; train split only"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "inspect-ai 0.1.dev3780 + vllm 0.11.0"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - nothing is trained in this card"
+    stop_token: null
+    # The grader does NOT read a marker: match(numeric=True, location='end') splits the
+    # completion on whitespace, walks it backwards and takes the first token that is
+    # numeric after punctuation stripping (inspect_ai/scorer/_common.py first_number_normalized).
+    # 'ANSWER:' is only a prompt convention, so there is no marker for preflight to count.
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 in dataset order, 10-shot with fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions whose final non-empty line matches 'ANSWER: <number>' - measures formatting/termination rather than math"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.33
+  output_checkpoint: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  checkpoints_kept:
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.06, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.267
+    path: /home/ben/task/analysis/exp-01_diag.json
+    notes: "only 26.7% of completions end on an 'ANSWER: <number>' line; 68/150 (45%) hit the 4000-token cap without ever emitting <end_of_turn>; median completion is 1971 tokens. Completions repeat the prompt back and continue with unrelated invented problems."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base gemma-3-4b-pt scores 0.060 +/- 0.019 on dev-150 under the official protocol; that is the comparator for this batch. The failure is termination and format, not arithmetic: 45% of samples run to the 4000-token cap, only 27% end on an ANSWER line, and the graded last-number is usually taken from invented follow-on text."
+  decision: adopt
+  next_step: "exp-02: SFT on GSM8K-train-derived CoT with every target ending 'ANSWER: N' + <end_of_turn> (token 106, in the base generation_config eos list, therefore a vLLM stop token)."

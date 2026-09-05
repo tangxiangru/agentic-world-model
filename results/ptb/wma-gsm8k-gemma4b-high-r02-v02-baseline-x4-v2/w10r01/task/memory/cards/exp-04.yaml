@@ -1,0 +1,145 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T12:12:23Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.5
+  remaining_h: 4.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/best
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "With turn discipline (exp-02) and prefix conditioning (exp-03) both fixed, the incumbent's dev300 failures are 63 of 77 plain wrong answers: the chain never computes the right number. no_stop is 2 and gold_in_chain 12, so there is nothing left to win on formatting."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/dev300_exp-03_checkpoint-200_fs10.jsonl, locator: "300 items, greedy, 10-shot", observation: "tags correct 223, wrong_answer 63, gold_in_chain 12, no_stop 2 - wrong_answer is 82% of what is left"}
+    - {path: /home/ben/task/analysis/exp03_dev150_diag.json, locator: "harness log, 150 items", observation: "answer_marker_share 0.9867, max_tokens 2/150, output p50 126 tokens - the formatting levers are exhausted"}
+  alternatives_rejected:
+    - {option: "Stop here and submit exp-03/best", reason: "4.5 h remain and final_model/ already holds exp-03/best, so the downside of one more card is bounded by GPU time; the incumbent is only re-promoted if the candidate wins"}
+    - {option: "A third round of fresh public data (more OpenMathInstruct-2)", reason: "exp-02 already used 31k OMI2 rows and a second epoch over that distribution actively hurt (0.68 -> 0.54). Self-generated correct chains are on-policy: in the model's own phrasing, and by construction chains it can actually produce"}
+    - {option: "DPO on correct/incorrect sample pairs", reason: "the sampling produces both, so pairs are available - but a preference run means a new trainer and new failure modes, with no smoke run, on the last card of a 10-hour budget. RFT reuses the exact pipeline that produced exp-02 and exp-03"}
+    - {option: "Sample all 20173 pooled questions rather than 12000", reason: "80k generations against 48k; the marginal questions are mostly ones already solved, and wall clock is the binding constraint"}
+    - {option: "Train the RFT rows 0-shot, as exp-02 did", reason: "that would undo exp-03 - the model would again never see an exemplar-laden prompt. The RFT rows go through the same 0/2/4/8/10-shot mix add_fewshot.py used for exp-03, so both effects are carried"}
+  pitfalls_hit:
+    - {what: "running a CPU model-soup job and a vLLM job concurrently corrupted gguf/vocab.cpython-310.pyc in site-packages; every later vLLM start died with 'ValueError: bad marshal data' from an unrelated import", cost_h: 0.2, fix: "delete the one bad .pyc; do not run two heavy python jobs that import the same packages at the same moment"}
+    - {what: "sweep.sh cached the empty .res files those failed runs left behind and reported them as '(cached)', hiding the failure for one cycle", cost_h: 0.1, fix: "cache test changed from -f to -s"}
+    - {what: "the local dev proxy was contaminated by its own training data. dev_heldout300 was carved out of GSM8K train BEFORE the pool was built, but MetaMathQA and OpenMathInstruct-2 are augmentations of the whole GSM8K train split, so 118 of the 300 dev questions re-entered through sft_r1.jsonl, 22 through sft_r2_fewshot.jsonl and 32 through sft_r3_rft.jsonl - 150 of 300 in total, and 16 of the 40 watch items. Found by the WMA on this card (probe p2). The benchmark test split is NOT affected: contamination_check.py returns 0 hits on all three training files.", cost_h: 0.2, fix: "data/dev_clean.jsonl = the 150 dev items present in no training file; every read from this card on uses it. Re-scoring the stored exp-02/exp-03 sample files on the clean subset shifts levels by 1-3 points and changes no ranking: exp-02 ckpt-1800 fs10 0.680 -> 0.6733, exp-03 ckpt-200 fs10 0.7433 -> 0.7333, ckpt-3546 fs10 0.540 -> 0.5467."}
+  smoke_runs:
+    - {command: [python, gen.py, --model, ../ckpts/exp-03/best, --questions, ../data/rft_questions.jsonl, --n, "4", --temperature, "1.0", --limit, "12000"], outcome: "48000 samples in 15 min; 10777/12000 questions solved at least once (solve rate 0.898); 31164 distinct correct reasoning paths. Incidentally, greedy pass@1 of the incumbent on these 12000 questions is 0.7149"}
+    - {command: [python, "-c", "contamination_check.py on data/rft_questions.jsonl"], outcome: "0 of 20173 flagged"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent's remaining failures are reasoning errors, not format errors: it misreads a rate or a ratio, or drops a term, and the chain reaches a confidently wrong number. 63 of the 77 dev300 failures are of this kind, and they are the same 63 with or without the prefix."
+  evidence:
+    - {path: /home/ben/task/analysis/dev300_exp-03_checkpoint-200_fs10.jsonl, locator: "300 items, tag=wrong_answer", observation: "63/300 on the full dev set; the 0-shot file gives 63/300 as well, so these are not prompt-sensitive. On the uncontaminated 150 the incumbent scores 0.7333 with the prefix and 0.7200 without."}
+    - {path: /home/ben/task/analysis/dev300_exp-02_checkpoint-1800_fs0.jsonl, locator: "300 items, tag=wrong_answer", observation: "69/300 for exp-02 0-shot - two rounds of format work moved this bucket by 6 items; it needs a different intervention"}
+  affected_share: 0.82
+  failure_examples:
+    - {id: trdev-5824, source: /home/ben/task/data/dev_heldout300.jsonl, question: "Barry has $10.00 worth of dimes. Dan has half that amount but finds 2 more dimes. How many dimes does Dan have?", gold: "52", model_output: "Dan has 10/10=10 dimes. He finds 2 more dimes so he has 10+2=12 dimes. ANSWER: 12", failure: "never converts dollars to dimes and applies 'half' to nothing; a unit-conversion miss"}
+    - {id: trdev-1204, source: /home/ben/task/data/dev_heldout300.jsonl, question: "8 more solar systems for every planet; 20 planets; how many solar systems and planets altogether?", gold: "200", model_output: "20 * 8 = 160 ... 160 + 20 = 180. ANSWER: 180", failure: "reads '8 more per planet' as '8 per planet'; a dropped-term reading error"}
+    - {id: trdev-5579, source: /home/ben/task/data/dev_heldout300.jsonl, question: "Amaya's marks across Maths, Arts, Social Studies and Music", gold: "296", model_output: "1/10*70 = 7 marks less in Maths ... total 306", failure: "applies the 1/10 reduction to the wrong subject's score; multi-constraint bookkeeping"}
+  watch_set:
+    path: /home/ben/task/data/dev_clean.jsonl
+    n: 150
+    selection: "the 150 of the 300 held-out GSM8K-train dev items whose question text appears in NO training file of exp-02, exp-03 or exp-04 (normalised exact match). watch40 is retired as a watch set: 16 of its 40 items are in sft_r1.jsonl."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing exp-03's checkpoint-200 on its own sampled solutions that reach the gold answer - rendered through the same 0/2/4/8/10-shot prefix mix - shrinks the wrong_answer bucket on dev300 relative to exp-03, and moves harness dev-150 accuracy in the same direction."
+  mechanism: "Rejection sampling keeps only chains the model can actually generate and that verifiably land on the right number, so training sharpens the distribution onto its own successful reasoning paths rather than importing a foreign style. Questions it solves 1-in-4 times get their correct path reinforced; the two-paths-per-question cap and the shortest-first ordering stop easy questions from swamping the file."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0.01 to +0.04 on clean-dev150-with-prefix; RFT gains on an already-tuned model are modest, and at n=150 (either set) the low end is below the noise floor - the harness read is the one that decides promotion"
+  falsified_if: "clean-dev150-with-prefix accuracy at every kept checkpoint is at or below the incumbent's 0.7333, or the wrong_answer bucket does not shrink relative to the incumbent's on those same 150 items."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/checkpoint-200
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_r3_rft.jsonl
+      source: "synthetic:self - 4 samples at T=1.0 / top_p 0.95 from ckpts/exp-03/best over the first 12000 questions of data/rft_questions.jsonl (7173 GSM8K train questions plus 13000 OpenMathInstruct-2 gsm8k questions the SFT never saw), kept only where the graded answer equals gold"
+      n_examples: 12184
+      built_by: /home/ben/task/scripts/build_rft.py
+      build_command: [python, build_rft.py, --samples, ../data/rft_samples.jsonl, --out, ../data/sft_r3_rft_raw.jsonl, --max-per-question, '2', --hard-threshold, '2']
+      selection: "drop any sample that did not stop, exceeds 3000 characters, contains '####', or does not contain exactly one 'ANSWER: '; keep only samples whose graded answer equals gold; dedup within a question on the sequence of numbers the chain computes; keep the 2 shortest survivors for questions solved at most 2 times in 4 and only 1 for easier ones (12184 rows, 13.3M tokens, ~380 steps; the ungated 2-per-question file was 20129 rows / 22.1M tokens / ~88 min, which the remaining budget does not allow). Then re-render every prompt with add_fewshot.py, k drawn from [0,0,0,2,4,8,10,10], so exp-03's prefix conditioning is preserved. Questions come from a pool that excludes the 300 dev / 40 watch items by construction."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer with a custom completion-only collator
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 2, grad_accum: 16, max_seq_len: 3072, scheduler: cosine, warmup: 0.05, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast + 8-bit Adam; the artifact is cast to bf16 before saving", seed: 0}
+    target_format: "unchanged: supervised target '{self-generated chain}\\n\\nANSWER: {n}<end_of_turn>', prompt tokens at label -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-03/checkpoint-200, --data, /home/ben/task/data/sft_r3_rft.jsonl, --out, /home/ben/task/ckpts/exp-04, --lr, '5e-6', --epochs, '1', --bs, '2', --grad-accum, '16', --max-seq-len, '3072', --warmup, '0.05', --save-strategy, steps, --save-steps, '50', --seed, '0']
+    cwd: /home/ben/task/scripts
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 50
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.2}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '2']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test slice, first 150; 10-shot system message from the train split at fewshot_seed 42). --max-tokens 4000 and --gpu-memory-utilization 0.3 are evaluate.py's defaults, pinned by the script hash in the lock file."
+    n: 150
+    seed: 42
+    decoding: "greedy, from the candidate's own generation_config.json written by scripts/finalize_ckpt.py - identical to exp-02's and exp-03's reads"
+  comparator:
+    ref: exp-03
+    value: 0.72
+    path: /home/ben/task/eval/exp03_dev150.json
+  diagnostic:
+    what: "every kept checkpoint scored on data/dev_clean.jsonl (150 items, none of them in any training file) at 10 shots by scripts/gen.py and bucketed by scripts/tag_failures.py. The mechanism claim is that wrong_answer shrinks against the incumbent's count on those same 150 items while no_stop and gold_in_chain do not regress. Also recorded: the sampler's solve rate (0.898 of 12000 questions solved at least once in 4 tries), which bounds the headroom RFT had."
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.87
+  output_checkpoint: /home/ben/task/ckpts/exp-04/best
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-50, step: 50}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-100, step: 100}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-150, step: 150}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-200, step: 200}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-250, step: 250}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-300, step: 300}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-350, step: 350}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-381, step: 381}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 381}
+    - {path: /home/ben/task/ckpts/exp-04/best, step: 250}
+  training_summary: {final_loss: 0.1974, steps: 381, notes: "3138 s wall, 3.9 samples/s, peak GPU 71 GB at bs 2 x 3072. ckpts/exp-04/best is checkpoint-250 through scripts/finalize_ckpt.py."}
+  measurements:
+    - {metric: accuracy, value: 0.74, n: 150, path: /home/ben/task/eval/exp04_dev150.json, delta_vs_comparator: 0.02}
+  diagnostic_result:
+    value: 0.7733
+    path: /home/ben/task/analysis/dev_exp-04_checkpoint-250_fs10.jsonl
+    notes: "clean-dev150 with the 10-shot prefix, greedy: checkpoint-50 0.6933, 150 0.7200, 250 0.7733, 350 0.7267, final(381) 0.7400, against the incumbent's 0.7333. The named bucket moved: wrong_answer 32 -> 29 on the same 150 items, with gold_in_chain 7 -> 5 and no_stop 1 -> 0. The sampler's solve rate was 0.898 of 12000 questions in 4 tries, so ~10% of the pool contributed nothing."
+  watch_set_result: {fixed: 6, still_failing: 34, regressions: 0, path: /home/ben/task/analysis/dev_exp-04_checkpoint-250_fs10.jsonl}
+  failure: null
+  notes: "Harness diagnostic on the candidate is the cleanest of the run: answer_marker_share 1.000, stop_reasons {stop: 150} with no truncation at all, output p50 104 tokens and max 303 (exp-03: 0.9867, 2 max_tokens, max 4000). The gguf/vocab .pyc corruption from the last card recurred twice more and cost another ~0.25 h, once inside evaluate.py's own vLLM server launch where it surfaced only as 'Failed to start vLLM server'. Deleting the __pycache__ directory and running every vLLM process with PYTHONDONTWRITEBYTECODE=1 stopped it. The checkpoint sweep is not monotone (250 up, 350 down, 381 up), which at n=150 is a ~3.5pp standard error; checkpoint-250 was chosen on the point estimate and confirmed independently on the harness."
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "RFT on the model's own verified-correct chains gives +4.0 points on the uncontaminated dev set (0.7333 -> 0.7733) and +2.0 on the harness (0.720 -> 0.740), both in the predicted direction and at the upper end of the predicted range. The mechanism read is consistent though small: the wrong_answer bucket it targeted fell 32 -> 29 of 150 while nothing regressed, and turn discipline became perfect (150/150 stopped, no truncation)."
+  decision: adopt
+  next_step: "final_model/ now holds ckpts/exp-04/best and passes scripts/verify_final.py. With ~2.9 h left the remaining value is in resolving the exp-03/exp-04 gap, which is inside one standard error at n=150: re-read both at --limit 500 and keep whichever wins."

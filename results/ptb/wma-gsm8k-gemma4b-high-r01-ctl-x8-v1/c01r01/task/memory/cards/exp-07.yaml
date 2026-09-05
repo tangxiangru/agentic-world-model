@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-02T20:22:00Z'
+situation:
+  elapsed_h: 6.3
+  remaining_h: 3.7
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.788, protocol_n: 500}
+  trigger: "Two independent readings say the model is still data-limited rather than saturated: exp-06 scored exp-02's 1-epoch checkpoint at 0.638 against the 2-epoch checkpoint's 0.7067 under the same sampled decode, and exp-04 showed that recycling the model's own output (pass@4 already 0.945) buys nothing. 72518 OpenMathInstruct-2 gsm8k-sourced rows built by the same pipeline were never used - exp-02 took the first 80000 of a 152518-row pool."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-06-ck704_dev500.json, locator: "whole file", observation: "exp-02/checkpoint-704 (1 epoch, sampled decode) 0.638 vs exp-02/final (2 epochs, sampled decode) 0.7067 at n=150 - accuracy was still climbing with exposure when exp-02 stopped"}
+    - {path: /home/ben/task/logs/build_v3.log, locator: "pool_gsm=152518", observation: "exp-02 consumed pool_gsm[0:80000]; rows 80000-152518 are unseen and pass the contamination checker (logs/decon_v3.log)"}
+  alternatives_rejected:
+    - {option: "Another rejection-sampling round", reason: "exp-04 is closed contradicted and cost 4 points at n=500; the on-policy well is dry"}
+    - {option: "Restart from base and train 3 epochs on the full 152k pool", reason: "~4.5 h of training against 3.7 h remaining, and it would throw away a verified 0.788 checkpoint for an unverified one"}
+    - {option: "Repeat the 7473 human GSM8K train solutions a third time", reason: "the model has already seen them twice; a third pass risks memorising 7k items instead of learning from 72k new ones, so --no-human-gsm drops them from this round"}
+    - {option: "Raise the learning rate back to 1e-5", reason: "this is a continuation from an already-converged checkpoint; 5e-6 with a fresh cosine decay is the standard way to absorb new data without discarding what exp-02 learned"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v3_decon.jsonl], outcome: "80518 documents scanned, 0 contaminated, 0 matches (logs/decon_v3.log)"}
+problem:
+  statement: "The incumbent gets 106 of 500 dev items wrong, and every cheap lever is spent: format is perfect (0.6% max_tokens, one ANSWER line everywhere), decoding is already greedy, and reweighting the model's own samples made it worse. What is left is that exp-02 stopped after seeing 80000 of the 152518 available gsm8k-domain solutions, at a point where its own 1-epoch-to-2-epoch delta shows accuracy was still rising with exposure."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05-incumbent_tags.json, locator: "summary", observation: "0.788 at n=500 with max_tokens_share 0.006 and multi_answer_line_share 0.0 - the remaining 106 errors are reasoning"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion", observation: "RFT round rejected: -3.8 pts at n=500"}
+  affected_share: 0.212
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-05-incumbent_watch.jsonl
+    n: 106
+    selection: "every one of the 500 items exp-03_greedy scored wrong under the n=500 protocol; stable ids only (protocol rule 7)"
+hypothesis:
+  claim: "One further epoch from exp-02/final over 80518 OpenMathInstruct-2 rows the model has never seen, at lr 5e-6, raises n=500 greedy accuracy above the incumbent's 0.788."
+  mechanism: "Unlike exp-04's self-samples, these rows carry solutions the model did not produce, for problems it has not been trained on, so the gradient carries information rather than reweighting the existing distribution. exp-06's 1-epoch/2-epoch gap is the direct evidence that this model's accuracy responds to additional distinct exposure."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +4 pts at n=500"
+  falsified_if: "n=500 greedy accuracy at or below 0.788, which would say the model is saturated on this corpus and exp-02's 2 epochs were the right stopping point"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (train_1M)"
+      n_examples: 80518
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v3.jsonl, --skip-gsm-aug, '80000', --n-gsm-aug, '72518', --skip-math, '8000', --n-math, '8000', --no-human-gsm]
+      selection: "the same seeded pools build_data.py produced for exp-02, sliced past what exp-02 consumed: gsm-sourced rows 80000-152518 (72518) and math rows 8000-16000 (8000). Human GSM8K train solutions excluded (--no-human-gsm) because exp-02 already trained on them twice. Same normalisation, same max-2-per-problem cap, same prompt-variant mixture (88% zero-shot / 8% 1-4 shots / 4% the grader's exact 10-shot system message). The GSM8K test split is never read."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "custom torch loop (scripts/train_sft.py) on transformers 4.57.3 + bitsandbytes 0.49.1"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 64, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 20, weight_decay: 0.0, precision: "fp32 master weights, bf16 autocast compute, AdamW8bit", seed: 2}
+    target_format: "unchanged from exp-02: CoT, blank line, 'ANSWER: <number>', <end_of_turn>; loss on target tokens only. Checkpoints are saved with the greedy generation_config exp-03 established."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v3.jsonl, --init, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-07, --cache, data/tok_v3.npz, --epochs, '1.0', --lr, '5e-6', --warmup, '20', --token-budget, '16384', --max-bs, '64', --accum, '4', --max-seq-len, '2560', --save-every-frac, '0.5', --seed, '2']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.788
+    path: /home/ben/task/eval/exp-05-incumbent_dev500.json
+  diagnostic:
+    what: "max_tokens share and median completion length at n=500 - the format properties exp-02 established must survive the extra epoch"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.20
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/checkpoint-302, step: 302}
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 604}
+  training_summary: {final_loss: 0.2821, steps: 604, notes: "starts at 0.297 and ends at 0.282 - compare exp-04's RFT round, which started at 0.173 and stayed flat. The higher, still-falling loss is the direct signal that these rows carried information the model did not already have."}
+  measurements:
+    - {metric: accuracy, value: 0.806, n: 500, path: /home/ben/task/eval/exp-07-final_dev500.json, delta_vs_comparator: 0.018}
+    - {metric: accuracy, value: 0.792, n: 500, path: /home/ben/task/eval/exp-07-ck302_dev500.json, delta_vs_comparator: 0.004}
+  diagnostic_result:
+    value: 0.006
+    path: /home/ben/task/analysis/exp-07-final_tags.json
+    notes: "max_tokens share 0.006 - identical to the incumbent; multi_answer_line_share 0.0. Median completion grew 391 -> 480 chars, so the extra epoch made the model reason at more length, which is where the gain plausibly comes from."
+  watch_set_result: {fixed: 45, still_failing: 61, regressions: 36, path: /home/ben/task/analysis/exp-07_paired.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "n=500 greedy 0.788 -> 0.806 (+1.8), with the half-epoch checkpoint in between at 0.792 - a monotone response to exposure, the opposite of exp-04's monotone decline. On the same 500 items the paired count is 45 gained / 36 lost (net +9, exact McNemar p=0.37): the direction is right and the mechanism check (loss starting high and falling) is clean, but this margin alone is not separable from noise at n=500."
+  decision: iterate
+  next_step: "Decide the shipped model on the full 1319-item test set rather than on a +1.8 pt margin with p=0.37: score exp-07/final and exp-03_greedy at --limit 1319 and take the paired winner."

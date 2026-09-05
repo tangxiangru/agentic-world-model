@@ -1,0 +1,158 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T08:35:36Z'
+situation:
+  elapsed_h: 2.3
+  remaining_h: 7.7
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: 0.0867
+      protocol_n: 150
+  trigger: "exp-02 scored 0.0733 on dev-150 (below the 0.0867 base) but its FIRST 'ANSWER: <n>' line is correct on 94 of 150 items; 146 of 150 completions continue past that line with a newly invented word problem, so the grader's last-number rule reads a number from the invention."
+  trigger_evidence:
+  - path: /home/ben/task/memory/cards/exp-02.yaml
+    locator: "result.diagnostic_result.notes"
+  - path: /home/ben/task/eval/exp-02/exp-02_dev150.json
+    locator: "accuracy = 0.0733"
+  - path: /home/ben/task/analysis/exp-02_failures.json
+    locator: "summary.stop_reasons = {stop: 86, max_tokens: 64}; summary.no_answer_line_share_of_failures = 0.129"
+  alternatives_rejected:
+  - option: "Retrain from the base model with the few-shot prefix mixed in from the start"
+    reason: "throws away exp-02's 0.9 h of arithmetic learning to fix a formatting habit; a continuation run reaches the same place in a third of the time"
+  - option: "Fix it at decode time instead (temperature 0, or a stop sequence)"
+    reason: "continuation past the answer is the mode of the distribution here, not sampling noise, so greedy would not remove it; and evaluate.py may not be modified, so no stop string can be injected. Decode config is a separate lever, tested in its own later card once the model actually terminates."
+  - option: "Always use the exact 10-shot prefix on every training row"
+    reason: "ties the habit to one 1500-token prefix and costs ~1500 tokens on every row; using the exact message on half the prefixed rows and a random subset of shots on the other half covers the graded prompt exactly while keeping the mean prefix near 1100 tokens"
+  - option: "bs 4 x grad_accum 8 at max_seq_len 2560 (the originally locked shape)"
+    reason: "WMA exp-03 cheaper_variants[0]: 4 x 2560 = 10240 tokens per micro-batch against exp-02's measured 8192, which already peaked at 69 GB of the 80 GB card. bs 2 x accum 16 keeps the effective batch at 32 and halves peak activation. max_seq_len raised 2560 -> 3072 at the same time because the grader-exact prefix (2044 tokens) plus the longest row (999) is 3043, and dropping those rows would thin exactly the condition being taught."
+  - option: "Use all 86k unseen rows instead of 12k"
+    reason: "at ~1300 tokens/row that is a 3.5 h run; the behaviour being taught is termination, which needs coverage, not scale. 12k rows is ~35 min and leaves budget for RFT."
+  pitfalls_hit:
+  - what: "exp-02 trained on zero-shot-rendered prompts while the grader always prefixes ten Q/Reasoning/ANSWER blocks into the user turn; the model learned to stop in the training context and not in the graded one. Cost: the whole exp-02 run as a score, though its weights are the parent here"
+    cost_h: 1.3
+    fix: "render a few-shot prefix into 85% of training prompts, half of them the grader's exact 10-shot message"
+  smoke_runs:
+  - command: [python, -c, "'\\n\\n'.join(render.build_fewshot_shots()) == the system_message template in logs/2026-09-04T09-31-09+00-00_gsm8k_hnXZgVEWYsMTkPN5pRN9uz.json"]
+    outcome: "EXACT MATCH True, 5872 chars both sides - the prefix trained on is the grader's own string, read back out of the grader's own log rather than rebuilt from the same helper" 
+  - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/_decon_cont.jsonl]
+    outcome: "12000 documents scanned, 0 contaminated, 0 matches"
+problem:
+  statement: "exp-02's checkpoint solves the problem and writes the ANSWER line, then fails to emit <end_of_turn>: primed by the ten Q/Reasoning/ANSWER blocks in the graded user turn, it continues with an eleventh problem of its own invention. The grader reads the last number in the completion, so a correct answer is overwritten by a number from the invented problem on 146 of 150 items."
+  evidence:
+  - path: /home/ben/task/analysis/exp-02_failures.json
+    locator: "summary"
+    observation: "139 failures, only 18 of them lacking an ANSWER line; 64 completions run to the 4000-token cap"
+  - path: /home/ben/task/memory/cards/exp-02.yaml
+    locator: "result.diagnostic_result"
+    observation: "first-ANSWER accuracy 0.6267 vs graded 0.0733 - a 55-point gap that is purely termination"
+  affected_share: 0.973
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch.jsonl
+    n: 139
+    selection: "ids only (rule 7) of every dev-150 item exp-02 scored incorrect"
+hypothesis:
+  claim: "A short continuation SFT of the exp-02 checkpoint on 12k fresh rows whose prompts carry a few-shot prefix (85% of rows; half of those the grader's exact 10-shot message) makes the model emit <end_of_turn> after its single ANSWER line under the graded prompt, and raises dev-150 accuracy against both exp-02 and the base model."
+  mechanism: "Termination is context-conditioned. exp-02 saw <end_of_turn> only after zero-shot prompts, so under a few-shot prefix the in-context 'next block' pattern wins. Showing the same target - one solution, one ANSWER line, then token 106 - with the prefix present makes stopping the learned continuation in exactly the context the grader uses."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "toward exp-02's 0.6267 first-answer accuracy; anything above ~0.50 confirms the gap was termination"
+  falsified_if: "dev-150 accuracy stays below 0.30, or the share of completions that continue past the first ANSWER line stays above 0.30"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/sft_cont_12k.jsonl
+    source: "derived:exp-02 - hf:nvidia/OpenMathInstruct-2 train_1M gsm8k/augmented_gsm8k rows, restricted to rows NOT seen in exp-02's 64k file (86k such rows exist; 12k sampled with seed 3)"
+    n_examples: 12000
+    built_by: /home/ben/task/prep_data.py
+    build_command: [python, prep_data.py, --out, data/sft_omi2_gsm8k_150k.jsonl, --n, '150000']
+    selection: "same formatting rules as exp-02 (boxed unwrapped, single trailing 'ANSWER: <n>' verified as the last number, target ends with <end_of_turn>), then set-difference against exp-02's training file so no row is seen twice"
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full-parameter, flash_attention_2"
+    peft: none
+    hyperparams:
+      lr: 5.0e-6
+      epochs: 1
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 1
+      optim: adamw_bnb_8bit
+      system_prob: 0.85
+      frozen: "vision_tower + multi_modal_projector; 3.88B trainable"
+      loss: "completion-only; the few-shot prefix is prompt, so it carries no loss"
+    target_format: "prompt = <bos><start_of_turn>user\\n{few-shot blocks}\\n\\n{inspect MATH_PROMPT_TEMPLATE with the question}<end_of_turn>\\n<start_of_turn>model\\n ; target = one chain of thought, one 'ANSWER: <n>' line, then <end_of_turn>. With probability 0.15 no prefix at all; when a prefix is used it is the grader's exact 10 blocks half the time and a random subset of 1-9 of them otherwise."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_cont_12k.jsonl, --parent,
+      /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-03, --lr, '5e-6',
+      --epochs, '1', --bs, '2', --grad-accum, '16', --max-len, '3072', --system-prob,
+      '0.85', --save-steps, '150', --seed, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 150
+    keep: 2
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.8
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file,
+      '{out}.json']
+    dev_set: "official --limit 150 at evaluate.py defaults (--max-connections 2, --max-tokens 4000, --gpu-memory-utilization 0.3); decode still inherited unchanged from the parent's generation_config.json (sampled, top_k 64, top_p 0.95, temperature 1.0), so this card holds decode fixed against exp-02 and exp-01"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.0733
+    path: /home/ben/task/eval/exp-02/exp-02_dev150.json
+  diagnostic:
+    what: "share of dev-150 completions that continue past their first 'ANSWER: <n>' line (0.973 for exp-02), and first-ANSWER accuracy, both read from the new inspect log"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.75
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-03/final, step: 375}
+  - {path: /home/ben/task/ckpts/exp-03/checkpoint-300, step: 300}
+  - {path: /home/ben/task/ckpts/exp-03/checkpoint-150, step: 150}
+  training_summary: {final_loss: 0.2807, steps: 375, notes: "11998/12000 rows kept at max_seq_len 3072 (2 dropped); tokens p50=1960 p99=2623 max=3044, 19.7M total; 10167 rows carried a few-shot prefix. train_runtime 2717 s, peak GPU 54 GB (the bs 2 x accum 16 shape the re-lock adopted). checkpoint-150 was rotated out by save_total_limit=2, so only 300 and 375 survive."}
+  measurements:
+  - {metric: accuracy, value: 0.6467, n: 150, path: /home/ben/task/eval/exp-03/exp-03_dev150.json, delta_vs_comparator: 0.5734}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-03_failures.json
+    notes: "Completions continuing past their first ANSWER line: 0 of 150, down from 146 of 150 in exp-02. Stop reasons stop 149 / max_tokens 1 (exp-02: 86 / 64). Mean completion length 594 chars. First-ANSWER accuracy 0.6533 vs graded 0.6467 - the 1-point residue is the single truncated sample plus rounding/format edge cases, not continuation."
+  watch_set_result: {fixed: 89, still_failing: 50, regressions: 4, path: /home/ben/task/analysis/exp-02_watch.jsonl}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.0733 -> 0.6467 (+57.3 against exp-02, +56.0 against the 0.0867 base). The mechanism is confirmed exactly: continuation past the first answer fell from 146/150 to 0/150 and max_tokens truncations from 64 to 1, while first-answer accuracy barely moved (0.6267 -> 0.6533). The 55-point gap exp-02 left on the table was entirely termination under the few-shot grading prompt."
+  decision: adopt
+  next_step: "Copied to final_model/ as the working incumbent. Two levers left: (a) decode config - the checkpoint still serves at the parent's sampled defaults (temperature 1.0, top_k 64, top_p 0.95), so a greedy variant is a weights-free test; (b) rejection-sampling fine-tuning on self-generated correct solutions to GSM8K train questions."

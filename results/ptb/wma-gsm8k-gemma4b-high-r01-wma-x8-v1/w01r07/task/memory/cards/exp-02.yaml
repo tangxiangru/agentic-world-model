@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T14:08:46Z'
+situation:
+  elapsed_h: 0.35
+  remaining_h: 9.65
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.06, protocol_n: 150}
+  trigger: "exp-01's diagnostic: greedy decoding gets the FIRST 'ANSWER: N' line right on 44/150 items (0.293) but 0/150 generations terminate, so the scored accuracy is 0.040. The gap between 0.293 and 0.040 is pure termination/format loss."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "greedy.first_answer_correct=44, greedy.stopped=0, greedy.scored=6"}
+    - {path: /home/ben/task/memory/cards/exp-01.yaml, locator: "result.diagnostic_result"}
+  alternatives_rejected:
+    - {option: "Few-shot prompt engineering / stop-string tricks", reason: "evaluate.py and the task definition are immutable; the only lever on the prompt side is the model itself"}
+    - {option: "LoRA instead of full fine-tuning", reason: "4B model on an 80GB H100 fits full FT with the vision tower frozen; LoRA would only cost accuracy here"}
+    - {option: "GSM8K train alone (7473 rows)", reason: "too small to move a 4B base far past the 0.293 first-answer ceiling; OpenMathInstruct-2's gsm8k-sourced rows add ~45k harder, more varied problems from the same train seeds"}
+    - {option: "MetaMathQA", reason: "its targets carry a second answer marker ('The answer is: N') on top of gsm8k's '#### N', the double_answer_format pitfall; OpenMathInstruct-2 has a single \\boxed marker that is easy to normalise away"}
+  pitfalls_hit:
+    - {what: "GenerationConfig with do_sample=false + temperature=0.0 is rejected by save_pretrained, so any later round trip through transformers would crash at checkpoint save", cost_h: 0.05, fix: "write do_sample=true + temperature=0.0 instead; vLLM ignores do_sample and reads temperature==0 as greedy. Verified both directions on CPU."}
+  smoke_runs:
+    - {command: [python, -c, "render_prompt/render_completion vs tokenizer.apply_chat_template(chat_template=templates/gemma3.jinja)"], outcome: "byte-for-byte MATCH for the zero-shot and the 10-shot rendering; full turn equals prompt+completion+'\\n'; completion's last token id is 106 <end_of_turn>"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v1.jsonl], outcome: "52473 documents scanned, 0 contaminated, exit 0"}
+problem:
+  statement: "The base model does not emit <end_of_turn>. Under greedy decoding all 150 generations run to max_tokens=4000: the model answers the asked question, then keeps generating fresh problems and degenerate filler, so match(numeric=True) - which takes the LAST number in the output - reads a number from the ramble instead of the answer."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "greedy.stopped=0 of 150; greedy.scored=6; greedy.first_answer_correct=44", observation: "0.293 of items are solved and then thrown away by the trailing text"}
+    - {path: /home/ben/task/eval/base_greedy_dev150.json, locator: "accuracy", observation: "0.040"}
+    - {path: /home/ben/task/eval/base_stock_dev150.json, locator: "accuracy", observation: "0.060 with 78/150 terminating"}
+  affected_share: 0.86
+  failure_examples: []   # rule 7: the only items evaluate.py scores are official GSM8K test items, so none are copied here
+  watch_set: null        # same reason
+hypothesis:
+  claim: "Full-parameter SFT on 52473 prompt/completion rows rendered byte-for-byte with templates/gemma3.jinja, whose targets end in <end_of_turn> after a single 'ANSWER: N' line, raises GSM8K accuracy over the greedy base model."
+  mechanism: "The loss is taken only on the completion, whose last token is <end_of_turn> (id 106, in the model's eos list). That teaches the model to stop right after the answer line, which converts the 0.293 first-answer rate that exp-01 measured into scored accuracy; the 45k OpenMathInstruct-2 gsm8k-sourced solutions should additionally raise the first-answer rate itself."
+  mechanism_note: "30% of rows carry a 1-4 shot prefix and 8% carry the exact 10-shot prefix the grader uses, so the model is trained to answer once and stop even when the context is full of worked examples that it could otherwise continue."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+25 to +50 pts over the 0.040 greedy base; the exp-01 first-answer rate of 0.293 is the floor a pure termination fix would give"
+  falsified_if: "dev-150 accuracy at or below 0.293 (i.e. the run bought nothing beyond what fixing termination alone would give), or the terminated-generation share stays below 0.9"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "openai/gsm8k main/train (7473) + nvidia/OpenMathInstruct-2 train_1M rev 469216e3f46f4dacf476b382e192485ea51a143e, problem_source in {gsm8k, augmented_gsm8k} (45000)"
+      n_examples: 52473
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v1.jsonl, --n-openmath, "45000", --gsm8k-repeat, "1", --p-fewshot-full, "0.08", --p-fewshot-short, "0.30"]
+      selection: "numeric expected_answer only; \\boxed{} unwrapped; lowercase-problem dedup; solutions <=4000 chars; gsm8k train targets have their <<..>> calculator spans stripped; every target ends '\\n\\nANSWER: <n><end_of_turn>'"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom pre-tokenised dataset + completion-only labels"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 24, grad_accum: 6, max_seq_len: 3584, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "chain of thought, then a blank line, then 'ANSWER: <number>', then <end_of_turn>; prompt tokens carry label -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_exp02.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_exp02.sh
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 150
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.04
+    path: /home/ben/task/eval/base_greedy_dev150.json
+  diagnostic:
+    what: "share of the 150 generations that terminate with <end_of_turn> rather than hitting max_tokens, plus the correct-first-ANSWER rate, both read from the inspect log the same way exp-01 read them"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.94
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 365}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-365, step: 365}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-300, step: 300}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-150, step: 150}
+  training_summary: {final_loss: 0.3626, steps: 365, notes: "3015 s wall, 17.4 samples/s, 33M tokens, bf16 + liger fused linear-CE, vision tower frozen"}
+  measurements:
+    - {metric: accuracy, value: 0.6533, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: 0.6133}
+  diagnostic_result:
+    value: 0.987
+    path: /home/ben/task/analysis/exp-02_diagnostic.json
+    notes: "148/150 generations terminate at <end_of_turn> (0.987) vs 0/150 for the greedy base; only 2 hit max_tokens. scored=98 and first_answer_correct=98 are now IDENTICAL, i.e. the format loss that cost the base model 0.253 is fully gone and every remaining failure is a reasoning or arithmetic error. Median completion 520 chars vs 10208 for the base."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.040 -> 0.6533 (+61.3 pts), far above the 0.293 first-answer floor a pure termination fix would have given, so the OpenMathInstruct-2 solutions raised solve rate as well as format. The mechanism is confirmed exactly: termination went 0/150 -> 148/150 and scored now equals first-answer-correct, so nothing is lost to trailing text any more."
+  decision: adopt
+  next_step: "Format is solved; the remaining 34.7 pts are reasoning errors. Two levers left, in order of expected value: (a) more unique gsm8k-derived problems - only 45000 of the 80795 deduped OpenMathInstruct-2 train_1M rows were used; (b) rejection-sampling fine-tuning on this checkpoint's own correct samples. First spend 12 GPU-minutes on checkpoint-150/300 under the same protocol to learn whether one epoch is already past the optimum, since that decides whether (a) should add data or epochs."

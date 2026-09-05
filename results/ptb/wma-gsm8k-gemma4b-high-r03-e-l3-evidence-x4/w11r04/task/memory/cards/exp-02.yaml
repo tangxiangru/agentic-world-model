@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T00:01:38Z'
+situation:
+  elapsed_h: 0.5
+  remaining_h: 9.6
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.04, protocol_n: 150}
+  trigger: "exp-01 measured the base model at 0.040 on dev-150 and found 73.6% of its failures are format/termination: 78/150 samples never emit <end_of_turn> and run to the 4000-token cap, continuing the few-shot pattern with invented problems (analysis/exp-01_diag.json)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "report.failure_tags, report.share_stop_clean"}
+    - {path: /home/ben/task/eval/exp-01_base_dev150.json, locator: "accuracy"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full-parameter SFT", reason: "the model must learn a turn/stop behaviour it has never seen; full FT fits in 80 GB here (measured in the smoke run) and LoRA adds a merge step that is a known way to ship an unloadable final_model"}
+    - {option: "Train on GSM8K train reference solutions only (7.4k rows)", reason: "7.4k terse reference chains fix the format but leave reasoning at the base model's level; OpenMathInstruct-2's GSM8K-derived solutions are longer self-checking chains from a much stronger generator. Both are used, mixed."}
+    - {option: "MetaMathQA as the augmentation source", reason: "its bodies carry GSM8K's own '#### N' line plus 'The answer is: N', i.e. two extra answer markers to strip (pitfall double_answer_format), and its generator is weaker than OpenMathInstruct-2's. Kept in scripts/build_data.py as a fallback source, weight 0 here."}
+    - {option: "Put the grader's exact 10-shot system message on every training row", reason: "it is ~1.6k tokens against a ~180-token answer, so >85% of the compute would go to a frozen prefix. Instead 10% of rows carry that exact prefix, 20% carry a random 2-5 shot prefix, 70% are zero-shot."}
+  pitfalls_hit:
+    - {what: "first trainer smoke run OOMed in cross_entropy: gemma-3's 262k vocab makes fp32 logits for 8 rows x 2.5k tokens a 19.35 GiB single allocation", cost_h: 0.15, fix: "liger fused linear-cross-entropy plus micro-batches built to a 16384-token budget instead of a fixed row count"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --model, "$PTB_BASE_MODEL_SNAPSHOT", --data, data/sft_v1.tokens.pt, --out, /tmp/smoke1, --bs, '8', --grad-accum, '4', --max-steps, '3'], outcome: "OOM at the loss (19.35 GiB logits alloc); led to the liger + token-budget rewrite"}
+    - {command: [python, scripts/train_sft.py, --model, "$PTB_BASE_MODEL_SNAPSHOT", --data, data/sft_v1.tokens.pt, --out, /tmp/smoke2, --token-budget, '16384', --grad-accum, '4', --max-steps, '4'], outcome: "4 steps in 31.8 s, loss 0.585, saved and re-loaded; ~5.5 s/step steady state -> ~55 min per epoch"}
+problem:
+  statement: "The parent checkpoint has never been trained on a turn-structured target, so under the grader it does not stop: 52% of dev-150 completions run to the 4000-token cap and only 26% of its failures are actually wrong arithmetic. It also has no habit of ending a solution with a single 'ANSWER: <n>' line."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "report.failure_tags", observation: "hit_cap 72, rambled 19, no_answer_line 16, wrong_number 37 of 144 failures"}
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "report.share_stop_clean = 0.48", observation: "only 72/150 completions end with a stop token"}
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "failures[1] id=gsm8k_013c2fba", observation: "emits 'ANSWER: <<36/8=9/2>>9/2' then keeps generating further invented problems until the cap"}
+  affected_share: 0.736
+  failure_examples:
+    - {id: gsm8k_010d0010, source: /home/ben/task/analysis/exp-01_diag.json, question: "(dev-150 item; text in the inspect log, not copied here)", gold: "20", model_output: "...Reasoning:<<none>>\n\nANSWER: 1/3+3/9=1/3+1=4/3", failure: "answers with an expression, not a number"}
+    - {id: gsm8k_013c2fba, source: /home/ben/task/analysis/exp-01_diag.json, question: "(dev-150 item; text in the inspect log, not copied here)", gold: "17", model_output: "...ANSWER: <<36/8=9/2>>9/2\n\nNumerator = 8 ... (runs to 4000 tokens)", failure: "never stops; invents new problems after the answer"}
+    - {id: gsm8k_01a47d5c, source: /home/ben/task/analysis/exp-01_diag.json, question: "(dev-150 item; text in the inspect log, not copied here)", gold: "400", model_output: "...\\boxed{\\text{#There are a total of 2720 students who are not in band.}}", failure: "no ANSWER: line at all; drifts into LaTeX"}
+    - {id: gsm8k_044dddfd, source: /home/ben/task/analysis/exp-01_diag.json, question: "(dev-150 item; text in the inspect log, not copied here)", gold: "40", model_output: "Solve this equation: <<x = 12 x 2 - 5 x 1>>x=22 ... (runs to 4000 tokens)", failure: "continues the few-shot pattern instead of answering"}
+  watch_set: null
+hypothesis:
+  claim: "Full-parameter SFT on 47k GSM8K-train-derived problem/solution pairs whose targets are a step-by-step chain followed by exactly one 'ANSWER: <n>' line and <end_of_turn> will raise dev-150 accuracy far above the base model's 0.040, and will do it mainly by removing the format/termination failures: the share of completions that stop cleanly should go from 0.48 to near 1.0."
+  mechanism: "Completion-only loss on targets that terminate in <end_of_turn> teaches the token the grading template stops on, so generation ends after the answer line; the OpenMathInstruct-2 chains additionally supply a much stronger reasoning style than the base model's continuation behaviour."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "+40 to +60 pts on dev-150"}
+  falsified_if: "dev-150 accuracy below 0.30, or share_stop_clean below 0.90 after training - either would mean the target format did not transfer and the problem is not what exp-01 diagnosed."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "openai/gsm8k train split (7463 rows) + nvidia/OpenMathInstruct-2 train_1M, problem_source in {gsm8k, augmented_gsm8k} (40000 rows, max 1 solution per problem)"
+      n_examples: 47463
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v1.jsonl, --omi2, '40000', --omi2-per-problem, '1', --seed, '0']
+      selection: "numeric final answers only; \\boxed{} unwrapped; any '#### n' or 'The answer is:' tail stripped so 'ANSWER: ' occurs exactly once; the grader's 10 few-shot questions excluded from the gsm8k rows; exact (question, completion) duplicates removed"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE"
+    peft: none
+    hyperparams: {lr: 1.5e-5, epochs: 2, batch_size: 1, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master + bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "step-by-step chain, blank line, 'ANSWER: <number>', then <end_of_turn>; prompt rendered with templates/gemma3.jinja - the same file evaluate.py hands to vLLM - and loss is masked to the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/sft_v1.tokens.pt, --out, /home/ben/task/ckpts/exp-02, --lr, '1.5e-5', --epochs, '2', --token-budget, '16384', --grad-accum, '4', --save-steps, '591']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02_train.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 591
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --json-output-file, '{out}.json']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k, fewshot=10, fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.04
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic:
+    what: "share of dev-150 completions that stop cleanly (stop_reason == 'stop'), from scripts/diagnose_log.py; 0.48 for the parent"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.95
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-591, step: 591}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1182, step: 1182}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 1182}
+    - {path: /home/ben/task/ckpts/exp-02/ep1, step: 591}
+  training_summary:
+    final_loss: 0.2829
+    steps: 1182
+    notes: "train_runtime 7014 s, 1182 steps at grad_accum 4 over 2364 token-budgeted micro-batches; loss 0.61 -> 0.32 by step 550 (epoch 1) -> 0.28 mean over the run. checkpoints.keep said all and the script hard-codes save_total_limit=2; with save_steps 591 over 1182 steps exactly the two promised checkpoints exist, so nothing was dropped."
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-02_ep2_dev150.json, delta_vs_comparator: 0.6667}
+    - {metric: accuracy, value: 0.66, n: 150, path: /home/ben/task/eval/exp-02_ep1_dev150.json, delta_vs_comparator: 0.62}
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-02_ep2_diag.json
+    notes: "share_stop_clean 0.48 -> 0.9933 (149/150 stop on <end_of_turn>); mean output 2303 -> 165 tokens; failure mix flips from 73.6% format to 97.7% wrong_number (43 of 44 failures). The epoch-1 checkpoint reads 0.660 with share_stop_clean 0.9867. garbage_prefix_samples 0 at --max-connections 16 in both evals."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.040 -> 0.7067 (+66.7 pts) after 2 epochs of full-parameter SFT on 47k GSM8K-train-derived rows. The mechanism is confirmed directly: clean-stop share went 0.48 -> 0.993 and the failure mix inverted from 73.6% format/termination to 97.7% wrong-number, so what remains is reasoning, not format."
+  decision: adopt
+  next_step: "exp-03: the residual failures are genuine reasoning/comprehension errors (misread quantity, wrong final step), so target them on-policy - rejection-sampling fine-tuning from ckpts/exp-02/final on its own correct samples, plus reference solutions for the questions it cannot solve in k tries. Two epochs beat one by 4.7 pts here (0.7067 vs 0.660), though the epoch-1 read is a mid-cosine checkpoint so part of that gap is the unannealed LR, not over-fitting; either way there is no evidence of over-training at 2 epochs on this corpus."

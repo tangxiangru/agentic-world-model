@@ -83,9 +83,12 @@ def test_the_scientist_sees_the_protocol_and_nothing_about_its_iteration(cell) -
     assert not (checkout / "skills" / "exp_protocol_meta").exists()
     assert not (checkout / "doc").exists()
     assert not list(checkout.rglob("*exp_protocol_meta*"))
-    assert not list(checkout.rglob("*wma*"))
+    assert not (checkout / "skills" / "wma").exists()
+    assert not (checkout / "skills" / "wma_meta").exists()
+    assert not (checkout / "awm" / "wma").exists()
+    assert (checkout / "awm" / "wma_client.py").is_file()
     assert sorted(p.name for p in (checkout / "awm").iterdir()) == [
-        "__init__.py", "cli.py", "exp_protocol", "paths.py", "sandbox.py"]
+        "__init__.py", "cli.py", "exp_protocol", "paths.py", "sandbox.py", "wma_client.py"]
 
     done = _awm(checkout, task, "sandbox", "setup", "--target", str(task), "--sha", sha,
                 "--exp-protocol", "--tool", "claude")
@@ -101,6 +104,14 @@ def test_the_scientist_sees_the_protocol_and_nothing_about_its_iteration(cell) -
     assert "skills/exp_protocol/SKILL.md" in (task / "CLAUDE.md").read_text()
     assert json.loads((task / "awm_sandbox.json").read_text())["sha"] == sha
     assert not list(task.rglob("*exp_protocol_meta*"))
+    assert not (task / "skills" / "wma").exists()
+    # a cell where no sidecar opened a queue is the control arm: the client says so and queues nothing
+    control = _awm(checkout, task, "wma", "review", "--dir", str(task), "exp-01", "--background")
+    assert control.returncode == 0 and "no world-model agent is attached" in control.stdout
+    assert not (task / ".wma").exists()
+    (task / ".wma" / "requests").mkdir(parents=True)          # what the sidecar does when it starts
+    queued = _awm(checkout, task, "wma", "review", "--dir", str(task), "exp-01", "--background")
+    assert queued.returncode == 2 and "no such card" in queued.stdout
     assert not (task / "AGENTS.md").exists()  # --tool claude only
 
 
@@ -123,6 +134,21 @@ def test_one_card_end_to_end_with_the_shipped_code(cell) -> None:
     assert locked.returncode == 0, locked.stdout + locked.stderr
     assert (lineage.cards_dir(task) / "exp-01.lock.json").is_file()
     assert (lineage.cards_dir(task) / "exp-01.preflight.json").is_file()
+    (task / ".wma" / "requests").mkdir(parents=True)          # the sidecar's queue, opened before the scientist
+    queued = _awm(
+        checkout,
+        task,
+        "wma",
+        "review",
+        "--dir",
+        d,
+        "exp-01",
+        "--background",
+    )
+    assert queued.returncode == 0, queued.stdout + queued.stderr
+    request = next((task / ".wma/requests").glob("*.json"))
+    assert json.loads(request.read_text())["card_ids"] == ["exp-01"]
+    assert not (task / "skills/wma").exists()
     fill_result(card_path, task)
     closed = _awm(checkout, task, "exp_protocol", "close", "--dir", d, "exp-01")
     assert closed.returncode == 0, closed.stdout + closed.stderr

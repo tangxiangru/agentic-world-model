@@ -1,0 +1,154 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T18:49:10Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.6
+  remaining_h: 6.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/variants/exp02e2_greedy
+    score: {metric: accuracy, value: 0.7333, protocol_n: 150}
+  trigger: "exp-02/exp-03 removed the format and termination failures entirely (format_ok 1.0, cap_hit 0.0), so the 74 items the incumbent still fails on the private dev set are pure reasoning errors - wrong equation set-up, wrong pair compared, a joint total assigned to one term (exp-03 failure_examples). Sampling the incumbent 4x per GSM8K train question shows it can already reach the gold answer on 94.1% of them (analysis/rft_exp02_stats.json), so most of that gap is inconsistency the model can be trained out of using its own correct traces."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/rft_exp02_stats.json, locator: "pass_rate_per_sample 0.6824, pass_at_k 0.9408, questions_with_no_correct_sample 425 of 7173", observation: "a 26-point gap between one-shot accuracy and 4-sample coverage: the knowledge is there, the single greedy trace is not reliably the right one"}
+    - {path: /home/ben/task/analysis/dev300_exp02_epoch2_fails.jsonl, locator: "74 items", observation: "all terminate and all end in a well-formed 'ANSWER: N'; the errors are in the chain, not the wrapper"}
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "conclusion.next_step", observation: "n=150 noise floor measured at +-4.7 pts, so this card must also be judged on the 300-item private set"}
+  alternatives_rejected:
+    - {option: "Continue training from exp-02/epoch2 on the RFT rows only (1 epoch, low LR) instead of retraining from base", reason: "cheaper (~15 min) but it narrows the model onto 6748 train questions it already solves, and the corpus's own history is that RFT is retrained from base over the union; the budget affords the safer version"}
+    - {option: "Add the remaining ~78k unused augmented_gsm8k rows instead of RFT", reason: "more off-policy data of the same kind that produced the incumbent; the measured 26-point pass@4-minus-pass@1 gap says the binding constraint is trace reliability, not exposure to more problems"}
+    - {option: "GRPO / online RL from the incumbent", reason: "no verified GRPO path in this environment, and 6.4 h with an unclosed card is the wrong place to debug a new trainer; RFT captures most of the same signal offline"}
+    - {option: "Upweight RFT more than 2x, or train on RFT alone", reason: "22.3k of 96.6k rows (23%) keeps the OpenMathInstruct-2 problem diversity that got the model to 0.75 in the first place; going further trades breadth for on-policy sharpness with no measurement to justify it"}
+    - {option: "Keep sampling to k=8 for better coverage of the 425 unsolved questions", reason: "coverage is already 94.1% at k=4 and the 425 residual questions keep their native GSM8K train solution in the mixture anyway; k=8 would have cost another ~20 min of GPU for the tail"}
+  pitfalls_hit:
+    - {what: "the first RFT sampling launch drew from all 7473 GSM8K train questions, which INCLUDES the 300 private-dev holdout items - it would have trained the next model on its own dev set", cost_h: 0.1, fix: "killed at 2% and added --holdout data/dev300.jsonl to scripts/rft_sample.py; the relaunch logged 'excluded 300 private-dev holdout questions'"}
+    - {what: "SamplingParams(seed=...) per request made vLLM build one RNG per sequence: 6.8 it/s and a 72-min ETA for 28692 generations", cost_h: 0.05, fix: "dropped the per-request seed and kept only the engine-level seed; the same job then ran at 25-155 it/s and finished in ~18 min"}
+    - {what: "killing the sampling job left an orphaned VLLM::EngineCore holding 66 GB, which would have OOMed the next eval", cost_h: 0.03, fix: "kill -9 on the pid from nvidia-smi --query-compute-apps before relaunching; worth checking after every killed vLLM job"}
+  smoke_runs:
+    - command: [python, scripts/rft_sample.py, --model, ckpts/exp-02/epoch2, --out, data/rft_exp02.jsonl, --k, '4', --temp, '0.9', --max-per-question, '2']
+      outcome: "7173 questions (300 held out), 28692 samples, ~18 min. pass_rate_per_sample 0.6824, pass_at_k 0.9408, 11150 rows kept after the exactly-one-trailing-ANSWER filter and exact-text dedup, 425 questions with no correct sample."
+    - command: [python, -c, "format audit over data/sft_v3_rft.jsonl"]
+      outcome: "0 malformed rows of 96646: every completion ends with <end_of_turn>, contains exactly one line starting 'ANSWER: ', and that line is the last non-empty line."
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_v3_check.jsonl]
+      outcome: "11150 RFT documents scanned, 0 contaminated, 0 matches (the 74346 non-RFT rows were already cleared under exp-02)."
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent solves 68.2% of GSM8K train questions on a single sample but reaches the gold answer on 94.1% of them within 4 samples. The residual failures are not missing knowledge but unreliable traces: on a benchmark scored from one sample, that 26-point gap is pure lost accuracy, and it is what the remaining 74 private-dev failures are made of."
+  evidence:
+    - {path: /home/ben/task/analysis/rft_exp02_stats.json, locator: "pass_rate_per_sample 0.6824 vs pass_at_k 0.9408 at k=4, temp 0.9", observation: "26-point single-sample-to-4-sample gap on 7173 held-in train questions"}
+    - {path: /home/ben/task/analysis/dev300_exp02_epoch2_fails.jsonl, locator: "74 items, format_ok true on all of them", observation: "the wrapper is solved; every remaining failure is a reasoning slip inside a well-formed answer"}
+    - {path: /home/ben/task/analysis/exp-03_greedy_diag.json, locator: "format_ok 1.0, cap_hit 0.0, mean_completion_tokens 123.75", observation: "no headroom left in termination or formatting - the only channel left is trace correctness"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: dev-7177, source: /home/ben/task/data/dev300.jsonl, question: "5 geckos on the kitchen window eat 6 insects each. 3 lizards eat twice as much as the geckos. How many total insects were eaten?", gold: "66", model_output: "The geckos eat 5*6=30 insects / The lizards eat 3*6=18 insects each / Total 30+54=84 / ANSWER: 84", failure: "read 'twice as much' as 3x; set-up error, arithmetic internally consistent"}
+    - {id: dev-7179, source: /home/ben/task/data/dev300.jsonl, question: "Three baskets A, B and C contain different numbers of differently colored marbles...", gold: "6", model_output: "... The greatest difference is 3 for green marbles ... ANSWER: 3", failure: "compared the wrong pair of baskets"}
+    - {id: dev-7181, source: /home/ben/task/data/dev300.jsonl, question: "A small airplane can seat 10 in first class, 30 in business, 50 in economy. If economy is half full, and business and first class together have the same number of people as economy...", gold: "8", model_output: "... business class is also 28 ... 30 - 28 = 2 ... ANSWER: 2", failure: "assigned the joint first+business total to business alone"}
+    - {id: dev-7182, source: /home/ben/task/data/dev300.jsonl, question: "If you double a number and add 5 to the result, then that's 20 more than half of the original number. What's the original number?", gold: "4", model_output: "2*x + 5 = 20 + x/2 ... x = 10 ... ANSWER: 10", failure: "mis-transcribed the word problem into the equation"}
+  watch_set:
+    path: /home/ben/task/data/dev300.jsonl
+    n: 300
+    selection: "the private held-out GSM8K-train set used since exp-02; excluded from sft_v2, from the RFT sampling pool (logged: 'excluded 300 private-dev holdout questions'), and from any OpenMathInstruct-2 rewrite sharing a 10-gram with it. 74 items currently failed by the incumbent under greedy decoding."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Retraining from the base snapshot on the exp-02 corpus plus 11150 answer-verified self-samples (weighted 2x, 23% of the mixture) raises accuracy relative to the incumbent, on both the 300-item private dev set and dev-150, by converting pass@4 coverage into pass@1 reliability."
+  mechanism: "Every added target is a trace this model family actually produces, in its own phrasing, that was checked to end at the gold answer. Training on them raises the likelihood of the reasoning paths that terminate correctly and lowers it on the near-miss paths the model currently samples with comparable probability - which is exactly the 26-point pass@1-to-pass@4 gap. Off-policy OpenMathInstruct-2 chains cannot do this because they are not paths this model was going to take."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+3 to +7 pts on the 300-item private set (0.7533 -> 0.78-0.82); on dev-150 the same effect is at or below the measured +-4.7 pt noise floor, so private dev is the primary read"
+  falsified_if: "private-dev greedy accuracy is at or below the incumbent's 0.7533, or the watch-set regression count exceeds the fixed count"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3_rft.jsonl
+      source: "derived:exp-02 - data/sft_v2.jsonl (OpenMathInstruct-2 train_1M gsm8k+augmented_gsm8k, openai/gsm8k main/train; datasets==4.5.0) UNION synthetic:self rejection samples from ckpts/exp-02/epoch2 repeated 2x"
+      n_examples: 96646
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, ckpts/exp-02/epoch2, --out, data/rft_exp02.jsonl, --stats, analysis/rft_exp02_stats.json, --k, '4', --temp, '0.9', --max-per-question, '2', --holdout, data/dev300.jsonl]
+      selection: "RFT rows: k=4 at temperature 0.9 / top_p 0.95 over the 7173 non-holdout GSM8K train questions; keep a sample only if its last numeric token equals gold AND it contains exactly one trailing 'ANSWER: N' line; exact-text dedup; at most 2 per question, shortest first. 11150 rows from 6748 questions. Mixture: 53680 augmented_gsm8k / 22300 rft (11150 x2) / 14346 gsm8k_native / 6320 gsm8k."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE, custom TokenBudgetSampler; scripts/train_sft.py (unchanged from exp-02)"
+    peft: "none - full fine-tune of the 3.880B language model; siglip vision tower and multi_modal_projector frozen"
+    hyperparams: {lr: 1.5e-5, epochs: 2, batch_size: 46, grad_accum: 2, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit; checkpoints saved as bf16", seed: 0}
+    target_format: "chain of thought, blank line, then exactly one 'ANSWER: <integer>' line, then <end_of_turn>; loss on the completion only. Audited: 0 malformed rows of 96646."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v3_rft.jsonl, --out, /home/ben/task/ckpts/exp-04, --epochs, '2', --lr, '1.5e-5', --token-budget, '16384', --ga, '2', --max-seq-len, '2048', --save-each-epoch, --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04_train.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: all   # epoch1/ and epoch2/, both bf16 and directly servable
+  budget: {gpu: H100-80GB, planned_h: 2.1}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '2', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle) - frozen in exp-01, unchanged. Every arm is served through a --greedy generation_config variant so the read is repeatable (exp-03)."
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.7333
+    path: /home/ben/task/eval/exp-03_greedy_rep2.json
+  diagnostic:
+    what: "greedy accuracy on the 300-item private dev set (scripts/dev_eval.py) - the primary read for this card, since exp-03 measured the dev-150 noise floor at +-4.7 pts - plus watch-set fixed/regressed counts against exp-02/epoch2"
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.85   # 1.54 h training (5559 s) + 0.31 h of evaluation
+  output_checkpoint: /home/ben/task/ckpts/exp-04/epoch2
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/epoch1, step: 1061}
+    - {path: /home/ben/task/ckpts/exp-04/epoch2, step: 2122}
+    - {path: /home/ben/task/ckpts/variants/exp04e2_greedy, step: 2122}   # hardlinked greedy variant
+  training_summary:
+    final_loss: 0.2533
+    steps: 2122
+    notes: "96174 rows kept of 96646 (472 over max_seq_len), 33.36M tokens/epoch, 5559 s = 12.0k tok/s. Final loss 0.2533 vs exp-02's 0.2849, as expected when 23% of the mixture is the model's own high-likelihood output - a lower loss here is not evidence of a better model."
+  measurements:
+    - {metric: accuracy, value: 0.7000, n: 150, path: /home/ben/task/eval/exp-04_epoch2_greedy.json, delta_vs_comparator: -0.0333}
+  diagnostic_result:
+    value: 0.7700
+    path: /home/ben/task/analysis/dev300_exp04_epoch2.json
+    notes: >-
+      Private dev-300, greedy, same items and same script for both arms: incumbent exp-02/epoch2
+      0.7533 -> exp-04/epoch2 0.7700, i.e. +1.7 pts, below the +3 pt rule stated before the run.
+      The paired test says the same thing more sharply: of 300 items, 27 flipped to correct and 22
+      flipped to wrong (exact McNemar two-sided p = 0.568). Failures fell 74 -> 69. epoch1 was much
+      worse than epoch2 (0.7067 vs 0.7700), matching exp-02's epoch gap. On dev-150 the greedy
+      candidate scored 0.7000 against the incumbent's greedy 0.7133/0.7333 - also inside the
+      +-4.7 pt floor, and pointing the other way. Two independent reads that disagree in sign and
+      neither of which clears its own noise floor is the signature of a null result, not of a small win.
+  watch_set_result: {fixed: 27, still_failing: 47, regressions: 22, path: /home/ben/task/analysis/exp-04_watch_rerun.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "RFT on 11150 answer-verified self-samples did not convert pass@4 coverage into pass@1 reliability. dev-300 moved 0.7533 -> 0.7700 (27 items fixed, 22 broken, McNemar p = 0.568) and dev-150 moved 0.7333 -> 0.7000; neither read clears its noise floor and they disagree in sign. The claim predicted +3 to +7 pts on dev-300, so falsified_if ('at or below 0.7533') technically did not fire, but the pre-stated +3 pt decision rule did: this is a null, and the near-equal fixed/regressed counts say the retraining mostly reshuffled which items are solved."
+  decision: reject
+  next_step: "Do not ship exp-04 alone. It is, however, a genuinely different point in weight space reached from the same base init and with a partly different corpus, and its errors overlap the incumbent's only partially (47 of 74 shared) - which is the precondition for weight averaging. exp-05: uniform soup of exp-02/epoch2 and exp-04/epoch2. Already built and probed at dev-300 0.7933 (26 fixed / 14 regressed vs the incumbent, McNemar p = 0.081) - better than either parent, so it gets a card and a protocol read."

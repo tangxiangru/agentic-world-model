@@ -1,0 +1,129 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T06:55:00Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 6.2
+  remaining_h: 3.8
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04_greedy
+    score: {metric: accuracy, value: 0.7067, protocol_n: 150}
+  trigger: "exp-05 exhausted the free options inside the exp-04 trajectory (checkpoint-500 ties on the official set and is 2.8 pts worse on dev250). Two independent full fine-tunes of the same immutable base now exist -- exp-02/final at 0.66 and exp-04/final at 0.7067 under identical greedy protocols -- and averaging them has not been tried."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-02 and exp-04 rows", observation: "two full fine-tunes from the same snapshot with the same recipe, 0.66 and 0.7067"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "conclusion", observation: "the checkpoint sweep is spent; the incumbent trajectory has nothing left to pick from"}
+  alternatives_rejected:
+    - {option: "A third training run (new recipe or higher LR), ~1.7 h + eval", reason: "3.8 h left and the deliverable still needs a default-invocation verification; a run that lands at 07:00 with no time to check it is how a session ships an unverified model. The soup costs ~0.6 h and uses weights that already exist"}
+    - {option: "Average the exp-04 trajectory checkpoints (500/750/886) instead", reason: "exp-05 measured checkpoint-500 at 0.668 on dev250 against final's 0.696, so that average is pulled toward a checkpoint known to be worse; two independently-trained endpoints is the setting model soups are actually reported to help in"}
+    - {option: "Weighted soup tuned over alpha", reason: "each alpha costs a full eval and there is time for one; 0.5 is the uniform default and the card is a yes/no on whether souping helps at all"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "The incumbent is a single point in weight space chosen by one n=150 measurement whose stderr is 0.037. Its own held-out dev signal barely moved from exp-03 (0.692 -> 0.696), so part of the 0.7067 is likely luck on the 150 items. Nothing has been done to reduce that variance."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy=0.7067, stderr=0.0373", observation: "the incumbent's margin over exp-03 rests on one measurement with a 3.7 pp standard error"}
+    - {path: /home/ben/task/analysis/dev250_watch_exp04.json, locator: "fixed=16, regressions=15", observation: "exp-04 vs exp-03 on held-out items is churn, so the two models make partly independent errors -- the condition under which averaging helps"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/dev_train.jsonl
+    n: 250
+    selection: "the same 250 gsm8k TRAIN problems held out of every training corpus this session (seed 0)"
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "A uniform (alpha=0.5) parameter average of exp-02/final and exp-04/final scores higher than exp-04/final alone under the official greedy protocol."
+  mechanism: "Both parents were fine-tuned from the same immutable snapshot with the same recipe and largely overlapping data, so they sit in the same loss basin and their parameters are index-aligned. Averaging cancels the part of each run's error that is independent -- which the 16-fixed/15-regressed pattern between exp-03 and exp-04 shows is a real component here -- without moving out of the basin."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "0 to +3 pts; the weaker parent is 4.7 pts below the stronger, so the soup could equally land between them"
+  falsified_if: "the soup scores at or below 0.7067 on the official 150, or below 0.696 on dev250 -- either says averaging in the weaker parent cost more than the variance reduction bought"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/mix_train.jsonl
+      source: "derived:exp-04 -- the corpus the stronger parent was trained on; this card trains nothing and reads no data"
+      n_examples: 74802
+      built_by: /home/ben/task/scripts/build_mix.py
+      build_command: [python, scripts/build_mix.py, --max-rft, '40000']
+      selection: "unchanged from exp-04"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "scripts/soup.py (safetensors shard-wise average in float32, cast back to bf16)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged; both parents were trained on the same prompt/completion format"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --a, /home/ben/task/ckpts/exp-02/final, --b, /home/ben/task/ckpts/exp-04/final, --alpha, '0.5', --out, /home/ben/task/ckpts/exp-06_soup]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06_soup
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, 10-shot, fewshot_seed=42), greedy decode written by scripts/make_final.py --greedy"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7067
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "held-out dev250 greedy accuracy via scripts/dev_eval.py, the same command that scored exp-03 0.692, exp-04 0.696 and exp-05 0.668; it is the tie-breaker when the official numbers land within 1.3 pp"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/exp-06_soup_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06_soup, step: null}
+    - {path: /home/ben/task/ckpts/exp-06_soup_greedy, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 883 tensors / 4.300B params averaged in float32 and cast back to bf16. WMA precondition 1: make_final.py --greedy run on the merged directory and its generation_config.json diffs IDENTICAL against exp-04_greedy's. WMA precondition 2: the vLLM 'Default sampling parameters have been overridden' receipt appears exactly once and eos_token_id is still [1,106]. WMA precondition 3: --verify-load CPU-loaded the soup, 4.30B params, vocab 262145. WMA precondition 4: eval argv byte-identical to exp-04's apart from paths."}
+  measurements:
+    - {metric: accuracy, value: 0.7467, n: 150, path: /home/ben/task/eval/exp-06_dev150.json, delta_vs_comparator: 0.04}
+  diagnostic_result:
+    value: 0.68
+    path: /home/ben/task/analysis/dev250_exp06_greedy.json
+    notes: "dev250 greedy 0.696 -> 0.680, i.e. DOWN 1.6 pts, which fires the second clause of the falsifier. Paired item-level counts (analysis/exp-06_paired.json) show why neither set is decisive: on the official 150 the soup fixes 13 and breaks 7; on dev250 it fixes 13 and breaks 17. Pooled that is 26 fixed against 24 broken -- a coin flip. Neither discordance is significant on its own (McNemar p ~0.26 and ~0.58)."
+  watch_set_result:
+    fixed: 13
+    still_failing: 63
+    regressions: 17
+    path: /home/ben/task/analysis/exp-06_paired.json
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The soup scores 0.7467 on the official 150 (+4.0 over the incumbent) but 0.680 on dev250 (-1.6), and the pre-registered falsifier fires on the dev250 clause. The paired counts say the two sets are not measuring different things badly -- they are measuring a null: 26 items fixed against 24 broken across both sets combined. The +4.0 is not evidence the soup is better; it is what a coin flip looks like at n=150."
+  decision: iterate
+  next_step: "Do NOT overwrite final_model on this evidence (the WMA's C9 guard). exp-07: break the tie on the target distribution itself by scoring both arms at --limit 500 -- 3.3x the items of the disputed measurement, on the benchmark that will actually be graded, rather than on a TRAIN-derived proxy."

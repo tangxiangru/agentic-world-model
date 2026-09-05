@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T16:23:20Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.55
+  remaining_h: 9.78
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "google/gemma-3-4b-pt is a pretrained (non-instruct) base model with no chat template; it does not know the <tool_call>...</tool_call> tool-calling format the BFCL grader requires, so it is expected to score near zero out of the box."
+  trigger_evidence:
+    - {path: /home/ben/task/templates/gemma3_tool_calling.jinja, locator: "tool_call block instructions"}
+    - {path: /home/ben/task/bfcl_evaluation_code.py, locator: "L57-101 bfcl_scorer requires exactly 1 assistant msg with exactly 1 tool_call matching function+args"}
+  alternatives_rejected:
+    - {option: "LoRA fine-tune", reason: "base->tool-calling is a large behavioural shift; full FT of a 4B model fits comfortably on one H100 (~7.5 samples/s smoke) and avoids adapter-merge loadability pitfalls; keep LoRA as a fallback"}
+    - {option: "few-shot prompting only (no training)", reason: "task requires submitting a fine-tuned model in final_model; and base model lacks the format entirely"}
+    - {option: "xLAM multi-call examples", reason: "exec_simple is strictly single-call; scorer rejects >1 tool_call, so trained only on the 26.7k single-call subset"}
+  pitfalls_hit:
+    - {what: "verified eos/template/seq-len against pitfalls.yaml before launch", cost_h: 0.0, fix: null}
+    - {what: "OOM at cross_entropy on step ~1 with bs=16: Gemma3 vocab is 262144, so fp32 logits for a 16 x ~1276 batch exceed free memory (smoke bs=16 survived only because its first 4 batches were short)", cost_h: 0.1, fix: "per_device batch 16->4, grad_accum 2->8 (effective batch 32 unchanged), PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"}
+    - {what: "still OOM at bs=4 with adamw_torch (fp32 optimizer states ~31GB) and with attn_implementation=eager (materializes full attention). Probe: eager+reentrant ckpt peaks >80GB.", cost_h: 0.25, fix: "attn_implementation=sdpa; gradient_checkpointing use_reentrant=False; optim=paged_adamw_8bit; max_seq_len 1536->1024 (keeps 25503/26765=95.3% of rows). Probe at bs=4/seq1536 peak 79.9GB -> bs=4/seq1024 gives ~27GB headroom."}
+  smoke_runs:
+    - {command: [python, train_sft.py, --out, /tmp/smoke_ckpt, --limit, "400", --max-steps, "10", --bs, "8"], outcome: "trained 10 steps in 31s, saved a Gemma3ForConditionalGeneration ckpt with tokenizer; loss ~0.1"}
+    - {command: [python, train_sft.py, --out, /tmp/smoke_ckpt2, --limit, "400", --max-steps, "4", --bs, "16"], outcome: "bs=16 fits GPU, 7.1 samples/s, no OOM"}
+    - {command: [python, data_build.py], outcome: "26765 single-call rows built; token p50=502 p99=1253 max=1536; 0 rows > max_seq_len after filter"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The base model cannot produce BFCL tool calls: it has no chat template and was never trained to emit a single <tool_call>{json}</tool_call> turn terminated by <end_of_turn>. The grader (bfcl_scorer) scores 'C' only when the model emits exactly one assistant message containing exactly one tool call whose function name and canonicalized arguments equal the gold call."
+  evidence:
+    - {path: /home/ben/task/bfcl_evaluation_code.py, locator: "L64-100", observation: "scorer returns Incorrect unless exactly 1 tool_call with matching function and args"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Full supervised fine-tuning of gemma-3-4b-pt on 26.7k single-tool-call xLAM examples, rendered through the exact eval chat template so train and grading strings match byte-for-byte, will raise BFCL exec_simple accuracy far above the base model."
+  mechanism: "SFT teaches the model (a) the <tool_call>{json}</tool_call><end_of_turn> output format the hermes parser and scorer expect, and (b) to map a natural-language query + JSON tool schema to the correct function name and typed argument values. Completion-only loss trains only the assistant tool-call tokens."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+50 points or more (base near 0; target 0.7-0.9)"
+  falsified_if: "trained model does not exceed base_model accuracy by at least 20 points on the same 100-item protocol, or fails to emit parseable single tool calls."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_train.jsonl
+      source: "minpeter/xlam-function-calling-60k-parsed (APIGen/xLAM mirror, non-gated)"
+      n_examples: 26765
+      built_by: /home/ben/task/data_build.py
+      build_command: [python, data_build.py, --out, data/sft_train.jsonl, --max-seq-len, "1536", --limit, "100000", --seed, "0"]
+      selection: "single tool_call only; tools normalized through inspect ToolInfo->openai_chat_tool_param to match eval JSON; dedup by (query,func); rows > 1536 tokens dropped (47)"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full fine-tune (vision tower + projector frozen), sdpa attn, non-reentrant grad checkpointing, paged_adamw_8bit"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 4, grad_accum: 8, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, optim: paged_adamw_8bit}
+    target_format: "assistant turn: <tool_call> newline {\"name\": ..., \"arguments\": {...}} newline </tool_call><end_of_turn>; completion-only loss (prompt masked)"
+    stop_token: "<end_of_turn>"
+    answer_marker: null
+  command:
+    argv: [python, train_sft.py, --data, data/sft_train.jsonl, --out, ckpts/exp-01, --max-seq-len, "1024", --epochs, "2", --lr, "1e-5", --bs, "4", --grad-accum, "8", --optim, paged_adamw_8bit, --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, TOKENIZERS_PARALLELISM: "false", PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    configs: []
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/ckpts/exp-01
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --json-output-file, "{out}"]
+    dev_set: "official exec_simple full set (100 items, --limit default = all)"
+    n: 100
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.04
+    path: /home/ben/task/eval/base_dev100.json
+  diagnostic:
+    what: "share of items producing exactly one parseable tool_call"
+    n: 100
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.54
+  output_checkpoint: /home/ben/task/ckpts/exp-01
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-01, step: 1594}
+  training_summary:
+    final_loss: 0.0202
+    steps: 1594
+    notes: "2 epochs over 25503 rows (rows >1024 tok dropped from 26765); train_runtime 5539.6s = 1.54h; 9.21 samples/s; loss fell to ~0.005-0.03/step. paged_adamw_8bit + sdpa + non-reentrant ckpt held GPU ~43GB, no OOM."
+  measurements:
+    - {metric: accuracy, value: 0.92, n: 100, path: /home/ben/task/eval/exp-01_dev100.json, delta_vs_comparator: 0.88}
+  diagnostic_result:
+    value: 0.92
+    path: /home/ben/task/eval/exp-01_dev100.json
+    notes: "92/100 scored C (exactly one parseable tool_call matching function+canonicalized args). vs base 0.04. All 100 samples returned HTTP 200; no empty/multi-message failures observed at the eval level."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Full SFT of gemma-3-4b-pt on 26.7k single-call xLAM examples, rendered byte-for-byte through the eval template, raised BFCL exec_simple accuracy from 0.04 (base) to 0.92 on the same n=100 protocol (+88 points), far exceeding the +50 pre-registered magnitude and well past the +20 falsification threshold."
+  decision: adopt
+  decision_detail: "Promote ckpts/exp-01 to final_model. A packaging repair was needed first: transformers save_model + tokenizer save omitted preprocessor_config.json and processor_config.json, so vLLM's multimodal loader failed with IndexError (image processor not found); copied both from the base snapshot (no weight change) and the eval then ran."
+  next_step: "Copy ckpts/exp-01 -> final_model (incl. the two processor configs), verify it loads with transformers on CPU, and optionally run evaluate.py on final_model to confirm the deliverable path scores 0.92. Time permitting, exp-02 could push higher (e.g. 3 epochs or larger max_seq_len to recover the 1262 dropped long rows), but 0.92 is a strong result and the priority is a verified deliverable."

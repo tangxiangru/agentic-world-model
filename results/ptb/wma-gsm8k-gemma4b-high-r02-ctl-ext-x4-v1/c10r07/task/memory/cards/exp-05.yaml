@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T07:45:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.0
+  remaining_h: 4.0
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7867, protocol_n: 150}
+  trigger: "Sampling the incumbent 6 times at temperature 1.0 over 20,000 training-pool problems gives pass@6 = 0.964 against a single-sample 0.821: on 14 points' worth of problems the model can find the right chain but does not find it on the greedy path."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-05_sampling.txt, locator: "acc_first_sample 0.8209, pass_at_k 0.96405, n 20000, k 6", observation: "the headroom that rejection sampling can convert"}
+    - {path: /home/ben/task/analysis/exp-04_diagnostic.json, locator: "accuracy 0.7867 of n=150", observation: "32 of 150 dev items still wrong, all reasoning rather than format"}
+  alternatives_rejected:
+    - {option: "A third epoch of teacher data, or the remaining 64k rows of the OpenMathInstruct-2 pool", reason: "exp-04 already used 79,539 of the ~80k distinct gsm8k-derived problems the filter yields; what is left is more solutions to problems the model has seen, and it is the teacher's distribution, not the model's"}
+    - {option: "DPO on correct/incorrect sample pairs from the same k=6 run", reason: "the pairs exist and it is the theoretically better use of the incorrect samples, but a DPO implementation, a beta sweep and a reference-model pass do not fit in the 4.6 h left with an eval and final packaging still to come; SFT-on-correct is the reliable version of the same signal"}
+    - {option: "Retrain from base on teacher + RFT data together", reason: "the cleaner design, and what the RFT literature does, but it is a 2.5 h run; continuing from exp-04 for one short low-lr epoch fits and keeps a fallback checkpoint that is already measured at 0.7867"}
+    - {option: "Keep only the problems the model gets wrong", reason: "0/6 problems have no correct sample to learn from at all; they are covered instead by mixing in the teacher's verified solution for each of those 719 problems"}
+  pitfalls_hit:
+    - {what: "The first exp-05 launch trained all 626 steps to loss 0.1765 and then died with zero weights written: the parent dir ckpts/exp-04/final carries the greedy generation_config.json from exp-03, and transformers' GenerationConfig.validate(strict=True) rejects temperature 0.0 together with do_sample false on save_pretrained. vLLM accepts that file happily, so nothing before the save could have caught it.", cost_h: 0.45, fix: "train_sft.py now resets model.generation_config to the base snapshot's valid config right after loading, and copies greedy_generation_config.json into the output dir after training instead; re-locked and relaunched"}
+    - {what: "setup.checkpoints.keep on exp-02 said 'all' and I deleted its two intermediate checkpoints anyway before launching exp-04, for disk that was never short (4.9 TB free). The epoch-1 checkpoint is unrecoverable.", cost_h: 0.0, fix: "recorded in exp-02's result.checkpoints_kept rather than quietly fixed; exp-04's checkpoints are being kept"}
+  smoke_runs:
+    - {command: [python, build_rft_data.py, --samples, analysis/exp-02_dev500_sampled_fewshot.jsonl, --out, /tmp/rft_smoke.jsonl], outcome: "375 rows built and rendered correctly from a k=1 file before the real k=6 run existed; targets end '...ANSWER: 25<end_of_turn>'"}
+    - {command: [python, decontaminate.py, --input, data/rft_v1_raw.jsonl, --threshold, "0.25"], outcome: "0 of 27,281 self-generated rows flagged; max containment against the 1319 test questions is 0.138"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent's greedy path is worse than its own sampling distribution's best path. On 20,000 held-out-from-dev training problems it answers 82.1% correctly on the first sample but 96.4% of those problems have at least one correct chain among 6 samples. The greedy chain is drawn from a distribution that still puts substantial mass on wrong set-ups; nothing in the teacher-only SFT told the model which of its own chains work."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_sampling.txt, locator: "acc_first_sample vs pass_at_k", observation: "0.8209 vs 0.9641 over 20,000 problems, 6 samples each"}
+    - {path: /home/ben/task/data/rft_samples_k6.jsonl, locator: "build_rft_data.py stats: hard 4502, unsolved 719", observation: "4,502 problems are solved on some but not most samples - exactly the band where re-weighting can pay"}
+  affected_share: 0.143
+  failure_examples:
+    - {id: dev150-basement, source: /home/ben/task/logs/2026-09-04T06-58-09+00-00_gsm8k_oVVWkBKgJD6SNpvNAYozXK.json, question: "each level has half the square footage of the level below; top level is 16", gold: "60", model_output: "Level 3: x/4 = 8/4 = 2; Level 4: x/8 = 2/8 = 0.25 ... ANSWER: 6.5625", failure: "divides the previous level instead of x, and never notices the answer is fractional square feet"}
+    - {id: dev150-boat, source: /home/ben/task/logs/2026-09-04T06-58-09+00-00_gsm8k_oVVWkBKgJD6SNpvNAYozXK.json, question: "Julia rows 20 feet in 16 seconds, shore 64 seconds away, boat takes on water every 10 feet", gold: "16", model_output: "she must have rowed 64 - 16 = 48 feet ... 48/10 = 4.8 sets of 10 feet", failure: "subtracts seconds from seconds to get feet; carries 4.8 'sets' without objection"}
+    - {id: dev150-pages, source: /home/ben/task/logs/2026-09-04T06-58-09+00-00_gsm8k_oVVWkBKgJD6SNpvNAYozXK.json, question: "average pages Solo must read per day", gold: "6", model_output: "39 / 5 = 7.8 ... ANSWER: 7.8", failure: "wrong page total, and again a non-integer answer to a counting question passes unchallenged"}
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing exp-04 for one low-lr epoch on 27,281 of its own verified-correct chains - budgeted towards the 4,502 problems it solves only sometimes - plus 12,744 teacher rows including the teacher's solution for all 719 problems it never solved, raises greedy dev-150 accuracy above exp-04's 0.7867."
+  mechanism: "Rejection sampling moves probability mass from the chains that reach a wrong answer onto the chains that reach the right one, within the model's own distribution, so the greedy path shifts towards the chains that already work. Spending 4 slots on problems with pass rate <= 0.67 and 1 on the rest concentrates that shift where the greedy path is actually unreliable. The teacher rows for the 0/6 problems supply the only signal available where the model has no correct chain of its own, and the 12k random teacher rows are there to stop a second, narrower training distribution from eroding what exp-04 learned."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +4 points; RFT at k=6 is a modest version of the k=100 setting the literature reports ~+5 from, and exp-04 is already high"
+  falsified_if: "greedy dev-150 accuracy is at or below exp-04's 0.7867 - which would say the model's own correct chains add nothing over the 405B teacher's, and that the remaining headroom is not reachable by re-weighting its own distribution."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: "synthetic:self (ckpts/exp-04/final, k=6, temperature 1.0, top_p 0.95, seed 1) over questions from nvidia/OpenMathInstruct-2 @ 469216e3; plus teacher rows from derived:exp-04's corpus data/sft_v2.clean.jsonl"
+      n_examples: 40025
+      built_by: /home/ben/task/build_rft_data.py
+      build_command: [python, build_rft_data.py, --samples, data/rft_samples_k6.jsonl, --out, data/rft_v1.jsonl, --raw-out, data/rft_v1_raw.jsonl, --easy-cap, "1", --hard-cap, "4", --hard-threshold, "0.67", --mix, data/sft_v2.clean.jsonl, --mix-raw, data/sft_v2_raw.clean.jsonl, --mix-unsolved, --mix-n, "12000"]
+      selection: "20,000 problems sampled from data/rft_pool.clean.jsonl (79,587 distinct gsm8k-derived problems, already decontaminated at containment 0.25, and with the 500 probe questions removed). Keep only samples whose final ANSWER equals the gold answer; dedup a problem's chains by their sequence of numbers; keep 4 chains where pass rate <= 0.67 and 1 otherwise -> 27,281 rows. Add the 744 teacher rows covering the 719 problems solved 0/6, and 12,000 random teacher rows. decontaminate.py flags 0 of the 27,281 self-generated rows (max containment 0.138)."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3, ChunkedLossTrainer in train_sft.py"
+    peft: "none - full parameter over the 3.88B text tower"
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 32, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "bf16 weights + adamw_bnb_8bit + flash_attention_2 + gradient checkpointing", seed: 0}
+    target_format: "<reasoning> then a blank line then 'ANSWER: <number>' then <end_of_turn>, rendered inside templates/gemma3.jinja (sha256[:12] = 7de1c58e208e); completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/rft_v1.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, ckpts/exp-05, --epochs, "1", --lr, "7e-6", --bs, "32", --accum, "2", --max-seq-len, "2816"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --json-output-file, "{out}.json"]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k openai/gsm8k test split, first 150 items, 10-shot system message seeded 42); the checkpoint carries the greedy generation_config.json adopted in exp-03"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7867
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "greedy accuracy on the 500 held-out GSM8K TRAIN questions excluded from every training corpus in this batch; exp-04 scored 0.860 there"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.45
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    # Amended at 8.0 h. setup.checkpoints.keep promised more than this: before
+    # launching exp-07 I deleted the intermediate checkpoints of exp-04 and
+    # exp-05 and all of exp-06, reflexively citing disk that was never short
+    # (5.5 TB free at the time). This is the second time in this batch, after
+    # exp-02; it is a habit, not an accident. What survives is listed below.
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 626}
+  training_summary: {final_loss: 0.1764, steps: 626, notes: "1623 s wall. The FIRST launch of this exact command trained all 626 steps and then died writing the checkpoint (see situation.pitfalls_hit); the numbers here are the relaunch after the fix. A second aborted launch is my own fault: I killed the first process with pkill -f on a pattern that also matched the wrapping shell's own command line, which took down the relaunch with it - use setsid and a pattern that cannot match the launcher."}
+  measurements:
+    - {metric: accuracy, value: 0.8267, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.0400}
+  diagnostic_result:
+    value: 0.868
+    path: /home/ben/task/analysis/exp-05_diagnostic.json
+    notes: "0.868 greedy on the 500 held-out train questions against exp-04's 0.860 - a much smaller move than the +4.0 on dev-150, which is what a probe at 0.86 saturating looks like; the dev-150 items are harder and have more room. stop_reason='stop' on 149/150."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.7867 -> 0.8267 (+4.0 points) from one low-lr epoch on the model's own verified chains. The gain is at the top of the predicted +1 to +4 band, and the held-out probe moved the same direction, so re-weighting the model's own distribution towards the chains that reach the right answer does convert part of the pass@6 minus pass@1 gap that motivated the card."
+  decision: adopt
+  next_step: "The same lever is not exhausted: this round used 20,000 of the 79,587 pool problems. exp-06 repeats it from this checkpoint on a disjoint 18,000-problem slice, which is both a second RFT round and new problem coverage. final_model is updated to this checkpoint first, so the incumbent is banked before that runs."

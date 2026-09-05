@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T15:05:35Z'
+situation:
+  elapsed_h: 7.0
+  remaining_h: 3.0
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/soup23
+    score: {metric: accuracy, value: 0.735, protocol_n: 400}
+  trigger: 'exp-04 showed that averaging two checkpoints beats both of them by more than the two differ from each other (0.735 against 0.7025 and 0.6925 on dev-400, and 0.764 against 0.740 and 0.738 on the train probe), which says the gain comes from cancelling per-run noise rather than from either parent being better.'
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-04_soup23_dev400.json, locator: accuracy, observation: '0.735 +/- 0.0221, +3.25 over the better parent'}
+    - {path: /home/ben/task/analysis/exp-04_watch500.json, locator: accuracy, observation: '382/500 = 0.764 against 370 and 369 for the parents'}
+  alternatives_rejected:
+    - {option: Stop at the two-way soup, reason: 'it is already shipped to final_model and stays the fallback, but averaging more same-basin checkpoints is the cheapest remaining lever - ~9 min of CPU per candidate and no GPU training'}
+    - {option: Tune the mixing weights instead of adding checkpoints, reason: 'a weight sweep needs one evaluation per point and there is budget for about three evaluations total; adding checkpoints at uniform weight explores more of the space per evaluation'}
+    - {option: Include the raw mid-epoch checkpoint-1000 of exp-02 as a fifth candidate, reason: 'it is an un-finalised fp32 Trainer directory and was never measured; two untested candidates are already as much as the screening budget supports'}
+    - {option: Screen the candidates directly on dev-400, reason: '13 min per candidate against 5 min for the 500-item train probe, and the probe is disjoint from the graded set, so screening there and confirming the winner once on dev-400 costs less and does not select on the reported number'}
+  pitfalls_hit:
+    - {what: 'exp-02/ep1 is a much weaker checkpoint (0.607 on dev-150 against 0.687 for exp-02/final), so the 4-way soup may be dragged down; that is the point of screening before confirming', cost_h: 0.0, fix: 'screen on the train probe first, confirm only the best on dev-400'}
+  smoke_runs:
+    - {command: [python, scripts/soup.py, --models, ckpts/exp-02/final, ckpts/exp-03/final, --dst, ckpts/soup23], outcome: 'the two-way case of the same script produced the incumbent; the N-way generalisation reuses that code path with w=1/N'}
+problem:
+  statement: 'The incumbent averages only two of the four checkpoints saved this batch. exp-03/ep1 and exp-02/ep1 sit in the same loss basin and carry independent run noise, so they are free ingredients, but exp-02/ep1 is a clearly weaker model and adding it may hurt - which of the three candidate soups is best is unmeasured.'
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_ep1_dev150.json, locator: accuracy, observation: '0.6067 - the weakest saved checkpoint, 8 points below its own final'}
+    - {path: /home/ben/task/eval/exp-04_soup23_dev400.json, locator: accuracy, observation: '0.735 - the bar a wider soup has to clear'}
+  affected_share: null
+  failure_examples:
+    - {id: dev400-f1, source: /home/ben/task/analysis/exp-04_diagnostic.json, question: 'two dev-400 items loop under greedy decoding until max_tokens', gold: 'n/a', model_output: 'stop_reason=max_tokens', failure: 'greedy repetition, 0.5% of items - a wider average may or may not damp it'}
+    - {id: dev150-w1, source: /home/ben/task/analysis/exp-02_diagnostic.json, question: hospital profit per day, gold: '10000', model_output: 'answers 30000 from a wrong revenue/cost set-up', failure: 'set-up error that survived both training rounds'}
+    - {id: dev150-w3, source: /home/ben/task/analysis/exp-02_diagnostic.json, question: cans of tomatoes used, gold: '12', model_output: 'answers 3 after a unit mix-up', failure: 'unit confusion'}
+  watch_set:
+    path: /home/ben/task/data/dev_train500.jsonl
+    n: 500
+    selection: 'the last 500 items of the GSM8K train split, held out of every training file; used here as the screening set - soup23 scores 0.764 on it'
+hypothesis:
+  claim: 'Uniformly averaging more than two of the four saved checkpoints produces a model that scores higher on dev-400 than the two-way soup at 0.735; the 3-way average (exp-02/final, exp-03/final, exp-03/ep1) is expected to be the best of the candidates because it adds an ingredient without adding the weakest one.'
+  mechanism: 'Each fine-tuning run picks up independent noise from its data order and mixture; averaging K same-basin checkpoints damps that noise like 1/K as long as every ingredient is individually competent. exp-02/ep1 is 8 points weaker than the others, so the 4-way soup tests where competence stops paying for diversity.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: '0 to +2 points; adding a third checkpoint has less headroom than the first average did'
+  falsified_if: 'neither candidate soup beats soup23 on the 500-item screening probe, or the screened winner scores at or below 0.735 on dev-400'
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/soup23
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev_train500.jsonl
+      source: 'openai/gsm8k train split, last 500 items - the screening probe, never trained on'
+      n_examples: 500
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/soup.py, --models, /home/ben/task/ckpts/exp-02/final, /home/ben/task/ckpts/exp-03/final, /home/ben/task/ckpts/exp-03/ep1, --dst, /home/ben/task/ckpts/soup3]
+      selection: 'no training in this card; the file is the screening set, not a training corpus'
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: 'transformers 4.57.3 state_dict average in fp32, saved bf16'
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: 'fp32 average, bf16 output', seed: null}
+    target_format: 'unchanged from the ingredients - one ANSWER line then <end_of_turn>'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, '{screened_winner}', --limit, '400', --max-connections, '16', --gpu-memory-utilization, '0.6', --json-output-file, /home/ben/task/eval/exp-05_winner_dev400.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '400', --max-connections, '16', --gpu-memory-utilization, '0.6']
+    dev_set: official --limit 400
+    n: 400
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.735
+    path: /home/ben/task/eval/exp-04_soup23_dev400.json
+  diagnostic:
+    what: 'the screening step itself - greedy accuracy of soup3 and soup4 on the 500 held-out train items, against soup23 0.764; only the best goes to dev-400'
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/soup23
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup23, step: 0}
+    - {path: /home/ben/task/ckpts/soup3, step: 0}
+    - {path: /home/ben/task/ckpts/soup4, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: 'no training; two uniform averages built, 3-way over exp-02/final + exp-03/final + exp-03/ep1 and 4-way adding exp-02/ep1'}
+  measurements:
+    - {metric: accuracy, value: 0.748, n: 500, path: /home/ben/task/analysis/exp-05_soup3_probe.json, delta_vs_comparator: -0.016}
+    - {metric: accuracy, value: 0.72, n: 500, path: /home/ben/task/analysis/exp-05_soup4_probe.json, delta_vs_comparator: -0.044}
+  diagnostic_result: {value: 0.748, path: /home/ben/task/analysis/exp-05_soup3_probe.json, notes: 'screening on the 500 held-out train items: soup23 0.764, soup3 0.748, soup4 0.720. The comparator here is soup23 measured on the same 500 items in exp-04 (analysis/exp-04_watch500.json), so the comparison is same-set and same-decoding; the dev-400 command in setup.command.argv was deliberately not run because the pre-registered screen selected no new candidate, and running it anyway would have been selecting on the reported set.'}
+  watch_set_result: {fixed: 374, still_failing: 126, regressions: null, path: /home/ben/task/analysis/exp-05_soup3_probe.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: 'Neither wider soup beats the two-way one: 0.764 -> 0.748 with exp-03/ep1 added and -> 0.720 with exp-02/ep1 added as well, monotone in how weak the added ingredient is. Averaging pays only while every ingredient is individually competent, and the epoch-1 checkpoints are 8 points behind their own finals.'
+  decision: reject
+  next_step: 'Keep ckpts/soup23 as final_model. Remaining time goes to verifying final_model loads and grades from a fresh process under evaluate.py defaults, which is the one failure mode no measurement so far has covered.'

@@ -1,0 +1,123 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T08:58:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 1.75
+  remaining_h: 8.25
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.64667, protocol_n: 150}
+  trigger: "vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config' on every eval so far: gemma-3-4b-pt ships do_sample true / top_k 64 / top_p 0.95, so all three measured numbers are temperature-1.0 sampling reads, not greedy ones."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-01.log, locator: "APIServer line 'Default sampling parameters have been overridden by the model's Hugging Face generation config'"}
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json, locator: "do_sample true, top_k 64, top_p 0.95, no temperature key"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py, locator: "ModelConfig.get_diff_sampling_param, available_params list", observation: "temperature/top_p/top_k from the model's generation_config.json become the server's default sampling params; do_sample is NOT in the list, so temperature is the field that decides greedy"}
+  alternatives_rejected:
+    - {option: "Pass a temperature flag to evaluate.py", reason: "rule 5 forbids modifying evaluate.py, and it exposes no sampling flag; the decode config is a property of the saved model, which is the thing I am allowed to change"}
+    - {option: "Fold the greedy config into the next training run's output", reason: "it would be confounded with that run's training change; measured alone here it costs one 3-minute eval and its effect transfers to every later checkpoint"}
+    - {option: "Self-consistency / majority vote over k samples", reason: "the harness scores one completion per item; there is no way to aggregate votes without modifying evaluate.py"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/mk_decode_variant.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-02/final_greedy, --temperature, "0.0"], outcome: "symlink clone of the checkpoint with only generation_config.json replaced; weights are bit-identical to exp-02/final by construction"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02's 0.647 was produced with vLLM sampling at temperature 1.0, top_k 64, top_p 0.95, because those values come from the base model's generation_config.json which the SFT run copied over unchanged. On a task with one scored completion per item and a single correct integer, sampling discards accuracy the model already has and adds run-to-run variance."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_final_dev150.json, locator: "accuracy 0.64667, format_share 1.0, mean_output_tokens 150", observation: "format is already perfect, so whatever the remaining 53 failures are, they are not termination failures; token-level sampling noise is a candidate cause that costs nothing to remove"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "whole file", observation: "do_sample true, top_k 64, top_p 0.95 - inherited from the base snapshot"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Replacing only generation_config.json in the exp-02 checkpoint with a greedy one (temperature 0.0, top_p 1.0, top_k 0) will raise dev-150 accuracy relative to exp-02's 0.647 measured with the sampled config."
+  mechanism: "vLLM takes its default sampling params from the model's generation_config.json and inspect never overrides temperature, so temperature 0.0 makes the graded completion the argmax chain. For a single-sample, single-correct-answer metric the mode of the distribution beats a draw from it whenever the model is better than chance on the token that decides the answer."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +8 points"
+  falsified_if: "dev-150 accuracy under the greedy config is at or below exp-02's 0.647, or the eval shows vLLM still reporting sampled defaults (i.e. the config did not take effect)."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_no_training_data.txt
+      source: local
+      n_examples: 1
+      built_by: null
+      build_command: []
+      selection: "no training in this card; the intervention is one config file"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 default sampling params from generation_config.json"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/final_greedy, --limit, "150", --max-connections, "16", --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.1}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official inspect_evals/gsm8k test --limit 150 (first 150 items in dataset order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.64667
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "mean output tokens and format share; greedy should keep format at 1.0 and must not introduce degenerate repetition (which would show up as a jump in mean/max output tokens)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.05
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 3080}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to exp-02/final"}
+  measurements:
+    - {metric: accuracy, value: 0.69333, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.04666}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-03_greedy_dev150.json
+    notes: "format share still 1.0; mean output 157.5 tokens vs 150.0 sampled. One completion reached 1065 tokens (vs 358 max under sampling), the expected greedy repetition tail, but it stayed far under the 4000 cap and did not cost format compliance."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Same weights, one config file: 0.647 -> 0.693 (+4.7 points) purely by making vLLM decode greedily instead of sampling at temperature 1.0 / top_k 64. vLLM still logged the generation-config override line, now with the greedy values, confirming the file took effect."
+  decision: adopt
+  next_step: "Every later checkpoint ships this generation_config.json, and every later comparison is measured under it. Remaining lever: rejection-sampling fine-tuning from exp-02/final - format is already perfect, so the surviving 46 failures are reasoning failures and need better chains, not better formatting."

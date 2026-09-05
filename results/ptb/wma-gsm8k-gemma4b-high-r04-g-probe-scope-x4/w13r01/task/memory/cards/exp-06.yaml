@@ -1,0 +1,142 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T14:19:28Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.2
+  remaining_h: 2.8
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7255, protocol_n: 1319}
+  trigger: "exp-05 retired the on-policy line: scaling it 1.7x cost -2.35 pts at p = 0.032 and the pre-registered chain-compression diagnostic fired. Of the two levers tried this batch only off-policy data scaling ever reached significance (exp-02 -> exp-03, +3.49 pts at p = 0.0034), and 37,873 rendered rows from the same source were built for exp-03 and then held back by its wall-clock quota. They are the one unused resource that sits on the lever that worked."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/mcnemar_exp04_exp05.json, locator: "delta -0.0235, p 0.0323", observation: "the on-policy line regressed significantly; it is closed"}
+    - {path: /home/ben/task/analysis/mcnemar_exp02_exp03.json, locator: "delta +0.0349, p 0.0034", observation: "off-policy data scaling is the only intervention in this batch that reached significance"}
+    - {path: /home/ben/task/data/sft_v4.jsonl, locator: "37,873 rows, 17.4M tokens", observation: "rows rendered for exp-03 and excluded only by its subsample quota, so they cost nothing to obtain and were never trained on"}
+  alternatives_rejected:
+    - {option: "Evaluate the exp-03+exp-04 weight soup already built at ckpts/soup_e3e4", reason: "the three points along the on-policy axis are now measured - exp-03 0.7081, exp-04 0.7255, exp-05 0.7020 - which is an inverted U with its peak at or very near exp-04. soup(exp-03, exp-04) is by construction the midpoint of the exp-03 -> exp-04 step, so it should land near 0.717 and beating 0.7255 would be surprising. The soup is left built and unevaluated; that is a budget decision, and the reasoning above is why it lost the slot rather than the clock alone."}
+    - {option: "A third on-policy round with median-length instead of shortest-length chain selection", reason: "that is the right fix for the mechanism exp-05 identified, but it needs a fresh sampling pass (~45 min) plus training (~35 min) and does not fit in 2.8 h alongside final verification. It is recorded in exp-05's next_step for a future batch."}
+    - {option: "A from-base SFT on ~200k rows", reason: "~2.6 h of training against 2.8 h remaining; it would leave no margin for the final verification and would risk finishing with an unverified artifact"}
+    - {option: "Restart the cosine schedule at exp-03's 1e-5", reason: "exp-05 showed that a continuation from an annealed checkpoint can significantly damage it. 3e-6 keeps the update small so that 0.7255 stays an effective floor; the point of this card is a cheap probe of a proven lever, not a second full training round."}
+  pitfalls_hit:
+    - {what: "exp-05 lost 0.61 h to a significant regression whose cause - selecting the shortest answer-correct chain per question, driving output-token p50 from 173 to 129 over two rounds - was only visible because the compression threshold had been pre-registered", cost_h: 0.61, fix: "the on-policy line is retired on both its stopping criteria; this card returns to off-policy data, where chain length is set by the teacher and not by a selection rule of ours"}
+  smoke_runs:
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v4_check.jsonl], outcome: "37,873 documents scanned, 0 contaminated, exit 0"}
+    - {command: [python, -c, "assert every sft_v4 target ends '<end_of_turn>' with exactly one 'ANSWER:' and no row is already in sft_v3"], outcome: "37,873 rows, all disjoint from data/sft_v3.jsonl by exact rendered text; max 3060 tokens against the 3072 cap; 1,543 rows (4.1%) carry the harness's 10-shot prefix"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent is wrong on 362 of 1319 test items and both continuation attempts so far have used its own outputs, which has now been shown to compress its chains and cost accuracy. It has never been shown fresh teacher-written supervision since exp-03; everything after that point was self-generated."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_full_items.jsonl, locator: "correct field", observation: "362 of 1319 wrong at 0.7255"}
+    - {path: /home/ben/task/analysis/mcnemar_exp04_exp05.json, locator: "b_only_a_correct 114 / c_only_b_correct 83", observation: "the last continuation produced more regressions than gains"}
+    - {path: /home/ben/task/analysis/exp-05_prereg.json, locator: "chain_compression_rule", observation: "output-token p50 173 -> 153 -> 129 across the two on-policy rounds; self-supervision was shortening the chains"}
+    - {path: /home/ben/task/analysis/exp-04_watch_rerun.json, locator: "still_failing", observation: "23 of the original 26 hard watch items remain wrong"}
+  affected_share: 0.2745
+  failure_examples:
+    - {id: gsm8k_6e11451d, source: /home/ben/task/analysis/exp-04_full_items.jsonl, question: "unfixed through exp-02 to exp-05", gold: "see analysis/exp-04_full_items.jsonl", model_output: "still incorrect", failure: "hard residue no intervention in this batch has moved"}
+    - {id: gsm8k_7feb8f87, source: /home/ben/task/analysis/exp-04_full_items.jsonl, question: "unfixed through exp-02 to exp-05", gold: "see analysis/exp-04_full_items.jsonl", model_output: "still incorrect", failure: "hard residue no intervention in this batch has moved"}
+    - {id: gsm8k_cef581f8, source: /home/ben/task/analysis/exp-04_full_items.jsonl, question: "unfixed through exp-02 to exp-05", gold: "see analysis/exp-04_full_items.jsonl", model_output: "still incorrect", failure: "hard residue no intervention in this batch has moved"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_watch_rerun.json
+    n: 23
+    selection: "the 23 items of the original reasoning watch set still wrong after exp-04; diagnostic only, never a falsifier, because at n=23 it decides on noise"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing training from ckpts/exp-04/final at a low learning rate on 37,873 held-back teacher-written OpenMathInstruct-2 chains - disjoint from everything exp-03 trained on - raises full-test accuracy against exp-04's 0.7255."
+  mechanism: "Off-policy data scaling is the one lever that produced a significant gain in this batch, and these rows are the same distribution that produced it, simply never used. Because the supervision comes from a stronger teacher rather than from the model itself, it cannot compress the model's chains onto its own modal outputs, which is the specific mechanism that made exp-05 worse; if anything the teacher's chains are longer than what exp-04 now produces (p50 153)."
+  decision_rule_precommitted: "Identical in form to exp-03, exp-04 and exp-05, written before launch. Primary metric: accuracy at n=1319 under the same argv. Significance: two-sided exact McNemar on paired per-item outcomes against analysis/exp-04_full_items.jsonl via scripts/mcnemar.py. (a) delta > 0 and p < 0.05 -> supported, adopt, exp-06 becomes final_model. (b) delta > 0 and p >= 0.05 -> inconclusive, the effect is NOT claimed; the higher-scoring checkpoint may still be taken as the artifact because the two are statistically indistinguishable. (c) delta <= 0 -> contradicted, reject, exp-04/final stays final_model. In every branch final_model is only rewritten AFTER the McNemar has been computed, never on the accuracy number alone. This is the last training card of the batch regardless of outcome: whatever remains after it goes to verifying that final_model loads and scores from a fresh process."
+  chain_compression_check: "The same pre-registered diagnostic as exp-05 applies unchanged: output-token p50 with a 140 floor. Here it is expected to move the OTHER way - teacher chains are longer than exp-04's own - so a p50 that falls again would mean the update did not take at all rather than that chains were compressed."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+0 to +2 pts (0.725-0.745). 37,873 rows at 3e-6 is a small update and a third of exp-03's corpus, so the honest expectation is a fraction of exp-03's +3.49; a null is at least as likely as a gain."
+  falsified_if: "Full-test accuracy at n=1319 is at or below exp-04's 0.7255, or the paired McNemar shows regressions outnumbering gains. Either says that at this point in training fresh off-policy data of this distribution is exhausted as a lever, and the batch ends with exp-04 as the artifact."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e shards 0-7: 30,234 problem_source=augmented_gsm8k and 7,639 augmented_math rows. Built from the GSM8K and MATH *train* splits only; the builder never reads the GSM8K test split."
+      n_examples: 37873
+      built_by: /home/ben/task/scripts/build_sft.py
+      build_command: [bash, -c, "python scripts/build_sft.py --out data/sft_v3_raw.jsonl --max-gsm-aug 130000 --max-math 22000 --max-per-problem 2 --fewshot-frac 0.04 --max-tokens 3072  # then: normalise the terminator and keep exactly the rows data/sft_v3.jsonl did not take, shuffled with seed 23"]
+      selection: "the complement of data/sft_v3.jsonl within data/sft_v3_raw.jsonl, by exact rendered text, after the same terminator normalisation. Same filters as exp-03 therefore apply (integer expected_answer, brace-balanced \\boxed unwrapping, '####' bodies rejected, at most 2 solutions per problem, exact dedup). These are rows exp-03's per-source quota excluded, not rows any filter rejected, so they are the same quality as what exp-03 trained on. Disjointness verified. 1,543 rows (4.1%) carry the harness's exact 10-shot prefix."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE, flash_attention_2"
+    peft: "none - full parameter on the 3.880B language tower; vision tower and multimodal projector frozen"
+    hyperparams: {lr: 3.0e-6, epochs: 1.0, batch_size: 24, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    decode: "greedy, identical to exp-02 through exp-05: generation_config.json with do_sample false, temperature 0.0, top_p 1.0, eos_token_id [1, 106], no top_k. The file has now diffed identically across three consecutive saves from a self-checkpoint."
+    target_format: "<bos><start_of_turn>user\\n{optional 10-shot block}\\n\\n{MATH_PROMPT_TEMPLATE with the question}<end_of_turn>\\n<start_of_turn>model\\n{teacher chain of thought}\\n\\nANSWER: {integer}<end_of_turn>; loss on the model turn only, prompt tokens masked to -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v4.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/ckpts/exp-06, --epochs, '1', --lr, '3e-6', --bs, '24', --accum, '2', --max-len, '3072', --attn, flash_attention_2, --liger, '1', --seed, '0', --save-steps, '395']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 395
+    keep: last
+  checkpoints_note: "37,873 rows / effective batch 48 = 789 steps. --save-steps 395 puts one save at the half-epoch and the final at 789, so save_total_limit 2 keeps two genuinely separated checkpoints rather than two a few steps apart (the trap exp-05's lock corrected)."
+  budget: {gpu: H100-80GB, planned_h: 0.55}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '8', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 1319, the complete openai/gsm8k main test split; fewshot_seed 42 fixed by the task definition"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7255
+    path: /home/ben/task/eval/exp-04_full1319.json
+  diagnostic:
+    what: "paired exact McNemar against analysis/exp-04_full_items.jsonl, gains and regressions counted separately over the same 1319 items, plus output-token p50 against the pre-registered 140 floor and the max_tokens / ANSWER-line shares"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.50
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 790}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-395, step: 395}
+  training_summary:
+    final_loss: 0.2896
+    steps: 790
+    notes: "1815 s (0.50 h) at 20.9 samples/s, inside the 0.55 h budget. 0 of 37,873 rows truncated. Loss 0.290, above exp-05's 0.197 and below exp-03's 0.315, consistent with teacher-written rather than self-generated targets. generation_config.json diffs identically against exp-04's for the fourth consecutive save from a self-checkpoint."
+  measurements:
+    - {metric: accuracy, value: 0.7240, n: 1319, path: /home/ben/task/eval/exp-06_full1319.json, delta_vs_comparator: -0.0015}
+  diagnostic_result:
+    value: 0.9437
+    path: /home/ben/task/analysis/mcnemar_exp04_exp06.json
+    notes: "Paired exact McNemar against exp-04: 99 gains against 101 regressions, 200 discordant, two-sided p = 0.944 - as close to exactly flat as this test can report. The chain-compression check behaved as the card predicted for off-policy data and confirms the update did take: output-token p50 rose 153 -> 171 and the max_tokens share rose 9 -> 22 of 1319, i.e. the teacher's longer chains were absorbed. So this is a genuine null from a real update, not a no-op. 200 discordant items on a 2-item net difference is also the clearest illustration in the batch of how much per-item churn a flat result hides."
+  watch_set_result: {fixed: 2, still_failing: 21, regressions: 101, path: /home/ben/task/analysis/exp-06_watch_rerun.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Full-test accuracy 0.7255 -> 0.7240 (-0.15 pts, p = 0.944): 37,873 fresh teacher-written chains at 3e-6 moved nothing. The update demonstrably took - chain length and the max_tokens share both moved toward the teacher's distribution - so the null is about the supervision being exhausted at this point in training, not about the run failing."
+  decision: reject
+  next_step: "Batch ends here as pre-committed in this card's decision rule. final_model stays ckpts/exp-04/final at 0.7255, never overwritten on an accuracy number alone. Both levers are now measured to exhaustion: off-policy scaling gave +65.3 (format) then +3.5 (reasoning, p = 0.003) then 0.0, and on-policy gave +1.7 (unproven) then -2.4 (p = 0.032). A future batch should try what this one could not reach: a from-base run on 250k+ rows under one schedule, and on-policy rounds that keep the median-length rather than the shortest correct chain."

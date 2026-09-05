@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T23:37:07Z'
+situation:
+  elapsed_h: 1.5
+  remaining_h: 8.5
+  # exp-04 is launched at elapsed 1.6 h / remaining 8.4 h
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0533, protocol_n: 150}
+  trigger: "exp-02 OOMed at step 50 of 2527 with 10.28 GiB reserved-but-unallocated; the hypothesis was never tested, so it is re-run here with the micro-batch peak halved."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "conclusion.summary", observation: "PROF micro_step=9297ms for 14298 tokens = 1538 tok/s, dataloader gap 48ms; fp32 fwd/bwd was the cause"}
+    - {path: /home/ben/task/logs/prof2.log, locator: "PROF n=150", observation: "after wrapping compute_loss in torch.autocast: 6477 tok/s, 3.6 s/step, same batch shape"}
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "ends_with_answer=36, scored_correct=8, first_answer_correct=23"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full fine-tune", reason: "80 GB H100 fits fp32-master full FT of the 3.88B text tower with 8-bit AdamW and a fused-linear CE (measured 37.5 GB peak at 16k tokens/micro-batch); full FT has the higher ceiling at the same wall-clock here"}
+    - {option: "Train on the original GSM8K train solutions only (7.5k rows)", reason: "too small to move a 4B model far, and the terse reference style is a weaker CoT than model-written solutions"}
+    - {option: "Pure bf16 weights instead of fp32 master weights", reason: "bf16 has ~3 decimal digits; at lr 1e-5 the per-step relative update (~1e-3) is at the edge of bf16 resolution, so updates get silently rounded away"}
+    - {option: "Make a large fraction of rows carry the grader's 10-shot prefix", reason: "a 10-shot prefix is ~1700 tokens and would roughly triple training cost; 3% of rows carry a 2/4/8-shot prefix as a hedge and the harness eval (always 10-shot) is the judge"}
+    - {option: "Give up on the fused-linear CE and use the model's own forward(labels=...) so accelerate's autocast applies", reason: "the 262208-token vocab makes materialised logits 12 bytes/element; at 34k tokens per micro-batch that is ~13 GB of logits alone, on top of a 39 GB fixed footprint. Explicit autocast costs one line and keeps the memory profile"}
+    - {option: "Trim the corpus to 120k rows to buy back the 0.75 h lost to the fp32 bug", reason: "8.5 h remain and the epoch is now 2.7 h; the schedule still leaves ~4.5 h for a follow-up round, so the data is worth more than the margin"}
+    - {option: "Keep bsz 32 and only add expandable_segments", reason: "the peak was 74.6 GB of 79 GB even before fragmentation; defragmenting alone leaves no margin, and a second OOM costs another 0.3 h of the 8.5 h left"}
+    - {option: "Cut the corpus instead of the micro-batch to save wall-clock", reason: "the OOM was a memory-shape bug, not a budget problem; 2.3 h of the 8.5 h remaining still leaves room for one follow-up experiment"}
+  pitfalls_hit:
+    - {what: "flash_attention_2 raises 'FlashAttention only support fp16 and bf16' when master weights are fp32 - autocast does not reach the varlen kernel's dtype check", cost_h: 0.1, fix: "attn_implementation=sdpa; benchmarked 9436 tok/s at 32x512"}
+    - {what: "first throughput smoke read 3.1 samples/s and looked like a 14 h run; group_by_length puts the LONGEST batches first so early steps are not representative", cost_h: 0.15, fix: "measured raw fwd+bwd instead: 68M padded tokens is ~2.1 h"}
+    - {what: "a benchmark showed 73 GB peak because the model was never put in train() mode, so gradient checkpointing silently did nothing", cost_h: 0.1, fix: "m.train() in the benchmark; real peak is 37.5 GB"}
+    - {what: "exp-02 OOMed at step 50/2527 at bsz 32 x max_len 2048 (65k tokens/micro-batch). group_by_length front-loads the longest batch of every 3200-sample megabatch, so a peak that survives step 1 recurs every 50 steps and eventually meets a fragmented allocator (10.28 GiB reserved-but-unallocated)", cost_h: 0.3, fix: "bsz 24 x max_len 1408 = 34k tokens/micro-batch, accum 3 to hold the effective batch at 72 sequences, plus PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft_exp04.py, --data, data/sft_v1.jsonl, --out, ckpts/smoke, --limit, "6000", --max-steps, "15"], outcome: "ran to completion, loss 0.46 -> 0.42, saved ckpts/smoke/final"}
+    - {command: [python, /tmp/checkloss.py], outcome: "liger fused-linear-CE loss 0.5512111 vs transformers' own labels= loss 0.5512110 on the same 4 rows: the custom loss and label shift are correct, and 0.55 is the base model's loss on this corpus so a step-10 loss of 0.46 is not suspiciously low"}
+problem:
+  statement: "google/gemma-3-4b-pt has no turn-taking or answer-format prior. Under the harness it continues the few-shot pattern past its own answer and invents new question/answer pairs, so the grader's last-number rule reads a number belonging to a hallucinated problem; and its raw math is weak (15.3% even if the FIRST ANSWER line is credited)."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "whole file", observation: "36/150 end with an ANSWER line; 63/150 hit max_tokens=4000; mean completion 6222 chars"}
+    - {path: /home/ben/task/eval/exp-01_base_dev150.json, locator: "accuracy", observation: "0.0533 +/- 0.018"}
+  affected_share: 0.76
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "(unchanged from exp-02/exp-03, neither of which produced a measurement) Completion-only SFT on 162k GSM8K-style CoT solutions, rendered with the grader's own gemma3.jinja and terminated with <end_of_turn>, will raise dev-150 accuracy over the 0.053 base_model comparator and drive the format-failure rate from 0.76 to near zero."
+  mechanism: "Two separable defects are fixed at once. (1) Every training target ends '\\n\\nANSWER: <n><end_of_turn>' and 106 is one of the two eos ids in the base generation_config, so vLLM stops exactly where the grader reads - the run-on failure goes away by construction. (2) 150k OpenMathInstruct-2 solutions to GSM8K-train and GSM8K-train-derived problems teach a step-by-step arithmetic style on in-domain problems, which is what lifts underlying correctness. The diagnostic isolates (1): if accuracy lands near 0.15 - what the base model already reaches when its first ANSWER line is credited - then (1) worked and (2) did not."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "+40 to +60 pts on dev-150"}
+  falsified_if: "dev-150 accuracy below 0.20, or the format-failure rate still above 0.10 after training."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "nvidia/OpenMathInstruct-2 @ 469216e3f46f4dacf476b382e192485ea51a143e (shards 0-9 of 32)"
+      n_examples: 162000
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v1.jsonl]
+      selection: "problem_source in {gsm8k, augmented_gsm8k} -> 150000 rows from 80442 distinct problems, max 2 solutions per problem; plus 12000 rows from {math, augmented_math} restricted to non-negative plain-numeric answers. boxed answers unwrapped to bare text; rows with a residual latex box/environment dropped; rows already containing 'ANSWER:' dropped; solution <= 4000 chars. Every target ends with exactly one final line 'ANSWER: <expected_answer>'. All problems are GSM8K/MATH TRAIN-derived; no test item is used."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer subclassed for liger 0.8.2 fused-linear cross-entropy"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 24, grad_accum: 3, max_seq_len: 1408, scheduler: "cosine_with_min_lr 0.1", warmup: 0.02, weight_decay: 0.0, precision: "fp32 master + bf16 autocast, adamw_bnb_8bit, beta2 0.95, clip 1.0", seed: 0}
+    target_format: "user turn = MATH_PROMPT_TEMPLATE with the question; model turn = chain of thought then a final line 'ANSWER: <n>' then <end_of_turn>; loss on the completion only; 3% of rows carry a 2/4/8-shot gsm8k-TRAIN system prefix formatted exactly like inspect's sample_to_fewshot; at max_seq_len 1408 the 8-shot rows (~1% of all rows) fall over the limit and are dropped by the tokenizer filter"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft_exp04.py, --data, data/sft_v1.jsonl, --out, /home/ben/task/ckpts/exp-04, --lr, "1e-5", --epochs, "1", --bsz, "24", --accum, "3", --max-len, "1408", --fewshot-frac, "0.03", --save-steps, "1200", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft_exp04.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 1200
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0533
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic:
+    what: "format-failure rate: share of the 150 completions that do not end with 'ANSWER: <number>'"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 2.61
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2227}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1200, step: 1200}
+    - {path: /home/ben/task/ckpts/exp-04/ck1200, step: 1200}
+  training_summary: {final_loss: 0.2292, steps: 2227, notes: "train_runtime 9407 s, 17.0 samples/s, mean train_loss 0.284; PROF held 6381 tok/s throughout; no OOM at 65.8 GB peak"}
+  measurements:
+    - {metric: accuracy, value: 0.8267, n: 150, path: /home/ben/task/eval/exp-04_final_dev150.json, delta_vs_comparator: 0.7734}
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-04_ck1200_dev150.json, delta_vs_comparator: 0.6667}
+  diagnostic_result:
+    value: 0.0133
+    path: /home/ben/task/analysis/exp-04_diag.json
+    notes: "format-failure rate 0.76 -> 0.013 (148/150 completions end with an 'ANSWER: <n>' line); 148/150 stopped on a stop token vs 87/150 for the base model, and mean completion length fell 6222 -> 714 chars. The 2 remaining format failures are the 2 samples that hit max_tokens."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.0533 -> 0.8267 (+77.3 pts), stderr 0.031. Both halves of the mechanism fired and are separable: the format fix alone would have capped the model near 0.15 (the base model's first-ANSWER-line score), so the remaining ~67 pts come from the OpenMathInstruct-2 CoT itself. The checkpoint-selection contrast came out the ordinary way rather than the 'trained to the end is often worse' way: step 1200 scores 0.72 against 0.8267 at step 2227, so the last checkpoint is the one to keep."
+  decision: adopt
+  next_step: "ckpts/exp-04/final is packed into final_model (verified loadable, bf16, greedy, eos 106). exp-05: a rejection-sampling round on the GSM8K TRAIN split from this checkpoint, weighted toward problems the model finds hard, to see whether on-policy correct solutions add anything on top of the off-policy corpus."

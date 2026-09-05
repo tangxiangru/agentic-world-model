@@ -1,0 +1,129 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T09:03:30Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.1
+  remaining_h: 7.9
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.5533, protocol_n: 150}
+  trigger: "evaluate.py never sets a temperature, and inspect only forwards sampling params that are explicitly set (inspect_ai/model/_openai.py:233). vLLM therefore falls back to the checkpoint's own generation_config.json, which the base model ships as do_sample=true, top_k=64, top_p=0.95 - so every score so far, including exp-02's 0.5533, was measured under stochastic sampling at temperature 1.0."
+  trigger_evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py, locator: "line 233: if config.temperature is not None"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py, locator: "get_diff_sampling_param, line 1344: temperature/top_k/top_p read from generation_config"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample true, top_k 64, top_p 0.95, no temperature key"}
+  alternatives_rejected:
+    - {option: "Pass --temperature to evaluate.py", reason: "evaluate.py has no such flag and rule 5 forbids modifying it; generation_config.json is part of the model artefact, which is mine to set"}
+    - {option: "Leave decoding alone and spend the time on more training", reason: "this costs one 5-minute eval and the result applies on top of any later checkpoint; cheapest experiment available"}
+    - {option: "Low temperature (0.2) rather than greedy", reason: "worth testing only if greedy loses; greedy is the limit case and the single cleanest comparison"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, make_variant.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-02-greedy, --temperature, '0.0', --symlink-weights], outcome: "variant dir written; generation_config.json now do_sample false, temperature 0.0, top_p 1.0, top_k 0; safetensors symlinked so the weights are byte-identical to exp-02"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02's 67 remaining dev-150 failures are all reasoning/arithmetic errors, and an unknown share of them are sampling noise rather than a wrong mode: the model is graded on a single sample drawn at temperature 1.0 with top_k 64, so any step where the argmax token is right but not overwhelmingly so can be lost to the sampler."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_failure_tags.json, locator: "incorrect=67, runon=0, no_answer_line=0", observation: "no formatting failures remain; all 67 errors are content errors under a stochastic decode"}
+    - {path: /home/ben/task/analysis/exp-02_probe250.json, locator: "summary.temperature=1.0, accuracy=0.584, truncated=2", observation: "the probe set was also scored under temperature-1 sampling; 2 completions ran into the length cap"}
+  affected_share: null
+  failure_examples:
+    - {id: "exp-02 probe failures", source: /home/ben/task/analysis/exp-02_probe250.json, question: "(100 held-out GSM8K TRAIN probe items still wrong after exp-02; see results[] where correct=false)", gold: "in analysis/probe250.jsonl", model_output: "in analysis/exp-02_probe250.json results[].output", failure: "arithmetic/reasoning errors under temperature-1 sampling"}
+    - {id: "exp-02 probe truncations", source: /home/ben/task/analysis/exp-02_probe250.json, question: "(2 probe items whose completion hit the 1024-token cap)", gold: "in analysis/probe250.jsonl", model_output: "finish_reason=length", failure: "degenerate continuation the sampler entered; greedy cannot enter it unless it is the mode"}
+    - {id: "exp-02 probe regressions", source: /home/ben/task/analysis/exp-02_watch_rerun.json, question: "(4 probe items the base model answered correctly and exp-02 did not)", gold: "in analysis/probe250.jsonl", model_output: "in analysis/exp-02_probe250.json", failure: "regressions, plausibly sampling noise at temperature 1"}
+  watch_set:
+    path: /home/ben/task/analysis/probe250.jsonl
+    n: 250
+    selection: "same 250 held-out GSM8K TRAIN items as exp-01/exp-02; contains no benchmark test item"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Setting temperature 0.0 / top_p 1.0 / top_k 0 in the checkpoint's generation_config.json (greedy decoding, which vLLM adopts as its default sampling params) raises dev-150 accuracy relative to exp-02's 0.5533 on byte-identical weights."
+  mechanism: "Only the decode changes - the safetensors are symlinked from exp-02. Under temperature-1 top_k-64 sampling one low-probability token anywhere in a ~470-character chain can derail the arithmetic, and the chain is never re-checked, so a single bad draw is unrecoverable. Greedy takes the argmax at every step, which for a model SFT'd onto one consistent solution format is where the trained probability mass sits."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +8 pts"}
+  falsified_if: "greedy dev-150 accuracy is at or below 0.5533, or greedy probe-250 accuracy is at or below 0.584"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "not read by this card; it is the corpus the parent checkpoint was trained on"
+      n_examples: 74254
+      built_by: /home/ben/task/build_data.py
+      build_command: []
+      selection: "n/a - decode-only change, no training"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 default sampling params taken from generation_config.json
+    peft: "none (weights unchanged, safetensors symlinked from the exp-02 checkpoint)"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "unchanged from exp-02: worked solution, then 'ANSWER: <number>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02-greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-02-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.5533
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "probe-250 accuracy under greedy decoding (probe_eval.py --temperature 0), against exp-02's 0.584 at temperature 1 - an independent 250-item read on the same weights"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/ckpts/exp-02-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02-greedy, step: 1719}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights symlinked from ckpts/exp-02/final, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.6933, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.14}
+  diagnostic_result:
+    value: 0.66
+    path: /home/ben/task/analysis/exp-03_probe250.json
+    notes: "probe-250 0.584 (T=1) -> 0.660 (greedy), +7.6 pts on a second, independent 250-item set. vLLM confirmed it adopted the config: 'Default sampling parameters have been overridden by the model's Hugging Face generation config' in logs/exp-03.log. dev-150 stop reasons 148 stop / 2 max_tokens."
+  watch_set_result:
+    fixed: 46
+    still_failing: 58
+    regressions: 27
+    path: /home/ben/task/analysis/exp-03_watch_rerun.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.5533 -> 0.6933 (+14.0 pts) and probe-250 0.584 -> 0.660 (+7.6 pts) from changing three numbers in generation_config.json; the weights are byte-identical. The 46-fixed / 27-regressed split on the probe set is what a variance reduction looks like rather than a capability gain: sampling was winning some items by luck too, and greedy nets +19."
+  decision: adopt
+  next_step: "Greedy is now part of every artefact, including final_model. exp-04: rejection-sampling fine-tune to attack the ~58 probe items and 46 dev-150 items that are wrong even at the mode."

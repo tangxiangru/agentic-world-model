@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T00:35:00Z'
+situation:
+  elapsed_h: 2.5
+  remaining_h: 7.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/vfinal_greedy
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "exp-04 is holding the GPU for ~1.9 h more, and exp-02 left four checkpoints on disk whose greedy reads (0.6867 / 0.7067 / 0.7133 / 0.7267) differ by only 4 pts - a flat tail of one trajectory is the situation uniform weight averaging is for, and the averaging itself runs on CPU while the GPU stays busy."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-03.yaml
+      locator: "result.measurements - steps 300/600/900/902 at 0.6867/0.7067/0.7133/0.7267"
+    - path: /home/ben/task/memory/cards/exp-04.verdict.json
+      locator: "suggestions.cheaper_variants[0]"
+      observation: "the WMA notes two final submissions in its corpus that were uniform soups beating every ingredient, and that this is the one cheap lever this run has not pulled"
+  alternatives_rejected:
+    - option: "Run the soup eval now, concurrently with exp-04's training"
+      reason: "training peaks around 57 GB and vLLM would take another 24 GB at gpu-memory-utilization 0.3; an OOM would cost the 2.5 h run to save 8 minutes."
+    - option: "Soup exp-02/final with exp-04/final once exp-04 lands"
+      reason: "Worth considering later, but the two are trained on different corpora for different step counts; averaging along one trajectory is the well-supported case and is testable now."
+    - option: "Exponential moving average over all four rather than a uniform mean"
+      reason: "One more free parameter to tune on a 150-item dev read; with only four checkpoints the uniform mean and a sensible EMA are nearly the same model."
+  pitfalls_hit:
+    - {what: "checkpoint-300 was trained at a much higher point on the cosine schedule (lr 1.56e-5 at step 300 vs ~0 at 902) and is 4 pts worse than the endpoint, so including it in the average may drag the soup down", cost_h: 0.0, fix: "build two soups - all four, and the last three - and read both"}
+  smoke_runs: []
+problem:
+  statement: "The incumbent is a single point on a trajectory whose last three checkpoints are within 2 pts of each other at n=150, i.e. inside the noise floor. Picking the endpoint is therefore partly a coin flip on evaluation noise, and any single checkpoint carries whatever idiosyncratic errors its final few hundred steps put there."
+  evidence:
+    - path: /home/ben/task/memory/cards/exp-03.yaml
+      locator: "result.measurements"
+      observation: "0.7067 (600), 0.7133 (900), 0.7267 (902) - a 2 pt spread against a ~3.7 pt standard error"
+    - path: /home/ben/task/analysis/exp-02_final_greedy_rows.json
+      locator: "summary.failures = 41"
+      observation: "39 of the 41 remaining failures are arithmetic slips in well-formed chains, the error class weight averaging is most likely to smooth"
+  affected_share: null
+  failure_examples:
+    - {id: "exp02-greedy-fail-1", source: /home/ben/task/analysis/exp-02_final_greedy_failures.jsonl, question: "dev-150 item, line 1 of the file", gold: "see file", model_output: "see file", failure: "arithmetic slip in a well-formed chain"}
+    - {id: "exp02-greedy-fail-2", source: /home/ben/task/analysis/exp-02_final_greedy_failures.jsonl, question: "dev-150 item, line 2 of the file", gold: "see file", model_output: "see file", failure: "arithmetic slip in a well-formed chain"}
+    - {id: "exp02-greedy-fail-3", source: /home/ben/task/analysis/exp-02_final_greedy_failures.jsonl, question: "dev-150 item, line 3 of the file", gold: "see file", model_output: "see file", failure: "arithmetic slip in a well-formed chain"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_final_greedy_failures.jsonl
+    n: 41
+    selection: "every dev-150 item the incumbent gets wrong at temperature 0"
+hypothesis:
+  claim: "A uniform weight average of exp-02's last three checkpoints (600, 900, 902), read at temperature 0, scores at least as high as the best single ingredient (0.7267); the four-checkpoint soup that also includes step 300 scores no higher than the three-checkpoint one."
+  mechanism: "Checkpoints late on one cosine trajectory sit in the same loss basin, so their mean is a valid point in that basin and averages away the step-to-step noise each individual checkpoint carries. Step 300 was taken at lr 1.56e-5, far enough back that it is a materially different point and should dilute rather than denoise."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "0 to +3 pts for the last-three soup; the four-checkpoint soup at or below it"
+  falsified_if: "The last-three soup scores below 0.7067 (worse than its own worst ingredient), or the four-checkpoint soup beats it by more than 2 pts."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "derived:exp-02 - no new data; this card averages weights exp-02 already wrote"
+      n_examples: 112234
+      built_by: /home/ben/task/scripts/build_sft.py
+      build_command: [python, scripts/build_sft.py, --out, data/sft_v1.jsonl, --nshot-frac, '0.04']
+      selection: "unchanged from exp-02"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: merge
+    framework: "scripts/soup.py - fp32 accumulation, bf16 output, safetensors"
+    peft: none
+    hyperparams: {seed: 0}
+    target_format: "unchanged: reasoning, blank line, 'ANSWER: <int>', <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [python, scripts/soup.py, --srcs, /home/ben/task/ckpts/exp-02/checkpoint-600, /home/ben/task/ckpts/exp-02/checkpoint-900, /home/ben/task/ckpts/exp-02/checkpoint-902, --dst, /home/ben/task/ckpts/soup_last3, --extra-from, /home/ben/task/ckpts/exp-02/vfinal_greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-05_soup.log
+  output_dir: /home/ben/task/ckpts
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --json-output-file, '{out}.json']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, 10-shot system message, fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7267
+    path: /home/ben/task/eval/exp-02_final_greedy.json
+  diagnostic:
+    what: "no-ANSWER-line share and mean output tokens for each soup, to confirm averaging has not broken the output contract"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.14
+  output_checkpoint: /home/ben/task/ckpts/soup_all4
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup_last3, step: 902}
+    - {path: /home/ben/task/ckpts/soup_all4, step: 902}
+  training_summary: {final_loss: null, steps: null, notes: "no training; fp32 accumulation of 883 tensors per source, bf16 output, run on CPU while exp-04 held the GPU"}
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-05_soup_last3.json, delta_vs_comparator: -0.02}
+    - {metric: accuracy, value: 0.7200, n: 150, path: /home/ben/task/eval/exp-05_soup_all4.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 0.0267
+    path: /home/ben/task/eval/exp-05_soup_last3.json
+    notes: "last-3 soup: no-ANSWER-line 4/150 (0.0267), mean output 257.7 tokens. all-4 soup: no-ANSWER-line 2/150 (0.0133), mean output 203.7 tokens. Averaging did not break the output contract - it just did not help; the all-4 soup is marginally cleaner than the last-3 one."
+  watch_set_result: {fixed: 0, still_failing: 41, regressions: 0, path: /home/ben/task/analysis/exp-02_final_greedy_failures.jsonl}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The last-three soup scored 0.7067 - 2.0 pts below its best ingredient (0.7267) and level with its worst - so weight averaging along this trajectory did not denoise anything. The four-checkpoint soup that includes the much earlier step-300 checkpoint scored 0.7200, i.e. HIGHER than the last-three soup, the opposite of the predicted ordering. Both soups are below the plain endpoint."
+  decision: reject
+  next_step: "Drop weight averaging from the plan. The checkpoints on this trajectory are too close together for averaging to buy anything and the endpoint remains the better single model; spend the remaining time on rejection-sampling fine-tuning instead."

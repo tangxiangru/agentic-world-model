@@ -1,0 +1,162 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T03:50:19Z'
+situation:
+  elapsed_h: 5.2
+  remaining_h: 4.8
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/final_model
+    score:
+      metric: accuracy
+      value: 0.7067
+      protocol_n: 150
+  trigger: "Three checkpoints reached by three different routes from the same exp-02 SFT run all sit on the same plateau: dev-150 0.687 / 0.707 / 0.687 and private-dev-600 0.800 / 0.800 / 0.810. Nothing downstream of that SFT run is moving the number, so the SFT run itself is what has to change."
+  trigger_evidence:
+    - path: /home/ben/task/memory/index.md
+      locator: "exp-02, exp-03, exp-04 rows"
+    - path: /home/ben/task/eval/exp-04_privdev600_10shot.json
+      locator: "accuracy 0.81 versus 0.80 for both parents"
+  alternatives_rejected:
+    - option: "Second RFT round from exp-03"
+      reason: "round one produced 14 fixes and 11 regressions on dev-150 and moved the 600-item dev by 0.000; the lever is spent"
+    - option: "Two epochs over the existing sft_v1 (142k rows)"
+      reason: "2.7h of the 4.8h left, and a second pass over the same targets is strictly weaker than a first pass over fresh targets for the same wall clock -- OpenMathInstruct-2 has 5 distinct verified solutions per problem sitting unused in the shards already on disk"
+    - option: "Full 412k-row v2 file, one epoch"
+      reason: "3.9h at the measured 29 rows/s; it would finish with no time left to evaluate it, let alone fall back"
+    - option: "Change only the learning rate, holding data fixed, so the comparison is a clean ablation"
+      reason: "there is time for exactly one more training run, so it has to be the best single recipe rather than the cleanest single-variable test. This card is therefore a recipe comparison, not an ablation, and cannot attribute its result to either change alone."
+  pitfalls_hit:
+    - what: "exp-04's soup was staged as a possible final model before its dev-150 number came back; it turned out to be the worst of the three there"
+      cost_h: 0.0
+      fix: "final_model/ now holds exp-03 and has been verified loadable on CPU (verify_final.py: Gemma3ForConditionalGeneration, 4.30B params, greedy generation_config, grader template renders). It is only replaced if this card beats it under the protocol."
+  smoke_runs:
+    - command: [python, verify_final.py, /home/ben/task/final_model]
+      outcome: "OK: architecture Gemma3ForConditionalGeneration, tokenizer present, <end_of_turn>=106, generation_config temperature 0.0 with eos [1,106], grader template renders to '<bos><start_of_turn>user\\n2+2?<end_of_turn>\\n<start_of_turn>model\\n', 4.30B params load on CPU with no nan/inf"
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/decon_v2.jsonl]
+      outcome: "188347 documents scanned, 0 contaminated, 0 matches"
+problem:
+  statement: "exp-02's SFT run -- the ancestor of every checkpoint measured so far -- saw each distinct training problem at most twice, once, for one epoch, at 1e-5. OpenMathInstruct-2 contains 5 verified solutions per problem and its own published results come from many more solution samples per problem than that. The plateau at 0.69-0.71 is most likely an under-trained SFT stage rather than a ceiling of the base model, and no post-hoc manipulation of that stage's output (RFT, weight averaging) has moved it."
+  evidence:
+    - path: /home/ben/task/eval/exp-02_dev150.json
+      locator: "accuracy 0.6867"
+      observation: "1 epoch, 142472 rows, <=2 solutions per problem, lr 1e-5"
+    - path: /home/ben/task/eval/exp-03_dev150.json
+      locator: "accuracy 0.7067"
+      observation: "RFT on top: +0.02 on dev-150, 0.000 on the 600-item dev"
+    - path: /home/ben/task/eval/exp-04_dev150.json
+      locator: "accuracy 0.6867"
+      observation: "weight average of the two: no gain on dev-150"
+    - path: /home/ben/task/data/sft_v2_raw.jsonl
+      locator: "412364 rows built from shards 0-7 with max 5 solutions per problem"
+      observation: "2.9x the rows of sft_v1 over the same ~87k problems, so the extra rows are distinct verified solutions, not repeats"
+  affected_share: null
+  failure_examples:
+    - id: exp03-still-wrong-1
+      source: /home/ben/task/analysis/exp-03_samples.jsonl
+      question: "(dev-150; see the 'input' field of the rows with correct=false)"
+      gold: "(various)"
+      model_output: "44 of exp-03's 44 wrong answers carry a single well-formed ANSWER line"
+      failure: "reasoning, not format: only 1 of 150 completions lacks an ANSWER marker"
+  watch_set: null
+hypothesis:
+  claim: "Retraining from the base checkpoint on 188347 rows -- 150000 drawn from a pool with up to 5 distinct verified OpenMathInstruct-2 solutions per problem, plus the 38347 RFT rows -- at 2e-5 for one epoch beats exp-03's 0.707 on dev-150."
+  mechanism: "Two changes to the SFT stage that the plateau evidence points at. (1) 32% more rows over the same problem set, and every extra row is a different verified derivation of the same problem rather than a repeat, so the model sees several distinct correct ways to reach each answer instead of one or two. (2) Twice the learning rate, because exp-02's single epoch at 1e-5 over ~940 optimizer steps is a light touch for a 4B model at an effective batch of ~148 sequences. Training from base rather than continuing exp-02 also means the RFT rows are learned in the same pass as the SFT rows instead of in a second pass over problems the model has already fit."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0.02 to +0.06 if the SFT stage was under-trained; 0 or negative if 0.70 is this base model's ceiling on this data"
+  falsified_if: "dev-150 accuracy is at or below exp-03's 0.707, or training diverges (loss non-finite, or a sustained grad-norm above the 1.0 clip that does not recover)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2_mix.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e shards 0-7 + openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 split train + synthetic:self (RFT samples from exp-02/final, carried over from exp-03)"
+      n_examples: 188347
+      built_by: /home/ben/task/mix_rft.py
+      build_command: [python, mix_rft.py, --rft, data/rft_all.jsonl, --sft, data/sft_v2_raw.jsonl, --out, data/sft_v2_mix.jsonl, --sft-rows, '150000', --keep-easy, '1', --keep-hard, '2']
+      selection: "sft_v2_raw.jsonl (412364 rows) was built by build_data.py over shards 0-7 with max-per-problem 5, the same numeric-answer / has-\\boxed / <=2600-char filters as sft_v1, the gsm8k train split included twice, and 6000 rows carrying the harness's exact 10-shot prefix; 150000 of those rows were sampled at random. The 38347 RFT rows are exp-03's, unchanged. Composition of the v2 pool: 340443 augmented_gsm8k, 36975 gsm8k, 19490 augmented_math, 14946 human gsm8k train, 510 math. No gsm8k TEST item enters the file in any form; the contamination checker scanned all 188347 rows and found 0 matches."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross-entropy"
+    peft: "none - full fine-tune of the 3.88B language tower, vision tower and projector frozen"
+    hyperparams:
+      lr: 2.0e-5
+      epochs: 1.0
+      batch_size: 1
+      grad_accum: 4
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      token_budget_per_microbatch: 16384
+    target_format: "unchanged from exp-02: chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the completion only, prompt masked to -100, over-length rows dropped rather than truncated"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v2_mix.jsonl, --out, /home/ben/task/ckpts/exp-05, --lr, '2e-5', --epochs, '1', --accum, '4', --max-seq-len, '2560', --token-budget, '16384', --save-steps, '600', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 600
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.9
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.7066666666666667
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "private 600-item dev set (MetaMathQA GSM_Rephrased, contamination-checked, disjoint from every training problem) with the harness's exact 10-shot prefix; exp-02 and exp-03 both measured 0.800 there and exp-04 0.810"
+    n: 600
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.48
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 1046}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-600, step: 600}
+  training_summary:
+    final_loss: 0.2873
+    steps: 1046
+    notes: "188153 of 188347 rows kept (0.103% over max_seq_len), p50 320 tokens, p95 532. 4182 micro-batches at 16384 padded tokens, 45.0 rows per micro-batch, 5337s wall, 35.3 rows/s. No instability at 2e-5: grad norms stayed around 1.0-1.5 against the 1.0 clip through the whole run (trainer_state at step 600 shows 0.85-1.47), loss 0.27-0.28 mid-run, train_loss 0.287."
+  measurements:
+    - metric: accuracy
+      value: 0.7466666666666667
+      n: 150
+      path: /home/ben/task/eval/exp-05_dev150.json
+      delta_vs_comparator: 0.04
+  diagnostic_result:
+    value: 0.885
+    path: /home/ben/task/eval/exp-05_privdev600_10shot.json
+    notes: "0.885 on the private 600-item dev against 0.800 for exp-02 and exp-03 and 0.810 for exp-04 -- +0.075 over the best previous checkpoint, about 5 standard errors at n=600, far outside the noise band that swallowed exp-03 and exp-04. Item-level pairing on dev-150 against exp-03: 14 fixed, 8 broken (exp-03 vs exp-02 was 14 fixed, 11 broken). Format unchanged and still clean: 149/150 completions carry an ANSWER line, 0.5% of the 600 private-dev completions hit the length cap."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "Retraining from base on 188k rows at 2e-5 gave dev-150 0.707 -> 0.747 and private-dev-600 0.800 -> 0.885, the largest gain since the initial SFT and the first change all session to move both dev sets together. The plateau three checkpoints sat on was an under-trained SFT stage, not a ceiling."
+  decision: adopt
+  next_step: "Two changes were made at once -- 32% more distinct verified solutions per problem, and 2x the learning rate -- so this card cannot say which mattered. exp-06 tests the data half alone by continuing exp-05 over 120k rows of the same pool it has never seen, at a halved learning rate; if data volume is the live variable the curve should not have flattened yet."

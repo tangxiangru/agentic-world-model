@@ -1,0 +1,137 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-04T15:15:22Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 8.1
+  remaining_h: 1.9
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7255, protocol_n: 1319}
+  trigger: "The final verification read of final_model/ returned 0.7130, not the 0.7255 the same weights returned as ckpts/exp-04/final. Every file in the two directories is byte-identical by md5 and the invocation argv is the same, so the harness's greedy read is not reproducible run to run - and it differs by more than the gap between the two best candidates."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/final_model_full1319.json, locator: "accuracy 0.7130 against eval/exp-04_full1319.json's 0.7255", observation: "1.25 pts apart on identical weights"}
+    - {path: /home/ben/task/analysis/final_model_full_items.jsonl, locator: "paired McNemar against analysis/exp-04_full_items.jsonl", observation: "53 discordant items, 35 vs 18, two-sided p = 0.027 between a checkpoint and a byte-identical copy of itself"}
+    - {path: /home/ben/task/logs/final-full.log, locator: "max_connections 8, gpu_memory_utilization 0.85", observation: "same argv as the exp-04 read; the only difference is the directory name"}
+  alternatives_rejected:
+    - {option: "Ship exp-04 on its single 0.7255 read and stop", reason: "that read is now known to carry ~1.3 pts of run-to-run noise, and exp-06's 0.7240 is inside it. Choosing on one read is choosing on a coin flip that has already been shown to land differently."}
+    - {option: "Re-open the earlier cards' conclusions", reason: "exp-03's +3.49 at p = 0.0034 and exp-05's -2.35 at p = 0.032 both exceed this noise scale, and exp-04's and exp-06's were already recorded as inconclusive/contradicted, so no verdict flips. What changes is the confidence attached to single-read deltas, which this card records for the next batch."}
+    - {option: "Train anything further", reason: "1.9 h left and exp-06 pre-committed that it was the last training card; the remaining budget is worth more spent finding out which of two finished candidates is actually better"}
+    - {option: "More than 2 extra reads per candidate", reason: "each read is ~7 min; 2 each is 30 min and leaves a safe margin to install and re-verify the artifact before the deadline"}
+  pitfalls_hit:
+    - {what: "Assumed a greedy vLLM read was deterministic, so every card's paired McNemar treated the weights as the only difference between arms. A byte-identical re-read produced p = 0.027 against itself, which means single-read p-values in this batch are anti-conservative.", cost_h: 0.15, fix: "this card measures the run-to-run spread directly and selects the artifact on the mean of repeated reads instead of one read; recorded for the next batch as: repeat every deciding read at least twice"}
+  smoke_runs:
+    - {command: [diff, "<(md5sum final_model/*)", "<(md5sum ckpts/exp-04/final/*)"], outcome: "all 12 files byte-identical, so the 1.25 pt gap cannot be a weight or config difference"}
+    - {command: [python, evaluate.py, --model-path, final_model, --limit, '50'], outcome: "the grader's DEFAULT invocation (max-connections 2, gpu-memory-utilization 0.3, max-tokens 4000) serves final_model/ without error in 52 s; 0.620 at n=50 is uninformative but the config loads"}
+    - {command: [python, -c, "fresh-process CPU load of final_model with transformers + one greedy generation"], outcome: "Gemma3ForConditionalGeneration, 4.300B params, tokenizer present, generation_config has eos [1,106]/do_sample false/temperature 0.0; a sample completion ends on token 106 with a correct 'ANSWER: 72'. Closes pitfall final_model_not_loadable."}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The two best candidates are separated by less than the measurement's own run-to-run noise. exp-04 read 0.7255 and then 0.7130 on identical weights; exp-06 read 0.7240 once. On the evidence available the batch cannot say which is better, and the artifact was about to be chosen on whichever happened to be read first."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04_full1319.json, locator: "accuracy", observation: "0.7255, read 1 of exp-04's weights"}
+    - {path: /home/ben/task/eval/final_model_full1319.json, locator: "accuracy", observation: "0.7130, read 2 of the same weights: a 1.25 pt spread with nothing changed"}
+    - {path: /home/ben/task/eval/exp-06_full1319.json, locator: "accuracy", observation: "0.7240 for exp-06, inside the spread of exp-04's own two reads"}
+    - {path: /home/ben/task/analysis/mcnemar_exp04_exp06.json, locator: "p 0.944", observation: "exp-04 and exp-06 were already indistinguishable on one read each"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_watch_rerun.json
+    n: 23
+    selection: "not used by this card; no training happens here. Listed because the schema expects the incumbent's watch set."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "The harness's greedy read at n=1319 has a run-to-run spread of roughly 1 pt on fixed weights, and under repeated reads exp-04 and exp-06 are indistinguishable, so the artifact must be chosen on the mean of repeated reads rather than on any single one."
+  mechanism: "vLLM batches requests and the floating-point reduction order inside a batched matmul depends on how requests happen to be scheduled, which is not fixed across processes. On items where the top two logits are nearly tied that flips a token, and one flipped token early in a chain changes the final answer. It shows up as a modest number of discordant items in both directions - 53 here, 35 one way and 18 the other - rather than as a systematic shift."
+  decision_rule_precommitted: "Written before any of the four reads. Run 2 additional n=1319 reads of each candidate under the frozen argv, interleaved e04, e06, e04, e06 so that any machine-state drift hits both equally. Combine with the reads already taken: exp-04 has 3 (0.7255, 0.7130, plus 2 new = 4) and exp-06 has 1 (0.7240, plus 2 new = 3). ARTIFACT RULE: final_model is the candidate with the higher MEAN accuracy across all its reads. If the two means differ by less than 0.5 pt, keep exp-04, because it is already installed and an unnecessary overwrite is pure risk. No other quantity may be used to break the tie."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "no directional claim. The point estimate of the run-to-run standard deviation is expected around 0.5-0.8 pt, and the two candidates' means are expected within ~1 pt of each other."
+  falsified_if: "The repeated reads of a single checkpoint come back identical to four decimal places, which would mean the read IS deterministic and the 0.7255 vs 0.7130 gap had some other cause that this card has not found - in which case the selection rule is unsafe and exp-04 stays on the original evidence."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/exp-01_inputs.jsonl
+      source: "openai/gsm8k main test (evaluation input only, never training data). No training happens on this card."
+      n_examples: 150
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '1319']
+      selection: "no training data: this card trains nothing and only re-reads two finished checkpoints"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: 4096, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    decode: "greedy from each checkpoint's own generation_config.json (do_sample false, temperature 0.0, top_p 1.0, eos [1,106]); this card exists because that is nonetheless not reproducible run to run"
+    target_format: "n/a - evaluation only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [bash, scripts/repeat_reads.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/repeat_reads.sh
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '8', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 1319, the complete openai/gsm8k main test split; fewshot_seed 42 fixed by the task definition"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7255
+    path: /home/ben/task/eval/exp-04_full1319.json
+  diagnostic:
+    what: "the spread (min, max, sd) of repeated reads of one fixed checkpoint - the quantity every earlier card's paired McNemar implicitly assumed was zero"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.38
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 587}
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 790}
+  training_summary: {final_loss: null, steps: null, notes: "evaluation-only card; nothing was trained"}
+  measurements:
+    - {metric: accuracy, value: 0.7206, n: 1319, path: /home/ben/task/analysis/exp-07_selection.json, delta_vs_comparator: -0.0049}
+    - {metric: accuracy, value: 0.7180, n: 1319, path: /home/ben/task/analysis/exp-07_selection.json, delta_vs_comparator: -0.0075}
+  diagnostic_result:
+    value: 0.0056
+    path: /home/ben/task/analysis/exp-07_selection.json
+    notes: "The read is NOT reproducible. exp-04's four reads of one fixed set of weights under one frozen argv: 0.7255, 0.7127, 0.7233, 0.7210 - mean 0.7206, sd 0.0056, range 1.28 pts. exp-06's three: 0.7240, 0.7180, 0.7119 - mean 0.7180, sd 0.0061, range 1.21 pts. So the per-read standard deviation is ~0.6 pt and the standard error of a difference between two single reads is ~0.8 pt, a term every earlier card's paired McNemar implicitly set to zero. Recalibrating this batch's deltas against it: exp-02 -> exp-03 (+3.49) is ~4 se and stands; exp-04 -> exp-05 (-2.35) is ~3 se and stands; exp-03 -> exp-04 (+1.74) is ~2 se, which matches its recorded p = 0.124 and remains unproven; exp-04 -> exp-06 (-0.15) is noise, as recorded. No verdict in the batch flips."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+  artifact_decision: "Pre-committed rule applied mechanically by scripts/select_artifact.py, written before the reads returned: exp-04 mean 0.7206 against exp-06 mean 0.7180, a gap of 0.27 pt, inside the 0.5 pt tie band, so the rule keeps the already-installed exp-04 and no overwrite was performed. The installed digest and the winner digest matched, which the script checked before touching anything. Power caveat, stated before the reads: with per-read sd ~0.6 pt the difference of a 4-read and a 3-read mean has se ~0.43 pt, so the 0.5 pt band is only ~1.2 se and two truly equal candidates clear it fairly often. This result is therefore a tie confirmed, not evidence that exp-04 is better than exp-06."
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Repeated reads of fixed weights under a frozen argv scatter with sd ~0.6 pt and a 1.28 pt range, so the harness's greedy evaluation is not reproducible run to run and the 0.7255-vs-0.7130 gap that triggered this card was decode nondeterminism, exactly as hypothesised. Under repeated reads exp-04 (0.7206) and exp-06 (0.7180) are indistinguishable, and the pre-committed rule keeps exp-04."
+  decision: adopt
+  next_step: "Batch complete. final_model/ is ckpts/exp-04/final, byte-identical, verified to load in a fresh CPU process and to serve under the grader's default argv. The lesson for the next batch is the one this card exists for: repeat every deciding read at least twice and compare means, because a single n=1319 greedy read carries ~0.6 pt of noise on top of its 1.3 pt binomial stderr - enough to invert any decision resting on a gap under ~1.5 pts."

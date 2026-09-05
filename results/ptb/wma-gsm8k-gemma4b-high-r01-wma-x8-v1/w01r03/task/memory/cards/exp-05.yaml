@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T18:10:26Z'
+situation:
+  elapsed_h: 4.6
+  remaining_h: 5.4
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7, protocol_n: 150}
+  trigger: "exp-04 closed the format gap completely (graded accuracy 0.700 == first-ANSWER-line accuracy 0.700, 99.3% of completions carry exactly one ANSWER: line), so every remaining dev-150 failure is a reasoning or arithmetic error. Screening 40000 train-derived problems with the same checkpoint under the grader's own few-shot context puts pass@1 at 0.727 and names 10585 problems it gets wrong (data/screen_labels.jsonl)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_dev150.json, locator: "share_answer_marker_exactly_once=0.9933, accuracy=0.700, first_answer_line_accuracy=0.700, failures[0..3]", observation: "no format failures left; the four inspected failures are a sign error on a profit, a rate-vs-distance confusion, a wrong unit conversion, and an average taken over the wrong denominator"}
+    - {path: /home/ben/task/analysis/exp-05_screen_stats.json, locator: "pass_at_1=0.7271, problems_all_wrong=10914", observation: "the failure set is large enough to build a training mixture from"}
+  alternatives_rejected:
+    - {option: "RFT on the model's own correct samples", reason: "I have the samples (29082 correct greedy completions from the screen), but they are by construction the problems it already solves; training on them reinforces what works and leaves the 10585 failures untouched. The teacher's verified solutions for the failures are the higher-information target"}
+    - {option: "Uniform third stage on 24k more OpenMathInstruct-2 rows", reason: "that is exp-04 repeated; a uniform sample spends ~73% of the budget on problems the model already answers correctly"}
+    - {option: "Train only on the 10585 failures", reason: "a pure-hard diet shifts the input distribution away from the benchmark's and risks unlearning the easy cases; the mixture keeps 30% solved-problem rows"}
+    - {option: "Sample k=4 at temperature 0.9 for a pass@k-style hardness signal instead of one greedy sample", reason: "4x the sampling cost (the k=1 screen already took 18 min of GPU) for a finer ranking I do not need: 'greedy gets it wrong' is exactly the condition the grader scores"}
+  pitfalls_hit:
+    - {what: "the screen's throughput fell from 15.5k to 7.1k output tok/s as the batch drained; a 40k-prompt screen took 18 min rather than the 11 min the early rate suggested", cost_h: 0.12, fix: "budget vLLM screens on the tail rate, not the peak"}
+  smoke_runs:
+    - {command: [python, scripts/build_hard_set.py, --labels, data/screen_labels.jsonl, --corpus, data/omi2_gsm_v2.jsonl, data/omi2_gsm_v1.jsonl, --out, data/hard_v3.jsonl, --hard-per-problem, '2', --easy-per-problem, '1', --easy-share, '0.3'], outcome: "10566 of 10585 unsolved problems have teacher solutions; 21126 hard rows + 9054 solved-problem rows = 30180; contamination check clean"}
+problem:
+  statement: "The incumbent answers 70% of dev-150 and 72.7% of a 40000-problem train-derived screen. Its errors are no longer about format: it sets up the wrong equation, converts units wrongly, or answers a different quantity than the one asked. Its training so far has been a uniform sample of OpenMathInstruct-2, which spends roughly three quarters of every gradient step on problems it already gets right."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_dev150.json, locator: "failures[0]", observation: "computes a hospital's cost as 500*24*200 instead of per-patient, answers -6000000 against gold 10000"}
+    - {path: /home/ben/task/analysis/exp-04_dev150.json, locator: "failures[3]", observation: "asked for a required speed over the remaining distance, restates the target average 4 instead of computing 6"}
+    - {path: /home/ben/task/analysis/exp-05_screen_stats.json, locator: "pass_at_1, problems_all_wrong", observation: "10914 of 40000 screened problems are answered wrong under the eval's own decode and context"}
+  affected_share: 0.2729
+  failure_examples:
+    - {id: dev150-hospital, source: /home/ben/task/analysis/exp-04_dev150.json, question: "hospital revenue/cost problem as logged", gold: '10000', model_output: "'...total cost is $500 * 24 * 200 = 24000000... ANSWER: -6000000'", failure: "cost model wrong by a factor of the patient count; the sign of the result did not prompt a re-check"}
+    - {id: dev150-pyramid, source: /home/ben/task/analysis/exp-04_dev150.json, question: "four-level square-footage average as logged", gold: '60', model_output: "'(16 + 8 + 4 + 2) / 4 = 7.5 ... ANSWER: 7.5'", failure: "solved for the wrong unknown - used the halving ratio instead of the given total"}
+    - {id: dev150-tomatoes, source: /home/ben/task/analysis/exp-04_dev150.json, question: "cans/tomatoes conversion as logged", gold: '12', model_output: "'32 ounces / 16 ounces per can = 2 cans ... 2 * 3 = 6 ... ANSWER: 6'", failure: "unit conversion dropped a factor of 2"}
+    - {id: dev150-marissa, source: /home/ben/task/analysis/exp-04_dev150.json, question: "required walking speed for the remaining distance", gold: '6', model_output: "'...she needs to cover 12 - 6 = 6 miles ... ANSWER: 4'", failure: "answered the target average speed instead of the required speed"}
+  watch_set:
+    path: /home/ben/task/data/screen_labels.jsonl
+    n: 10585
+    selection: "every problem in the 40000-problem screen that ckpts/exp-04-greedy answered wrong under greedy decoding with the grader's 10-shot context (n_correct == 0)"
+hypothesis:
+  claim: "A third SFT stage from ckpts/exp-04/final on a mixture weighted toward the 10585 problems the incumbent fails (two teacher solutions each, plus one solution for a 30% share of solved problems) raises dev-150 accuracy above exp-04's 0.700."
+  mechanism: "The failures are concentrated in problem types the uniform corpus under-samples relative to how often the model gets them wrong. Re-weighting the gradient toward verified teacher solutions for exactly those problems puts the budget where the errors are, while the 30% solved-problem share holds the rest of the distribution in place."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+2 to +6 points (0.70 -> 0.72-0.76); a re-weighting of an existing corpus, not new capability, so nothing like exp-04's jump"
+  falsified_if: "dev-150 accuracy is at or below 0.700, or the share of completions with exactly one ANSWER: line falls below 0.95 (which would mean the third stage cost the termination behaviour exp-04 bought)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/hard_v3.jsonl
+      source: "derived:exp-04 screen over nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e (gsm8k + augmented_gsm8k) and openai/gsm8k train"
+      n_examples: 30180
+      built_by: /home/ben/task/scripts/build_hard_set.py
+      build_command: [python, scripts/build_hard_set.py, --labels, data/screen_labels.jsonl, --corpus, data/omi2_gsm_v2.jsonl, data/omi2_gsm_v1.jsonl, --out, data/hard_v3.jsonl, --hard-per-problem, '2', --easy-per-problem, '1', --easy-share, '0.3', --seed, '0']
+      selection: "21126 rows are up to 2 teacher solutions for each of the 10566 screened problems the incumbent answered wrong; 9054 rows are one solution each for a random 30% share of the problems it answered right. Targets are the same verified OpenMathInstruct-2 solutions used in exp-02/exp-04 (single ANSWER: line, <end_of_turn> terminated). The trainer reads the first 24000 rows of the shuffled file. No GSM8K test item is involved: the screen ran over gsm8k *train* questions and OpenMathInstruct-2 problems, both train-derived."
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/train-00000-of-00001.parquet
+      source: openai/gsm8k@740312add88f781978c0658806c59bc2815b9866 train split
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/common_fmt.py
+      build_command: [python, scripts/common_fmt.py]
+      selection: "prompt-side only: the exemplar pool for the few-shot block, no loss taken on it. Train split only."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer, pre-tokenised rows, completion-only loss
+    peft: none
+    hyperparams: {lr: 5.0e-06, epochs: 1.0, batch_size: 4, grad_accum: 16, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-04: exemplar block in the prompt (half the grader's exact 10-shot block, half k random GSM8K-train exemplars), target = reasoning + single 'ANSWER: n' + <end_of_turn>"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/hard_v3.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --output-dir, /home/ben/task/ckpts/exp-05, --limit, '24000', --max-seq-len, '2816', --lr, '5e-6', --epochs, '1', --batch-size, '4', --grad-accum, '16', --fewshot-frac, '1.0', --fewshot-mode, mixed, --load-dtype, bfloat16, --attn, flash_attention_2, --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.55']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "share of the 150 completions with exactly one ANSWER: line (0.9933 for the comparator), to confirm the third stage does not cost the termination behaviour"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.50
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 373}
+    - {path: /home/ben/task/ckpts/exp-05-greedy, step: 373}
+  training_summary: {final_loss: 0.3122, steps: 373, notes: "train_runtime 5402 s, 4.41 samples/s over 23930 prefixed rows, 1 epoch. Loss is higher than exp-04's 0.279 as expected: the mixture is deliberately weighted toward problems the parent could not solve. ckpts/exp-05-greedy symlinks these weights with temperature 0.0, matching the comparator's decode config."}
+  measurements:
+    - {metric: accuracy, value: 0.7733, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.0733}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-05_dev150.json
+    notes: "share with exactly one ANSWER: line 0.9933 -> 1.000; no completion hit the token cap (0/150); all 150 stopped on <end_of_turn>. The termination behaviour exp-04 bought was not lost."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "dev-150 0.700 -> 0.7733 (+7.3 points), above the +2 to +6 predicted, and format compliance went to 100%. The claim is supported; the mechanism is not separately tested, because I did not re-screen the 10585 watch-set problems with the new checkpoint - the +7.3 could come from the hard re-weighting or simply from a third epoch-equivalent of teacher data."
+  decision: adopt
+  next_step: "The gap is 1.4 standard errors at n=150, which is thin for a promotion. exp-06: score exp-05 and a uniform soup of exp-04+exp-05 at n=500 to choose the submission on a tighter measurement."

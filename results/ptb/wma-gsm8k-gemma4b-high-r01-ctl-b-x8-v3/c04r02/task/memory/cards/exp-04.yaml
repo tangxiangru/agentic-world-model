@@ -1,0 +1,129 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T00:08:00Z'
+situation:
+  elapsed_h: 1.55
+  remaining_h: 8.45
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.5867, protocol_n: 150}
+  trigger: "evaluate.py never sets a temperature, and inspect only forwards a temperature when
+    GenerateConfig.temperature is not None (inspect_ai/model/_openai.py:233), so the vLLM server
+    falls back to the checkpoint's own generation_config.json - which for gemma-3-4b-pt is
+    do_sample=true, top_k=64, top_p=0.95 at vLLM's default temperature 1.0. Every score so far
+    was measured under stochastic sampling."
+  trigger_evidence:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py
+      locator: "lines 233-234"
+    - path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py
+      locator: "get_diff_sampling_param, lines 1344-1390"
+    - path: /home/ben/task/ckpts/exp-03/final/generation_config.json
+      locator: "whole file"
+  alternatives_rejected:
+    - option: "Leave decoding alone and spend the time on more training data"
+      reason: "one eval (~4 min) settles a knob that applies to every later checkpoint; the data
+        scale-up runs next either way"
+    - option: "Set a low non-zero temperature (0.2-0.6) instead of greedy"
+      reason: "with one sample per item and a numeric-match grader there is no diversity benefit;
+        greedy is the limit of that family and needs no extra eval to place"
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The submitted model's decode configuration is part of the model: vLLM reads
+    generation_config.json from the checkpoint directory and uses it as the server default. The
+    checkpoint inherited gemma-3-4b-pt's sampling defaults, so every answer is drawn at
+    temperature 1.0 with top_p 0.95, adding variance and sampling errors to a task where only
+    one sample is graded."
+  evidence:
+    - path: /home/ben/task/analysis/exp-03_dev150_samples.jsonl
+      locator: "150 rows"
+      observation: "0.587 accuracy under sampled decoding; stderr 0.040 on 150 items"
+    - path: /home/ben/task/ckpts/exp-03/final/generation_config.json
+      locator: "whole file"
+      observation: "do_sample true, top_k 64, top_p 0.95, no temperature -> vLLM default 1.0"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Replacing the checkpoint's inherited sampling defaults with greedy decoding
+    (do_sample=false, temperature=0, no top_k/top_p) changes nothing about the weights but raises
+    dev-150 accuracy, because the graded sample becomes the mode of the distribution instead of a
+    draw from it."
+  mechanism: "Under temperature 1.0 with top_k=64 the model can sample a wrong token at any step
+    of a long arithmetic chain; a single wrong digit changes the final number the grader reads.
+    Greedy decoding removes that noise source."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+2 to +8 points"}
+  falsified_if: "dev-150 accuracy under greedy is not above exp-03's 0.5867"
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-03/final, origin: exp-03, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_pilotB15k.jsonl
+      source: "unchanged from exp-03; no training happens in this card"
+      n_examples: 15000
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, data/sft_pilotB15k.jsonl, --n, '15000',
+        --max-per-problem, '2', --gsm8k-repeat, '0', --fewshot-frac, '0.3', --fewshot-max, '4', --seed, '0']
+      selection: "the exp-03 checkpoint's training data, listed for provenance only"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 server defaults read from generation_config.json"
+    peft: none
+    hyperparams: {}
+    target_format: "unchanged from exp-03"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04-greedy, --limit, '150',
+      --max-connections, '32', --gpu-memory-utilization, '0.85', --json-output-file,
+      /home/ben/task/eval/exp-04_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04-greedy
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '32', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: "official gsm8k test --limit 150 (first 150 items, dataset not shuffled)"
+    n: 150
+    seed: 42
+  comparator: {ref: exp-03, value: 0.5867, path: /home/ben/task/eval/exp-03_dev150.json}
+  diagnostic:
+    what: "mean output tokens and share of completions with exactly one ANSWER line (greedy can loop)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.05
+  output_checkpoint: /home/ben/task/ckpts/exp-04-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 469}
+  training_summary: {final_loss: null, steps: null, notes: "no training; the directory symlinks
+    exp-03/final's weights and replaces generation_config.json with do_sample=false, temperature=0"}
+  measurements:
+    - {metric: accuracy, value: 0.6867, n: 150, path: /home/ben/task/eval/exp-04_greedy_dev150.json, delta_vs_comparator: 0.1}
+  diagnostic_result:
+    value: 0.993
+    path: /home/ben/task/analysis/exp-04_greedy_dev150_samples.jsonl
+    notes: "no degeneration under greedy: 149/150 exactly one ANSWER line and stop_reason=stop,
+      mean 200 output tokens vs 211 sampled; the one failure is a single max_tokens run-on"
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Identical weights, 0.587 -> 0.687 (+10.0) from decoding the mode instead of a
+    temperature-1.0 sample. No looping or length blow-up. The decode config is part of the
+    submitted model and must be shipped with it."
+  decision: adopt
+  next_step: "Ship greedy generation_config.json with every later checkpoint and with final_model;
+    evaluate all later cards under greedy so comparators stay on one protocol. Next: scale the
+    exp-03 data recipe from 15k to the full 152817-row pool."

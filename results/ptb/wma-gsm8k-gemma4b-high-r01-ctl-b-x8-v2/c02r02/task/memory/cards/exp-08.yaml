@@ -1,0 +1,135 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T14:01:25Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 7.35
+  remaining_h: 2.65
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05-greedy
+    score: {metric: accuracy, value: 0.7040, protocol_n: 500}
+  trigger: "Reading the three n=500 logs item by item turned up something the summary numbers hide: the 150-item subset and the other 350 rank the candidates in opposite orders (exp-05 0.740 vs 0.689, exp-04 0.693 vs 0.711), and two runs of the SAME weights under greedy decoding disagree on 11-12 of 150 items. The tie in exp-06 and exp-07 is not three equal models, it is a measurement that cannot see the difference."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/selection_summary.json, locator: "models.*.n150_subset against models.*.other350"}
+    - {path: /home/ben/task/analysis/selection_summary.json, locator: "greedy_reproducibility", observation: "11 and 12 item flips between a --max-connections 8 run and a --max-connections 16 run of identical weights"}
+  alternatives_rejected:
+    - {option: "Evaluate all three on the full 1319-item test set and take the winner", reason: "about 12 min each; at n=1319 the stderr is still 1.25 points and the candidates are 0.2 points apart, so it buys a prettier number for the same coin flip"}
+    - {option: "Ship the soup as a hedge", reason: "it is second on the 150 subset (0.713) and second on the other 350 (0.703) - it hedges by being nobody's best, and evaluate.py's default protocol is knowable, so there is nothing to hedge against"}
+    - {option: "Ship exp-04 on its 0.7060 at n=500", reason: "its lead over exp-05 there is one item out of 500, while exp-05's lead on the 150 subset is 5-7 items and replicates across two independent runs"}
+    - {option: "Train something else with the remaining 2.6 h", reason: "the last four cards each moved the metric by less than one stderr; the recipe has converged near 0.705 and the remaining risk is packaging, not modelling"}
+  pitfalls_hit:
+    - {what: "read 'first 150 samples of the n=500 log' as the n=150 subset; inspect-ai sorts samples by id in the log, so that split was wrong and briefly showed exp-05 at 0.653", cost_h: 0.05, fix: "took the actual id set from the n=150 run and intersected on it; the n=150 items are a genuine subset of the n=500 items"}
+    - {what: "assumed greedy decoding made the eval deterministic when exp-03 adopted it", cost_h: 0.0, fix: "measured it - 11 to 12 of 150 items flip between runs differing only in --max-connections; greedy removes the sampling noise but not the batching noise"}
+  smoke_runs:
+    - {command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-07-soup, --limit, '500', --max-connections, '16'], outcome: "0.7060; recorded in exp-07"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "final_model must hold exactly one checkpoint and three candidates sit within 0.2 points of each other over 500 items, so the metric that drove every card cannot make the choice. The measurement is also not reproducible: identical weights under greedy decoding flip 7-8% of items between runs, because vLLM's batched matmuls are not bitwise stable across different --max-connections."
+  evidence:
+    - {path: /home/ben/task/analysis/selection_summary.json, locator: "models", observation: "exp-04 0.7060, exp-05 0.7040, exp-07 0.7060 over the same 500 items"}
+    - {path: /home/ben/task/analysis/selection_summary.json, locator: "greedy_reproducibility", observation: "exp-04 flips 11/150 and exp-05 flips 12/150 against its own second run"}
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "accuracy=0.7267", observation: "exp-05 scored 0.7267 and 0.7400 on the 150-item subset in two runs against exp-04's 0.7000 and 0.6933 - the one split where the candidates separate consistently"}
+  affected_share: null
+  failure_examples:
+    - {id: split-disagreement, source: /home/ben/task/analysis/selection_summary.json, question: "(measurement property, not an item)", gold: "n/a", model_output: "exp-05: 0.740 on the 150 subset, 0.689 on the other 350; exp-04: 0.693 and 0.711", failure: "the two halves of the same test set rank the candidates in opposite orders, so neither ranking is a property of the models"}
+    - {id: greedy-nondeterminism, source: /home/ben/task/analysis/selection_summary.json, question: "(measurement property)", gold: "n/a", model_output: "11 of 150 items change score between two runs of one checkpoint", failure: "the eval's own noise floor is larger than every gap measured after exp-03"}
+    - {id: converged-ladder, source: /home/ben/task/memory/index.md, question: "(programme property)", gold: "n/a", model_output: "exp-04 +2.7, exp-05 +2.7, exp-06 +0.2, exp-07 +0.2 - all inside one stderr", failure: "four consecutive cards below the resolution of the protocol, which is the signal to stop optimising and start packaging"}
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Writing ckpts/exp-05-greedy to final_model and evaluating that directory from a fresh process under evaluate.py's own defaults reproduces the incumbent's measured accuracy, i.e. the packaged artefact is the checkpoint that was measured and not a silently different model."
+  mechanism: "The two ways a packaged model differs from the measured one are a missing side-file (tokenizer, processor config, generation_config) and a path-dependent template choice. evaluate.py picks the chat template from the architecture string in config.json when the path contains no model name, so final_model/ resolves to Gemma3ForConditionalGeneration and therefore templates/gemma3.jinja, the template every card used; copying the whole checkpoint directory also keeps generation_config.json, which is what carries the greedy decode. If either had gone wrong the score would collapse toward exp-01's 0.067 formatting floor rather than drift by a point."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "0.68-0.75 at n=150, i.e. the incumbent's 0.7267 give or take the 7-8% item-flip noise the batching non-determinism produces"
+  falsified_if: "final_model scores below 0.65 at n=150, or its format compliance drops below 0.95 - either would mean the packaged directory is not the checkpoint that was measured"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05-greedy
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    # No training. Declared for the record: the rows the shipped checkpoint saw.
+    - path: /home/ben/task/data/train_v4.jsonl
+      source: "derived:exp-05 (no data is read in this card)"
+      n_examples: 184634
+      built_by: /home/ben/task/build_data3.py
+      build_command: [python, build_data3.py]
+      selection: "unchanged from exp-05"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "file copy plus a fresh-process evaluate.py run at its own defaults"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: reasoning, one 'ANSWER: <n>' line, then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, make_greedy.py, --src, ckpts/exp-05-greedy, --dst, final_model]
+    cwd: /home/ben/task
+    script: /home/ben/task/make_greedy.py
+    env: {}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/final_model
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --json-output-file, /home/ben/task/eval/final_model_default.json]
+    dev_set: "official --limit 150 (evaluate.py default), --max-connections 2 (default), --max-tokens 4000 (default), --gpu-memory-utilization 0.3 (default)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7267
+    path: /home/ben/task/eval/exp-05_dev150.json
+  diagnostic:
+    what: "format_compliance and stopped_cleanly from a fresh process at the harness defaults - the packaging check no card can do for the next one"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 1035}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 1035}
+    - {path: /home/ben/task/ckpts/exp-05-greedy, step: 1035}
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 589}
+    - {path: /home/ben/task/ckpts/exp-07-soup, step: null}
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 758}
+  training_summary: {final_loss: null, steps: null, notes: "no training; ckpts/exp-05-greedy copied to final_model, training_args.bin removed, then loaded once on CPU with transformers (4.300B params, generation_config do_sample=False temperature=0.0 eos [1,106], <end_of_turn> resolves to 106) before the eval"}
+  measurements:
+    - {metric: accuracy, value: 0.7467, n: 150, path: /home/ben/task/eval/final_model_default.json, delta_vs_comparator: 0.0200}
+  diagnostic_result:
+    value: 0.9867
+    path: /home/ben/task/analysis/final_model_default.json
+    notes: "format_compliance and stopped_cleanly 0.9867, mean output 212 tokens, whole run 1 min 34 s at --max-connections 2. A fresh vLLM process picked templates/gemma3.jinja from the architecture string in config.json, exactly as the mechanism required."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "final_model scores 0.7467 +/- 0.0356 from a fresh process at evaluate.py's own defaults, against the incumbent's 0.7267 on the same 150 items - a 3-item drift, well inside the 11-12 item run-to-run noise this card measured. The packaged directory is the checkpoint that was measured: no missing side-file, and the grader resolved the right template from config.json alone."
+  decision: adopt
+  next_step: "Batch complete: base 0.0667 -> final_model 0.7467 at n=150 (0.704 at n=500). The two interventions that actually moved the metric were formatting/termination (exp-02, +46.7) and greedy decoding (exp-03, +14.0); everything after that was inside the protocol's noise floor. Anyone continuing should start by fixing the eval's resolution - the 7-8% item-flip rate under greedy makes any gain below ~5 points unmeasurable at n=150 - before spending another GPU hour on data or schedule changes."

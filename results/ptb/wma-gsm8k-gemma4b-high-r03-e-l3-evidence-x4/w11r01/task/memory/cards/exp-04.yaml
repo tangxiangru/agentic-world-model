@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T02:11:57Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.4
+  remaining_h: 6.6
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "exp-02 trained 2 epochs on a single-domain 80505-row corpus and only the end-of-training weights have ever been measured. The end-of-epoch-1 checkpoint was kept precisely so this could be a measurement instead of an assumption, and I am about to pick a parent for a rejection-sampling round."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.checkpoints_kept", observation: "checkpoint-629/1258/1887/2516 all on disk"}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1258/trainer_state.json, locator: "log_history", observation: "the whole 2-epoch cosine schedule was planned around 2516 steps; epoch 1 ends at 1258"}
+  alternatives_rejected:
+    - {option: "Evaluate all four kept checkpoints", reason: "four evals for a curve when one contrast answers the question I actually have (is the second epoch helping or overfitting); the two intermediate points only matter if the answer is 'overfitting', and then 629 is the next read"}
+    - {option: "Skip this and start the rejection-sampling round from the epoch-2 weights", reason: "if epoch 2 overfit, every hour of the RFT round would be spent on the wrong parent; the check costs 5 minutes against a 2.5 h round"}
+  pitfalls_hit:
+    - {what: "the Trainer checkpoint-N dirs ship weights and config.json only, with no tokenizer or processor files, so the grader's vLLM could not have loaded them", cost_h: 0.05, fix: "scripts/finalize_ckpt.py copies tokenizer + preprocessor/processor configs from the frozen snapshot and re-asserts eos_token_id [1,106]"}
+  smoke_runs:
+    - {command: [python, scripts/finalize_ckpt.py, --ckpt, ckpts/exp-02/checkpoint-1258], outcome: "added 7 tokenizer/processor files; architectures Gemma3ForConditionalGeneration, eos_token_id [1,106]"}
+    - {command: [python, scripts/make_variant.py, --src, ckpts/exp-02/checkpoint-1258, --dst, ckpts/exp-02/ckpt1258_greedy, --greedy], outcome: "hardlinked weights with the exp-03 greedy decode config; optimizer.pt and trainer state removed from the eval copy"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "I do not know whether the second epoch of exp-02 helped or hurt. 80505 rows seen twice on one narrow domain is where a 4B model starts fitting the phrasing of its training chains rather than the arithmetic, and the only measurement I have is at the end of the schedule."
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: "whole file", observation: "0.7267 for the epoch-2 weights under greedy; no comparable number exists for any earlier checkpoint"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "The end-of-epoch-1 checkpoint (step 1258), served greedily, scores differently on dev-150 from the end-of-epoch-2 weights, and the sign of that difference decides which checkpoint parents the next round."
+  mechanism: "Two epochs over a single-domain corpus with a cosine schedule that anneals to nearly zero puts most of the second epoch's updates into fitting chains the model has already seen. If that memorisation is displacing generalisation, epoch 1 is at or above epoch 2; if the second epoch is still buying arithmetic reliability, epoch 2 wins."
+  expected_effect: {metric: accuracy, direction: lower, against: exp-03, magnitude: "-8 to +2 points; I expect epoch 2 to hold its lead but not by much"}
+  falsified_if: "the two land within 1 point of each other, which would say the second epoch bought nothing measurable and 1.05 h of the budget went into a flat part of the curve"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/checkpoint-1258
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/datasets/openai___gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866/gsm8k-test.arrow
+      source: openai/gsm8k
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "nothing is trained in this card; the benchmark the eval reads (first 150 unshuffled test items)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: vllm 0.11.0 with generation_config=auto
+    peft: "none"
+    hyperparams: {lr: null, epochs: 1.0, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "checkpoint selection only; weights are exp-02's at step 1258, decode config is exp-03's greedy one"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/ckpt1258_greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.55', --json-output-file, /home/ben/task/eval/exp-04_ckpt1258_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.55']
+    dev_set: official --limit 150 (first 150 items of openai/gsm8k test, unshuffled)
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.7267
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "median completion length at step 1258 versus step 2516 - a shorter, more stereotyped chain at epoch 2 is what memorisation looks like before it shows up in accuracy"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.08
+  output_checkpoint: /home/ben/task/ckpts/exp-02/ckpt1258_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1258, step: 1258}
+    - {path: /home/ben/task/ckpts/exp-02/ckpt1258_greedy, step: 1258}
+  training_summary: {final_loss: null, steps: 1258, notes: "no training in this card; exp-02 weights at the epoch-1 boundary"}
+  measurements:
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp-04_ckpt1258_greedy_dev150.json, delta_vs_comparator: -0.0134}
+  diagnostic_result:
+    value: 492
+    path: /home/ben/task/analysis/exp-04_diagnostic.json
+    notes: "median completion 492 chars at step 1258 against 510 at step 2516, p90 877 against 917: the second epoch did not shorten or stereotype the chains, so the memorisation signature the hypothesis looked for is absent. vLLM logged the generation-config override receipt, so both arms really did decode greedily."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: "0.7133 at epoch 1 against 0.7267 at epoch 2, a 1.3-point gap that sits below this protocol's ~3-point floor at n=150: the two checkpoints are tied and I cannot say the second epoch either helped or hurt. The memorisation mechanism is contradicted on its own terms - chain length barely moved (492 vs 510 median chars)."
+  decision: reject
+  next_step: "Keep the epoch-2 weights as the incumbent (tie goes to the incumbent, per the pre-registered tie band) and parent the rejection-sampling round from ckpts/exp-02/final. The read that matters for the remaining budget: a second epoch over the same corpus is a flat part of the curve, so more of the same data is not where the next points are - new, on-policy data is."

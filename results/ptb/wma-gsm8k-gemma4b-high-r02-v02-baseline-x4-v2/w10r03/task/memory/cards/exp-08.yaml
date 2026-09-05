@@ -1,0 +1,132 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T18:00:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.4
+  remaining_h: 2.6
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.735, protocol_n: 400}
+  trigger: "Every number in this batch was produced from a temporary staging directory that run_eval.sh deletes on exit, and every one of them was read at --max-connections 16 with --gpu-memory-utilization 0.85. The artifact that will actually be graded is final_model/, invoked with evaluate.py's defaults (--max-connections 2, --gpu-memory-utilization 0.3), and that exact combination has never been run once."
+  trigger_evidence:
+    - {path: /home/ben/task/scripts/run_eval.sh, locator: "last line, 'rm -rf $STAGE'", observation: "every scored directory in this batch was deleted after its read; final_model/ was built separately by package_final.py"}
+    - {path: /home/ben/task/evaluate.py, locator: "parse_args defaults", observation: "--model-path final_model, --limit 150, --max-connections 2, --gpu-memory-utilization 0.3 -- none of which any read in this batch used together"}
+    - {path: /home/ben/task/skills/exp_protocol/pitfalls.yaml, locator: "id: final_model_not_loadable", observation: "'the final evaluation scores the base model or fails to load; hours of training count for nothing'"}
+  alternatives_rejected:
+    - {option: "Trust the exp-07 arm-B read and stop", reason: "arm B scored ckpts/_stage_exp-07_B_exp05_greedy_dev400, a directory that no longer exists. final_model/ was assembled by a different code path (package_final.py copying processor/tokenizer side files out of the base snapshot) and has never been handed to vLLM."}
+    - {option: "Verify only by loading final_model/ on CPU with transformers", reason: "already done (4.30 B params, bf16, generation_config temperature 0.0 / eos [1, 106]) -- but the grader loads it with vLLM, which needs the Gemma3ForConditionalGeneration processor files a transformers text-only load does not touch"}
+    - {option: "Verify at --max-connections 16 like every other read in this batch", reason: "that would re-test what is already tested. Running the grader's own default of 2 also settles the concurrency question the WMA raised twice (a precedent moved 0.2733 -> 0.8533 between 8 and 2 on identical greedy weights); if 16 had been corrupting outputs, this read is where it shows."}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, -c, "Gemma3ForConditionalGeneration.from_pretrained('final_model')"], outcome: "loads from a fresh CPU process; 4.300 B params, bf16, 12 files present including preprocessor_config.json and processor_config.json"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "final_model/ is an unvalidated artifact. It was assembled by copying Trainer output plus seven side files out of the base snapshot and rewriting generation_config.json; if vLLM cannot load it, or if the grader's default concurrency and 0.3 memory fraction change the result, the whole batch's measured 0.735 is not what gets scored."
+  evidence:
+    - {path: /home/ben/task/final_model/generation_config.json, locator: whole file, observation: "temperature 0.0, do_sample false, eos_token_id [1, 106], no top_k/top_p -- the greedy config adopted in exp-03, written by package_final.py rather than by the Trainer"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.training_summary", observation: "the Trainer wrote eos_token_id [1, 1, 106] on two of three runs; the value in final_model/ is a repaired one, not an original"}
+    - {path: /home/ben/task/eval/exp-07_B_exp05_greedy_dev400.json, locator: accuracy, observation: "0.7350 -- the number this card is checking the artifact against, measured on a staging dir that has since been deleted"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: artifact-a, source: /home/ben/task/skills/exp_protocol/pitfalls.yaml, question: "final_model/ lacks a tokenizer or processor config", gold: "loads", model_output: "vLLM raises at startup", failure: "the documented final_model_not_loadable pitfall"}
+    - {id: artifact-b, source: /home/ben/task/memory/cards/exp-01.yaml, question: "generation_config drops <end_of_turn> from eos_token_id", gold: "stops at 106", model_output: "runs to 4000 tokens", failure: "the eos-collapse pitfall; base model scored 0.08 with half its completions in this state"}
+    - {id: artifact-c, source: /home/ben/task/memory/cards/exp-01.verdict.json, question: "concurrency changes the score on identical weights", gold: "same score at 2 and 16", model_output: "0.2733 at 8 vs 0.8533 at 2 in one precedent", failure: "a serving-path artefact that would make every read in this batch unrepresentative of the grading run"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_final_greedy_dev150_failures.jsonl
+    n: 39
+    selection: "the incumbent-family failures at n=150; the 150 items this card scores are the same 150"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Running the grader's own default invocation (python evaluate.py, i.e. --model-path final_model --limit 150 --max-connections 2 --gpu-memory-utilization 0.3) on the shipped directory reproduces the accuracy the same weights showed at --max-connections 16 and --gpu-memory-utilization 0.85, within the n=150 floor."
+  mechanism: "The weights, the chat template and the decode config are identical; only the serving parameters differ, and greedy decoding should make the result independent of batching. If it is not, the difference is a vLLM serving artefact and the batch's whole measurement chain has to be re-read at the grader's settings."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "no change expected: within +/-3 pp of the same weights' 150-item read"
+  falsified_if: "The eval fails to load final_model/, or the accuracy differs from exp-05/final's --max-connections 16 read (0.7267 at n=150) by more than the 3.0 pp n=150 floor."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v6.jsonl
+      source: "not read by this card -- the training file behind the shipped weights"
+      n_examples: 130000
+      built_by: /home/ben/task/scripts/build_sft_v2.py
+      build_command: [python, scripts/build_sft_v2.py, --per-problem, '2', --slice-from, '2']
+      selection: "see exp-05; no training happens in this card"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "vllm 0.11.0 via evaluate.py, all defaults"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: unchanged
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --json-output-file, /home/ben/task/eval/exp-08_final_model_default.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py]
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (evaluate.py default), --max-connections 2, --gpu-memory-utilization 0.3 (evaluate.py defaults)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7267
+    path: /home/ben/task/eval/exp-05_final_greedy_dev150.json
+  diagnostic:
+    what: "item-level agreement between this read and the --max-connections 16 read of the same weights; a serving artefact would show as scattered disagreement rather than a shift"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.2
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 2032}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 2032}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2082}
+  training_summary: {final_loss: null, steps: null, notes: "no training; artifact verification"}
+  measurements:
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp-08_final_model_default.json, delta_vs_comparator: -0.0134}
+  diagnostic_result:
+    value: 142
+    path: /home/ben/task/analysis/exp-08_agreement.json
+    notes: "vLLM loaded final_model/ and the eval exited 0. 149/150 completions end on a stop token. Against the same weights read at --max-connections 16 / gpu-mem 0.85: the two reads agree on 142 of 150 items, 5 items correct only under mc=16 and 3 only under the defaults -- scatter of the size greedy decoding shows between different batching, not a systematic shift."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-08_agreement.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The shipped directory works: `python evaluate.py` with every default scores 0.7133 on the 150-item protocol against 0.7267 for the same weights at --max-connections 16, a 1.33 pt difference inside the 3.0 pp floor, with 142/150 item-level agreement. Neither the final_model_not_loadable pitfall nor the concurrency artefact the WMA flagged twice is present, so every read in this batch stands as representative of the grading invocation."
+  decision: adopt
+  next_step: "Ship. final_model/ holds ckpts/exp-05/final packaged greedy. Headline numbers for the batch: base gemma-3-4b-pt 0.080 -> 0.7350 at n=400 (0.7133 at n=150 under the grader's exact defaults). ckpts/exp-04/final is retained on disk as the runner-up (0.7050 at n=400)."

@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T13:15:00Z'
+situation:
+  elapsed_h: 7.05
+  remaining_h: 2.95
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score: {metric: accuracy, value: 0.7067, protocol_n: 150}
+  trigger: "exp-05 scored 0.700 against exp-04's 0.7067 but the item-level split was 10 fixed / 11 regressed: the two checkpoints are close in accuracy and disagree on 21 of 150 items, which is exactly the situation where averaging their weights can beat both."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-05_diag.json, locator: "vs_exp04 fixed 10 regressed 11", observation: "21 items flip in each direction between the two checkpoints"}
+    - {path: /home/ben/task/eval/exp-05_greedy_dev150.json, locator: accuracy, observation: "0.700 vs exp-04's 0.7067"}
+  alternatives_rejected:
+    - {option: "A third RFT round", reason: "exp-05 showed round 2 was already saturated, and there is not enough time left to sample, train and evaluate one"}
+    - {option: "Spend the remaining time on a --limit 500 confirmation of exp-04 alone", reason: "a bigger eval sharpens the estimate but cannot raise the score; the soup is a 12-minute chance at an actual gain, and a confirmation eval still fits after it"}
+    - {option: "Soup exp-02 in as well (3-way)", reason: "exp-02 is 11 points weaker; a uniform 3-way average would pull the result toward it"}
+    - {option: "Tune the mixing weight alpha", reason: "each alpha costs a 12-minute eval; 0.5 is the standard choice and there is time for one shot, not a sweep"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/soup.py, --a, ckpts/exp-04, --b, ckpts/exp-05, --out, ckpts/exp-06, --alpha, '0.5'], outcome: "to be run; averages float tensors in fp32 then casts back to bf16, copies config/tokenizer/generation_config from exp-04"}
+problem:
+  statement: "Two checkpoints of comparable accuracy (0.7067 and 0.700) each solve items the other misses - 10 and 11 respectively - so roughly 14% of the dev set is decided by which of two nearby points in weight space is used. Neither checkpoint alone captures both sets."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_diag.json, locator: "vs_exp04", observation: "10 fixed, 11 regressed between two checkpoints one RFT round apart"}
+    - {path: /home/ben/task/eval/exp-04_greedy_dev150.json, locator: accuracy, observation: "0.7067, 44 items wrong"}
+  affected_share: 0.14
+  failure_examples:
+    - {id: "flip-set", source: /home/ben/task/analysis/exp-05_diag.json, question: "the 10 dev items exp-05 fixes and the 11 it breaks", gold: "various", model_output: "solved by exactly one of the two checkpoints", failure: "the two checkpoints disagree on 21 of 150 items despite nearly identical accuracy"}
+    - {id: "dev-Nissa", source: "official gsm8k test --limit 150", question: "Nissa hires 60 seasonal workers ... a third quit, then 10 more quit ...", gold: "30", model_output: "re-counts survivors as quitters", failure: "state-tracking error both checkpoints share"}
+    - {id: "dev-Luke", source: "official gsm8k test --limit 150", question: "Luke ... each sandcastle level has half the square footage of the one below ...", gold: "60", model_output: "answers the average, not the total", failure: "answers a different quantity than asked; shared by both"}
+  watch_set: null
+hypothesis:
+  claim: "Averaging the exp-04 and exp-05 weights at alpha 0.5 scores higher on greedy dev-150 than exp-04's 0.7067."
+  mechanism: "exp-05 is a continuation of exp-04's own trajectory, so the two sit in one loss basin and their average is a valid model; averaging cancels the round-specific noise each picked up from its own sampled data and keeps what both agree on, which is the standard model-soup effect for checkpoints fine-tuned from a shared parent."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+0 to +3 points; soups usually land at or slightly above the better endpoint"
+  falsified_if: "the soup scores at or below exp-04's 0.7067 on greedy dev-150"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft2_v1.jsonl
+      source: "no new data: the soup's two endpoints were trained on data/rft_v1.jsonl (exp-04) and data/rft2_v1.jsonl (exp-05); this card trains nothing"
+      n_examples: 53706
+      built_by: /home/ben/task/scripts/build_rft.py
+      build_command: [python, scripts/soup.py, --a, ckpts/exp-04, --b, ckpts/exp-05, --out, ckpts/exp-06, --alpha, '0.5']
+      selection: "not used for training in this card; listed because it is what produced endpoint B"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: safetensors weight average, fp32 accumulation cast back to bf16
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null, alpha: 0.5}
+    target_format: "unchanged from exp-04/exp-05"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, scripts/soup.py, --a, /home/ben/task/ckpts/exp-04, --b, /home/ben/task/ckpts/exp-05, --out, /home/ben/task/ckpts/exp-06, --alpha, '0.5']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-06_soup.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.35}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}-greedy', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 150 (first 150 items, deterministic order), greedy decode via generation_config temperature 0.0 as adopted in exp-03
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7067
+    path: /home/ben/task/eval/exp-04_greedy_dev150.json
+  diagnostic:
+    what: "greedy termination share and one-ANSWER share; a badly-formed average would show up first as broken formatting"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.2
+  output_checkpoint: /home/ben/task/ckpts/exp-06
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 883 tensors averaged in fp32 and cast back to bf16, 2 min on CPU"}
+  measurements:
+    - {metric: accuracy, value: 0.7, n: 150, path: /home/ben/task/eval/exp-06_greedy_dev150.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-06_diag.json
+    notes: "150/150 terminate with exactly one ANSWER line, so the average is a well-formed model - the null result is about accuracy, not a broken merge."
+  watch_set_result: {fixed: 6, still_failing: 38, regressions: 7, path: /home/ben/task/analysis/exp-06_diag.json}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The 0.5 soup of exp-04 and exp-05 scores 0.700, the same as exp-05 and 0.7 points below exp-04, with 6 items fixed and 7 broken relative to exp-04. Averaging sits between its endpoints here rather than above them: the 21-item disagreement between the two checkpoints is not noise the average can cancel."
+  decision: reject
+  next_step: "exp-04, exp-05 and exp-06 are within one standard error of each other at n=150 (0.7067 / 0.700 / 0.700), so dev-150 cannot separate them. exp-07 re-scores the two leading candidates at --limit 500 to pick the final model on an estimate with half the standard error."

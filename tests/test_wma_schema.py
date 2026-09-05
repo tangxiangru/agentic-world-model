@@ -45,10 +45,14 @@ class TestValidate:
         fields = {p.field for p in schema.validate_verdict(v).errors}
         assert {"levels.L0_runs.answer", "levels.L1_valid.confidence", "levels.L2_effect.interval"} <= fields
 
-    def test_basis_must_name_an_evidence_id(self) -> None:
+    def test_basis_must_name_an_evidence_or_probe_id(self) -> None:
         v = verdict()
         v["levels"]["L0_runs"]["basis"] = ["e9"]
         assert any(p.field == "levels.L0_runs.basis" for p in schema.validate_verdict(v).errors)
+
+        v["probes"] = [{"id": "p1", "kind": "static_check", "result": "ok", "changed": "L0"}]
+        v["levels"]["L0_runs"]["basis"] = ["e1", "p1"]
+        assert schema.validate_verdict(v).ok
 
     def test_round_trip_and_path(self, tmp_path) -> None:
         card = tmp_path / "memory" / "cards" / "exp-01.yaml"
@@ -94,13 +98,14 @@ class TestScore:
         s = schema.score(verdict(), self.truth())
         assert s == {"L0": "hit", "L1": "hit", "L2": "in_interval", "L3": "hit"}
 
-    def test_failed_run_misses_L0_and_L1(self) -> None:
+    def test_failed_run_misses_L0_and_leaves_L1_unscored(self) -> None:
+        """L1 is scored only on completed runs (spec §十一.9): a failed launch is L0's miss, not L1's."""
         s = schema.score(verdict(), self.truth(execution="failed", output_checkpoint=None, measurements=[]))
-        assert s["L0"] == "miss" and s["L1"] == "miss"
+        assert s["L0"] == "miss" and s["L1"] == "unscorable"
 
-    def test_killed_counts_as_ran_but_not_valid(self) -> None:
+    def test_killed_counts_as_ran_and_leaves_L1_unscored(self) -> None:
         s = schema.score(verdict(), self.truth(execution="killed", output_checkpoint=None, measurements=[]))
-        assert s["L0"] == "hit" and s["L1"] == "miss"
+        assert s["L0"] == "hit" and s["L1"] == "unscorable"
 
     def test_L2_above_below_unscorable(self) -> None:
         assert schema.score(verdict(), self.truth(delta=0.10))["L2"] == "above"
@@ -136,3 +141,102 @@ def test_verdict_path_with_and_without_a_tag(tmp_path) -> None:
         schema.verdict_path(card, tag="bad tag!")
     assert schema.card_path_for(tmp_path / "exp-01.verdict.opus.json") == card
     assert schema.card_path_for(tmp_path / "exp-01.verdict.json") == card
+
+
+def test_flat_is_a_direction_a_baseline_card_can_have() -> None:
+    """A packaging/baseline card (copy the base model, evaluate) expects no change: direction flat."""
+    v = verdict()
+    v["levels"]["L2_effect"]["direction"] = "flat"
+    assert schema.validate_verdict(v).ok
+    v["levels"]["L2_effect"]["direction"] = "sideways"
+    assert not schema.validate_verdict(v).ok
+
+
+# ---- measurement batch 2 (2026-09-02, spec §十一.9): types, completed-only L1, noise floor, baseline cards ----
+
+def test_change_types_must_look_like_the_taxonomy() -> None:
+    v = verdict()
+    v["change_types"] = ["C1b", "C2", "C12", "C18"]
+    assert schema.validate_verdict(v).ok
+    for bad in (["C19"], ["c2"], ["C1c"], "C2", ["decode"]):
+        v["change_types"] = bad
+        assert not schema.validate_verdict(v).ok, bad
+
+
+def test_noise_floor_follows_the_question_count() -> None:
+    """reference §2: gsm8k n=1319 0.45–1.6pp, n=150 1.3–3.3pp, n=20–50 ±10–15pp; aime2025 one question = 3.33pp."""
+    assert schema.noise_floor(1319) == 0.01
+    assert schema.noise_floor(150) == 0.03
+    assert schema.noise_floor(20) == 0.12
+    assert schema.noise_floor(30) == round(1 / 30, 4) or schema.noise_floor(30) >= 1 / 30
+    assert schema.noise_floor(None) is None
+
+
+def test_l1_is_scored_only_on_cards_that_completed() -> None:
+    """A killed run is the scientist's clock decision and a failed one is L0's miss: neither says whether the
+    proposal would have yielded a valid candidate."""
+    for execution in ("killed", "failed"):
+        assert schema.truth_levels({"execution": execution, "output_checkpoint": None, "measurements": []})["L1"] is None
+    assert schema.truth_levels({"execution": "completed", "output_checkpoint": "/x", "measurements": [{}]})["L1"] is True
+    assert schema.truth_levels({"execution": "completed", "output_checkpoint": None, "measurements": []})["L1"] is False
+
+
+def test_a_baseline_packaging_card_is_unscorable_at_l3_and_carries_its_family_and_n() -> None:
+    card = closed_card()
+    card["setup"]["method"]["family"] = "other"
+    card["setup"]["parent_checkpoint"] = {"path": "Qwen/Qwen3-1.7B-Base", "origin": "base_model", "hash": None}
+    card["setup"]["data"] = []
+    card["conclusion"]["decision"] = "reject"      # superseded, not unworthy
+    t = schema.truth_from_card(card)
+    assert t["baseline_packaging"] is True and t["family"] == "other" and t["n"] == 150
+    v = verdict()
+    v["levels"]["L3_worth_now"]["answer"] = "yes"
+    assert schema.score(v, t)["L3"] == "unscorable"
+    card["setup"]["data"] = [{"path": "/d.jsonl", "n_examples": 10}]
+    assert schema.truth_from_card(card)["baseline_packaging"] is False
+    assert schema.score(v, schema.truth_from_card(card))["L3"] == "miss"
+
+
+def test_a_self_measurement_card_scores_l1_on_its_reading_and_nothing_at_l2_or_l3() -> None:
+    """The run's first card measures the base model it will later be compared against. Online
+    (2026-09-02) such cards had no checkpoint and a delta of 0.0 by construction, so the scorer
+    charged the WMA with L1 misses and L2 misses that were about the card's shape, not its foresight."""
+    card = closed_card()
+    card["setup"]["method"]["family"] = "other"
+    card["setup"]["parent_checkpoint"] = {"path": "google/gemma-3-4b-pt", "origin": "base_model", "hash": "cc0"}
+    card["setup"]["data"] = [{"path": "/eval/test.parquet", "n_examples": 150}]   # the eval input, listed
+    card["evaluation"]["comparator"] = {"ref": "base_model", "value": None, "path": None}
+    card["result"]["output_checkpoint"] = None
+    card["result"]["measurements"] = [{"metric": "accuracy", "value": 0.0533, "n": 150,
+                                       "path": "/eval/base_dev150.json", "delta_vs_comparator": 0.0}]
+    card["conclusion"]["decision"] = "iterate"
+    t = schema.truth_from_card(card)
+    assert t["self_measurement"] is True and t["baseline_packaging"] is False
+    assert schema.truth_levels(t)["L1"] is True
+    v = verdict()
+    v["levels"]["L1_valid"]["answer"] = "yes"
+    v["levels"]["L2_effect"]["interval"] = [0.10, 0.50]      # an absolute guess written into the delta slot
+    v["levels"]["L3_worth_now"]["answer"] = "yes"
+    s = schema.score(v, t)
+    assert (s["L1"], s["L2"], s["L3"]) == ("hit", "unscorable", "unscorable")
+    # the same base model measured against an earlier reading of it is a real comparison
+    card["evaluation"]["comparator"] = {"ref": "base_model", "value": None, "path": "/eval/base_stock_dev150.json"}
+    card["setup"]["method"]["family"] = "decode-config"
+    card["result"]["measurements"][0]["delta_vs_comparator"] = -0.02
+    t2 = schema.truth_from_card(card)
+    assert t2["self_measurement"] is False
+    assert schema.truth_levels(t2)["L1"] is False              # no checkpoint, and it is not a self-measurement
+    assert schema.score(v, t2)["L2"] == "below"
+    # a training card from the base is never a self-measurement
+    card["setup"]["method"]["family"] = "sft"
+    card["evaluation"]["comparator"] = {"ref": "base_model", "value": None, "path": None}
+    assert schema.truth_from_card(card)["self_measurement"] is False
+
+
+def test_skill_sha_covers_every_file_of_the_skill(tmp_path) -> None:
+    d = tmp_path / "wma"
+    d.mkdir()
+    (d / "SKILL.md").write_text("a")
+    one = schema.skill_sha(d)
+    (d / "change_types.md").write_text("b")
+    assert schema.skill_sha(d) != one and len(schema.skill_sha(d)) == 12

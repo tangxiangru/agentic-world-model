@@ -1,0 +1,132 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T05:04:56Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.3
+  remaining_h: 3.7
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/greedy
+    score: {metric: accuracy, value: 0.7733, protocol_n: 150}
+  trigger: "exp-05 came in at 0.7667 against exp-04's 0.7733 - one item out of 150 - and one of the two has to be the shipped model. The whole batch's headline also rests on a single 150-item read, whose binomial stderr at p=0.77 is 3.4 pp."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp04_greedy_dev150.json, locator: "accuracy=0.7733, stderr=0.0343"}
+    - {path: /home/ben/task/eval/exp05_greedy_dev150.json, locator: "accuracy=0.7667"}
+    - {path: /home/ben/task/memory/index.md, locator: "exp-04, exp-05 rows"}
+  alternatives_rejected:
+    - {option: "Ship exp-04 on the n=150 reads and spend the remaining time on another training run", reason: "a 1-item gap is not a selection signal, and no run that starts now (>=40 min train + >=15 min eval) leaves room to confirm its own result; a wrong ship decision costs more than a marginal extra experiment gains"}
+    - {option: "Read the full 1319-item test split instead of 500", reason: "~3x the wall time of n=500 for each candidate, which would consume most of the 3.7 h left and leave no room for the merge candidate or for re-verifying final_model; n=500 already cuts the stderr from 3.4 pp to ~1.9 pp"}
+    - {option: "Re-read at n=150 with a different seed", reason: "greedy decoding is deterministic, so a re-read at the same n returns the same number - the only way to shrink the interval is more items"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The two surviving candidates cannot be told apart by the evidence that exists. exp-04 reads 0.7733 and exp-05 reads 0.7667 on the same 150 items - a single item - while the binomial stderr of either read is about 3.4 pp. Every selection made in this batch so far was decided by a gap of 5 pts or more, but this one is not, and it is the decision that determines what actually ships."
+  evidence:
+    - {path: /home/ben/task/eval/exp04_greedy_dev150.json, locator: "accuracy=0.7733, stderr=0.0343", observation: "116/150 correct"}
+    - {path: /home/ben/task/eval/exp05_greedy_dev150.json, locator: "accuracy=0.7667", observation: "115/150 correct"}
+    - {path: /home/ben/task/analysis/exp-05_greedy_diag.json, locator: "watch_set: fixed 107 vs exp-04's 108, regressions 0 for both", observation: "the paired view shows the same one-item difference, so it is not an artefact of unpaired scoring"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: exp04-vs-exp05-delta, source: /home/ben/task/analysis/exp-05_greedy_diag.json, question: "(the single dev-150 item on which the two candidates differ; benchmark text not copied to disk)", gold: "(id in analysis/exp-01_watch.jsonl)", model_output: "exp-04 correct, exp-05 wrong", failure: "one item is carrying the entire selection decision"}
+    - {id: watch-still-failing-1, source: /home/ben/task/analysis/exp-04_greedy_diag.json, question: "(dev-150 item both candidates get wrong)", gold: "(id in analysis/exp-01_watch.jsonl)", model_output: "terminated, one ANSWER line, wrong number", failure: "shared residual error - not informative for selection"}
+    - {id: watch-still-failing-2, source: /home/ben/task/analysis/exp-05_greedy_diag.json, question: "(dev-150 item both candidates get wrong)", gold: "(id in analysis/exp-01_watch.jsonl)", model_output: "terminated, one ANSWER line, wrong number", failure: "shared residual error - not informative for selection"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-01_watch.jsonl
+    n: 142
+    selection: "the dev-150 items the base model failed in exp-01, carried unchanged through every card in this batch"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Re-reading both candidates on 500 items instead of 150 separates them by more than the read's own stderr, or shows they are equivalent; either way it replaces a 1-item selection with a measured one and puts a tighter interval on the number this batch reports."
+  mechanism: "This is a measurement, not an intervention: the weights and the decode config are untouched. n=500 cuts the binomial stderr at p~0.77 from ~3.4 pp to ~1.9 pp, and because both candidates are read on the same 500 items under a deterministic greedy decode, the comparison is paired - the difference is decided by the items where they actually disagree, not by two independent samples."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "no intervention; expect both candidates in 0.72-0.80 and a gap under 3 pts"}
+  falsified_if: "Either read fails to complete, or the n=500 accuracies land outside the n=150 confidence intervals of the same checkpoints (which would mean the first 150 items are not representative of the split and the whole batch's protocol was mis-specified)."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/greedy
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    # measurement-only card: no training data. The only input is the benchmark itself,
+    # loaded read-only by the grader's task definition.
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      source: openai/gsm8k
+      n_examples: 500
+      built_by: null
+      build_command: []
+      selection: "official gsm8k test split, first 500 samples via --limit 500; read by the grader only, never by a trainer"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect_ai 0.1.dev3780 + vllm 0.11.0
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - measurement only; both checkpoints keep the greedy generation_config adopted in exp-03"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_exp06.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_exp06.sh
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all   # both candidates stay on disk; the winner is copied to final_model/
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 500 (inspect_evals/gsm8k test split, first 500 samples, deterministic order)
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7733
+    path: /home/ben/task/eval/exp04_greedy_dev150.json
+    # NOTE: the comparator was read at n=150. That mismatch is the reason this card exists;
+    # exp-04 is re-read at n=500 inside this run, and that read is the comparator for exp-05
+    # and for any later card.
+  diagnostic:
+    what: "termination at the larger n - share of completions ending on their 'ANSWER:' line and share hitting the token cap, which were 1.00 / 0.00 for both candidates at n=150; the garbage-prefix screen for --max-connections 16 also gets 500 items instead of 150"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/exp-04/greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/greedy, step: 3547}
+    - {path: /home/ben/task/ckpts/exp-05/greedy, step: 1176}
+  training_summary: {final_loss: null, steps: null, notes: "no training - both checkpoints are unchanged from exp-04 and exp-05"}
+  measurements:
+    - {metric: accuracy, value: 0.7400, n: 500, path: /home/ben/task/eval/exp-04_greedy_dev500.json, delta_vs_comparator: -0.0333}
+    - {metric: accuracy, value: 0.7320, n: 500, path: /home/ben/task/eval/exp-05_greedy_dev500.json, delta_vs_comparator: -0.0413}
+  diagnostic_result:
+    value: 0.994
+    path: /home/ben/task/analysis/exp-06_exp-04_dev500_diag.json
+    notes: "Termination holds at the larger n for both: 0.994 of completions end on their 'ANSWER:' line and 0.006 (3 of 500) hit the token cap - identical for the two candidates. Garbage-prefix screen 0/500 on both, so --max-connections 16 is clean at this size too. exp-05's chains stay shorter (median 118 output tokens vs 137), the same compression seen at n=150. Paired view over the 500 items (analysis/exp-06_paired.json): 330 both correct, 40 exp-04 only, 36 exp-05 only - the two models disagree on 76 items and split them almost evenly, which is what statistically indistinguishable looks like item by item."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-06_paired.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "At n=500 exp-04 reads 0.7400 +/- 0.0196 and exp-05 0.7320 +/- 0.0198; the ordering from n=150 holds but the gap is 4 items and the paired split (40 vs 36 exclusive wins out of 76 disagreements) says the two are not separable. Both n=500 values sit inside the n=150 intervals of the same checkpoints, so the first 150 items were representative and the batch protocol was sound - the n=150 numbers were simply optimistic by ~3 pts, which is what a 3.4 pp stderr allows."
+  decision: adopt
+  next_step: "exp-04 ships: it is ahead on both protocols and is the checkpoint already in final_model/. One cheap candidate remains - exp-07, the uniform weight average of exp-04 and exp-05, which is already built on disk; it gets the same n=500 read and replaces final_model/ only if it clears 0.7400 by more than the ~2 pp stderr."

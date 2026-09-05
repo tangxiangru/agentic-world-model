@@ -85,8 +85,9 @@ scontrol show node slurm2-a3nodesetondem-0 -o
 - Agent SIF：`/rmeng_data/robtang/ptb-containers/opus_5.sif`
   - SHA-256：`35f287e7b17d62ab44cd95db26dfeeac166943daed5f7b557b008bae51acc759`
   - Claude Code：2.1.219；正式 batch 关闭 auto-update。
-- Official judge SIF：`/rmeng_data/robtang/ptb-containers/gpt_5_5.sif`
-  - SHA-256：`765cae4e7893171e935c89fba27fa9bff93bb884b139a7f319a9fbfbbbded117`
+- Official judge SIF：`/rmeng_data/robtang/ptb-containers/opus_5.sif`
+  - SHA-256：`35f287e7b17d62ab44cd95db26dfeeac166943daed5f7b557b008bae51acc759`
+  - 四个 canonical judge（包括 general）统一使用 `claude-opus-5[1m]`、`high`、Vertex。
 - Final-eval SIF：`/rmeng_data/robtang/ptb-containers/vllm_debug.sif`
   - SHA-256：`72748f77f9fe5a1abe925bb532c1da64d80b1dcce7849179c9546700099448f8`
   - 内部 Inspect fork commit：`64db0afdd3796732b232954ef440c66ed22923a7`；该实现会在
@@ -176,10 +177,8 @@ uv run awm ptb audit-receipt data/ptb/batches/gsm8k-opus5-4x4-batch1/formal-*.js
 已创建的 job 保持 hold，receipt 会保留 job 和失败 cell，不能直接重跑造成重复。
 
 每个 job 请求 `1 H100 + 16 CPU + 128G RAM`，agent budget 10h，Slurm walltime
-另留 12h 给排队的 official judge lock、四个 judge 和 full evaluation。官方 ChatGPT
-judge 共享认证文件时，完整 judge phase 通过
-`/rmeng_data/robtang/ptb-locks/official-judges.lock` 串行化 refresh-token 写入；agent
-本身使用无可写 token 文件的 Vertex/GCE metadata ADC。
+另留 12h 给四个 official Claude judge 和 full evaluation。Judge 与 agent 都使用
+Vertex/GCE metadata ADC，但 judge 在独立 safe-mode 配置中运行，不读取被测 agent 的配置。
 
 ## 5. Research judges
 
@@ -191,13 +190,22 @@ uv run awm ptb research-judges \
 ```
 
 它为每个不可变 result 提交一个 CPU-only Slurm job，使用
-`claude-opus-5[1m]`、xhigh、Vertex 和完全相同的四份 judge prompt。输出为独立的
+`claude-opus-5[1m]`、high、Vertex 和完全相同的四份 judge prompt。输出为独立的
 `judgement_claude_*_rerun.json`，不会覆盖 official canonical verdict。
 research job 也从 official receipt 冻结的 PTB commit 物化 source，避免 judge prompt 随后漂移。
-它同时复用并校验 receipt 中冻结的 Opus 5 xhigh provider 证据；模型字符串保持
+它同时复用并校验 receipt 中冻结的 Opus 5 high provider 证据；模型字符串保持
 `claude-opus-5[1m]`，因此不会退化到裸 alias 的 200k context。
 
 ## 6. 取消、故障与恢复
+
+当已有结果只缺四个 canonical judge verdict 时，使用 judge-only recovery；它不会重跑
+agent 或 final evaluation：
+
+```bash
+uv run awm ptb recover-judges RECEIPT
+```
+
+恢复任务先 held 提交、写 receipt、注册进共享 ownership registry，再统一释放。
 
 查看 receipt 后，只取消其中明确列出的 job：
 

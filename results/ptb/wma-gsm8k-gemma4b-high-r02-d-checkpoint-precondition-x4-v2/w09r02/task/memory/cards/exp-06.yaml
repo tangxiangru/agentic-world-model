@@ -1,0 +1,135 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T00:20:00Z'
+situation:
+  elapsed_h: 7.7
+  remaining_h: 2.3
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.774, protocol_n: 500}
+  trigger: "exp-05 ruled out the weight-average hedge (soup 0.762 vs exp-04 0.774 at n=500) and left the first rejection-sampling round as the only lever that has actually moved the incumbent. Re-sampling exp-04 shows its per-sample accuracy rose 0.712 -> 0.745 while pass@8 barely moved 0.959 -> 0.965, so a reliability gap of 22 points is still open on the training questions."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/rft_v3_stats.json
+      locator: "pass_at_8 0.9655, mean_sample_accuracy 0.7452, rows_kept 10491"
+    - path: /home/ben/task/memory/cards/exp-05.yaml
+      locator: "result.measurements (n=500: exp-04 0.774, soup 0.762, exp-03 0.756)"
+  alternatives_rejected:
+    - option: "Stop and ship exp-04"
+      reason: "2.3 h remain; this round reuses a code path that has already run end to end once (sample, mix, train, evaluate) and is guarded - final_model only changes if the candidate beats exp-04 at n=500."
+    - option: "Download OpenMathInstruct-2 train_2M for ~134k genuinely new gsm8k-derived rows"
+      reason: "Download, rebuild, decontamination and one epoch is ~2.4 h before any evaluation; it does not fit, and a truncated version of it would be a worse use of the same GPU minutes than a round that is known to complete in 21 min."
+    - option: "Score exp-04's kept step checkpoints (60/120/180) instead"
+      reason: "196 steps on a cosine schedule to zero; the WMA's own L2 for checkpoint selection here is near zero and each read costs 3 min. The on-policy round has the larger upside."
+    - option: "Raise the replay weight or drop replay entirely"
+      reason: "The exp-04 recipe (roughly one replay row per on-policy row, lr 7e-6, one epoch) is the only version of this intervention with a measured outcome; changing two things at once in the last round would make the comparison unreadable."
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --k, '8', --adaptive-keep]
+      outcome: "10491 rows kept from 7473 questions in ~17 min; decontamination on the mixed file reports 0 of 20991 documents flagged."
+problem:
+  statement: "exp-04 is the incumbent at 0.774 (n=500) and its failures are still reliability failures rather than capability failures: on the GSM8K train questions it reaches a correct chain in at least one of eight samples for 96.5% of problems but only 74.5% of individual samples are right. The first rejection-sampling round closed part of that gap (per-sample 0.712 -> 0.745) and this card asks whether a second round, sampled from the improved model, closes any more or whether the lever is exhausted."
+  evidence:
+    - path: /home/ben/task/analysis/rft_v3_stats.json
+      locator: "pass_at_8 0.9655 vs mean_sample_accuracy 0.7452"
+      observation: "a 22-point reliability gap remains after round 1."
+    - path: /home/ben/task/analysis/exp-04_final_tags.json
+      locator: "tags.wrong_number = 33 of 150"
+      observation: "the residual failures are still well-formed wrong numbers."
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A second on-policy rejection-sampling round - continuing exp-04 for one epoch at lr 7e-6 on 10491 of its own verified-correct solutions plus a 10500-row replay slice of sft_v2 - will score higher than exp-04's 0.774 on a 500-item read."
+  mechanism: "Round 1 moved per-sample accuracy on train questions by 3.3 points, and the pass@8 ceiling is still 22 points above per-sample accuracy, so there is still probability mass to move onto chains the model can already find. Sampling from exp-04 rather than exp-03 keeps the data on-policy for the checkpoint being updated, which is the property that made round 1 work; the replay slice again holds the OpenMathInstruct-2 style."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "0 to +2 points; round 1 was worth +1.8 at n=500, and successive rejection-sampling rounds are expected to give diminishing returns"
+  falsified_if: "Accuracy at n=500 is at or below exp-04's 0.774, i.e. the second round adds nothing over the checkpoint that generated its data."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v2.jsonl
+      source: "synthetic:self (exp-04 checkpoint, k=8, temperature 1.0, top_p 0.95, on openai/gsm8k train questions) + derived:exp-03 replay slice of /home/ben/task/data/sft_v2.jsonl"
+      n_examples: 20991
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --out, data/rft_v3.jsonl, --k, '8', --temperature, '1.0', --top-p, '0.95', --max-tokens, '640', --max-keep, '4', --adaptive-keep]
+      selection: "keep only samples whose final 'ANSWER: <n>' line equals the gold answer of the GSM8K train item; drop whitespace-identical duplicates within a problem; adaptive keep - 1 sample if 8/8 correct, 2 if >=4/8, up to 4 otherwise; drop any sample with more than one 'ANSWER:'; 10491 rows result. Mixed with 10500 rows drawn uniformly from sft_v2.jsonl (seed 11) as replay, then shuffled."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler, torch 2.8.0, flash_attention_2; vLLM 0.11.0 for the sampling stage"
+    peft: none
+    hyperparams:
+      lr: 7.0e-6
+      epochs: 1.0
+      batch_size: 6144
+      grad_accum: 8
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit; the saved checkpoint is cast to bf16"
+      seed: 0
+    target_format: "chain of thought, blank line, 'ANSWER: <integer>', then '<end_of_turn>'. Loss on the completion only; the prompt is masked with -100."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_mix_v2.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/ckpts/exp-06, --lr, '7e-6', --epochs, '1', --grad-accum, '8', --token-budget, '6144', --max-seq-len, '2560', --attn, flash_attention_2, --seed, '0', --save-steps, '60', --save-total-limit, '4']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-06_train.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 60
+    keep: 4
+  budget: {gpu: H100-80GB, planned_h: 0.45}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --json-output-file, '{out}']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, deterministic order); byte-identical invocation to exp-05's three reads"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.774
+    path: /home/ben/task/eval/exp-05_exp-04_n500.json
+  diagnostic:
+    what: "wrong_number count and format-failure share at n=500, against exp-04's read; plus a paired McNemar over the same 500 items"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.34
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 188}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-180, step: 180}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-120, step: 120}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-60, step: 60}
+  training_summary: {final_loss: null, steps: 188, notes: "train_loss 0.2383 over 1219 s (17.2 rows/s), against 0.2510 for round 1 - the model fits its own second-round samples more easily, which is what a saturating lever looks like from the training side."}
+  measurements:
+    - {metric: accuracy, value: 0.756, n: 500, path: /home/ben/task/eval/exp-06_final_n500.json, delta_vs_comparator: -0.018}
+  diagnostic_result:
+    value: 113
+    path: /home/ben/task/analysis/exp-06_final_n500_tags.json
+    notes: "wrong_number 113 of 500 and 9 malformed final lines, a format-failure share of 0.074 against exp-04's 0.057 at n=150. Paired McNemar over the identical 500 items: exp-04-only 43, exp-06-only 34, exact two-sided p=0.362 - the loss is not significant, but there is no evidence of a gain in either the unpaired or the paired read, and the malformed-line count is the one thing that moved consistently in the wrong direction across both RFT rounds (0 -> 2 -> 9 as a share of the sample)."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "0.774 -> 0.756 at n=500 (-1.8), inside the falsification clause: a second on-policy round from exp-04 bought nothing. Round 1 moved per-sample train accuracy 0.712 -> 0.745 for +1.8 on the test read; round 2 moved it 0.745 -> (unmeasured) for -1.8, and its lower training loss on its own samples says the model is now mostly re-fitting text it already produces. The lever is exhausted."
+  decision: reject
+  next_step: "The regression guard holds: final_model keeps exp-04/final (0.774 at n=500, 0.7667 at n=150), which is the best of six candidates under two protocols. No further training; the remaining time goes to verifying the shipped artifact loads and scores from a fresh process."

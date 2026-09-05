@@ -1,0 +1,123 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-02T13:59:14Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.15
+  remaining_h: 9.85
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Batch start: no measured score exists for the immutable base snapshot under the harness protocol, so no later card can have a comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/evaluate.py, locator: "L24-51: default --limit 150, --max-tokens 4000"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and go straight to SFT", reason: "protocol rule 2: every later card needs a comparator measured under the same protocol"}
+    - {option: "Baseline at --limit 1319 (full test)", reason: "~1h of a 10h budget; 150 is the harness default and will be the shared protocol for all cards"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, -c, "from datasets import load_dataset; load_dataset('openai/gsm8k','main')"], outcome: "internet reachable; gsm8k train 7473 / test 1319 load fine"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruction-tuned checkpoint. Under the harness gemma3 chat template with a 10-shot system message it is unknown whether it (a) terminates with <end_of_turn>, (b) emits the required final 'ANSWER: N' line, or (c) solves the problems. All three failures look identical in the score, so the floor and the dominant failure mode must be measured before any training is designed."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L27-35, L50-66", observation: "solver is a 10-shot system message plus MATH_PROMPT_TEMPLATE demanding a final 'ANSWER: $ANSWER' line"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py, locator: "match_str with location=end, numeric=True", observation: "grading takes the last whitespace token in the completion that parses as a number; a trailing number that is not the answer scores 0"}
+    - {path: /home/ben/task/templates/gemma3.jinja, locator: "whole file", observation: "turns are delimited by <start_of_turn>/<end_of_turn>; generation stops on <end_of_turn>"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "300 held-out items from the gsm8k TRAIN split (seed 0), never trained on; the benchmark test split is not used here (protocol rule 7)" 
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Measuring the immutable base snapshot under the harness protocol (gsm8k, --limit 150) yields a nonzero accuracy floor plus a set of raw completions that identifies which failure mode dominates: no stop token, no ANSWER line, or wrong arithmetic."
+  mechanism: "A 10-shot prompt gives a pretrained LM enough format signal to imitate the 'Reasoning ... ANSWER: N' pattern, so the floor should be well above chance; the inspect log stores every completion, so the dominant failure mode is readable from it."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "0.15-0.45, the usual 10-shot range for a 4B pretrained model"
+  falsified_if: "accuracy is 0.00, or the majority of completions hit the 4000-token cap without emitting <end_of_turn> - either would mean the harness wiring, not the model, is what is being measured."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe300.jsonl
+      source: local
+      n_examples: 300
+      built_by: /home/ben/task/scripts/make_probe.py
+      build_command: [python, scripts/make_probe.py]
+      selection: "300 items sampled (seed 0) from the gsm8k TRAIN split, excluding the 10 fewshot exemplars; held out of every training file. Nothing is trained in this card - this file is the diagnostic/watch set only."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "inspect-ai 0.1.dev3780 + vllm 0.11.0"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "eval only; nothing is trained"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, /home/ben/task/eval/base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions carrying a well-formed final 'ANSWER: <number>' line, and share that hit the 4000-token cap without stopping"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "eval only; nothing trained"}
+  measurements:
+    - {metric: accuracy, value: 0.05333, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.853
+    path: /home/ben/task/analysis/exp-01_diagnostic.json
+    notes: "128/150 (0.853) contain an 'ANSWER:' marker, so format imitation is mostly there; but 72/150 (0.48) hit the 4000-token cap without ever emitting <end_of_turn> - the model keeps inventing new problems after answering. vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config': generation_config.json ships do_sample=true, top_k=64, top_p=0.95 and no temperature, so grading decodes stochastically at T=1.0, not greedily."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/data/probe300.jsonl}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base snapshot scores 0.0533 on gsm8k dev-150 (8/150). The floor is real but low, and it is a formatting/termination floor as much as a reasoning one: 48% of completions run to the 4000-token cap because the pretrained model does not stop, and decoding is stochastic at T=1.0 because vLLM adopts the checkpoint's generation_config."
+  decision: iterate
+  next_step: "exp-02: completion-only SFT so every target ends in <end_of_turn> and carries a single final 'ANSWER: N'. Keep the checkpoint's original generation_config in exp-02 so the SFT delta is not confounded; test greedy decoding separately in exp-03."

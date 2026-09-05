@@ -1,0 +1,111 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-09
+created_at: '2026-09-04T07:58:00Z'
+situation:
+  elapsed_h: 6.6
+  remaining_h: 3.4
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-06-soup
+    score: {metric: accuracy, value: 0.770, protocol_n: 500}
+  trigger: "exp-08 was the last idea with a positive prior and it lost (0.758 vs 0.770 at n=500), so the model is settled. What is not yet verified is the artifact: every number so far was measured on ckpts/..., never on the final_model/ directory the grader actually loads from a fresh process."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-08.yaml, locator: "conclusion", observation: "4-way soup rejected; the 3-way soup stands"}
+    - {path: /home/ben/task/skills/exp_protocol/pitfalls.yaml, locator: "final_model_not_loadable", observation: "the named pitfall: a final_model that the grader's vLLM cannot load makes every hour before it count for nothing. It already bit twice this session (missing processor configs in exp-02, double-renamed keys in exp-06)."}
+  alternatives_rejected:
+    - {option: "Declare done after the CPU load test", reason: "the CPU test used transformers; the grader uses vLLM in a fresh process, which is exactly the path that failed twice this session for reasons transformers did not care about"}
+    - {option: "Verify at --limit 150 to save 20 minutes", reason: "3.4 h are left and nothing else is queued; the full 1319 items cost ~25 min and give the honest headline number at stderr ~0.012 instead of 0.037"}
+    - {option: "Squeeze in one more training run instead", reason: "a 1.5-2 h run started at 6.6 h elapsed would finish with no margin to evaluate it, re-ship, and re-verify; the last three training-side interventions all landed inside the noise band anyway"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, -c, "Gemma3ForConditionalGeneration.from_pretrained('final_model')"], outcome: "loads on CPU, 4.30B params, bf16, Gemma3Processor builds from the copied preprocessor_config.json/processor_config.json"}
+problem:
+  statement: "final_model/ has been populated by copying ckpts/exp-06-soup and passes a transformers CPU load, but it has never been served by vLLM through evaluate.py. Two distinct serialization faults this session (missing Gemma3Processor configs; save_pretrained double-renaming gemma-3 keys) were invisible to transformers and fatal to vLLM, and neither showed up until a server was actually started."
+  evidence:
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.postmortem_note", observation: "checkpoint unloadable under vLLM for want of preprocessor_config.json/processor_config.json"}
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "result.postmortem_note", observation: "'ValueError: There is no module or parameter named language_model in Gemma3ForCausalLM' from a state dict transformers had saved happily"}
+  affected_share: null
+  failure_examples:
+    - {id: exp-02-save, source: /home/ben/task/logs/exp-02_eval_final.log, question: "(n/a - infrastructure failure, not a benchmark item)", gold: "a served model", model_output: "OSError: Can't load image processor for 'ckpts/exp-02/final'", failure: "vLLM builds a Gemma3Processor for this architecture; save_pretrained does not write its configs"}
+    - {id: exp-06-save, source: /home/ben/task/logs/exp-06_eval.log, question: "(n/a - infrastructure failure)", gold: "a served model", model_output: "ValueError: There is no module or parameter named 'language_model' in Gemma3ForCausalLM", failure: "save_pretrained re-applied gemma-3's save-time key rename to an already-renamed state dict"}
+    - {id: config-dtype, source: /home/ben/task/ckpts/exp-05/final/config.json, question: "(n/a - silent, not fatal)", gold: "dtype bfloat16", model_output: "dtype float32 beside bf16 tensors", failure: "vLLM served the earlier checkpoints upcast; final_model declares bfloat16"}
+  watch_set: null
+hypothesis:
+  claim: "Serving the final_model/ directory itself through evaluate.py on the full 1319-item GSM8K test set will start cleanly and score in the neighbourhood of the 0.770 measured for the identical weights at n=500."
+  mechanism: "final_model/ is a byte copy of ckpts/exp-06-soup with real files instead of symlinks, so the only thing that can differ is the path and the file layout -- which is exactly what the two earlier failures turned on. n=1319 replaces the n=500 estimate with the full-test number at stderr ~0.012."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "~0.75-0.79; the n=500 estimate is 0.770 +- 0.019"
+  falsified_if: "the vLLM server fails to start from final_model/, or accuracy lands below 0.72 (more than 2.5 standard errors under the n=500 estimate), either of which would mean the shipped directory is not the model that was measured."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-06-soup
+    origin: exp-06
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/EVAL_ONLY_no_training_data.md
+      source: local
+      n_examples: 1319
+      built_by: null
+      build_command: []
+      selection: "no training in this card, mixture_weight 0. The 1319 are the graded items: the whole official openai/gsm8k test split, fetched by the harness inside evaluate.py."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0, greedy (temperature 0 from final_model/generation_config.json)"
+    peft: none
+    hyperparams: {}
+    target_format: "<reasoning> then 'ANSWER: <int>' then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, final_model, --limit, '-1', --json-output-file, /home/ben/task/eval/exp-09_final_model_full1319.json, --max-connections, '16']
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-09_final_eval.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '-1', --max-connections, '16']
+    dev_set: "official full test split (1319 items)"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "format compliance and max_tokens count over all 1319 items -- the greedy repetition loop was 1/500 and this measures it on 2.6x the sample"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.37
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; verification of the shipped artifact"}
+  measurements:
+    - {metric: accuracy, value: 0.7582, n: 1319, path: /home/ben/task/eval/exp-09_final_model_full1319.json, delta_vs_comparator: 0.7115}
+  diagnostic_result:
+    value: 0.9962
+    path: /home/ben/task/eval/exp-09_final_model_full1319_full.json
+    notes: "1314/1319 completions end in an 'ANSWER: <number>' line; 5 (0.38%) run to max_tokens in a greedy repetition loop; median completion 409 chars. Base model for comparison: 0.247 compliance, median 6346 chars."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "final_model/ served cleanly under vLLM from a fresh process and scored 0.7582 +- 0.0118 on all 1319 GSM8K test items, consistent with the 0.770 +- 0.019 measured for the identical weights at n=500. Against the base checkpoint's 0.047 that is +71.1 points."
+  decision: adopt
+  next_step: "3.0 h remain and nothing is queued. exp-10: the runner-up (exp-05 weights, 0.748 vs the soup's 0.770 at n=500) is only 1.1 standard errors behind; score it on the same 1319 items so the shipped model is chosen at the full-test resolution rather than on a 500-item slice."

@@ -1,0 +1,226 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T07:11:41Z'
+situation:
+  elapsed_h: 6.6
+  remaining_h: 3.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score:
+      metric: accuracy
+      value: 0.6867
+      protocol_n: 150
+  trigger: exp-04's continuation landed at 0.6667 against exp-03's 0.6867, but the
+    paired per-item read shows the two checkpoints disagree on 19 of 150 items in
+    both directions (8 wrong->right, 11 right->wrong) - two models of near-equal
+    accuracy making largely different errors, which is the setting a uniform weight
+    average exploits.
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp04_vs_exp03_flips.json
+    locator: wrong_to_right 8, right_to_wrong 11, net -3
+  - path: /home/ben/task/eval/exp-04_final_dev150.json
+    locator: accuracy 0.6667
+  alternatives_rejected:
+  - option: A third training stage
+    reason: 3.4 h remain, the last training took 1.56 h and its reference class has
+      a median effect of about zero; a soup costs 5 minutes of CPU and one eval.
+  - option: Weighted soup or a sweep over mixing coefficients
+    reason: Each coefficient costs another eval at a ~3 pt noise floor, so a sweep
+      at n=150 cannot resolve the differences it would produce. Uniform is the single
+      pre-registered point.
+  - option: Adopt exp-04 anyway because it saw more data
+    reason: The adoption rule was fixed in writing before exp-04 launched - beat 0.6867
+      by more than the noise floor or final_model does not move.
+  - option: Souping exp-04/checkpoint-900 in as a third ingredient
+    reason: It is an unscored checkpoint from the middle of a cosine schedule; adding
+      an unmeasured ingredient to the average makes a bad result uninterpretable.
+      It is scored separately in this card instead.
+  pitfalls_hit:
+  - what: exp-04's eval had to go through scripts/finalize.py --greedy first; the
+      raw trainer checkpoint inherits do_sample true / top_k 64 / top_p 0.95 from
+      its parent and would have been scored ~10 pt low against a greedy comparator
+    cost_h: 0.0
+    fix: every candidate in this card is packaged with finalize.py --greedy before
+      it is scored
+  smoke_runs:
+  - command:
+    - python
+    - evaluate.py
+    - --model-path
+    - final_model
+    - --limit
+    - '4'
+    outcome: exit 0, vLLM loaded final_model from a fresh process and scored it; the
+      packaging path is verified end to end
+problem:
+  statement: The run has two checkpoints of statistically indistinguishable accuracy
+    (0.6867 and 0.6667 at n=150, a 3-item net difference against a ~3 pt noise floor)
+    and only one can be submitted. Choosing on the point estimate alone would be
+    choosing on noise, and neither checkpoint's number has been confirmed on more
+    than 150 of the 1319 test items.
+  evidence:
+  - path: /home/ben/task/analysis/exp04_vs_exp03_flips.json
+    locator: n_paired 150, net -3
+    observation: the two candidates differ on 19 items, so they are genuinely different
+      models rather than one being a slightly worse copy of the other
+  - path: /home/ben/task/eval/exp-03_greedy_dev150.json
+    locator: stderr 0.038
+    observation: the n=150 protocol's own stderr is 3.8 pt, wider than the 2.0 pt
+      gap it is being asked to resolve
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: A uniform weight average of ckpts/exp-02/final and ckpts/exp-04/final, decoded
+    greedily, scores higher on the dev-150 protocol than the better of its two ingredients
+    (exp-03's 0.6867).
+  mechanism: exp-04/final is a continuation of exp-02/final at a low learning rate,
+    so the two sit in the same loss basin and their parameters can be averaged without
+    interpolating through a barrier. Averaging cancels the part of each model's error
+    that is idiosyncratic to its own final training steps while keeping the part of
+    the solution both agree on - which is exactly what the 8-versus-11 two-directional
+    flip pattern says is available.
+  mechanism_note: If the soup instead lands between the two ingredients, the disagreement
+    was not idiosyncratic noise but a real capability trade, and the right action is
+    to keep the better ingredient.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: 0 to +5 pt; a soup of two near-equal checkpoints in one basin usually
+      matches or slightly beats the better ingredient
+  falsified_if: the soup scores at or below 0.6867 on dev-150, or its share of completions
+    ending in a well-formed ANSWER line falls below 0.98
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/ckpts/exp-04/final/model.safetensors.index.json
+    source: derived:exp-04
+    n_examples: 1
+    built_by: /home/ben/task/scripts/soup.py
+    build_command:
+    - python
+    - scripts/soup.py
+    - --src
+    - ckpts/exp-02/final
+    - --src
+    - ckpts/exp-04/final
+    - --out
+    - ckpts/soup-0204
+    selection: no training data. The second ingredient of the average; parameters are
+      summed in float32 and divided by 2, then cast back to bfloat16.
+    contamination_check: not_run
+    mixture_weight: 0.5
+  method:
+    family: merge
+    framework: safetensors
+    peft: none
+    hyperparams:
+      weights: 0.5 exp-02/final + 0.5 exp-04/final
+      accumulate_dtype: float32
+      store_dtype: bfloat16
+      temperature: 0.0
+      seed: null
+    target_format: unchanged - chain of thought, blank line, one ANSWER line, then
+      the stop token
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - evaluate.py
+    - --model-path
+    - /home/ben/task/ckpts/soup-0204-greedy
+    - --limit
+    - '150'
+    - --json-output-file
+    - /home/ben/task/eval/exp-05_soup_dev150.json
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/soup-0204
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.2
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '150'
+    dev_set: official --limit 150; the candidate is packaged with scripts/finalize.py
+      --greedy first so its generation_config carries temperature 0, matching the
+      decode under which every comparator from exp-03 on was measured
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6867
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: share of completions ending in a well-formed ANSWER line and share with
+      stop_reason max_tokens, to confirm the average did not damage the output shape;
+      plus a paired per-item flip count against exp-03
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/soup-0204-greedy
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/soup-0204, step: 0}
+  - {path: /home/ben/task/ckpts/soup-0204-greedy, step: 0}
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: 'No training. Uniform float32 average of ckpts/exp-02/final and
+      ckpts/exp-04/final, cast back to bfloat16, packaged by scripts/finalize.py
+      --greedy into ckpts/soup-0204-greedy and scored there, not on the raw
+      ckpts/soup-0204 (WMA precondition). Ingredient shard layouts and key sets
+      matched exactly.'
+  measurements:
+  - metric: accuracy
+    value: 0.68
+    n: 150
+    path: /home/ben/task/eval/exp-05_soup_dev150.json
+    delta_vs_comparator: -0.0067
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-05_soup150.json
+    notes: 'Shape is intact and marginally better than either ingredient: 149/150
+      stop cleanly and 1/150 hits max_tokens, against 148/2 for both exp-03 and
+      exp-04; 99.3% end in a well-formed ANSWER line; mean completion 569 chars vs
+      674 and 666. The falsifier''s 0.98 ANSWER-line clause was read as the WMA
+      advised - against the ingredients'' 148/2, not against a threshold one item
+      wide - and the shape did not degrade. Paired flips vs exp-03
+      (analysis/exp05_vs_exp03_flips.json): 9 wrong->right, 10 right->wrong, net -1.'
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: 'The soup scores 0.680 against the better ingredient''s 0.6867 and the
+    worse one''s 0.6667 - it lands between them, one item below the leader. The
+    falsifier''s accuracy clause fired. By the card''s own mechanism_note that means
+    the 19-item disagreement between exp-02/final and exp-04/final was a real
+    capability trade rather than idiosyncratic noise, so averaging had nothing to
+    cancel; the flip pattern against exp-03 stayed two-directional (9 up, 10 down).'
+  decision: reject
+  next_step: 'Three candidates now sit inside one noise band at n=150: 0.6867
+    (exp-02+greedy), 0.680 (soup), 0.6667 (exp-04+greedy), against a 3.8 pt stderr.
+    The n=150 protocol cannot separate them, so the selection read has to be
+    n=1319 - that is exp-06, and it is the last thing the budget allows.
+    final_model is unchanged and still holds exp-03 at 0.6867.'

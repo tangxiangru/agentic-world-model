@@ -1,0 +1,109 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T06:17:37Z'
+situation:
+  elapsed_h: 7.4
+  remaining_h: 2.6
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.6933, protocol_n: 150}
+  trigger: "2.6 h are left, which is not enough for another training run (exp-03 alone took 3.3 h). Two checkpoints trained from the same base init on overlapping corpora are already on disk and score 0.660 and 0.6933; a weight-space average of them costs ~5 min of CPU and no training."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-02 and exp-03 rows", observation: "two adopted checkpoints, same parent snapshot cc012e0a, 0.660 and 0.6933 on the same protocol"}
+    - {path: /home/ben/task/analysis/exp-03_final_probe300.json, locator: "summary", observation: "0.7067 on the 300 held-out items; exp-02 scored 0.6833 on the identical items"}
+  alternatives_rejected:
+    - {option: "A third training run (second RFT round from exp-03, or a 3-epoch schedule)", reason: "exp-03's two epochs took 3.27 h; even a one-epoch run on the same corpus is ~1.6 h plus sampling, which does not fit in 2.6 h with the finalisation and verification still to do"}
+    - {option: "Average exp-03/final with exp-03/checkpoint-1500 instead", reason: "those two are 314 steps apart at a cosine LR already below 1e-7, so they sit almost on top of each other in weight space; averaging them cannot move much. exp-02 and exp-03 are two full independent fine-tunes from the same init, which is the case where weight averaging actually behaves like an ensemble"}
+    - {option: "Spend the remaining time on a --limit 1319 read of exp-03 instead of trying anything new", reason: "the exp-03 verdict recommended it, but the adopt decision is already carried by two independent reads moving together (dev-150 +3.3, held-out probe +2.3), and a full read cannot raise the score. A confirmation read is scheduled after this card only if the soup wins and time remains"}
+    - {option: "Adopt the soup on the 300-item probe alone to save one eval", reason: "the probe is held-out gsm8k TRAIN, not the benchmark; every adopt decision in this batch has been made on the protocol read and this one will be too"}
+  pitfalls_hit:
+    - {what: "exp-03's launch was estimated at 2.9 h from the dry-run token count but the printed step count implied 3:16 and it took 3:16; the estimate was 12% optimistic because it ignored padding inside micro-batches", cost_h: 0.0, fix: "read the trainer's own ETA line in the first 60 s rather than trusting the token-count estimate; that is what left no room for a fourth training run"}
+  smoke_runs: []
+problem:
+  statement: "exp-03 is the incumbent at 0.6933 on dev-150 and 0.7067 on the 300 held-out probe, and all 46 of its dev-150 failures are reasoning errors. There is no remaining budget to train a better model, so the only untried lever is combining the two checkpoints already on disk. They disagree: exp-02 and exp-03 were trained on different corpora from the same initialisation, so each solves items the other misses."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_final_dev150.json, locator: "summary.tally", observation: "{format_stop: 0, no_answer: 0, reasoning: 46}; all 150 completions stopped normally"}
+    - {path: /home/ben/task/analysis/exp-03_final_probe300.json, locator: "summary", observation: "0.7067, 88 of 300 still failing"}
+    - {path: /home/ben/task/analysis/exp-02_final_probe300.json, locator: "summary", observation: "0.6833 on the identical 300 items, 95 failing - a different 95, since both were graded item by item"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "the same 300 held-out gsm8k TRAIN questions used by exp-02 and exp-03 (shuffle seed 1234), excluded from every training file in this batch. No benchmark test item (rule 7)."
+hypothesis:
+  claim: "An equal-weight average of the ckpts/exp-02/final and ckpts/exp-03/final parameter tensors will score at least as well as exp-03 alone on dev-150 and on the 300-item held-out probe."
+  mechanism: "Both checkpoints descend from the same initialisation (snapshot cc012e0a) under the same recipe and differ only in the corpus, so they are expected to lie in one loss basin; averaging weights inside a basin approximates ensembling their predictions and cancels part of the fine-tuning noise, without any of the inference cost of a real ensemble."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "-1 to +3 pts; a genuine possibility of no change or a small loss, which is why exp-03 stays installed as final_model until the soup beats it on the protocol read"}
+  falsified_if: "the soup scores below 0.7067 on the 300-item probe, or below exp-03's 0.6933 on dev-150. Either one means the two checkpoints are not in a shared basin and the average lands between them or below both."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-04/MERGE_INPUTS.md
+      source: "derived:exp-03 + derived:exp-02 - no training data is read; the merge consumes only the two checkpoints' weights, listed in this file"
+      n_examples: 2
+      built_by: null
+      build_command: []
+      selection: "no training in this card; family=merge"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: safetensors 0.6 shard-wise fp32 average, written back in bf16
+    peft: none
+    hyperparams: {alpha: 0.5, sources: 2, precision: bf16, seed: 0, lr: null, epochs: 0, batch_size: null, grad_accum: null, max_seq_len: 2816}
+    target_format: "unchanged from exp-03: chain of thought, blank line, 'ANSWER: <integer>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --a, /home/ben/task/ckpts/exp-03/final, --b, /home/ben/task/ckpts/exp-02/final, --alpha, '0.5', --out, /home/ben/task/ckpts/exp-04/soup]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '2', --max-tokens, '4000', --gpu-memory-utilization, '0.3']
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test, inspect_evals/gsm8k, 10-shot seed 42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6933
+    path: /home/ben/task/eval/exp-03_final_dev150.json
+  diagnostic:
+    what: "300-item held-out gsm8k-train probe, greedy, 10-shot (scripts/probe_eval.py), run FIRST: if the soup does not clear exp-03's 0.7067 there, the protocol read is skipped and exp-03 stays installed, because a degenerate average shows up as a collapse in output length or in the format tally before it shows up in accuracy. Also the analyze_log.py failure tally, which must keep format/stop at 0."
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/exp-04/soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/soup, step: 0}
+  training_summary: {final_loss: null, steps: 0, notes: "shard-wise fp32 average of 4.30B parameters, written back in bf16; generation_config.json and config.json are byte-identical to exp-03/final and scripts/finalize.py reports no loadability problems"}
+  measurements:
+    - {metric: accuracy, value: 0.6833, n: 300, path: /home/ben/task/analysis/exp-04_soup_probe300.json, delta_vs_comparator: -0.0234}
+  diagnostic_result:
+    value: 0.6833
+    path: /home/ben/task/analysis/exp-04_soup_probe300.json
+    notes: "300-item held-out probe, greedy, 10-shot: soup 0.6833 vs exp-03 0.7067 vs exp-02 0.6833. The average landed exactly on the weaker parent, not above either. Output length is unchanged (p50 138 vs 144 tokens, 1 truncation) so this is not a degenerate merge - the model is healthy and simply no better. Per the pre-registered gate in evaluation.diagnostic, the dev-150 protocol read was NOT run and exp-03 stays installed as final_model."
+  watch_set_result: {fixed: 205, still_failing: 95, regressions: 7, path: /home/ben/task/analysis/exp-04_soup_probe300.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The equal-weight average of exp-02/final and exp-03/final scores 0.6833 on the 300 held-out items against exp-03's 0.7067, so it is 2.3 pts below the incumbent and level with the weaker parent. falsified_if triggered on the probe, the protocol read was skipped by the card's own gate, and no GPU time was spent grading a model that had already lost."
+  next_step: "Weight averaging across two different corpora is not free here, so do not retry it at another alpha without a reason: the merge landing on the weaker parent rather than between the two suggests the two fine-tunes are not sharing a basin as cleanly as assumed. final_model remains ckpts/exp-03/final."
+  decision: reject

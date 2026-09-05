@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T13:51:08Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 7.02
+  remaining_h: 2.98
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05-greedy
+    score: {metric: accuracy, value: 0.7040, protocol_n: 500}
+  trigger: "The last three cards are separated by +2.7 points each at n=150, where one stderr is 3.7-3.8 points, so the ordering exp-03 < exp-04 < exp-05 is not established by the numbers that produced it. final_model has to be one of them and the choice should not be made on a coin flip."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: "accuracy=0.6733"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy=0.7000"}
+    - {path: /home/ben/task/eval/exp-05_dev500.json, locator: "accuracy=0.7040 at n=500, stderr 0.020"}
+  alternatives_rejected:
+    - {option: "Ship exp-05 on its n=150 lead without a confirmation eval", reason: "a 2.7-point lead at stderr 3.7 leaves a large chance of the wrong pick; 4 minutes of GPU removes most of it"}
+    - {option: "Confirm on the full 1319-item test set", reason: "about 12 min per checkpoint against 4 min at n=500, and n=500 already cuts the stderr from 0.038 to 0.020, smaller than any gap this decision turns on; the saved time is the deadline buffer for writing and verifying final_model"}
+    - {option: "Also confirm exp-03 at n=500", reason: "exp-03 carries exp-02's weights and lost to exp-04 on the same 150 items; it cannot win a three-way without both later cards being wrong, and the budget is better spent on the two live candidates"}
+    - {option: "Evaluate exp-05's intermediate checkpoints (400, 800)", reason: "they are 0.39 and 0.77 of a single cosine that anneals to zero, i.e. strictly undertrained versions of the same run; no card has shown early stopping helps here"}
+  pitfalls_hit:
+    - {what: "exp-05's n=500 confirmation eval was run while closing exp-05, before this card existed", cost_h: 0.0, fix: "it is recorded here as the comparator rather than re-run; the protocol it used is byte-identical to the one this card locks"}
+  smoke_runs:
+    - {command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-05-greedy, --limit, '500', --max-connections, '16'], outcome: "0.7040 +/- 0.0200 over 500/500 samples, no retries; this is the comparator"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "Three candidate checkpoints (exp-03-greedy, exp-04-greedy, exp-05-greedy) are separated by 2.7 points each on the n=150 protocol, whose stderr is 3.7-3.8 points. The ranking that decides what goes into final_model is therefore unmeasured, and picking on the n=150 numbers alone would be selection on noise."
+  evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-03/exp-04/exp-05 rows", observation: "0.6733, 0.7000, 0.7267 - three equal 2.7-point steps, each well inside one stderr"}
+    - {path: /home/ben/task/eval/exp-05_dev500.json, locator: "accuracy=0.7040", observation: "exp-05 measured 0.7267 at n=150 but 0.7040 at n=500, a 2.3-point shift from resampling alone - the same size as the gaps being compared"}
+  affected_share: null
+  failure_examples:
+    - {id: n150-vs-n500, source: /home/ben/task/eval/exp-05_dev500.json, question: "(measurement property, not an item)", gold: "n/a", model_output: "0.7267 at n=150 vs 0.7040 at n=500 for identical weights and identical greedy decode", failure: "the n=150 protocol moves by as much as the effect being measured"}
+    - {id: exp03-vs-exp04, source: /home/ben/task/eval/exp-04_dev150.json, question: "(pairwise comparison)", gold: "n/a", model_output: "0.6733 vs 0.7000, i.e. 4 items of 150", failure: "a 4-item difference is not a ranking"}
+    - {id: exp04-vs-exp05, source: /home/ben/task/eval/exp-05_dev150.json, question: "(pairwise comparison)", gold: "n/a", model_output: "0.7000 vs 0.7267, i.e. 4 items of 150", failure: "the same problem one card later; this is the pair the card resolves"}
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Scored on the same 500 official test items under the same greedy decode, exp-04-greedy and exp-05-greedy separate by more than the n=500 stderr, so final_model can be chosen on evidence rather than on the n=150 ordering."
+  mechanism: "Both checkpoints saw the same 184.6k rows and differ only in whether those rows were fitted under one cosine from base or two chained cosines. At n=500 the stderr falls from 0.038 to 0.020, which resolves gaps of about 4 points. If the true gap is smaller than that, the two are interchangeable and either is a defensible final_model."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "exp-04 is expected to land at or below exp-05's 0.7040; what the card is measuring is the size of the gap, not its sign"
+  falsified_if: "the two n=500 accuracies land within 0.02 of each other, in which case the schedule genuinely does not matter and the pick falls to the tie-breaker (the simpler single-stage artefact) rather than to the metric"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04-greedy
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    # No training. Declared for the record: the rows the checkpoint under test saw.
+    - path: /home/ben/task/data/train_v3.jsonl
+      source: "derived:exp-04 (no data is read in this card)"
+      n_examples: 99161
+      built_by: /home/ben/task/build_data2.py
+      build_command: [python, build_data2.py]
+      selection: "unchanged from exp-04; listed only because the checkpoint under test was trained on it"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "inspect-ai + vllm 0.11.0 via evaluate.py, greedy via generation_config.json"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: reasoning, one 'ANSWER: <n>' line, then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04-greedy, --limit, '500', --max-connections, '16', --json-output-file, /home/ben/task/eval/exp-04_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/eval_exp-04_500.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --json-output-file, '{out}.json']
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7040
+    path: /home/ben/task/eval/exp-05_dev500.json
+  diagnostic:
+    what: "format_compliance and stopped_cleanly at n=500 for the chosen checkpoint, as the last check before it is written to final_model"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.07
+  output_checkpoint: /home/ben/task/ckpts/exp-05-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 589}
+    - {path: /home/ben/task/ckpts/exp-05-greedy, step: 1035}
+  training_summary: {final_loss: null, steps: null, notes: "no training; two evaluations under one protocol"}
+  measurements:
+    - {metric: accuracy, value: 0.7060, n: 500, path: /home/ben/task/eval/exp-04_dev500.json, delta_vs_comparator: 0.0020}
+    - {metric: accuracy, value: 0.7040, n: 500, path: /home/ben/task/eval/exp-05_dev500.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.996
+    path: /home/ben/task/analysis/exp-04_dev500.json
+    notes: "exp-04: format_compliance 0.996, stopped_cleanly 0.996, mean output 181 tokens. exp-05 (analysis/exp-05_dev500.json): 0.980 / 0.980, mean output 241 tokens - exp-05 writes longer chains and lets 2% of items run past the stop token against exp-04's 0.4%, which is the only behavioural difference the two show."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "0.7060 vs 0.7040 at n=500: a 1-item difference out of 500, an order of magnitude inside the 0.020 stderr. The card's falsified_if (gap within 0.02) is met, so the two-stage and single-stage schedules produce the same model to the resolution available, and the whole exp-03 -> exp-04 -> exp-05 ladder at n=150 was one checkpoint's worth of noise dressed as a trend."
+  decision: adopt
+  next_step: "The pre-registered tie-breaker names exp-05 (the single-stage artefact), and the n=150 protocol also favours it (0.7267 vs 0.7000), so exp-05-greedy is the pick. Before writing it to final_model, exp-07 spends 10 minutes on the one thing this tie makes cheap and plausible: a uniform weight average of the two, which are fine-tuned from the same base checkpoint on the same rows and so should be linearly connected."

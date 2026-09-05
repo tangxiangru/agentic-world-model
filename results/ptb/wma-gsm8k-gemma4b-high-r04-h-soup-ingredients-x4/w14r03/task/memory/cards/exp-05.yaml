@@ -1,0 +1,138 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T15:15:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.1
+  remaining_h: 3.9
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.77333, protocol_n: 150}
+  trigger: "exp-04 tripled solution diversity from the same generator and bought only a point estimate: 14 items fixed, 11 regressed, McNemar p = 0.69 (analysis/exp-04_paired_vs_exp03.json). The OpenMathInstruct-2 line is at diminishing returns, so the next card has to change the distribution, not its size."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_paired_vs_exp03.json, locator: "fixed=14, regressed=11, mcnemar_p=0.69"}
+    - {path: /home/ben/task/data/rft_raw.jsonl.stats.json, locator: "whole file", observation: "sampling exp-04 four times on 22000 held-in training questions: pass@1 0.829, 973 questions never solved in 4 tries, 40833 deduped correct solutions kept"}
+    - {path: /home/ben/task/analysis/exp-04_diag.json, locator: "wrong_but_has_answer_line=34", observation: "34 of 150 dev items are well-formed wrong answers -- reasoning failures, the class RFT targets"}
+  alternatives_rejected:
+    - {option: "A fourth epoch's worth of OpenMathInstruct-2 solutions (6 per problem)", reason: "exp-04 already showed 1 -> 3 solutions/problem is inside the noise; 3 -> 6 from the same generator on the same 80855 problems is the same lever again, for ~1.8h of the 3.9h left"}
+    - {option: "Train from base on the SFT corpus plus the RFT rows in one run", reason: "correct in principle and it avoids a second annealing, but it is ~2.2h of GPU and would leave no room to evaluate, finalise and verify final_model"}
+    - {option: "RFT rows only, with no OpenMathInstruct-2 mixed in", reason: "continuing a fully annealed checkpoint on 41k of its own samples narrows the distribution toward what the model already does; 40000 fresh 405B-written solutions and gold solutions for the 933 unsolved questions hold it open"}
+    - {option: "Attribute any gain to the on-policy rows alone", reason: "not available: the 40833 RFT rows, the 933 gold rows for unsolved questions and the 40000 unseen OpenMathInstruct-2 rows ride on one launch (WMA: C3 x C3). The card can only claim the mixture as a whole; the paired McNemar decomposition is the only instrument that separates a real repair from another 14-for-11 trade"}
+    - {option: "Checkpoint soup over exp-04's checkpoint-950/1900/final", reason: "cheap (~0.4h) but the cosine annealed fully, so the three points are not equally good and averaging across a decaying schedule is not the setting souping is known to help; kept as a fallback if RFT fails and time remains"}
+  pitfalls_hit:
+    - {what: "BLOCKER caught by the WMA before launch: exp-04/final is the first parent whose own generation_config is the greedy one, and GenerationConfig.save_pretrained refuses to write temperature 0.0 with do_sample false. PreTrainedModel.save_pretrained calls it with no try/except, so the run would have died at save time after the full epoch, leaving ckpts/exp-05 with a config.json and no weights", cost_h: 0.1, fix: "reset model.generation_config to the base snapshot's after loading the parent; the greedy JSON is written by hand after the save anyway, so the served decode config is unchanged. Reproduced the ValueError, applied the fix, and smoked 6 steps + 2 checkpoint saves + the final save from the greedy parent (logs/smoke5.log)"}
+    - {what: "the root filesystem is a 64MB overlay and filled with .pyc files written at import time, which silently zeroed liger-kernel's METADATA (35401 NUL bytes) and made is_liger_kernel_available() throw mid-launch", cost_h: 0.35, fix: "delete the day's __pycache__ from the overlay, export PYTHONDONTWRITEBYTECODE=1, reinstall with UV_LINK_MODE=copy and --no-deps (a plain --reinstall pulled torch and aborted on ENOSPC). Verified torch/vllm/transformers still import"}
+  smoke_runs:
+    - {command: [python, scripts/sample_rft.py, --model, /home/ben/task/ckpts/exp-04/final, --k, "4", --n-questions, "22000"], outcome: "88000 samples in ~34 min; 72939 matched the reference answer; 40833 rows kept after dedup and the 2-per-question cap"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/contam_v3.jsonl], outcome: "81766 documents scanned, 0 contaminated, exit 0 (analysis/contam_v3.err)"}
+    - {command: [python, scripts/train_sft.py, --parent, /home/ben/task/ckpts/exp-04/final, --output-dir, ckpts/smoke5, --max-steps, "6", --save-steps, "3", --liger, --greedy-gen-config], outcome: "WMA precondition 2: 6 steps from the greedy parent with two intermediate checkpoint saves and the final save, exit 0, saved dtype bfloat16, greedy generation_config written. This is the path that would have crashed before the fix"}
+    - {command: [python, scripts/train_sft.py, --data, data/sft_train_v3_rft.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --max-rows, "4000", --dry-run], outcome: "tokenises against the exp-04 tokenizer: p50 322, max 2933, 5/4000 dropped; target ends 'ANSWER: 120<end_of_turn>'"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent gets 34 of 150 dev items wrong, all well-formed: the chain of reasoning breaks, not the format. All of its supervision so far is off-policy -- solutions written by Llama-3.1-405B-Instruct in a style the 4B model has to imitate rather than produce. On its own training questions it already solves 82.9% at the first try, so the places where its own sampling fails are a direct read of where its reasoning is fragile."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_diag.json, locator: "wrong_but_has_answer_line=34, answer_line_is_last=149", observation: "every failure is a reasoning failure"}
+    - {path: /home/ben/task/data/rft_raw.jsonl.stats.json, locator: "pass_at_1_estimate=0.829, questions_with_no_correct=973", observation: "the model fails 17% of its own draws on questions it was trained on, and 973 of 22000 it cannot solve at all in 4 tries"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy, stderr", observation: "0.77333 +/- 0.0343"}
+  affected_share: 0.227
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing exp-04 for one short low-LR pass over 40833 of its own reference-verified solutions, mixed 1:1 with 40933 unseen off-policy solutions, will raise greedy dev-150 accuracy against exp-04's 0.77333."
+  mechanism: "Rejection-sampled targets are on-policy: they are sequences this model already assigns high probability to, so the gradient sharpens the reasoning paths it actually takes instead of pulling it toward a 405B model's phrasing. The filter keeps only chains that reached the reference answer, which is exactly the correct-vs-incorrect distinction its 34 well-formed failures get wrong. The 40000 fresh OpenMathInstruct-2 rows plus gold solutions for the 933 questions it never solved keep the mixture from collapsing onto what it can already do."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+0.01 to +0.04"
+  falsified_if: "greedy dev-150 accuracy is at or below exp-04's 0.77333, or the paired McNemar count against exp-04 is not clearly positive (fixed minus regressed <= 3, the same non-result exp-04 produced; for reference, at n=150 with ~25 discordant pairs a split near 17/8 is what reaches p<0.05, so a net of 4-6 is a point estimate and not a demonstrated effect either) -- either would say on-policy data adds nothing this model cannot already extract from the off-policy corpus."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_train_v3_rft.jsonl
+      source: "synthetic:self (exp-04 samples on OpenMathInstruct-2 / gsm8k-train questions) + nvidia/OpenMathInstruct-2 (train_5M, gsm8k + augmented_gsm8k)"
+      n_examples: 81766
+      built_by: /home/ben/task/scripts/sample_rft.py
+      build_command: [python, scripts/sample_rft.py, --model, /home/ben/task/ckpts/exp-04/final, --questions, data/rft_questions.jsonl, --out, data/rft_raw.jsonl, --n-questions, "22000", --k, "4", --temperature, "1.0", --top-p, "0.95", --max-tokens, "640", --keep-per-question, "2"]
+      selection: "40833 self-samples: 4 draws at temperature 1.0 / top_p 0.95 for each of 22000 training questions, kept only when the completion contains 'ANSWER: ' exactly once and its last number equals the reference answer, deduped, at most 2 per question. Plus 933 off-policy gold solutions for the questions exp-04 never solved in 4 tries, and 40000 OpenMathInstruct-2 solutions that exp-04 was NOT trained on (the 4th draw per problem, disjoint from sft_train_v2.jsonl). Questions come only from the training corpus; the GSM8K TEST split is read by nothing here."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused CE"
+    peft: "none (full fine-tune; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 91, grad_accum: 1, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 params + bf16 autocast, adamw_bnb_8bit; checkpoint cast to bfloat16 before save", seed: 0}
+    target_format: "unchanged: <chain of thought>\\n\\nANSWER: <number> rendered by templates/gemma3.jinja, loss on the assistant turn only, greedy generation_config saved (--greedy-gen-config) so this is directly comparable to exp-03/exp-04. lr is halved to 5e-6 because the parent is a fully annealed checkpoint, not a base model, and a second cosine at 1e-5 would undo its annealing."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_train_v3_rft.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --output-dir, /home/ben/task/ckpts/exp-05, --max-seq-len, "1024", --fewshot-max-seq-len, "3072", --fewshot-rows, "1200", --token-budget, "40000", --max-batch, "96", --grad-accum, "1", --lr, "5e-6", --epochs, "1.0", --liger, --greedy-gen-config, --save-steps, "300", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True", PYTHONDONTWRITEBYTECODE: "1"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 300
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.8}   # ~30M tokens at exp-04's measured 13509 tok/s = ~2200s stepping, plus tokenising 81766 rows and the save
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, dataset order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.77333
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "the paired McNemar decomposition against exp-04 on the same 150 items (fixed / regressed / net), which is what exposed exp-04's +2.0 pp as noise, plus the usual ANSWER-last share and stop_reason counts"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.65
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 936}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-936, step: 936}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-900, step: 900}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-600, step: 600}
+  training_summary:
+    final_loss: 0.2248
+    steps: 936
+    notes: "81680 rows kept of 81766 (86 too long, 0.11%); 29803960 tokens; 936 token-budget micro-batches at grad_accum 1; 2321s of stepping = 12840 tok/s. Loss 0.225 against exp-04's 0.275, as expected when half the targets are the model's own samples. The generation_config fix held: two intermediate checkpoints and the final save all completed."
+  measurements:
+    - {metric: accuracy, value: 0.82, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.04667}
+  diagnostic_result:
+    value: 7.0
+    path: /home/ben/task/analysis/exp-05_paired_vs_exp04.json
+    notes: "The paired decomposition is the number this card was built around: on the same 150 items exp-05 fixes 11 that exp-04 missed and breaks 4 that exp-04 had -- net +7, exact McNemar two-sided p = 0.119. Compare exp-04's 14/11 net +3 at p = 0.69: the ratio of repairs to regressions went from 1.3 to 2.8. Format unchanged (149/150 ANSWER-last, the same single greedy repetition loop into the 4000-token cap, median completion 432 chars). Well-formed-but-wrong 34 -> 26."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "greedy dev-150 0.77333 -> 0.82000 (+4.7 pp), above the predicted +0.01..+0.04 and clear of the falsification line (net +7 against the <=3 threshold written before the read). p = 0.119 still leaves this short of significance at n=150, but the repair-to-regression ratio nearly tripled versus exp-04's equal-cost data-scaling card, which is the contrast that matters."
+  mechanism_note: "Attribution is limited by design, as the WMA flagged: the 40833 on-policy rows, 933 gold solutions for never-solved questions and 40000 unseen off-policy rows all rode on one launch. The card can claim the mixture, not the on-policy half alone."
+  decision: adopt
+  next_step: "Adopted and delivered: ckpts/exp-05/final is copied to final_model/ as real shards (no symlinks) with tokenizer, multimodal side-cars, bfloat16 dtype, eos_token_id [1,106] and the greedy generation_config, verified by a fresh-process CPU load (analysis/final_model_check.json). A second RFT round from exp-05 is the obvious continuation and was not started: ~1.5h of sampling+training+eval does not fit in the 2.0h left with delivery verification still to do."

@@ -1,0 +1,109 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T05:05:00Z'
+situation:
+  elapsed_h: 6.6
+  remaining_h: 3.4
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.782, protocol_n: 500}
+  trigger: "Every model in this batch was trained on the zero-shot prompt, but the grader always prepends a 10-shot system message built from GSM8K train items - a train/serve prompt mismatch that has never been measured, and the only remaining lever big enough to be worth 3.4 h."
+  trigger_evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "lines 49-66: system_message built from 10 shuffled train samples, seed 42"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "situation.alternatives_rejected: the 10-shot prefix was left out of training to keep the run affordable"}
+  alternatives_rejected:
+    - {option: "Retrain with the 10-shot prefix without measuring first", reason: "prompt tokens go from ~200 to ~1900 per row, roughly 4x the cost per row; a 1.5 h run on a mismatch that may not exist"}
+    - {option: "Three-way soup with the exp-04 mid checkpoint", reason: "the two-way soup won by 0.64 sigma; a third ingredient from the same trajectory is more selection on the same dev items, not new information"}
+    - {option: "Stop and ship", reason: "3.4 h is enough for a 15-minute probe plus a retrain if the probe says the mismatch is real"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The shipped model is trained on prompts that contain no examples and graded on prompts that begin with ten worked examples in a different format (raw GSM8K reasoning with calculator annotations). If the prefix costs accuracy, every number in this batch understates what the same weights could do."
+  evidence:
+    - {path: /home/ben/task/eval/exp-06_soup_dev500.json, locator: "accuracy 0.782", observation: "measured with the 10-shot prefix, which is the only mode the grader offers"}
+    - {path: /home/ben/task/data/omi2_gsm8k.jsonl, locator: "any row", observation: "training prompts carry no system message and no examples"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "On the same 500 test items and the same greedy decode, the shipped model scores differently with the grader's 10-shot prefix than without it; the size and sign of that gap decide whether a prefix-matched retrain is worth the remaining budget."
+  mechanism: "SFT concentrated the model on one prompt shape; a 1700-token prefix in a different style either distracts it (accuracy drops, mismatch is real and fixable by training with the prefix) or acts as extra evidence (accuracy holds or rises, nothing to fix)."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: "zero-shot within +/-2 points of 0.782 means no mismatch worth fixing; more than +3 points means the prefix is costing real accuracy"
+  falsified_if: "the probe's 10-shot arm does not reproduce the harness number for the same weights (within ~2 points), which would mean the probe is not measuring what the grader measures"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-06
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_baseline.md
+      source: local
+      n_examples: 1
+      built_by: null
+      build_command: []
+      selection: "probe card: no training data; the inputs are the first 500 official test questions, used for evaluation only"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "vllm 0.11.0 offline, greedy, stop_token_ids [1, 106]"
+    peft: none
+    hyperparams: {temperature: 0.0, max_tokens: 1024}
+    target_format: "unchanged"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, probe_prefix.py, --model, /home/ben/task/final_model, --n, '500', --out, /home/ben/task/analysis/exp-07_prefix_probe.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/probe_prefix.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/analysis
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+evaluation:
+  protocol:
+    command: [python, probe_prefix.py, --model, '{checkpoint}', --n, '500']
+    dev_set: "first 500 items of the official gsm8k test split, scored by the grader's rule (last number in the completion)"
+    n: 500
+    seed: 0
+  comparator:
+    ref: exp-06
+    value: 0.782
+    path: /home/ben/task/eval/exp-06_soup_dev500.json
+  diagnostic:
+    what: "the probe's own 10-shot arm, as a control that the probe reproduces the harness"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.25
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "probe only, no training"}
+  measurements:
+    - {metric: accuracy, value: 0.8, n: 500, path: /home/ben/task/analysis/exp-07_prefix_probe.json, delta_vs_comparator: 0.018}
+  diagnostic_result:
+    value: 0.788
+    path: /home/ben/task/analysis/exp-07_prefix_probe.json
+    notes: "control: the probe's 10-shot arm scores 0.788 on the same 500 items the harness scored 0.782, so the probe reproduces the grader to within 0.6 points and the zero-shot arm can be trusted. did_not_stop 2/500 with prefix, 7/500 without."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "Zero-shot 0.800 vs 10-shot 0.788 on the same 500 items: the grader's 10-shot prefix costs about 1.2 points, not the 3+ that would justify a prefix-matched retrain at 4x the cost per row. The train/serve prompt mismatch is real but small."
+  decision: reject
+  next_step: "Stop training. Ship the exp-06 soup, verify the shipped directory under the official harness, and record the full-test-set number."

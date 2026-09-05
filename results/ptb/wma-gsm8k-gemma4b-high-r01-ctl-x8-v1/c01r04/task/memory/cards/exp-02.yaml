@@ -1,0 +1,125 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T14:19:26Z'
+situation:
+  elapsed_h: 0.4
+  remaining_h: 9.6
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.040, protocol_n: 150}
+  trigger: "exp-01 measured the base snapshot at 0.040 on dev-150 and the eval log shows why: 65/150 completions hit max_tokens and the internal dev probe has stop_rate 0.00 - the model never emits <end_of_turn>, it keeps going after answering."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-01_base_dev150.json, locator: "accuracy 0.040"}
+    - {path: /home/ben/task/analysis/dev_base_greedy.json, locator: "summary.stop_rate = 0.0, summary.accuracy = 0.028 over 250 held-out gsm8k-train items"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full fine-tuning", reason: "the deficit is turn termination plus solution style over ~40M target tokens; full FT peaks at 34 GiB with liger FLCE so there is no memory reason to accept LoRA's lower ceiling"}
+    - {option: "MetaMathQA or orca-math as the corpus", reason: "MetaMathQA targets carry gsm8k's own '#### N' line as a second answer marker (pitfall double_answer_format); OpenMathInstruct-2 targets carry exactly one boxed answer which we unwrap into a single 'ANSWER: N'"}
+    - {option: "train 0-shot only and rely on generalisation to the graded 10-shot prompt", reason: "the graded prompt always carries a 2043-token prefix of terse gsm8k-train solutions; putting 12% of rows under that exact prefix costs ~45% of the token budget but removes the one train/serve mismatch we can see"}
+    - {option: "3 epochs", reason: "2 epochs is ~1.9 h of the 9.6 h left; a third buys little on 47k distinct problems and would crowd out a second experiment"}
+  pitfalls_hit:
+    - {what: "61 of the first 70k built rows had a negative gold answer; the grader's match(numeric=True, location='end') cannot read '-7' (word.replace('.','').isnumeric() is False) so it would silently have graded an earlier number in the text", cost_h: 0.1, fix: "build_data.py NUMERIC regex now rejects negatives; verify_data.py re-checks and reports 0"}
+    - {what: "the bash tool killed the first dev-probe run at its 2-minute wall clock, leaving vLLM to be reaped", cost_h: 0.05, fix: "long GPU jobs go to nohup + background"}
+  smoke_runs:
+    - {command: [python, scripts/verify_data.py], outcome: "renders match templates/gemma3.jinja byte-for-byte for both 0-shot and 10-shot rows; 0/70000 completions miss <end_of_turn>; 0 miss a single 'ANSWER: '; 0 would be misread by the scorer; 0.025% over max_seq_len 3072"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/decon_input.jsonl], outcome: "0 matches over all 70000 rows, exit 0"}
+    - {command: [python, scripts/train_sft.py, --limit, '6000', --max-steps, '8', --max-tokens-per-batch, '32768', --accum, '1'], outcome: "2.5 s/step, peak 34.0 GiB, liger FLCE patched, loss 0.45 and falling; extrapolates to ~57 min/epoch on 70k rows"}
+    - {command: [python, scripts/dev_eval.py, --model, $PTB_BASE_MODEL_SNAPSHOT], outcome: "base model 0.028 on the 250 held-out gsm8k-train items, stop_rate 0.00"}
+problem:
+  statement: "The base checkpoint does not terminate its assistant turn and does not follow the graded answer format: 0 of 250 internal-dev completions emit <end_of_turn>, and it degenerates into a repeated line or spills into invented follow-up problems, so the grader reads the last number of a runaway continuation instead of a final answer. Underneath that it also has no reliable grade-school chain of thought."
+  evidence:
+    - {path: /home/ben/task/analysis/dev_base_greedy.json, locator: "summary.stop_rate", observation: "0.00 - never emits the stop token in 250 completions"}
+    - {path: /home/ben/task/analysis/dev_base_greedy.json, locator: "items[].text", observation: "243 of 250 wrong; tails are degenerate repeats or a newly invented problem"}
+    - {path: /home/ben/task/eval/exp-01_base_dev150.json, locator: "accuracy", observation: "0.040 under the official protocol; 65/150 samples stopped on max_tokens"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: gsm8ktrain-467, source: /home/ben/task/data/dev_gsm8ktrain.jsonl, question: "Hadley wore his cowboy boots everywhere. He walked 2 miles to the grocery store in his boots...", gold: "6", model_output: "...CDCl\\nCDCl\\nCDCl x20, never stops", failure: "degenerate repetition, no stop token; scorer reads 100"}
+    - {id: gsm8ktrain-6097, source: /home/ben/task/data/dev_gsm8ktrain.jsonl, question: "John has 25 horses. He feeds each horse twice a day and feeds them 20 pounds of food at each meal...", gold: "60", model_output: "...CDCl repeated to max_tokens", failure: "no stop token; scorer reads 30"}
+    - {id: gsm8ktrain-3276, source: /home/ben/task/data/dev_gsm8ktrain.jsonl, question: "... the rabbit's speed ...", gold: "45", model_output: "The rabbit's speed is 188 / 2 = 94. ... is 94 + 4 = 98. ... loops", failure: "loops over the same three operations, never concludes"}
+    - {id: gsm8ktrain-6372, source: /home/ben/task/data/dev_gsm8ktrain.jsonl, question: "Mary downloads a Mac version then a Windows version...", gold: "82", model_output: "Mary spent 10 minutes downloading the Mac version, (repeated)", failure: "repetition loop; scorer reads 1"}
+    - {id: gsm8ktrain-2223, source: /home/ben/task/data/dev_gsm8ktrain.jsonl, question: "Elyse had 100 pieces of gum. She gave half to her brother Rick...", gold: "14", model_output: "...CDCl repeated", failure: "no stop token; scorer reads 100, a number copied from the question"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch.jsonl
+    n: 243
+    selection: "every one of the 250 held-out gsm8k-TRAIN dev items the base model answers wrong under greedy decoding (analysis/dev_base_greedy.json). Held out means excluded from the training corpus by exact problem-text match in build_data.py; drawn from the train split, so no benchmark test item is involved."
+hypothesis:
+  claim: "Completion-only SFT of the base snapshot on 70k OpenMathInstruct-2 gsm8k/augmented_gsm8k solutions, rendered into the grader's exact turn format and terminated with <end_of_turn>, raises dev-150 accuracy above the base model's 0.040."
+  mechanism: "Two deficits are fixed by the same targets. (a) Every target ends in <end_of_turn>, which is in the snapshot's generation_config eos list and is what vLLM stops on, so the model learns to end its turn instead of running to max_tokens. (b) Every target is a correct grade-school chain of thought whose last line is 'ANSWER: N', exactly the string the grader's match(numeric=True, location='end') reads. 12% of rows carry the eval's own 2043-token 10-shot prefix so the model also sees the graded conditioning during training."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+40 to +65 points on dev-150: published gemma-3-4b-pt few-shot GSM8K is ~38% once the model is made to stop, and 4B models SFT'd on OpenMathInstruct-2 land in the 60-80% band"
+  falsified_if: "dev-150 accuracy at or below 0.040, or internal-dev stop_rate still below 0.9 after training (the format was not learned), or fewer than 40 of the 243 watch items fixed"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_train.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (shards 0-5 of 32), problem_source in {gsm8k, augmented_gsm8k}"
+      n_examples: 70000
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py]
+      selection: "problem_source in {gsm8k, augmented_gsm8k}, both seeded from the gsm8k TRAIN split; gold must match ^\\d+(\\.\\d+)?$ (non-negative, see pitfalls_hit); solution 60-2400 chars; exactly one boxed answer, unwrapped; no '####' or 'ANSWER:' already present; at most 4 solutions per original gsm8k problem and 2 per augmented problem; the 250 internal-dev problems and the 10 eval few-shot problems removed by exact text match; rendered by scripts/eval_format.py, 12% of rows under the eval's exact 10-shot prefix"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross-entropy"
+    peft: "none (full fine-tune of the 3.88B language model; the 420M SigLIP tower and its projector are frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 32768, grad_accum: 1, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant turn = <chain of thought>\\n\\nANSWER: <number><end_of_turn>\\n ; loss on completion tokens only, prompt tokens masked to -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_train.jsonl, --out, /home/ben/task/ckpts/exp-02, --epochs, '2', --lr, '1e-5', --max-tokens-per-batch, '32768', --accum, '1', --max-seq-len, '3072', --scheduler, cosine, --warmup, '0.03', --seed, '0', --save-epochs]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PTB_BASE_MODEL_SNAPSHOT: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.75']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.040
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic:
+    what: "internal dev probe (250 held-out gsm8k-TRAIN items, greedy, 10-shot) accuracy and stop_rate, via scripts/dev_eval.py"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.60
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1292, step: 1292}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-2584, step: 2584}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 2584}
+  training_summary: {final_loss: 0.2513, steps: 2584, notes: "train_loss 0.2696 over the run; 0.69 at step 10 falling to ~0.27 by step 200 and ~0.24 in epoch 2; grad_norm stayed 1.5-4.8 with no spikes; peak 34.0 GiB; 5768 s wall"}
+  measurements:
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: 0.6733}
+  diagnostic_result:
+    value: 0.744
+    path: /home/ben/task/analysis/exp-02_dev_greedy_fs10.json
+    notes: "internal dev (250 held-out gsm8k-train, greedy, 10-shot) 0.028 -> 0.744; stop_rate 0.00 -> 0.992, so the termination deficit is gone. Two extra probes on the same 250 items: 0-shot greedy 0.712 (the 10-shot prefix is worth +3.2, so the 12% prefixed training rows paid off rather than hurting), and sampled at the snapshot's own generation_config (T=1.0/top_p 0.95/top_k 64, which is what vLLM adopts by default and therefore what the 0.7133 above was measured under) 0.708 - i.e. greedy looks worth ~+3.6 on the same items. That gap is the subject of exp-03."
+  watch_set_result: {fixed: 182, still_failing: 61, regressions: 3, path: /home/ben/task/analysis/exp-02_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.040 -> 0.7133 (+67.3 points); 182 of the 243 watch items fixed against 3 regressions. The mechanism is confirmed directly: internal-dev stop_rate went 0.00 -> 0.992, so the model now ends its turn on <end_of_turn> and the grader reads the 'ANSWER: N' line instead of the tail of a runaway continuation."
+  decision: adopt
+  next_step: "exp-03: the graded run inherits the snapshot's generation_config, so vLLM samples at T=1.0/top_p 0.95/top_k 64; the internal probe says greedy is ~+3.6 on the same items. Test greedy under the protocol. Then exp-04: a second SFT stage on the 99424 unseen OpenMathInstruct-2 rows in data/sft_stage2.jsonl."

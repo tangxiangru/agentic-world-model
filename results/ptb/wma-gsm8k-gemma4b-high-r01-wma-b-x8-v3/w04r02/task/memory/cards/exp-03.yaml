@@ -1,0 +1,136 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T00:00:00Z'
+situation:
+  elapsed_h: 1.9
+  remaining_h: 8.1
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6133, protocol_n: 150}
+  trigger: "The checkpoint inherits the base snapshot's generation_config.json (do_sample true, top_k 64, top_p 0.95, no temperature), and vLLM's ModelConfig.get_diff_sampling_param reads exactly those fields while ignoring do_sample - so the harness decodes at temperature 1.0. Re-reading the SAME exp-02 weights with temperature 0 scored 0.7267 against 0.6133, a +11.3 pt swing from a config field."
+  trigger_evidence:
+    - path: /home/ben/task/eval/exp-02_final_greedy.json
+      locator: "accuracy 0.7266666666666667"
+    - path: /home/ben/task/eval/exp-02_final_samp.json
+      locator: "accuracy 0.6133333333333333"
+    - path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py
+      locator: "get_diff_sampling_param, lines 1344-1384"
+      observation: "available_params = repetition_penalty, temperature, top_k, top_p, min_p, max_new_tokens - do_sample is not read, so greedy has to be written as temperature 0."
+  alternatives_rejected:
+    - option: "Leave the decode config alone and treat 0.6133 as the number to beat"
+      reason: "The grader scores one sample per item; sampling at t=1.0 spends accuracy for no benefit and widens the n=150 noise floor. The config field is part of the deliverable."
+    - option: "Pick the checkpoint under sampling (the sweep already queued at t=1.0)"
+      reason: "Selection should be made under the decode config the final model will ship with, otherwise the winner is chosen on a metric nobody will use. The sampling sweep was killed after two reads to free the GPU for this one."
+    - option: "Average (soup) checkpoints 600/900/final instead of selecting one"
+      reason: "Worth doing, but only once the per-checkpoint curve is known; a soup of a still-improving trajectory is a worse bet than its endpoint."
+  pitfalls_hit:
+    - {what: "The temperature-0 read on ckpts/exp-02/final was taken inside exp-02's eval sweep, before this card existed. It is prior evidence in situation, not a result of this card; the pre-registered claim below is about the three intermediate checkpoints, which are unmeasured under greedy.", cost_h: 0.0, fix: "record the ordering here rather than restate a known number as a prediction"}
+    - {what: "Killing the eval batch left an orphan VLLM::EngineCore holding 15.2 GB; the next run would have started with a shrunken KV cache", cost_h: 0.05, fix: "kill the engine pid from nvidia-smi and confirm 0 MiB before relaunching"}
+  smoke_runs:
+    - command: [python, scripts/make_variant.py, --src, ckpts/exp-02/checkpoint-300, --dst, ckpts/exp-02/v300_greedy, --extra-from, ckpts/exp-02/final, --temperature, '0.0']
+      outcome: "weights symlinked, tokenizer/processor copied from final, generation_config rewritten to temperature 0 / top_k 0 / top_p 1.0 with eos_token_id [1,106] preserved"
+problem:
+  statement: "Two decisions are still open on the incumbent and both are made on the same eval sweep: (a) which decode config the deliverable ships with, and (b) which of the four saved checkpoints (300, 600, 900, 902=final) is actually best. One epoch over 112k rows is well past the point where the output format is learned, so the trajectory may have peaked before the end; and every comparison made from here on is only meaningful if it is made under the decode config the model will ship with."
+  evidence:
+    - path: /home/ben/task/analysis/exp-02_final_greedy_rows.json
+      locator: "summary"
+      observation: "At temperature 0: accuracy 0.7267, no_answer_line 2/150, non_stop 2/150, mean output 209 tokens - the remaining 41 failures are arithmetic/reasoning, not format."
+    - path: /home/ben/task/ckpts/exp-02/checkpoint-300/trainer_state.json
+      locator: "log_history"
+      observation: "loss 0.637 (step 10) -> 0.315 (step 300); most of the drop is in the first 100 steps, which is consistent with the format being learned early and the rest of the epoch buying reasoning, or nothing."
+  affected_share: null
+  failure_examples:
+    - {id: "exp02-greedy-fail-1", source: /home/ben/task/analysis/exp-02_final_greedy_failures.jsonl, question: "dev-150 item, line 1 of the file", gold: "see file", model_output: "see file", failure: "arithmetic/reasoning error inside a well-formed, correctly terminated chain"}
+    - {id: "exp02-greedy-fail-2", source: /home/ben/task/analysis/exp-02_final_greedy_failures.jsonl, question: "dev-150 item, line 2 of the file", gold: "see file", model_output: "see file", failure: "arithmetic/reasoning error inside a well-formed, correctly terminated chain"}
+    - {id: "exp02-greedy-fail-3", source: /home/ben/task/analysis/exp-02_final_greedy_failures.jsonl, question: "dev-150 item, line 3 of the file", gold: "see file", model_output: "see file", failure: "one of the 2 remaining format/termination failures"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_final_greedy_failures.jsonl
+    n: 41
+    selection: "every dev-150 item the incumbent gets wrong at temperature 0"
+hypothesis:
+  claim: "Read at temperature 0, the three intermediate exp-02 checkpoints (300, 600, 900) will not beat the endpoint by more than the n=150 noise floor, so the endpoint stays the incumbent; and every one of them will beat the 0.6133 that the endpoint scores under the inherited t=1.0 sampling config, i.e. the decode field dominates the checkpoint choice."
+  mechanism: "GSM8K is graded on a single sample, so any sampling temperature above 0 converts a peaked next-token distribution into a lottery on every arithmetic step of a 200-token chain; greedy takes the mode. Checkpoint choice moves accuracy only if the cosine tail is overfitting, and one epoch over 112k unique-ish rows with loss still falling is not that regime."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "checkpoint spread within +/-4 pts of 0.7267; every greedy read at least +6 pts over the 0.6133 sampled read"
+  falsified_if: "Any of checkpoint-300/600/900 beats the endpoint's 0.7267 by more than 0.04 at temperature 0 (checkpoint choice matters more than claimed), or any greedy read lands below 0.6733 (the decode effect is not general)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "derived:exp-02 - no new data; this card changes a config field and selects among checkpoints exp-02 already wrote"
+      n_examples: 112234
+      built_by: /home/ben/task/scripts/build_sft.py
+      build_command: [python, scripts/build_sft.py, --out, data/sft_v1.jsonl, --nshot-frac, '0.04']
+      selection: "unchanged from exp-02"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: decode-config
+    framework: "scripts/make_variant.py + vLLM 0.11.0 via evaluate.py"
+    peft: none
+    hyperparams: {temperature: 0.0, top_p: 1.0, top_k: 0, seed: 0}
+    target_format: "unchanged: reasoning, blank line, 'ANSWER: <int>', <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [bash, scripts/run_evals.sh, "exp-02_ck900_greedy:ckpts/exp-02/v900_greedy", "exp-02_ck600_greedy:ckpts/exp-02/v600_greedy", "exp-02_ck300_greedy:ckpts/exp-02/v300_greedy"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_evals.sh
+    env: {}
+    log: /home/ben/task/logs/evals_exp02b.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.25}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --json-output-file, '{out}.json']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, 10-shot system message, fewshot_seed=42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6133
+    path: /home/ben/task/eval/exp-02_final_samp.json
+  diagnostic:
+    what: "mean output tokens and no-ANSWER-line share per checkpoint, to confirm greedy is not buying accuracy by degenerating into longer or truncated chains"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/ckpts/exp-02/vfinal_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/vfinal_greedy, step: 902}
+    - {path: /home/ben/task/ckpts/exp-02/v900_greedy, step: 900}
+    - {path: /home/ben/task/ckpts/exp-02/v600_greedy, step: 600}
+    - {path: /home/ben/task/ckpts/exp-02/v300_greedy, step: 300}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights symlinked, only generation_config.json rewritten"}
+  measurements:
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp-02_final_greedy.json, delta_vs_comparator: 0.1134}
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp-02_ck900_greedy.json, delta_vs_comparator: 0.1000}
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-02_ck600_greedy.json, delta_vs_comparator: 0.0934}
+    - {metric: accuracy, value: 0.6867, n: 150, path: /home/ben/task/eval/exp-02_ck300_greedy.json, delta_vs_comparator: 0.0734}
+  diagnostic_result:
+    value: 209.3
+    path: /home/ben/task/analysis/exp-02_final_greedy_rows.json
+    notes: "Mean output tokens at temperature 0: 174.8 (ck300), 228.5 (ck600), 234.5 (ck900), 209.3 (final). no-ANSWER-line share 0.0067/0.02/0.02/0.0133 and non-stop share identical to it in every case - greedy is not buying accuracy by running long or truncating; chains stay ~200 tokens against a 4000-token cap."
+  watch_set_result: {fixed: 0, still_failing: 41, regressions: 0, path: /home/ben/task/analysis/exp-02_final_greedy_failures.jsonl}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Under temperature 0 the checkpoint curve is monotone - 0.6867 (300), 0.7067 (600), 0.7133 (900), 0.7267 (902/final) - so the endpoint wins and the trajectory was still improving at the end of the epoch; the spread over the last three is 2 pts, inside the noise floor. Every greedy read beats the endpoint's 0.6133 under the inherited t=1.0 config by 7.3-11.3 pts, so the decode field, not the checkpoint, is the dominant term."
+  decision: adopt
+  next_step: "Ship greedy in the final generation_config. The monotone curve says the model was still learning at the end of one epoch over 112k rows, which is the case for exp-04: retrain from base on data/sft_v3.jsonl (193,592 rows, 8 solutions per real GSM8K train problem instead of 2)."

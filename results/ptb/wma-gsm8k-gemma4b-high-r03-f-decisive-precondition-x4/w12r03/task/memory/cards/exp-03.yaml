@@ -1,0 +1,139 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T02:52:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.5
+  remaining_h: 7.5
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.712, protocol_n: 250}
+  trigger: "exp-02 fixed termination (96.4% of completions now end in an ANSWER line) and scores 0.712, so the remaining 72 failures are reasoning/arithmetic errors, not format; the obvious next lever is more unseen GSM8K-family problems."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "stop_reasons, ends_with_answer_line", observation: "241/250 stop, 96.4% end in an ANSWER line - format is no longer the bottleneck"}
+    - {path: /home/ben/task/eval/exp-02_n250.json, locator: accuracy, observation: "0.712"}
+  alternatives_rejected:
+    - {option: "A second epoch over the same 51.5k rows", reason: "the corpus precedent the WMA cited puts epoch 2 below this ruler; fresh problems are strictly more information for the same wall clock"}
+    - {option: "Retrain from base on the union (115k rows, ~1.8 h)", reason: "0.9 h more than continuing, for a cleaner single cosine schedule but the same data; the saved hour goes to the rejection-sampling round in exp-04"}
+    - {option: "Jump straight to rejection sampling from exp-02", reason: "RFT samples are drawn from the model being improved, so it is worth doing from the strongest available checkpoint; run the cheap data-scaling step first, then sample from its output"}
+    - {option: "Evaluate checkpoint-800 as a checkpoint sweep", reason: "it sits mid-cosine with lr ~5e-6, so it is not a converged arm; 5 min of GPU is better spent on the next training run"}
+    - {option: "Keep n=250 as this card's ruler", reason: "WMA tier 4: the expected band (+0.02 to +0.06) is half below the n=250 noise floor of ~0.03. Full-test evaluation costs ~6 min and drops the floor to ~0.0125, so both arms are measured at n=1319 instead"}
+    - {option: "Also exclude the 7056 rft_pool questions from sft_v2", reason: "deliberate, not accidental: those are the original GSM8K train problems, the best on-distribution data available, and rejection sampling conventionally samples on its own training questions. Only probe250 is held out unconditionally"}
+  pitfalls_hit:
+    - {what: "Trainer's stdout loss lines were invisible for most of exp-02 (python block-buffers stdout under nohup while tqdm writes to stderr), so progress had to be read off the tqdm bar", cost_h: 0.0, fix: "harmless; read the bar, or run with python -u next time"}
+    - {what: "WMA caught a launch-killer before it ran: loading a parent saved by train_sft.py puts do_sample=False + temperature 0.0 + top_k 0 into model.generation_config, and transformers 4.57.3 save_pretrained validates it strictly, so the first Trainer save would have raised ValueError ~34 min in. Reproduced locally.", cost_h: 0.1, fix: "set temperature/top_k/top_p to None on model.generation_config after from_pretrained; write_gen_config still writes the greedy JSON after every save (verified: checkpoint-20 and final/ both greedy in a smoke with --save-steps 20)"}
+    - {what: "WMA caught a leak: build_sft_v2.py applied the exclusion set only to augmented_gsm8k rows, so 242 of the 250 probe questions (471 rows) were in sft_v2 - the held-out probe would have stopped being held out", cost_h: 0.15, fix: "probe exclusion moved above the source branch and sft_v2 rebuilt; verified 0 probe rows in sft_v2 (and 0 in sft_v1, which never had the bug)"}
+  smoke_runs:
+    - {command: [python, gen.py, --model, ckpts/exp-02/final, --input, data/probe250.jsonl, --temperature, '0', --fewshot, '10'], outcome: "0.796 on the 250 held-out train items, 250/250 finish_reason 'stop' - the parent checkpoint is healthy before continuing training on it"}
+    - {command: [python, train_sft.py, --data, data/sft_v2.jsonl, --model, ckpts/exp-02/final, --out, ckpts/smoke03, --limit-rows, '2000', --max-steps, '25', --save-steps, '20', --bs, '16', --accum, '2'], outcome: "WMA cheaper-variant: exercises the save path this card's parent would have crashed on. checkpoint-20, checkpoint-25 and final/ all written, each with do_sample false / temperature 0.0 / eos [1,106]; peak GPU 55.9 GiB"}
+    - {command: [python, evaluate.py, --model-path, ckpts/exp-02/final, --limit, '-1', --max-connections, '8', --gpu-memory-utilization, '0.85'], outcome: "comparator re-measured on the full test set: 0.7096 +/- 0.0125 at n=1319, against 0.712 at n=250 - the two rulers agree, and the full one is what this card is judged on"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02 gets 72 of 250 official items wrong with the format fixed, and 49 of the 250 held-out probe items wrong. The errors are wrong arithmetic or a wrong plan inside an otherwise well-formed solution, which is a coverage/quality problem in the 51.5k training rows rather than a behaviour problem."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "scored_acc=0.712, ends_with_answer_line=0.964", observation: "only 3.6% of failures could still be format-related"}
+    - {path: /home/ben/task/analysis/exp-02_probe.jsonl, locator: "correct=false rows", observation: "49/250 probe items wrong, all terminating cleanly"}
+    - {path: /home/ben/task/eval/logs/exp-02, locator: "per-sample inspect log", observation: "9/250 still hit the 4000-token cap"}
+  affected_share: 0.288
+  failure_examples:
+    - {id: probe-fail-1, source: /home/ben/task/analysis/exp-02_probe.jsonl, question: "(see file: first row with correct=[false])", gold: "in file", model_output: "well-formed CoT ending in ANSWER: N with the wrong N", failure: "reasoning/arithmetic error, not format"}
+    - {id: probe-fail-2, source: /home/ben/task/analysis/exp-02_probe.jsonl, question: "(second row with correct=[false])", gold: "in file", model_output: "well-formed CoT, wrong final number", failure: "same"}
+    - {id: probe-fail-3, source: /home/ben/task/analysis/exp-02_probe.jsonl, question: "(third row with correct=[false])", gold: "in file", model_output: "well-formed CoT, wrong final number", failure: "same"}
+  watch_set:
+    path: /home/ben/task/data/probe250.jsonl
+    n: 250
+    selection: "the same 250 held-out GSM8K train items used since exp-01; exp-02 scores 0.796 on them, so 49 remain to be fixed"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing SFT from exp-02/final for one epoch on 63.7k GSM8K-family rows the model has never seen (49.7k fresh augmented problems + 14k additional solutions to original train problems) raises harness accuracy above exp-02's 0.712."
+  mechanism: "The failures are solution-quality errors on unseen problem shapes; roughly doubling the number of distinct verified-answer problems (51.5k -> 115k rows seen in total) is the standard data-scaling lever, and OpenMathInstruct-2's published scaling curves are still steep at this data size."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+0.02 to +0.06; the n=1319 ruler has a ~0.0125 standard error, so a +0.02 result is readable"
+  falsified_if: "harness accuracy at or below 0.7096 at n=1319, or probe250 at or below 0.796, or the share of completions ending in an ANSWER line falls below 0.96"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3: 49703 augmented_gsm8k rows whose problems appear in neither sft_v1, probe250 nor rft_pool, plus 14000 further gsm8k-source solutions to original train problems (solution text differs from the ones in sft_v1; these problems do overlap rft_pool by design)"
+      n_examples: 63703
+      built_by: /home/ben/task/build_sft_v2.py
+      build_command: [python, build_sft_v2.py]
+      selection: "same filters as sft_v1 (integer answer, <=2 solutions per problem, markup stripped, solution's last number equals the answer); probe250 excluded from every source unconditionally (verified 0 rows), sft_v1 and rft_pool questions excluded from the augmented slice, and solution texts already used in sft_v1 excluded"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE + bitsandbytes 8-bit AdamW"
+    peft: "none (full parameter; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 3200, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights with bf16 autocast", seed: 0}
+    target_format: "identical to exp-02: templates/gemma3.jinja (sha 7de1c58e208eda46), target = CoT + 'ANSWER: <int>' + <end_of_turn>, 1000 rows carrying the exact 10-shot eval prefix"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_v2.jsonl, --model, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-03, --epochs, '1', --lr, '7e-6', --bs, '16', --accum, '2', --max-seq-len, '3200', --fewshot-rows, '1000', --save-steps, '400', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-03_train.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 400
+    keep: 2
+  budget: {gpu: H100-80GB, planned_h: 1.3}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '-1', --max-connections, '8', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items; greedy via the model dir's generation_config.json"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.7096
+    path: /home/ben/task/eval/exp-02_full1319.json
+  diagnostic:
+    what: "probe250 accuracy (greedy, 10-shot, gen.py) and stop-share, on items excluded from every training file"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.15
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 1991}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1600, step: 1600}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1991, step: 1991}
+  training_summary: {final_loss: 0.24, steps: 1991, notes: "lr 7e-6 cosine, 1 epoch over 63703 rows, 0 rows dropped over max_seq_len, peak GPU 66.8 GiB, ~63 min"}
+  measurements:
+    - {metric: accuracy, value: 0.7635, n: 1319, path: /home/ben/task/eval/exp-03_full1319.json, delta_vs_comparator: 0.0538}
+  diagnostic_result:
+    value: 0.804
+    path: /home/ben/task/analysis/exp-03_probe.jsonl
+    notes: "probe250 0.796 -> 0.804 (+0.008, inside the probe's own ~0.025 standard error) while the official full-test ruler moved +0.054 (0.7096 -> 0.7635, stderr 0.012). The probe is drawn from GSM8K train, which both models were trained on the style of, and at n=250 it cannot resolve this; the full test set can. Stop-share on the full test: 1306/1319 stop, 13 hit the cap, 99.0% of completions end in an ANSWER line (up from 96.4%). WMA precondition 1 checked before launch: sft_v2 completion tokens p99 = 559, far below the 4000-token cap, so the longer targets did not raise truncation - they lowered it."
+  watch_set_result: {fixed: 22, still_failing: 29, regressions: 20, path: /home/ben/task/analysis/exp-03_probe.jsonl}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "One epoch on 63.7k unseen GSM8K-family rows took the full-test score from 0.7096 to 0.7635 (+5.4 pts, stderr 0.012 each), well above the card's own +0.02-0.06 band and above the WMA's [-0.015, 0.035]. Format also improved: 99.0% of completions now end in an ANSWER line and only 13/1319 hit the token cap."
+  decision: adopt
+  next_step: "exp-04: the integer-answer augmented_gsm8k problem pool is exhausted (a 5000-row probe of the shuffled stream found 0 usable unseen problems), so widen the mixture instead - 70k further 405B solutions to gsm8k-family problems plus 30k integer-answer MATH-family rows. Attribution note the WMA asked for: 14000 of exp-03's 63703 rows (22%) were additional solutions to problems exp-02 had already seen, so this result is 49.7k fresh problems plus a partial second pass, not pure new-problem scaling."

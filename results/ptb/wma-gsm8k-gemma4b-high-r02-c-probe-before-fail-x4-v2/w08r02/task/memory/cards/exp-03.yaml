@@ -1,0 +1,161 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T18:58:00Z'
+
+situation:
+  elapsed_h: 3.4
+  remaining_h: 6.6
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/served
+    score: {metric: accuracy, value: 0.700, protocol_n: 200}
+  trigger: "exp-02's diagnostic says the format problem is closed and the reasoning problem is not: of its 60 failures at n=200, 59 are wrong at the model's own answer line and only 1 is right-but-buried, truncation is 1%, and no completion degenerates. So the remaining error is solution quality, and the two cheap sources of better solutions are (a) the 63k GSM8K-derived OpenMathInstruct-2 rows exp-02 never saw, and (b) the model's own correct samples: sampling k=4 at t=1.0 over 20000 train-derived problems solved 84.25% of them at least once against a 61.24% per-sample rate, so there are correct chains available for many problems greedy decoding still gets wrong."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-02_n200_diag.json
+      locator: "wrong_and_answer_line_also_wrong=59, wrong_but_first_ANSWER_line_correct=1, share_max_tokens=0.01"
+    - path: /home/ben/task/data/rft_v1_stats.json
+      locator: "pass_at_k 0.8425 over 20000 problems, sample_accuracy 0.6124, n_rows 30713"
+  alternatives_rejected:
+    - option: "Retrain from the base snapshot on the whole union (158186 rows, ~2.1 h) -- this card's original plan"
+      reason: "Changed after the exp-03 WMA verdict. It retrieved a near-controlled precedent (/history/r-d2611dd8) that ran the same RFT mixture both ways on a comparable base model: warm-started from the SFT checkpoint it scored 0.716 at n=500, from the base snapshot 0.596 -- 12 points worse from base. Its 16 completed rft-family cards cluster in [-0.047, +0.027] with a median near -0.01, and it put this card's from-base delta at [-0.02, +0.06], i.e. inside the protocol's own noise. The warm-start arm costs a third of the time and is the arm the precedent favours, so it is run first; the from-base arm remains available with the 158186-row corpus (data/sft_v2.jsonl, already built and contamination-checked) if this one disappoints."
+    - option: "A second epoch over the same 97k rows of exp-02"
+      reason: "exp-02's loss was still drifting down (0.35 -> 0.33) with no sign of overfitting, so extra optimisation is not the binding constraint; unique problems are. The 30k unseen OMI rows plus 30.7k self-samples are new signal, and rows exp-02 has already seen are excluded from this corpus by an exact (prompt, target) set difference."
+    - option: "Score exp-02's checkpoint-350/700/1050, which exist and were never evaluated (the verdict's cheapest suggestion, ~25 min of GPU)"
+      reason: "Deferred, not dismissed. Checkpoint selection pays when a run overfits, and exp-02 shows the opposite signature: a single epoch, a cosine schedule that had decayed lr to near zero by the end, and a loss still falling (0.35 at step 225 -> 0.33 at step 1110) with no eval-side degradation. checkpoint-350 and -700 sit mid-schedule at lr 8.0e-6 and ~4.4e-6 and are strictly undertrained on the same data. The checkpoints are kept, so this stays available if the remaining budget goes unused; spending 25 min of GPU on it now would come out of the only run that can produce a better final_model."
+    - option: "Rejection-sample with a larger k, or from the harder tail only"
+      reason: "k=4 over 20000 problems already took 28 min of GPU and returned 30713 usable rows after answer-matching and chain dedup. Raising k mostly returns more copies of problems the model already solves; the failure mode RFT does not fix is the 15.75% of problems no sample got right, and no amount of self-sampling reaches those."
+    - option: "Keep the few-shot share at 8%"
+      reason: "Kept at the 6% the merged corpus was built with: a few-shot row costs 2384 tokens against 334 zero-shot, and exp-02 showed the format transferred to the grader's 10-shot prompt perfectly (99% ANSWER: lines, 1% truncation) with only 8%. 6% of 158k rows is still 9.5k few-shot rows, more than exp-02 had in absolute terms."
+  verdict_preconditions_done:
+    - "[tier 1] The eval points at ckpts/exp-03/final, and package_model.py asserts on the shipped generation_config before any eval: temperature 0.0 present, top_k absent, do_sample false, eos_token_id contains 106. Same path that produced exp-02's correctly-decoding served copy."
+    - "[tier 1] Measured the repetition the verdict warned about. In this corpus of 60713 rows over 38264 distinct problems: 21253 problems appear once, 12073 twice, 4438 three times, 500 four or more. 16850 problems come from the rejection sampler and 27231 from the unseen teacher rows, overlapping on 5817. So a per-problem repetition change does ride along, at a modest size, and it is recorded here rather than credited to the RFT leg."
+    - "[tier 1] Every row of exp-02's corpus is excluded from this one by an exact (prompt, target) set difference -- 97473 rows dropped -- so the warm start never re-reads data it has already fit."
+    - "[tier 2] Launch is wrapped in an early-failure watch over the first 90 s of logs/exp-03.log."
+    - "[tier 4] Adopted: whichever candidate wins at n=200 is resolved against the incumbent with a second read at a larger n before it is packaged, because the expected effect sits inside the n=200 binomial stderr."
+  pitfalls_hit:
+    - {what: "vLLM's LLM.generate() adds a second <bos> when given a string prompt, because the chat template already emits one", cost_h: 0.0, fix: "caught by reading before launching; rft_sample.py passes prompt_token_ids tokenised with add_special_tokens=False"}
+    - {what: "A fixed SamplingParams.seed with n=4 risks correlated samples", cost_h: 0.0, fix: "dropped the seed; sampling is unseeded at t=1.0 top_p=0.95, so the run is not bit-reproducible and the card says so"}
+  smoke_runs:
+    - command: [python, rft_sample.py, --model, /home/ben/task/ckpts/exp-02/served, --pool, data/rft_pool.jsonl, --k, '4', --max-problems, '20000']
+      outcome: "80000 samples in 28 min at ~8000 output tok/s; 48992 answer-correct (0.6124), 84.25% of problems solved at least once, 30713 rows kept after requiring exactly one ANSWER: marker, nothing after it, and a distinct numeric-chain fingerprint"
+    - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v2_forcheck.jsonl]
+      outcome: "158186 documents scanned, 0 contaminated, 0 matches, exit 0"
+    - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v3_forcheck.jsonl]
+      outcome: "60713 documents scanned, 0 contaminated, 0 matches, exit 0 -- this card's actual corpus"
+
+problem:
+  statement: "exp-02 scores 0.700 at n=200 and its residual error is now almost entirely wrong reasoning: 59 of its 60 failures are already wrong at the model's own ANSWER: line, truncation is 1% and no completion degenerates. It was trained on one epoch of 97k rows, 90k of them from OpenMathInstruct-2, while 63k further GSM8K-derived rows in the same source went unused; and it can produce a correct chain for 84% of held-out train problems under k=4 sampling but only emits one greedily for 70% of dev items, so its own successful samples encode solutions its greedy path does not take."
+  evidence:
+    - path: /home/ben/task/analysis/exp-02_n200_diag.json
+      locator: "accuracy 0.700, wrong_and_answer_line_also_wrong 59 of 60 failures, share_max_tokens 0.01, share_with_answer_line 0.99"
+      observation: "format and termination are solved; what is left is solution quality"
+    - path: /home/ben/task/data/rft_v1_stats.json
+      locator: "pass_at_k 0.8425, sample_accuracy 0.6124"
+      observation: "a 14-point gap between what the model can sample and what it emits greedily"
+  affected_share: 0.983
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: "Continuing exp-02 at a reduced learning rate for one epoch over 60713 rows it has never seen -- 30713 of its own rejection-sampled correct solutions and 30000 unseen OpenMathInstruct-2 GSM8K rows -- improves GSM8K accuracy over exp-02 itself."
+  mechanism: "Two additive sources of signal, applied to a checkpoint that already has the format and most of the ability. (1) 30000 unseen teacher-written problems and solutions: exp-02's loss was still falling at the end of its single epoch, so it was data-limited rather than optimisation-limited. (2) The 30713 rejection-sampled rows are correct chains in the model's OWN output distribution, which is the standard RFT effect -- they raise the probability mass of reasoning paths the model can already reach by sampling but does not reach greedily, converting part of the 0.8425 pass@4 / 0.6124 per-sample gap into greedy accuracy. Warm-starting rather than restarting is what makes the self-samples on-policy for the weights being updated; from the base snapshot they are another model's outputs, which is the difference the retrieved precedent measured at 12 points."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points (0.700 -> 0.72-0.76). Published RFT deltas on GSM8K are +3 to +6 over the SFT checkpoint; the estimator, working from 16 rft-family cards clustered in [-0.047, +0.027], is more pessimistic and would put it near +0.02. n=200 resolves about 3.2pp, so a result inside +/-3pp is not resolvable here and will be taken to a larger n before anything is packaged."
+  falsified_if: "accuracy at n=200 is at or below 0.700, i.e. no improvement on the incumbent under the identical protocol."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/served
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "derived:exp-02 rejection samples (30713) + nvidia/OpenMathInstruct-2 train_1M gsm8k/augmented_gsm8k rows absent from exp-02's corpus (30000); datasets==4.5.0"
+      n_examples: 60713
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v2.jsonl, --n-omi, '120000', --fewshot-frac, '0.06', --extra, data/rft_v1.jsonl]
+      selection: "data/sft_v2.jsonl (158186 rows, built by the command above with the same filters as exp-02's corpus: gsm8k/augmented_gsm8k sources only, max 2 solutions per distinct problem, numeric expected_answer, boxed unwrapped, calculator spans stripped, no second answer marker) minus every (prompt, target) pair already in data/sft_v1.jsonl -- 97473 rows dropped, leaving 30000 unseen teacher rows and all 30713 self-samples. The self-samples are exp-02's own generations over 20000 problems from the GSM8K train split and OMI's augmented_gsm8k at t=1.0 top_p=0.95 k=4, kept only when the ANSWER: number equals gold, the completion carries exactly one ANSWER: marker with nothing after it, and its numeric-chain fingerprint is new for that problem; at most 2 per problem. Every target ends with 'ANSWER: <n><end_of_turn>'. 6% of rows carry the grader's exact 10-shot prefix. No GSM8K test item is read at any point."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, subclassed for token-budget batching and a selected-token cross-entropy; torch 2.8.0+cu129; flash_attention_2"
+    peft: none
+    hyperparams:
+      lr: 5.0e-6
+      epochs: 1
+      batch_size: 16384
+      grad_accum: 4
+      max_seq_len: 3328
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+    target_format: "worked solution, blank line, 'ANSWER: <n>', then <end_of_turn>. Loss on the target tokens and the terminator only; prompt masked with -100. Identical to exp-02: what changes is the parent checkpoint, the corpus, and the learning rate (halved for a warm start)."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --parent, /home/ben/task/ckpts/exp-02/served, --data, data/sft_v3.jsonl, --out, /home/ben/task/ckpts/exp-03, --epochs, '1', --lr, '5e-6', --token-budget, '16384', --label-budget, '5000', --grad-accum, '4', --max-seq-len, '3328', --seed, '0', --save-steps, '250']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 250
+    keep: 3
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official --limit 200"
+    n: 200
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.700
+    path: /home/ben/task/eval/exp-02_n200.json
+  diagnostic:
+    what: "analyze_eval.py over the per-sample inspect log: share with an ANSWER: line, share stopping on max_tokens, mean/p95 completion length, degenerate completions, and the format-vs-reasoning split of the failures. exp-02 set these at 0.99 / 0.01 / 507 / 0 / 0.017; the point of the check here is that the added self-generated rows do not regress the format the way self-distillation sometimes does."
+    n: 200
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.72
+  output_checkpoint: /home/ben/task/ckpts/exp-03/served
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-250, step: 250}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-500, step: 500}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 639}
+    - {path: /home/ben/task/ckpts/exp-03/served, step: 639}
+  training_summary:
+    final_loss: 0.2668
+    steps: 639
+    notes: "639 optimizer steps over 60713 rows in ~43 min. Mean loss 0.267 against exp-02's 0.330 -- expected, since the parent has already fit this task and half these rows are its own outputs. Saved weight-key set is identical to the parent's index (0 parent-only, 0 new-only)."
+  measurements:
+    - metric: accuracy
+      value: 0.730
+      n: 200
+      path: /home/ben/task/eval/exp-03_n200.json
+      delta_vs_comparator: 0.030
+  diagnostic_result:
+    value: 0.995
+    path: /home/ben/task/analysis/exp-03_n200_diag.json
+    notes: "Format gate PASSED, which was the specific risk of training on self-samples: share_with_answer_line 0.99 -> 0.995, share_max_tokens 0.01 -> 0.005, degenerate completions 0, format_share_of_failures 0.017 -> 0.019. Completions got slightly longer (507 -> 557 chars mean, 755 -> 886 p95). PAIRED analysis over the same 200 items (both evals score the same first-200 prefix): 21 items exp-02 got wrong are now right, 15 items it got right are now wrong, net +6. Exact McNemar on the 36 discordant items gives two-sided p = 0.405, so the +3.0 point delta is NOT resolved by this protocol even paired."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "0.700 -> 0.730 at n=200. The pre-registered falsification (accuracy at or below 0.700) did not fire and the point estimate sits in the predicted +2 to +6 band, but the paired McNemar test over the same 200 items (21 fixed, 15 broken, p=0.405) says this protocol cannot tell the two checkpoints apart. The format gate the card set for self-sample training passed cleanly (ANSWER: line 0.995, truncation 0.005, no degeneration). Which of the three bundled legs -- new teacher rows, warm start at halved lr, per-problem repetition -- paid is untested, as the estimator warned."
+  decision: iterate
+  next_step: "exp-04: warm-start again from exp-03 on 130k GSM8K-derived OpenMathInstruct-2 rows from the train_5M split that no card has trained on (806k gsm8k-derived rows are reachable there against 153k in train_1M), excluding by problem text everything in exp-02's and exp-03's corpora. Then a final selection card scoring the surviving candidates at a larger n with byte-identical flags, because three of the four numbers in this session now sit inside each other's noise. final_model is moved to exp-03 in the meantime: it is the higher point estimate and is trained on a strict superset of exp-02's data."

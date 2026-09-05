@@ -1,0 +1,108 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T14:43:33Z'
+situation:
+  elapsed_h: 0.1
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Start of the batch: no number exists for the untuned base checkpoint under the harness protocol, so no later card can have a comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty table - no cards yet"}
+  alternatives_rejected:
+    - {option: "Run at --max-connections 32 / gpu_memory_utilization 0.3 as first drafted", reason: "the WMA review of the first lock priced a concurrency artefact (0.273 vs 0.853 on the same weights, '!!!!' prefixes, EngineDeadError) at 8-16 connections when KV cache is tight; 16 connections at 0.6 utilisation was smoke-tested clean instead, and every later card uses the identical invocation"}
+    - {option: "Also pin the base model's decode to greedy for this card (symlink dir with a rewritten generation_config)", reason: "the as-shipped snapshot is the honest floor; the decode question is worth more measured on a tuned checkpoint, where it decides what final_model ships - deferred to its own card"}
+    - {option: "Skip the baseline and train immediately", reason: "rule 2 of the protocol: every later card needs a comparator measured under the same protocol; without it a delta is unmeasurable"}
+    - {option: "Baseline at --limit 1319 (full test)", reason: "~9x the GPU time of limit 150 and the harness itself defaults to 150; the same 150 items are the dev protocol for every card"}
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '8', --max-connections, '16', --gpu-memory-utilization, '0.6']
+      outcome: "harness healthy: engine started, 8/8 sampled, accuracy 0.125, no '!!!!' garbage prefix; 2 of 3 inspected completions hit stop_reason=max_tokens and ran on into invented follow-up problems; vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config' -> the base snapshot is decoded with top_k 64 / top_p 0.95 / temperature 1.0 (sampling, not greedy)"
+    - command: [python, -c, "render one training row with templates/gemma3.jinja and check the terminator"]
+      outcome: "sha256(templates/gemma3.jinja)=7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4; every rendered row ends <end_of_turn>\\n (ids 106,107); snapshot generation_config eos_token_id is [1, 106]" 
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruction-tuned checkpoint. Under the inspect_evals/gsm8k harness it is prompted with a 10-shot system message and must end its answer with a line 'ANSWER: <number>'; an untuned base model typically rambles past the answer, never emits <end_of_turn>, and the match(location=end, numeric=True) scorer then reads the last number in a long tail rather than the intended answer."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L27-35, L50-66, L77", observation: "prompt template demands 'ANSWER: $ANSWER' as the last line; scorer is match(numeric=True) with location='end', i.e. the LAST numeric token of the whole completion is compared to gold"}
+    - {path: /home/ben/task/templates/gemma3.jinja, locator: "whole file", observation: "grading renders <start_of_turn>user ... <end_of_turn>\\n<start_of_turn>model\\n; the turn terminator is <end_of_turn> (token 106), which is in the base generation_config eos_token_id [1, 106]"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Measuring google/gemma-3-4b-pt unchanged under the harness protocol (evaluate.py --limit 150) yields the accuracy floor that every later card in this batch is compared against, and the failure modes in its completions identify what post-training has to fix."
+  mechanism: "The base checkpoint has seen math text in pretraining but has never been trained to stop or to emit the harness's answer marker, so its score is limited by format compliance and by unaided chain-of-thought quality rather than by knowledge."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "no change expected - this run defines the reference point, not an intervention"}
+  falsified_if: "The evaluation does not complete (vLLM cannot load the snapshot, or the run OOMs at gpu_memory_utilization 0.3), so no reference number exists and later cards have no comparator."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/datasets/openai___gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866/gsm8k-test.arrow
+      source: openai/gsm8k
+      n_examples: 150
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '150']
+      selection: "no training data in this card; this is the harness's own evaluation input (gsm8k test split, first 150 items) which evaluate.py loads via hf_dataset"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0"
+    peft: "none"
+    hyperparams: {seed: null, decode: "as shipped in the snapshot's generation_config.json: eos_token_id [1, 106], top_k 64, top_p 0.95, temperature unset -> vLLM samples at 1.0"}
+    target_format: "n/a - no training in this card"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6', --json-output-file, /home/ben/task/eval/base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6', --max-tokens, '4000']
+    dev_set: "official inspect_evals/gsm8k test, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions that contain a line matching 'ANSWER: <number>' at the end (format compliance), read from the inspect log"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.06, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.24
+    path: /home/ben/task/eval/exp-01_dev150_log.json
+    notes: "36/150 completions end in 'ANSWER: <number>'; stop_reason distribution 82 stop / 68 max_tokens, i.e. 45% of items ran into the 4000-token cap. Effective invocation, verbatim: python evaluate.py --model-path <snapshot> --limit 150 --max-connections 16 --gpu-memory-utilization 0.6 (max-tokens default 4000, first 150 items, no shuffle). Decode was unseeded sampling (snapshot generation_config: top_k 64, top_p 0.95, temperature unset -> vLLM 1.0), so this number carries run-to-run scatter; evaluation.protocol.seed 42 refers to the task's fewshot_seed, not to the sampler."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The untuned snapshot scores 0.06 on dev-150. Only 24% of completions end in the required 'ANSWER: <number>' line and 45% hit the 4000-token cap, running on into invented follow-up problems: the floor is set by format and stopping behaviour, not by arithmetic. The comparator for every later card is 0.06 at n=150 under the invocation recorded above."
+  decision: iterate
+  next_step: "exp-02: full-parameter SFT on gsm8k-derived CoT rendered with the grader's own template and terminated with <end_of_turn>, which is the direct fix for the two observed failure modes."

@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T11:45:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 4.5
+  remaining_h: 5.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.69333, protocol_n: 150}
+  trigger: "exp-05 lost 4 points (0.693 -> 0.653) and its diagnostic showed mean chain length falling 157.5 -> 135.5 instead of rising: the RFT half of that mixture had been built by keeping the two SHORTEST correct chains per problem, so it trained the model to be terser rather than more careful."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.diagnostic_result, conclusion", observation: "contradicted; chains shortened"}
+    - {path: /home/ben/task/data/rft_v2_report.json, locator: "chain_chars_mean 466.2 vs rft_v1's 416.3, kept 35337 from 18893 solved problems", observation: "re-filtering the saved raw generations at random instead of shortest-first recovers 12% more chain length at zero GPU cost"}
+  alternatives_rejected:
+    - {option: "Continue from exp-05/final", reason: "exp-05 is 4 points below the incumbent; continuing from it would compound a regression"}
+    - {option: "Continue from exp-02/final on the rebuilt RFT set (repeat exp-05 with only the selection fixed)", reason: "it would be a third effective epoch over largely the same problems, which is the other confound in exp-05 that I cannot rule out. Training from base on the union is the canonical RFT recipe and removes both confounds at the same total cost."}
+    - {option: "Keep the Orca-Math corpus in the mixture", reason: "29% of exp-05's rows and the WMA review's top-ranked route to a negative delta (LaTeX markup, non-GSM8K rate/algebra items, heuristically recovered labels). It is dropped here so the only change against exp-02 is more data of the sources that already worked."}
+    - {option: "Three epochs instead of two", reason: "83k rows x 2 epochs is already 2.5 h of the 5.5 h left; a third epoch would leave no room for the final selection evals and the final_model checks"}
+  pitfalls_hit:
+    - {what: "sample_rft.py sorted correct candidates by length and sliced the two shortest, silently selecting for terseness; it cost exp-05", cost_h: 1.0, fix: "scripts/rebuild_rft.py draws kept chains at random from the correct ones and enforces a 120-char floor; it re-filters the saved raw dump with no resampling"}
+  smoke_runs:
+    - {command: [python, scripts/rebuild_rft.py, --raw, data/rft_v1_raw.jsonl, --out, data/rft_v2.jsonl, --keep, "2", --min-chars, "120"], outcome: "35337 rows from 18893 solved problems; chain mean 466 chars vs 416 for the shortest-first build"}
+    - {command: [python, scripts/mix_data.py, --in, "data/sft_v1.jsonl:1.0", "data/rft_v2.jsonl:1.0", --out, data/sft_v3.jsonl], outcome: "83346 rows: 26000 omi_aug, 22938 rft2_augmented_gsm8k, 14615 omi_gsm8k, 12399 rft2_gsm8k_train, 7394 gsm8k_orig"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent (exp-02's recipe, 48k rows, 2 epochs from base) is the only training run that has beaten its comparator, and it leaves 46/150 items wrong on comprehension, not format. Its training set contained no on-policy data at all: every target came from another model, so nothing in it told the model which of its own reasoning paths to commit to greedily. Separately, exp-05 established that bolting an extra stage onto that checkpoint makes things worse."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150.json, locator: "accuracy 0.69333, format_share 1.0, 46 wrong_ids", observation: "the number to beat, and the fact that none of the remaining failures are format failures"}
+    - {path: /home/ben/task/data/rft_v1_report.json, locator: "pass_at_k 0.8808", observation: "exp-02/final solves 88% of these problems at least once in 4 samples but only 69% greedily - the gap between pass@4 and pass@1 is the headroom on-policy data is supposed to close"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "conclusion.verdict contradicted", observation: "a continuation stage on top of exp-02/final cost 4 points; the union-from-base route has not been tried"}
+  affected_share: null
+  failure_examples:
+    - {id: gsm8k_2b38cfd5, source: /home/ben/task/analysis/exp-03_greedy_dev150.json, question: "3 boxes 5x6x4 inches, walls 1 inch thick, total inner volume", gold: "72", model_output: "5*6*4=120 per box, 3*120=360. ANSWER: 360", failure: "ignored wall thickness"}
+    - {id: gsm8k_2466f3cc, source: /home/ben/task/analysis/exp-03_greedy_dev150.json, question: "12-mile trail, wants 4 mph average, what speed for the remaining distance", gold: "6", model_output: "average is 4 mph so she needs 4 mph. ANSWER: 4", failure: "assumed the conclusion instead of solving for the last leg"}
+    - {id: gsm8k_01a47d5c, source: /home/ben/task/analysis/exp-03_greedy_dev150.json, question: "700 bees, twice as many workers as babies, twice as many babies as queens", gold: "400", model_output: "q+2q+2q=700 so q=140, w=4q=560. ANSWER: 560", failure: "the total it wrote contradicts the substitution it then used"}
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Retraining from the base snapshot with exp-02's exact hyperparameters on 83346 rows - exp-02's 48009 plus 35337 rejection-sampled chains that exp-02/final itself got right, selected at random rather than shortest-first - will raise greedy dev-150 accuracy above the incumbent's 0.693."
+  mechanism: "Two additive effects, both in the direction exp-02 already validated. More data of the sources that worked (73% more rows) is straightforward SFT scaling. The on-policy half converts pass@4 into pass@1: chains the model can already find 1-in-4 times get reinforced into its greedy output, which is the 0.881 vs 0.693 gap. Training from base rather than continuing avoids the third-epoch effect that confounded exp-05, and dropping Orca removes the off-distribution corpus the WMA review ranked as exp-05's most likely source of loss."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 points; the n=150 noise floor is about 3 points, so the adopt/reject call will be made on a larger eval"
+  falsified_if: "greedy dev-150 accuracy is at or below the incumbent's 0.693, or format share drops below 1.0."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "data/sft_v1.jsonl (openai/gsm8k main/train + nvidia/OpenMathInstruct-2 gsm8k/augmented_gsm8k, 48009) + data/rft_v2.jsonl (derived:exp-02, 35337)"
+      n_examples: 83346
+      built_by: /home/ben/task/scripts/mix_data.py
+      build_command: [python, scripts/mix_data.py, --in, "data/sft_v1.jsonl:1.0", "data/rft_v2.jsonl:1.0", --out, data/sft_v3.jsonl, --seed, "1"]
+      selection: "RFT half re-filtered on CPU from data/rft_v1_raw.jsonl (4 samples per problem from exp-02/final at temperature 1.0 / top_p 0.95 over 7473 GSM8K-train + 14000 augmented_gsm8k problems): a sample is kept only when its ANSWER line matches gold, chains under 120 chars are dropped, exact duplicates removed, and up to 2 of the survivors are drawn AT RANDOM per problem (exp-05's bug was taking the shortest). Both halves pass the contamination checker against the GSM8K test copy."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler"
+    peft: "none (full fine-tune of the 3.880B text tower; vision tower frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 8, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "chain of thought, blank line, 'ANSWER: <integer>', then <end_of_turn>; prompt masked to -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v3.jsonl, --out, /home/ben/task/ckpts/exp-06, --lr, "1e-5", --epochs, "2", --batch-size, "8", --grad-accum, "4", --max-seq-len, "2560", --max-tokens-per-batch, "8000", --save-strategy, steps, --save-steps, "1300"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 1300
+    keep: 4
+  budget: {gpu: H100-80GB, planned_h: 2.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, scripts/mk_decode_variant.py, --src, "{checkpoint}", --dst, "{checkpoint}_greedy", --temperature, "0.0", "&&", python, evaluate.py, --model-path, "{checkpoint}_greedy", --limit, "150", --max-connections, "16"]
+    dev_set: "official inspect_evals/gsm8k test --limit 150 (first 150 items in dataset order), greedy decoding via the exp-03 generation_config"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.69333
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "format share and mean output tokens; the on-policy half should hold length near exp-02's 157 rather than shortening it as exp-05 did"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.29
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-2600, step: 2600}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-3900, step: 3900}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-5200, step: 5200}
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 5296}
+  training_summary: {final_loss: 0.2431, steps: 5296, notes: "train_loss 0.2677 over 8247 s; 20.2 rows/s, same throughput as exp-02"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-06_final_dev150.json, delta_vs_comparator: 0.02667}
+    - {metric: accuracy, value: 0.73333, n: 150, path: /home/ben/task/eval/exp-06_checkpoint-3900_dev150.json, delta_vs_comparator: 0.04}
+  diagnostic_result:
+    value: 0.9867
+    path: /home/ben/task/analysis/exp-06_final_dev150.json
+    notes: "mean output 196.9 tokens (exp-02: 157.5, exp-05: 135.5) - the random-selection RFT rebuild reversed exp-05's shortening, as intended. Cost: 2 of 150 completions (1 at checkpoint-3900) run to the 4000-token cap in a greedy repetition loop, so format share is 0.987 rather than 1.000."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy dev-150 0.693 -> 0.720 at the end of training and 0.733 at checkpoint-3900 (1.47 epochs), both above the incumbent. The mechanism reads correctly: mean chain length rose 157.5 -> 196.9 where exp-05's shortest-first selection had cut it to 135.5, so fixing the RFT selection turned a -4.0 result into a +2.7/+4.0 one on the same generations."
+  decision: adopt
+  next_step: "checkpoint-3900 and final are 1.3 points apart, well inside the ~3-point noise floor at n=150, so the choice between them cannot be made on this eval. Next card scores the candidates on the full 1319-item test set, where stderr is about 1.2 points, and packages the winner into final_model."

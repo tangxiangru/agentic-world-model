@@ -264,3 +264,97 @@ def test_show_resolves_job_to_receipt_cell(tmp_path: Path) -> None:
     rendered = slurm_queue.render_job_explanation(explanation)
     assert "base_model=Qwen/Qwen3-1.7B-Base" in rendered
     assert "manifest=/tmp/manifest.yaml" in rendered
+
+
+def test_default_registry_splits_gangda_into_two_fixed_sixteen_gpu_subqueues() -> None:
+    registry = slurm_queue._default_registry()
+
+    assert registry["subqueues"] == {
+        "gangda_exp-protocol-evolve": {
+            "branches": ["gangda_exp_protocol_evolve"],
+            "gpu_limit": 16,
+            "nodes": ["slurm2-a3nodesetondem-0", "slurm2-a3nodesetondem-1"],
+        },
+        "gangda_wma_evolve": {
+            "branches": ["gangda_wma_evolve"],
+            "gpu_limit": 16,
+            "nodes": ["slurm2-a3nodesetondem-2", "slurm2-a3nodesetondem-3"],
+        },
+    }
+
+
+def test_register_receipt_assigns_the_branch_subqueue(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "batch_id": "ep-r00",
+                "ownership": {"branch": "gangda_exp_protocol_evolve"},
+                "jobs": [
+                    {
+                        "cell_id": "p01r1",
+                        "job_id": "101",
+                        "job_name": "gangda_exp_protocol_evolve.ptb.ep-r00.p01r1",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = tmp_path / "registry.json"
+
+    slurm_queue.register_receipt(receipt, registry_path=registry)
+
+    data = json.loads(registry.read_text(encoding="utf-8"))
+    assert data["sources"][0]["subqueue"] == "gangda_exp-protocol-evolve"
+
+
+def test_snapshot_renders_each_subqueue_capacity(tmp_path: Path, monkeypatch) -> None:
+    registry = tmp_path / "registry.json"
+    data = slurm_queue._default_registry()
+    data["sources"] = [
+        {
+            "id": "receipt:exp",
+            "kind": "receipt",
+            "label": "exp round",
+            "subqueue": "gangda_exp-protocol-evolve",
+            "jobs": [
+                {
+                    "cell_id": "p01r1",
+                    "job_id": "101",
+                    "job_name": "gangda_exp_protocol_evolve.ptb.ep-r00.p01r1",
+                }
+            ],
+        }
+    ]
+    registry.write_text(json.dumps(data), encoding="utf-8")
+
+    def fake_command(command: list[str]) -> str:
+        if command[0] == "squeue":
+            return (
+                "101|RUNNING|slurm2-a3nodesetondem-0|slurm2-a3nodesetondem-0|"
+                "gangda_exp_protocol_evolve.ptb.ep-r00.p01r1|00:10|root|ptb-a3\n"
+            )
+        if command[:3] == ["scontrol", "show", "node"]:
+            allocated = 1 if command[3].endswith("-0") else 0
+            return f"NodeName={command[3]} State=MIXED AllocTRES=gres/gpu={allocated}\n"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(slurm_queue, "_command", fake_command)
+    snapshot = slurm_queue.collect_snapshot(registry)
+
+    assert [(item["name"], item["gpus_allocated"], item["gpus_total"]) for item in snapshot["subqueues"]] == [
+        ("gangda_exp-protocol-evolve", 1, 16),
+        ("gangda_wma_evolve", 0, 16),
+    ]
+    rendered = slurm_queue.render_snapshot(snapshot)
+    assert "gangda_exp-protocol-evolve: GPUS 1/16" in rendered
+    assert "gangda_wma_evolve: GPUS 0/16" in rendered
+
+    exp_only = slurm_queue.render_snapshot(
+        snapshot, subqueue="gangda_exp-protocol-evolve"
+    )
+    assert "SUBQUEUE gangda_exp-protocol-evolve" in exp_only
+    assert "exp round" in exp_only
+    assert "gangda_wma_evolve" not in exp_only

@@ -1,0 +1,122 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T04:35:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.05
+  remaining_h: 7.95
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6467, protocol_n: 150}
+  trigger: "exp-02's checkpoint inherited the base snapshot's generation_config, and vLLM's --generation-config auto turns that into the server's default sampling params: top_k 64, top_p 0.95, no temperature key, so temperature falls back to 1.0. On 500 held-out GSM8K train questions the same weights score 0.814 greedy against 0.752 sampled."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_dev500_fewshot.txt, locator: "acc_first_sample at temperature 0.0", observation: "0.814"}
+    - {path: /home/ben/task/analysis/exp-02_dev500_sampled.txt, locator: "acc_first_sample at temperature 1.0 top_p 0.95", observation: "0.752"}
+  alternatives_rejected:
+    - {option: "Leave the decode config alone and spend the time on more training data", reason: "not exclusive - this card costs one 15-minute eval and no GPU training, and it also removes sampling noise from every later comparison, which is worth more than the points"}
+    - {option: "Set temperature via evaluate.py flags instead", reason: "evaluate.py and templates/ may not be modified (task rule 5), and the grader runs final_model/ itself; the decode config has to travel inside the model directory"}
+    - {option: "Low-but-nonzero temperature (0.2) to keep a little diversity", reason: "the grader takes exactly one sample per item, so diversity has no way to pay off; argmax is the right point estimate"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, -c, "GenerationConfig.from_pretrained('ckpts/exp-03-greedy').to_diff_dict()"], outcome: "{'temperature': 0.0, 'eos_token_id': [1, 106], ...} - temperature survives to_diff_dict, which is the dict vLLM's ModelConfig.get_diff_sampling_param reads, so the server default becomes greedy"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent is graded with stochastic decoding it never asked for. Nothing in evaluate.py sets temperature, so vLLM applies the model directory's generation_config as its default sampling params, and the base snapshot's file says do_sample true / top_k 64 / top_p 0.95 with no temperature - i.e. temperature 1.0. Every graded answer is one sample from a fairly flat distribution, and the eval is not reproducible run to run."
+  evidence:
+    - {path: /home/ben/task/logs/exp-01.log, locator: "EngineCore line 'Falling back to the PyTorch-native implementation of top-p & top-k sampling'", observation: "vLLM is actually running the top-p/top-k sampler, so the generation_config defaults are in force"}
+    - {path: /home/ben/task/analysis/exp-02_dev500_sampled.txt, locator: "acc_first_sample", observation: "0.752 sampled against 0.814 greedy on the same 500 questions and the same weights"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Writing temperature 0.0 into the checkpoint's generation_config.json, with the weights of exp-02 left bit-identical, raises dev-150 accuracy relative to exp-02's 0.6467."
+  mechanism: "vLLM's ModelConfig.get_diff_sampling_param lifts temperature/top_p/top_k out of generation_config.json into the server's default SamplingParams, and inspect_ai sends no temperature of its own, so temperature 0.0 makes every graded completion the argmax path. For a single-sample grader the argmax beats a draw from the same distribution whenever the model's mode is more often right than a typical sample, which the 500-question probe says it is by ~6 points."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+3 to +9 points, centred on the +6.2 measured off-protocol"
+  falsified_if: "dev-150 accuracy is at or below exp-02's 0.6467, or the vLLM log does not show the 'Default sampling parameters have been overridden by the model's Hugging Face generation config' line (which would mean the file was never read)."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+      source: "openai/gsm8k @ 740312add88f781978c0658806c59bc2815b9866"
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "no training in this card; the only data read is the grader's own input, the first 150 test items with the 10-shot seed-42 system message"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vLLM 0.11.0 default sampling params via generation_config.json"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02; weights are symlinked, only generation_config.json differs"
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03-greedy, --limit, "150", --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --json-output-file, "{out}.json"]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k openai/gsm8k test split, first 150 items, 10-shot system message seeded 42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6467
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "presence of the vLLM 'Default sampling parameters have been overridden by the model's Hugging Face generation config' warning in the eval log - proof the file was read"
+    n: 1
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.28
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 1250}
+  training_summary: {final_loss: null, steps: null, notes: "no training; the weights are symlinks to ckpts/exp-02/final and only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.7467, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.1000}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-03_diagnostic.json
+    notes: "logs/exp-03.log contains the vLLM warning 'Default sampling parameters have been overridden by the model's Hugging Face generation config', so the file was read and temperature 0.0 reached the sampler. stop_reason='stop' on 146/150; the 4 max_tokens items are the only completions that still run long."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.6467 -> 0.7467 (+10.0 points) from a six-line json file, with the weights bit-identical. The effect is larger than the +6.2 the 500-question off-protocol probe predicted, which is consistent with the probe's questions being easier (held-out GSM8K train, where the model scores 0.81) so there is less room for sampling to knock an answer off the mode."
+  decision: adopt
+  next_step: "Every later checkpoint must carry this generation_config.json, and final_model must too - it is worth more than most training deltas. Next, exp-04: scale the SFT corpus from 40k rows over ~30k unique problems to 100k over 79.5k, and evaluate under greedy from the start."

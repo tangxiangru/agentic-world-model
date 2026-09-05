@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from exp_protocol_cards import closed_card, plan_card
 
 from awm.exp_protocol import schema as cards
 from awm.wma import backends, review, schema
-from exp_protocol_cards import closed_card, plan_card
 
 
 @pytest.fixture
@@ -55,6 +55,18 @@ def test_review_refuses_a_card_that_already_has_a_result(tmp_path, skill) -> Non
     assert v["card_id"] == "exp-01"
 
 
+def test_review_accepts_the_not_run_prelaunch_sentinel(tmp_path, skill) -> None:
+    card = plan_card()
+    card["result"] = {"execution": "not_run"}
+    s = session_with(tmp_path, card)
+
+    verdict = review.review(
+        s, "exp-01", backends.HeuristicBackend(), mode="online", skill_dir=skill
+    )
+
+    assert verdict["card_id"] == "exp-01"
+
+
 def test_review_migrates_a_v1_card_in_memory_without_touching_the_file(tmp_path, skill) -> None:
     card = plan_card()
     card["schema_version"] = "awm-experiment-card-v1"
@@ -85,3 +97,42 @@ def test_prompt_names_the_paths_the_mode_and_the_rules(tmp_path, skill) -> None:
     b2 = review.make_brief(s, "exp-01", mode="online", budget=backends.Budget(), model="m", skill_dir=skill,
                            history_dir=tmp_path / "hist")
     assert "online" in b2.prompt and str(tmp_path / "hist") in b2.prompt
+
+
+def test_review_stamps_model_and_effort_when_the_backend_leaves_them_blank(tmp_path, skill) -> None:
+    class Blank(backends.Backend):
+        name = "blank"
+
+        def run(self, brief):
+            assert brief.effort == "high" and brief.model == "m-1"
+            schema.dump_verdict(brief.verdict_path, schema.empty_verdict(brief.card_id))
+
+    s = session_with(tmp_path, plan_card())
+    v = review.review(s, "exp-01", Blank(), mode="offline", skill_dir=skill, model="m-1", effort="high")
+    assert v["model"] == "m-1" and v["effort"] == "high"
+    v2 = review.review(session_with(tmp_path / "b", plan_card()), "exp-01", backends.HeuristicBackend(),
+                       mode="offline", skill_dir=skill)
+    assert "model" not in v2 and "effort" not in v2
+
+
+def test_harness_fields_are_measured_not_copied_from_the_agent(tmp_path, skill) -> None:
+    """The first real verdict copied wma_skill, backend and issued_at from the example file. The harness knows
+    these; what the agent wrote is overwritten."""
+    class Copier(backends.Backend):
+        name = "copier"
+
+        def run(self, brief):
+            v = schema.empty_verdict(brief.card_id)
+            v.update({"wma_skill": "skills/wma/SKILL.md", "backend": "claude-opus-5", "mode": "online",
+                      "issued_at": "2026-09-02T00:00:00Z", "model": "made-up", "effort": "max", "card_id": "exp-99"})
+            schema.dump_verdict(brief.verdict_path, v)
+
+    s = session_with(tmp_path, plan_card())
+    v = review.review(s, "exp-01", Copier(), mode="offline", skill_dir=skill, model="m-1", effort="high")
+    assert v["wma_skill"] == schema.skill_sha(skill) and v["backend"] == "copier" and v["mode"] == "offline"
+    assert v["model"] == "m-1" and v["effort"] == "high" and v["card_id"] == "exp-01"
+    assert v["issued_at"] != "2026-09-02T00:00:00Z"
+    # the heuristic backend does not read the skill; its own stamp stays
+    v2 = review.review(session_with(tmp_path / "h", plan_card()), "exp-01", backends.HeuristicBackend(),
+                       mode="offline", skill_dir=skill)
+    assert v2["wma_skill"] == "heuristic-priors"

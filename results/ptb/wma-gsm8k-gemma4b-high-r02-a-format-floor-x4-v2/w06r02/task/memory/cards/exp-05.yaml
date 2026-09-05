@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T18:08:38Z'
+situation:
+  elapsed_h: 4.2
+  remaining_h: 5.8
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.6733, protocol_n: 150}
+  trigger: "Every number in this batch so far was produced under the snapshot's shipped sampling defaults - vLLM logs 'Default sampling parameters have been overridden by the model's Hugging Face generation config' and that config is top_k 64 / top_p 0.95 with no temperature, i.e. sampling at t=1.0 on a model that now has a sharp answer distribution."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-04/final/generation_config.json, locator: "top_k 64, top_p 0.95, do_sample true, no temperature field"}
+    - {path: /home/ben/task/logs/smoke8.log, locator: "vLLM APIServer line about the HF generation config overriding default sampling parameters"}
+    - {path: /home/ben/task/memory/cards/exp-04.verdict.json, locator: "suggestions.cheaper_variants[2] - the reviewer priced the same gap at 0.676 vs 0.820 in one historical run and ~3.3 pp of sampling noise at n=150"}
+  alternatives_rejected:
+    - {option: "Ship greedy without measuring it", reason: "vLLM reads 'temperature', not 'do_sample'; if the field were ignored, final_model would silently keep sampling and the assumption would never be tested. One 8-minute read settles it"}
+    - {option: "Fold this read into the next training card's evaluation", reason: "it would mix a decode change with a data change and neither delta would be attributable"}
+    - {option: "Lower the temperature to 0.3 instead of 0", reason: "the harness grades one sample per item, so the mode is the right target, and t=0 also removes run-to-run scatter from every later comparison"}
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, make_decode_variant.py, --src, ckpts/exp-04/final, --dst, ckpts/exp-04-greedy, --temperature, '0.0']
+      outcome: "scratch dir with symlinked weights and a rewritten generation_config.json: eos_token_id still [1, 106], top_k/top_p removed, do_sample false, temperature 0.0"
+problem:
+  statement: "The incumbent's graded accuracy (0.6733) is measured under stochastic decoding it did not choose: the base snapshot's generation_config (top_k 64, top_p 0.95, temperature defaulted to 1.0 by vLLM) is copied into every checkpoint this batch saves. For a single-sample benchmark this both loses accuracy relative to the mode and adds scatter to every comparison."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_dev150_diag.json, locator: "accuracy 0.6733, stderr 0.0384", observation: "stderr at n=150 is 3.8 pp before any sampling noise is added"}
+    - {path: /home/ben/task/eval/exp-04_dev150_failures.jsonl, locator: "49 failures", observation: "several are single-step slips inside otherwise sound chains - the kind of token-level error a sampled tail produces more often than the mode"}
+  affected_share: null
+  failure_examples:
+    - {id: dev-sandcastle, source: /home/ben/task/eval/exp-04_dev150_failures.jsonl, question: "average square footage of a 4-level sandcastle", gold: "60", model_output: "16+8+4+2 = 28 / 4 = 7 ... ANSWER: 7", failure: "misread the level areas; wrong chain, not a format problem"}
+    - {id: dev-dogfood, source: /home/ben/task/eval/exp-04_dev150_failures.jsonl, question: "bags of dog food in the first year", gold: "5", model_output: "'... 900 / 110 = 8.18 (round up to 9 bags) ... ANSWER: 9'", failure: "wrong model of the problem"}
+    - {id: dev-tomato, source: /home/ben/task/eval/exp-04_dev150_failures.jsonl, question: "tomatoes used for 32 oz of sauce", gold: "12", model_output: "'... 32 / 6 = 5 and 1/3 tomatoes ... ANSWER: 5.33'", failure: "inverted ratio"}
+  watch_set: null
+hypothesis:
+  claim: "Pinning temperature 0.0 in generation_config.json (weights untouched, reached by symlink) changes dev-150 accuracy for the exp-04 checkpoint relative to the same weights decoded with the shipped sampling config."
+  mechanism: "vLLM builds its default SamplingParams from the model directory's generation_config.json; with temperature 0 it takes the argmax token at every step instead of sampling from a top-64 / top-p-0.95 tail, so token-level slips introduced by the tail disappear and the read becomes deterministic."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+2 to +8 pts"}
+  falsified_if: "accuracy under the greedy config is not higher than 0.6733, or the completions show vLLM ignored the temperature field."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/datasets/openai___gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866/gsm8k-test.arrow
+      source: openai/gsm8k
+      n_examples: 150
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '150']
+      selection: "no training data in this card; this is the harness's own evaluation input (gsm8k test split, first 150 items)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 via inspect_ai; generation_config.json is the only file that differs"
+    peft: "none"
+    hyperparams: {temperature: 0.0, top_p: null, top_k: null, seed: null}
+    target_format: "unchanged - the weights are the exp-04 checkpoint, reached through symlinks"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_eval.sh, ckpts/exp-04-greedy, exp-05_greedy_dev150]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/eval_exp-05_greedy_dev150.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6', --max-tokens, '4000']
+    dev_set: "official inspect_evals/gsm8k test, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.6733
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "mean output length and the share of completions ending in 'ANSWER: <number>' - greedy should not change format compliance (already 1.00); if it does, the decode change is doing something other than what is claimed"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/exp-04-greedy
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-04-greedy
+    step: 397
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: no training; symlinked weights of ckpts/exp-04/final with temperature 0.0 in generation_config.json
+  measurements:
+  - metric: accuracy
+    value: 0.6933
+    n: 150
+    path: /home/ben/task/eval/exp-05_greedy_dev150.json
+    delta_vs_comparator: 0.02
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-05_greedy_dev150_diag.json
+    notes: format compliance essentially unchanged (1.000 -> 0.9933) and length unchanged (chars p50 452 -> 448), so the decode change did not alter behaviour beyond token choice. One completion (1/150) ran to the 4000-token cap - the repetition loop greedy decoding can fall into, against 0/150 under sampling. vLLM still logged that the HF generation config overrode its defaults, i.e. the temperature field was read.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: '0.6733 -> 0.6933 (+2.0 pts) from decode alone, with weights untouched. The direction matches the claim and the mechanism is confirmed (vLLM read the temperature field; format and length unchanged), but +2.0 pts sits inside the n=150 noise band (stderr 3.8 pp), so this is adopted on principle rather than on a significant delta: the harness grades one sample per item, so the mode is the right target and the read becomes deterministic.'
+  decision: adopt
+  next_step: 'Ship temperature 0.0 in final_model''s generation_config.json. Spend the remaining GPU on reasoning quality: the 46 residual failures are wrong problem models and arithmetic slips, so exp-06 continues SFT on 26k further few-shot-formatted OpenMathInstruct-2 solutions that no earlier card used.'

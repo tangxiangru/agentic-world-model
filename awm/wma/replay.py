@@ -18,10 +18,13 @@ Verdicts are written once; scoring happens when the ledger reads them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -145,15 +148,50 @@ def _build_session(out: Path, run_ref: str, cards: list[dict[str, Any]], k: int,
     return session, truth
 
 
+def run_ref(run_id: str) -> str:
+    """The corpus names a run by the first eight hex digits of the sha256 of its catalogue id."""
+    return "r-" + hashlib.sha256(run_id.encode()).hexdigest()[:8]
+
+
+def default_split(corpus: Path) -> Path:
+    """``splits/posttrainbench/<corpus basename>.yaml`` — the contract the corpus was cut from."""
+    from awm import paths
+
+    return paths.REPO_ROOT / "splits" / "posttrainbench" / (Path(corpus).name + ".yaml")
+
+
+def runs_by_agent(split: Path, side: str, agents: str) -> tuple[set[str], int]:
+    """Which run_refs on ``side`` belong to an agent whose run id matches ``agents``.
+
+    The run id (agent, scaffold, base model) lives only in the split file; the corpus, the sessions and
+    the history carry the opaque run_ref, so the filter never tells the WMA who the scientist was.
+    """
+    import yaml
+
+    split = Path(split)
+    if not split.is_file():
+        raise FileNotFoundError(f"{split}: the split file that maps run ids to the corpus")
+    ids = (yaml.safe_load(split.read_text()).get("splits") or {}).get(side) or []
+    pat = re.compile(agents)
+    return {run_ref(r) for r in ids if pat.search(r)}, len(ids)
+
+
 def build_samples(corpus: Path, out: Path, *, side: str = "train", sample: int | None = None,
-                  seed: int = 0) -> list[Sample]:
+                  seed: int = 0, agents: str | None = None, split: Path | None = None) -> list[Sample]:
     corpus, out = Path(corpus), Path(out)
     side_dir = corpus / side
     if not side_dir.is_dir():
         raise FileNotFoundError(f"{side_dir} is not a directory")
     runs = sorted(d for d in side_dir.iterdir() if d.is_dir())
-    loaded = {d.name: load_run(d) for d in runs}
-    pairs = [(d.name, k) for d in runs for k in range(1, len(loaded[d.name]) + 1)]
+    picked = runs
+    meta: dict[str, Any] = {}
+    if agents:
+        wanted, total = runs_by_agent(split or default_split(corpus), side, agents)
+        picked = [d for d in runs if d.name in wanted]
+        meta = {"agents": agents, "runs_matched": len(picked), "runs_total": total,
+                "split": str(split or default_split(corpus))}
+    loaded = {d.name: load_run(d) for d in picked}
+    pairs = [(d.name, k) for d in picked for k in range(1, len(loaded[d.name]) + 1)]
     if sample is not None and sample < len(pairs):
         pairs = sorted(random.Random(seed).sample(pairs, sample))
     samples: list[Sample] = []
@@ -166,7 +204,20 @@ def build_samples(corpus: Path, out: Path, *, side: str = "train", sample: int |
         samples.append(Sample(run_ref, cards[k - 1]["card_id"], k, len(cards), session, truth))
     out.mkdir(parents=True, exist_ok=True)
     (out / "samples.jsonl").write_text("".join(s.to_json() + "\n" for s in samples))
+    (out / "samples.sha").write_text(fingerprint(samples) + "\n")
+    if meta:
+        (out / "filter.json").write_text(json.dumps(meta, indent=2) + "\n")
     return samples
+
+
+def fingerprint(samples: list[Sample]) -> str:
+    """The identity of a sample set: the (run, card) pairs, not the paths they were built under.
+
+    ``samples.jsonl`` embeds the out directory, so its bytes differ between two builds of the same
+    set; this does not. Rounds are comparable only on the same fingerprint.
+    """
+    lines = sorted(f"{s.run_ref} {s.card_id}" for s in samples)
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
 def read_samples(out: Path) -> list[Sample]:
@@ -177,27 +228,39 @@ def read_samples(out: Path) -> list[Sample]:
 
 
 def run_replay(out: Path, backend: Backend, *, budget: Budget | None = None, model: str | None = None,
-               limit: int | None = None) -> dict[str, int]:
+               effort: str | None = None, limit: int | None = None, jobs: int = 1) -> dict[str, int]:
     out = Path(out)
     counts = {"reviewed": 0, "skipped": 0, "errors": 0}
     errors = out / "errors.jsonl"
-    done = 0
+    lock = threading.Lock()
+    pending: list[Sample] = []
     for s in read_samples(out):
-        session = s.session_dir
-        card_path = session / "memory" / "cards" / f"{s.card_id}.yaml"
+        card_path = s.session_dir / "memory" / "cards" / f"{s.card_id}.yaml"
         if schema.verdict_path(card_path).is_file():
             counts["skipped"] += 1
-            continue
-        if limit is not None and done >= limit:
-            break
-        done += 1
+        elif limit is None or len(pending) < limit:
+            pending.append(s)
+
+    def one(s: Sample) -> None:
+        session = s.session_dir
         try:
             review(session, s.card_id, backend, mode="offline", budget=budget or Budget(), model=model,
-                   history_dir=session / "history")
-            counts["reviewed"] += 1
+                   effort=effort, history_dir=session / "history")
+            with lock:
+                counts["reviewed"] += 1
         except (ReviewError, BackendError, ValueError) as exc:
-            counts["errors"] += 1
-            with errors.open("a") as fh:
-                fh.write(json.dumps({"run_ref": s.run_ref, "card_id": s.card_id, "error": str(exc)}) + "\n")
+            with lock:
+                counts["errors"] += 1
+                with errors.open("a") as fh:
+                    fh.write(json.dumps({"run_ref": s.run_ref, "card_id": s.card_id, "error": str(exc)}) + "\n")
+
+    # Sessions are independent directories, so samples can be reviewed concurrently; the only shared
+    # state is the skill link (locked in prepare_session), the counters and the error log.
+    if jobs > 1 and len(pending) > 1:
+        with ThreadPoolExecutor(max_workers=min(jobs, len(pending))) as pool:
+            list(pool.map(one, pending))
+    else:
+        for s in pending:
+            one(s)
     return counts
 

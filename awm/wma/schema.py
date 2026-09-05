@@ -2,8 +2,8 @@
 
 A verdict is one JSON file beside the card, ``exp-NN.verdict.json``. Four
 levels, each with its own answer and confidence, each basis entry naming an
-evidence id. ``truth_from_card`` reads what actually happened out of a
-closed card; ``score`` holds each level to it. Nothing here calls a model.
+evidence or probe id. ``truth_from_card`` reads what actually happened out of
+a closed card; ``score`` holds each level to it. Nothing here calls a model.
 """
 
 from __future__ import annotations
@@ -23,6 +23,17 @@ L3_ANSWERS = ("yes", "no", "defer")
 MODES = ("offline", "online")
 PROBE_KINDS = ("static_check", "unit_test", "data_probe", "dry_run", "sample_probe")
 CHANGED = ("L0", "L1", "L2", "L3", "none")
+#: L2 direction: flat is for a card that expects no change (a packaging or baseline card).
+DIRECTIONS = (None, "higher", "lower", "flat")
+#: An unusable verdict is moved to <verdict>.rejected (never *.json, so the ledger ignores it).
+REJECTED_SUFFIX = ".rejected"
+#: Change types from doc/reference/verifier_tiers_and_change_types.md §3: C1–C18, C1 split into C1a / C1b.
+CHANGE_TYPE_RE = re.compile(r"^C(1[0-8]|[1-9])[ab]?$")
+#: Same-weight repeat noise of an accuracy read, by question count (reference §2 "噪声的实测分布"):
+#: n≈1319 greedy 0.45–1.6pp, n=600–800 ±2–4pp, n=150 1.3–3.3pp, n=20–50 ±10–15pp. Sampling widens it;
+#: one question is 1/n whatever the decoding. An interval narrower than this floor claims what the ruler
+#: cannot show.
+NOISE_BY_N = ((1000, 0.01), (500, 0.02), (150, 0.03), (50, 0.07), (0, 0.12))
 #: L0 = "did it run": a run killed by the deadline ran; a failed or never-launched one did not.
 RAN = ("completed", "killed")
 WORTH = {"adopt": True, "reject": False, "abandon_line": False}
@@ -61,9 +72,82 @@ def dump_verdict(path: Path, verdict: dict[str, Any]) -> None:
     path.write_text(json.dumps(verdict, indent=2) + "\n")
 
 
+#: What agents write for "no change expected" besides flat; all mean the same and direction is never scored.
+FLAT_SYNONYMS = ("none", "n/a", "na", "neutral", "no_change", "no change", "unchanged", "zero", "same")
+
+
+def normalize_verdict(v: dict[str, Any]) -> dict[str, Any]:
+    """Fold harmless spelling variants into the schema's vocabulary, in place. Nothing scored changes."""
+    lv = v.get("levels")
+    if isinstance(lv, dict) and isinstance(lv.get("L2_effect"), dict):
+        d = lv["L2_effect"].get("direction")
+        if isinstance(d, str):
+            d = d.strip().lower()
+            lv["L2_effect"]["direction"] = "flat" if d in FLAT_SYNONYMS else (d or None)
+    return v
+
+
+def noise_floor(n: int | float | None) -> float | None:
+    """The interval width below which a delta at ``n`` questions is not distinguishable from repeat noise."""
+    if not _num(n) or n <= 0:
+        return None
+    table = next(v for lo, v in NOISE_BY_N if n >= lo)
+    return round(max(table, 1.0 / n), 4)
+
+
+def is_baseline_packaging(card: dict[str, Any]) -> bool:
+    """A card that packages the untrained base model (no training, no data, parent is the base): its
+    outcome label says whether it was superseded, not whether it was worth running, so L3 is unscorable."""
+    return (get(card, "setup.method.family") == "other" and get(card, "setup.parent_checkpoint.origin") == "base_model"
+            and not (get(card, "setup.data") or []))
+
+
+def is_self_measurement(card: dict[str, Any]) -> bool:
+    """A card whose comparator is the base model and that carries no earlier reading of it: the card
+    *is* the first measurement of its own comparator (the run's exp-01, typically). Its delta is 0.0 by
+    construction, so L2 says nothing; it trains nothing, so "valid" means only that it produced a
+    reading; its decision is about what comes next, not about this card. Seen 2026-09-02 online:
+    four such cards scored two spurious L1 misses (no checkpoint) and two spurious L2 misses."""
+    comparator = get(card, "evaluation.comparator") or {}
+    if not isinstance(comparator, dict) or comparator.get("ref") != "base_model":
+        return False
+    if _num(comparator.get("value")) or comparator.get("path"):
+        return False            # the comparator was measured before this card: a real delta
+    return get(card, "setup.parent_checkpoint.origin") == "base_model" and (
+        get(card, "setup.method.family") in ("other", "decode-config")
+    )
+
+
+def reject_verdict(path: Path, reason: str, **measured: Any) -> Path:
+    """Move an unusable verdict file aside so the card counts as unreviewed, keeping the text and what it cost.
+
+    A rejected file is not a verdict: the ledger never reads it, a replay pass retries the sample, and the
+    round's spend can still be added up from it.
+    """
+    path = Path(path)
+    target = path.with_name(path.name + REJECTED_SUFFIX)
+    n = 1
+    while target.exists():
+        target = path.with_name(f"{path.name}{REJECTED_SUFFIX}.{n}")
+        n += 1
+    raw = path.read_text()
+    try:
+        body: dict[str, Any] = {"verdict": json.loads(raw)}
+    except ValueError:
+        body = {"raw": raw}
+    body["rejected"] = {"reason": reason, "at": now(), **measured}
+    target.write_text(json.dumps(body, indent=2) + "\n")
+    path.unlink()
+    return target
+
+
 def skill_sha(skill_dir: Path) -> str:
-    """Twelve hex chars of the skill's SKILL.md; the ledger groups by it."""
-    return hashlib.sha256((Path(skill_dir) / "SKILL.md").read_bytes()).hexdigest()[:12]
+    """Twelve hex chars over every file of the skill (name and bytes, sorted); the ledger groups by it.
+    A manual the SKILL.md refers to is part of the skill, so it is part of the hash."""
+    h = hashlib.sha256()
+    for p in sorted(x for x in Path(skill_dir).rglob("*") if x.is_file()):
+        h.update(str(p.relative_to(skill_dir)).encode() + b"\0" + p.read_bytes() + b"\0")
+    return h.hexdigest()[:12]
 
 
 def empty_verdict(card_id: str) -> dict[str, Any]:
@@ -99,8 +183,13 @@ def validate_verdict(v: dict[str, Any]) -> Report:
     if not isinstance(levels, dict):
         r.error("levels", "required")
         return r
+    ct = v.get("change_types")
+    if ct is not None and not (isinstance(ct, list) and all(isinstance(x, str) and CHANGE_TYPE_RE.match(x) for x in ct)):
+        r.error("change_types", "must be a list of C1–C18 labels (C1a / C1b for the two decode branches)")
     evidence = v.get("evidence") or []
-    ids = {e.get("id") for e in evidence if isinstance(e, dict)}
+    probes = v.get("probes") or []
+    ids = ({e.get("id") for e in evidence if isinstance(e, dict)}
+           | {p.get("id") for p in probes if isinstance(p, dict)})
     for i, e in enumerate(evidence):
         if not isinstance(e, dict) or not e.get("id") or not e.get("path"):
             r.error(f"evidence[{i}]", "needs id and path")
@@ -115,23 +204,23 @@ def validate_verdict(v: dict[str, Any]) -> Report:
             r.error(f"{where}.confidence", "must be a number in [0, 1]")
         basis = lv.get("basis")
         if not isinstance(basis, list):
-            r.error(f"{where}.basis", "must be a list of evidence ids")
+            r.error(f"{where}.basis", "must be a list of evidence or probe ids")
         elif any(b not in ids for b in basis):
-            r.error(f"{where}.basis", "names an evidence id that is not in evidence[]")
+            r.error(f"{where}.basis", "names an id that is not in evidence[] or probes[]")
         if name == "L2_effect":
             iv = lv.get("interval")
             if iv is not None and not (isinstance(iv, list) and len(iv) == 2 and all(_num(x) for x in iv)
                                        and iv[0] <= iv[1]):
                 r.error(f"{where}.interval", "must be [lo, hi] with lo <= hi, or null")
-            if lv.get("direction") not in (None, "higher", "lower"):
-                r.error(f"{where}.direction", "must be higher | lower | null")
+            if lv.get("direction") not in DIRECTIONS:
+                r.error(f"{where}.direction", "must be higher | lower | flat | null")
         elif name == "L3_worth_now":
             if lv.get("answer") not in L3_ANSWERS:
                 r.error(f"{where}.answer", f"must be one of {L3_ANSWERS}")
         else:
             if lv.get("answer") not in YES_NO:
                 r.error(f"{where}.answer", f"must be one of {YES_NO}")
-    for i, p in enumerate(v.get("probes") or []):
+    for i, p in enumerate(probes):
         if not isinstance(p, dict) or p.get("kind") not in PROBE_KINDS:
             r.error(f"probes[{i}].kind", f"must be one of {PROBE_KINDS}")
         elif p.get("changed") not in CHANGED:
@@ -166,10 +255,30 @@ def truth_from_card(card: dict[str, Any]) -> dict[str, Any]:
         "decision": get(card, "conclusion.decision"),
         "wall_h": get(card, "result.wall_h"),
         "delta": delta,
+        "family": get(card, "setup.method.family"),
+        "n": ms[0].get("n") if ms and _num(ms[0].get("n")) else None,
+        "baseline_packaging": is_baseline_packaging(card),
+        "self_measurement": is_self_measurement(card),
     }
 
 
 # ------------------------------------------------------------------ score
+
+def truth_levels(truth: dict[str, Any]) -> dict[str, bool | None]:
+    """What L0 and L1 actually were: ran (completed or killed) / yielded a scorable candidate. None = open."""
+    execution = truth.get("execution")
+    if execution is None:
+        return {"L0": None, "L1": None}
+    # L1 is a property of the proposal only once it ran to completion: a killed run is the scientist's
+    # clock decision and a failed one is already L0's miss.
+    if execution == "completed":
+        # a self-measurement trains nothing: its only deliverable is the reading itself
+        valid = bool(truth.get("measurements")) and (
+            bool(truth.get("output_checkpoint")) or bool(truth.get("self_measurement")))
+    else:
+        valid = None
+    return {"L0": execution in RAN, "L1": valid}
+
 
 def score(verdict: dict[str, Any], truth: dict[str, Any]) -> dict[str, str]:
     lv = verdict["levels"]
@@ -181,17 +290,14 @@ def score(verdict: dict[str, Any], truth: dict[str, Any]) -> dict[str, str]:
             return "unscorable"
         return "hit" if (ans == "yes") == actual else "miss"
 
-    execution = truth.get("execution")
-    ran = None if execution is None else execution in RAN
-    out["L0"] = yes_no("L0_runs", ran)
-    valid = None if execution is None else (execution == "completed" and bool(truth.get("output_checkpoint"))
-                                             and bool(truth.get("measurements")))
-    out["L1"] = yes_no("L1_valid", valid)
+    actual = truth_levels(truth)
+    out["L0"] = yes_no("L0_runs", actual["L0"])
+    out["L1"] = yes_no("L1_valid", actual["L1"])
 
     iv = lv["L2_effect"].get("interval")
     delta = truth.get("delta")
-    if iv is None or delta is None:
-        out["L2"] = "unscorable"
+    if iv is None or delta is None or truth.get("self_measurement"):
+        out["L2"] = "unscorable"    # a delta of a reading against itself measures nothing
     elif delta < iv[0]:
         out["L2"] = "below"
     elif delta > iv[1]:
@@ -201,7 +307,8 @@ def score(verdict: dict[str, Any], truth: dict[str, Any]) -> dict[str, str]:
 
     ans3 = lv["L3_worth_now"].get("answer")
     worth = WORTH.get(truth.get("decision"))
-    if worth is None or ans3 not in L3_ANSWERS:
+    if (worth is None or ans3 not in L3_ANSWERS or truth.get("baseline_packaging")
+            or truth.get("self_measurement")):
         out["L3"] = "unscorable"
     else:
         said_worth = ans3 == "yes"          # defer counts as "not now"

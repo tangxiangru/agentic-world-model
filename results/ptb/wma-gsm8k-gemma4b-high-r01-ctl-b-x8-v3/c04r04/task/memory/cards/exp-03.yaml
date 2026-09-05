@@ -1,0 +1,110 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T00:45:00Z'
+situation:
+  elapsed_h: 1.95
+  remaining_h: 8.05
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final_bf16
+    score: {metric: accuracy, value: 0.6667, protocol_n: 150}
+  trigger: "evaluate.py never sets a temperature and inspect only forwards temperature when it is not None, so vLLM falls back to the model's own generation_config.json - which the base checkpoint ships as do_sample=true, top_k=64, top_p=0.95, i.e. every graded answer so far was sampled at temperature 1.0."
+  trigger_evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py, locator: "lines 233-234: params['temperature'] set only if config.temperature is not None"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/entrypoints/openai/protocol.py, locator: "ChatCompletionRequest.to_sampling_params: temperature falls back to default_sampling_params from generation_config.json"}
+    - {path: /home/ben/task/eval/exp-02_final_dev150_samples.json, locator: "whole file", observation_note: "exp-02 scored 0.6667 under that sampled decode"}
+  alternatives_rejected:
+    - {option: "Edit evaluate.py to pass temperature=0", reason: "forbidden by the task rules; the decode default has to live in the model artifact"}
+    - {option: "Leave sampling on and rely on training to sharpen the distribution", reason: "free variance at grading time; greedy is the standard single-sample decode for gsm8k and costs one 8-minute eval to verify"}
+    - {option: "temperature 0.3 instead of 0", reason: "no reason to keep any sampling noise for a single-attempt numeric-match benchmark; 0 is the extreme of the same axis"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The graded checkpoint is decoded with sampling (temperature 1.0, top_p 0.95, top_k 64) inherited from the base model's generation_config.json, so a share of dev-150 items are lost to sampling noise rather than to the model's inability."
+  evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final_bf16/generation_config.json, locator: "do_sample true, top_k 64, top_p 0.95, no temperature key", observation: "vLLM applies these as request defaults when the client omits them"}
+    - {path: /home/ben/task/analysis/exp-02_final_diag.json, locator: "accuracy 0.6667", observation: "measured under that sampled decode"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Setting temperature 0 (do_sample false) in the model's generation_config.json, with weights byte-identical to exp-02, will raise dev-150 accuracy relative to exp-02's sampled 0.6667."
+  mechanism: "The grader takes one sample per item and matches the final number exactly; at temperature 1.0 the model sometimes samples a worse token early in the chain and derails. Greedy removes that variance and takes the mode of the distribution the SFT sharpened."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points"
+  falsified_if: "dev-150 accuracy at or below exp-02's 0.6667"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final_bf16
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-03_greedy/generation_config.json
+      source: local
+      n_examples: 1
+      built_by: /home/ben/task/package_model.py
+      build_command: [python, package_model.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-03_greedy, --temperature, '0']
+      selection: "decode-config card: the only artefact that changes is the generation_config; the safetensors are a byte copy of exp-02"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 default sampling params from generation_config.json"
+    peft: none
+    hyperparams: {temperature: 0.0, do_sample: false}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03_greedy, --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.25}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6667
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "clean-format share (stops cleanly and exactly one ANSWER line) - must not regress under greedy"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03_greedy, step: 3102}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are a byte copy of exp-02/final_bf16, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.78, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.1133}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-03_greedy_diag.json
+    notes: "clean-format share 1.000 under greedy (0.993 sampled): 0/150 non-stopping, 0/150 without an ANSWER line, no degeneration or repetition loops."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Same weights, greedy instead of temperature-1.0 sampling: dev-150 0.6667 -> 0.78 (+11.3 pts, stderr 0.034). More than a tenth of the benchmark was being lost to decode noise inherited from the base model's generation_config."
+  decision: adopt
+  next_step: "Every later candidate is packaged with temperature 0 and scored under the same greedy protocol; exp-02's 0.6667 is not a valid comparator for them - 0.78 is."

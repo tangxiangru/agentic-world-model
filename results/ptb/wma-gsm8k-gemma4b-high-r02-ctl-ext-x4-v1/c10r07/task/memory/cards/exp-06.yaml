@@ -1,0 +1,132 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T09:30:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.2
+  remaining_h: 2.8
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.8267, protocol_n: 150}
+  trigger: "exp-05's RFT round used 20,000 of the 79,587 pool problems and gained +4.0 on dev-150; sampling the new checkpoint 6 times over a disjoint 18,000-problem slice still shows pass@6 0.963 against single-sample 0.828, so the same gap the first round exploited is still open on problems the model has not been rejection-trained on."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-06_sampling.txt, locator: "acc_first_sample 0.8276, pass_at_k 0.9629, n 18000, k 6", observation: "the gap is essentially unchanged on unseen problems, so round 1 did not close it globally"}
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "accuracy", observation: "incumbent at 0.8267"}
+  alternatives_rejected:
+    - {option: "Re-sample the same 20,000 problems from the stronger checkpoint", reason: "those problems have already had their pass-rate-weighted budget spent once; a disjoint slice is both a second RFT round and new problem coverage for the same GPU cost"}
+    - {option: "Retrain from exp-04 on round-1 and round-2 data together, avoiding a third stacked cosine schedule", reason: "the cleaner design, but ~50 min of training against ~28, and it throws away the measured 0.8267 as a starting point with 2.8 h left including the final packaging"}
+    - {option: "Stop here and spend the remaining time on a larger-n confirmation eval of exp-05", reason: "final_model already holds exp-05 and is verified, so the downside of this card is bounded; if it does not beat 0.8267 I simply do not promote it"}
+    - {option: "Same lr as exp-05 (7e-6)", reason: "this is a third pass over a model already near convergence and the incumbent is what final_model holds; 5e-6 keeps the step small enough that a failed card cannot cost anything already banked"}
+  pitfalls_hit:
+    - {what: "pkill -f 'train_sft.py --data data/rft_v1.jsonl' also matched the wrapping shell of the very command that issued it, killing the relaunch it was meant to clear the way for; two launches died before I noticed", cost_h: 0.1, fix: "launch long jobs with setsid ... < /dev/null &, and never pkill on a pattern that the launcher's own command line contains"}
+  smoke_runs:
+    - {command: [python, decontaminate.py, --input, data/rft_v2_raw.jsonl, --threshold, "0.25"], outcome: "0 of 24,036 self-generated rows flagged; max containment against the 1319 test questions 0.138"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent still answers only 82.8% of unseen pool problems correctly on its greedy path while 96.3% of them are solvable within 6 samples. Round 1 of rejection training closed part of that gap on the 20,000 problems it covered, but the gap measured on a disjoint slice is the same size, so the correction did not generalise to problems the model was not rejection-trained on."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_sampling.txt, locator: "acc_first_sample 0.8276 vs pass_at_k 0.9629 on 18,000 unseen pool problems", observation: "13.5 points of within-distribution headroom remain"}
+    - {path: /home/ben/task/analysis/exp-05_sampling.txt, locator: "acc_first_sample 0.8209 vs pass_at_k 0.9641 before round 1", observation: "the gap was 14.3 points then and 13.5 now: round 1's effect was mostly local to its own problems"}
+    - {path: /home/ben/task/analysis/exp-05_diagnostic.json, locator: "accuracy 0.8267 of n=150", observation: "26 of 150 dev items still wrong"}
+  affected_share: 0.135
+  failure_examples:
+    - {id: rft2-unsolved-668, source: /home/ben/task/data/rft_samples2_k6.jsonl, question: "(the 668 slice-2 problems the incumbent solves 0 times out of 6)", gold: "n/a", model_output: "no correct chain in 6 samples", failure: "no self-generated signal available; covered by mixing in the teacher's verified solution for each"}
+    - {id: rft2-hard-3819, source: /home/ben/task/data/rft_samples2_k6.jsonl, question: "(the 3,819 slice-2 problems solved on at most 4 of 6 samples)", gold: "n/a", model_output: "correct on some samples, wrong on others", failure: "the greedy path is unreliable exactly here; these get 4 chains each rather than 1"}
+    - {id: dev150-remaining-26, source: /home/ben/task/analysis/exp-05_diagnostic.json, question: "(the 26 dev-150 items exp-05 still gets wrong)", gold: "n/a", model_output: "n/a", failure: "the population this card has to move"}
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A second rejection-training epoch from exp-05, on 24,036 of its own verified-correct chains over an 18,000-problem slice disjoint from round 1's plus 10,635 teacher rows, raises greedy dev-150 accuracy above exp-05's 0.8267."
+  mechanism: "Same mechanism as exp-05 - move probability mass onto the model's own chains that reach the right answer, budgeted towards the problems whose pass rate is at most 0.67 - applied to problems the first round never touched. If round 1's gain had been a general calibration effect it would already show on this slice and there would be nothing left to take; the sampling numbers say it was largely local, which is what makes a second disjoint round worth a run rather than a repeat."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0 to +3 points; smaller than round 1's +4.0, since the parent is stronger, the slice is 10% smaller and the lr is lower"
+  falsified_if: "greedy dev-150 accuracy is at or below exp-05's 0.8267 - which would say a second RFT round on fresh problems adds nothing on top of the first, and that the remaining dev-150 errors are not the kind that re-weighting the model's own distribution can reach."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v2.jsonl
+      source: "synthetic:self (ckpts/exp-05/final, k=6, temperature 1.0, top_p 0.95, seed 2) over questions from nvidia/OpenMathInstruct-2 @ 469216e3; plus teacher rows from data/sft_v2.clean.jsonl"
+      n_examples: 34671
+      built_by: /home/ben/task/build_rft_data.py
+      build_command: [python, build_rft_data.py, --samples, data/rft_samples2_k6.jsonl, --out, data/rft_v2.jsonl, --raw-out, data/rft_v2_raw.jsonl, --easy-cap, "1", --hard-cap, "4", --hard-threshold, "0.67", --mix, data/sft_v2.clean.jsonl, --mix-raw, data/sft_v2_raw.clean.jsonl, --mix-unsolved, --mix-n, "10000", --seed, "2"]
+      selection: "rows 20,000-38,000 of data/rft_pool.clean.jsonl - disjoint from the 0-20,000 slice exp-05 used, already decontaminated, and with the 500 probe questions removed. Keep only samples whose final ANSWER equals gold; dedup a problem's chains by their sequence of numbers; 4 chains where pass rate <= 0.67, 1 otherwise -> 24,036 rows. Add the 635 teacher rows covering the 668 problems solved 0/6, plus 10,000 random teacher rows. decontaminate.py flags 0 of the 24,036 self-generated rows."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3, ChunkedLossTrainer in train_sft.py"
+    peft: "none - full parameter over the 3.88B text tower"
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 32, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "bf16 weights + adamw_bnb_8bit + flash_attention_2 + gradient checkpointing", seed: 0}
+    target_format: "<reasoning> then a blank line then 'ANSWER: <number>' then <end_of_turn>, rendered inside templates/gemma3.jinja (sha256[:12] = 7de1c58e208e); completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/rft_v2.jsonl, --parent, /home/ben/task/ckpts/exp-05/final, --out, ckpts/exp-06, --epochs, "1", --lr, "5e-6", --bs, "32", --accum, "2", --max-seq-len, "2816", --save-strategy, "no"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --json-output-file, "{out}.json"]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k openai/gsm8k test split, first 150 items, 10-shot system message seeded 42); the checkpoint carries the greedy generation_config.json adopted in exp-03"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.8267
+    path: /home/ben/task/eval/exp-05_dev150.json
+  diagnostic:
+    what: "greedy accuracy on the 500 held-out GSM8K TRAIN questions excluded from every corpus in this batch; exp-04 0.860, exp-05 0.868"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.38
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    # Amended at 8.0 h: deleted before launching exp-07, so setup.checkpoints.keep
+    # ("last") is not honoured for this card at all. It was a rejected checkpoint
+    # and nothing starts from it, but the record should say so rather than list a
+    # path that no longer exists.
+    []
+  training_summary: {final_loss: 0.1539, steps: 542, notes: "1363 s wall, no incidents"}
+  measurements:
+    - {metric: accuracy, value: 0.8067, n: 150, path: /home/ben/task/eval/exp-06_dev150.json, delta_vs_comparator: -0.0200}
+  diagnostic_result:
+    value: 0.856
+    path: /home/ben/task/analysis/exp-06_diagnostic.json
+    notes: "0.856 on the 500 held-out train questions against exp-05's 0.868 - down, like dev-150. Two independent sets moving the same way is what makes this a real negative rather than dev-150 noise; a -2.0 point move on n=150 alone (3 items) would not be."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.8267 -> 0.8067 (-2.0) and the held-out probe 0.868 -> 0.856 (-1.2). A second rejection-training round on fresh problems does not stack: round 1 converted the pass@6 gap into accuracy, round 2 at half the lr on a disjoint slice moved both measurements down. The most likely reading is that a third consecutive pass on the model's own outputs narrows the output distribution past the point where it helps - final loss fell 0.176 -> 0.154 while accuracy fell - rather than that the slice was bad."
+  decision: reject
+  next_step: "final_model stays exp-05. If this line were continued the next thing to test is not a third round but round 1 done once from exp-04 with a larger k, since the gain came from the first pass; and the self-distillation collapse should be checked directly by measuring output entropy or pass@6 of exp-06 against exp-05 rather than inferred from the loss."

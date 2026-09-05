@@ -23,9 +23,12 @@ def _budget(spec: str | None):
         if not item:
             continue
         key, sep, val = item.partition("=")
-        if not sep or key not in ("cpu", "gpu", "wall"):
-            raise ValueError(f"--budget expects cpu=,gpu=,wall= (minutes), got {item!r}")
-        setattr(b, f"{key}_min", float(val))
+        if not sep or key not in ("cpu", "gpu", "wall", "turns"):
+            raise ValueError(f"--budget expects cpu=,gpu=,wall= (minutes) and turns=, got {item!r}")
+        if key == "turns":
+            b.max_turns = int(val)
+        else:
+            setattr(b, f"{key}_min", float(val))
     return b
 
 
@@ -82,6 +85,8 @@ def _detach(args: argparse.Namespace) -> int:
             "--backend", args.backend, "--mode", args.mode, "--jobs", str(args.jobs)]
     if args.model:
         argv += ["--model", args.model]
+    if args.effort:
+        argv += ["--effort", args.effort]
     if args.budget:
         argv += ["--budget", args.budget]
     if args.history:
@@ -124,13 +129,13 @@ def _review(args: argparse.Namespace) -> int:
     if args.tag is not None and not schema.TAG_RE.match(args.tag):
         print(f"--tag must match {schema.TAG_RE.pattern}")
         return 2
-    backend = get_backend(args.backend, args.model)
+    backend = get_backend(args.backend, args.model, args.effort)
     history = Path(args.history) if args.history else None
 
     def one(cid: str):
         try:
             v = review(Path(args.dir), cid, backend, mode=args.mode, budget=budget, model=args.model,
-                       force=args.force, history_dir=history, tag=args.tag)
+                       force=args.force, history_dir=history, tag=args.tag, effort=args.effort)
             return cid, v, None
         except ReviewError as exc:
             return cid, None, str(exc)
@@ -191,8 +196,20 @@ def _status(args: argparse.Namespace) -> int:
 def _ledger(args: argparse.Namespace) -> int:
     from . import ledger
 
-    summary = ledger.summarize(ledger.rows([Path(d) for d in args.dirs]))
+    dirs = [Path(d) for d in args.dirs]
+    summary = ledger.summarize(ledger.rows(dirs), by=args.by)
     print(ledger.to_csv(summary) if args.csv else ledger.render(summary), end="" if args.csv else "\n")
+    rej = ledger.rejected(dirs)
+    if rej["n"] and not args.csv:
+        print(f"rejected (not verdicts, still paid for): {rej['n']} file(s), usd {rej['cost_usd_sum']}")
+    return 0
+
+
+def _rescan(args: argparse.Namespace) -> int:
+    from .backends import rescan
+
+    counts = rescan([Path(d) for d in args.dirs])
+    print(", ".join(f"{k}={v}" for k, v in counts.items()))
     return 0
 
 
@@ -206,12 +223,17 @@ def _replay(args: argparse.Namespace) -> int:
         print(exc)
         return 2
     out = Path(args.out)
-    samples = replay.build_samples(Path(args.corpus), out, side=args.side, sample=args.sample, seed=args.seed)
-    print(f"{len(samples)} samples under {out}")
+    try:
+        samples = replay.build_samples(Path(args.corpus), out, side=args.side, sample=args.sample, seed=args.seed,
+                                       agents=args.agents, split=Path(args.split) if args.split else None)
+    except FileNotFoundError as exc:
+        print(exc)
+        return 2
+    print(f"{len(samples)} samples under {out}; set fingerprint {replay.fingerprint(samples)[:16]}")
     if args.build_only:
         return 0
-    counts = replay.run_replay(out, get_backend(args.backend, args.model), budget=budget, model=args.model,
-                               limit=args.limit)
+    counts = replay.run_replay(out, get_backend(args.backend, args.model, args.effort), budget=budget,
+                               model=args.model, effort=args.effort, limit=args.limit, jobs=args.jobs)
     print(", ".join(f"{k}={v}" for k, v in counts.items()))
     return 0 if counts.get("errors", 0) == 0 else 1
 
@@ -219,14 +241,18 @@ def _replay(args: argparse.Namespace) -> int:
 def register(sub: argparse._SubParsersAction) -> None:
     wp = sub.add_parser("wma", help="the world-model agent: review cards, status, ledger, replay")
     cmds = wp.add_subparsers(dest="cmd", required=True)
+    from awm.wma_client import register_decisions
+    register_decisions(cmds)
 
     r = cmds.add_parser("review", help="ask a backend for a verdict on one or more cards (writes exp-NN.verdict[.tag].json)")
     r.add_argument("--dir", required=True)
     r.add_argument("card_id", nargs="+", help="exp-NN ...; several cards are reviewed in parallel and ranked")
     r.add_argument("--backend", choices=("heuristic", "claude", "codex"), default="heuristic")
     r.add_argument("--model")
+    r.add_argument("--effort", default="high",
+                   help="reasoning effort passed to the agent CLI (never inherited from its settings)")
     r.add_argument("--mode", choices=("offline", "online"), default="online")
-    r.add_argument("--budget", help="cpu=,gpu=,wall= in minutes")
+    r.add_argument("--budget", help="cpu=,gpu=,wall= in minutes, turns= for the agent")
     r.add_argument("--history", help="read-only directory of other runs' cards")
     r.add_argument("--tag", help="name this verdict (exp-NN.verdict.<tag>.json) so several agents can review one card")
     r.add_argument("--jobs", type=int, default=4, help="how many cards to review concurrently")
@@ -242,7 +268,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     lg = cmds.add_parser("ledger", help="summarise every verdict under the given directories")
     lg.add_argument("dirs", nargs="+")
     lg.add_argument("--csv", action="store_true")
+    lg.add_argument("--by", choices=("type", "family"), help="slice each group by the WMA's change types or the card's family")
     lg.set_defaults(func=_ledger)
+
+    rs = cmds.add_parser("rescan", help="re-derive access / leak_suspected from the kept transcripts (after a fence change)")
+    rs.add_argument("dirs", nargs="+")
+    rs.set_defaults(func=_rescan)
 
     rp = cmds.add_parser("replay", help="offline replay over the historical card corpus")
     rp.add_argument("--corpus", required=True, help="results/exp-cards/<split> directory with train/ and test/")
@@ -250,9 +281,15 @@ def register(sub: argparse._SubParsersAction) -> None:
     rp.add_argument("--side", choices=("train", "test"), default="train")
     rp.add_argument("--sample", type=int, help="random subset of (run, card) samples")
     rp.add_argument("--seed", type=int, default=0)
+    rp.add_argument("--agents", help="regex on the run id (split file) — keep only runs whose agent matches; "
+                                     "the sessions still carry only the opaque run_ref")
+    rp.add_argument("--split", help="split file mapping run ids to the corpus (default: splits/posttrainbench/<corpus>.yaml)")
     rp.add_argument("--backend", choices=("heuristic", "claude", "codex"), default="heuristic")
     rp.add_argument("--model")
-    rp.add_argument("--budget", help="cpu=,gpu=,wall= in minutes")
+    rp.add_argument("--effort", default="high",
+                    help="reasoning effort passed to the agent CLI (never inherited from its settings)")
+    rp.add_argument("--budget", help="cpu=,gpu=,wall= in minutes, turns= for the agent")
     rp.add_argument("--limit", type=int, help="review at most this many samples this invocation")
+    rp.add_argument("--jobs", type=int, default=1, help="how many samples to review concurrently")
     rp.add_argument("--build-only", action="store_true", help="build the sessions, review nothing")
     rp.set_defaults(func=_replay)

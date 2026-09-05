@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T01:40:57Z'
+situation:
+  elapsed_h: 3.6
+  remaining_h: 6.4
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7067, protocol_n: 150}
+  trigger: "exp-04 solved the format problem (stop-and-one-marker 77/150 -> 145/150) but left 44/150 wrong, and sampling the incumbent on 37473 held-out-style training problems put its pass@1 at 0.649 while 0.863 of those problems are solvable in 4 tries - so the model already knows how to solve most of what it gets wrong, it just does not do so on the first attempt."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/rft_r2_stats.json, locator: "whole file", observation: "pass@1 0.6488, solve_rate(4 samples) 0.8630 over 37473 GSM8K-train-derived problems"}
+    - {path: /home/ben/task/analysis/exp-04_diag.json, locator: "wrong[*]", observation: "44 failures; the sampled ones are reasoning/arithmetic errors, not format errors"}
+  alternatives_rejected:
+    - {option: "A second epoch over data/sft_r1.jsonl", reason: "same 80768 problems and the same solutions; the loss curve was already flat at 0.28-0.29 from step 700, so a second pass buys memorisation rather than accuracy"}
+    - {option: "Fresh problems from OpenMathInstruct-2 instead of new solutions", reason: "measured and rejected: the full gsm8k-derived split (2570505 rows, data/omi2_gsm_full) covers only ~80k distinct problems, and round 1 already used 80768 of them. A 2000-row probe found 1991 of 2000 problems already seen. The available novelty is additional distinct *solutions* per problem, so that is what the fresh half draws."}
+    - {option: "DPO on correct-vs-incorrect self-samples", reason: "the rejection-sampled pool gives correct completions cheaply, but building matched preference pairs and running a second trainer is ~1.5 h of new code at 6.4 h remaining; RFT reuses the trainer that is already validated"}
+    - {option: "Start round 2 from the base checkpoint on the combined corpus", reason: "would cost 282k rows x 1 epoch (~3.2 h) to re-learn what exp-04 already knows; continuing from exp-04 at a lower LR costs 1.3 h"}
+  pitfalls_hit:
+    - {what: "First build_data2 run produced 80 fresh rows instead of 55000 because it excluded any problem seen in round 1, and round 1 had seen essentially all of them", cost_h: 0.15, fix: "exclusion key changed from the problem to the (problem, solution) pair; 217004 pairs excluded, 55000 new pairs found"}
+    - {what: "First launch of this card was killed at step 695/1598 (37 min in): transformers' GenerationConfig.save_pretrained raises ValueError when temperature is set and do_sample is not, and the parent ckpts/exp-04/final ships exactly that config, so every Trainer checkpoint save - and the final save - would have aborted the run. exp-04 did not hit it because its parent was the base snapshot, whose generation_config carries do_sample=true.", cost_h: 0.62, fix: "train_sft.py now resets model.generation_config to the base model's valid config right after from_pretrained; the greedy {temperature: 0.0} config is still written over final/ at the end by json.dump, which bypasses that validation. --save-steps lowered 800 -> 400 so the first checkpoint lands 20 min in and proves the save path."}
+    - {what: "Rejection sampling was slower than planned (8.3k output tok/s, 48 min for 149892 generations) because k=4 over 37473 problems is 150k sequences", cost_h: 0.2, fix: "none needed; it completed, and the k/n_aug numbers are recorded here for the next card"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_r2.jsonl, --out, ckpts/tmp, --dry-run, --limit, '2000'], outcome: "render assertion passed; p50 320 tokens, max 1230, 0/2000 truncated at max_seq_len 1536"}
+    - {command: [python, -c, "GenerationConfig.from_pretrained('ckpts/exp-04/final').save_pretrained('/tmp/gctest')"], outcome: "ValueError - this is the check that caught the save-time abort before the second launch"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/sft_r2_decon_input.jsonl], outcome: "115026 documents scanned, 0 contaminated, 0 matches"}
+problem:
+  statement: "The incumbent gets 44 of 150 dev items wrong, and the errors are substantive rather than formatting: it misreads which quantity the question asks for, divides by the wrong count, or leaves a non-integer where the gold answer is an integer. Its own pass@1 on GSM8K-train-style problems is 0.649 against a 4-sample solve rate of 0.863, so the first-attempt policy is well below what the model can already reach."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_diag.json, locator: "wrong[*] (44 items)", observation: "44/150 wrong, but stopped_and_one_marker is 145/150, so almost none of the loss is format"}
+    - {path: /home/ben/task/analysis/rft_r2_stats.json, locator: "pass_at_1_estimate, solve_rate", observation: "0.6488 vs 0.8630 - a 21-point gap between what the model does and what it can do"}
+  affected_share: 0.29
+  failure_examples:
+    - {id: gsm8k_18abb77f, source: /home/ben/task/analysis/exp-04_diag.json, question: "(dev item, layered square footage)", gold: "60", model_output: "16 + 8 + 4 + 2 = 30 ... divide by 4 levels: 30 / 4 = 7.5 ... ANSWER: 7.5", failure: "answered the average when the question asked for a total, and halved the wrong base"}
+    - {id: gsm8k_1c7c4606, source: /home/ben/task/analysis/exp-04_diag.json, question: "(dev item, bags of dog food)", gold: "5", model_output: "910 cups / 110 cups per bag = 8.27 bags, round up to 9 ... ANSWER: 9", failure: "wrong intermediate quantity carried into the division"}
+    - {id: gsm8k_21c04e2d, source: /home/ben/task/analysis/exp-04_diag.json, question: "(dev item, boat taking on water)", gold: "16", model_output: "2 litres / 10 feet * 84 feet = 16.8 ... ANSWER: 16.8", failure: "non-integer answer where the gold is an integer; no rounding step"}
+    - {id: gsm8k_2b38cfd5, source: /home/ben/task/analysis/exp-04_diag.json, question: "(dev item, inner volume of 3 boxes)", gold: "72", model_output: "5 x 6 x 4 = 120 ... x 3 = 360 ... ANSWER: 360", failure: "ignored the wall thickness, so every dimension was wrong"}
+    - {id: gsm8k_1cdba498, source: /home/ben/task/analysis/exp-04_diag.json, question: "(dev item, cans of tomatoes)", gold: "12", model_output: "... 103. Since each can of tomatoes contains 3 tomatoes ... 104. Since each can ... (16345 chars)", failure: "repetition loop - the one surviving instance of the base model's non-termination"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing training from exp-04 for one epoch on 60026 rejection-sampled self-solutions (kept only where the final answer matches gold) mixed with 55000 previously unused OpenMathInstruct-2 solutions raises dev-150 accuracy above exp-04's 0.7067."
+  mechanism: "Rejection sampling reweights the model's own output distribution towards the reasoning paths that actually reach the right answer on problems it currently gets right only sometimes, which is the direct way to convert the 0.649-to-0.863 pass@1/pass@4 gap into first-attempt accuracy; the 55000 unused solutions are there so the update is not purely self-referential and the model keeps seeing solution styles it did not generate."
+  mechanism_probe: "the rejection-sampled pool's own pass@1 (0.6488) is the quantity the mechanism claims to move; re-sampling after training would measure it directly but costs 48 min, so it is left for a later card if the dev number is ambiguous"
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+2 to +6 pts; note dev-150 stderr is 0.037, so anything under ~4 pts is not separable at this n"
+  falsified_if: "dev-150 accuracy at or below exp-04's 0.7067, or the stop-and-one-marker diagnostic falling below 145/150 (which would mean the self-generated targets degraded the format the first round installed)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_r2.jsonl
+      source: "synthetic:self (60026 rows sampled from ckpts/exp-04/final) + nvidia/OpenMathInstruct-2 split=train, problem_source in {gsm8k, augmented_gsm8k} (55000 rows). Problems come from openai/gsm8k split=train and OpenMathInstruct-2's gsm8k-derived augmentations; the GSM8K test split is never read."
+      n_examples: 115026
+      built_by: /home/ben/task/scripts/build_data2.py
+      build_command: [python, scripts/build_data2.py, --rft, data/rft_r2.jsonl, --seen, data/sft_r1.jsonl, --seen, data/rft_r2.jsonl, --n-fresh, '55000', --per-problem, '1', --out, data/sft_r2.jsonl]
+      selection: "RFT half: k=4 samples per problem at temperature 1.0 / top_p 0.95 from ckpts/exp-04/final over 7473 GSM8K-train problems plus 30000 OpenMathInstruct-2 problems; keep only completions that finish on a stop token, contain 'ANSWER:' exactly once and whose number equals gold; dedup exact; at most 2 per problem. Fresh half: OpenMathInstruct-2 rows whose (problem, solution) pair was not used in round 1, at most 1 per problem, same \\boxed unwrapping and numeric-answer filter as round 1. 10% of all rows carry a 1-3 shot prefix in the harness's own few-shot format."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 (fused linear cross entropy)
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 24, grad_accum: 3, max_seq_len: 1536, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 1}
+    target_format: "prompt = templates/gemma3.jinja rendering of [optional few-shot system message, user=harness MATH_PROMPT_TEMPLATE]; target = chain of thought, blank line, 'ANSWER: N', then <end_of_turn> (token 106). Loss on target tokens only. Vision tower and multimodal projector frozen."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_r2.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, ckpts/exp-05, --lr, '5e-6', --epochs, '1', --bs, '24', --accum, '3', --max-seq-len, '1536', --warmup, '0.03', --seed, '1', --save-steps, '400']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-05_rft.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 400
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7067
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "completions that terminate on a stop token and contain 'ANSWER:' exactly once (exp-04: 145/150) - guards against the self-generated targets eroding the format"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.35
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 1598}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-1598, step: 1598}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-1200, step: 1200, deleted_at: "2026-09-03T05:01Z", deleted_reason: "freed before exp-07's launch; exp-05/final and checkpoint-1598 (identical weights) are both still on disk, so nothing this card promised a later card is lost"}
+  training_summary:
+    final_loss: 0.2376
+    steps: 1598
+    notes: "Loss starts at 0.2695 (already near where exp-04 ended, as expected when continuing from it) and is essentially flat at 0.26 until the cosine tail pulls it to 0.238. 0 of 115026 rows truncated. The first launch of this card was killed at step 695 by the generation_config save bug; this is the second launch, with the fix, and checkpoint-400 landed 20 min in as intended."
+  measurements:
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.02}
+  diagnostic_result:
+    value: 149
+    path: /home/ben/task/analysis/exp-05_diag.json
+    notes: "stop-and-one-marker 145/150 -> 149/150, so the self-generated targets did not erode the format; they tightened it. Median completion 484 chars (exp-04: 504). One 13826-char repetition loop remains."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "0.7067 -> 0.7267 (+2.0 pts) with dev-150 stderr 0.037 on each arm. The direction matches the hypothesis and the format diagnostic improved (145 -> 149 of 150), but +2 pts is well inside the noise of this protocol: the card said in advance that anything under ~4 pts is not separable at n=150, and this is not. The claim is neither supported nor contradicted by a 150-item read."
+  decision: iterate
+  next_step: "exp-06 resolves it rather than guessing: score exp-04/final, exp-05/final and a uniform soup of the two at n=500, where the stderr is ~0.020 instead of 0.037, and take the winner as final_model. The soup is included because the expected training gain sits inside the noise floor, which is exactly the regime where weight averaging tends to pay."

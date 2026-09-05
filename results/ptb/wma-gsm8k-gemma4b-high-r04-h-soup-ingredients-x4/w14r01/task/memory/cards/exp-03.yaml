@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T12:18:34Z'
+situation:
+  elapsed_h: 3.3
+  remaining_h: 6.7
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score:
+      metric: accuracy
+      value: 0.6933
+      protocol_n: 150
+  trigger: "exp-02's checkpoints are all being read under the decode arm they inherited from the base config - do_sample=true, top_k=64, top_p=0.95 and no temperature, i.e. sampling at T=1.0 (eval/base_generation_config.json). That arm is a free variable of the submitted artefact: vLLM takes its default sampling params from the checkpoint's own generation_config.json, and evaluate.py never overrides them."
+  trigger_evidence:
+    - path: /home/ben/task/eval/base_generation_config.json
+      locator: "whole file"
+    - path: /home/ben/task/analysis/exp-02_final_diag.json
+      locator: "summary: accuracy 0.6933, ends_with_answer_line 1.0, stop_reasons {stop: 150}, mean_chars 468"
+  alternatives_rejected:
+    - option: "Leave the shipped sampling arm in place and spend the slot on more training"
+      reason: "The arm is a property of the artefact that will be graded, not of the experiment: a single 3-minute read decides it, and at n=150 the sampling arm also carries a ~3.3 pp repeat spread against ~1.3 pp greedy, so fixing it makes every later comparison sharper as well."
+    - option: "Tune temperature/top_p on a grid (T=0.2/0.5/0.7)"
+      reason: "GSM8K is scored on a single response, so there is no diversity benefit to trade against; the interesting comparison is the two endpoints. A grid would also need a repeat at each point to beat the sampling noise floor and would cost 5 reads instead of 1."
+    - option: "Test the decode arm on checkpoint-2170 instead of final"
+      reason: "final is the incumbent at 0.6933 and is what would be packaged; the arm has to be measured on the artefact that ships."
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, scripts/set_decode.py, --ckpt, ckpts/exp-03_greedy, --mode, greedy]
+      outcome: "Writes do_sample=false, temperature=0.0, removes top_k/top_p, keeps eos_token_id [1, 106]; the original file is preserved as generation_config.json.orig. See result.training_summary for the printed config."
+problem:
+  statement: "The checkpoint that would be submitted decodes GSM8K by sampling at temperature 1.0 with top_k=64 and top_p=0.95, because those fields survive save_pretrained from google/gemma-3-4b-pt and vLLM adopts them as the server's default sampling params. On a single-response, exact-match benchmark this throws away accuracy for no benefit and inflates the run-to-run spread of every measurement in this session."
+  evidence:
+    - path: /home/ben/task/eval/base_generation_config.json
+      locator: "do_sample, top_k, top_p; temperature absent"
+      observation: "No temperature field means the vLLM OpenAI server's default of 1.0 applies; the checkpoint therefore samples from the full top-64/top-p-0.95 distribution at every token."
+    - path: /home/ben/task/analysis/exp-02_final_diag.json
+      locator: "summary"
+      observation: "The format failure is gone (100% of completions end on an 'ANSWER: N' line, 150/150 stop_reason=stop, mean 468 chars), so whatever is left of the 30.7% error rate is reasoning or sampling noise - not truncation."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Rewriting ckpts/exp-02/final's generation_config.json to do_sample=false / temperature=0.0 (greedy) and leaving the weights byte-identical raises GSM8K accuracy at --limit 150 relative to the same weights read under the shipped sampling arm."
+  mechanism: "Every token of a chain of thought is a chance for T=1.0 sampling to pick a wrong digit or a wrong operation; one such slip invalidates the whole answer under exact match. Greedy decoding takes the argmax the SFT put there, which is the mode the training objective actually optimised."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+3 to +10 points"
+  falsified_if: "Greedy accuracy is not above 0.6933 + 0.033 (the sampling-arm noise floor at n=150), or the diagnostic shows greedy decoding causing repetition loops (stop_reason max_tokens appearing where the sampled arm had none)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_baseline_data.md
+      source: "no training data - this card only rewrites generation_config.json and re-evaluates"
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "official inspect_evals/gsm8k test split, first 150, identical to every other card in this session"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 default sampling params read from the checkpoint's generation_config.json"
+    peft: "none"
+    hyperparams: {}
+    target_format: "weights unchanged from exp-02; only generation_config.json differs"
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_exp03.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_exp03.sh
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.15
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '2', --max-tokens, '4000', --gpu-memory-utilization, '0.3']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150, fewshot=10 seed=42)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.6933
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "scripts/analyze_eval.py on the greedy log: stop_reason histogram (a greedy repetition loop would show up as max_tokens), mean completion length vs the sampled arm's 468 chars, and ends_with_answer_line."
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.06
+  output_checkpoint: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03_greedy, step: 4342}
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "No training. generation_config.json written as {do_sample: false, temperature: 0.0, eos_token_id: [1, 106]} with top_k/top_p removed; temperature is the number 0.0, not JSON null (WMA tier-1 precondition checked before the eval started). Weights are hard links to ckpts/exp-02/final, so the arm is the only difference."
+  measurements:
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.0200}
+    - {metric: accuracy, value: 0.6800, n: 150, path: /home/ben/task/eval/exp-02_final_dev150_rep2.json, delta_vs_comparator: -0.0133}
+  diagnostic_result:
+    value: 0.98
+    path: /home/ben/task/analysis/exp-03_greedy_diag.json
+    notes: "Greedy: 147/150 stop_reason=stop, 3 hit the 4000-token cap (the sampled arm had 0), 98% end on an 'ANSWER: N' line, mean completion 689 chars against the sampled arm's 468 and one 13278-char outlier. Greedy does introduce a small number of repetition loops, but 3/150 is below the size of the gain."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Greedy reads 0.7133 against the sampled arm's 0.6933; a C18 repeat of the sampled arm on byte-identical weights reads 0.6800, so the sampled arm is 0.6867 +/- 0.0067 over two draws and greedy is +2.7 pts. That is larger than the observed two-read spread but smaller than the 3.3 pp sampling floor the card set as its bar, so the claim as written is not established at n=150."
+  decision: adopt
+  next_step: "Adopt greedy for the artefact anyway, on three grounds the size of the point estimate does not capture: it is never worse in the measurement, it makes the graded number reproducible instead of one draw from a T=1.0 distribution, and it removes the 3.3 pp floor from every later comparison. The 3 repetition loops are the one cost and are worth re-checking on the stage-2 checkpoint. Greedy is what will be packaged into final_model; sampled reads are kept only as the comparator series for exp-01 and exp-02."

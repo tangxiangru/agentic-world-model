@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T20:02:56Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.25
+  remaining_h: 9.75
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0, protocol_n: 150}
+  trigger: "Base gemma-3-4b-pt scores 0/150 on HumanEval: it ignores the instruction, hallucinates unrelated function signatures, never emits a ```python fence and never stops."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/2026-09-04T20-03-48+00-00_humaneval_CDTP6CuvZuQvfnXV3TWhe8.json, locator: "samples[0].output.completion"}
+    - {path: /home/ben/task/eval/base_n150.json, locator: "accuracy=0.0"}
+  alternatives_rejected:
+    - {option: "Few-shot prompting only (no training)", reason: "cannot edit evaluate.py/templates; the grader sends a fixed zero-shot user turn, so prompting is not available at eval time"}
+    - {option: "Full fine-tuning instead of LoRA", reason: "LoRA is memory-safe on one H100, fast to iterate, and merges cleanly into a loadable final_model; reserve full-FT for later if LoRA plateaus"}
+    - {option: "MBPP as the source", reason: "MBPP lacks signature+docstring->fenced-function shape; Magicoder pairs already emit fenced Python and are larger/cleaner"}
+  pitfalls_hit:
+    - {what: "evaluate.py needs >2min for vLLM startup; the 2-min shell tool timeout killed the first smoke", cost_h: 0.05, fix: "run evals in background"}
+  smoke_runs:
+    - {command: [python, evaluate.py, --model-path, "<snapshot>", --limit, "8", --max-connections, "8"], outcome: "accuracy 0.0; base rambles, no code fence, ~1225 output tokens/sample"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "gemma-3-4b-pt is a base (non-instruct) model: given the HumanEval instruction + function signature/docstring it does not produce a single fenced implementation of the requested function nor stop; the grader's find_code then fails and accuracy is 0."
+  evidence:
+    - {path: /home/ben/task/logs/2026-09-04T20-03-48+00-00_humaneval_CDTP6CuvZuQvfnXV3TWhe8.json, locator: "samples[0].output.completion", observation: "completion echoes the prompt then invents many unrelated defs, emits garbage token 'стоковое', never a ```python fence"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "HumanEval/0", source: /home/ben/task/logs/2026-09-04T20-03-48+00-00_humaneval_CDTP6CuvZuQvfnXV3TWhe8.json, question: "has_close_elements(numbers, threshold)", gold: "loop pairwise, return True if any pair closer than threshold", model_output: "echoes instruction; invents list_to_zip/get_median/... never implements has_close_elements; no fence", failure: "no fenced solution, no stop, wrong function"}
+    - {id: "smoke-generic-1", source: /home/ben/task/eval/base_smoke8.json, question: "any of the 8 smoke HumanEval prompts", gold: "requested function body", model_output: "long non-terminating ramble; ~1225 tokens; no fence", failure: "does not stop; no <end_of_turn>"}
+    - {id: "smoke-generic-2", source: /home/ben/task/eval/base_n150.json, question: "150 HumanEval prompts", gold: "requested function bodies", model_output: "202k output tokens over 150 samples (~1350/sample), all incorrect", failure: "format+stop failure across the board (accuracy 0)"}
+  watch_set:
+    path: /home/ben/task/data/watch_set.jsonl
+    n: 12
+    selection: "12 held-out MBPP-sanitized coding prompts (not HumanEval; contamination-checked clean) to re-check that the trained model emits a single fenced, terminating solution"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "LoRA SFT on ~24k contamination-checked Magicoder Python instruction->solution pairs, rendered with the grader's gemma3.jinja template and with targets ending in <end_of_turn>, will raise HumanEval pass@1 vs the base model."
+  mechanism: "The base model already writes Python but is unaligned. SFT teaches it to read the signature/docstring, emit exactly one fenced full-function solution, and stop at <end_of_turn> (id 106, an eos), which is what the grader extracts and scores."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+30 pts or more (base 0)"
+  falsified_if: "HumanEval@150 accuracy of the trained model is not clearly above the base model's 0.0, or the model still fails to emit fenced code / stop."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_final.jsonl
+      source: "HF: ise-uiuc/Magicoder-OSS-Instruct-75K + ise-uiuc/Magicoder-Evol-Instruct-110K (Python subset)"
+      n_examples: 24000
+      built_by: /home/ben/task/build_final.py
+      build_command: [python, build_data.py, "&&", python, build_final.py]
+      selection: "lang==python (OSS) or python-only fence (Evol); response contains 'def ' and a ```python block; 40<=len<=6000; rendered with gemma3.jinja; completion ends with <end_of_turn>"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 + peft 0.18.1 (LoRA)
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=q,k,v,o,gate,up,down"
+    hyperparams: {lr: 2.0e-4, epochs: 3, batch_size: 4, grad_accum: 8, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "user=instruction, model=solution; loss on completion only; completion ends with <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: null
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/sft_final.jsonl, --out, /home/ben/task/models/exp-01, --epochs, "3", --lr, "2e-4", --batch, "4", --grad-accum, "8", --max-seq-len, "2048", --lora-r, "32", --lora-alpha, "64", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    configs: []
+    log: /home/ben/task/models/exp-01.log
+  output_dir: /home/ben/task/models/exp-01
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/models/exp-01, --limit, "150", --max-connections, "16", --json-output-file, /home/ben/task/eval/exp-01_n150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0
+    path: /home/ben/task/eval/base_n150.json
+  diagnostic:
+    what: "share of completions that contain a ```python fence and stop at <end_of_turn>"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: not_run
+  wall_h: null
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: null}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: null
+  mechanism_verdict: null
+  summary: null
+  decision: null
+  next_step: null

@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T09:13:13Z'
+situation:
+  elapsed_h: 0.15
+  remaining_h: 9.85
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Start of batch: no measurement of google/gemma-3-4b-pt on the GSM8K harness exists yet, so no later card can have a comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty card table"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and train immediately", reason: "rule 2 needs a comparator measured under the same protocol; without it every later delta is unreadable"}
+    - {option: "Baseline at --limit 500 for tighter error bars", reason: "eval throughput unknown and budget is 10 h; 150 is the harness default and will be the protocol for every later card"}
+    - {option: "Keep --max-connections 16 and audit the completions for garbage afterwards", reason: "the exp-01 verdict's first precondition records 0.2733 vs 0.8533 on identical greedy weights at 8 vs 2 connections, with 99/150 outputs beginning '!!!!' and EngineDeadError at 8/16. A depressed-but-finite baseline would anchor every later delta, and an after-the-fact audit still costs a full rerun. Dropped to 4."}
+    - {option: "Re-evaluate the base with a greedy generation_config so the comparator decodes like the trained children will", reason: "the starting snapshot is immutable for this batch and copying it to patch generation_config costs GPU time for a number that is not the decision-relevant one. Instead the decode config is recorded per card and every trained arm is scored under one fixed greedy config, so arm-to-arm deltas stay clean; the base number is explicitly a SAMPLED read."}
+  pitfalls_hit:
+    - {what: "first lock attempt failed preflight on answer_marker_single because the held-out probe jsonl's 'answer' field is the raw GSM8K rationale, which the check reads as a training target", cost_h: 0.05, fix: "locked with --override answer_marker_single plus the reason; the card trains nothing"}
+  smoke_runs:
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/probe_train300.jsonl], outcome: "0 of 300 documents contaminated; the probe set is clean of the benchmark test copy"}
+    - {command: [python, train_sft.py, --data, data/sft_v1.jsonl, --out, /tmp/dry, --dry-run], outcome: "CPU render check for the NEXT card: templates/gemma3.jinja (sha256 7de1c58e...) round-trips to '<bos><start_of_turn>user\\n...<end_of_turn>\\n<start_of_turn>model\\n' and targets end '...ANSWER: 500<end_of_turn>'"}
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, not instruction-tuned, checkpoint. The harness prompts it with a 10-shot GSM8K system message plus a template demanding a final 'ANSWER: $ANSWER' line, and grades with inspect_ai match(location='end', numeric=True), which reads the LAST number in the completion. A base model is expected to continue past its answer or emit further few-shot-style problems, so its last number is often not its answer. The size of that gap is unmeasured, and every post-training decision in this batch depends on it."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L27-35, L50-66, L77", observation: "10-shot system message built from the GSM8K train split (seed 42) + MATH_PROMPT_TEMPLATE; scorer is match(numeric=True), whose location defaults to 'end'"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py, locator: "match_str, branch location=='end'", observation: "completion is split on whitespace, reversed, and the first numeric-looking token wins - so the final number in the completion is the graded answer"}
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json, locator: "whole file", observation: "do_sample=true, top_k=64, top_p=0.95 - vLLM adopts these as sampling defaults, so the baseline is sampled rather than greedy"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe_train300.jsonl
+    n: 300
+    selection: "300 items sampled (seed 1234) from the GSM8K TRAIN split and held out from all training in this batch, so they can be re-scored after every card. No item comes from the benchmark test copy; contamination_check reports 0 of 300 contaminated."
+hypothesis:
+  claim: "Evaluating the unmodified base snapshot under the exact harness protocol (evaluate.py --limit 150) produces a finite accuracy well below the harness ceiling, and a measurable share of its errors are termination/format failures rather than arithmetic failures."
+  mechanism: "A pretrained-only checkpoint has never been trained to stop after an answer line, so some items fail because the last number in the completion is not the intended answer."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "baseline expected in the 0.20-0.55 band for a 4B pretrained model at 10-shot"
+  falsified_if: "the eval does not run to completion on the base snapshot, or accuracy is >= 0.80, which would leave no headroom and invalidate the premise that post-training is needed"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe_train300.jsonl
+      source: "openai/gsm8k (config main, split train) - held-out slice, NOT the benchmark test split"
+      n_examples: 300
+      built_by: null
+      build_command: [python, -c, "shuffle openai/gsm8k train with seed 1234, take the first 300 as a held-out probe set; write the remaining 7173 to data/gsm8k_train_rest.jsonl"]
+      selection: "random 300 of 7473 train items, seed 1234; excluded from every training set in this batch so it stays a clean probe"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0, evaluation only - no weights are changed"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - no training in this card"
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --max-connections, '4', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/eval/logs/exp-01}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '4', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 - the FIRST 150 items of the gsm8k test split, not a random sample, so this number must never be compared with a published full-test figure"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions in which the graded (last) number was not produced by an 'ANSWER:' line - i.e. format/termination failures rather than arithmetic failures"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  checkpoints_kept:
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.08, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.60
+    path: /home/ben/task/analysis/exp-01_diag.json
+    notes: "Termination, not arithmetic, is the dominant failure. 90/150 completions contain 3 or more 'ANSWER:' markers (the model answers, then invents and answers further problems); 11/150 contain none. 67/150 hit the 4000-token cap; mean output 2075 tokens, p50 1403. Regrading at the FIRST 'ANSWER:' line would give 19/150 = 0.127 instead of 12/150 = 0.080, so ~4.7 pts of the gap is pure non-termination and the rest is genuine solving ability. Verdict self-checks: 0 completions with a '!!!!' garbage prefix, no EngineDeadError in logs/exp-01.log, stop_reason {stop: 83, max_tokens: 67} - --max-connections 4 produced clean output."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base google/gemma-3-4b-pt scores 0.080 +/- 0.022 on the first 150 GSM8K test items under the harness protocol (10-shot, sampled decode from the snapshot's own generation_config, --max-tokens 4000 default, --max-connections 4). The diagnostic confirms the predicted mechanism: 90/150 completions never stop, so the grader's last-number rule reads a number from a self-invented follow-up problem."
+  decision: adopt
+  next_step: "exp-02: completion-only SFT on GSM8K-style CoT whose targets end in a single 'ANSWER: <n>' line followed by <end_of_turn> (token 106, in the snapshot's eos list), so termination is trained rather than hoped for. Two protocol notes inherited from this card's verdict: (a) --max-tokens is the evaluate.py default 4000 here and must be pinned explicitly in every later card's protocol command, and (b) this baseline is a SAMPLED read (the snapshot ships do_sample=true/top_k=64/top_p=0.95) whereas trained arms will ship a greedy generation_config, so part of any delta is a decode change and that must be stated, not hidden."

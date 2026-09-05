@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T22:51:46Z'
+situation:
+  elapsed_h: 7.2
+  remaining_h: 2.8
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.722, protocol_n: 500}
+  trigger: "exp-05 scored both finalists at n=500: exp-04 0.722, exp-03 0.704, but paired they exchange 46 items for 37, so each solves ~37 items the other misses. Two models with that much complementary skill and a shared initialisation are exactly the case a weight-space average is meant for, and it costs no training."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-05_paired500.json, locator: "gained_by_b=46, lost_by_b=37, discordant=83 of 500"}
+    - {path: /home/ben/task/eval/exp-05_exp04_dev500.json, locator: "accuracy 0.722"}
+    - {path: /home/ben/task/eval/exp-05_exp03_dev500.json, locator: "accuracy 0.704"}
+  alternatives_rejected:
+    - {option: "A fifth training run in the remaining 2.8 h", reason: "1.5-1.9 h of training plus an n=500 read would leave no slack for packaging, and the result would land on the same unresolvable ruler"}
+    - {option: "Ensembling the two models at decode time (majority vote)", reason: "the grader runs one model directory through vLLM with one generation per item, so a decode-time ensemble cannot be submitted"}
+    - {option: "Souping exp-02/final in as well", reason: "exp-02 is 6 points behind on dev-150 and trained on a strict subset of the data; it would drag the average towards the weaker solution without adding a distinct skill"}
+  pitfalls_hit:
+    - {what: "make_soup.py hit the same transformers validation that bit exp-02: loading a checkpoint whose generation_config is already greedy and re-saving it raises ValueError on do_sample=False with temperature/top_k", cost_h: 0.05, fix: "null the three fields on the object before save_pretrained and let fix_gen_config.py rewrite the file"}
+  smoke_runs:
+    - {command: [python, make_soup.py, --models, ckpts/exp-03/final, ckpts/exp-04/final, --out, ckpts/soup34], outcome: "8.1 GB written; state dicts matched key-for-key; generation_config temperature 0.0 / top_k 1 / eos [1,106]"}
+problem:
+  statement: "The two finalists disagree on 83 of 500 official items (46 only exp-04 gets, 37 only exp-03 gets) yet neither dominates, so about 7% of the benchmark is solvable by a model already in hand and missed by whichever single checkpoint is submitted."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_paired500.json, locator: "lost_ids: 37 items exp-03 solves and exp-04 does not", observation: "the incumbent's 0.722 leaves 37 items on the table that its sibling already solves"}
+    - {path: /home/ben/task/analysis/exp-04_paired.json, locator: "watch_fixed=28, watch_regressions=14", observation: "the same two-way exchange on the held-out train items, so it is a property of the two models rather than of one item set"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "conclusion.summary", observation: "three independent reads order exp-04 above exp-03, but never by more than the noise"}
+  affected_share: 0.166
+  failure_examples:
+    - {id: soup-target-1, source: /home/ben/task/analysis/exp-05_paired500.json, question: "the 37 items in lost_ids", gold: "various", model_output: "exp-04 wrong, exp-03 right", failure: "solvable by a sibling checkpoint, missed by the submission"}
+    - {id: soup-target-2, source: /home/ben/task/analysis/exp-05_paired500.json, question: "the 46 items in gained_ids", gold: "various", model_output: "exp-03 wrong, exp-04 right", failure: "the mirror image; an average has to keep these while picking up the others"}
+    - {id: soup-risk-1, source: /home/ben/task/analysis/exp-03_paired.json, question: "29 watch items lost between exp-02 and exp-03", gold: "various", model_output: "wrong after the on-policy round", failure: "weight changes between these checkpoints move items both ways, which is the risk an average runs too"}
+  watch_set:
+    path: /home/ben/task/data/dev_train_holdout.jsonl
+    n: 250
+    selection: "the 250 GSM8K-train items held out since exp-02 (exp-02 0.656, exp-03 0.636, exp-04 0.692); scored for the soup only if it leads on the n=500 read"
+hypothesis:
+  claim: "A uniform weight-space average of exp-03/final and exp-04/final scores higher on the 500-item official read than exp-04/final's 0.722."
+  mechanism: "Both checkpoints start from the same frozen snapshot and were trained for one epoch on overlapping corpora, so they should lie in the same loss basin; averaging such fine-tunes cancels the part of each update that is data-order noise and keeps what both agree on, which is where the 83 discordant items live."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+0 to +2 points; a soup below 0.71 would mean the two are not in one basin"}
+  falsified_if: "the soup scores at or below 0.722 at n=500"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/soup34/config.json
+      source: "merge of exp-03/final and exp-04/final; this card reads no training data"
+      n_examples: 2
+      built_by: /home/ben/task/make_soup.py
+      build_command: [python, make_soup.py, --models, ckpts/exp-03/final, ckpts/exp-04/final, --out, ckpts/soup34]
+      selection: "uniform 0.5/0.5 average of every tensor, accumulated in fp32 and cast back to bf16"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: merge
+    framework: transformers 4.57.3
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null,
+      scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from the parents: chain of thought then a single 'ANSWER: <integer>' line terminated by <end_of_turn>; greedy generation_config (temperature 0.0, top_p 1.0, top_k 1), eos_token_id [1,106]"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_eval.sh, ckpts/soup34, exp-06_soup_dev500, '500']
+    cwd: /home/ben/task
+    script: /home/ben/task/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/eval_exp-06_soup_dev500.log
+  output_dir: /home/ben/task/ckpts/soup34
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.3
+evaluation:
+  protocol:
+    command: [bash, run_eval.sh, '{checkpoint}', '{tag}', '500']
+    dev_set: "official --limit 500 (inspect_evals/gsm8k test split, first 500 items, 10-shot system message seeded 42), --max-connections 16, --gpu-memory-utilization 0.6, greedy generation_config"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.722
+    path: /home/ben/task/eval/exp-05_exp04_dev500.json
+  diagnostic:
+    what: "paired item-level comparison against exp-04 at n=500 via pair_eval.py: how many of the 37 items only exp-03 solved the soup recovers, and how many of exp-04's own it loses"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/soup34
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup34, step: 0}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 3477}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 2686}
+  training_summary: {final_loss: null, steps: null, notes: "no training; a 0.5/0.5 tensor average, verified bit-exact against the bf16 mean of both parents for embed_tokens and a sampled mlp weight"}
+  measurements:
+    - {metric: accuracy, value: 0.726, n: 500, path: /home/ben/task/eval/exp-06_soup_dev500.json, delta_vs_comparator: 0.004}
+  diagnostic_result:
+    value: 0.004
+    path: /home/ben/task/analysis/exp-06_paired500.json
+    notes: "paired against exp-04 at n=500: 35 gained, 33 lost, 68 discordant - a coin flip, and the 0.4-point aggregate lead is a fifth of the n=500 noise floor. The soup also has slightly worse termination hygiene than exp-04 (5 vs 3 items with no ANSWER line and 5 vs 3 hitting the token cap)."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "The soup scores 0.726 against exp-04's 0.722 at n=500, nominally ahead but by a fifth of the noise floor, and the paired split is 35/33. The two parents are close enough to average without damage - which does say they sit in one basin - but no gain is demonstrated."
+  decision: reject
+  next_step: "final_model stays on exp-04/final under the rule pre-registered before the read: do not move the submission on a sub-floor aggregate. exp-07 verifies final_model under the grader's own default invocation (--max-connections 2, --gpu-memory-utilization 0.3) from a fresh process."

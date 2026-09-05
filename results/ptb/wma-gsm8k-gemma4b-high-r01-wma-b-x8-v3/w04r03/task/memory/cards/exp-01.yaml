@@ -1,0 +1,102 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-02T22:09:35Z'
+situation:
+  elapsed_h: 0.1
+  remaining_h: 9.9
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Batch start: no number exists yet for the frozen base snapshot under the harness protocol, so no later card can have a legal comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty table - no prior cards"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and train immediately", reason: "rule 2 of the protocol: a comparator must be measured under the same protocol; without it every later delta is unfalsifiable"}
+    - {option: "Baseline at --limit 500 for a tighter CI", reason: "10-shot prompts at 4k max_tokens; 150 items is the harness default and keeps the measurement under ~20 min"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained (non-instruct) checkpoint; its GSM8K accuracy and, more importantly, its failure modes under this harness (10-shot system message, 'ANSWER: $N' last line, match(numeric=True) on the last number of the completion) are unmeasured."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L20-40 MATH_PROMPT_TEMPLATE; L45-70 fewshot=10 seed=42; scorer=match(numeric=True)", observation: "grader reads the LAST number in the completion; completion must end with the answer"}
+    - {path: /home/ben/task/templates/gemma3.jinja, locator: "L41-47", observation: "turns terminate with <end_of_turn>; generation prompt is '<start_of_turn>model\\n'"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Measuring the frozen base snapshot under the harness protocol will yield a baseline accuracy and a dump of completions that shows which of two failure modes dominates: wrong arithmetic/reasoning, or format failure (no 'ANSWER: N' final line / run-on generation past the answer)."
+  mechanism: "A pretrained-only checkpoint has no turn-taking prior, so under a chat template it tends to keep generating past the answer; the grader takes the last number in the completion, so run-on text scores zero even when the reasoning was right. The 10-shot system message partially suppresses this."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "no change expected - this is the measurement of base_model itself"}
+  falsified_if: "The eval fails to run (vLLM cannot load the snapshot, or the gemma3 template is rejected), leaving no baseline number."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      source: openai/gsm8k
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "official harness eval set, first 150 test items (--limit 150); no training data - this card trains nothing"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect-ai + vllm 0.11.0
+    peft: none
+    hyperparams: {seed: null}
+    target_format: "n/a - measurement only"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, "150", --max-connections, "16", --json-output-file, /home/ben/task/eval/exp-01_base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions whose final line is not of the form 'ANSWER: <number>' (format failure rate)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.08
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training - measurement card"}
+  measurements:
+    - {metric: accuracy, value: 0.0533, n: 150, path: /home/ben/task/eval/exp-01_base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.24
+    path: /home/ben/task/analysis/exp-01_diag.json
+    notes: "only 36/150 completions END with an 'ANSWER: <number>' line (format failure rate 0.76); 63/150 hit max_tokens; mean completion 6222 chars. Taking the FIRST 'ANSWER:' line instead of the last number would score 23/150 = 0.153, so ~15 pts of the gap is run-on formatting and the rest is genuine math error under the harness's temperature-1 sampling default."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base snapshot scores 0.053 on dev-150. The dominant failure is exactly the predicted one: with no turn-taking prior the model continues the few-shot pattern and invents further question/answer pairs after its own answer, so the grader's last-number rule reads a number from a hallucinated problem (76% of completions do not end with an ANSWER line; 42% ran to max_tokens)."
+  decision: iterate
+  next_step: "SFT on GSM8K-style CoT with the grader's exact chat template so every target ends '\n\nANSWER: <n><end_of_turn>'; this should fix the run-on failure outright. Baseline 0.053 at n=150 is the comparator for exp-02."

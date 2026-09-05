@@ -1,0 +1,122 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-02T22:44:53Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.15
+  remaining_h: 9.85
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Start of the batch: no measured number exists for the immutable base checkpoint under the harness protocol, so no later card could have a comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/evaluate.py, locator: "lines 30-40 (default --limit 150)"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and go straight to SFT", reason: "protocol rule 2: a comparator must be measured under the same protocol; without it every later delta is unfalsifiable"}
+    - {option: "Baseline at --limit 500 for tighter error bars", reason: "eval throughput unknown and budget is 10 h; 150 is the harness default and every card will share it"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruction-tuned checkpoint. The harness grades with inspect_ai match(numeric=True, location='end'), which reads the LAST numeric token of the completion, so a model that does not stop scores near zero however good its reasoning is. The base tokenizer declares eos=<eos> (id 1) while the grading chat template terminates turns with <end_of_turn> (id 106). Neither the base accuracy nor which terminator the served model honours is currently known."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py, locator: "match_str, location=='end' branch", observation: "the score is decided by the last numeric-looking whitespace-delimited token of the completion"}
+    - {path: /home/ben/task/templates/gemma3.jinja, locator: "'<end_of_turn>' emitted after every turn", observation: "the grading template's turn terminator is <end_of_turn>, not <eos>"}
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/tokenizer_config.json, locator: "eos_token", observation: "tokenizer eos_token is <eos>; generation_config.json lists eos_token_id [1, 106]"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/dev_train_holdout.jsonl
+    n: 300
+    selection: "300 items sampled (seed 12345) from the GSM8K *train* split and held out of every training file for the rest of the batch. No benchmark test item is used - protocol rule 7."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Running the harness evaluation unchanged on the immutable base snapshot yields a non-null accuracy on the 150-item protocol that becomes the comparator for every later card, and the per-sample logs will show whether generations terminate at all and on which token."
+  mechanism: "The task prepends a 10-shot system message whose exemplars end in 'ANSWER: N', so even a pretrained model has an in-context format to imitate; whether it also learns to stop is what the log will reveal."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "no directional claim - this run defines the baseline. Prior for gemma-3-4b-pt few-shot GSM8K is roughly 0.20-0.45 if generations terminate, near 0.00 if they do not."
+  falsified_if: "The eval does not run to completion on the base snapshot, or produces no accuracy metric, so no comparator can be recorded."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev_train_holdout.jsonl
+      source: "openai/gsm8k (main, train split, revision e53f048)"
+      n_examples: 300
+      built_by: /home/ben/task/build_dev.py
+      build_command: [python, build_dev.py]
+      selection: "random 300 of the 7473 train items, seed 12345; held out of all training data for the whole batch"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0 via the harness evaluate.py"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - measurement only, no training target"
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --max-connections, '16', --json-output-file, /home/ben/task/eval/base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, unshuffled)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions that terminate before the 4000-token cap, and which token they end on"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.05
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.05333, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.58
+    path: /home/ben/task/logs/2026-09-02T22-48-58+00-00_gsm8k_JSPoQACxJ83xV9t3wbqGWW.json
+    notes: "87/150 (0.58) completions terminated; 63/150 hit the 4000-token cap. 95/150 completions contain 'ANSWER:' more than once - the model imitates the 10-shot block by inventing further problems after answering. Accuracy conditional on terminating is only 0.069, so termination alone is not the whole defect: the model answers and then keeps going, and match(location='end') reads the last number of the LAST invented problem. Sampling is also non-greedy: the base generation_config.json sets do_sample=true, top_k=64, top_p=0.95 and vLLM adopts those as server defaults, while inspect sends no temperature (so T=1.0)."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base google/gemma-3-4b-pt scores 0.053 +/- 0.018 on the 150-item protocol. The score is dominated by two format defects, not by reasoning: the model does not stop after its answer (95/150 completions contain a second 'ANSWER:'), and the served defaults sample at T=1.0/top_p=0.95/top_k=64."
+  decision: iterate
+  next_step: "exp-02: completion-only SFT on GSM8K-train-derived data with every target ending in a single 'ANSWER: N' line followed by <end_of_turn>, prompts rendered with the grader's own templates/gemma3.jinja. Also make the final artifact greedy by rewriting generation_config.json, and point the tokenizer's eos at <end_of_turn>."

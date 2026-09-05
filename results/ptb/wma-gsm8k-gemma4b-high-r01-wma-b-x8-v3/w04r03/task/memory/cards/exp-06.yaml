@@ -1,0 +1,110 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T04:16:30Z'
+situation:
+  elapsed_h: 6.7
+  remaining_h: 3.3
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.814, protocol_n: 500}
+  trigger: "exp-05's rejection-sampling round came in below its parent (0.794 and 0.788 at n=500 against 0.814), so there are now three scored checkpoints on one fine-tuning trajectory and no further training idea that fits the 3.3 h left; weight averaging over that trajectory costs 0.5 h and is the only remaining lever."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-05_final_dev500.json, locator: accuracy, observation: "0.794 after 2 RFT epochs"}
+    - {path: /home/ben/task/eval/exp-05_ck450_dev500.json, locator: accuracy, observation: "0.788 after 1 RFT epoch"}
+    - {path: /home/ben/task/eval/exp-04_final_dev500.json, locator: accuracy, observation: "0.814, the incumbent"}
+  alternatives_rejected:
+    - {option: "Train with the grader's 10-shot prefix on most rows", reason: "measured, not assumed: the probe on 300 held-out GSM8K-TRAIN items scores 0.887 zero-shot and 0.870 ten-shot, a 1.7 pt gap at n=300. There is almost nothing to recover, and a prefix-matched round would cost ~1.5 h"}
+    - {option: "One more epoch from exp-04 on fresh OpenMathInstruct-2 shards", reason: "1.6 h of training plus 0.25 h of eval against 3.3 h remaining leaves no margin for packaging and the confirmation run, and exp-05 just showed that continuing this checkpoint on more of the same distribution does not help"}
+    - {option: "Ship exp-04 and stop", reason: "still the fallback - final_model already holds exp-04 and is verified. This card only replaces it on a paired win, so the downside is bounded at the 0.5 h it costs"}
+  pitfalls_hit:
+    - {what: "exp-05 (2 RFT epochs on 12336 self-generated solutions over only 7330 problems + 20k off-policy rows) lost 2 pts against its parent; on-policy data on a narrow problem set at a model already at 0.83 is a regression, not a gain", cost_h: 1.4, fix: "no fix - a real negative result; recorded so the next agent does not repeat it"}
+  smoke_runs:
+    - {command: [python, scripts/probe_eval.py, --model, /home/ben/task/ckpts/exp-04/final, --n, "300", --shots, "0", "10"], outcome: "0-shot 0.887 / 10-shot 0.870, format_ok 0.997 / 0.993 - training zero-shot and grading 10-shot costs at most ~1.7 pts"}
+problem:
+  statement: "The best checkpoint scores 0.814 at n=500 and there is no training experiment left that fits the remaining budget. Three checkpoints of one trajectory (exp-04/final, exp-05/ck450, exp-05/final) are each individually worse than or equal to the incumbent, but they are all in the same loss basin and their errors are not identical."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04_final_dev500.json, locator: accuracy, observation: "incumbent 0.814 +/- 0.017 at n=500"}
+    - {path: /home/ben/task/analysis/probe_exp04.json, locator: "0shot vs 10shot", observation: "the prompt-format lever is worth at most 1.7 pts, so it is not where the remaining error is"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Uniformly averaging the weights of checkpoints along the exp-04 -> exp-05 trajectory will score at least as high as the best single checkpoint on dev-500, and the paired item-level comparison against exp-04 will show a net gain rather than a wash."
+  mechanism: "exp-05 continued training from exp-04, so the three checkpoints are successive points of one trajectory in one basin and their weights can be averaged directly. Averaging late-trajectory points behaves like an EMA over the tail of training: it cancels the part of each checkpoint's error that comes from where its last few hundred steps happened to land, while keeping what all three agree on. It cannot recover knowledge none of them has, which bounds the expected gain at a few points."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "0 to +2 pts on dev-500; more likely a wash than a large gain"}
+  falsified_if: "both soups score at or below 0.814 on dev-500."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "derived:exp-05 - no new data; this card trains nothing and reads no data. The file is named only because the checkpoints being averaged were produced from it."
+      n_examples: 32336
+      built_by: /home/ben/task/scripts/build_rft.py
+      build_command: [python, scripts/build_rft.py, --out, data/rft_mix_v1.jsonl]
+      selection: "n/a - merge card"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "torch state_dict mean in fp32, saved bf16"
+    peft: none
+    hyperparams: {seed: 0}
+    target_format: "unchanged from exp-04"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --srcs, /home/ben/task/ckpts/exp-04/final, /home/ben/task/ckpts/exp-05/ck450, --dst, /home/ben/task/ckpts/soup_ac]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16"]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.814
+    path: /home/ben/task/eval/exp-04_final_dev500.json
+  diagnostic:
+    what: "paired item-level comparison against exp-04 on the same 500 items: items fixed by the soup minus items broken by it"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.5
+  output_checkpoint: /home/ben/task/ckpts/soup_abc
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup_ac, step: 0}
+    - {path: /home/ben/task/ckpts/soup_abc, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; fp32 state-dict mean of 2 and of 3 checkpoints, saved bf16; 0 missing / 0 unexpected keys in both merges"}
+  measurements:
+    - {metric: accuracy, value: 0.782, n: 500, path: /home/ben/task/eval/exp-06_soupac_dev500.json, delta_vs_comparator: -0.032}
+    - {metric: accuracy, value: 0.802, n: 500, path: /home/ben/task/eval/exp-06_soupabc_dev500.json, delta_vs_comparator: -0.012}
+  diagnostic_result:
+    value: -6
+    path: /home/ben/task/analysis/exp-06_paired.json
+    notes: "paired on the same 500 items against exp-04: soup(A,C) fixed 22 broke 38 (net -16); soup(A,B,C) fixed 24 broke 30 (net -6). Both soups sit between their ingredients rather than above them."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Both soups scored below the best ingredient: 0.782 for the 2-way and 0.802 for the 3-way against exp-04's 0.814. Averaging did not cancel independent error - it interpolated toward the weaker endpoint, and the 3-way (which weights exp-04 one third) beating the 2-way (which weights it one half) says the ordering here is not even monotone in how much exp-04 is in the mix, i.e. what is left is noise at this n rather than a soup effect worth chasing."
+  decision: reject
+  next_step: "final_model keeps exp-04/final (0.814 at n=500, 0.8267 at n=150). Remaining budget goes to verifying that artefact under the harness's own default invocation rather than to another candidate."

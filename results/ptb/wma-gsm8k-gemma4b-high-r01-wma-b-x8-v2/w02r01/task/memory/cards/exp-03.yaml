@@ -1,0 +1,129 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T01:35:51Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.6
+  remaining_h: 7.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/ep1
+    score: {metric: accuracy, value: 0.6400, protocol_n: 150}
+  trigger: "Both exp-02 reads inherited gemma's sampling defaults - the packaged generation_config.json still says do_sample true, top_k 64, top_p 0.95, and evaluate.py passes no temperature - so the benchmark is being decoded by sampling, and the ep1-vs-ep2 gap (0.640 vs 0.633) is smaller than that read's own noise."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-02/ep2/generation_config.json, locator: "do_sample, top_k, top_p"}
+    - {path: /home/ben/task/analysis/exp-02_ep2_diag.json, locator: "accuracy"}
+    - {path: /home/ben/task/evaluate.py, locator: "L60-95"}
+  alternatives_rejected:
+    - {option: "Skip the decode question and spend the time on more training", reason: "one eval settles it; greedy on gsm8k is usually worth several points over T=1 top-p sampling and it costs no training time at all"}
+    - {option: "Self-consistency / majority vote over k samples", reason: "the grader scores one completion per item and evaluate.py has no place to aggregate votes"}
+    - {option: "Pick ep1 over ep2 on the sampled reads alone", reason: "0.7 pp against a ~3.3 pp sampling floor is not a difference; greedy is deterministic, so the same two evals also do the checkpoint selection at a ~1.3 pp floor"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The trained checkpoint is being graded under a decode configuration nobody chose. evaluate.py sets no temperature, so vLLM's ModelConfig.get_diff_sampling_param pulls temperature/top_k/top_p out of the checkpoint's generation_config.json, which still carries the sampling defaults gemma-3-4b-pt ships. Every dev-150 number so far is one draw from a sampled decode: on a task with a single correct answer that costs accuracy against greedy, and it inflates the noise floor to ~3.3 pp, which is why ep1 and ep2 cannot be told apart."
+  evidence:
+    - {path: /home/ben/task/ckpts/exp-02/ep2/generation_config.json, locator: "whole file", observation: "{do_sample: true, top_k: 64, top_p: 0.95, eos_token_id: [1,106]} and no temperature key, so vLLM defaults temperature to 1.0"}
+    - {path: /home/ben/task/eval/exp02_ep1_dev150.json, locator: "accuracy=0.64", observation: "sampled read of the 1-epoch checkpoint"}
+    - {path: /home/ben/task/eval/exp02_ep2_dev150.json, locator: "accuracy=0.6333", observation: "sampled read of the 2-epoch checkpoint; the 0.7 pp gap is inside the sampling floor"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: watch-still-failing-1, source: /home/ben/task/analysis/exp-02_ep2_diag.json, question: "(watch-set item still wrong after exp-02; benchmark text not copied to disk)", gold: "(id listed in analysis/exp-01_watch.jsonl)", model_output: "terminated, single ANSWER line, wrong number", failure: "format is right; a wrong token early in the sampled chain is unrecoverable"}
+    - {id: watch-still-failing-2, source: /home/ben/task/analysis/exp-02_ep2_diag.json, question: "(watch-set item still wrong after exp-02)", gold: "(id listed in analysis/exp-01_watch.jsonl)", model_output: "terminated, single ANSWER line, wrong number", failure: "same shape - arithmetic/reasoning error, not a format error"}
+    - {id: regression-vs-base-1, source: /home/ben/task/analysis/exp-02_ep2_diag.json, question: "(one of the 3 items the base scored right and ep2 scored wrong)", gold: "(id listed in analysis/exp-01_watch.jsonl)", model_output: "terminated, single ANSWER line, wrong number", failure: "regression under a sampled decode"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-01_watch.jsonl
+    n: 142
+    selection: "the dev-150 items the base model failed in exp-01, carried forward unchanged so every card in the batch re-checks the same items"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Setting temperature 0 and clearing top_k/top_p in the checkpoint's generation_config.json - the only decode knob reachable without touching evaluate.py - raises dev-150 accuracy relative to the same weights read under gemma's inherited sampling defaults."
+  mechanism: "GSM8K has one correct answer and the chain of thought is a long conditional sequence, so a sampled token that derails the chain is unrecoverable. At T=1 with top_p 0.95 the model draws from a broad tail at every step of a ~150-token chain; greedy follows the argmax path SFT actually optimised. The knob works because vLLM reads temperature/top_k/top_p out of generation_config.json and evaluate.py overrides none of them."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +8 pts on each checkpoint"}
+  falsified_if: "No greedy read beats the incumbent's 0.640 - i.e. greedy is at or below the sampled read on both checkpoints - which would mean the decode config is not a lever and the inherited defaults should be left alone."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/ep1
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    # decode-config card: no training data is read. The only input is the benchmark
+    # itself, loaded read-only by the grader's task definition.
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      source: openai/gsm8k
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "official gsm8k test split, first 150 samples via --limit 150; read by the grader only"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 via inspect_ai 0.1.dev3780
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "weights byte-identical to exp-02; only generation_config.json differs - do_sample false, temperature 0.0, top_k 0, top_p 1.0, eos_token_id [1,106] preserved"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_exp03.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_exp03.sh
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: all   # ep1_greedy and ep2_greedy; whichever wins becomes the parent of exp-04
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150 (inspect_evals/gsm8k test split, first 150 samples, deterministic order)
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6400
+    path: /home/ben/task/eval/exp02_ep1_dev150.json
+  diagnostic:
+    what: "termination must survive the decode change - share of completions ending on their 'ANSWER:' line stays at 1.00 and share hitting the token cap stays at 0.00; a greedy decode that starts looping would show up as max_tokens completions"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: not_run
+  wall_h: null
+  output_checkpoint: /home/ben/task/ckpts/exp-03/ep2_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/ep1_greedy, step: 1796}
+    - {path: /home/ben/task/ckpts/exp-03/ep2_greedy, step: 3592}
+  training_summary: {final_loss: null, steps: null, notes: "no training - weights are byte-identical to exp-02's ep1/ep2, only generation_config.json changed"}
+  measurements:
+    - {metric: accuracy, value: 0.7200, n: 150, path: /home/ben/task/eval/exp03_ep2_greedy_dev150.json, delta_vs_comparator: 0.0800}
+    - {metric: accuracy, value: 0.7200, n: 150, path: /home/ben/task/eval/exp03_ep1_greedy_dev150.json, delta_vs_comparator: 0.0800}
+  diagnostic_result:
+    value: 0.993
+    path: /home/ben/task/analysis/exp-03_ep2_greedy_diag.json
+    notes: "Termination survived the decode change and greedy did not start looping: ep2_greedy ends on its 'ANSWER:' line in 149/150 completions with 1 hitting the token cap (ep1_greedy 147/150, 3 at the cap), against 150/150 and 0 for the sampled reads - that is the whole cost of greedy and it is about one item. Median completion 147 tokens, unchanged. Garbage-prefix screen 0/150, so the --max-connections 16 concurrency failure did not occur here either. Both checkpoints land on exactly 0.7200 and fix exactly the same 101 of 142 watch items with 1 regression, which is what two reads of near-identical weights under a deterministic decode should look like."
+  watch_set_result: {fixed: 101, still_failing: 41, regressions: 1, path: /home/ben/task/analysis/exp-03_ep2_greedy_diag.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy decoding moves dev-150 from 0.640/0.633 to 0.720 on both epoch checkpoints - +8.0 pts for no training - and the gain lands where the mechanism predicted: 11 more of the 142 watch items are fixed (101 vs 90) and the 3 regressions against the base fall to 1. The two checkpoints are indistinguishable under the now-deterministic read (0.7200 each, same 101 items), so epoch count is not a live variable."
+  decision: adopt
+  next_step: "exp-04: rejection-sampling fine-tune from ep2_greedy. The residual 41 watch failures are terminated, single-answer, wrong-number completions - arithmetic and reasoning errors - which is exactly what RFT on self-generated correct chains for the gsm8k TRAIN questions targets. Every checkpoint from here ships the greedy generation_config."

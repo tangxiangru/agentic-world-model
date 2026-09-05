@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T18:55:17Z'
+situation:
+  elapsed_h: 2.9
+  remaining_h: 7.1
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.5533, protocol_n: 150}
+  trigger: "exp-02's checkpoint still ships the base snapshot's decode defaults - generation_config.json has do_sample=true, top_k=64, top_p=0.95 and no temperature, so vLLM samples at t=1.0. Every number measured so far is a sampled read of a model whose answers are now short (p50 303 chars) and 99.3% well formed, which is exactly the regime where sampling noise costs accuracy for nothing."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample/top_k/top_p"}
+    - {path: /home/ben/task/analysis/exp-02_final_items.json, locator: "format_compliant=0.9933, stop_reason={'stop': 150}, output chars p50=303", observation: "the model now emits one short well-formed solution, so the only thing sampling adds is variance"}
+  alternatives_rejected:
+    - {option: "Leave the decode alone and spend the time on more training", reason: "this is one 4-minute eval against a 40+ minute training round; if it is worth points it is worth them for free, and if it is not, the next card knows to spend the hours on data instead"}
+    - {option: "Tune temperature/top_p instead of going greedy", reason: "a temperature sweep is several evals for a parameter that has no reason to beat argmax on a single-sample-scored benchmark; greedy is the one setting that removes the variance entirely"}
+    - {option: "Self-consistency / majority voting", reason: "the grader scores one generation per item through inspect's generate(); there is no way to vote inside the model artifact"}
+  pitfalls_hit:
+    - {what: "Trainer step checkpoints (checkpoint-516) carry no tokenizer or processor files, so vLLM cannot load them directly", cost_h: 0.05, fix: "scripts/make_variant.py-style packaging: symlink the weights next to the tokenizer files from final/ (ckpts/exp-02/ep1)"}
+  smoke_runs:
+    - {command: [python, scripts/make_variant.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-02/final_greedy, --greedy], outcome: "first version wrote only do_sample=false, which vLLM ignores - the 'greedy' artifact would have sampled at t=1.0 with top_p/top_k removed, i.e. WIDER than the comparator, turning the card into a silent no-op measured as a regression. Script fixed to write temperature 0.0; variant rebuilt and re-verified through GenerationConfig.to_diff_dict()."}
+problem:
+  statement: "The graded artifact decodes by sampling at temperature 1.0. On a benchmark scored by exact match of a single generation, that throws away accuracy the model already has: any item where the argmax chain is right but a sampled token derails the arithmetic is scored wrong, and there is no second sample to recover it."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_final_items.json, locator: "the 67 incorrect items; 66 of them are well-formed 'ANSWER: N' responses", observation: "failures are wrong numbers inside otherwise clean short solutions - the shape sampling noise produces"}
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: accuracy, observation: "0.5533 +/- 0.0407 sampled at t=1.0"}
+  affected_share: null
+  failure_examples:
+    - {id: gsm8k_044dddfd, source: /home/ben/task/analysis/exp-01_items.json, question: "A mechanic charges different rates to repair the tires of trucks and cars...", gold: '40', model_output: "well-formed short solution, 'ANSWER: 60'", failure: "wrong number inside a clean solution"}
+    - {id: gsm8k_013c2fba, source: /home/ben/task/analysis/exp-01_items.json, question: "A basket contains 25 oranges among which 1 is bad, 20% are unripe, 2 are sour and the rest are good. How many oranges are good?", gold: '17', model_output: "well-formed after exp-02, still not 17", failure: "arithmetic slip in a multi-step chain"}
+    - {id: gsm8k_01a47d5c, source: /home/ben/task/analysis/exp-01_items.json, question: "There are 700 bees in a hive. There are twice as many worker bees as baby bees, and twice as many babies as queens. How many worker bees are there?", gold: '400', model_output: "well-formed after exp-02", failure: "sets up the ratio wrong"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch.jsonl
+    n: 67
+    selection: "every dev-150 item exp-02/final got wrong under the sampled protocol"
+hypothesis:
+  claim: "Rewriting the artifact's generation_config.json to temperature=0.0 (removing top_k/top_p) raises dev-150 accuracy relative to the same weights read at t=1.0, because vLLM takes its decode defaults from that file and greedy decoding removes sampling noise from a benchmark scored on one generation."
+  mechanism: "vLLM never reads do_sample; it builds default_sampling_params from generation_config's diff dict, and temperature 0.0 is what makes vllm/sampling_params.py pin top_p=1.0, top_k=0 and SamplingType.GREEDY. The weights are byte-identical (the variant symlinks them); only the decode changes. With format compliance already at 0.993 and median output 303 chars, sampling can only perturb tokens inside a short correct chain, so removing it should convert some of the 67 failures and cost few or none of the 83 successes."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+0.03 to +0.15"
+  falsified_if: "greedy scores at or below 0.5533, i.e. no better than the sampled read on the same weights."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-02/final_greedy/generation_config.json
+      source: derived:exp-02
+      n_examples: 1
+      built_by: /home/ben/task/scripts/make_variant.py
+      build_command: [python, scripts/make_variant.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-02/final_greedy, --greedy]
+      selection: "No training data - this card changes one config file. The 'data' is the rewritten generation_config.json: temperature 0.0 (plus do_sample false, which vLLM ignores), top_k and top_p removed, eos_token_id left as [1,106]. The .safetensors in final_greedy/ are symlinks to exp-02/final's, so the weights cannot differ. Verified after the rewrite: GenerationConfig.to_diff_dict() is {cache_implementation: hybrid, temperature: 0.0, pad_token_id: 0, bos_token_id: 2, eos_token_id: [1,106]}, so the temperature field survives the round trip that HF warns about."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 default_sampling_params from generation_config.json
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02: chain of thought, blank line, 'ANSWER: <number>', <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/final_greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.5533
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "format compliance, the stop_reason split, and the output-length distribution (scripts/analyze_log.py), to confirm greedy does not introduce degenerate repetition - the one way argmax decoding can lose is a loop that never reaches the ANSWER line and runs to the 4000-token cap. Sampling and greedy fail in opposite directions (tail-token derailment vs repetition), so the length/cap read is what separates them; stop_reason alone will not."
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.08
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 1034}
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "No training - weights are symlinks to exp-02/final. Post-run confirmation of the WMA precondition: vLLM's own resolver was replayed on both directories with ModelConfig(...).get_diff_sampling_param(): exp-02/final -> {'top_k': 64, 'top_p': 0.95} (samples at t=1.0), exp-02/final_greedy -> {'temperature': 0.0} (vllm/sampling_params.py then pins top_p=1.0, top_k=0 and SamplingType.GREEDY). The transformers warning \"generation flags are not valid ... ['temperature']\" appears in both the config load and logs/exp-03.log and is cosmetic: to_diff_dict keeps the field and vLLM reads it."
+  measurements:
+    - {metric: accuracy, value: 0.6533, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.1}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-03_greedy_items.json
+    notes: "Format compliance 1.0000 (was 0.9933 sampled), stop_reason 'stop' for 150/150, zero outputs at the 4000-token cap - the repetition-loop failure mode greedy could have introduced did not appear. Output length shrank rather than grew: p50 303 -> 281, p95 831 -> 633, max 1798 -> 1109, which is what removing tail-token derailment looks like."
+  watch_set_result: {fixed: 27, still_failing: 40, regressions: 12, path: /home/ben/task/analysis/exp-03_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy 0.6533 vs sampled 0.5533 on byte-identical weights: +10.0 pts for one config field, well outside the 3.3 pt sampled noise floor. 27 of the 67 sampled failures flip to correct against 12 that regress - the net +15 items is consistent with removing per-token noise from short chains rather than with a systematic change, and the shorter outputs confirm the mechanism."
+  decision: adopt
+  next_step: "The artifact ships greedy from here on; every later checkpoint is packaged through scripts/make_variant.py --greedy and compared against 0.6533. A separate probe (analysis/probe_kshot_exp02.json, 300 held-out gsm8k TRAIN problems, greedy) rules out the next-cheapest hypothesis: 10-shot 0.667 vs 0-shot 0.650, so the grader's 2184-token prefix is not costing anything and the 22% few-shot training mixture is adequate. What is left is reasoning quality, which needs data or steps: exp-04 scales the SFT corpus."

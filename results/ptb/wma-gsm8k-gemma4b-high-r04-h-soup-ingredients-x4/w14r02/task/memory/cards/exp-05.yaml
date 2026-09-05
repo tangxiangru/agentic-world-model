@@ -1,0 +1,112 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T16:04:43Z'
+situation:
+  elapsed_h: 7.05
+  remaining_h: 2.95
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7033, protocol_n: 300}
+  trigger: "exp-04 finished the format work - format_failure_share 0.01, ends_at_first_answer_share 0.99, and first_answer_accuracy now equals accuracy exactly (0.7033). Every one of the 89 remaining dev-300 failures is a wrong reasoning chain, so the only lever left is reasoning quality."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_final_diag.json, locator: "summary.first_answer_accuracy=0.7033 == summary.accuracy=0.7033, format_failure_share=0.01"}
+    - {path: /home/ben/task/logs/rft_sample2.log, locator: "final line", observation: "sampling exp-04/final at T=1.0, k=4 on 13,473 training-pool questions solves 11,771 (87.4%) at least once, so k=4 pass@4 is 17 pts above greedy pass@1 - there is exploitable headroom inside the model's own distribution"}
+  alternatives_rejected:
+    - {option: "Stop here and just verify final_model (exp-04, 0.7033)", reason: "final_model already holds exp-04 and is only overwritten if exp-05 beats it by more than the 0.03 floor, so the downside of trying is time, not score"}
+    - {option: "More OpenMathInstruct-2 data / another epoch", reason: "exp-03 measured that curve: 50x more data bought +7 pts. Off-policy volume is the weakest remaining lever"}
+    - {option: "Model soup of exp-04/final and checkpoint-240 (tied at 0.7033/0.7100)", reason: "cheaper (~30 min) but the expected gain is smaller and it does nothing about reasoning; kept as the fallback if this card fails and time remains"}
+    - {option: "Sample the RFT data under the grader's 10-shot prefix, matching the eval condition", reason: "tried first and abandoned: the 1,420-token prefix made generation prefill-bound at 3.0k output tok/s with a 1h44m ETA. Zero-shot sampling runs at 7.9k tok/s. Only the conditioning differs; the targets are the same, and 35% of training rows carry the prefix anyway"}
+    - {option: "Train from the base model on OMI2 + RFT together", reason: "~2.5 h; there are 2.95 h left including evaluation and packaging"}
+  pitfalls_hit:
+    - {what: "NEW PITFALL, not in pitfalls.yaml: vLLM's LLM.chat/SamplingParams does not inherit the second entry of generation_config's eos_token_id list. Sampling with only max_tokens set, every one of 61,892 samples ran to the cap repeating its own 'ANSWER: n' line (skip_special_tokens hides the <end_of_turn> the model did emit), finish_reason was 'length' on all of them, and the rejection filter - which requires finish_reason=='stop' - kept 11 rows out of 15,473 questions. The score looked like a catastrophic model failure; the model was fine (19/24 correct in a 24-question probe). Cost: one full 80-minute sampling run.", cost_h: 1.4, fix: "pass stop_token_ids=[1, 106] explicitly in SamplingParams. Note that evaluate.py is NOT affected - it goes through vLLM's OpenAI server, which does read the whole eos list."}
+    - {what: "the same 80-minute run was also the one sampled under the 10-shot prefix, so the prefix experiment and the stop-token bug were lost together", cost_h: 0.0, fix: "re-ran zero-shot at k=4 on 13,473 questions in 18 min"}
+  smoke_runs:
+    - {command: [python, "-c", "24-question k=4 sample from ckpts/exp-04/final, printing finish_reason and the extracted answer"], outcome: "19/24 questions had at least one correct sample but finish_reason was 'length' on every one - this is what identified the stop-token bug above"}
+problem:
+  statement: "exp-04/final answers 70.3% of dev-300 correctly and the other 29.7% are reasoning errors, not formatting errors. But sampling the same model four times at T=1.0 on training-pool questions reaches a correct answer on 87.4% of them, so the model can already produce correct chains for many problems it fails greedily - it just does not put them first."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_final_diag.json, locator: "summary", observation: "accuracy 0.7033 == first_answer_accuracy 0.7033; format_failure_share 0.01; only 3/300 hit the token cap"}
+    - {path: /home/ben/task/logs/rft_sample2.log, locator: "final line", observation: "questions with >=1 correct 11771/13473 (0.874) from 53,892 samples; 21,813 verified solutions kept after the one-marker/terminates/answer-matches-gold filter"}
+  affected_share: 0.297
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing SFT of exp-04/final on 18,000 of its own answer-verified samples (plus 3,000 OpenMathInstruct-2 rows as ballast, 35% of the mix carrying the grader's 10-shot block) raises dev-300 accuracy above exp-04/final's 0.7033."
+  mechanism: "Rejection sampling concentrates probability mass on chains the model itself produced AND that reached the gold answer, which is exactly the pass@4-minus-pass@1 gap the sampling run measured (0.874 vs 0.703). Because the targets are on-policy they need no distribution shift to fit, and because they are answer-verified the filter removes the chains that went wrong. The 3,000 off-policy rows and the 35% prefix share hold the exp-03/exp-04 behaviour in place while this happens."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+2 to +5 pts, i.e. dev-300 around 0.72-0.75; RFT rounds in the literature give single-digit gains and this is one round on 13.5k questions"}
+  falsified_if: "dev-300 accuracy is at or below 0.7033 (with the 0.03 floor, anything inside 0.673-0.733 is inconclusive rather than a win), or ends_at_first_answer_share falls below 0.95, which would mean the on-policy data undid exp-04's format work."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final_train
+    origin: exp-04
+    hash: "symlinks to ckpts/exp-04/final's weights and tokenizer; generation_config drops temperature/top_p/top_k so GenerationConfig.validate(strict=True) passes on save (the exp-04 save trap)"
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_fewshot_v1.jsonl
+      source: "synthetic:self (ckpts/exp-04/final) for 18,000 rows + derived:exp-03 (nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, gsm8k + augmented_gsm8k) for 3,000 ballast rows; questions from openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 split=TRAIN (all 7,473) and 6,000 OMI2 gsm8k-family problems"
+      n_examples: 21000
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --out, data/rft_raw.jsonl, --k, "4", --temperature, "1.0", --top-p, "0.95", --max-tokens, "512", --n-train-repeat, "1", --n-omi, "6000", --keep-per-q, "2", --seed, "0"]
+      selection: "k=4 samples per question at T=1.0/top_p=0.95 with stop_token_ids=[1,106]; keep a sample only if finish_reason=='stop', it contains 'ANSWER:' exactly once with nothing after it, and that number equals the gold answer (GSM8K train's #### value, or OMI2's expected_answer); at most 2 distinct survivors per question, chosen by a crc32-seeded shuffle rather than by length. 11,771/13,473 questions yielded at least one; 21,813 rows kept, of which 18,000 are used. Then 3,000 sft_v1 rows are mixed in and 35% (7,349) of the 21,000 get the grader's 10-shot system block. NO GSM8K TEST ITEM IS READ by any step: the questions are the train split and the OMI2 training pool, and the gold answers come with them."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 (fused linear cross-entropy), full parameters, vision tower frozen"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 16, grad_accum: 4, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-04 - MATH_PROMPT_TEMPLATE user turn, chain of thought, final line 'ANSWER: <n>', then <end_of_turn>, rendered by templates/gemma3.jinja (sha256 7de1c58e...); 35% of conversations open with the grader's 10-shot system block, which the template folds into the first user turn. Loss on the model turn only."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft_fs.py, --model, /home/ben/task/ckpts/exp-04/final_train, --data, /home/ben/task/data/rft_fewshot_v1.jsonl, --out, /home/ben/task/ckpts/exp-05, --max-seq-len, '3072', --bs, '16', --grad-accum, '4', --lr, '5e-6', --epochs, '1', --save-steps, '170']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft_fs.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 170
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '300', --max-connections, '32', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: "official inspect_evals/gsm8k test split --limit 300 (first 300 items, no shuffle)"
+    n: 300
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7033
+    path: /home/ben/task/eval/exp-04_final_dev300.json
+  diagnostic:
+    what: "ends_at_first_answer_share and format_failure_share on dev-300 from scripts/analyze_eval.py - the guard that on-policy data has not undone exp-04's format and termination work (currently 0.99 and 0.01)"
+    n: 300
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.78
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 329}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-170, step: 170}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-329, step: 329}
+  training_summary: {final_loss: null, steps: 329, notes: "2810 s wall; 20999/21000 rows kept at max_seq_len 3072 (p50 359, p99 2529, max 3041); 7349 rows (35.0%) carried the grader's 10-shot block; 155.0 loss tokens per row. Of the 21,000 rows, 2,275 sit on questions the sampler never solved (analysis/exp-05_ballast.json) - the WMA's precondition 3 number, and it is small: 10.8% of the mix carries any signal for the 1,702 unsolved questions."}
+  measurements:
+    - {metric: accuracy, value: 0.7100, n: 300, path: /home/ben/task/eval/exp-05_final_dev300.json, delta_vs_comparator: 0.0067}
+  diagnostic_result:
+    value: 0.99
+    path: /home/ben/task/analysis/exp-05_final_diag.json
+    notes: "The format guard holds exactly: ends_at_first_answer_share 0.99, format_failure_share 0.01, 297/300 finish_reason=stop, garbage_prefix 0 - identical to exp-04, so training on 18k of the model's own samples did not undo the prefix alignment. first_answer_accuracy is 0.7167, marginally above the scored 0.7100 (two items state a correct first answer and then a different last one). The stop-token fix worked: every kept RFT row came from a sample vLLM reported as finish_reason=='stop'."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "dev-300 0.7033 -> 0.7100, a 0.67 pt move against a 3 pt noise floor: one round of rejection sampling on 13.5k training-pool questions did not produce a measurable gain. It did no harm either - the format diagnostics are unchanged and the score ties exp-04/checkpoint-240's 0.7100."
+  decision: iterate
+  next_step: "The card's own falsification rule puts anything in 0.673-0.733 in the inconclusive band, and 0.7100 is in it, so this is not evidence that RFT works here and not evidence that it fails. Two plausible reasons it was flat, both untested: only 10.8% of the mix (2,275 rows) touches the 1,702 questions the sampler could not solve, so almost all the gradient went to problems the model already gets right; and one round at k=4 on 13.5k questions is small next to the multi-round, tens-of-thousands-of-question RFT setups that report single-digit gains. A second round would need to oversample the unsolved questions (higher k on failures only) rather than repeat this mix. final_model: three candidates are now within 0.7 pt of each other - exp-04/final 0.7033, exp-04/checkpoint-240 0.7100, exp-05/final 0.7100. exp-05/final is packaged: it ties the best score, has the highest first_answer_accuracy (0.7167) of the three, and is the only one trained on answer-verified on-policy data as well as everything its parents saw."

@@ -1,0 +1,141 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T15:04:41Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 8.1
+  remaining_h: 1.9
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-06-greedy
+    score: {metric: accuracy, value: 0.686, protocol_n: 500}
+  trigger: "exp-06 and exp-07 differ by 4 items over the 750 disjoint items measured so far and their two reads disagree in sign (dev-500 favours exp-07 by 5 items, probe-250 favours exp-06 by 1). One of them goes in final_model and the existing measurements cannot say which."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-06_greedy_dev500.json, locator: "accuracy 0.686"}
+    - {path: /home/ben/task/eval/exp-07_greedy_dev500.json, locator: "accuracy 0.696"}
+    - {path: /home/ben/task/analysis/exp-07_watch_rerun.json, locator: "fixed=4, regressions=5; pooled exp-06 0.6893 vs exp-07 0.6947"}
+  alternatives_rejected:
+    - {option: "Apply exp-07's pre-registered rule and ship exp-06 without further measurement", reason: "the rule exists to stop me adopting on one noisy read, and it is still what decides the card's verdict - but with 1.9 h left the cheaper thing is to buy the measurement that resolves the tie rather than to guess"}
+    - {option: "Score both on the full 1319-item test split", reason: "~33 min each, 66 min of the 1.9 h left, with no margin if a vLLM start-up fails; n=1000 doubles the existing evidence and still leaves ~50 min for packaging and verification"}
+    - {option: "Soup exp-06 and exp-07", reason: "exp-05 already showed weight averaging lands between the parents here, and there is no time left to train or evaluate a third artefact"}
+    - {option: "Train anything further", reason: "the shortest training run in this batch was 1.2 h; nothing can be trained and evaluated in 1.9 h with a safe margin"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Two candidate artefacts are within noise of each other on every read taken so far, and shipping the wrong one costs whatever the true difference is. The dev-500 slice that separates them by 5 items has a stderr of 0.021, which is four times the size of the difference it is being asked to resolve."
+  evidence:
+    - {path: /home/ben/task/eval/exp-06_greedy_dev500.json, locator: "accuracy 0.686, stderr 0.0208", observation: "stderr is 4x the 0.010 difference"}
+    - {path: /home/ben/task/eval/exp-07_greedy_dev500.json, locator: "accuracy 0.696, stderr 0.0206"}
+    - {path: /home/ben/task/analysis/exp-07_watch_rerun.json, locator: "fixed=4, still_failing=72, regressions=5", observation: "the two checkpoints disagree on only 9 of 250 probe items - they are nearly the same function"}
+  affected_share: 0.036
+  failure_examples:
+    - {id: "probe items exp-06 answers and exp-07 does not", source: /home/ben/task/analysis/exp-07_watch_rerun.json, question: "(5 held-out GSM8K TRAIN probe items)", gold: "in analysis/probe250.jsonl", model_output: "in analysis/exp-06_probe250.json vs analysis/exp-07_probe250.json", failure: "lost by the third pass"}
+    - {id: "probe items exp-07 answers and exp-06 does not", source: /home/ben/task/analysis/exp-07_watch_rerun.json, question: "(4 held-out GSM8K TRAIN probe items)", gold: "in analysis/probe250.jsonl", model_output: "in the two probe result files", failure: "would be lost by shipping exp-06"}
+    - {id: "probe items both miss", source: /home/ben/task/analysis/exp-07_watch_rerun.json, question: "(72 held-out probe items neither checkpoint answers)", gold: "in analysis/probe250.jsonl", model_output: "in the two probe result files", failure: "the shared residual; unaffected by this choice"}
+  watch_set:
+    path: /home/ben/task/analysis/probe250.jsonl
+    n: 250
+    selection: "same 250 held-out GSM8K TRAIN items used throughout; already scored for both candidates, so this card adds no new watch-set run"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Scored on the same 1000-item benchmark slice, exp-07-greedy is at least as accurate as exp-06-greedy; doubling n from 500 to 1000 halves the variance of the difference and gives a defensible basis for which artefact goes into final_model."
+  mechanism: "Both checkpoints lie on the same training trajectory (exp-07 is one further low-LR pass from exp-06) and disagree on only 9 of 250 probe items, so any true difference is small and a larger sample is the only way to see it. n=1000 covers the 500 items already used plus 500 previously unseen ones, so the second half is a fresh read on both models under identical conditions."
+  falsified_if: "exp-07-greedy scores lower than exp-06-greedy on the shared 1000-item slice, in which case exp-06 stays in final_model as exp-07's pre-registered rule already requires"
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "0 to +1 pt; the honest prior is that they are equal"}
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-07/final
+    origin: exp-07
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "not read by this card; it is the corpus both candidates were trained on"
+      n_examples: 88539
+      built_by: /home/ben/task/rft_sample.py
+      build_command: []
+      selection: "n/a - this card only evaluates two existing checkpoints"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: inspect-ai + vllm 0.11.0 (evaluate.py, unmodified), greedy via generation_config.json
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "unchanged: worked solution, then 'ANSWER: <number>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-07-greedy, --limit, '1000', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-07greedy_dev1000.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp07g_dev1000.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1000', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 1000 (first 1000 items, no shuffle)
+    n: 1000
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.674
+    path: /home/ben/task/eval/exp-06greedy_dev1000.json
+  diagnostic:
+    what: "already measured - probe-250 greedy, exp-06 0.696 vs exp-07 0.692; no new diagnostic run fits in the remaining time"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.5
+  output_checkpoint: /home/ben/task/ckpts/exp-07-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 1719}
+    - {path: /home/ben/task/ckpts/exp-02-greedy, step: 1719}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2767}
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 2767}
+    - {path: /home/ben/task/ckpts/soup24, step: null}
+    - {path: /home/ben/task/ckpts/soup24-greedy, step: null}
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 1875}
+    - {path: /home/ben/task/ckpts/exp-06-greedy, step: 1875}
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 1875}
+    - {path: /home/ben/task/ckpts/exp-07-greedy, step: 1875}
+    - {path: /home/ben/task/final_model, step: 1875}
+  training_summary: {final_loss: null, steps: null, notes: "no training; both candidates scored on the same 1000-item benchmark slice"}
+  measurements:
+    - {metric: accuracy, value: 0.682, n: 1000, path: /home/ben/task/eval/exp-07greedy_dev1000.json, delta_vs_comparator: 0.008}
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/final_model_dev150.json, delta_vs_comparator: null}
+  diagnostic_result:
+    value: 0.692
+    path: /home/ben/task/analysis/exp-07_probe250.json
+    notes: "probe-250 still favours exp-06 by one item (0.696 vs 0.692). Pooled over the 1250 disjoint items now measured (dev-1000 + probe-250): exp-06 0.6784, exp-07 0.6840."
+  watch_set_result:
+    fixed: 4
+    still_failing: 72
+    regressions: 5
+    path: /home/ben/task/analysis/exp-07_watch_rerun.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "On the shared 1000-item slice exp-07-greedy scores 0.682 against exp-06-greedy's 0.674 - 8 items, the best-powered read taken in this batch (stderr 0.0147 each) - and the pre-registered falsification condition (exp-07 lower) is not met. probe-250 still favours exp-06 by a single item, so the true difference is small, but nothing in the evidence now favours exp-06."
+  decision: adopt
+  next_step: "final_model holds exp-07-greedy. Verified end to end: it loads on CPU with transformers (Gemma3ForConditionalGeneration, 4.30 B params) and `python evaluate.py` with every default argument - the way the grader invokes it, including --max-connections 2 and --gpu-memory-utilization 0.3 - returns 0.7133 on dev-150. Next batch should start from the open question this one leaves: greedy decoding was worth +14 pts and a second pass +1.1, while data volume, self-generated RFT data and weight averaging were each worth nothing."

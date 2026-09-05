@@ -1,0 +1,146 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T11:19:24Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 4.95
+  remaining_h: 5.05
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.764, protocol_n: 500}
+  trigger: "exp-04's item-level diff against exp-03: 51 items fixed but 24 newly broken. A second cycle of the same off-policy teacher data has started trading errors rather than removing them. Sampling the incumbent 4x at T=1.0 on 14931 held-out questions confirms the headroom is in its own distribution: single-sample accuracy 0.707 but pass@4 0.887."
+  trigger_evidence:
+    - {path: /home/ben/task/data/rft_samples.jsonl.summary.json, locator: "acc_first_sample 0.7067, pass_at_k 0.8871, n=14931, k=4", observation: "an 18-point gap between what the model does on one try and what it can do in four - the model already knows how to solve most of what it gets wrong"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.watch_set_result: fixed 51, regressions 24", observation: "diminishing and now partly self-cancelling returns from more Llama-405B-distilled rows"}
+    - {path: /home/ben/task/analysis/exp-04_format_diag.json, locator: "not_ending_answer_line=7 of 500", observation: "format is still a non-issue, so the whole 23.6% error rate is solution quality"}
+  alternatives_rejected:
+    - {option: "A third pass of fresh OpenMathInstruct-2 rows", reason: "exp-04 bought +5.4 points for 1.83 h and produced 24 regressions doing it; a third identical cycle would cost most of the 5 h left for a smaller expected gain, and leaves no time to package and verify"}
+    - {option: "DPO or GRPO on the sampled pairs", reason: "the samples are already there and the pairs would be free, but a preference/RL stage needs its own hyperparameter search and a reward-hacking check that does not fit in 5 h; RFT extracts most of the same signal with the SFT machinery already validated over four cards"}
+    - {option: "Pure RFT with no replay", reason: "24950 self-samples for one epoch from a checkpoint trained on 280k rows invites drift toward the narrow style of its own correct answers; 25000 replay rows from data/sft_v2_fresh.jsonl hold the distribution in place at a cost of 20 minutes"}
+    - {option: "Keep more than 2 correct samples per question", reason: "would over-weight the easy questions, which already contribute 4 correct samples each; the cap concentrates the corpus on questions where the model is unreliable"}
+  pitfalls_hit:
+    - {what: "None new. gen_vllm.py was written to pass generation_config='vllm' so the sampling parameters come from the command line rather than from the checkpoint's now-greedy generation_config.json, which would otherwise have produced 4 identical samples per question", cost_h: 0.0, fix: "explicit temperature 1.0 / top_p 0.95 / top_k 64 and stop_token_ids [1, 106] on the SamplingParams"}
+  smoke_runs:
+    - {command: [python, scripts/gen_vllm.py, --model, /home/ben/task/ckpts/exp-04/final, --input, data/rft_questions.jsonl, --out, data/rft_samples.jsonl, --k, '4', --temperature, '1.0'], outcome: "59724 samples in 20 min at ~8700 output tok/s; acc_first_sample 0.707, pass@4 0.887"}
+    - {command: [python, scripts/build_rft_data.py, --samples, data/rft_samples.jsonl, --out, data/rft_v1.jsonl, --mix-sft, data/sft_v2_fresh.jsonl, --n-mix, '25000'], outcome: "13243/14931 questions solved at least once; kept 24950 of 59724 samples (17658 wrong answer, 7 unterminated, 9 duplicate, 1 double-marker); 49950 rows out"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/rft_v1_contam.jsonl], outcome: "49950 documents scanned, 0 contaminated, exit 0"}
+    - {command: [python, scripts/train_sft.py, --data, data/rft_v1.jsonl, --out, /tmp/dry, --dry-run, --max-seq-len, '2048'], outcome: "renders '...ANSWER: 30<end_of_turn>'; template sha 7de1c58e208e"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent fails 118 of 500 dev items with well-formed chains that reach a wrong number, and off-policy distillation has stopped paying: exp-04's gain came with 24 regressions against 51 fixes. Sampling the incumbent four times on 14931 unseen questions gives 0.707 on the first sample but 0.887 within four, so on roughly 18% of questions the model can produce a correct chain and simply does not produce it on the attempt that counts."
+  evidence:
+    - {path: /home/ben/task/data/rft_samples.jsonl.summary.json, locator: "acc_first_sample 0.7067 vs pass_at_k 0.8871 over n=14931", observation: "an 18-point single-sample-to-pass@4 gap: the failure is reliability, not missing capability"}
+    - {path: /home/ben/task/analysis/exp-04_format_diag.json, locator: "correct=382, not_ending_answer_line=7 of n=500", observation: "118 well-formed wrong answers"}
+    - {path: /home/ben/task/eval/exp-04_dev500_samples.json, locator: "samples with scores.match.value == 'I'", observation: "terminated single-ANSWER chains with a wrong intermediate quantity"}
+  affected_share: 0.236
+  failure_examples:
+    - {id: exp04-err-1, source: /home/ben/task/eval/exp-04_dev500_samples.json, question: "(dev item, worker bees - still wrong after exp-04)", gold: "400", model_output: "(well-formed chain committing to an inconsistent value for the unknown)", failure: "set-up error survives both distillation cycles"}
+    - {id: exp04-err-2, source: /home/ben/task/eval/exp-04_dev500_samples.json, question: "(one of the 24 items exp-04 broke that exp-03 had right)", gold: "(various)", model_output: "(well-formed chain, different wrong number)", failure: "off-policy data displacing a chain the model previously got right"}
+    - {id: rft-gap-3, source: /home/ben/task/data/rft_samples.jsonl, question: "(the 1688+ questions solved on some but not all of 4 samples)", gold: "(various)", model_output: "(3 of 4 samples wrong, 1 right)", failure: "the model holds a correct method with too little probability mass to emit it reliably"}
+  watch_set:
+    path: /home/ben/task/data/dev_holdout300.jsonl
+    n: 300
+    selection: "300 items sampled with random.Random(0) from the openai/gsm8k TRAIN split, excluded from every training file in this batch including data/rft_questions.jsonl; zero overlap with inspect's seed-42 few-shot items"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Fine-tuning the incumbent for one epoch on its own correct solutions (24950 rows, at most 2 per question, kept only when the grader's own extraction rule returns gold) blended with 25000 replay rows raises dev-500 accuracy above exp-04's 0.764."
+  mechanism: "The pass@4 0.887 / first-sample 0.707 gap says correct chains are already in the model's distribution but are not the modal output. Training on the filtered correct samples is a self-distillation step that moves probability mass from the wrong modes onto chains the model already produces, in its own phrasing, so there is no distribution shift to absorb - unlike exp-04's teacher rows, which cost 24 regressions. The per-question cap of 2 and shortest-first selection concentrate the update on questions the model solves unreliably rather than on the ones it already always gets right."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +4 points on dev-500"
+  falsified_if: "dev-500 accuracy is at or below exp-04's 0.764, or the item-level diff shows regressions >= fixes, which would mean self-distillation is reshuffling errors rather than removing them."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: "synthetic:self (exp-04 checkpoint, 4 samples per question at T=1.0/top_p=0.95/top_k=64) over openai/gsm8k TRAIN questions and unused nvidia/OpenMathInstruct-2 gsm8k-derived questions; blended with replay rows from data/sft_v2_fresh.jsonl"
+      n_examples: 49950
+      built_by: /home/ben/task/scripts/build_rft_data.py
+      build_command: [python, scripts/build_rft_data.py, --samples, data/rft_samples.jsonl, --out, data/rft_v1.jsonl, --max-per-question, '2', --mix-sft, data/sft_v2_fresh.jsonl, --n-mix, '25000']
+      selection: "a sample is kept only if fmt.graded_correct (a reimplementation of match(numeric=True, location='end')) returns gold AND finish_reason=='stop' AND the last line starts with 'ANSWER:' AND the body contains exactly one marker; deduped on whitespace-normalised text; at most 2 per question, shortest first. Questions come from data/rft_questions.jsonl: the 7173 gsm8k TRAIN items outside dev_holdout300, plus 7758 OMI2 gsm8k-derived questions absent from data/sft_v1.jsonl, and all of them are excluded from data/sft_v2_fresh.jsonl by construction. 15% of rows carry a k-shot system prefix."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross-entropy"
+    peft: "none (full fine-tune of the 3.88B text tower; 420M vision tower and projector frozen)"
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 32, grad_accum: 1, max_seq_len: 2048, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02/exp-04: prompt = templates/gemma3.jinja over [optional k-shot system] + inspect's MATH_PROMPT_TEMPLATE user turn; completion = reasoning body, blank line, 'ANSWER: <number>', <end_of_turn>. Loss on completion tokens only."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_v1.jsonl, --out, /home/ben/task/ckpts/exp-05, --parent, /home/ben/task/ckpts/exp-04/final, --max-seq-len, '2048', --bs, '32', --grad-accum, '1', --lr, '5e-6', --epochs, '1', --greedy-gen-config]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-05_train.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '32']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, no shuffle)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.764
+    path: /home/ben/task/eval/exp-04_dev500.json
+  diagnostic:
+    what: "item-level diff against exp-04's dev-500 samples: fixed vs regressed (exp-04 vs exp-03 was 51 fixed / 24 regressed), plus completions not ending on an ANSWER line"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: failed
+  wall_h: 0.66
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary:
+    final_loss: 0.2296
+    steps: 1561
+    notes: "training itself completed: 2146 s, 23.3 samples/s, train_loss 0.2296 (exp-04 ended at 0.259). The weights were then lost at save time and setup.checkpoints.every_steps was null, so nothing was on disk to fall back to."
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: |
+    File "/home/ben/task/scripts/train_sft.py", line 179, in main
+      trainer.save_model(final)
+    File "transformers/generation/configuration_utils.py", line 725, in save_pretrained
+      raise ValueError(str(exc) + "\n\nFix these issues to save the configuration.")
+    ValueError: GenerationConfig is invalid:
+    - `temperature`: `do_sample` is set to `False`. However, `temperature` is set to `0.0`
+      -- this flag is only used in sample-based generation modes.
+    Root cause: the parent checkpoint (exp-04/final) carries the greedy generation_config
+    exp-03 adopted. transformers loads it into model.generation_config and validates it on
+    save; vLLM accepts that same file without complaint, so nothing upstream flagged it.
+    exp-02 and exp-04 were unaffected because their parents still had the base sampling
+    config and the greedy file was written by hand AFTER save_model returned.
+    Only ckpts/exp-05/final/config.json was written before the exception.
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "The RFT hypothesis was never measured. Training ran to completion and the loss moved in the expected direction (0.259 -> 0.2296), but save_model raised on the parent's greedy generation_config and 36 minutes of GPU time produced no checkpoint."
+  decision: iterate
+  next_step: "exp-06 re-runs the identical plan with two fixes in scripts/train_sft.py: model.generation_config is replaced with a validator-clean GenerationConfig immediately before save_model, and --save-steps is set so a mid-run checkpoint exists if the final save fails again."

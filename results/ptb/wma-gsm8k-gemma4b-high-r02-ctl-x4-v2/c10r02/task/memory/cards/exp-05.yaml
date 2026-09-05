@@ -1,0 +1,107 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T14:20:00Z'
+situation:
+  elapsed_h: 6.15
+  remaining_h: 3.85
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "Three cards now agree that the single-attempt recipe is saturated at 0.72-0.73: exp-03 (greedy decode) moved +0.67 pt with 16 fixed / 15 broken, exp-04 (40k on-policy rejection samples + 40k unseen OpenMathInstruct-2 rows) moved -0.67 pt with 10 fixed / 11 broken and its training loss never fell below its 0.25 starting point. Meanwhile the sampler shows the model solves 66% of samples but 90% of questions at least once in four tries (logs/rft_sample.log, logs/vote_sample.log) - the accuracy is there, spread across samples the benchmark never gets to see."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-03 and exp-04 rows"}
+    - {path: /home/ben/task/logs/vote_sample.log, locator: "final json: 88668 samples, pass_rate 0.6628 per sample over 22167 questions"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "final json: solve_rate 0.9029 - fraction of questions solved at least once in 4 samples"}
+  alternatives_rejected:
+    - {option: "A third same-distribution SFT stage", reason: "exp-04 tested exactly that and returned churn; its loss started the stage at 0.25 and never fell, so the tokens carried no information the parent lacked."}
+    - {option: "Model soup of exp-02/final and exp-04/final", reason: "cheap, but both parents score the same and differ by one short low-LR stage, so the average is very unlikely to leave the 0.72-0.73 band; it does not attack the pass@1 vs pass@4 gap at all."}
+    - {option: "Spend the remaining time on a larger confirmation eval (n=500) instead of a fifth experiment", reason: "at n=500 the standard error is still ~2 pts, which would not separate 0.72 from 0.7267 either; better to spend the hours on the one intervention with double-digit headroom and keep exp-03 as the fallback if it fails."}
+    - {option: "Self-consistency by asking the harness for several completions", reason: "impossible - evaluate.py scores exactly one completion per item and may not be modified. The only place a vote can happen is inside that one completion."}
+    - {option: "Train on triples whose majority is WRONG, relabelled to gold", reason: "that teaches the model to ignore its own attempts and hallucinate an answer; 5669 questions (26%) were dropped for exactly this reason."}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/build_vote_data.py, --raw, data/vote_raw.jsonl, --out, data/sft_vote.jsonl, --rows-per-question, '2'], outcome: "32321 rows from 22163 questions; 13052 rows (40%) contain a genuine disagreement between the three attempts; 5669 questions dropped for having no gold majority"}
+    - {command: [python, scripts/train_sft.py, --data, data/sft_vote.jsonl, --tokenize-only, --max-seq-len, '3584'], outcome: "32320 rows kept, 1 dropped; 31.7M tokens/epoch, 17.5M label tokens -> ~1.1 h at 7.9k tok/s"}
+problem:
+  statement: "The model's accuracy is limited by sampling variance, not by knowledge: it answers 66% of individual samples correctly but reaches the right answer at least once in four tries on 90% of questions. The benchmark grades one completion, so all of that headroom is invisible - and neither a better decode (exp-03) nor more training tokens (exp-04) recovers any of it."
+  evidence:
+    - {path: /home/ben/task/logs/vote_sample.log, locator: "pass_rate 0.6628 over 88668 samples", observation: "per-sample accuracy on held-out GSM8K-style questions"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "solve_rate 0.9029 over 23473 questions at k=4", observation: "24 points of headroom between one sample and four"}
+    - {path: /home/ben/task/analysis/exp-04_diag.json, locator: "whole file", observation: "148/150 well-formed - format is not the constraint; the errors are single-draw reasoning slips"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: dev-w1, source: /home/ben/task/eval/exp-02_dev150_inspect.json, question: "700 bees; workers twice babies, babies twice queens", gold: "400", model_output: "x + x/2 + 2x = 700 -> 560", failure: "one bad variable assignment decides the whole item; a second independent attempt would likely set it up differently"}
+    - {id: dev-w2, source: /home/ben/task/eval/exp-02_dev150_inspect.json, question: "(profit problem)", gold: "10000", model_output: "hedging paragraph, then ANSWER: -14000", failure: "single draw wandered into a low-probability branch and there is no second opinion"}
+    - {id: dev-w3, source: /home/ben/task/eval/exp-02_dev150_inspect.json, question: "(sandcastle levels)", gold: "60", model_output: "'the number of levels is not given', then ANSWER: 4", failure: "an incoherent draw is graded as the model's answer"}
+  watch_set: null
+hypothesis:
+  claim: "Fine-tuning exp-02/final so that every completion contains three attempts at the problem followed by their modal answer will raise dev-150 accuracy above exp-03's 0.7267, by turning self-consistency into something a single graded completion can carry."
+  mechanism: "The grader reads the last number of one completion. If that completion internally contains three attempts and reports their majority, a single reasoning slip no longer decides the item - it has to be outvoted. Training triples are real independent samples from the parent (40% of rows contain a genuine disagreement) and the stated majority always equals gold, so the model learns to count its own attempts rather than to copy the first one. The model keeps its sampling generation_config so the three attempts are drawn diversely at grading time."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+3 to +8 points; the pass@1 to pass@4 gap is 24 points and a 3-way in-context vote should recover part of it"}
+  falsified_if: "dev-150 accuracy is at or below exp-03's 0.7267, or fewer than 80% of completions actually contain three attempts (which would mean the policy did not switch), or the well-formed-ANSWER share falls below 0.95."
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-02/final, origin: exp-02, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_vote.jsonl
+      source: "derived:exp-02 (self-samples) over openai/gsm8k TRAIN questions and OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e questions"
+      n_examples: 32321
+      built_by: /home/ben/task/scripts/build_vote_data.py
+      build_command: [python, scripts/sample_multi.py, --model, /home/ben/task/ckpts/exp-02/final, --questions, data/vote_questions.jsonl, --out, data/vote_raw.jsonl, --k, '4', --temperature, '1.0', --max-tokens, '512', --seed, '7']
+      selection: "4 samples at T=1.0 for each of 22167 questions (16167 held-out OpenMathInstruct-2 gsm8k-derived questions incl. the 2167 unsolved in round 1, plus 6000 round-1 questions). For each question, triples of samples are enumerated and only triples whose modal answer occurs at least twice AND equals gold are kept; triples containing a disagreement are preferred; at most 2 rows per question. Target = 'Attempt 1..3' bodies each ending 'Answer: <n>', then 'The three attempts give a, b, c. The most frequent answer is G.', then 'ANSWER: G'. 5669 questions with no gold majority were dropped rather than relabelled. No item comes from the gsm8k test split."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "custom loop on transformers 4.57.3 + liger-kernel 0.8.2 fused-linear-CE + bitsandbytes AdamW8bit"
+    peft: none
+    hyperparams: {lr: 8.0e-6, epochs: 1.0, batch_size: 131072, grad_accum: -1, max_seq_len: 3584, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast", seed: 2}
+    target_format: "templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4); user turn = verbatim inspect_evals MATH_PROMPT_TEMPLATE; model turn = three 'Attempt i:' blocks, a one-line tally, then '\\n\\nANSWER: <number><end_of_turn>'. 'ANSWER:' appears exactly once (the per-attempt lines say 'Answer:'), so the grader still reads one marker and the last number of the completion is the voted answer. Loss on completion tokens only; 12% of rows carry the grader's exact 10-shot system message, 6% a 2-4 shot prefix."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_vote.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-05, --epochs, '1', --lr, '8e-6', --max-seq-len, '3584', --tokens-per-micro, '12288', --tokens-per-step, '131072', --full-fewshot-frac, '0.12', --part-fewshot-frac, '0.06', --save-every-frac, '0.6', --max-hours, '1.5', --seed, '2']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints: {every_steps: null, keep: all}
+  budget: {gpu: H100-80GB, planned_h: 1.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '8', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: null
+  comparator: {ref: exp-03, value: 0.7267, path: /home/ben/task/eval/exp-03_greedy_dev150.json}
+  diagnostic:
+    what: "share of completions containing three 'Attempt' blocks, share whose stated majority matches the actual mode of its own three attempt answers, and the pass rate of attempt 1 alone (does the vote beat a single attempt inside the same completion?)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.15
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-138, step: 138}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 230}
+  training_summary: {final_loss: 0.196, steps: 230, notes: "32320 rows -> 31.7M tokens; loss 0.44 -> 0.20 (the policy change is real: the parent had never produced this format)"}
+  measurements:
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: -0.0134}
+  diagnostic_result:
+    value: 0.8
+    path: /home/ben/task/analysis/exp-05_diag.json
+    notes: "The policy switched completely: 150/150 completions contain three Attempt blocks, 150/150 are well-formed and terminate, median length 91 -> 296 words. Inside those completions, attempt 1 alone is correct on 104/150 (0.693) and the true mode of the model's own three attempts is correct on 108/150 (0.720) - so the vote is worth +2.7 pts of signal. But the model reports its own mode correctly only 120/150 times (80%): the reported final answer is right on 107/150 (0.7133). The arithmetic of counting three numbers is where the gain is lost."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.7267 -> 0.7133 (-1.3 pts). The mechanism half-works and the diagnostic says exactly which half: the in-context vote does carry signal (own-mode 0.720 vs attempt-1 0.693), but two things eat it - the three attempts are drawn in the same context and are far more correlated than the independent samples that gave the 24-point pass@1-to-pass@4 gap, and the model mis-reports its own majority on 20% of items."
+  decision: reject
+  next_step: "Do not ship the vote policy. Two fixable defects are now named for a future batch: (a) force independence between attempts (e.g. train the attempts to be generated without seeing each other, or make attempt blocks a strict template the model fills), and (b) the tally line should be made trivially copyable - the model loses 20% of items to counting three numbers it has just written. Remaining time goes to exp-06, a weight average of the two equal-scoring single-attempt checkpoints, and to shipping the best of them."

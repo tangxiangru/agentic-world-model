@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T04:55:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.45
+  remaining_h: 7.55
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.7467, protocol_n: 150}
+  trigger: "exp-02 trained on 40k rows drawn from only ~30k unique problems, while the same OpenMathInstruct-2 filter yields 79,539 unique gsm8k-derived problems and a 164k-row candidate pool; the incumbent's remaining dev-150 failures are reasoning errors, not format, so more and more varied supervision is the obvious next lever."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_diagnostic.json, locator: "stop_share 0.987, accuracy 0.6467", observation: "format and termination are solved; what is left is reasoning"}
+    - {path: /home/ben/task/analysis/exp-03_diagnostic.json, locator: "accuracy 0.7467, stop 146/150", observation: "the incumbent under greedy; 4 items still run to max_tokens"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling (RFT) from exp-02 instead of more teacher data", reason: "on-policy self-samples are bounded by what the model already gets right (0.81 on held-out train questions), whereas OpenMathInstruct-2 still has 31 verified 405B solutions per problem unused; RFT is kept as the next card if time allows"}
+    - {option: "A third epoch on the existing 40k file", reason: "final train loss was already 0.179 and the corpus repeats ~30k problems; a third pass buys memorisation, not coverage"}
+    - {option: "Add MATH / NuminaMath for harder problems", reason: "the benchmark is grade-school word problems; the earlier filter already drops latex-heavy bodies because they correlate with lower accuracy (0.797 with '$' against 0.826 without, analysis/exp-02_dev500_greedy_fewshot.jsonl)"}
+    - {option: "Go straight to 164k rows (the whole pool)", reason: "at the measured 23.8 samples/s that is 1.9 h per epoch; 100k x 2 epochs fits the budget with room for an RFT card and the final packaging"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, decontaminate.py, --input, data/sft_v2_raw.jsonl, --threshold, "0.25"], outcome: "16 of 100,000 rows flagged against the 1319 test questions and dropped; max containment among the survivors is below 0.25"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v2_raw.clean.jsonl], outcome: "0 contaminated documents (this checker cannot resolve GSM8K-length questions, so it is a formality; decontaminate.py is the real gate)"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent gets 25% of dev-150 wrong, and the failures are reasoning errors: it sets up an algebraic model of the word problem and then mis-solves it, or mis-tracks units mid-chain. It was trained on 40k rows covering only about 30k distinct problems, roughly 38% of the distinct gsm8k-derived problems available under the same filter."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_diagnostic.json, locator: "accuracy 0.7467 of n=150", observation: "38 of 150 items wrong under greedy"}
+    - {path: /home/ben/task/analysis/exp-02_diagnostic.json, locator: "stop_share 0.987, has_answer_share 0.987", observation: "so the 38 are not format failures"}
+    - {path: /home/ben/task/data/sft_v2.clean.jsonl, locator: "build log: 'unique problems: 79539', 'candidate pool: 164174'", observation: "the corpus exp-02 used was a 40k sample of that pool"}
+  affected_share: 0.253
+  failure_examples:
+    - {id: dev150-bees, source: /home/ben/task/logs/2026-09-04T04-15-40+00-00_gsm8k_6jSfdKTMfXD44wXNtn88vm.json, question: "queen/baby/worker bees in a hive, B + W = 700", gold: "400", model_output: "sets Q = 2B and B = 2Q, concludes B = 4Q, then computes B = 700/4 = 175 and W = 525", failure: "contradictory algebraic set-up carried through without a sanity check"}
+    - {id: dev150-cookies, source: /home/ben/task/logs/2026-09-04T04-15-40+00-00_gsm8k_6jSfdKTMfXD44wXNtn88vm.json, question: "Henry baked twice as many cookies this year, dropped 5, has 110", gold: "50", model_output: "sets 2x = x + 15, gets x = 15, then rambles about y and never recovers", failure: "wrong equation, then no recovery; one of the items that ran to max_tokens"}
+    - {id: dev150-hospital, source: /home/ben/task/logs/2026-09-04T04-15-40+00-00_gsm8k_6jSfdKTMfXD44wXNtn88vm.json, question: "hospital profit from doctor and patient hours", gold: "10000", model_output: "'500 patients * 200 hours * 2 hours/day = 500000 hours', ends at 3.7e7", failure: "unit tracking collapses mid-chain"}
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Retraining from the base snapshot on 99,984 rows covering 79,539 distinct gsm8k-derived problems - 2.6x the distinct problems exp-02 saw - raises greedy dev-150 accuracy above the incumbent's 0.7467."
+  mechanism: "The failures are reasoning, and every extra distinct problem is an extra verified 405B chain over a word-problem structure the model has not seen. Coverage of problem structures, not more repetitions of the same 30k, is what should reduce the algebraic-set-up errors. Retraining from base rather than continuing from exp-02 keeps the two runs comparable and avoids stacking two cosine schedules."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +7 points; data scaling at this size gives diminishing but real returns, and the corpus grows 2.5x while distinct problems grow 2.6x"
+  falsified_if: "greedy dev-150 accuracy is at or below 0.7467, i.e. 2.5x the corpus buys nothing - which would say the model is capacity- or teacher-limited rather than data-limited, and the remaining time should go to RFT or decode-side work instead."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.clean.jsonl
+      source: "nvidia/OpenMathInstruct-2 @ 469216e3 (shards 0-6 of 32), problem_source in {gsm8k, augmented_gsm8k}"
+      n_examples: 99984
+      built_by: /home/ben/task/build_sft_data.py
+      build_command: [python, build_sft_data.py, --shards, "0", "1", "2", "3", "4", "5", "6", --n, "100000", --max-seq-len, "2816", --p-full-fewshot, "0.03", --p-short-fewshot, "0.06", --gsm8k-per-problem, "3", --per-problem, "2", --exclude-questions, data/dev_train500.jsonl, --out, data/sft_v2.jsonl, --raw-out, data/sft_v2_raw.jsonl]
+      selection: "562,187 gsm8k-derived rows from 7 shards -> drop the 6,605 rows whose problem is one of the 500 held-out probe questions -> drop non-numeric answers, latex-heavy bodies, bodies already carrying '####' or 'ANSWER:' -> 79,539 distinct problems -> per problem drop the shortest solution quartile and keep at most 3 (original gsm8k) or 2 (augmented) -> 164,174-row pool -> sample 100,000 -> drop the 16 rows decontaminate.py flags at word-8-gram containment >= 0.25 against all 1319 test questions. \\boxed{X} unwrapped to X. Prompt-kind mix 90,875 zero-shot / 6,046 short-few-shot / 3,079 with the grader's exact 10-shot prefix."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3, ChunkedLossTrainer in train_sft.py"
+    peft: "none - full parameter over the 3.88B text tower; vision tower and projector frozen but kept"
+    hyperparams: {lr: 2.0e-5, epochs: 2, batch_size: 32, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "bf16 weights + adamw_bnb_8bit + flash_attention_2 + gradient checkpointing", seed: 0}
+    target_format: "<reasoning> then a blank line then 'ANSWER: <number>' then <end_of_turn>, rendered inside templates/gemma3.jinja (sha256[:12] = 7de1c58e208e); completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v2.clean.jsonl, --out, ckpts/exp-04, --epochs, "2", --lr, "2e-5", --bs, "32", --accum, "2", --max-seq-len, "2816"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --json-output-file, "{out}.json"]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k openai/gsm8k test split, first 150 items, 10-shot system message seeded 42); the checkpoint carries the greedy generation_config.json adopted in exp-03"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7467
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "greedy accuracy on the 500 held-out GSM8K TRAIN questions that were excluded from this corpus (data/dev_train500.jsonl); exp-02 scored 0.814 there but had only ~30k distinct problems and did not exclude them, so this is the cleaner read of generalisation"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.29
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    # Amended at 8.0 h. setup.checkpoints.keep promised more than this: before
+    # launching exp-07 I deleted the intermediate checkpoints of exp-04 and
+    # exp-05 and all of exp-06, reflexively citing disk that was never short
+    # (5.5 TB free at the time). This is the second time in this batch, after
+    # exp-02; it is a habit, not an accident. What survives is listed below.
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 3126}
+  training_summary: {final_loss: 0.3048, steps: 3126, notes: "train_loss 0.2381 over 2 epochs, 8237 s wall, 24.3 samples/s; no spikes. The greedy generation_config.json adopted in exp-03 was copied into ckpts/exp-04/final before evaluating. AMENDED at 8.0 h to correct result.checkpoints_kept; awm close could not re-validate the amendment because train_sft.py has since changed (exp-05's generation_config save fix), so this card stays closed against its original lock and the amendment is a text-only correction of the record."}
+  measurements:
+    - {metric: accuracy, value: 0.7867, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.0400}
+  diagnostic_result:
+    value: 0.86
+    path: /home/ben/task/analysis/exp-04_diagnostic.json
+    notes: "0.860 greedy on the 500 held-out GSM8K train questions that were explicitly excluded from this corpus, against exp-02's 0.814 on the same 500 - and exp-02 had NOT excluded them, so its number was the optimistic one and the real gap is larger. stop_reason='stop' on 149/150."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.7467 -> 0.7867 (+4.0 points) from 2.5x the rows over 2.6x the distinct problems, same recipe otherwise. The held-out probe moved the same way (0.814 -> 0.860 on questions this corpus excluded), so the gain is coverage, not memorisation of the dev set."
+  decision: adopt
+  next_step: "32 of 150 still wrong, and the surviving errors are a recognisable class: the model builds an algebraic frame, mis-reads one relation in the problem, and then carries a non-integer through to the end (6.5625 square feet, 4.8 sets of 10 feet, 7.8 pages). Every one of those three would be caught by noticing the answer is not a whole number of the thing being counted. exp-05: rejection-sample from this checkpoint at temperature 1.0 and retrain on its own verified-correct chains, which puts extra weight exactly on the problems it currently only sometimes gets right."

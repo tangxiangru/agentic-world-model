@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T13:55:15Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.2
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.06, protocol_n: 150}
+  trigger: "Base google/gemma-3-4b-pt is a pretrained (not instruction-tuned) checkpoint; under the 10-shot GSM8K eval it rarely emits a stop token and runs to max_tokens, so it is slow and leaves the answer buried."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/base_eval.log, locator: "first baseline run: 29 completions in ~15 min at max_connections=2, generations hit max_tokens"}
+  alternatives_rejected:
+    - {option: "LoRA fine-tune", reason: "4B fits full FT comfortably on 80GB H100; full FT gives larger GSM8K gains and avoids adapter-merge loadability pitfall"}
+    - {option: "Train on MetaMathQA/large augmented set first", reason: "de-risk the harness (format/stop-token/loadability) on clean GSM8K-train SFT first; augment in a later card if this works"}
+    - {option: "decode-config only (few-shot prompt engineering, no training)", reason: "base pt model does not reliably stop or follow the ANSWER format; SFT is needed to teach the stop token and format"}
+  pitfalls_hit:
+    - {what: "baseline eval at max_connections=2 too slow (base model never stops, 4000-tok generations)", cost_h: 0.3, fix: "re-run eval with --max-connections 32 --gpu-memory-utilization 0.85; kill orphaned vllm serve/EngineCore pids directly"}
+  smoke_runs:
+    - {command: [python, train.py, --dry_run], outcome: "7473 rows, 0 truncated at max_len 768; every target ends with <end_of_turn> (id 106)"}
+    - {command: [python, "-c", "Gemma3ForCausalLM.from_pretrained(snapshot)"], outcome: "loads 3.88B text params, forward ok, generation eos=[1,106]"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The base pretrained model has no SFT for the GSM8K answer format: it does not reliably produce a single 'ANSWER: N' line nor emit the <end_of_turn> stop token, so the grader (match numeric, reads last number) scores it far below its latent math ability."
+  evidence:
+    - {path: /home/ben/task/logs/base_eval.log, locator: "generations run to max_tokens=4000", observation: "base model does not stop; answers not in the required terminal ANSWER form"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Full SFT of gemma-3-4b-pt on the 7473 GSM8K-train solutions, formatted exactly like the eval's per-question shape (MATH_PROMPT user turn -> '{reasoning}\\n\\nANSWER: N' + <end_of_turn>), will raise GSM8K test accuracy substantially over the base model."
+  mechanism: "SFT teaches the model to (a) produce the chain-of-thought then the single 'ANSWER: N' marker the grader reads, and (b) emit <end_of_turn> so vLLM stops at the answer instead of drifting past it."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+20 pts or more on dev-150"
+  falsified_if: "trained model's dev-150 accuracy is not clearly above the base model's, or it fails to emit <end_of_turn> and keeps running to max_tokens"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: openai/gsm8k (main, train split)
+      n_examples: 7473
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/gsm8k_train.jsonl]
+      selection: "GSM8K train answers; strip <<...>> calculator annotations and the final '#### N' line; single answer marker 'ANSWER: N'"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 (full fine-tune, Gemma3ForCausalLM)
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 3, batch_size: 16, grad_accum: 1, max_seq_len: 768, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "user = MATH_PROMPT_TEMPLATE(question); assistant = '{reasoning}\\n\\nANSWER: {N}' then <end_of_turn>; completion-only loss (prompt masked)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train.py, --data, data/gsm8k_train.jsonl, --out, ckpts/exp01, --epochs, "3", --lr, "1e-5", --bs, "16", --max_len, "768", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/ckpts/exp01
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "32", --gpu-memory-utilization, "0.85", --json-output-file, "{out}"]
+    dev_set: "official gsm8k test --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.06
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "does the trained model emit <end_of_turn> and keep generations short (vs base running to max_tokens)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.29
+  output_checkpoint: /home/ben/task/ckpts/exp01/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp01/final, step: 1404}
+  training_summary: {final_loss: 0.439, steps: 1404, notes: "3 epochs, ~17.7 min on H100, train_samples/s 21.1"}
+  measurements:
+    - {metric: accuracy, value: 0.36, n: 150, path: /home/ben/task/eval/exp01_dev150.json, delta_vs_comparator: 0.30}
+    - {metric: accuracy, value: 0.4533, n: 150, path: /home/ben/task/eval/exp01_dev150_greedy.json, delta_vs_comparator: 0.3933}
+  diagnostic_result: {value: null, path: /home/ben/task/logs/2026-09-04T14-24-12+00-00_gsm8k_mrAG7t7LEdcnzv2EK5VhrA.json, notes: "model emits <end_of_turn>, avg completion 289 chars (max 1871); no runaway to max_tokens. Failures are genuine reasoning/arithmetic errors, not format errors."}
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "SFT on GSM8K-train lifted dev-150 from 0.06 (base) to 0.36 (sampling) / 0.453 (greedy). The stop-token + single ANSWER marker work: generations are short and the grader reads the right number. KEY FINDING: vLLM uses the model's generation_config.json for default decoding; switching final_model to greedy (do_sample=false, temperature=0) adds +9.3 pts and lowers variance -> keep greedy for all models and for final_model."
+  decision: adopt
+  next_step: "exp-02: SFT from base on a larger GSM8K-style augmented set (MetaMathQA GSM subset, reformatted to 'ANSWER: N' + <end_of_turn>, single marker) to improve genuine reasoning; keep greedy decoding. Compare vs exp-01 greedy 0.453."

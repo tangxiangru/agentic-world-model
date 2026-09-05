@@ -1,0 +1,139 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T04:02:27Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.65
+  remaining_h: 4.35
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.7067, protocol_n: 150}
+  trigger: "Four greedy candidates now sit inside a 2.7 pp band at n=150 - exp-04/checkpoint-900 0.7333, exp-02/checkpoint-1857 0.7200, exp-04/checkpoint-450 0.7133, exp-02/final 0.7067 - and the n=150 standard error is 0.037. exp-04 was closed inconclusive for exactly this reason: at this n the ranking is unreadable, and one of them has to become final_model."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-02 0.6333 sampling, exp-03 0.7067/0.72 greedy, exp-04 0.7333/0.7133/0.6933 greedy"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion.verdict inconclusive; next_step names this card"}
+  alternatives_rejected:
+    - {option: "Select on data/gsm8k_devheld.jsonl (500 held-out GSM8K train rows)", reason: "it is NOT held out with respect to training: OpenMathInstruct-2's gsm8k problem_source covers the whole GSM8K train split, so solutions to those 500 problems are in exp-02's and exp-04's training data. It is a valid format diagnostic and an invalid accuracy selector"}
+    - {option: "Repeat reads at n=150 instead of one read at n=1319", reason: "exp-03 measured that two greedy reads of identical weights give the same score but differ on 8/150 items; averaging repeats at n=150 still leaves ~0.03 stderr, while n=1319 gives ~0.012 for about the same total GPU time"}
+    - {option: "Spend the remaining time on another training card instead of resolving the ranking", reason: "with 4.35 h left, a further training card would land unmeasured or measured only at n=150, and the deliverable is one packaged model - resolving which of four existing checkpoints is best is worth more than a fifth unmeasurable one"}
+    - {option: "Average the four checkpoints (model soup)", reason: "untested here, would need its own card and eval, and two of the four are 450 steps apart on the same trajectory rather than independent runs"}
+  pitfalls_hit:
+    - {what: "train_sft.py's finalize() copies the BASE generation_config into every checkpoint, so a freshly trained checkpoint decodes by sampling unless set_decode.py is run on it; exp-03 measured that protocol gap at 7.3 pp", cost_h: 0.0, fix: "scripts/package_final.py runs set_decode.py --mode greedy itself and asserts temperature==0.0 and eos_token_id==[1,106] before finishing"}
+  smoke_runs:
+    - {command: [python, scripts/set_decode.py, --model, ckpts/exp-04/checkpoint-900, --mode, greedy], outcome: "all three exp-04 checkpoints patched to greedy before their n=150 reads; vLLM logged the generation-config override on each"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The run has four plausible final models whose measured accuracies span 0.7067-0.7333, a range smaller than the 0.037 standard error of the protocol that produced them. Shipping the nominal best is a coin flip, and the deliverable (final_model/) must be one directory that the grader can load in a fresh vLLM process with greedy decoding intact."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04_checkpoint-900_dev150.json, locator: "accuracy 0.7333, stderr 0.0362", observation: "nominal best, but 4 items ahead of the third-placed candidate"}
+    - {path: /home/ben/task/eval/exp-03_greedy1857_dev150.json, locator: "accuracy 0.72, stderr 0.0368", observation: "a checkpoint from a different card, statistically tied"}
+    - {path: /home/ben/task/eval/exp-04_final_dev150.json, locator: "accuracy 0.6933", observation: "the endpoint of the newest training run is the worst of the four - the ranking is not monotone in training progress"}
+  affected_share: null
+  failure_examples:
+    - {id: "(aggregate, 40 of 150)", source: /home/ben/task/eval/exp-04_checkpoint-900_dev150.json, question: "harness items, first-150 slice", gold: "n/a", model_output: "valid ANSWER line, wrong number", failure: "reasoning error; format compliance is 1.0000 at this checkpoint"}
+    - {id: "(aggregate, 44 of 150)", source: /home/ben/task/eval/exp-03_greedy_dev150.json, question: "harness items, first-150 slice", gold: "n/a", model_output: "valid ANSWER line, wrong number", failure: "reasoning error"}
+    - {id: "(aggregate, 8 of 150)", source: /home/ben/task/eval/exp-03_greedy_dev150_repeat.json, question: "harness items, first-150 slice", gold: "n/a", model_output: "same weights, same greedy config, different completion", failure: "vLLM continuous-batching nondeterminism - the reason a 2.7 pp gap at n=150 cannot be trusted"}
+  watch_set:
+    path: /home/ben/task/data/gsm8k_devheld.jsonl
+    n: 500
+    selection: "500 GSM8K train rows held out from RFT sampling; retained as a format diagnostic only - see alternatives_rejected for why it cannot select on accuracy"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Scoring the four greedy candidates on the full 1319-item test set separates them by more than the resulting standard error (~0.012), so the ranking observed at n=1319 is a real ordering rather than the n=150 noise; and the winner, packaged into final_model/ by scripts/package_final.py, reproduces its measured accuracy when re-scored from that directory."
+  mechanism: "Standard error falls as 1/sqrt(n): 0.037 at n=150 becomes ~0.012 at n=1319, so a 2-3 pp true difference becomes detectable. Packaging is a separate claim: copying resolves the symlinked weights into real files, set_decode writes the greedy config, and a re-score from final_model/ checks that nothing in that copy changed the model the grader will load."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "the winner should land near 0.70-0.75 at n=1319; the four may still fall within ~2 pp of each other"
+  falsified_if: "the four candidates land within ~1.2 pp (one stderr) of each other at n=1319, in which case the ranking is still unresolved and the choice is arbitrary; or final_model/ re-scores more than 2 pp away from the checkpoint it was copied from, which would mean packaging changed the model."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/checkpoint-900
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_gsm8k_targets.jsonl
+      source: "synthetic:self, sampled from ckpts/exp-02/final over the 6973-question GSM8K train pool"
+      n_examples: 17937
+      built_by: /home/ben/task/scripts/append_stop_token.py
+      build_command: [python, scripts/append_stop_token.py, --inp, data/rft_gsm8k.jsonl, --out, data/rft_gsm8k_targets.jsonl]
+      selection: "provenance of the candidate checkpoints only. NO training happens in this card; the commands read no training data."
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect-ai + vllm 0.11.0; scripts/package_final.py for the artefact
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: '<chain>\\n\\nANSWER: <n><end_of_turn>'"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04/checkpoint-900, --limit, '1319', --json-output-file, /home/ben/task/eval/exp-05_exp04-900_full.json, --max-connections, '16', --gpu-memory-utilization, '0.85']
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/final_model
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --json-output-file, '{out}', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 1319 (the whole GSM8K test split)
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-03
+    value: null
+    path: null
+  diagnostic:
+    what: "format compliance and token-cap share at n=1319 for every candidate (all four read 0.9933-1.0000 and 0.0000-0.0067 at n=150); plus a re-score of final_model/ itself, which must land within 2 pp of the checkpoint it was copied from"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.15
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 900}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-900, step: 900}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-450, step: 450}
+    - {path: /home/ben/task/ckpts/exp-03-greedy-1857, step: 1857}
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 2476}
+  training_summary: {final_loss: null, steps: null, notes: "no training; four greedy candidates scored on the full 1319-item test split, then the winner copied into final_model/ by scripts/package_final.py (weights de-symlinked, greedy generation_config written, tokenizer/config/shard presence asserted, MD5s of both safetensors shards verified identical to the source checkpoint)"}
+  measurements:
+    - {metric: accuracy, value: 0.7165, n: 1319, path: /home/ben/task/eval/exp-05_exp04-900_full.json, delta_vs_comparator: 0.0197}
+    - {metric: accuracy, value: 0.7119, n: 1319, path: /home/ben/task/eval/exp-05_exp04-450_full.json, delta_vs_comparator: 0.0152}
+    - {metric: accuracy, value: 0.7036, n: 1319, path: /home/ben/task/eval/exp-05_exp02-1857_full.json, delta_vs_comparator: 0.0069}
+    - {metric: accuracy, value: 0.6967, n: 1319, path: /home/ben/task/eval/exp-05_exp02-final_full.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.7074, n: 1319, path: /home/ben/task/eval/exp-05_final_model_full.json, delta_vs_comparator: 0.0107}
+  diagnostic_result:
+    value: 0.0121
+    path: /home/ben/task/eval/exp-05_final_model_full.json
+    notes: "token-cap share at n=1319: 0.0121 (exp-04/900), 0.0136 (exp-04/450), 0.0159 (exp-02/1857), 0.0190 (exp-02/final) - it falls monotonically with the ranking, so the winner is also the one that terminates most reliably. Paired (McNemar) counts, all on the same 1319 items: exp-04/900 vs exp-02/final +1.97 pp (99 gained, 73 lost, z=+1.98); vs exp-02/1857 +1.29 pp (99/82, z=+1.26); vs exp-04/450 +0.45 pp (93/87, z=+0.45). final_model/ re-scored 0.7074 against its source checkpoint's 0.7165: MD5s of both weight shards and the config/generation_config are identical, and the paired count is 41 gained / 29 lost over 70 discordant items (z=+1.43), i.e. this 0.9 pp is the harness's own greedy read-to-read nondeterminism, not a packaging defect."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  decision: adopt
+  summary: "At n=1319 the four candidates order consistently - exp-04/900 0.7165 > exp-04/450 0.7119 > exp-02/1857 0.7036 > exp-02/final 0.6967 - so the RFT card that exp-04 had to close as inconclusive at n=150 is worth about +2 pp after all (paired z=+1.98 against exp-02/final). Within each training run the two checkpoints are not separable (z=0.45 and, for exp-02's pair, 1.29). final_model/ holds exp-04/checkpoint-900 with greedy decoding and re-scores 0.7074, a 0.9 pp read-to-read swing on bit-identical weights."
+  next_step: "Two reads of identical weights at n=1319 differ by 0.9 pp with 70 discordant items, so no future card should claim a sub-1 pp win from a single read. Remaining idea with the time left: a uniform weight average of exp-04's three checkpoints (450/900/1335), which is the standard variance-reduction move when checkpoints along one trajectory cannot be separated - exp-06."

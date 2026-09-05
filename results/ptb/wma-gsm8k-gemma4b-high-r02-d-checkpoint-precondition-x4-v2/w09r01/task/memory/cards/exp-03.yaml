@@ -1,0 +1,126 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T18:10:00Z'
+
+situation:
+  elapsed_h: 1.6
+  remaining_h: 8.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6467, protocol_n: 150}
+  trigger: "evaluate.py sends no temperature/top_p/top_k, so the grader decodes with whatever the model directory's own generation_config.json carries; exp-02 inherited the base file (do_sample true, top_k 64, top_p 0.95) and was therefore graded under temperature-1.0 sampling."
+  trigger_evidence:
+    - {path: /home/ben/task/evaluate.py, locator: "parse_args and main - only max_tokens, max_connections, gpu_memory_utilization and chat_template are passed", observation: "no decode parameter is ever set by the harness"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py, locator: "L233-234", observation: "temperature is put in the request body only when config.temperature is not None, and it is None here"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "whole file", observation: "byte-identical to the base: do_sample true, top_k 64, top_p 0.95, no temperature"}
+    - {path: /home/ben/task/analysis/exp-02_failure_tags.json, locator: "failure_taxonomy", observation: "all 51 remaining failures are wellformed_but_wrong - single-sample reasoning errors, the failure class sampling noise inflates"}
+  alternatives_rejected:
+    - {option: "Leave the sampled decode and buy the points with more training", reason: "training costs hours; this costs one eval and no weight change, and it compounds with every later card"}
+    - {option: "Pass decode flags on the command line", reason: "evaluate.py may not be modified (task rule 5) and the final grading run is launched by the harness, not by me - the model directory is the only channel I control"}
+    - {option: "Also sweep temperature 0.3/0.7 or min_p", reason: "single-sample accuracy on a math benchmark is maximised at greedy; a sweep costs 3 more evals for a decision already made by theory"}
+  pitfalls_hit:
+    - {what: "Confirmed on a scratch dir that transformers warns 'generation flags are not valid and may be ignored: [temperature, top_k]' when do_sample=false; it is a warning from GenerationConfig.validate, and to_diff_dict still emits temperature 0.0 and top_k 0, which is all vLLM reads", cost_h: 0.05, fix: "verified the exact dict vLLM would receive before spending GPU time"}
+  smoke_runs:
+    - {command: [python, -c, "GenerationConfig.from_pretrained('/tmp/gctest').to_diff_dict()"], outcome: "{'cache_implementation': 'hybrid', 'temperature': 0.0, 'top_k': 0, 'pad_token_id': 0, 'bos_token_id': 2, 'eos_token_id': [1, 106]} -> vLLM default_sampling_params {'temperature': 0.0, 'top_k': 0}; eos_token_id preserved"}
+
+problem:
+  statement: "The incumbent is graded under temperature-1.0 nucleus sampling that nothing in the task requires. Every one of its 51 remaining dev-150 failures is a well-formed answer with the wrong number, which is exactly the failure class a stochastic decode manufactures: a single sample from a distribution whose mode is correct can still be wrong, and the run is scored on one sample."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_failure_tags.json, locator: "failure_taxonomy", observation: "correct 97, wellformed_but_wrong 51, no_termination_hit_cap 2 - no format failures left for training to fix"}
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "stderr", observation: "0.0392 at n=150 under a sampled decode"}
+    - {path: /home/ben/task/memory/cards/exp-01.verdict.json, locator: "evidence e6, probes p3", observation: "the decode path was traced end to end by the world-model agent: GenerateConfig defaults -> _openai.py:233 -> vllm serve, nothing sets a decode parameter"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "see analysis/exp-02_failure_tags.json", source: /home/ben/task/analysis/exp-02_failure_tags.json, question: "(the 51 items tagged wellformed_but_wrong)", gold: "(various)", model_output: "(well-formed 'ANSWER: n' with the wrong n)", failure: "wellformed_but_wrong"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch.jsonl
+    n: 53
+    selection: "every dev-150 item exp-02 got wrong"
+
+hypothesis:
+  claim: "Writing temperature 0.0 (and top_k 0, top_p 1.0) into the candidate's own generation_config.json, changing no weights, raises dev-150 accuracy above exp-02's 0.6467 measured under the inherited sampled decode."
+  mechanism: "vLLM's ModelConfig.get_diff_sampling_param reads the model directory's generation_config.json into default_sampling_params, and ChatCompletionRequest.to_sampling_params falls back to it for every field the client leaves None. With temperature 0.0 the server decodes the argmax path instead of one draw from a top-64/0.95 nucleus, so the single graded sample becomes the model's mode."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+3 to +10 points"
+  falsified_if: "accuracy at or below 0.6467, or the eval log shows the completions were still sampled (identical repeats of the exp-02 run's outputs would indicate the config was not picked up)"
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "unchanged from exp-02; no training happens in this card, the weights are exp-02's"
+      n_examples: 77000
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --shards, "3", --max-per-problem, "2", --n-zeroshot, "68000", --n-fewshot, "9000", --shot-choices, "1,2,4,10,10", --max-seq-len, "2560", --out, /home/ben/task/data/sft_v2.jsonl]
+      selection: "no rows are read by this card; recorded so the lineage of the weights being re-scored is explicit"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 via inspect_ai; no trainer"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: chain of thought then a single 'ANSWER: <n>' line, closed with <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03/greedy, --limit, "150", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.85", --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/eval/logs/exp-03}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --max-tokens, "1024", --gpu-memory-utilization, "0.85", --json-output-file, "{out}"]
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items in dataset order, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6467
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "count of dev-150 completions identical between the exp-02 (sampled) and exp-03 (greedy) logs - a greedy run must be reproducible, so this is the check that the config was actually honoured rather than silently ignored"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: /home/ben/task/ckpts/exp-03/greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/greedy, step: 1313}
+  training_summary: {final_loss: null, steps: null, notes: "no training; the directory is exp-02/final symlinked file-by-file with one real file of its own, generation_config.json, carrying do_sample false / temperature 0.0 / top_k 0 / top_p 1.0 and the unchanged eos_token_id [1, 106]"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.0733}
+    - {metric: accuracy, value: 0.7333, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150_repeat.json, delta_vs_comparator: 0.0867}
+  diagnostic_result:
+    value: 0.6667
+    path: /home/ben/task/eval/logs/exp-03b
+    notes: "The card's stated diagnostic was wrong and the WMA said so: an identical-completion count against the sampled log discriminates nothing. Replaced with the test it suggested. Two greedy runs of the same 150 items share 66.7% byte-identical completions; the greedy log and the sampled exp-02 log share 0.0%. Two draws from a t=1.0 nucleus cannot agree on 100 of 150 completions, so the generation_config was honoured; the residual 33% is vLLM continuous-batching nondeterminism, not sampling. Corroborating: the two greedy draws spread 1.3 pp (0.720/0.733), the greedy spread the corpus reports, against 3.9 pp stderr on the sampled side. The vLLM server also logged 'Default sampling parameters have been overridden by the model 's Hugging Face generation config', and the eval log records model_args.chat_template = templates/gemma3.jinja (WMA precondition 2)."
+  watch_set_result: {fixed: 21, still_failing: 32, regressions: 10, path: /home/ben/task/analysis/exp-03_watch_rerun.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Changing one file and no weights moved dev-150 from 0.6467 to 0.720 and 0.7333 on two greedy draws (mean 0.7267, +8.0 pts). The mechanism is confirmed by the run-to-run agreement test rather than by the score: 66.7% identical completions between two greedy runs vs 0.0% against the sampled run. The failure taxonomy is unchanged in shape - correct 108, wellformed_but_wrong 40, no_termination_hit_cap 2 - so greedy is converting borderline reasoning chains, not fixing a format bug."
+  decision: adopt
+  next_step: "Greedy generation_config.json ships with final_model and every later card is scored under it. Note honestly (WMA precondition 3): the 0.6467 comparator was one stochastic draw with stderr 0.0392, so the defensible statement is 'roughly +8 pts, and the greedy read is the more reproducible of the two', not a precise delta. 10 items regressed against 21 fixed, which is the expected churn of a 1.3 pp-noise metric. Next: exp-04, SFT from base on the 143k-row sft_v3 corpus (exp-02 used 42k of 77k) - the remaining failures are all wellformed_but_wrong, i.e. reasoning, which is what more data addresses."

@@ -112,12 +112,11 @@ def test_run_replay_reviews_reconciles_and_is_resumable(corpus, tmp_path, skill)
     assert counts == {"reviewed": 6, "skipped": 0, "errors": 0}
     summary = ledger.summarize(ledger.rows([out]))
     # six verdicts; five have an outcome — r-aaaa/exp-03 is an open historical card with none
-    assert len(summary) == 1 and summary[0]["n"] == 6 and summary[0]["n_reconciled"] == 5
+    assert len(summary) == 1 and summary[0]["n"] == 6 and summary[0]["n_scored"] == 5
     # the failed and killed cards scored L0/L1 against the truth kept outside
     rows = {(r["path"].split("/")[-5], r["card_id"]): r for r in ledger.rows([out])}
     assert rows[("r-bbbb", "exp-02")]["scored"]["L0"] == "miss"
-    assert rows[("r-cccc", "exp-01")]["scored"] == {"L0": "hit", "L1": "miss", "L2": "unscorable", "L3": "hit"} or \
-        rows[("r-cccc", "exp-01")]["scored"]["L1"] == "miss"
+    assert rows[("r-cccc", "exp-01")]["scored"] == {"L0": "hit", "L1": "unscorable", "L2": "unscorable", "L3": "miss"}   # heuristic said yes; it was rejected
     again = replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1))
     assert again == {"reviewed": 0, "skipped": 6, "errors": 0}
 
@@ -184,3 +183,87 @@ def test_an_interrupted_session_build_is_completed_on_the_next_build(corpus, tmp
     replay.build_samples(corpus, out, side="train")
     assert (s.session_dir / "memory" / "cards" / "exp-03.yaml").is_file()
     assert (s.session_dir / "memory" / "index.md").is_file() and (s.session_dir / "history").is_symlink()
+
+
+# ---- the sample set has an identity of its own, and a pass can run in parallel (2026-09-02) ----
+
+def test_the_sample_set_fingerprint_names_the_pairs_not_the_paths(corpus, tmp_path, skill) -> None:
+    a = replay.build_samples(corpus, tmp_path / "out-a", side="train")
+    b = replay.build_samples(corpus, tmp_path / "out-b", side="train")
+    sha_a = (tmp_path / "out-a" / "samples.sha").read_text().strip()
+    assert sha_a == (tmp_path / "out-b" / "samples.sha").read_text().strip() == replay.fingerprint(a) == replay.fingerprint(b)
+    assert len(sha_a) == 64
+    fewer = replay.build_samples(corpus, tmp_path / "out-c", side="train", sample=2, seed=0)
+    assert replay.fingerprint(fewer) != sha_a
+    # the fingerprint is over the (run, card) pairs alone: order of the list does not matter
+    assert replay.fingerprint(list(reversed(a))) == sha_a
+
+
+def test_a_parallel_pass_reviews_every_sample_once(corpus, tmp_path, skill) -> None:
+    out = tmp_path / "replay"
+    replay.build_samples(corpus, out, side="train")
+    counts = replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1), jobs=3)
+    assert counts == {"reviewed": 6, "skipped": 0, "errors": 0}
+    assert len(ledger.rows([out])) == 6
+    limited = replay.build_samples(corpus, tmp_path / "r2", side="train")
+    assert len(limited) == 6
+    counts = replay.run_replay(tmp_path / "r2", backends.HeuristicBackend(), budget=backends.Budget(wall_min=1),
+                               jobs=4, limit=2)
+    assert counts == {"reviewed": 2, "skipped": 0, "errors": 0}
+
+
+def test_a_sample_whose_verdict_was_rejected_is_pending_again_on_the_next_pass(corpus, tmp_path, skill) -> None:
+    out = tmp_path / "replay"
+    replay.build_samples(corpus, out, side="train", sample=2, seed=1)
+
+    class Sloppy(backends.Backend):
+        """Writes a verdict the schema rejects, the way a real agent did on 2026-09-02 (direction 'flat'
+        before it was allowed): the file must not count as done."""
+        name = "sloppy"
+
+        def run(self, brief):
+            v = schema.empty_verdict(brief.card_id)
+            v["levels"]["L2_effect"]["direction"] = "sideways"
+            schema.dump_verdict(brief.verdict_path, v)
+            raise backends.BackendError("sloppy: invalid verdict")
+
+    counts = replay.run_replay(out, Sloppy(), budget=backends.Budget(wall_min=1))
+    assert counts["errors"] == 2
+    again = replay.run_replay(out, backends.HeuristicBackend(), budget=backends.Budget(wall_min=1))
+    assert again["reviewed"] == 2 and again["skipped"] == 0
+
+
+# ---- the sample set can be restricted to runs by agent, without the session learning the agent (2026-09-02) ----
+
+def test_agent_filter_selects_runs_through_the_split_file_and_never_names_them(corpus, tmp_path, skill) -> None:
+    """run_ref is 'r-' + sha256(run id)[:8]; the split file lists run ids. A filter on the agent in the run id
+    picks the runs, but sessions and history keep only the opaque run_ref."""
+    import yaml
+
+    runs = {"claude_non_api_claude-opus-5_10h_run1/gsm8k_x_1": "r-aaaa",
+            "codex_non_api_gpt-5.5_10h_run1/gsm8k_x_2": "r-bbbb",
+            "claude_non_api_max_claude-fable-5_1m__10h_run2/gsm8k_x_3": "r-cccc"}
+    # rename the fixture's runs to hash-derived refs so the split file resolves them
+    for run_id, old in runs.items():
+        (corpus / "train" / old).rename(corpus / "train" / replay.run_ref(run_id))
+    split = tmp_path / "split.yaml"
+    split.write_text(yaml.safe_dump({"splits": {"train": list(runs), "test": []}}))
+    out = tmp_path / "replay"
+    samples = replay.build_samples(corpus, out, side="train", split=split, agents=r"claude-(opus-5|fable-5)")
+    picked = {s.run_ref for s in samples}
+    assert picked == {replay.run_ref("claude_non_api_claude-opus-5_10h_run1/gsm8k_x_1"),
+                      replay.run_ref("claude_non_api_max_claude-fable-5_1m__10h_run2/gsm8k_x_3")}
+    assert len(samples) == 4          # 3 cards + 1 card; the codex run's 2 cards are out
+    meta = json.loads((out / "filter.json").read_text())
+    assert meta["agents"] == r"claude-(opus-5|fable-5)" and meta["runs_matched"] == 2 and meta["runs_total"] == 3
+    # nothing under the out dir names an agent: sessions, history links, samples, truth
+    text = "".join(p.read_text() for p in out.rglob("*") if p.is_file() and p.suffix in (".yaml", ".jsonl", ".md"))
+    assert "opus" not in text and "codex" not in text and "fable" not in text
+    # the codex run is still available as history to the picked ones
+    hist = samples[0].session_dir / "history"
+    assert replay.run_ref("codex_non_api_gpt-5.5_10h_run1/gsm8k_x_2") in {p.name for p in hist.iterdir()}
+
+
+def test_agent_filter_needs_a_split_file_that_resolves_the_corpus(corpus, tmp_path, skill) -> None:
+    with pytest.raises(FileNotFoundError):
+        replay.build_samples(corpus, tmp_path / "r", side="train", agents="opus")

@@ -1,0 +1,213 @@
+{
+  "schema_version": "awm-wma-verdict-v1",
+  "card_id": "exp-02",
+  "wma_skill": "176f0a464986",
+  "backend": "claude",
+  "mode": "online",
+  "issued_at": "2026-09-02T22:32:15Z",
+  "change_types": [
+    "C3",
+    "C4",
+    "C2"
+  ],
+  "levels": {
+    "L0_runs": {
+      "answer": "yes",
+      "confidence": 0.88,
+      "basis": [
+        "e1",
+        "e2",
+        "e7",
+        "e8"
+      ],
+      "note": "Three labels ride on one launch: a new 112k-row corpus (C3), a full-parameter SFT recipe (C4), and the format/stop-token alignment that is the actual hypothesis (C2). The launch itself is well de-risked: the smoke run did 8 optimizer steps at this exact token budget with grad checkpointing on, the OOM boundary was mapped (grad-ckpt 0 and token-budget >=16384 OOM; 8192 does not), disk has 5.5 TB free and RAM 1.8 TB, so ~4 x 8.6 GB checkpoints and the ~3 GB tokenized corpus in RAM are not binding. The one abort path the smoke did not exercise is the hard assert 'more than 2% of rows truncate' at train_sft.py:174, which fires only after ~5-10 min of tokenising all 112k rows; my length probe puts the truncation share at 0.01-0.13%, two orders of magnitude below it, so it will not fire. Residual risk is the save path at the end (trainer.save_model + tok.save_pretrained + AutoProcessor.save_pretrained), which no recorded smoke reached: ckpts/ holds no smoke/ directory. Wall clock is the other soft risk: ~50M tokens at the measured 8.2k tok/s is ~1.7 h of stepping plus ~0.1-0.2 h of tokenisation, against a planned 1.6 h."
+    },
+    "L1_valid": {
+      "answer": "yes",
+      "confidence": 0.7,
+      "basis": [
+        "e2",
+        "e3",
+        "e4",
+        "e5",
+        "e9"
+      ],
+      "note": "Format side is checked and clean. The training prompt renders byte-for-byte identical to the string the grader sends (probe p2: the exp-01 log's user message equals MATH_PROMPT_TEMPLATE.format(prompt=question) exactly, and the few-shot pool rows carry the grader's own 'question / Reasoning: / <<..>> / ANSWER: N' shape), all 112,234 targets end with <end_of_turn>, contain 'ANSWER:' exactly once, contain no '####' and no '\\boxed', and the answer is the last number in the target -- which is what match(numeric=True, location='end') reads. The checkpoint will load: evaluate.py's model_type() finds no 'gemma' in /home/ben/task/ckpts/exp-02/final but falls through to config.json architectures ('Gemma3...') and picks gemma3.jinja. What holds this at 0.7 rather than 0.9 is one named silent-failure mechanism (manual section 4, 'config fields vanish'): gemma-3's generation_config carries eos_token_id [1, 106] and transformers' Trainer is documented to collapse it to 1 on save. If 106 (<end_of_turn>) is dropped from the saved generation_config, vLLM never stops on the token the model has just been taught to emit, generation runs to the 4000-token cap into a fabricated next turn, and the grader's last-number rule scores a valid-looking near-zero -- the exact failure that two history runs hit on their first SFT read (0.040 and 0.213 on weights that read 0.480 and 0.533 after the eos patch). The card's own diagnostic (share of non-stop finishes) would expose it, and the fix is a one-line config edit plus a 3-min re-eval, so this is a threat to the first read rather than to the run."
+    },
+    "L2_effect": {
+      "metric": "accuracy",
+      "direction": "higher",
+      "interval": [
+        0.4,
+        0.7
+      ],
+      "confidence": 0.55,
+      "basis": [
+        "e5",
+        "e6",
+        "e10",
+        "e11",
+        "e12"
+      ],
+      "note": "Delta against the base's 0.0533 on dev-150, i.e. a final read of roughly 0.45-0.75. The mechanism is the strongest one the manual records: exp-01 shows the defect is termination, not arithmetic (106/150 have no parseable ANSWER line, 70/150 hit the 4000-token cap), and C2 prompt-attainable headroom on gsm8k is 63% (controlled). No history run uses gemma-3-4b-pt, so by the skill's rule confidence stays at or below 0.6; the closest analogues are first-SFT-from-base cards on gsm8k at n=150 with comparable corpora: SmolLM3-3B-Base on 122k rows at lr 2e-5 read 0.620 after epoch 1 and 0.673 after epoch 2 (history/r-628a7a20), Qwen3-1.7B-Base on 60k gsm8k+MetaMath rows at lr 1e-5/1ep went 0.140 -> 0.673 under the identical eval command, and the wider corpus of first full SFTs clusters at 0.42-0.81. gemma-3-4b-pt is at least as strong a base and 105k OMI-2 gsm8k-derived solutions are a better corpus than gsm8k-train alone, which argues for the upper half; two things argue the other way. First, the read is sampled, not greedy: inspect passes no temperature and gemma's generation_config supplies top_k 64 / top_p 0.95, so the effective decode is t~1.0 sampling (the base's Devanagari/Bengali digit degeneration in exp-01 is the signature), which costs a fine-tuned model a few points and widens the n=150 noise floor to ~3.3 pp. Second, the distribution is bimodal, not unimodal: with probability ~0.2 the eos-collapse mechanism at L1 fires and the recorded read lands at 0.03-0.25 instead, outside this interval. The card's own claim of +40 to +65 pts sits inside the main mode and is, unusually, not overstated."
+    },
+    "L3_worth_now": {
+      "answer": "yes",
+      "confidence": 0.9,
+      "expected_cost_h": 2.0,
+      "basis": [
+        "e6",
+        "e7",
+        "e10",
+        "e11"
+      ],
+      "note": "9.7 h left and the incumbent is the unmodified base at 0.0533 -- there is no trained candidate at all, so some C3/C4 launch has to happen and the cheap levers the manual normally prefers do not exist yet (no checkpoints to sweep for C5, no trajectory to soup for C6, and the C2 alignment this card would otherwise be told to do first is already built into it). 2.0 h expected (1.7 h stepping, ~0.15 h tokenising, 0.05 h eval, save and slack) against 1.6 h planned still leaves ~7.7 h for a second training plus checkpoint selection and packaging. save_steps=300 over ~850 optimizer steps also lands two intermediate checkpoints plus the final one, so the run buys a C5 lever (+/-15 pp controlled, the highest effect per minute in the manual) at no extra GPU cost -- provided all three get evaluated, not just the last."
+    }
+  },
+  "evidence": [
+    {
+      "id": "e1",
+      "path": "/session/scripts/train_sft.py",
+      "locator": "lines 35-57, 166-247",
+      "note": "completion-only labels (-100 over the prompt), rows over max_seq_len dropped, assert dropped/len(rows) < 0.02 at line 174, save_only_model + save_total_limit 4, final save writes model, tokenizer and processor to <out>/final"
+    },
+    {
+      "id": "e2",
+      "path": "/session/memory/cards/exp-02.preflight.json",
+      "locator": "results, summary",
+      "note": "9 pass / 0 fail; stop_token_consistent 500/500, answer_marker_single 500/500. Its max_seq_len check is chars/4 on row text only and explicitly excludes the few-shot prefix, so it does not cover the 4,489 k-shot rows -- probe p3 does"
+    },
+    {
+      "id": "e3",
+      "path": "/session/data/sft_v1.jsonl",
+      "locator": "all 112,234 rows",
+      "note": "every target ends with <end_of_turn>; 'ANSWER:' appears exactly once in every target; zero rows contain '####' or '\\boxed'; the answer is the final number of the target text; nshot 0 x 107,745 and k=2..10 x 4,489"
+    },
+    {
+      "id": "e4",
+      "path": "/session/logs/2026-09-02T22-09-16+00-00_gsm8k_3GqgShT4BK8TmsxpxefjEn.json",
+      "locator": "samples[0].messages, eval.model_args, plan.config",
+      "note": "the grader's user message is byte-identical to train_sft.py's MATH_PROMPT_TEMPLATE render; system message is the 10-shot block (5872 chars, 2177 prompt tokens); model_args set only chat_template and gpu_memory_utilization, plan.config sets max_tokens 4000 and max_connections 16 but no temperature"
+    },
+    {
+      "id": "e5",
+      "path": "/session/analysis/exp-01_base_dev150_rows.json",
+      "locator": "summary, rows[].stop_reason",
+      "note": "base at 0.0533; 70/150 stop_reason=max_tokens, 80/150 stop; of the 80 that stopped only 43 carry an ANSWER line. Confirms termination is the binding defect and that some stop token is honoured by the server today"
+    },
+    {
+      "id": "e6",
+      "path": "/session/memory/cards/exp-02.yaml",
+      "locator": "situation, setup.budget, evaluation.protocol",
+      "note": "elapsed 0.3 h / remaining 9.7 h; planned 1.6 h; dev-150 at max-connections 16 -- the same invocation as the comparator, so the two arms are comparable (manual C12)"
+    },
+    {
+      "id": "e7",
+      "path": "/session/memory/cards/exp-02.yaml",
+      "locator": "situation.smoke_runs, situation.pitfalls_hit",
+      "note": "8 steps in 29.9 s at 8.2k tok/s with grad-ckpt on; grad-ckpt 0 and token budgets 16384/24576 OOM; 0/150 exp-01 outputs began with a '!!!' garbage prefix at max-connections 16, ruling out the high-concurrency mechanism of manual section 4"
+    },
+    {
+      "id": "e8",
+      "path": "/session/system_monitor.log",
+      "locator": "[Disk] tail",
+      "note": "5.5 TB free on /home/ben, 1.8 TB RAM; four bf16 checkpoints of a 4B multimodal model (~8.6 GB each) and the ~3 GB in-RAM tokenised corpus are not binding"
+    },
+    {
+      "id": "e9",
+      "path": "/opt/awm/skills/wma/change_types.md",
+      "locator": "section 4, 'config fields vanish'",
+      "note": "Trainer collapses eos_token_id [1, 106] to 1 before saving; gemma keeps do_sample/top_k 64/top_p 0.95 and must have them removed to decode greedily"
+    },
+    {
+      "id": "e10",
+      "path": "/history/r-628a7a20/index.md",
+      "locator": "exp-02 row",
+      "note": "SmolLM3-3B-Base, sft_v1b.jsonl 122,397 rows, lr 2e-5: 0.620 @150 after epoch 1, 0.673 after epoch 2 -- the closest analogue by corpus size, lr and eval size; different base"
+    },
+    {
+      "id": "e11",
+      "path": "/history/r-0632a2e4/index.md",
+      "locator": "exp-03 row and line 28",
+      "note": "Qwen3-1.7B-Base, gsm8k train + MetaMathQA 60k with few-shot system messages, lr 1e-5 / 1 epoch: 0.140 -> 0.673 at n=150 under the identical eval command -- a format-collapse repair of the same shape as this card"
+    },
+    {
+      "id": "e12",
+      "path": "/history/r-2cd75f43/index.md",
+      "locator": "exp-02 row; see also /history/r-1fff43fc/index.md exp-01",
+      "note": "two runs whose first SFT read 0.040 and 0.213 on weights that read 0.480 and 0.533 after an eos patch -- the base rate for the stop-token silent failure on a first SFT read is not small"
+    }
+  ],
+  "probes": [
+    {
+      "id": "p1",
+      "kind": "data_probe",
+      "cost": {
+        "cpu_min": 1.5
+      },
+      "result": "Full-file scan of sft_v1.jsonl (not the preflight's first 500): 112,234 rows, 0 targets not ending in <end_of_turn>, ANSWER: count is exactly 1 in every row, 0 rows with '####' or '\\boxed', 0/4000 sampled targets whose text does not end in 'ANSWER: <number>'; nshot distribution 0 x 107,745, k=2..10 x 4,489 (4.0%)",
+      "changed": "L1"
+    },
+    {
+      "id": "p2",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 1
+      },
+      "result": "Token-free byte comparison: the user message inspect sent for dev-150 item 0 equals train_sft.py's MATH_PROMPT_TEMPLATE.format(prompt=question) exactly (True), including the trailing '\\n\\nReasoning:'; data/fewshot_pool.json entries (7,417 gsm8k-train rows) use the grader's own few-shot rendering with <<..>> calculator spans and a final 'ANSWER: N'. Training and grading render the same string -- the template_unreachable pitfall the preflight reminds about does not apply",
+      "changed": "L2"
+    },
+    {
+      "id": "p3",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 1.5
+      },
+      "result": "Length estimate calibrated on the eval log (6,334 prompt chars -> 2,177 tokens, 2.91 chars/token): rows over max_seq_len 2560 are 0.010% at 2.91 c/t and 0.127% even at a pessimistic 2.6 c/t, against the script's 2% abort assert -- the k-shot rows the preflight did not measure do not trip it. Corpus is ~50M tokens -> ~1.7 h at the measured 8.2k tok/s, i.e. slightly over the planned 1.6 h; ~850 optimizer steps at grad_accum 6, so save_steps=300 lands checkpoints at 300 and 600 plus final",
+      "changed": "L0"
+    },
+    {
+      "id": "p4",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 1
+      },
+      "result": "The eval passes no temperature and vLLM takes its sampling defaults from the model's generation_config (gemma: top_k 64, top_p 0.95), so dev-150 is read under sampling at t~1.0, not greedy: the noise floor is ~3.3 pp at n=150 rather than 1.3 pp, and the base's Devanagari/Bengali digit tail in exp-01 is consistent with it. A greedy read is an unpriced few points and half the noise",
+      "changed": "L2"
+    },
+    {
+      "id": "p5",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 0.5
+      },
+      "result": "Disk 5.5 TB free, RAM 1.8 TB, ckpts/exp-02 already created and empty. No resource ceiling; did not change any level",
+      "changed": "none"
+    }
+  ],
+  "suggestions": {
+    "preconditions": [
+      "[tier 1, 2 min] After the save, diff ckpts/exp-02/final/generation_config.json against the base's: eos_token_id must still contain 106 (<end_of_turn>). transformers is documented to collapse [1, 106] to 1 on save (manual section 4), and that alone turns this training into a valid-looking ~0.05. If it collapsed, put 106 back before evaluating.",
+      "[tier 2, 2 min] Re-run the 8-step smoke through to the end and load ckpts/smoke/final on CPU: the recorded smoke stops at step 8 and no smoke checkpoint exists under ckpts/, so trainer.save_model + tok.save_pretrained + AutoProcessor.save_pretrained (which rewrites the tokenizer files the trainer just wrote) has never been exercised on this script.",
+      "[tier 1, 1 min] Read the non-stop and no-ANSWER-line shares out of the new eval log before reading the accuracy -- the card's falsification criterion needs them, and they are what distinguishes 'the training did not work' from 'the stop token is not in the server's stop set'."
+    ],
+    "cheaper_variants": [
+      "[tier 2+3, 15 min] Train 150-200 steps on a 15k-row subset first and score it at n=150. The format/termination behaviour is learned in the first few hundred steps, so this tests the entire hypothesis chain -- emit <end_of_turn>, server stops, grader reads the ANSWER line -- for ~15 min instead of discovering a broken stop set after 1.7 h.",
+      "[tier 3, 10 min] Evaluate all three checkpoints (300, 600, final), not only final: C5 is the only strict single-variable +/-15 pp lever in the corpus, one epoch over 112k rows is well past the point where format is learned, and the checkpoints cost nothing extra since save_steps=300 already writes them.",
+      "[tier 1+3, 5 min] Score the winning checkpoint a second time with top_k/top_p removed and temperature 0 in generation_config. The protocol currently samples at t~1.0 because gemma's config supplies top_k 64 / top_p 0.95 and inspect sends no temperature; greedy is worth a few points on a fine-tuned model and cuts the n=150 noise floor from ~3.3 pp to ~1.3 pp, which matters for every comparison after this card."
+    ]
+  },
+  "cost": {
+    "cpu_min": 6,
+    "gpu_min": 0,
+    "wall_min": 8.920205,
+    "usd": 2.6574,
+    "turns": 33
+  },
+  "model": "claude-opus-5",
+  "effort": "high",
+  "access": {
+    "files": 9,
+    "outside": []
+  }
+}

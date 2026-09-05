@@ -1,0 +1,110 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-09
+created_at: '2026-09-02T21:38:00Z'
+situation:
+  elapsed_h: 7.6
+  remaining_h: 2.4
+  incumbent:
+    ref: exp-07
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7877, protocol_n: 1319}
+  trigger: "final_model is installed and verified at 0.7877 on the full test set, and 2.4 h remain. Every data lever is spent - all 152518 gsm8k-sourced OpenMathInstruct-2 rows have now been trained on across exp-02 and exp-07 - so the only remaining move that fits the budget without risking the verified artefact is a weight-space one."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-08.yaml, locator: "result.measurements", observation: "exp-07/final 0.7877 on 1319 items, adopted and installed as final_model"}
+    - {path: /home/ben/task/logs/build_v3.log, locator: "pool_gsm=152518", observation: "exp-02 took rows 0-80000 and exp-07 took 80000-152518; there is no unseen gsm8k-domain data left to train on"}
+  alternatives_rejected:
+    - {option: "One more SFT epoch on OpenMathInstruct-2 math (non-gsm8k) rows", reason: "508k such rows are unseen but off-domain for this benchmark, and a 1 h train plus a 15 min eval would finish with under an hour of margin; exp-04 already showed a late round can cost points"}
+    - {option: "Soup exp-07/final with exp-02/final", reason: "those two are 3.3 pts apart on the full test set and separated by a whole 80k-row epoch; averaging across that much distance is more likely to land between them than above both"}
+    - {option: "Stop here", reason: "reasonable, and it is the fallback - but this costs 25 minutes, cannot touch the installed final_model unless it wins, and tail-averaging two checkpoints of one cosine run is a well-behaved operation"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "final_model gets 280 of 1319 test items wrong. No unseen in-domain training data remains and the budget cannot absorb another training round with verification, so any further gain has to come from the checkpoints already on disk."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-08-challenger_tags.json, locator: "summary", observation: "0.7877 on 1319, max_tokens_share 0.0038, multi_answer_line_share 0.0 - format is clean, the errors are reasoning"}
+    - {path: /home/ben/task/eval/exp-07-ck302_dev500.json, locator: "whole file", observation: "the half-epoch checkpoint scores 0.792 at n=500 against the full-epoch 0.806 - close enough in quality to be worth averaging with"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-08-challenger_watch.jsonl
+    n: 280
+    selection: "every one of the 1319 test items final_model scores wrong; stable ids only (protocol rule 7)"
+hypothesis:
+  claim: "The uniform weight average of exp-07/checkpoint-302 and exp-07/final scores higher on the 1319-item test set than exp-07/final alone."
+  mechanism: "The two checkpoints are the midpoint and endpoint of one cosine decay over one epoch, so they sit in the same loss basin at different learning rates (2.5e-6 and 2.5e-7). Averaging along that trajectory is tail averaging: it cancels the SGD noise the endpoint still carries and usually lands at a flatter point than either input."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: "0 to +1.5 pts; a negative result is entirely possible and the fallback is already installed"
+  falsified_if: "the soup scores at or below 0.7877 on the 1319-item run, in which case final_model is left exactly as it is"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-07/final
+    origin: exp-07
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "derived:exp-07"
+      n_examples: 80518
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v3.jsonl, --skip-gsm-aug, '80000', --n-gsm-aug, '72518', --skip-math, '8000', --n-math, '8000', --no-human-gsm]
+      selection: "NO TRAINING IN THIS CARD (mixture_weight 0). The schema requires a data entry; this names the corpus whose two checkpoints are being averaged."
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors shard-wise fp32 mean, cast back to bf16 (scripts/soup.py)"
+    peft: none
+    hyperparams: {weights: "0.5 / 0.5", temperature: 0.0, seed: 0}
+    target_format: "unchanged"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --inputs, /home/ben/task/ckpts/exp-07/checkpoint-302, /home/ben/task/ckpts/exp-07/final, --out, /home/ben/task/ckpts/exp-09_soup]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-09_soup.log
+  output_dir: /home/ben/task/ckpts/exp-09_soup
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 1319 (evaluation only)"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-07
+    value: 0.7877
+    path: /home/ben/task/eval/exp-08-challenger_dev1319.json
+  diagnostic:
+    what: "exact McNemar two-sided p on the paired 1319-item outcomes against exp-07/final"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.25
+  output_checkpoint: /home/ben/task/ckpts/exp-09_soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-09_soup, step: 604}
+  training_summary: {final_loss: null, steps: null, notes: "no training; shard-wise fp32 mean of exp-07/checkpoint-302 and exp-07/final, cast back to bf16, tokenizer and greedy generation_config copied from the endpoint"}
+  measurements:
+    - {metric: accuracy, value: 0.7786, n: 1319, path: /home/ben/task/eval/exp-09-soup_dev1319.json, delta_vs_comparator: -0.0091}
+  diagnostic_result:
+    value: 0.3112
+    path: /home/ben/task/analysis/exp-09_paired.json
+    notes: "paired on all 1319 items: 53 gained, 65 lost, net -12, exact McNemar two-sided p=0.31. max_tokens share 0.0038 -> 0.0053. The soup is a valid model, just a slightly worse one."
+  watch_set_result: {fixed: 53, still_failing: 227, regressions: 65, path: /home/ben/task/analysis/exp-09_paired.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The tail average scores 0.7786 against exp-07/final's 0.7877, 0.9 pts down with a paired net of -12 (p=0.31). Averaging did not find a flatter point; it pulled the endpoint back toward the mid-run checkpoint, which was the worse of the two inputs. Cheap to test, correctly falsified, no cost to the shipped model."
+  decision: reject
+  next_step: "final_model stays exp-07/final. Nothing further is attempted: the in-domain data pool is exhausted, and the remaining budget is margin, not a lever."

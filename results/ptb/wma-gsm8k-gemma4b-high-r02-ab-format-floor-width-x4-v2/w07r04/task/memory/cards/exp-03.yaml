@@ -1,0 +1,120 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T18:35:01Z'
+situation:
+  elapsed_h: 2.9
+  remaining_h: 7.1
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.66, protocol_n: 150}
+  trigger: "exp-02's checkpoint-800 and its final step both score exactly 0.66 on dev-150, so the second half of the epoch over the 52k off-policy corpus bought nothing; and with termination fixed (1/150 run-ons) the remaining 51 failures are reasoning and arithmetic, which more passes over the same solutions will not touch."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_ckpt800.json, locator: "accuracy 0.66 at step 800"}
+    - {path: /home/ben/task/eval/exp-02_final.json, locator: "accuracy 0.66 at step 1632"}
+    - {path: /home/ben/task/analysis/exp-02_final_diagnostic.json, locator: "hit_max_tokens=1, no_answer_line=1, correct_on_first_answer_line=101 of 150"}
+  alternatives_rejected:
+    - {option: "Continue training exp-02/final on the RFT data alone at a lower LR", reason: "cheaper (~25 min) but it trains a second time on questions the model has already fitted and risks collapsing onto its own phrasing; the standard RFT recipe (Yuan et al.) retrains the base on SFT union RFT and keeps the off-policy diversity"}
+    - {option: "Scale the off-policy corpus instead (data/sft_v2.jsonl, 77.5k rows, 25k more unique problems, already built and contamination-checked)", reason: "the ckpt-800 = final result says another pass over more of the same 405B-generated solutions is the weaker lever; sft_v2 is kept as the exp-04 fallback if RFT does not move the number"}
+    - {option: "DPO/GRPO on correct-vs-incorrect samples", reason: "no preference-pair pipeline exists here and a GRPO loop would not fit the remaining 7 h alongside a final eval; RFT extracts most of the same signal from the samples already drawn"}
+  pitfalls_hit:
+    - {what: "rft_sample.py generation is counted per sequence by vLLM (20223 prompts x k=6 = 121338), which made the ETA look 6x worse than the real one", cost_h: 0.0, fix: "none needed; 37 min wall at ~8.4k output tok/s"}
+  smoke_runs:
+    - {command: [python, rft_sample.py, --model, ckpts/exp-02/final, --questions, data/rft_pool.jsonl, --out, data/rft_v1.jsonl, --k, '6', --max-keep, '2', --temperature, '1.0'], outcome: "17878/20223 questions solved at least once (88%); 33707 rows kept; 0 malformed (every row has exactly one ANSWER line and ends with <end_of_turn>); contamination check passed"}
+problem:
+  statement: "exp-02 is right about format but still wrong on a third of the items, and the errors are inside the reasoning: of 150 dev items, 101 have a correct first ANSWER line and 49 are simply wrong chains. The training corpus is entirely off-policy (Llama-405B-written solutions) so nothing in it corrects the specific chains this 4B model actually produces."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_final_diagnostic.json, locator: "scored=I entries with has_answer_line=true", observation: "49 of 51 failures are well-formed answers that are numerically wrong; only 2 lose to formatting"}
+    - {path: /home/ben/task/analysis/exp-02_watchset.json, locator: "accuracy over 250 GSM8K-train holdout items", observation: "0.656 - the same error rate off the official dev set, so this is the model's general error rate, not dev-150 noise"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "final line", observation: "at temperature 1.0 the model reaches the gold answer on 17878/20223 training questions within 6 tries, so most of the failures are recoverable behaviour it can already produce sometimes"}
+  affected_share: 0.96
+  failure_examples:
+    - {id: wrong-chain-1, source: /home/ben/task/analysis/exp-02_final_diagnostic.json, question: "dev items scored I with a well-formed ANSWER line", gold: "various", model_output: "single well-formed chain ending 'ANSWER: n' with n wrong", failure: "arithmetic or set-up error inside an otherwise fluent chain"}
+    - {id: unsolvable-1, source: /home/ben/task/logs/rft_sample.log, question: "2345 of 20223 training questions", gold: "various", model_output: "no correct solution in 6 samples at temperature 1.0", failure: "beyond the model's current reach; RFT supplies no data for these"}
+    - {id: format-residual, source: /home/ben/task/analysis/exp-02_final_diagnostic.json, question: "1 dev item", gold: "various", model_output: "runs to the 4000-token cap", failure: "residual run-on, 0.7% of items"}
+  watch_set:
+    path: /home/ben/task/data/dev_train_holdout.jsonl
+    n: 250
+    selection: "the same 250 GSM8K-train items held out of every training file since exp-02; exp-02/final scores 0.656 on them (analysis/exp-02_watchset.json)"
+hypothesis:
+  claim: "Retraining the base snapshot on the exp-02 corpus plus 33.7k rejection-sampled on-policy solutions (correct-answer-filtered, <=2 distinct chains per question) raises dev-150 accuracy above exp-02's 0.66."
+  mechanism: "The RFT rows are chains this model actually generates, reweighted onto the ones that reach the gold answer; training on them raises the probability mass of its own correct reasoning paths at temperature 0, which is exactly what pass@1 greedy decoding reads. The 88% coverage of the question pool means the reweighting is broad rather than concentrated on easy items."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +6 points (0.66 -> 0.68-0.72)"}
+  falsified_if: "dev-150 accuracy at or below exp-02's 0.66, or the train-split watch set at or below 0.656"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1_rft.jsonl
+      source: "derived:exp-02 (33707 rows sampled from ckpts/exp-02/final) concatenated with the exp-02 corpus (hf:nvidia/OpenMathInstruct-2 gsm8k-family + hf:openai/gsm8k train)"
+      n_examples: 85930
+      built_by: /home/ben/task/rft_sample.py
+      build_command: [python, rft_sample.py, --model, ckpts/exp-02/final, --questions, data/rft_pool.jsonl, --out, data/rft_v1.jsonl, --k, '6', --n-questions, '20223', --max-keep, '2', --temperature, '1.0', --max-tokens, '512']
+      selection: "keep a sample only if it contains exactly one ANSWER line, ends on it, and its number equals the gold answer; dedupe by the first 120 characters; at most 2 distinct chains per question; questions are 7223 GSM8K-train items (dev holdout removed) plus 13000 OpenMathInstruct-2 problems; the official test split is never sampled"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer with a custom completion-only collator
+    peft: none
+    hyperparams: {lr: 1.0e-05, epochs: 1.0, batch_size: 8, grad_accum: 4, max_seq_len: 1536,
+      scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02: chain of thought, blank line, 'ANSWER: <integer>', then <end_of_turn>, rendered through templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4); saved generation_config decodes greedily (temperature 0.0, top_p 1.0, top_k 1) with eos_token_id [1,106]"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v1_rft.jsonl, --out, /home/ben/task/ckpts/exp-03,
+      --lr, '1e-5', --epochs, '1', --bs, '8', --grad-accum, '4', --max-seq-len, '1536',
+      --optim, adamw_bnb_8bit, --save-steps, '1400']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-03_train.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 1400
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.3
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '16', --gpu-memory-utilization, '0.6', --json-output-file, '{out}.json']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, 10-shot system message seeded 42)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.66
+    path: /home/ben/task/eval/exp-02_final.json
+  diagnostic:
+    what: "train-split watch set (250 held-out GSM8K-train items, greedy zero-shot, score_watchset.py): exp-02 scores 0.656. n=250 makes a 3-point move readable where dev-150 cannot."
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.25
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1400, step: 1400}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 2686}
+  training_summary: {final_loss: 0.303, steps: 2686, notes: "74 min wall at 19.3 samples/s; loss below exp-02's 0.327, as expected when 39% of the rows are the model's own chains"}
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-03_final.json, delta_vs_comparator: 0.0467}
+  diagnostic_result:
+    value: 0.636
+    path: /home/ben/task/analysis/exp-03_watchset.json
+    notes: "the n=250 train-split watch set moved the OTHER way: 0.656 -> 0.636 (24 fixed, 29 regressions). Paired on dev-150 the change is 20 gained / 13 lost, which McNemar puts at p~0.29 - a real improvement is not established by either read on its own, and the two reads disagree in sign."
+  watch_set_result: {fixed: 24, still_failing: 62, regressions: 29, path: /home/ben/task/analysis/exp-03_paired.json}
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: "dev-150 rose 0.66 -> 0.7067 (+4.7) but the held-out train-split probe fell 0.656 -> 0.636, and the paired dev-150 split (20 gained, 13 lost) is not significant. The mechanism - reweighting the model's own correct chains raises greedy pass@1 - is not supported by the n=250 read, so the dev-150 gain is at least partly selection noise on a 150-item ruler."
+  decision: adopt
+  next_step: "exp-03/final is still the best measured checkpoint under the graded protocol, so it becomes the incumbent, but a second on-policy round is not justified by this evidence. exp-04 changes the other axis instead - the off-policy corpus grows from 45k to 70k unique OpenMathInstruct-2 problems (data/sft_v2.jsonl) while the RFT rows stay - and exp-05 re-scores the finalists at --limit 500 so the submitted checkpoint is not chosen on a 3-point ruler."

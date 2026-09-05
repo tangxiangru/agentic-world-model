@@ -1,0 +1,308 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T05:22:23Z'
+situation:
+  elapsed_h: 4.85
+  remaining_h: 5.15
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score:
+      metric: accuracy
+      value: 0.6867
+      protocol_n: 150
+  trigger: With format and decode fixed, the incumbent's remaining 47 dev-150 failures
+    are reasoning errors, and two facts say the SFT stage was under-fed - exp-02 used
+    only 90k of the 152,639 usable GSM8K-sourced OpenMathInstruct-2 rows available
+    in train_1M, and rejection sampling from exp-02/final solves 6793 of the 7473
+    GSM8K train problems at k=6, yielding 12,825 usable on-policy correct solutions that
+    cost nothing further to collect.
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp-03_greedy150.json
+    locator: summary
+  - path: /home/ben/task/logs/rft_sample.log
+    locator: final json block
+  - path: /home/ben/task/data/omi_fresh.jsonl
+    locator: whole file, 62658 rows not present in sft_v1.jsonl
+  alternatives_rejected:
+  - option: Train a fresh run from the base model on the larger corpus instead of
+      continuing from exp-02/final
+    reason: exp-02 alone cost 3.17 h and only 5.15 h remain; a restart cannot finish
+      and be evaluated, and continuing keeps the checkpoint that already scores 0.687
+      as a fallback.
+  - option: RFT data only (12,825 rows, ~25 min of training)
+    reason: On-policy data alone is a narrow intervention over 7473 problems the model
+      already solves 91% of; the 62,658 unseen 405B-generated rows are the part of
+      the corpus exp-02 never saw and are the cheaper source of new competence. Both
+      are mixed rather than run as two cards because each card costs ~15 min of lock
+      and review overhead against a 5 h budget.
+  - option: DPO or GRPO on the 680 unsolved train problems
+    reason: No preference pairs exist, a GRPO loop needs a reward server and several
+      hours to tune, and the failure mode is capability rather than preference.
+  - option: Second epoch over sft_v1
+    reason: 62,658 unseen rows of the same distribution are strictly better than a
+      repeat of rows already fitted to loss 0.28.
+  pitfalls_hit:
+  - what: rft_sample.py's vLLM progress bar counts prompts x k, so the first ETA read
+      21 h and looked like a failure; it settled to 42 min once the engine warmed
+      up
+    cost_h: 0.0
+    fix: read the est. speed field, not the first ETA
+  - what: 'rft_sample.py passed stop=["<end_of_turn>"] to vLLM as a string, but vLLM
+      detokenises with skip_special_tokens=True so that string never appears; offline
+      generate() ran to max_tokens and 10726 of 12848 completions repeated their
+      "ANSWER: n" line dozens of times. The answer_marker_single preflight check
+      refused the lock (82/500 targets with != 1 marker) - exactly the
+      double_answer_format pitfall, caught before any GPU time was spent.
+      scripts/clean_rft.py truncates each completion at its first ANSWER line and
+      re-verifies it against gold: 12825 kept, 3 with no ANSWER line and 20 whose
+      first answer was wrong dropped.'
+    cost_h: 0.15
+    fix: truncate at the first ANSWER line; pass stop_token_ids=[106] next time
+  - what: exp-01's --limit 150 baseline took 14:39 because the un-finetuned model
+      never terminated and every sample ran to the 4000-token cap
+    cost_h: 0.25
+    fix: the --limit 10 probe run first would have priced it; trained checkpoints
+      evaluate in ~1.5 min
+  smoke_runs:
+  - command:
+    - python
+    - /home/ben/contamination_check.py
+    - --reference
+    - /home/ben/test_data.json
+    - --input
+    - data/sft_v2_docs.jsonl
+    outcome: 60825 documents scanned, 0 contaminated, exit 0 (rft_v1 and omi_fresh
+      were each also checked separately, 0 contaminated)
+problem:
+  statement: The incumbent answers in the right shape every time and is decoded on
+    its mode path, so all 47 remaining dev-150 failures are wrong arithmetic or wrong
+    problem set-up. Its SFT stage saw 90k of the 152,639 usable GSM8K-sourced OpenMathInstruct-2
+    rows and no data from its own output distribution, so it has never been corrected
+    on the chains it actually produces.
+  evidence:
+  - path: /home/ben/task/analysis/exp-03_greedy150.json
+    locator: summary
+    observation: 148/150 stop cleanly and 98.7% end in an ANSWER line at accuracy
+      0.687, so the residual 47 failures are not format failures
+  - path: /home/ben/task/logs/rft_sample.log
+    locator: final json block
+    observation: solve_rate 0.909 over the 7473 GSM8K train problems at k=6, i.e.
+      680 train problems the model cannot solve in six tries, and 12825 usable correct on-policy
+      solutions for the rest
+  - path: /home/ben/task/data/omi_fresh.jsonl
+    locator: line count
+    observation: 62658 OpenMathInstruct-2 GSM8K-sourced rows exist that are not in
+      sft_v1.jsonl
+  affected_share: 1.0
+  failure_examples:
+  - id: exp03-fail-agg
+    source: /home/ben/task/analysis/exp-03_greedy150.json
+    question: the 47 dev-150 items the incumbent still gets wrong
+    gold: mixed
+    model_output: well-formed chains ending in a single ANSWER line with the wrong
+      number
+    failure: arithmetic or set-up error inside an otherwise well-shaped solution
+  - id: exp03-maxtok
+    source: /home/ben/task/analysis/exp-03_greedy150.json
+    question: 2 of the 150 items
+    gold: mixed
+    model_output: greedy repetition loop that never terminates
+    failure: stop_reason max_tokens under greedy decoding (0/150 under sampling)
+  - id: rft-unsolved
+    source: /home/ben/task/logs/rft_sample.log
+    question: 680 GSM8K *train* problems
+    gold: mixed
+    model_output: no correct solution in 6 samples at temperature 0.9
+    failure: capability ceiling, not decode - these are the problems the current weights
+      cannot reach
+  watch_set: null
+hypothesis:
+  claim: Continuing training from exp-02/final for one epoch on a 60,825-row mixture
+    of on-policy rejection-sampled GSM8K train solutions, unseen OpenMathInstruct-2
+    GSM8K rows and a replay slice of sft_v1, at a reduced learning rate, moves greedy-decoded
+    dev-150 accuracy in the positive direction relative to exp-03's 0.6867.
+  mechanism: Two additive sources. The 38k unseen 405B-generated solutions extend the
+    same distillation signal exp-02 was cut short on, which is where new arithmetic
+    competence comes from. The 12,825 rejection-sampled rows are drawn from the model's
+    own output distribution and are filtered to correct final answers, so they sharpen
+    the exact chains it produces at decode time rather than teaching a new style.
+    The 10k replay slice holds the format and stops the continuation drifting off
+    the target shape.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: +2 to +7 pt; smaller than exp-02's jump because format and decode are
+      already fixed and only reasoning is left
+  falsified_if: greedy dev-150 accuracy is at or below 0.6867, or the share of completions
+    ending in a well-formed ANSWER line falls below 0.98
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/sft_v2.jsonl
+    source: 'synthetic:self (rejection sampling from exp-02/final over openai/gsm8k
+      train) mixed with nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e
+      train_1M and derived:exp-02 replay'
+    n_examples: 60825
+    built_by: /home/ben/task/scripts/merge_data.py
+    build_command:
+    - python
+    - scripts/merge_data.py
+    - --input
+    - data/rft_v1_clean.jsonl
+    - --input
+    - data/omi_fresh.jsonl:38000
+    - --input
+    - data/sft_v1.jsonl:10000
+    - --out
+    - data/sft_v2.jsonl
+    selection: 12825 rejection-sampled rows (k=6 at temperature 0.9 from exp-02/final
+      over all 7473 GSM8K train problems, kept only when the answer matches gold,
+      at most 2 distinct solutions per problem, then truncated at the first ANSWER
+      line by scripts/clean_rft.py - see situation.pitfalls_hit) plus 38000 sampled from the 62658
+      OpenMathInstruct-2 GSM8K-sourced rows absent from sft_v1 plus a 10000-row replay
+      slice of sft_v1. Every target carries one ANSWER marker and ends in the stop
+      token.
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer, torch 2.8.0
+    peft: none
+    hyperparams:
+      lr: 7.0e-06
+      epochs: 1.0
+      batch_size: 4
+      grad_accum: 8
+      max_seq_len: 2816
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      optim: adamw_bnb_8bit
+      gradient_checkpointing: true
+      attn: flash_attention_2
+      fewshot_p: 0.06
+    target_format: unchanged from exp-02 - completion-only loss on chain of thought,
+      blank line, one ANSWER line, then the stop token, with the prompt rendered by
+      templates/gemma3.jinja
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - scripts/train_sft.py
+    - --data
+    - /home/ben/task/data/sft_v2.jsonl
+    - --model
+    - /home/ben/task/ckpts/exp-02/final
+    - --out
+    - /home/ben/task/ckpts/exp-04
+    - --lr
+    - 7e-6
+    - --epochs
+    - '1'
+    - --bs
+    - '4'
+    - --grad-accum
+    - '8'
+    - --max-seq-len
+    - '2816'
+    - --fewshot-p
+    - '0.06'
+    - --save-steps
+    - '900'
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 900
+    keep: 3
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.8
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '150'
+    dev_set: official --limit 150; the candidate is packaged with scripts/finalize.py
+      --greedy first so its generation_config carries temperature 0, matching the decode
+      under which the exp-03 comparator was measured
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6867
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: share of completions ending in a well-formed ANSWER line and share with
+      stop_reason max_tokens, to confirm the continuation did not disturb the format
+      or worsen greedy repetition
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.56
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-04/checkpoint-900, step: 900}
+  - {path: /home/ben/task/ckpts/exp-04/checkpoint-1800, step: 1800}
+  - {path: /home/ben/task/ckpts/exp-04/checkpoint-1900, step: 1900}
+  - {path: /home/ben/task/ckpts/exp-04/final, step: 1900}
+  training_summary:
+    final_loss: 0.2417
+    steps: 1900
+    notes: 'train_loss 0.2618 over 1 epoch, 5608 s (2.95 s/step, 10.84 samples/s).
+      The WMA precondition on the warm restart is satisfied: loss at step 20 was 0.2901,
+      essentially where exp-02 ended (0.2809), so the continuation saw the format it
+      was trained on rather than a new one. 60794 of 60825 rows kept, 31 dropped over
+      max_seq_len. Evaluated through scripts/finalize.py --greedy into
+      ckpts/exp-04-greedy so the decode matched the exp-03 comparator exactly.'
+  measurements:
+  - metric: accuracy
+    value: 0.6667
+    n: 150
+    path: /home/ben/task/eval/exp-04_final_dev150.json
+    delta_vs_comparator: -0.02
+  diagnostic_result:
+    value: 0.9867
+    path: /home/ben/task/analysis/exp-04_final150.json
+    notes: 'Format is untouched: 148/150 stop cleanly, 2/150 max_tokens, 98.7% end
+      in a well-formed ANSWER line, mean completion 666 chars - all within a rounding
+      error of exp-03 (148/2/98.7%/674). Paired per-item read over the same 150 items
+      (analysis/exp04_vs_exp03_flips.json): 8 wrong->right, 11 right->wrong, net -3
+      items. The continuation moved 19 of 150 items in total, i.e. it changed the
+      model, but the movement was symmetric.'
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: 'Greedy dev-150 0.6867 -> 0.6667, a net loss of 3 items out of 150 and
+    inside the ~3 pt noise floor: the second stage neither helped nor clearly hurt.
+    The falsifier fired as written (accuracy at or below 0.6867). The mechanism gets
+    no support - 38k more unseen 405B solutions plus 12.8k on-policy correct chains
+    bought 8 newly-right items and lost 11, which is what the WMA''s reference class
+    of ~25 rft continuations at n=150 predicted (median -0.007) and not what the card
+    predicted (+2 to +7 pt).'
+  decision: reject
+  next_step: 'final_model stays at exp-03 (exp-02 weights + greedy generation_config,
+    0.6867) under the pre-declared adoption rule: exp-04 had to beat 0.6867 by more
+    than the noise floor and it did not. exp-04/final is kept because the two
+    checkpoints are 19 items apart and disagree in both directions, which is the
+    setting a uniform weight soup exploits - that is exp-05, together with a read of
+    exp-04/checkpoint-900 and a full-test confirmation of whichever candidate leads.'

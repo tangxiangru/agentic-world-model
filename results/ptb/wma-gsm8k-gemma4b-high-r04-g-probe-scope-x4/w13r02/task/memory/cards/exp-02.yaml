@@ -1,0 +1,151 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T08:07:12Z'
+situation:
+  elapsed_h: 0.7
+  remaining_h: 9.3
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: 0.0867
+      protocol_n: 150
+  trigger: "exp-01 measured the untrained parent under the harness protocol; the parent has never been instruction-tuned, so nothing in it has been taught to answer in the graded shape (chain of thought, then a final 'ANSWER: <n>' line, then <end_of_turn>). This is the first intervention."
+  trigger_evidence:
+  - path: /home/ben/task/eval/exp-01/base_dev150.json
+    locator: "accuracy = 0.0867"
+  alternatives_rejected:
+  - option: "LoRA instead of full-parameter SFT"
+    reason: "the shift is base -> instruction-following in a new response format, which is exactly the regime where full FT beats a low-rank update; the 3.88B trainable text tower fits on one H100 with 8-bit Adam"
+  - option: "MetaMathQA (395k) as the training corpus"
+    reason: "its GSM_FOBAR/GSM_SV targets carry two answer markers at once ('#### 50' and 'The answer is: 50', seen in logs/dl_mm.log) - the double_answer_format pitfall - and its solutions are weaker than OpenMathInstruct-2's 405B-generated ones"
+  - option: "Mix the exact 10-shot system message into a fraction of the training prompts so training and grading prompts match"
+    reason: "the message is ~1500 tokens; at 15% of rows it adds ~65% to the token budget of the run. Deferred to a later card, and made a falsification check on this one instead"
+  - option: "2 epochs over the same 64k rows"
+    reason: "2.2 h for the first intervention with no evidence yet on the loss curve; 1 epoch first, extend only if the eval says the model is undertrained"
+  pitfalls_hit:
+  - what: "launched a smoke train while the exp-01 vLLM server was profiling memory; vLLM died with 'No available memory for the cache blocks' at --gpu-memory-utilization 0.3 and the locked eval command exited 1"
+    cost_h: 0.15
+    fix: "never run anything on the GPU while a vLLM server is starting; re-ran the identical locked command on an idle GPU and it started fine"
+  smoke_runs:
+  - command: [python, train_sft.py, --data, data/_smoke.jsonl, --out, ckpts/_smoke, --bs, '2', --grad-accum, '2', --epochs, '1', --max-len, '1024']
+    outcome: "239/240 rows kept, tokens p50=316 p99=525 max=791; loss 0.44 -> 0.36 over 60 steps; saved checkpoint kept architectures=['Gemma3ForConditionalGeneration'] and generation_config eos_token_id [1, 106] (not collapsed to 1)"
+  - command: [python, -c, "render.render_prompt vs render.jinja_render on templates/gemma3.jinja"]
+    outcome: "byte-identical with and without a system message; template sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4"
+  - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/_decon_input.jsonl]
+    outcome: "64000 documents scanned, 0 contaminated, 0 matches (logs/decon_sft.log)"
+problem:
+  statement: "The parent is a pretrained-only checkpoint: it has no notion of ending a turn with <end_of_turn> and no habit of closing a solution with the 'ANSWER: <n>' line the grader reads, so its graded accuracy is far below what a 4B model can do on grade-school arithmetic."
+  evidence:
+  - path: /home/ben/task/eval/exp-01/base_dev150.json
+    locator: "accuracy"
+    observation: "exp-01 baseline under the official protocol: 0.0867 +/- 0.023 (13/150)"
+  - path: /home/ben/task/analysis/exp-01_failures.json
+    locator: "summary.stop_reasons, summary.no_answer_line_share_of_failures"
+    observation: "80 of 150 completions hit the 4000-token cap without ever emitting <end_of_turn>; 50 of 137 failures (36.5%) have no well-formed final 'ANSWER: <n>' line; 9 completions are degenerate repeats"
+  affected_share: 0.365
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-01_watch.jsonl
+    n: 137
+    selection: "the ids (ids only - no benchmark question or gold text is stored, per rule 7) of every dev-150 item exp-01 scored incorrect; re-checked after the run as fixed/still-failing counts"
+  note_on_failure_examples: "left empty on purpose: the only failing items available are benchmark test items, and rule 7 forbids putting them in failure_examples. The problem is characterised by the aggregate structural diagnostic instead (stop-reason histogram, no-ANSWER-line share, degeneracy count), which is what actually drove the design of this intervention"
+hypothesis:
+  claim: "Full-parameter SFT of the parent on 64k GSM8K-style chain-of-thought solutions, rendered with the grader's own gemma3 template and terminated with <end_of_turn>, raises accuracy on the official dev-150 protocol against the exp-01 baseline."
+  mechanism: "The targets teach three things the parent lacks and the grader rewards: step-by-step arithmetic in the domain, a single final 'ANSWER: <n>' line as the last number in the completion, and termination on token 106 so the completion stops before it can drift onto another number."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+20 pts or more; a 4B model SFT'd on OpenMathInstruct-2 gsm8k data should land well above a pretrained-only floor"
+  falsified_if: "dev-150 accuracy is not higher than the exp-01 baseline, or the trained model's completions under the official 10-shot prompt lose the ANSWER line (which would mean training on zero-shot-prompted rows did not transfer to the few-shot-prefixed grading prompt)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/sft_omi2_gsm8k.jsonl
+    source: "hf:nvidia/OpenMathInstruct-2 split train_1M, rows with problem_source in {gsm8k, augmented_gsm8k} (problems derived from the GSM8K TRAIN split only; solutions generated by Llama-3.1-405B-Instruct by the dataset authors)"
+    n_examples: 64000
+    built_by: /home/ben/task/prep_data.py
+    build_command: [python, prep_data.py, --out, data/sft_omi2_gsm8k.jsonl, --n, '64000']
+    selection: "boxed answers unwrapped, any '####' tail cut, a single final 'ANSWER: <n>' line appended and verified to be the last number under the grader's own extraction rule; answers restricted to plain numerics; solutions 120-3000 chars; at most 2 solutions per distinct problem; all 14753 rows whose problem came from real gsm8k-train problems kept first, remainder filled from augmented_gsm8k; shuffled with seed 0"
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full-parameter, flash_attention_2"
+    peft: none
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 1
+      batch_size: 8
+      grad_accum: 4
+      max_seq_len: 1024
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      optim: adamw_bnb_8bit
+      frozen: "vision_tower + multi_modal_projector (420M params); 3.88B trainable"
+      loss: "completion-only (prompt tokens masked with -100)"
+    target_format: "prompt = <bos><start_of_turn>user\\n{inspect MATH_PROMPT_TEMPLATE with the question}<end_of_turn>\\n<start_of_turn>model\\n ; target = chain of thought, blank line, 'ANSWER: <n>', then <end_of_turn>. Rendered through templates/gemma3.jinja itself and asserted byte-identical to the hand-built string."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_omi2_gsm8k.jsonl, --out,
+      /home/ben/task/ckpts/exp-02, --lr, '1e-5', --epochs, '1', --bs, '8', --grad-accum,
+      '4', --max-len, '1024', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file,
+      '{out}.json']
+    dev_set: "official --limit 150 at evaluate.py defaults (--max-connections 2, --max-tokens 4000, --gpu-memory-utilization 0.3); decode taken from the checkpoint's generation_config.json, which this run leaves at the parent's values (do_sample true, top_k 64, top_p 0.95, temperature falls back to vLLM's 1.0) so the comparison against exp-01 holds decode fixed"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0867
+    path: /home/ben/task/eval/exp-01/base_dev150.json
+  diagnostic:
+    what: "share of dev-150 completions that end in a well-formed 'ANSWER: <n>' line and stop on <end_of_turn> (format acquisition), measured on the same inspect log as the score"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.9
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-02/final, step: 1999}
+  training_summary: {final_loss: 0.2873, steps: 1999, notes: "train_runtime 3226 s, 19.8 samples/s, loss 0.44 -> 0.28, no spikes; generation_config carried over from the parent unchanged except transformers_version (eos_token_id still [1, 106])"}
+  measurements:
+  - {metric: accuracy, value: 0.0733, n: 150, path: /home/ben/task/eval/exp-02/exp-02_dev150.json, delta_vs_comparator: -0.0134}
+  diagnostic_result:
+    value: 0.6267
+    path: /home/ben/task/analysis/exp-02_failures.json
+    notes: "The score is not a math failure. The FIRST 'ANSWER: <n>' line in the completion is correct on 94/150 items (0.6267), but 146 of 150 completions keep generating after it - they emit a brand-new invented word problem wrapped in the same MATH_PROMPT_TEMPLATE and start solving it - so the grader's last-number rule reads a number from the invented problem instead. Format itself was learned: only 18 of 139 failures (12.9%) lack a well-formed ANSWER line, down from 36.5% for the base, and degenerate completions went 9 -> 0. Stop-reason histogram stop 86 / max_tokens 64."
+  watch_set_result: {fixed: 0, still_failing: 139, regressions: 2, path: /home/ben/task/analysis/exp-01_watch.jsonl}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 went 0.0867 -> 0.0733, i.e. down, so the claim is contradicted as written. The diagnostic says why, and it is not the mechanism the card proposed: SFT did teach the arithmetic and the ANSWER line (first-answer accuracy 0.6267, no-ANSWER-line share 36.5% -> 12.9%), but it did not teach termination under the grading prompt. Trained rows were zero-shot; the graded prompt prefixes the user turn with ten Q/Reasoning/ANSWER blocks, and that in-context pattern makes the model continue with an eleventh invented problem instead of emitting <end_of_turn>."
+  decision: iterate
+  next_step: "exp-03: short continuation SFT from this checkpoint on prompts that CARRY the few-shot prefix, so the model learns to stop after its single answer in exactly the context it is graded in. The 0.6267 first-answer accuracy is the headroom this unlocks. The re-locked exp-02 rejection of few-shot mix-in ('+65% tokens') was the wrong call and this card is the evidence."

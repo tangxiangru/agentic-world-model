@@ -1,0 +1,140 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T19:24:00Z'
+situation:
+  elapsed_h: 2.25
+  remaining_h: 7.75
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6867, protocol_n: 150}
+  trigger: "exp-02's retained-checkpoint curve is still climbing at the end of the epoch: 18k rows seen 0.613, 36k 0.633, 54k 0.653, 67k 0.687. Nothing in that curve says the mixture is saturated."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-02.yaml
+      locator: "result.measurements (four n=150 reads at steps 200/400/600/743)"
+    - path: /home/ben/task/analysis/exp-02_final_tags.json
+      locator: "tags: correct 103, wrong_number 44, malformed_final_line 2, runaway 1"
+  alternatives_rejected:
+    - option: "Two epochs over the existing 67472-row sft_v1 instead of one epoch over 141914 new-ish rows"
+      reason: "Same GPU cost. The OpenMathInstruct-2 gsm8k pool holds ~134k rows at <=2 solutions per problem, so sft_v2 is mostly problems sft_v1 never saw; re-reading the same rows is the weaker use of the same hours."
+    - option: "Go straight to a rejection-sampling round from exp-02"
+      reason: "It is the right next lever but it is cheap (~1 h) and can be run from whichever SFT checkpoint wins; running it second means it starts from the stronger parent. Its sampling stage is being built during this card's lock wait so no time is lost."
+    - option: "Add the augmented_math / MATH portion of OpenMathInstruct-2 to widen the mixture"
+      reason: "Would change two things at once (volume and domain) and reintroduces the LaTeX/non-integer answer surface exp-02 deliberately excluded. Volume alone is the single variable being tested here."
+    - option: "Raise the learning rate or train longer per row"
+      reason: "exp-02's loss curve ended at 0.31 with grad_norm ~1.6 and no instability; nothing observed argues the optimisation was the limit, so the recipe is held fixed and only the data volume moves."
+  pitfalls_hit:
+    - {what: "Trainer's loss lines are buffered on stdout under nohup, so the log shows only the tqdm bar until the process exits; progress had to be read off the step counter", cost_h: 0.0, fix: "read the step counter from the tqdm line; the loss history flushes at exit"}
+  smoke_runs:
+    - command: [python, scripts/finalize_ckpt.py, --src, ckpts/exp-02/checkpoint-200, --dst, ckpts/exp-02/ck200_bf16]
+      outcome: "the WMA precondition on exp-02: a Trainer step checkpoint (28 GB fp32 + optimizer state) converts to an 8.1 GB bf16 directory that vLLM serves and scores 0.6133 at n=150. The step-checkpoint path is verified, so this card's retained checkpoints are usable."
+problem:
+  statement: "exp-02 reached 0.6867 but its accuracy was still rising monotonically with rows seen right up to the last checkpoint (0.613 -> 0.633 -> 0.653 -> 0.687), which means the run stopped while data volume was still the binding constraint rather than because the mixture had been exhausted. Separately, 44 of its 47 remaining failures are well-formed answers with the wrong number, i.e. arithmetic/reasoning capacity, which is what more correct worked solutions are supposed to buy."
+  evidence:
+    - path: /home/ben/task/eval/exp-02_ck600_dev150.json
+      locator: "accuracy 0.6533333333333333"
+      observation: "third checkpoint still below the fourth; no plateau."
+    - path: /home/ben/task/analysis/exp-02_final_tags.json
+      locator: "tags.wrong_number = 44 of 47 failures"
+      observation: "the residual failure mode is arithmetic, not format."
+  affected_share: 0.936
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Running the identical SFT recipe from the same base checkpoint on 141914 rows instead of 67472 - the only change being data volume - will score higher than exp-02's 0.6867 on the official n=150 protocol."
+  mechanism: "The exp-02 checkpoint curve is still in its rising regime, so the model has not yet extracted what the OpenMathInstruct-2 gsm8k pool contains. Doubling the number of distinct worked GSM8K-style problems gives more coverage of problem types and more correct arithmetic chains, which is what the residual wrong_number failures need. Nothing else moves: same parent, lr, schedule, token budget, max_seq_len, seed and rendering."
+  mechanism_note: "If instead accuracy is flat or lower, volume was not the constraint and the remaining hours belong to on-policy rejection sampling rather than to more of the same corpus."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points (0.687 -> roughly 0.71-0.75); the four-point exp-02 curve gained about 2 points per 18k additional rows"
+  falsified_if: "Accuracy at n=150 is at or below exp-02's 0.6867, i.e. doubling the corpus buys nothing beyond the n=150 noise floor of about 0.03."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2 (rev 469216e3f46f4dacf476b382e192485ea51a143e, train_1M split, problem_source in {gsm8k, augmented_gsm8k}) + openai/gsm8k train split"
+      n_examples: 141914
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v2.jsonl, --n-omi2, '140000', --max-per-question, '4', --fewshot-frac, '0.10', --seed, '1']
+      selection: "identical filters to sft_v1 (integer answers only, \\boxed{} unwrapped, exact-duplicate solutions dropped, targets already containing 'ANSWER:' or '####' dropped, calculator annotations stripped from native rows, 10% given a 10-shot system prefix built from native GSM8K train rows). The only change is the cap of 4 rather than 2 solutions per problem and a 140000 rather than 60000 row cap, which takes essentially the whole gsm8k-derived pool (134442 rows) instead of a 60000-row sample of it."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler, torch 2.8.0, flash_attention_2"
+    peft: none
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 1.0
+      batch_size: 6144
+      grad_accum: 8
+      max_seq_len: 2560
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit; the saved checkpoint is cast to bf16"
+      seed: 0
+    target_format: "chain of thought, blank line, 'ANSWER: <integer>', then '<end_of_turn>'. Loss on the completion only; the prompt is masked with -100."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v2.jsonl, --out, /home/ben/task/ckpts/exp-03, --lr, '1e-5', --epochs, '1', --grad-accum, '8', --token-budget, '6144', --max-seq-len, '2560', --attn, flash_attention_2, --seed, '0', --save-steps, '500', --save-total-limit, '3']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-03_train.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 500
+    keep: 3
+  budget: {gpu: H100-80GB, planned_h: 2.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, deterministic order). {checkpoint} is /home/ben/task/ckpts/exp-03/final or a finalize_ckpt.py-converted step checkpoint, never the parent output_dir."
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6866666666666666
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "wrong_number count among the 150 items (44 for exp-02): the arithmetic failures more worked solutions are supposed to remove, separated from format failures"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 2.55
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 1580}
+    - {path: /home/ben/task/ckpts/exp-03/ck1000_bf16, step: 1000}
+    - {path: /home/ben/task/ckpts/exp-03/ck500_bf16, step: 500}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1500, step: 1500}
+  training_summary:
+    final_loss: null
+    steps: 1580
+    notes: "train_loss 0.3129 over 9178 s (15.5 rows/s); 141871 of 141914 rows kept, 43 dropped over max_seq_len 2560 (0.03%). ck500 and ck1000 were converted to bf16 while the run continued, as the WMA precondition asked, because save_total_limit 3 prunes the earliest step checkpoint."
+  measurements:
+    - {metric: accuracy, value: 0.7533333333333333, n: 150, path: /home/ben/task/eval/exp-03_final_dev150.json, delta_vs_comparator: 0.0667}
+  diagnostic_result:
+    value: 37
+    path: /home/ben/task/analysis/exp-03_final_tags.json
+    notes: "wrong_number fell from 44 to 37 of 150 and format failures from 3 to 0; every one of the 37 remaining failures is a well-formed single answer with the wrong number. Mean output length fell 219 -> 154 tokens, no sample hit the 4000-token cap. The mid-run checkpoints ck500/ck1000 were kept but not scored: with no further large-SFT run affordable in the remaining budget, the extra 14 min of eval would not have changed a decision."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "0.6867 -> 0.7533 at n=150 (+6.7 points), at the top of the predicted +2 to +6 band and outside the falsification clause. The diagnostic moved the way the mechanism predicted: arithmetic (wrong_number) failures fell 44 -> 37 and format failures to zero, so doubling the count of distinct worked GSM8K-style problems bought reasoning accuracy, not formatting."
+  decision: adopt
+  next_step: "final_model now holds this checkpoint. The delta (+6.7) is larger than the n=150 stderr (0.035) but the two reads should still be repeated at a larger n before shipping. Remaining failures are entirely arithmetic, so the next card is an on-policy rejection-sampling round from this checkpoint (data already being sampled at k=8 with adaptive per-problem keep), followed if time allows by a weight-average soup of exp-02/final and exp-03/final."

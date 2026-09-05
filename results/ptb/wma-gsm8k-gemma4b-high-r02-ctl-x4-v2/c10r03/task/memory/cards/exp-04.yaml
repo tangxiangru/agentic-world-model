@@ -1,0 +1,115 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T14:59:51Z'
+situation:
+  elapsed_h: 6.8
+  remaining_h: 3.2
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.7025, protocol_n: 400}
+  trigger: 'exp-02 and exp-03 are statistically tied - 0.6925 vs 0.7025 at n=400, a 1.0 point gap against a 2.3 point standard error - so there is no evidence-backed way to choose between them, and both are full fine-tunes of the same base snapshot, which is exactly the setting where weight averaging is defined.'
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_final_dev400.json, locator: accuracy, observation: '0.6925 +/- 0.0231'}
+    - {path: /home/ben/task/eval/exp-03_final_dev400.json, locator: accuracy, observation: '0.7025 +/- 0.0229'}
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: conclusion.summary, observation: 'the RFT round moved dev-150 by +0.7 and the train probe by one item - inside noise'}
+  alternatives_rejected:
+    - {option: Ship exp-03 and stop, reason: 'it is the safe default and remains the fallback, but 3.2 h are left and a weight average of two same-basin fine-tunes is a 25-minute test with a real chance of a point or two'}
+    - {option: A third training round (more RFT, or DPO on the correct/incorrect pairs), reason: 'a fresh 2-epoch run is 2.6 h and would finish with no time to evaluate it or to recover if it were worse; at 6.8 h elapsed that is a gamble, not an experiment'}
+    - {option: Evaluate at n=1319 (the full test split) to settle exp-02 vs exp-03 exactly, reason: 'about 45 min per model and it answers a question that no longer matters once the soup is measured against both'}
+    - {option: Weight the average toward exp-03 (0.3/0.7), reason: 'no measured basis for a weight; a uniform average is the single defensible choice and there is only budget for one soup evaluation'}
+  pitfalls_hit:
+    - {what: 'soup.py crashed in save_pretrained - the parents ship a greedy generation_config (do_sample=False with temperature 0.0) that GenerationConfig.save_pretrained refuses to serialise', cost_h: 0.05, fix: 'neutralise model.generation_config before save_pretrained, then overwrite generation_config.json with the greedy one'}
+    - {what: 'the offline probe scorer crashed with OverflowError on a completion whose last number overflowed float', cost_h: 0.03, fix: 'math.isfinite guard in scripts/rft_sample.py norm(); the official grader was never affected'}
+  smoke_runs:
+    - {command: [python, scripts/soup.py, --a, ckpts/exp-02/final, --b, ckpts/exp-03/final, --dst, ckpts/soup23], outcome: 'averaged 884 float tensors at w=0.5 and wrote a serve-ready directory with tokenizer, processor sidecars and greedy generation config'}
+problem:
+  statement: 'The two candidate checkpoints cannot be separated by the available measurements, and both leave about 30% of dev items wrong. Choosing one discards whatever the other learned: exp-02 saw 24k off-policy problems that exp-03 subsampled away, exp-03 saw 43k verified on-policy chains that exp-02 never saw.'
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_final_dev400.json, locator: 'accuracy, stderr', observation: '0.7025 +/- 0.0229 - the 1.0 point lead over exp-02 is under half a standard error'}
+    - {path: /home/ben/task/analysis/exp-03_watch500.json, locator: accuracy, observation: '370/500 on the held-out train probe against exp-02 369/500'}
+  affected_share: null
+  failure_examples:
+    - {id: dev150-w1, source: /home/ben/task/analysis/exp-02_diagnostic.json, question: hospital profit per day, gold: '10000', model_output: 'answers 30000 from a wrong revenue/cost set-up', failure: 'set-up error that survived both training rounds'}
+    - {id: dev150-w2, source: /home/ben/task/analysis/exp-02_diagnostic.json, question: bags of dog food in the first year, gold: '5', model_output: 'answers 9 after rounding 6.64 up and adding 2', failure: 'over-applied ceiling'}
+    - {id: dev150-w3, source: /home/ben/task/analysis/exp-02_diagnostic.json, question: cans of tomatoes used, gold: '12', model_output: 'answers 3 after a unit mix-up', failure: 'unit confusion'}
+  watch_set:
+    path: /home/ben/task/data/dev_train500.jsonl
+    n: 500
+    selection: 'the last 500 items of the GSM8K train split, excluded from every training file; exp-02 scores 0.738 and exp-03 0.740'
+hypothesis:
+  claim: 'A uniform weight average of ckpts/exp-02/final and ckpts/exp-03/final scores higher on dev-400 than the better parent, exp-03 at 0.7025.'
+  mechanism: 'Both parents were fine-tuned from the identical gemma-3-4b-pt snapshot, so they lie in one loss basin and their average is a valid model; averaging cancels the independent noise each run picked up from its own data ordering and data mixture, the standard model-soup effect.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: '0 to +2 points; the honest prior is that it ties'
+  falsified_if: 'the soup scores at or below 0.7025 on dev-400, or its completions stop being well formed (any max_tokens truncation, or a completion without exactly one ANSWER line)'
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: 'not read by this card - the soup consumes weights, not data; listed because it is the corpus behind parent exp-03'
+      n_examples: 93114
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/soup.py, --a, /home/ben/task/ckpts/exp-02/final, --b, /home/ben/task/ckpts/exp-03/final, --dst, /home/ben/task/ckpts/soup23]
+      selection: 'no training in this card'
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: 'transformers 4.57.3 state_dict average in fp32, saved bf16'
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: 'fp32 average, bf16 output', seed: null}
+    target_format: 'unchanged from the parents - one ANSWER line then <end_of_turn>'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/soup23, --limit, '400', --max-connections, '16', --gpu-memory-utilization, '0.6', --json-output-file, /home/ben/task/eval/exp-04_soup23_dev400.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/soup23
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '400', --max-connections, '16', --gpu-memory-utilization, '0.6']
+    dev_set: official --limit 400
+    n: 400
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.7025
+    path: /home/ben/task/eval/exp-03_final_dev400.json
+  diagnostic:
+    what: 'format integrity of the merged weights - share of dev-400 completions that stop cleanly and carry exactly one ANSWER line; a bad merge shows up here before it shows up in accuracy'
+    n: 400
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/soup23
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup23, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: 'no training; 884 float tensors averaged at w=0.5 in fp32, written bf16'}
+  measurements:
+    - {metric: accuracy, value: 0.735, n: 400, path: /home/ben/task/eval/exp-04_soup23_dev400.json, delta_vs_comparator: 0.0325}
+  diagnostic_result: {value: 0.995, path: /home/ben/task/analysis/exp-04_diagnostic.json, notes: '398/400 completions stop cleanly with exactly one ANSWER line; 2 loop to max_tokens under greedy decoding, so the merge did not damage the output protocol'}
+  watch_set_result: {fixed: 382, still_failing: 118, regressions: null, path: /home/ben/task/analysis/exp-04_watch500.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: 'The uniform average scores 0.735 +/- 0.022 on dev-400 against 0.7025 for exp-03 and 0.6925 for exp-02, so it beats both parents by more than either differs from the other. The held-out train probe agrees independently: 0.764 against 0.740 and 0.738.'
+  decision: adopt
+  next_step: 'Two independent measurements agree the soup helps, so extend it: greedy-soup search over the four saved checkpoints, screened on the 500-item train probe and confirmed on dev-400.'

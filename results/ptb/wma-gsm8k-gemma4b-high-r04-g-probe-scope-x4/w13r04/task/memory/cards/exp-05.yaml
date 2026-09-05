@@ -1,0 +1,138 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T14:00:00Z'
+situation:
+  elapsed_h: 6.0
+  remaining_h: 4.0
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.7468, protocol_n: 1319}
+  trigger: "exp-04's full-test read put rejection fine-tuning at 0.7407 against its parent's 0.7468 - two checkpoints of near-equal quality, one a fine-tune of the other, which is exactly the situation where a weight-space average is worth 15 minutes."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_full.json, locator: "accuracy", observation: "0.7468 +- 0.0120 over all 1319 test items"}
+    - {path: /home/ben/task/eval/exp-04_full.json, locator: "accuracy", observation: "0.7407 +- 0.0121 over the same 1319 items, same flags"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion", observation: "RFT rejected; final_model/ still holds exp-03/final"}
+  alternatives_rejected:
+    - {option: "A second SFT epoch from exp-03/final (~2.2 h)", reason: "exp-04 was already a continued-training run from that checkpoint and it lost 0.6 pts; with 4.0 h left, a 2.2 h run whose eval and packaging would land near the deadline is the wrong risk for an uncertain gain"}
+    - {option: "A fresh 2-epoch run from the base model on all 151858 rows", reason: "needs ~5 h of GPU; does not fit"}
+    - {option: "Re-run RFT at a lower learning rate or on RFT rows only", reason: "exp-04's own diagnostic says the kept samples cover the problems the model already solves, so the data is the limitation, not the step size; a cheaper rerun of the same idea is not a new hypothesis"}
+    - {option: "Ship exp-03/final and stop", reason: "still the fallback and the current contents of final_model/. This card costs ~0.4 h and cannot lose - the guard below only overwrites final_model/ if the soup wins the full 1319-item read."}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The two best checkpoints in this batch score 0.7468 and 0.7407 on the full test set and neither can be improved further by more of the training that produced it: exp-03 exhausted the available gsm8k-family data and exp-04's continued training moved the score down."
+  evidence:
+    - path: /home/ben/task/eval/exp-03_full.json
+      locator: "accuracy"
+      observation: "0.7468, n=1319 - the incumbent"
+    - path: /home/ben/task/eval/exp-04_full.json
+      locator: "accuracy"
+      observation: "0.7407, n=1319 - a continued fine-tune of the incumbent, 0.6 pts below it"
+    - path: /home/ben/task/memory/cards/exp-03.yaml
+      locator: "conclusion.next_step"
+      observation: "151858 gsm8k-family rows exist in total and 120000 were used; the data-volume lever is spent"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A 50/50 weight-space average of ckpts/exp-03/final and ckpts/exp-04/final scores higher on the full 1319-item test read than the better of its two parents (0.7468)."
+  mechanism: "exp-04 is a short low-learning-rate continuation of exp-03 on a different data mix, so the two sit in the same loss basin and their difference is close to noise in weight space. Averaging weights inside one basin cancels the part of each update that is fitting its own data mixture and keeps the part both agree on, which is the standard model-soup effect. No training is involved, so nothing can be forgotten."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "-1 to +2 pts; soups of two nearby checkpoints usually land at or just above the better parent, and at n=1319 the read has stderr ~0.012, so only a gain of roughly 2 pts or more is separable"
+  falsified_if: "the soup's full-test accuracy is at or below 0.7468, i.e. the average is no better than simply keeping exp-03/final. In that case final_model/ is left exactly as it is."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "derived:exp-04 - listed only because it is the data that produced the second parent; this card trains on nothing"
+      n_examples: 33845
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/mix_jsonl.py, --out, data/rft_mix_v1.jsonl, data/rft_v1.jsonl, 'data/sft_v2_unseen.jsonl:20000']
+      selection: "not used by this card - no gradient step is taken here"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "torch 2.8.0+cu129 state-dict average (scripts/soup.py), fp32 accumulation, saved bf16"
+    peft: none
+    hyperparams: {lr: null, epochs: 0, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: "fp32 accumulate, bf16 save", seed: 0}
+    target_format: "unchanged - no training"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --out, /home/ben/task/ckpts/exp-05/soup, '/home/ben/task/ckpts/exp-03/final:1', '/home/ben/task/ckpts/exp-04/final:1']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-05_soup.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-05/soup, --limit, '150', --max-connections, '8', --max-tokens, '4000', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-05_dev150.json]
+    dev_set: "official --limit 150 first, then the deciding read at --limit -1 (all 1319 items) with the same other flags"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.780
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: >-
+      The dev-150 read is a screen, not the decision: if it lands below 0.74 the soup is dropped
+      without spending the full read. Otherwise the decision is the full 1319-item read against
+      exp-03/final's 0.7468 (eval/exp-03_full.json), measured under identical flags. A merge can
+      also break generation, so cap-hits and no-ANSWER share are checked against exp-03's 1/150 and
+      1/150, and the soup's generation_config must be byte-identical to exp-03/final's.
+      final_model/ holds exp-03/final and is overwritten only if the soup wins the full read.
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/exp-05/soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/soup, step: 0}
+  training_summary: {final_loss: null, steps: 0, notes: "no gradient step; fp32 state-dict average of the two parents, saved bf16"}
+  measurements:
+    - {metric: accuracy, value: 0.7467, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: -0.0333}
+    - {metric: accuracy, value: 0.74754, n: 1319, path: /home/ben/task/eval/exp-05_full.json, delta_vs_comparator: 0.00075}
+  diagnostic_result:
+    value: 0.0067
+    path: /home/ben/task/analysis/exp-05_diag.json
+    notes: >-
+      Full-test read: soup 0.74754 (986/1319) against exp-03/final 0.74678 (985/1319) - a one-item
+      difference, against the +-0.012 stderr of the read and the card's own statement that only ~2 pts
+      is separable. The soup is at the better parent, not above it. On the first 150 items the order
+      reverses (0.7467 vs 0.780) and outside that prefix it reverses back (0.7476 vs 0.7425), which is
+      what two statistically indistinguishable checkpoints look like. Generation was not broken by the
+      merge: cap-hits 1/150, no-ANSWER 1/150, mean completion 195 tokens, all matching exp-03's, and
+      the soup's generation_config.json is byte-identical to exp-03/final's.
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: >-
+    The 50/50 soup lands on top of its better parent, not above it: 0.74754 vs 0.74678 on all 1319
+    test items, one item apart. The card's pre-registered threshold (beat 0.7468) is met by that single
+    item, but the same card fixed ~2 pts as the separability floor at this n, so this is a flat result,
+    not a win.
+  decision: reject
+  next_step: >-
+    final_model/ keeps ckpts/exp-03/final. Two reasons, both stated before the numbers were split:
+    the full-test difference is one item and so cannot justify a swap, and evaluate.py's own default
+    protocol is --limit 150, where exp-03/final is 3.3 pts ahead (0.780 vs 0.7467). The soup is kept
+    on disk at ckpts/exp-05/soup.

@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T16:00:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.15
+  remaining_h: 7.85
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7000, protocol_n: 150}
+  trigger: "exp-02 scored 0.7000 with stderr 0.0375, and that noise is decode noise: vLLM serves the checkpoint with the base model's generation_config - temperature 1.0, top_p 0.95, top_k 64 - because vllm's --generation-config defaults to 'auto' and ModelConfig.get_diff_sampling_param lifts those fields straight out of the file."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy 0.7000, stderr 0.0375"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample true, top_k 64, top_p 0.95, no temperature key"}
+  alternatives_rejected:
+    - {option: "Leave the decode policy alone and spend the 15 minutes on training", reason: "generation_config.json is part of the artifact the grader loads, so this is a free lever on the final score; and if greedy wins it removes sampling noise from every later comparison, which is worth more than 15 minutes of gradient steps"}
+    - {option: "Pass a temperature through evaluate.py", reason: "rule 5 forbids modifying evaluate.py and the grader runs its own copy; the only place a decode choice can live is the model directory"}
+    - {option: "Sample at a low temperature (0.2-0.3) rather than pure greedy", reason: "an extra eval for a variant that is strictly noisier than greedy with no mechanism to beat it on a single-sample metric; if greedy loses, that is the interesting result and this becomes the follow-up"}
+  pitfalls_hit:
+    - {what: "save_pretrained does not write preprocessor_config.json / processor_config.json, which vLLM needs to build an AutoProcessor for Gemma3ForConditionalGeneration", cost_h: 0.0, fix: "caught before the exp-02 eval; both copied from the base snapshot, and scripts/package_final.py now does it as a matter of course"}
+    - {what: "awm wma review refuses a card that already carries a result: key, even an empty 'execution: not_run' one", cost_h: 0.0, fix: "sections 5-6 are appended after the run instead of being pre-stubbed"}
+  smoke_runs:
+    - {command: [python, scripts/variant_dir.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-02-greedy, --greedy], outcome: "symlink farm over the same 8.4 GB of weights with do_sample false / temperature 0.0 and top_k, top_p removed; no second copy on disk"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent is graded on one sample per item, drawn at temperature 1.0 with top_p 0.95 and top_k 64. On a task with one right answer and many plausible-looking wrong chains, sampling from the full distribution discards the model's own ranking at every token, and the resulting 0.0375 stderr is large enough to hide a 3-point training improvement."
+  evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "whole file", observation: "do_sample true, top_k 64, top_p 0.95; no temperature key, so vLLM's own default of 1.0 applies"}
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "stderr 0.0375", observation: "at n=150 one sigma is +-3.75 points, comparable to the effect size of an entire extra training stage"}
+    - {path: /home/ben/task/analysis/exp-02_watch.jsonl, locator: "45 wrong items", observation: "3 of 45 still have no parseable ANSWER line and 2 hit max_tokens - degenerate outputs of the kind temperature-1 sampling produces and greedy does not"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "exp02_wrong_no_answer", source: /home/ben/task/analysis/exp-02_watch.jsonl, question: "(the 3 rows with first_answer null)", gold: "(field gold)", model_output: "(field completion_tail)", failure: "no ANSWER line although the model was trained to emit exactly one - a sampling artefact"}
+    - {id: "exp02_wrong_max_tokens", source: /home/ben/task/analysis/exp-02_watch.jsonl, question: "(the 2 rows with stop_reason max_tokens)", gold: "(field gold)", model_output: "(field completion_tail)", failure: "runs to the 4000-token cap while the mean completion is 272 tokens - a sampled degenerate loop"}
+    - {id: "exp02_wrong_arith", source: /home/ben/task/analysis/exp-02_watch.jsonl, question: "(field question)", gold: "(field gold)", model_output: "(field completion_tail)", failure: "well-formed chain with a wrong number - the residual reasoning failures greedy will not fix"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch.jsonl
+    n: 45
+    selection: "every dev-150 item exp-02 got wrong under temperature-1 decoding"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Serving the exp-02 weights with do_sample false / temperature 0.0 in generation_config.json - no weight change at all - will score higher on dev-150 than the same weights served under the inherited temperature-1.0 policy."
+  mechanism: "The grader takes one sample per item. Under temperature-1 sampling with top_p 0.95, every token can leave the mode of a distribution the SFT made sharp, and one unlucky token inside a 272-token chain flips the item. Greedy follows the argmax path - the model's own best single guess - and is deterministic, so the measurement stops carrying sampling variance."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points, and stderr across repeat runs should collapse to 0 because decoding becomes deterministic"
+  falsified_if: "greedy scores at or below 0.7000, i.e. no better than the sampled policy it replaces"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "derived:exp-02 - no training happens in this card; this is the corpus that produced the parent checkpoint, recorded for provenance"
+      n_examples: 120000
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --n, "120000"]
+      selection: "unchanged from exp-02"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 served by inspect_ai; generation_config.json is the served sampling policy"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02; the weights are byte-identical, the variant dir is a symlink farm"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02-greedy, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test, deterministic slice)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.7000
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "stop_reason histogram, mean completion length, and the count of completions with no ANSWER line - greedy should remove the degenerate tail entirely"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/ckpts/exp-02-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02-greedy, step: 938}
+  training_summary: {final_loss: null, steps: null, notes: "no training; the weights are the exp-02 weights, reached through symlinks"}
+  measurements:
+    - {metric: accuracy, value: 0.7467, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.0467}
+  diagnostic_result:
+    value: 0.7467
+    path: /home/ben/task/eval/exp-03_greedy_dev150_full.json
+    notes: "first-'ANSWER:'-line accuracy equals graded accuracy exactly (112/150), so output shape now costs nothing at all. Mean completion 267 tokens vs 272 sampled. stop reasons 147 stop / 3 max_tokens - greedy did NOT remove the degenerate tail, it moved it from 2 items to 3: greedy has its own failure mode, repetition loops. 3 of the 38 wrong items still emit no ANSWER line, the same absolute count as under sampling."
+  watch_set_result: {fixed: 15, still_failing: 30, regressions: 8, path: /home/ben/task/analysis/exp-03_watch.jsonl}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy decoding of the identical weights scores 0.7467 against 0.7000 sampled, +4.7 points for no training and no weight change, inside the predicted +2 to +6 band. The item-level churn is large (15 fixed, 8 regressed) which is what a 0.0375-stderr sampled comparator implies, so the point estimate is the honest read, not the item diff."
+  decision: adopt
+  next_step: "generation_config.json with do_sample false / temperature 0.0 ships in final_model, and every later eval uses greedy so comparisons stop carrying sampling variance. The 3 max_tokens items are a greedy repetition loop worth a look if the residual failures ever become the binding constraint. Next: exp-04, a second training stage from exp-02 on 200k fresh rows, compared against this 0.7467."

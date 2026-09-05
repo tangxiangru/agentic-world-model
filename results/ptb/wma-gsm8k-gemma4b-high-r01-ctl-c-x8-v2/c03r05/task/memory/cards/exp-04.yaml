@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T03:33:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 4.9
+  remaining_h: 5.1
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.71333, protocol_n: 150}
+  trigger: "exp-03 tied exp-02 on the 150-item protocol (0.71333 both) but beat it by +3.0 on the 300-item train-holdout probe (0.760 vs 0.730) after only ONE epoch, while exp-02's own second epoch was worth +3.3. exp-03's corpus has never been seen twice."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_holdout_fs1.json, locator: summary.accuracy, observation: "0.760 vs exp-02's 0.730 on the same 300 items"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: result.measurements, observation: "epoch 1 0.680 -> epoch 2 0.713 on the protocol"}
+  alternatives_rejected:
+    - {option: "A full second epoch on sft_v4 (2.0 h)", reason: "5.1 h left and the finalists still need --limit 500 evals plus packaging; 0.65 of an epoch at 1.35 h keeps a real margin and still anneals a full cosine"}
+    - {option: "A second RFT round sampled from exp-03", reason: "round 1 bought at most a few points and costs 0.4 h of sampling before any training; a second epoch tests the larger, already-measured effect"}
+    - {option: "Model soup of exp-02 and exp-03", reason: "not rejected, deferred: it costs ~15 min and can be run after this card if the clock allows"}
+    - {option: "Restart from base at lr 1e-5 for 2 epochs on sft_v4", reason: "4 h; does not fit"}
+  pitfalls_hit:
+    - {what: "Judged exp-03 against a falsified_if threshold the protocol cannot resolve: n=150 has stderr 0.037, so a 3-point effect reads as a tie", cost_h: 0.0, fix: "score the finalists at --limit 500 before choosing the submission; treat n=150 as a screen, not a decision"}
+    - {what: "Re-saving the tokenizer produced a tokenizer.json whose bytes differ from the base snapshot (identical tokenisation on 3000 texts, but a loader warning)", cost_h: 0.05, fix: "copy the base snapshot's tokenizer.json into every artifact after saving; only tokenizer_config.json carries the eos change"}
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-03 has seen its 184,867-row corpus exactly once. Its greedy pass@1 on the train holdout is 0.760 while exp-02's pass@6 at T=1.0 was already 0.909, so a large share of the remaining 72 holdout failures are problems the model can solve but does not solve on the greedy path. Under-training is the cheapest remaining explanation: the one measured lever that moved this model (+3.3 on exp-02) was a second pass over the same data."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_holdout_fs1.json, locator: "samples[*].correct == false", observation: "72/300 train-holdout items still wrong at temperature 0"}
+    - {path: /home/ben/task/eval/exp-03_final_dev150.json, locator: accuracy, observation: "0.71333 on the protocol, identical to exp-02"}
+    - {path: /home/ben/task/logs/exp-03.log, locator: "final train_loss", observation: "0.3001 after one epoch, essentially unchanged from exp-02's 0.3037 after two epochs on a smaller corpus"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: holdout-72, source: /home/ben/task/analysis/exp-03_holdout_fs1.json, question: "72 of the 300 held-out GSM8K-train items", gold: "various", model_output: "well-formed chain ending in one 'ANSWER: N' with N wrong", failure: "reasoning/arithmetic error on the greedy path"}
+    - {id: holdout-regress-13, source: /home/ben/task/analysis/exp-03_holdout_fs1.json, question: "13 holdout items exp-02 got right and exp-03 got wrong", gold: "various", model_output: "different chain, wrong number", failure: "churn: exp-03 fixed 22 and broke 13, so the net +9 hides substantial instability"}
+    - {id: holdout-unterm-4, source: /home/ben/task/analysis/exp-03_holdout_fs1.json, question: "4 of the 300 holdout items", gold: "various", model_output: "repetition until the 1024-token probe cap", failure: "greedy decoding falls into a loop and never emits <end_of_turn>"}
+  watch_set:
+    path: /home/ben/task/data/dev_train_holdout.jsonl
+    n: 300
+    selection: "300 GSM8K *train* items (seed 12345) held out of every training file; no benchmark test item - protocol rule 7"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing exp-03 for a second, 0.65-epoch pass over the same 184,867-row corpus at lr 5e-6 with a fresh cosine schedule raises accuracy on the 300-item train-holdout probe above exp-03's 0.760, and does not lower the 150-item protocol score below exp-03's 0.713."
+  mechanism: "The one intervention measured to move this model was a second pass over the same data (exp-02: 0.680 -> 0.713). exp-03 has had one pass over 1.4x the tokens and its loss (0.3001) is no lower than exp-02's after two passes, which is what under-training looks like. A second pass at a lower peak lr sharpens the greedy path onto chains the model already assigns high probability, which is exactly the gap between pass@1 (0.76) and pass@6 (0.91)."
+  falsified_if: "The train-holdout probe is at or below exp-03's 0.760, or the 150-item protocol score falls below 0.713."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +4 points on the 300-item holdout probe"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4.jsonl
+      source: "derived:exp-02 (17,694 rft rows) + nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e shards 0-19 (160,000 rows) + openai/gsm8k main/train (7,173 rows)"
+      n_examples: 184867
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --shards, '20', --per-problem, '2', --max-omi, '160000', --out, data/sft_v3.jsonl]
+      selection: "unchanged from exp-03. Trainer shuffles with seed 0, so 0.65 epochs is a random 65% of the file; the few-shot-prefix assignment is drawn from the same seed and is therefore identical to exp-03's."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE + flash_attention_2"
+    peft: "none (full fine-tune of the 3.88B language model; the 420M vision tower and projector are frozen)"
+    hyperparams: {lr: 5.0e-6, epochs: 0.65, batch_size: 32, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02/exp-03: templates/gemma3.jinja (md5 acabb12fa812ef3ab334ea6b817562f3) around inspect_evals' MATH_PROMPT_TEMPLATE; target = chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>; completion-only loss; artifact saved with eos=<end_of_turn> and greedy generation_config.json"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v4.jsonl, --parent, /home/ben/task/ckpts/exp-03/final, --out, ckpts/exp-04, --epochs, '0.65', --lr, '5e-6', --bs, '32', --grad-accum, '2', --max-len, '2816', --fewshot-frac, '0.05', --warmup, '0.02', --save-steps, '900']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 900
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, unshuffled)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.71333
+    path: /home/ben/task/eval/exp-03_final_dev150.json
+  diagnostic:
+    what: "accuracy on the 300-item GSM8K-train holdout probe with the grader's 10-shot prefix (eval_local.py --fewshot 1), against exp-03's 0.760; this is the decision metric because n=150 cannot resolve a 3-point effect"
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: failed
+  wall_h: 0.63
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: 0.2477, steps: 900, notes: "the run reached step 900 of 1878 (loss 0.2486 -> 0.2477, well below exp-03's 0.3001) and died on the first intermediate checkpoint save. No weights survive: ckpts/exp-04/checkpoint-900 contains only config.json."}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: |
+    File "/usr/local/lib/python3.10/dist-packages/transformers/trainer.py", line 4331, in _save
+      self.model.save_pretrained(
+    File "/usr/local/lib/python3.10/dist-packages/transformers/modeling_utils.py", line 3930, in save_pretrained
+      model_to_save.generation_config.save_pretrained(save_directory)
+    File "/usr/local/lib/python3.10/dist-packages/transformers/generation/configuration_utils.py", line 725, in save_pretrained
+      raise ValueError(str(exc) + "\n\nFix these issues to save the configuration.")
+    ValueError: GenerationConfig is invalid:
+    - `temperature`: `do_sample` is set to `False`. However, `temperature` is set to `0.0` -- this flag is only used in sample-based generation modes.
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Killed by the artifact configuration, not by the science. exp-03/final was saved with the greedy generation_config the grader needs (do_sample=false, temperature=0.0); HF's GenerationConfig.save_pretrained rejects that pair, so the first checkpoint save of any run that starts FROM one of our own checkpoints raises before the weights are written. exp-02 and exp-03 never hit it because their parent was the base snapshot, whose generation_config is valid. 0.63 h lost."
+  decision: iterate
+  next_step: "exp-05 repeats this experiment with the fix: train_sft.py now replaces model.generation_config with a valid one right after loading the parent, and save_for_grader still writes the greedy generation_config.json into the finished artifact. Shortened to 0.5 epochs to fit the remaining budget."

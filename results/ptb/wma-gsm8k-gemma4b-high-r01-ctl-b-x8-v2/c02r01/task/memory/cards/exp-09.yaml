@@ -1,0 +1,96 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-09
+created_at: '2026-09-03T15:05:00Z'
+situation:
+  elapsed_h: 7.1
+  remaining_h: 2.9
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-06-e1
+    score: {metric: accuracy, value: 0.7317, protocol_n: 600}
+  trigger: "Rejection sampling was the only intervention since exp-04 that clearly moved the model (exp-05: format and termination went to 1.000 and dev-200 rose 3.5 pts), and the round-1 sampler was exp-04-e2. exp-06-e1 is a stronger sampler: on the same 19,973 problems it produced 71,038/79,892 correct samples (0.889) against round 1's 69,107 (0.865). exp-08 also showed the exp-05/exp-06 difference is a real trajectory difference, not noise to be averaged away, so the way forward is another step along the trajectory, not a merge."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/rft_sample2.log, locator: "final [rft] line", observation: "generations=79892 correct=71038 (0.889) kept=38395 problems_covered=19512/19973"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "conclusion.summary", observation: "round 1 of RFT gave +3.5 on dev-200 and drove stop/format share to 1.000"}
+    - {path: /home/ben/task/eval/exp-08_soup_n600.json, locator: "accuracy=0.7233", observation: "the soup interpolated between its ingredients instead of beating them"}
+  alternatives_rejected:
+    - {option: "Score exp-05 / exp-06 / soup on the full 1319 items to pick between them", reason: "~50 min per checkpoint and the true gaps look like 1-2 pts, which n=1319 (diff-stderr ~1.7 pts) still would not resolve; spending the same time on an actual intervention has more upside"}
+    - {option: "A 3-way soup including exp-04-e2", reason: "exp-08 showed 2-way averaging interpolates rather than improves; adding a weaker, older checkpoint should interpolate further down"}
+    - {option: "Train the model to emit three solutions and self-vote", reason: "under the greedy decoding this model ships with, the second and third chains are conditioned on the first and are not independent samples, so the majority vote would add tokens without adding information"}
+    - {option: "Two epochs over the round-2 mix", reason: "2.9 h remain and the endgame needs an n=600 eval, final_model packaging and a load check; one epoch at 33 samples/s is ~27 min and fits with margin"}
+  pitfalls_hit:
+    - {what: "scripts/soup.py crashed in save_pretrained because transformers 4.57 will not serialise do_sample=False together with temperature/top_k", cost_h: 0.05, fix: "null those fields on the in-memory GenerationConfig and write the greedy values straight into generation_config.json, which is the file vLLM reads (recorded as exp-08's one re-lock)"}
+  smoke_runs: []
+problem:
+  statement: "The incumbent gets 26.8% of the 600-item dev set wrong with output shape fully solved (99.5% terminated and well-formed), so the entire residual is solve-rate. Its most recent training epoch was 78% off-policy text, and the last three cards (exp-06 off-policy scaling, exp-07 more measurement, exp-08 merging) all failed to move it."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-07_exp06_n600_diag.json, locator: "accuracy=0.7317, stop_share=0.995", observation: "26.8% wrong with format solved: the failure is reasoning"}
+    - {path: /home/ben/task/eval/exp-08_soup_n600.json, locator: "accuracy=0.7233", observation: "merging did not help"}
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "conclusion.summary", observation: "doubling the off-policy corpus did not help either"}
+  affected_share: 0.268
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A second rejection-sampling round -- continued training of exp-06 on 38,395 of its own answer-verified samples plus 15,000 replay rows -- raises n=600 accuracy above the incumbent's 0.7317."
+  mechanism: "Same mechanism as exp-05, applied to a sampler that is now 2.4 points more accurate: the gradient reinforces only chains this model can actually produce and that reach the reference answer, sharpening modes it half-knows instead of pulling it toward off-policy phrasing. The replay rows keep it from narrowing onto the 19,512 sampled problems."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "+1 to +4 pts; smaller than round 1's because the sampler is closer to its own ceiling"}
+  falsified_if: "n=600 accuracy is at or below 0.7317, or stop/format share falls below 0.99."
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-06, origin: exp-06, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft2_mix.jsonl
+      source: "synthetic:self (exp-06-e1 samples, answer-verified) + replay drawn from data/sft_all.jsonl and data/sft_fresh.jsonl"
+      n_examples: 53395
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-06-e1, --out, data/rft_round2.jsonl, --k, '4', --temperature, '1.0', --top-p, '0.95', --max-tokens, '512', --n-aug, '12500', --max-keep-per-problem, '2', --seed, '7']
+      selection: "Problems: all 7473 GSM8K *train* questions (gold answers) + 12,500 distinct OpenMathInstruct-2 augmented_gsm8k problems (majority-vote answers), sampled k=4 at T=1.0/top_p 0.95. A sample is kept only if it has exactly one 'ANSWER:' marker, that marker is the last line, and its integer equals the reference answer; then exact-text dedup and at most 2 per problem -> 38,395 rows over 19,512 problems. Mixed (seed 11) with 15,000 replay rows sampled from the two off-policy shards. Contamination check: 38,395 documents scanned, 0 flagged."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2"
+    peft: "none (full fine-tune of the 3.88B text stack; vision tower and projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 64, grad_accum: 1, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master + bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "unchanged: chain, blank line, 'ANSWER: {int}', <end_of_turn>; loss on completion + terminator only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-06, --data, data/rft2_mix.jsonl, --out, /home/ben/task/ckpts/exp-09, --lr, '7e-6', --epochs, '1', --bs, '64', --grad-accum, '1', --max-seq-len, '1024', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-09.log
+  output_dir: /home/ben/task/ckpts/exp-09
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '600', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 600 (first 600 items of the gsm8k test split in inspect_evals order); bf16 + greedy generation_config.json"
+    n: 600
+    seed: null
+  comparator: {ref: exp-06, value: 0.7317, path: /home/ben/task/eval/exp-07_exp06_n600.json}
+  diagnostic: {what: "share of completions that end with a stop token, at n=600", n: 600, metric: accuracy, direction: higher}
+result:
+  execution: completed
+  wall_h: 0.52
+  output_checkpoint: /home/ben/task/ckpts/exp-09-e1
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-09, step: 834}
+    - {path: /home/ben/task/ckpts/exp-09-e1, step: 834}
+  training_summary: {final_loss: null, steps: 834, notes: "train_loss 0.1741, 34.1 samples/s, 1568 s wall"}
+  measurements:
+    - {metric: accuracy, value: 0.7167, n: 600, path: /home/ben/task/eval/exp-09_n600.json, delta_vs_comparator: -0.015}
+  diagnostic_result:
+    value: 0.9983
+    path: /home/ben/task/analysis/exp-09_n600_diag.json
+    notes: "stop/format share 0.9983, the highest of any checkpoint at n=600 -- the on-policy round did what it did in exp-05 to output shape, it just did not convert into solve rate this time."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "n=600 0.7317 -> 0.7167 (-1.5 pts, inside the 2.6-pt difference-stderr). A second rejection-sampling round on a stronger sampler bought nothing: with 88.9% of samples already correct, the filter passes almost the model's whole output distribution, so the gradient mostly re-fits what the model already does."
+  decision: reject
+  next_step: "Stop training. Four consecutive interventions (off-policy scaling, more measurement, weight averaging, a second RFT round) have all landed inside the noise band around 0.72, which is where this recipe converges. Ship exp-06-e1, already staged in final_model/, and spend the remaining time verifying the shipped artifact end-to-end."

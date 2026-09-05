@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T20:18:50Z'
+situation:
+  elapsed_h: 6.4
+  remaining_h: 3.6
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.815, protocol_n: 200}
+  trigger: "exp-04 spent 2.9 GPU-hours on 155k fresh rows and landed at 0.810 greedy against exp-03's 0.815 - but the watch-set diff was 12 items fixed and 13 regressed, so the two checkpoints disagree on 25 of 200 items while scoring the same. Decorrelated errors on a shared trajectory is the textbook setting for weight averaging, and it costs no GPU time to build."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_ep2_greedy_diag.json, locator: "fixed=12, regressions=13, accuracy=0.81"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev200.json, locator: "accuracy 0.815"}
+    - {path: /home/ben/task/eval/exp-04_ep2_greedy_dev200.json, locator: "accuracy 0.810"}
+  alternatives_rejected:
+    - {option: "a third SFT slice (data/sft_v3.jsonl, already built and contamination-checked)", reason: "exp-04 showed OpenMathInstruct-2 has saturated for this model - 155k fresh rows moved the decode-matched score by -0.5 points. Another 1.5h of the same would be buying the same nothing, and it would leave no time to verify final_model"}
+    - {option: "rejection-sampling fine-tune from exp-04 (scripts/rft_sample.py is written)", reason: "needs ~40 min of sampling plus ~30 min of training plus an eval, and would land with no slack before the deadline; a soup plus a properly powered selection eval is the better use of 3.6h"}
+    - {option: "just ship exp-03 and stop", reason: "the four candidates sit at 0.785/0.810/0.815/0.820 with a standard error of 0.028 on dev-200 - choosing between them on that evidence is choosing noise. A 600-item run cuts the standard error to ~0.016 and is affordable"}
+    - {option: "soup in exp-04_ep1 as a third ingredient", reason: "ep1 is the weakest measured checkpoint (0.785) and is only 1480 steps from exp-02; adding it mostly re-weights the average toward the parent"}
+  pitfalls_hit:
+    - {what: "exp-04's declared comparator was exp-02 at 0.77, which was measured with the SAMPLED decode config; after exp-03 switched the artifact to greedy, that comparator stopped being decode-matched and made exp-04 look like a +5 win when the like-for-like number was -0.5", cost_h: 0.0, fix: "ran exp-04's final checkpoint under BOTH decode configs so the declared comparison stayed honest, and this card fixes the protocol so all candidates are greedy and all are scored at n=600"}
+  smoke_runs:
+    - {command: [python, scripts/finalize.py, --src, /home/ben/task/ckpts/exp-05_soup_raw, --dst, /home/ben/task/ckpts/exp-05_soup], outcome: "reloaded on CPU: 4.30B params, arch Gemma3ForConditionalGeneration, greedy generation_config written"}
+problem:
+  statement: "There are four candidate checkpoints within 3.5 points of each other on dev-200, which is one standard error, so the batch currently has no defensible way to pick which one becomes final_model. Separately, exp-03 and exp-04 disagree on 25 of 200 items while scoring the same, which means each is losing items the other gets right."
+  evidence:
+    - path: /home/ben/task/analysis/exp-04_ep2_greedy_diag.json
+      locator: "fixed=12, regressions=13, still_failing=25"
+      observation: "the two checkpoints' errors are only partly shared"
+    - path: /home/ben/task/eval/exp-04_ep1_greedy_dev200.json
+      locator: "accuracy 0.785, stderr 0.029"
+      observation: "the whole candidate spread is inside one standard error of the dev-200 protocol"
+  affected_share: 0.125
+  failure_examples:
+    - {id: null, source: /home/ben/task/analysis/exp-03_greedy_percorrect.json, question: null, gold: null, model_output: null, failure: "25 dev-200 ids are missed by both exp-03 and exp-04; 12 more are missed by exp-03 only and 13 by exp-04 only. Ids are in the per-id files; item text and gold are not copied here - the benchmark test copy is checker input only"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_greedy_percorrect.json
+    n: 200
+    selection: "per-id correctness of the incumbent under greedy decoding"
+hypothesis:
+  claim: "A uniform weight average of ckpts/exp-02/final and ckpts/exp-04/final scores higher on a 600-item dev run than either parent scored on the same 600-item run, all three decoding greedily."
+  mechanism: "The two checkpoints lie on one optimisation trajectory 2974 steps apart, so they are in the same basin and averaging is well-defined; their residual errors are measurably decorrelated (12 fixed / 13 regressed out of 200), which is the condition under which a soup cancels idiosyncratic error instead of averaging two copies of the same mistake."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+0 to +2 points; a null result here is a real possibility and is worth knowing before packaging"}
+  falsified_if: "the soup's dev-600 accuracy is below the better of the two parents' dev-600 accuracy"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "no new data - the ingredients are the exp-02 and exp-04 weights; sft_v2 is what produced the second ingredient"
+      n_examples: 155000
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, data/sft_v2.jsonl, --n-gsm, '115000', --n-math, '40000', --shard-start, '2', --exclude, data/sft_v1.jsonl, --max-per-problem, '6', --seed, '7', --fewshot-frac, '0.12']
+      selection: "unchanged from exp-04; mixture_weight 0 because nothing is trained on this card"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "scripts/soup.py - fp32 elementwise mean of the two state_dicts, cast to bf16"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: "fp32 average, bf16 output", seed: 42}
+    target_format: "unchanged - the merge does not touch the response format; greedy generation_config from scripts/finalize.py"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --src, /home/ben/task/ckpts/exp-02/final, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/ckpts/exp-05_soup_raw]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {CUDA_VISIBLE_DEVICES: ''}
+    log: /home/ben/task/logs/soup.log
+  output_dir: /home/ben/task/ckpts/exp-05_soup
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '600', --max-tokens, '1024', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official gsm8k test, harness order, --limit 600 (the dev-200 slice is a prefix of it)"
+    n: 600
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.8083
+    path: /home/ben/task/eval/exp-05_exp03_dev600.json
+  diagnostic:
+    what: "cap-hits and p50 completion length of the soup - a badly conditioned average would show up as looping or as a collapse in answer length"
+    n: 600
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.25
+  output_checkpoint: /home/ben/task/ckpts/exp-05_soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05_soup, step: null}
+    - {path: /home/ben/task/ckpts/exp-05_soup_raw, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training - fp32 elementwise mean of two state_dicts, 4.30B params, reloaded on CPU before use"}
+  measurements:
+    - {metric: accuracy, value: 0.8183, n: 600, path: /home/ben/task/eval/exp-05_soup_dev600.json, delta_vs_comparator: 0.01}
+    - {metric: accuracy, value: 0.8083, n: 600, path: /home/ben/task/eval/exp-05_exp03_dev600.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.8283, n: 600, path: /home/ben/task/eval/exp-05_exp04_dev600.json, delta_vs_comparator: 0.02}
+  diagnostic_result:
+    value: 160.0
+    path: /home/ben/task/analysis/exp-05_soup_dev600_diag.json
+    notes: "the average is well conditioned - completion length and cap-hits are indistinguishable from either parent, so the merge did not damage the model; it simply is not the best of the three."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-600 greedy: exp-02 weights 0.8083, soup 0.8183, exp-04 weights 0.8283. The soup beat one parent and lost to the other, so the claim (soup > best parent) is contradicted; averaging recovered part of exp-04's gain rather than adding to it. The more important result is the second one on the same three runs: at n=600 exp-04 is +2.0 points over exp-02, where dev-200 had shown -0.5. exp-04's own conclusion - that OpenMathInstruct-2 had saturated - was an artifact of a 200-item protocol whose standard error (0.028) was larger than the effect being measured."
+  decision: reject
+  next_step: "Drop the soup. Promote exp-04/final to incumbent at 0.8283 (n=600). Because more teacher data is in fact still paying, exp-06 spends the remaining budget on one epoch over the third slice (data/sft_v3.jsonl, 155k rows, already contamination-checked) starting from exp-04/final, and every comparison from here uses n=600 or the full 1319 - never n=200."

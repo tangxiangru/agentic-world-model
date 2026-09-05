@@ -1,0 +1,140 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T22:40:00Z'
+
+situation:
+  elapsed_h: 6.7
+  remaining_h: 3.3
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/soup34/served
+    score: {metric: accuracy, value: 0.6998, protocol_n: 1319}
+  trigger: "exp-05 showed that exp-04 overshot: on all 1319 items it scores 0.6884 against exp-03's 0.6990, losing the pair 114 fixes to 128 breaks. So somewhere between exp-03 and the end of exp-04's 1553 steps the model stopped improving and started degrading, and two things sit in that gap that cost no training at all -- exp-04's own kept mid-trajectory checkpoints, and weight averages that land between the two endpoints. The uniform exp-03+exp-04 soup already tied the better endpoint at 0.6998 (82 fixes / 81 breaks, p=1.000), which is what a mid-gap point looks like when it is at least as good as both ends."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-05_paired.json
+      locator: "exp-03 vs exp-04: 114 fixes / 128 breaks, p=0.403, marginals 0.6990 vs 0.6884; exp-03 vs soup34: 82/81, p=1.000"
+    - path: /home/ben/task/memory/cards/exp-05.yaml
+      locator: "conclusion.next_step -- the C5 sweep reserved in exp-03, exp-04 and exp-05"
+  alternatives_rejected:
+    - option: "Another training run in the remaining 3.3 h"
+      reason: "exp-05 just showed that the last training run made the model worse and that the protocol used to steer it could not tell. A fifth checkpoint costs 1.5 h and would be chosen on the same instrument that already misranked one. Averaging and checkpoint selection cost minutes and are the two levers that operate inside the gap the failure actually opened."
+    - option: "Sweep exp-03's checkpoint-250/500 as well"
+      reason: "Those are earlier than exp-03/final on a trajectory whose endpoint is the best single checkpoint measured, so they are undertrained rather than mid-gap. exp-04's checkpoint-1200 is the earliest surviving point between the two endpoints of the run that overshot."
+    - option: "Score more soup mixing ratios (0.5/0.5 is already in, adding 0.6, 0.8, 0.9)"
+      reason: "Selection pressure. Four candidates already sit within 1.2pp of each other and 1319 items give about 1.2pp of stderr, so the more near-identical arms are scored, the more the winner is the luckiest rather than the best. Three new arms, and a pre-declared paired-test bar to beat, is the limit this instrument supports."
+    - option: "Pick whichever candidate scores highest and ship it"
+      reason: "That is what the n=200 protocol would have done in exp-05, and it would have shipped a model 14 items worse. The decision rule below requires the challenger to WIN the paired test against the incumbent, not merely to out-score it."
+  pitfalls_hit:
+    - {what: "Packaged a checkpoint that save_total_limit had already deleted and did not notice: the assertion fired but I had filtered the output down to a line that printed before it. Caught by the exp-06 verdict before the GPU ran", cost_h: 0.05, fix: "arm re-pointed at checkpoint-1200, the earliest surviving interior point; the eval loop now continues past a failing arm instead of aborting the other two"}
+    - {what: "Greedy decoding under vLLM is not batch-invariant: the same do_sample=false weights scored 0.700 and 0.665 on the identical 200 items in two runs (exp-02), and 0.740 vs 0.710 (exp-04)", cost_h: 0.0, fix: "recorded in exp-05; every comparison in this card is between full 1319-item reads and is decided by the paired test, not by marginals"}
+  smoke_runs:
+    - command: [python, soupn.py, --models, ckpts/exp-02/final, ckpts/exp-03/final, ckpts/exp-04/final, --out, ckpts/soup234/final]
+      outcome: "float32 accumulate, cast back to bf16; packaged, 8.6 GB, 2 shards, asserted loadable with the greedy generation_config"
+    - command: [python, soupn.py, --models, ckpts/exp-03/final, ckpts/exp-04/final, --weights, '0.7', '0.3', --out, ckpts/soup37/final]
+      outcome: "same, packaged and asserted"
+    - command: [python, package_model.py, --src, ckpts/exp-04/checkpoint-900, --dst, ckpts/exp04c900/served]
+      outcome: "FAILED and was caught before launch, by the verdict's first precondition. save_total_limit 3 had already rotated checkpoint-900 away (only 1200, 1500, 1553 and final survive), so the packaged directory held the copied tokenizer files and no weights at all; package_model.py's own >5 GB shard assertion fired, but I had grepped its output for 'packaged|shards' and read the first line as success. Directory deleted."
+    - command: [python, package_model.py, --src, ckpts/exp-04/checkpoint-1200, --dst, ckpts/exp04c1200/served]
+      outcome: "Gemma3ForConditionalGeneration, vocab 262144, eot 106, 2 shards, 8.6 GB -- the arm actually built" 
+
+problem:
+  statement: "The best model this session has produced scores 0.6998 on the full GSM8K test set, and the run that was supposed to improve on 0.6990 instead produced 0.6884. Nothing measured separates the top two candidates (p=1.000). Three artefacts that require no further training sit inside the region where the degradation happened -- exp-04's checkpoint-1200, a three-way average of all endpoints, and an average weighted toward the better endpoint -- and none has been scored."
+  evidence:
+    - path: /home/ben/task/eval/exp-05_exp-04_full.json
+      locator: "accuracy 0.6884 at n=1319"
+      observation: "the last training run ended below its own parent"
+    - path: /home/ben/task/analysis/exp-05_paired.json
+      locator: "exp-03 vs soup34: 82 fixes / 81 breaks, p=1.000"
+      observation: "the incumbent is tied with its own ingredient; nothing has been shown to be better"
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: "At least one of three no-training artefacts -- exp-04's earliest surviving interior checkpoint (step 1200 of 1553), the uniform three-way average of exp-02/exp-03/exp-04, and the 0.7/0.3 exp-03/exp-04 average -- scores higher on the full 1319-item test set than the incumbent uniform soup at 0.6998."
+  mechanism: "exp-04 monotonically walked the weights away from exp-03 and ended 14 items worse, so the trajectory has an interior optimum rather than a terminal one; checkpoint-1200 samples that interior directly, and a weight average samples it by interpolation. Weight averaging additionally cancels the part of each endpoint's error that is idiosyncratic to its own corpus -- exp-02 never saw orca, exp-04 saw 76% orca -- which is the reason the uniform soup already matched the better endpoint rather than landing between the two."
+  decision_rule: "final_model is overwritten only by a candidate that WINS the 1319-item paired McNemar test against the incumbent soup34 at p<0.05. Out-scoring it is not enough: three near-identical arms against a 1.2pp stderr means the highest marginal is as likely to be the luckiest as the best. Pre-computing the bar so it cannot be argued about afterwards: the pairs among these models run 160-260 discordant items, and at 160 discordant p<0.05 needs roughly a 20-item net edge, i.e. about +1.5 points of marginal accuracy. Declared before any number is read."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0 to +1.5 points (0.6998 -> 0.70-0.715). Interior checkpoints and averages of near-identical models usually move a benchmark by well under a point, which is precisely why the decision rule requires a paired win rather than a higher number."
+  falsified_if: "No candidate beats 0.6998 on 1319 items, i.e. all three artefacts score at or below the incumbent."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/soup34/served
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_eval_data.md
+      source: local
+      n_examples: 1319
+      built_by: null
+      build_command: []
+      selection: "No training data: this card runs evaluations only, on the whole official openai/gsm8k test split (--limit -1). Never used for training."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors float32 weight averaging (soupn.py) + inspect_ai/vllm 0.11.0 via the unmodified evaluate.py"
+    peft: none
+    hyperparams: {seed: null}
+    target_format: "unchanged: 'ANSWER: <n>' then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_selection2.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_selection2.sh
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+evaluation:
+  protocol:
+    command: [bash, run_eval.sh, '{checkpoint}', '{tag}', '-1']
+    dev_set: "official full test split, 1319 items"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.6998
+    path: /home/ben/task/eval/exp-05_soup34_full.json
+  diagnostic:
+    what: "Corruption gate read before any accuracy on every arm (garbage_prefix_indices must be empty, share_max_tokens below 0.02, share_with_answer_line above 0.98) -- all three arms carry a tokenizer copied from the base snapshot rather than saved beside their weights, so the format panel is the check that the copy was right. Then pair_eval.py over all six candidates (the three new ones plus exp-03, exp-04 and soup34 from exp-05, whose logs are reused because the protocol and flags are byte-identical): fixed/broken counts and exact McNemar p for every pair."
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.25
+  output_checkpoint: /home/ben/task/ckpts/soup234/served
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup234/served, step: 0}
+    - {path: /home/ben/task/ckpts/soup37/served, step: 0}
+    - {path: /home/ben/task/ckpts/exp04c1200/served, step: 1200}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card; the three arms are two weight averages and one saved checkpoint"}
+  measurements:
+    - {metric: accuracy, value: 0.7058, n: 1319, path: /home/ben/task/eval/exp-06_soup234_full.json, delta_vs_comparator: 0.0061}
+    - {metric: accuracy, value: 0.7013, n: 1319, path: /home/ben/task/eval/exp-06_soup37_full.json, delta_vs_comparator: 0.0015}
+    - {metric: accuracy, value: 0.6801, n: 1319, path: /home/ben/task/eval/exp-06_exp04c1200_full.json, delta_vs_comparator: -0.0197}
+  diagnostic_result:
+    value: 0.7058
+    path: /home/ben/task/analysis/exp-06_paired.json
+    notes: "Corruption gate first: garbage_prefix_indices empty on all three, share_max_tokens 0.008-0.010, share_with_answer_line 0.989-0.992, so the base-snapshot tokenizer copy is fine on every arm. Protocol check before pooling the three new logs with exp-05's three: eval_config and model_args are byte-identical across all six (max_connections 16, max_tokens 4000, gpu_memory_utilization 0.85, templates/gemma3.jinja). SIX-WAY RANKING on 1319 items: soup234 0.7058, soup37 0.7013, soup34 0.6998, exp-03 0.6990, exp-04 0.6884, exp04c1200 0.6801. NULL ARM, read first as the verdict asked: exp04c1200 sits at t=0.995 of exp-03->exp-04 in weight space and is effectively a repeat of exp-04, and it differs from exp-04 on 95 of 1319 items (53 fixes / 42 breaks, p=0.305). That is the flip floor of this instrument -- 7.2% of items move between two near-identical sets of weights -- and every other cell has to be read against it. THE DECISION CELL: soup234 vs soup34 is 63 items where soup234 is right and soup34 wrong against 55 the other way, a net +8, p=0.520. That does NOT clear the p<0.05 / ~20-item bar this card pre-declared. soup234 also out-scores exp-03 (68/59, p=0.478) and exp-04 (119/96, p=0.133), i.e. it is ahead of every arm and separated from none. The three-way soup being top and the pure exp-04 arms bottom is at least consistent with the mechanism: averaging away corpus-idiosyncratic error rather than continuing to train on the newest corpus."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "Two of the three no-training artefacts beat the incumbent's 0.6998 -- the uniform three-way soup at 0.7058 and the 0.7/0.3 soup at 0.7013 -- so the claim as written is not falsified, and the best model of the session is now a weight average that cost four minutes of CPU rather than any GPU training. But the pre-declared paired bar is not met: soup234 leads soup34 by 8 items with p=0.520, well inside the 95-item flip floor the null arm established. The card bought a better point estimate and no resolution."
+  decision: iterate
+  next_step: "final_model is deliberately NOT overwritten on this card, because the decision rule said p<0.05 and the answer was p=0.520. What is actually undecided is narrow and cheap to settle: exp-05 measured that greedy decoding is not batch-invariant under vLLM, so a single full-test read carries roughly a point of run-to-run noise, and soup234's lead is 0.6 of a point. exp-07 re-scores soup234 and soup34 a second time each on the full test set and decides on the two-run mean, which halves exactly the noise term that is in the way. exp04c1200 also settles the reserved C5 question negatively: save_total_limit 3 had kept only post-decay steps, so exp-04's interior was never sampled and that lever is forfeited for this session, not swept."

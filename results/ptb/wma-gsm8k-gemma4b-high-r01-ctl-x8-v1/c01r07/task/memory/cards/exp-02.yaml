@@ -1,0 +1,215 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T14:24:00Z'
+situation:
+  elapsed_h: 0.4
+  remaining_h: 9.6
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: 0.07333
+      protocol_n: 150
+  trigger: exp-01 measured the base model at 0.073 and showed the failure is format
+    and termination, not arithmetic - 79 of 139 failures ran to the 4000-token cap
+    and 23 never emitted an ANSWER line.
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp-01_base.json
+    locator: summary.hit_token_cap_among_failures=79, summary.no_answer_marker_among_failures=23
+  - path: /home/ben/task/eval/base_dev150.json
+    locator: accuracy=0.07333
+  alternatives_rejected:
+  - option: Few-shot prompt engineering / decode-config only (no training)
+    reason: The harness fixes the prompt (10-shot, seed 42) and evaluate.py may not
+      be modified, so the only levers on the artifact are the weights and generation_config.json.
+      Decode config alone cannot teach the model to stop.
+  - option: LoRA instead of a full fine-tune
+    reason: The model has to learn a format it has never produced and to terminate;
+      full-parameter SFT is the higher-ceiling option and fits in 80 GB with fp32
+      masters plus 8-bit Adam. LoRA stays available as a fallback if this is unstable.
+  - option: MetaMathQA-395K as the corpus
+    reason: 'Its targets carry a second answer marker ("The answer is: N") plus gsm8k''s
+      own "#### N", which is exactly the double_answer_format pitfall. OpenMathInstruct-2
+      bodies clean to a single marker more reliably. MetaMathQA is downloaded and
+      stays available as a mixture ingredient.'
+  - option: Train zero-shot only (no 10-shot rows) to save ~30% compute
+    reason: Every graded prompt carries the 2153-token 10-shot prefix; leaving it out
+      of training entirely is an unforced train/test mismatch. 10% of rows carry the
+      byte-identical prefix as a hedge.
+  pitfalls_hit:
+  - what: 'Token-budget 12288 OOMed inside cross_entropy: gemma-3''s 262k vocabulary
+      makes the logits tensor (bf16 plus the fp32 upcast in the loss) the binding
+      memory constraint, not the activations.'
+    cost_h: 0.1
+    fix: token budget 6144 with grad_accum 8; measured at ~7.2 s/optimizer step on
+      the worst-case all-10-shot rows.
+  - what: The first data build trained on all 7473 gsm8k train questions, leaving no
+      held-out probe set that protocol rule 7 permits for failure_examples/watch_set.
+    cost_h: 0.05
+    fix: 300 train-split questions reserved in data/probe300.jsonl and excluded from
+      the training data by normalised-question key (both gold and OpenMathInstruct-2
+      rows).
+  smoke_runs:
+  - command: [python, train_sft.py, --limit, '4000', --max-steps, '12', --token-budget,
+      '6144', --grad-accum, '8']
+    outcome: ran clean, loss 0.53, 7.2 s/step, no OOM, checkpoint saved
+  - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json,
+      --input, data/sft_v1_check.jsonl]
+    outcome: 49990 documents scanned, 0 contaminated, exit 0
+problem:
+  statement: The base model does not answer the harness's prompt, it continues it.
+    It runs past the 4000-token cap on 57% of its failures and omits the ANSWER marker
+    on 17%, so almost all of its 0.073 comes from format failure rather than from
+    being unable to do the arithmetic.
+  evidence:
+  - path: /home/ben/task/analysis/exp-01_base.json
+    locator: summary
+    observation: 'n=150, accuracy 0.073, 139 failures: 79 hit the token cap, 23 have
+      no ANSWER line, mean completion ~19.5k chars.'
+  affected_share: 0.73
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: 300 questions sampled (seed 12345) from the gsm8k TRAIN split and excluded
+      from every training file; no benchmark test item is used.
+hypothesis:
+  claim: Completion-only SFT on 50k GSM8K-style chain-of-thought targets that are
+    rendered with the grader's own template, carry exactly one "ANSWER" line and
+    end in <end_of_turn> will raise accuracy on the official 150-item protocol above
+    the base model's 0.073.
+  mechanism: The loss is taken only on the assistant turn, so the model is trained
+    to emit a bounded solution, put the final number where match(numeric=True) reads
+    it, and stop on token 106 - which is what vLLM stops on. That removes the two
+    failure modes exp-01 measured. Shipping generation_config.json with temperature 0
+    additionally removes the sampling degeneration that produced 4000-token repeats;
+    the two changes are not separable in this card, and exp-03 can ablate the decode
+    config on the same weights for the cost of one extra eval.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: large - the base sits at a format floor, so anything from +0.35 upward
+  falsified_if: Accuracy on the 150-item protocol is at or below 0.073, or the trained
+    model still hits the token cap on more than 10% of samples, which would mean the
+    terminator did not take.
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/sft_v1.jsonl
+    source: nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e (train_1M
+      shard, problem_source in gsm8k / augmented_gsm8k) + openai/gsm8k@740312add88f781978c0658806c59bc2815b9866
+      train split
+    n_examples: 49990
+    built_by: /home/ben/task/build_data.py
+    build_command: [python, build_data.py, --out, data/sft_v1.jsonl, --n, '50000',
+      --max-per-problem, '2', --fewshot-frac, '0.10']
+    selection: 'GSM8K train-derived only; the test split is never read. Answers normalised
+      to a bare number; calculator annotations, the "#### N" line and \boxed{} stripped
+      by prompt_spec.clean_body; at most 2 distinct solutions per problem; the 300
+      probe questions excluded; rows whose target does not contain exactly one answer
+      marker dropped (10 rows). 10% of rows carry the byte-identical 10-shot prefix
+      the grader uses, the other 90% are zero-shot.'
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with a custom token-budget batch sampler
+    peft: none
+    hyperparams:
+      lr: 1.0e-05
+      epochs: 1.0
+      batch_size: 1
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: fp32 master weights, bf16 autocast, adamw_bnb_8bit
+      seed: 0
+      token_budget: 6144
+    target_format: assistant turn = cleaned chain of thought, blank line, the answer
+      marker with a bare number, then <end_of_turn> and a newline; prompt tokens masked
+      to -100 so the loss is completion-only
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d,
+      --data, data/sft_v1.jsonl, --out, ckpts/exp-02, --epochs, '1.0', --lr, '1e-5',
+      --token-budget, '6144', --grad-accum, '8', --save-steps, '300', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 300
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '32', --gpu-memory-utilization, '0.8']
+    dev_set: official --limit 150 (inspect_evals/gsm8k test split, first 150, fewshot_seed=42)
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.07333
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: share of samples that hit the 4000-token cap and share with no ANSWER line,
+      from the same eval log
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.2
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-02/final, step: 628}
+  - {path: /home/ben/task/ckpts/exp-02/checkpoint-628, step: 628}
+  training_summary:
+    final_loss: 0.3146
+    steps: 628
+    notes: 'train_runtime 4315 s, mean train_loss 0.359, grad_norm settled ~2. Peak
+      GPU 69.0 GiB allocated / 77.0 GiB reserved at token budget 6144, confirming the
+      budget was at the ceiling. checkpoint-300 and checkpoint-600 deleted; final
+      (bf16, 8.1 GB) and checkpoint-628 (fp32 + optimizer state, for a possible
+      second epoch) kept.'
+  measurements:
+  - metric: accuracy
+    value: 0.65333
+    n: 150
+    path: /home/ben/task/eval/exp-02_dev150.json
+    delta_vs_comparator: 0.58
+  diagnostic_result:
+    value: 0.0133
+    path: /home/ben/task/analysis/exp-02_dev150.json
+    notes: 'Of 52 failures, 1 hit the 4000-token cap and 1 lacked an ANSWER line
+      (base: 79 and 23 of 139). Mean completion fell from ~19.5k to ~1.2k chars.
+      The remaining failures are genuine reasoning/arithmetic errors, e.g. answering
+      the wrong quantity or dropping a constraint.'
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: 'Accuracy 0.073 -> 0.653 (+0.58) on the official 150-item protocol. The
+    mechanism is confirmed directly: the token-cap failure rate fell from 79/139 to
+    1/52 and the missing-ANSWER rate from 23/139 to 1/52, so the model now terminates
+    on <end_of_turn> and puts the number where match(numeric=True) reads it.'
+  decision: adopt
+  next_step: 'The format failure is spent; what is left is reasoning quality. exp-03
+    should attack that - more unique GSM8K-style data (data/sft_v2.jsonl, 110k rows,
+    contamination-checked) and/or a rejection-sampling round from this checkpoint.
+    Probe first whether the 10-shot prefix at grading time helps or hurts a model
+    trained 90% zero-shot; that decides the fewshot fraction for the next build.'

@@ -1,0 +1,155 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T14:45:00Z'
+situation:
+  elapsed_h: 8.75
+  remaining_h: 1.25
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-05/final_greedy
+    score:
+      metric: accuracy
+      value: 0.738
+      protocol_n: 500
+  trigger: exp-06 left two checkpoints statistically tied at n=500 (0.738 vs 0.722, McNemar p=0.37) with 62 discordant items - 35 the RFT checkpoint gets and the SFT one does not, 27 the other way. Two checkpoints on one trajectory that disagree on 62 of 500 items are the textbook case for averaging their weights, and it costs no GPU training time.
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp06_paired.json
+    locator: whole file
+    observation_note: rft_only 35, sft_only 27, discordant 62, mcnemar_p 0.374
+  - path: /home/ben/task/eval/exp06_b_rft_dev500.json
+    locator: accuracy 0.738
+  - path: /home/ben/task/eval/exp06_a_sft_dev500.json
+    locator: accuracy 0.722
+  alternatives_rejected:
+  - option: Stop now and ship exp-05
+    reason: 'it is already installed and verified as final_model, so this card risks nothing: the soup is only adopted if it beats 0.738 on the identical n=500 protocol'
+  - option: A second RFT epoch (~40 min training + eval)
+    reason: would leave under 15 minutes of margin, and exp-05 showed the first epoch of this data was already inside the noise
+  - option: Ensemble/self-consistency at decode time
+    reason: the grader takes exactly one sample per item; there is no place to put a vote
+  - option: Search alpha over several values
+    reason: each alpha costs a 14-minute eval and there is time for one; 0.5 is the standard choice and the two parents are one epoch apart on one trajectory
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: Neither available checkpoint dominates. Each solves ~30 items the other misses, so both are leaving accuracy on the table that is present somewhere in the pair, and picking one discards it.
+  evidence:
+  - path: /home/ben/task/analysis/exp06_paired.json
+    locator: rft_only / sft_only
+    observation: 35 and 27 items respectively; 334 of 500 correct in both
+  affected_share: 0.124
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: A uniform (alpha=0.5) weight average of ckpts/exp-02/final and ckpts/exp-05/final will score higher on dev-500 than either parent, under the identical greedy protocol.
+  mechanism: 'exp-05 is exp-02 continued for one epoch, so the two are one short optimisation leg apart on a single trajectory and their weights are in the same basin. Averaging along a trajectory is a variance-reduction step: it cancels the part of the last epoch''s update that is data-order noise while keeping the part that is consistent signal, which is why the average often beats both endpoints on held-out data.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: +0 to +2 points over the better parent's 0.738
+  falsified_if: the soup scores at or below 0.738 on dev-500, i.e. it does not beat its better parent.
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: averaged 50/50 with /home/ben/task/ckpts/exp-02/final (origin exp-02)
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/rft_train.jsonl
+    source: derived:exp-05
+    n_examples: 25155
+    built_by: /home/ben/task/build_rft_train.py
+    build_command: []
+    selection: no training in this card; this is the data whose one epoch separates the two checkpoints being averaged.
+    contamination_check: passed
+    mixture_weight: 0.0
+  method:
+    family: merge
+    framework: safetensors + torch (CPU, float32 accumulate, saved bf16)
+    peft: none
+    hyperparams:
+      alpha: 0.5
+      temperature: 0.0
+      top_p: 1.0
+      seed: 0
+    target_format: 'unchanged: chain of thought, blank line, ''ANSWER: <int>'', <end_of_turn>'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - soup.py
+    - --a
+    - ckpts/exp-05/final_greedy
+    - --b
+    - ckpts/exp-02/final_greedy
+    - --alpha
+    - '0.5'
+    - --out
+    - ckpts/soup
+    cwd: /home/ben/task
+    script: /home/ben/task/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/soup
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.4
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '500'
+    - --max-connections
+    - '32'
+    - --gpu-memory-utilization
+    - '0.85'
+    dev_set: official gsm8k test --limit 500 (inspect_evals/gsm8k default order, fewshot=10 seed=42)
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.738
+    path: /home/ben/task/eval/exp06_b_rft_dev500.json
+  diagnostic:
+    what: paired McNemar of the soup against its better parent on the same 500 items, plus the stop_reason histogram to confirm averaging did not break the output contract
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/soup
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/soup
+    step: 0
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: no training; 883 float tensors averaged at alpha=0.5 on CPU in float32, saved bf16. Non-float tensors verified identical between parents.
+  measurements:
+  - metric: accuracy
+    value: 0.738
+    n: 500
+    path: /home/ben/task/eval/exp07_soup_dev500.json
+    delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.738
+    path: /home/ben/task/analysis/exp07_paired.json
+    notes: 'Paired on the same 500 items: 22 soup-only, 22 parent-only, McNemar p=1.000 - the soup is a different model with the same accuracy, not a better one. stop_reason 495 stop / 5 max_tokens, so averaging left the output contract intact.'
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: The 50/50 average of the two checkpoints scores 0.738 on dev-500, identical to its better parent, and the paired split is a dead heat (22 vs 22, p=1.00). Averaging along this trajectory reshuffled which items are solved without reducing the error rate, so the variance-reduction mechanism the card argued for did not operate here.
+  decision: reject
+  next_step: final_model stays ckpts/exp-05/final_greedy, already installed and verified. Nothing further is worth launching in the remaining time; a change with a tied point estimate is a coin flip, and the incumbent is the one whose provenance and eval history are documented end to end.

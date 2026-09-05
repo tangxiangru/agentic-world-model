@@ -1,0 +1,139 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T08:55:00Z'
+situation:
+  elapsed_h: 2.2
+  remaining_h: 7.8
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.68, protocol_n: 150}
+  trigger: "With the format and decode problems closed (exp-02, exp-03), all 48 remaining dev-150 failures are reasoning or arithmetic errors (analysis/exp-03_failures.json). exp-02 saw only 35k of the 80811 distinct gsm8k-family problems available in OpenMathInstruct-2 train_1M, so the cheapest remaining lever is unique training problems."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-03_failures.json
+      locator: "48 items, all with a well-formed ANSWER line"
+    - path: /home/ben/task/logs/build_r1.log
+      locator: "'OpenMathInstruct-2 gsm8k-family rows available: 80811' vs --n-omi 35000 used"
+  alternatives_rejected:
+    - option: "Rejection-sampling (RFT) round from exp-02 now"
+      reason: "RFT needs a sampling pass (~0.6 h) before any training and its data is on-policy but limited to problems the model already sometimes solves; scaling unique off-policy problems is the larger untested lever and leaves RFT as the next card"
+    - option: "Retrain from the base model on r1+r2 combined (175k rows, 1 epoch)"
+      reason: "throws away the 2 epochs already paid for; continuing costs 1 epoch instead of 1.4 and keeps a working incumbent if the run has to be cut short"
+    - option: "Raise the learning rate back to 1e-5"
+      reason: "this is a continuation of an already-converged cosine schedule; restarting at full LR on a fine-tuned checkpoint usually costs a few points before it recovers"
+    - option: "Add MATH / augmented_math rows for reasoning breadth"
+      reason: "same reason as exp-02 - the LaTeX answer style pulls against the grader's plain ANSWER line; unresolved, worth a card only if gsm8k-family data saturates"
+  pitfalls_hit:
+    - what: "build_sft_data.py only multiplies the gsm8k rows when --gsm-repeat > 1, so --gsm-repeat 0 did not drop them: sft_r2.jsonl carries the 14946 gsm8k train rows a second time on top of 110000 fresh OpenMathInstruct-2 rows"
+      cost_h: 0.0
+      fix: "left as is and recorded here: those rows now get a 3rd pass overall, which is within normal SFT repetition, and the 110000 OMI rows are all new (--exclude data/sft_r1.jsonl removed every pair exp-02 already saw)"
+  smoke_runs:
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_r2_decon_input.jsonl]
+      outcome: "124946 documents scanned, 0 contaminated, 0 matches"
+problem:
+  statement: "exp-03 gets 48 of 150 dev items wrong and every one of them is a fluent, correctly formatted chain with a wrong number in it: the model sets the problem up incorrectly or slips in the arithmetic. It has been trained on 35k distinct GSM8K-family problems out of 80811 available, so it is data-limited on problem variety rather than on format."
+  evidence:
+    - path: /home/ben/task/analysis/exp-03_failures.json
+      locator: "all 48 entries"
+      observation: "every failure ends with a well-formed 'ANSWER: <number>' line; none is a formatting or truncation failure"
+    - path: /home/ben/task/analysis/exp-02_format.json
+      locator: "capped 0, ends_with_answer 150"
+      observation: "0/150 truncations, so nothing is lost to generation length"
+  affected_share: 1.0
+  failure_examples:
+    - {id: "gsm8k-oranges", source: /home/ben/task/analysis/exp-02_failures.json, question: "basket of oranges with bad/unripe/sour ones", gold: "17", model_output: "x + 7 = 25 ... x = 18 ... ANSWER: 18", failure: "wrong equation setup"}
+    - {id: "gsm8k-bees", source: /home/ben/task/analysis/exp-02_failures.json, question: "hive with baby and worker bees", gold: "400", model_output: "700/2=350 ... 350*2=700 ... ANSWER: 700", failure: "returns an intermediate quantity"}
+    - {id: "gsm8k-cookies", source: /home/ben/task/analysis/exp-02_failures.json, question: "Henry baking cookies", gold: "50", model_output: "110/2 = 55 ... 55-15=40 ... ANSWER: 40", failure: "misreads the comparison in the question"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-02's checkpoint for one epoch over 124946 further GSM8K-train-derived rows - 110000 of them OpenMathInstruct-2 problems the model has never seen, plus up to 3 distinct solutions per problem - raises GSM8K accuracy at --limit 150 above exp-03's greedy 0.680."
+  mechanism: "The residual failures are wrong problem setups on question shapes the model has not seen enough of. More distinct GSM8K-style problems, and several distinct correct solution paths per problem, is the standard way that error class shrinks; OpenMathInstruct-2's own scaling ablations show gsm8k accuracy still rising with solution count in this range."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 points"
+  falsified_if: "greedy accuracy at n=150 is at or below exp-03's 0.680, i.e. the extra epoch of off-policy data buys nothing or costs accuracy through overfitting"
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-02/final, origin: exp-02, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_r2.jsonl
+      source: "openai/gsm8k (main+socratic, split=train) + nvidia/OpenMathInstruct-2 (split=train_1M, problem_source in {gsm8k, augmented_gsm8k}); datasets==4.5.0"
+      n_examples: 124946
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, data/sft_r2.jsonl, --n-omi, '110000', --max-per-problem, '3', --gsm-repeat, '0', --fewshot-frac, '0.10', --seed, '7', --exclude, data/sft_r1.jsonl]
+      selection: "same cleaning as exp-02; up to 3 distinct solutions per OpenMathInstruct-2 problem; every (question, solution) pair present in sft_r1.jsonl excluded; 10% of rows carry the grader's 10-shot prefix"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (custom completion-only masking), torch 2.8.0"
+    peft: none
+    hyperparams:
+      lr: 7.0e-6
+      epochs: 1
+      batch_size: 0    # dynamic: token-budget batches of 8192 padded tokens
+      grad_accum: 4
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.02
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+    target_format: "assistant turn = worked reasoning, blank line, 'ANSWER: <integer>', then <end_of_turn>; prompt tokens masked to -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-02/final, --data, /home/ben/task/data/sft_r2.jsonl, --out, /home/ben/task/ckpts/exp-04, --max-seq-len, '3072', --lr, '7e-6', --epochs, '1', --accum, '4', --token-budget, '8192', --attn, flash_attention_2, --warmup, '0.02', --save-strategy, steps, --save-steps, '700']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04_train.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints: {every_steps: 700, keep: all}
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator: {ref: exp-03, value: 0.68, path: /home/ben/task/eval/exp-03_greedy_dev150.json}
+  diagnostic:
+    what: "how many of exp-03's 48 wrong dev-150 items become correct, and how many previously-correct items regress"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.0
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-700, step: 700}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1400, step: 1400}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2100, step: 2100}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2170, step: 2170}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2170}
+  training_summary:
+    final_loss: 0.3094
+    steps: 2170
+    notes: "7176 s wall, 17.4 samples/s; masked loss 0.344 (end of exp-02) -> 0.309. Ran clean, no OOM."
+  measurements:
+    - metric: accuracy
+      value: 0.68
+      n: 150
+      path: /home/ben/task/eval/exp-04_dev150.json
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.25
+    path: /home/ben/task/analysis/exp-04_vs_exp-03.json
+    notes: "12 of exp-03's 48 wrong items became correct and 12 previously-correct items regressed; wrong count identical at 48. The extra data moved a quarter of the failures in each direction, which is churn, not progress."
+  watch_set_result: {fixed: 12, still_failing: 36, regressions: 12, path: /home/ben/task/analysis/exp-04_vs_exp-03.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "One more epoch over 124946 rows (~54k genuinely new GSM8K-family problems) left dev-150 exactly where it was: 0.680 before, 0.680 after, 48 wrong in both, with 12 fixed and 12 regressed. Off-policy solution volume from the same distribution has stopped paying at this scale."
+  decision: reject
+  next_step: "exp-05: switch mechanism from more off-policy data to on-policy rejection sampling - train on the model's own correct chains for GSM8K train questions, which targets the problems it actually gets wrong instead of adding more of what it already fits."

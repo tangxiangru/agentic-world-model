@@ -1,0 +1,140 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T07:35:00Z'
+situation:
+  elapsed_h: 6.6
+  remaining_h: 3.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/checkpoint-2817
+    score: {metric: accuracy, value: 0.7400, protocol_n: 150}
+  trigger: "exp-04 crashed at its first checkpoint save after 27 min of GPU time and produced no weights, so its hypothesis is still untested; the cause is a transformers save-time validation on the greedy generation_config this pipeline writes, now fixed and verified on CPU. The underlying observation is unchanged: exp-03's two epochs over the 180k corpus scored 0.7400 and 0.7200 on dev-150 - 3 items apart, i.e. a second pass over OpenMathInstruct-2 bought nothing. Meanwhile sampling exp-03/final k=4 at T=1.0 over 13,000 training questions solves 92.6% of them at least once (analysis/rft_exp03_stats.json), so the model can already reach far more correct solutions than its single greedy pass delivers."
+  trigger_evidence:
+    - path: /home/ben/task/eval/exp-03_ck2817_dev150.json
+      locator: "accuracy 0.7400 (epoch 1)"
+    - path: /home/ben/task/eval/exp-03_final_dev150.json
+      locator: "accuracy 0.7200 (epoch 2) - flat against epoch 1"
+    - path: /home/ben/task/analysis/rft_exp03_stats.json
+      locator: "pass_at_k 0.926 over 13,000 train questions at k=4, T=1.0"
+  alternatives_rejected:
+    - option: "A third epoch, or more unseen OpenMathInstruct-2 rows alone (250k are built and contamination-checked)"
+      reason: "exp-03 epoch 1 -> 2 was flat, so that distribution is saturated; adding more of it is the intervention already shown not to move the metric."
+    - option: "Pure RFT with no fresh data"
+      reason: "22.9k self-generated rows are shorter and self-similar; training only on them risks narrowing the output distribution. Mixing 1:1 with unseen augmented_gsm8k keeps the corpus broad while the RFT rows supply the new signal."
+    - option: "DPO on correct-vs-incorrect self-samples"
+      reason: "the pairs exist in principle but a preference-training path is untested here and 4 h remain; a failed DPO run leaves no time to recover, whereas this card reuses the exact SFT path that has now run three times."
+    - option: "Start from ckpt-2817 (0.74) rather than exp-03/final (0.72)"
+      reason: "the 22.9k RFT rows were sampled from exp-03/final, so they are on-policy for it; the two checkpoints are within noise of each other and ckpt-2817 is retained as a candidate for the final pick either way."
+    - option: "Retry at 2 epochs as exp-04 planned"
+      reason: "27 min of budget is already gone and 3.4 h remain, of which the final larger-n model selection needs ~1 h; one epoch fits with margin and exp-03 showed the second epoch of an SFT stage adds nothing here."
+    - option: "k=4 over all 25k prepared questions"
+      reason: "measured vLLM throughput was ~8k output tok/s, so 25k questions is ~70 min against 35 min for 13k; the extra 35 min is worth more spent on a larger-n final comparison."
+  pitfalls_hit:
+    - what: "pkill -f rft_sample.py killed the agent's own shell (the pattern matched its command line) and left an orphan VLLM::EngineCore holding 66 GB, which would have OOMed the next launch"
+      cost_h: 0.1
+      fix: "kill the engine pid from nvidia-smi and verify memory.used is 0 before relaunching"
+    - what: "train_sft.py writes generation_config.json with do_sample=false and temperature=0.0 so vLLM decodes greedily; transformers LOADS that file fine but refuses to SAVE it, so exp-04 - the first run whose parent was a checkpoint from this pipeline - died in Trainer._save_checkpoint at step 739/1478 with no weights written"
+      cost_h: 0.45
+      fix: "train_sft.py now sets do_sample=False and temperature/top_p/top_k=None on the in-memory generation_config and calls validate() before training; the greedy generation_config.json is written back as a plain file after save_model, which bypasses the validator. Verified on CPU that save_pretrained now succeeds."
+    - what: "the first RFT sampling launch was scoped at 25k questions with a ~95 min ETA, which did not fit the remaining budget"
+      cost_h: 0.1
+      fix: "killed after 6 min and relaunched at 13k questions / max_tokens 512; finished in 34.5 min"
+  smoke_runs:
+    - command: [python, -c, "load ckpts/exp-03/final, neutralise generation_config, config+generation_config save_pretrained to a tempdir"]
+      outcome: "saves cleanly; generation_config.json written with temperature/top_p/top_k null and eos_token_id [1, 106]"
+    - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/rft_mix.jsonl]
+      outcome: "47,241 documents scanned, 0 contaminated, exit 0"
+    - command: [python, -c, "tokenise data/rft_mix.jsonl; assert every target ends with <end_of_turn> and holds exactly one 'ANSWER: '"]
+      outcome: "mean 335, p50 299, p99 1241, max 2030 tokens; 0 rows over max_seq_len 2560; 0 malformed targets"
+problem:
+  statement: "exp-03 is wrong on 42 of 150 dev items while its own sampling shows it can solve 92.6% of comparable training questions within 4 attempts. The gap is not knowledge it lacks but reliability of the single greedy path: the correct reasoning is inside the model's distribution and is not the one it emits first."
+  evidence:
+    - path: /home/ben/task/analysis/exp-03_final_diagnostic.json
+      locator: "n_wrong=42, accuracy 0.72, stopped_share 0.993, no_answer_marker_share 0.007"
+      observation: "all remaining error is reasoning, not format - format and termination are saturated"
+    - path: /home/ben/task/analysis/rft_exp03_stats.json
+      locator: "pass_at_k 0.926 vs greedy dev accuracy 0.72"
+      observation: "a ~20 pt gap between what the model can reach in 4 samples and what it emits in one"
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-03/final on 22,925 of its own solutions that were verified correct against the gold answer (with hard questions - those solved at most twice in four tries - contributing up to 4 distinct paths instead of 2), mixed 1:1 with 25,000 unseen augmented_gsm8k rows, raises dev-150 accuracy above exp-03's 0.7400."
+  mechanism: "Rejection-sampling fine-tuning concentrates probability mass on the reasoning paths the model already produces and that verifiably end at the right answer, which is exactly the greedy-vs-sampled gap measured above; the correct-answer filter removes the failure modes, and the per-question cap keeps easy questions from dominating. The unseen augmented_gsm8k half stops the target distribution from collapsing onto the model's own shorter phrasing."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +5 pts on dev-150"
+  falsified_if: "the exp-05 checkpoint scores at or below exp-03's best 0.7400 on dev-150, or the stop-token share drops below 0.95."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix.jsonl
+      source: "synthetic:self (22,242 rows sampled from exp-03/final) + derived:exp-03 unseen slice of nvidia/OpenMathInstruct-2 train split (20,422 augmented_gsm8k + 4,577 gsm8k)"
+      n_examples: 47241
+      built_by: /home/ben/task/mix_rft.py
+      build_command: [python, rft_sample.py, --model, /home/ben/task/ckpts/exp-03/final, --questions, data/rft_questions.jsonl, --out, data/rft_exp03.jsonl, --k, '4', --temperature, '1.0', --top-p, '0.95', --max-tokens, '512', --keep-per-question, '2', --keep-per-question-hard, '4', --seed, '0']
+      selection: "Questions: all 7,473 GSM8K TRAIN problems plus 5,527 distinct OpenMathInstruct-2 augmented_gsm8k problems - no benchmark test item. A sample is kept only if the number after its single 'ANSWER: ' equals the gold answer; the text is cut at the end of that answer line so nothing follows it; identical samples are deduped; up to 2 distinct paths per question, up to 4 for questions solved in at most half of the 4 tries. Fresh rows are drawn from data/sft_extra250k.jsonl, which was built disjoint by row hash from exp-03's training file. Dedup by row id across the mixture."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE + flash_attention_2, custom completion-only collator; sampling with vLLM 0.11.0"
+    peft: none
+    hyperparams: {lr: 6.0e-6, epochs: 1, batch_size: 32, grad_accum: 2, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "<chain of thought> + blank line + 'ANSWER: <n>' + <end_of_turn>; loss on the model turn only (prompt masked to -100)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --train-file, data/rft_mix.jsonl, --parent, /home/ben/task/ckpts/exp-03/final, --output-dir, /home/ben/task/ckpts/exp-05, --lr, '6e-6', --epochs, '1', --batch-size, '32', --grad-accum, '2', --max-seq-len, '2560', --save-epochs, --seed, '0', --attn, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '16', --gpu-memory-utilization, '0.8']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, 10-shot seed 42)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7400
+    path: /home/ben/task/eval/exp-03_ck2817_dev150.json
+  diagnostic:
+    what: "share of completions whose stop_reason is 'stop', plus median completion length (RFT on self-samples should not lengthen or destabilise the output)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.45
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-739, step: 739}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 739}
+  training_summary: {final_loss: 0.239, steps: 739, notes: "1620 s over 47,241 rows, 0 dropped for length; the generation_config fix held - both saves succeeded"}
+  measurements:
+    - {metric: accuracy, value: 0.7533, n: 150, path: /home/ben/task/eval/exp-05_final_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-05_final_diagnostic.json
+    notes: "stop_reason='stop' on 149/150 and missing-marker share 0.007, both unchanged from exp-03: training on self-samples did not destabilise termination. Median completion 424 -> 448 chars, so the output did not collapse to shorter self-similar text either. accuracy_if_truncated_at_first_ANSWER equals accuracy exactly."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "dev-150 0.7533 against exp-03's best 0.7400 (+1.3 pts) and its epoch-2 0.7200 (+3.3 pts). The direction matches the hypothesis and the mechanism checks pass, but +1.3 pts on n=150 is 2 items and 0.37 stderr - this protocol cannot separate it from the comparator, so the verdict is inconclusive at n=150 rather than supported."
+  decision: iterate
+  next_step: "exp-06: the three candidates within 3.3 pts of each other cannot be separated at n=150. Re-score exp-05/final, exp-03/checkpoint-2817 and exp-03/final under one larger protocol (--limit 500, same seed and template) and pick final_model from that."

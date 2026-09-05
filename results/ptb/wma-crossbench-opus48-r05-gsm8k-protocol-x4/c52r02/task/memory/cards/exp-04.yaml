@@ -1,0 +1,98 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T19:04:58Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.3
+  remaining_h: 4.7
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp03/final
+    score: {metric: accuracy, value: 0.4928, protocol_n: 1319}
+  trigger: "exp-03 (gsm8k-train + <<>> kept) is the best model at 0.4928 full-test, but ~80% of its errors are on questions it CAN sometimes solve when sampled. Rejection-sampling fine-tuning (RFT/STaR) can turn those into extra verified-correct, on-distribution training traces."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp03_full.json, locator: "accuracy 0.4928 (n=1319)"}
+    - {path: /home/ben/task/logs/gen_rft.log, locator: "6037/7473 train questions solved by sampling exp-03 (k=4)"}
+  alternatives_rejected:
+    - {option: "more epochs / higher LR on exp-03 data only", reason: "exp-03 loss already 0.34 on 7473 rows; adding epochs risks overfit, not new signal"}
+    - {option: "MetaMath or external augmentation", reason: "off-distribution -> exp-02 showed 100% runaway on the 10-shot eval; RFT stays on-distribution (self-generated, <<>>-style, verified correct)"}
+    - {option: "STaR rationalization (give gold answer, ask model to justify) for the 1436 unsolved questions", reason: "risks unfaithful/hindsight reasoning traces; keep only cleanly sampled correct traces this round"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, gen_rft.py, --model, ckpts/exp03/final, --n, "4", --keep, "2"], outcome: "29892 samples in ~7 min; 6037/7473 questions solved; kept 10946 strict-clean correct traces (single ANSWER, ends <end_of_turn>, 98.7% have <<>>)"}
+    - {command: [python, "-c", "build exp04_train + contamination_check"], outcome: "18419 rows (7473 gold + 10946 RFT); 0 contaminated; max ~522 tok, p99 ~370 tok (fits max_len 768)"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-03 at 0.4928 leaves reasoning headroom: its training set is only the 7473 gold gsm8k-train solutions (one reasoning path each). It has no exposure to the diverse correct solution paths it can itself produce for the same train questions."
+  evidence:
+    - {path: /home/ben/task/eval/exp03_full.json, locator: "accuracy 0.4928", observation: "clean stopping (runaway 1.3%); remaining errors are reasoning/arithmetic"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Full SFT of gemma-3-4b-pt on the 7473 gold gsm8k-train solutions PLUS 10946 verified-correct traces sampled from exp-03 on the same train questions (all <<>>-style, on-distribution) will raise full-test greedy accuracy above exp-03's 0.4928."
+  mechanism: "RFT adds multiple verified-correct reasoning paths per question, densifying the on-distribution solution manifold and reinforcing correct step patterns, which improves generalization to gsm8k test while preserving the stop behavior (all traces end <end_of_turn>)."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +5 pts over 0.4928"
+  falsified_if: "full-test (n=1319) greedy accuracy <= exp-03's 0.4928, or runaway rate rises materially above exp-03's 1.3%"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/exp04_train.jsonl
+      source: "openai/gsm8k (main, train) gold solutions + RFT: verified-correct traces self-sampled from exp-03 (ckpts/exp03/final) on gsm8k train questions"
+      n_examples: 18419
+      built_by: /home/ben/task/gen_rft.py
+      build_command: [python, gen_rft.py, --model, ckpts/exp03/final, --out, data/rft_correct.jsonl, --n, "4", --keep, "2"]
+      selection: "gold: gsm8k train answers, KEEP <<>>, single 'ANSWER: N'+<end_of_turn> (7473). RFT: sample exp-03 (temp 0.8, top_p 0.95, k=4) on gsm8k TRAIN questions; keep only strict-clean completions (exactly one ANSWER line, no restarted problem) whose answer == gold; up to 2 shortest unique per question (10946). Combined + shuffled seed 0."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers.Trainer 4.57.3 (full fine-tune, Gemma3ForCausalLM)
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 3, batch_size: 16, grad_accum: 1, max_seq_len: 768, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "user = MATH_PROMPT_TEMPLATE(question); assistant = '{reasoning_with_<<>>}\\n\\nANSWER: {N}' then <end_of_turn>; completion-only loss; model saved with GREEDY generation_config"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train.py, --data, data/exp04_train.jsonl, --out, ckpts/exp04, --epochs, "3", --lr, "1e-5", --bs, "16", --max_len, "768", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "1319", --max-connections, "32", --gpu-memory-utilization, "0.85", --json-output-file, "{out}"]
+    dev_set: "official gsm8k test --limit 1319 (full)"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.4928
+    path: /home/ben/task/eval/exp03_full.json
+  diagnostic:
+    what: "runaway rate: fraction of eval completions that emit >1 'ANSWER:' or restart a new problem (must stay ~exp-03's 0.013)"
+    n: 1319
+    metric: runaway_rate
+    direction: lower

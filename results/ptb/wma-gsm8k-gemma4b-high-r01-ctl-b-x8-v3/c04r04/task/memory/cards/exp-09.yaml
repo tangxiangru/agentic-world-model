@@ -1,0 +1,112 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-09
+created_at: '2026-09-03T06:20:00Z'
+situation:
+  elapsed_h: 7.25
+  remaining_h: 2.75
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7582, protocol_n: 1319}
+  trigger: "exp-07 measured the one mismatch left: the same weights score 0.800 zero-shot and 0.788 with the grader's 10-shot prefix on the same 500 items. The prefix is not optional at grading time, so the ~1.2 points it costs can only be recovered by training on prompts that carry it."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-07_prefix_probe.json, locator: "ten_shot 0.788, zero_shot 0.800, n=500"}
+    - {path: /home/ben/task/eval/exp-08_final_model_full.json, locator: "accuracy 0.7582 on all 1319 items"}
+  alternatives_rejected:
+    - {option: "Stop after exp-08 and ship", reason: "2.75 h left is enough for a 45-minute run plus a paired check on items never used for selection; the incumbent stays on disk and only loses if the challenger wins"}
+    - {option: "Full prefix-matched retrain from base", reason: "at ~2400 tokens per row that is 6x the cost per row of exp-02 - about 9 h for one epoch of 99k rows"}
+    - {option: "Score the challenger on the same first-500 items used for every earlier decision", reason: "six candidates have now been compared on that slice; the challenger is checked on items 500-1318, which no decision in this batch has touched"}
+  pitfalls_hit:
+    - {what: "at max_len 2560 the 262k-vocab logits force per_device_batch_size down to 2 (bs 8 already OOMed at 768)", cost_h: 0.0, fix: "bs 2 x accum 16, same effective batch 32"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --dry-run, --grader-prefix, --data, data/prefix8k.jsonl, --max-len, '2560'], outcome: "7775 of 8000 rows fit; token len p50 2359 / max 2560; targets still end 'ANSWER: 45' + <end_of_turn>; label tokens p50 156"}
+problem:
+  statement: "Every training prompt in this batch was zero-shot while every graded prompt carries a 1700-token 10-shot system prefix in a different style (raw GSM8K reasoning with calculator annotations). The shipped model is measurably worse in the mode it is graded in than in the mode it was trained in."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-07_prefix_probe.json, locator: "ten_shot 0.788 vs zero_shot 0.800", observation: "1.2-point penalty for the prefix on 500 items, same weights, same greedy decode"}
+    - {path: /home/ben/task/data/omi2_gsm8k.jsonl, locator: "any row", observation: "no system message in any training prompt so far"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "One short SFT stage from the exp-06 soup on 7.8k rows whose prompts carry the grader's exact 10-shot prefix will raise with-prefix accuracy on held-out test items 500-1318 above the incumbent's, measured paired on the same items."
+  mechanism: "The penalty is a prompt-shape mismatch, not missing knowledge: with the prefix present at training time the model learns to read past ten worked examples in a foreign style and answer the last question, which is exactly the shape it is graded in."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: "+1 to +3 points on the with-prefix arm; the zero-shot 0.800 is the floor this should approach"
+  falsified_if: "with-prefix accuracy on items 500-1318 is at or below the incumbent's on the same items"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-06_soup
+    origin: exp-06
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/prefix8k.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, gsm8k-derived rows unused by exp-02 and exp-04"
+      n_examples: 8000
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/omi2_gsm8k_200k.jsonl, --max-per-problem-aug, '2', --max-per-problem-orig, '6', --max-rows, '220000']
+      selection: "rows of the 175k build absent from both earlier training files; first 8000 after shuffle seed 1. Prompts are rendered at training time with the grader's 10-shot system message, built from the GSM8K *train* split (shuffle seed 42, first 10) exactly as inspect_evals.gsm8k builds it. No test item is used."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom completion-only collator (train_sft.py --grader-prefix)"
+    peft: none
+    hyperparams: {lr: 3.0e-6, epochs: 1.0, batch_size: 2, grad_accum: 16, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights, bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "unchanged: solution body, final line 'ANSWER: <n>', then <end_of_turn>; only the prompt changes, gaining the 10-shot system prefix"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/prefix8k.jsonl, --model, /home/ben/task/ckpts/exp-06_soup, --output-dir, /home/ben/task/ckpts/exp-09, --grader-prefix, --max-len, '2560', --bs, '2', --accum, '16', --lr, '3e-6', --epochs, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-09.log
+  output_dir: /home/ben/task/ckpts/exp-09
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+evaluation:
+  protocol:
+    command: [python, probe_prefix.py, --model, '{checkpoint}', --n, '819', --offset, '500', --arms, ten_shot]
+    dev_set: "official gsm8k test items 500-1318 (held out from every model-selection decision in this batch), with the grader's 10-shot prefix, greedy, scored by the grader's last-number rule"
+    n: 819
+    seed: 0
+  comparator:
+    ref: exp-06
+    value: null
+    path: null
+  diagnostic:
+    what: "paired discordant counts between challenger and incumbent on the same 819 items"
+    n: 819
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.35
+  output_checkpoint: /home/ben/task/ckpts/exp-09/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-09/final, step: 243}
+    - {path: /home/ben/task/ckpts/exp-09/final_greedy, step: 243}
+  training_summary: {final_loss: 0.2367, steps: 243, notes: "second attempt; the first ran all 243 steps and then died in save_model on the parent's greedy generation_config, losing 0.65 h and the weights (no intermediate checkpoints were configured). 9.4 s/step at 2560 tokens, bs 2 x accum 16."}
+  measurements:
+    - {metric: accuracy, value: 0.7399, n: 819, path: /home/ben/task/analysis/exp-09_probe_holdout.json, delta_vs_comparator: -0.0098}
+  diagnostic_result:
+    value: -8.0
+    path: /home/ben/task/analysis/exp-09_paired_holdout.json
+    notes: "paired on the same 819 held-out items under the same probe: incumbent 0.7497, challenger 0.7399; 60 items only the incumbent gets, 52 only the challenger, 112 discordant, sd 5.29 items - the challenger is 1.5 sigma behind, i.e. no gain and possibly a small loss."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Training on prompts that carry the grader's 10-shot prefix did not recover the 1.2 points exp-07 measured: on 819 items never used for selection the challenger scores 0.7399 against the incumbent's 0.7497, 8 items behind on a paired sd of 5.3. The prefix penalty is not a fixable prompt-shape mismatch, or 7.8k rows at lr 3e-6 is too small a stage to fix it."
+  decision: reject
+  next_step: "Ship the exp-06 soup unchanged (already in final_model, verified in exp-08 at 0.7582 on all 1319 items). If this line were continued, the next test would be whether the penalty is the prefix's *style* (raw GSM8K reasoning with calculator annotations) rather than its presence."

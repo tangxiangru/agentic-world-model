@@ -1,0 +1,130 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T00:16:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.2
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Session start: no measured score exists for the immutable base checkpoint under the harness protocol, so no later card can have a comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty table - no cards yet"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and train immediately", reason: "every later card needs a comparator measured under the same protocol (pitfall comparator_protocol_mismatch); 20 min now buys that"}
+    - {option: "Use the published gemma-3-4b-pt GSM8K number from the model card", reason: "different prompt, different decoding, not measured under this harness"}
+    - {option: "Measure only the snapshot's shipped decode config (do_sample true, top_k 64, top_p 0.95)", reason: "WMA precondition 1: that makes the comparator one sampled draw with a 3-4 pp floor. Both arms are measured instead - greedy is the comparator, sampled is the diagnostic"}
+    - {option: "Keep --max-connections 32 / --gpu-memory-utilization 0.3", reason: "WMA precondition 2: 32 is 16x the script default and the corpus has a garbage-prefix/EngineDeadError failure at high concurrency with a small KV cache. Fixed for the whole session at 8 connections with gpu-memory-utilization 0.85"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The starting checkpoint is a pretrained (non-instruction-tuned) 4B model. Under the harness prompt it is expected to continue text rather than reliably terminate right after a single 'ANSWER: N' line, but the size of that gap is unmeasured."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L27-35, L50-66", observation: "grader wraps each question in a 10-shot system message plus a template demanding a final 'ANSWER: $ANSWER' line"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py, locator: "match_str location=end numeric=True", observation: "only the LAST number in the completion is compared to gold; trailing text containing numbers breaks the match"}
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json, locator: "whole file", observation: "ships do_sample true, top_k 64, top_p 0.95, no temperature -> vLLM decodes by sampling at temp 1.0 unless the model dir says otherwise (WMA precondition 1, checked before launch)"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe250.jsonl
+    n: 250
+    selection: "last 250 items of the GSM8K *train* split (indices 7223-7472), held out from every training file; no benchmark test item is in it"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Measuring the untrained base checkpoint under the fixed harness protocol (n=250, greedy decoding) yields a floor accuracy plus a per-sample log that shows which failure mode dominates (missing terminator, runaway continuation, or wrong final number)."
+  mechanism: "The 10-shot prefix gives the base model the output shape, so the floor should be well above zero but limited by arithmetic errors and by text continuing past the answer line; greedy decoding removes the sampling noise that would otherwise widen every later comparison."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "floor measurement; no delta expected. Prior on the floor: 0.10-0.45"
+  falsified_if: "the eval does not produce a scored log for 250 items (crash, OOM, or template failure), or the completions show the high-concurrency garbage-prefix signature, so no usable comparator exists"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/models/base_greedy
+    origin: base_model
+    hash: "weights are symlinks to snapshot cc012e0a6d0787b4adcc0fa2c4da74402494554d; only generation_config.json differs (greedy)"
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe250.jsonl
+      source: "openai/gsm8k (train split, rev 740312ad) - held-out probe, NOT training data; this card trains nothing"
+      n_examples: 250
+      built_by: /home/ben/task/build_probe.py
+      build_command: [python, build_probe.py]
+      selection: "last 250 train items; excluded from every training file built later"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect-ai + vllm 0.11.0 (evaluation only, no weight update)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - evaluation only"
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/models/base_greedy, --limit, '250', --max-connections, '8', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-01_base_greedy_n250.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/eval/logs/exp-01_base_greedy}
+    log: /home/ben/task/logs/exp-01_base_greedy_eval.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '250', --max-connections, '8', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split --limit 250 (first 250 items, no shuffle); every model dir decodes greedily via its own generation_config.json"
+    n: 250
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "from the inspect per-sample log: share of completions ending in an 'ANSWER: N' line, share hitting the 4000-token cap, share with the high-concurrency garbage prefix ('!!!!'); plus the same eval on the snapshot's shipped sampled decode config to size the decode effect"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.45
+  output_checkpoint: /home/ben/task/models/base_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/models/base_greedy, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no weight update; evaluation-only card"}
+  measurements:
+    - {metric: accuracy, value: 0.028, n: 250, path: /home/ben/task/eval/exp-01_base_greedy_n250.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.292
+    path: /home/ben/task/analysis/exp-01_diag.json
+    notes: "250/250 completions hit the 4000-token cap (stop_reason max_tokens for every single item); 0 end in an 'ANSWER: N' line; 0 show the '!!!!' concurrency-garbage prefix, so --max-connections 8 is clean. The FIRST 'ANSWER:' the model writes is correct on 73/250 = 0.292: the model solves ~29% of the problems and then keeps generating a new problem and degenerates into token loops, so the last-number matcher reads the garbage tail. Resolved n = 250, no dropped or errored samples."
+  watch_set_result:
+    fixed: 0
+    still_failing: 245
+    regressions: 0
+    path: /home/ben/task/analysis/exp-01_probe_base_summary.json
+    notes: "probe250 (held-out GSM8K train items, greedy, 10-shot, max_tokens 768): 0.020 - the same floor as the official read, so the probe is a usable cheap proxy"
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base gemma-3-4b-pt scores 0.028 on the harness (n=250, greedy). The binding constraint is not math: it never emits <end_of_turn>, so 100% of completions run to the 4000-token cap and the last-number matcher reads a degenerate tail. Its first ANSWER line is already right 29.2% of the time."
+  decision: adopt
+  next_step: "exp-02: full-parameter SFT on 51.5k GSM8K-style CoT targets that end with 'ANSWER: N' + <end_of_turn>, so the model terminates; the 0.292-vs-0.028 gap is the free part of the gain."

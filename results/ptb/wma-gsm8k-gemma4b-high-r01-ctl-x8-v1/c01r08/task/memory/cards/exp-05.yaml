@@ -1,0 +1,242 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T18:45:43Z'
+situation:
+  elapsed_h: 4.85
+  remaining_h: 5.15
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score:
+      metric: accuracy
+      value: 0.76
+      protocol_n: 150
+  trigger: 'The sampling run for this card measured the incumbent''s own competence: over 27163 training problems at temperature 1.0, 73.6% of individual samples are right but 91.7% of problems are solved by at least one of four. The 18-point gap between pass@1 and pass@4 is ability the greedy decoder does not reach.'
+  trigger_evidence:
+  - path: /home/ben/task/analysis/rft_v1_stats.json
+    locator: pass_rate 0.7361, solve_rate 0.9169 over 27163 problems
+  - path: /home/ben/task/eval/exp-04_greedy_dev150.json
+    locator: accuracy 0.76
+  - path: /home/ben/task/analysis/exp-03_taxonomy.json
+    locator: 47 wrong_number failures after 113k extra supervised problems
+  alternatives_rejected:
+  - option: a third supervised data round
+    reason: exp-03 spent 1.9 GPU-hours on 113k further problems and moved dev-150 by -0.7 points; the off-policy data lever is measured flat
+  - option: pure RFT with no supervised anchor
+    reason: training only on the model's own outputs narrows the output distribution; 15k held-back supervised rows (31% of the mix) cost nothing and keep an off-policy signal in the gradient
+  - option: DPO on correct/incorrect pairs from the same sampling run
+    reason: the sampling data supports it, but a preference run is a new loss, a new set of failure modes and no measured baseline, with 5 hours left and a working SFT path; RFT reuses the pipeline already validated three times
+  - option: start from exp-03/final instead
+    reason: exp-02 leads under the scoring protocol (0.760 vs 0.740 greedy at n=150) while the n=300 probe has exp-03 marginally ahead (0.813 vs 0.800); the two are indistinguishable, so the tie goes to the one measured better under the protocol that decides
+  pitfalls_hit:
+  - what: vLLM expands SamplingParams(n=4) into 4x the prompt count, so the progress bar reads 108652 rather than 27163 - looked like a 4x overrun until checked
+    cost_h: 0.0
+    fix: none needed; 8.2k output tok/s, 34 minutes for the whole sampling run
+  smoke_runs:
+  - command:
+    - python
+    - ../contamination_check.py
+    - --reference
+    - ../test_data.json
+    - --input
+    - data/rft_mix_v1_forcheck.jsonl
+    outcome: 48558 documents scanned, 0 contaminated
+  - command:
+    - python
+    - -c
+    - validate rft_mix_v1 rows
+    outcome: 0 of 48558 rows malformed; 3885 carry the grader's 10-shot prefix
+problem:
+  statement: 'The incumbent''s residual failures are all wrong_number: a well-formed chain of thought that reaches a wrong value. Its own sampling statistics say most of those problems are inside its reach - it solves 91.7% of training problems in at least one of four samples but only 73.6% per sample - so the deficit is that its single greedy trajectory is not reliably the correct one. Off-policy supervised data has already been shown not to move this (exp-03).'
+  evidence:
+  - path: /home/ben/task/analysis/rft_v1_stats.json
+    locator: pass_rate vs solve_rate
+    observation: '0.7361 per-sample against 0.9169 per-problem over 27163 problems: an 18-point reachable gap'
+  - path: /home/ben/task/analysis/exp-02_taxonomy.json
+    locator: tally
+    observation: 46/46 failures are wrong_number; no format failure remains
+  - path: /home/ben/task/eval/exp-03_final_dev150.json
+    locator: accuracy 0.68667
+    observation: 113k more off-policy problems left the wrong_number count at 47
+  affected_share: 0.24
+  failure_examples:
+  - id: exp-04 greedy dev-150 residual
+    source: /home/ben/task/eval/exp-04_greedy_dev150.json
+    question: (official gsm8k test items - rule 7, text not reproduced)
+    gold: various
+    model_output: 'well-formed chain ending in ''ANSWER: n'' with n wrong'
+    failure: 36 of 150 items wrong under greedy decoding
+  - id: rft sampling, unsolved problems
+    source: /home/ben/task/analysis/rft_v1_stats.json
+    question: (training problems, not benchmark items)
+    gold: various
+    model_output: 0 of 4 samples correct
+    failure: 2256 of 27163 problems out of reach even at pass@4 - the part RFT cannot fix
+  - id: rft sampling, partially solved problems
+    source: /home/ben/task/analysis/rft_v1_stats.json
+    question: (training problems, not benchmark items)
+    gold: various
+    model_output: 1-3 of 4 samples correct
+    failure: 'the class this card targets: reachable but unreliable'
+  watch_set:
+    path: /home/ben/task/data/dev_train300.jsonl
+    n: 300
+    selection: 300 GSM8K TRAIN items (idx 7173-7472), held out of every training file including the RFT sampling problem list, disjoint from the grader's 10 few-shot exemplars, contamination-checked clean. No benchmark test item is used.
+hypothesis:
+  claim: Fine-tuning exp-02's checkpoint on its own answer-verified samples (33558 rows from 24907 solved training problems, mixed with 15000 held-back supervised rows) will raise greedy dev-150 accuracy above the incumbent's 0.760.
+  mechanism: Rejection sampling keeps only trajectories that reached the right answer, so the gradient upweights the reasoning paths the model already produces successfully and downweights the ones that lead it astray. That concentrates probability mass on correct trajectories, which is exactly what a single greedy decode needs; it converts part of the pass@4-minus-pass@1 gap into pass@1. Problems solved 4/4 contribute one row and partially-solved problems two, so the mix is tilted toward the reachable-but-unreliable class.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: +1 to +4 points; RFT's published gains are largest from weaker SFT baselines than this one
+  falsified_if: greedy dev-150 accuracy is at or below 0.760, or the probe on the 300 held-out train items falls below exp-02's greedy_few 0.800.
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/rft_mix_v1.jsonl
+    source: synthetic:self (ckpts/exp-02/final) + derived:exp-03 supervised anchor
+    n_examples: 48558
+    built_by: /home/ben/task/scripts/rft_sample.py
+    build_command:
+    - python
+    - scripts/rft_sample.py
+    - --model
+    - ckpts/exp-02/final
+    - --out
+    - data/rft_v1.jsonl
+    - --n-gsm-train
+    - '7163'
+    - --n-omi
+    - '20000'
+    - --k
+    - '4'
+    - --keep-per-problem
+    - '2'
+    - --temperature
+    - '1.0'
+    - --top-p
+    - '0.95'
+    - --max-tokens
+    - '640'
+    - --seed
+    - '0'
+    selection: '33558 self-samples: 4 draws at temperature 1.0 / top_p 0.95 for each of 27163 problems (all 7163 usable GSM8K TRAIN items plus 20000 OpenMathInstruct-2 gsm8k-flavoured problems; the 300 probe items and the grader''s 10 few-shot exemplars are excluded from the problem list). A sample is kept only if it terminated on <end_of_turn>, contains ''ANSWER: '' exactly once, and its final number matches the gold answer under the scorer replica. Duplicates removed; one row kept for a problem solved 4/4, two for a partially solved one. 8% re-rendered with the grader''s 10-shot prefix. Plus 15000 rows drawn from data/sft_v3.jsonl as an off-policy anchor, none of which exp-02 has seen.'
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: rft
+    framework: custom loop on transformers 4.57.3 + bitsandbytes 0.49.1 AdamW8bit
+    peft: none
+    hyperparams:
+      lr: 5.0e-06
+      epochs: 1.0
+      batch_size: 65536
+      grad_accum: 8
+      max_seq_len: 3328
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: fp32 master weights, bf16 autocast, 8-bit AdamW
+      seed: 2
+    target_format: 'chain of thought, blank line, then a single final line ''ANSWER: <number>'', then <end_of_turn>. Prompt tokens masked to -100; completion-only loss.'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - scripts/train_sft.py
+    - --data
+    - data/rft_mix_v1.jsonl
+    - --out
+    - ckpts/exp-05
+    - --init
+    - ckpts/exp-02/final
+    - --lr
+    - 5e-6
+    - --epochs
+    - '1'
+    - --token-budget
+    - '8192'
+    - --tokens-per-step
+    - '65536'
+    - --max-seq-len
+    - '3328'
+    - --seed
+    - '2'
+    - --save-frac
+    - '0.5'
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.7
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '150'
+    - --max-connections
+    - '16'
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.76
+    path: /home/ben/task/eval/exp-04_greedy_dev150.json
+  diagnostic:
+    what: scripts/probe.py greedy_few and greedy_zero on the 300 held-out GSM8K-train items, against exp-02's 0.800 / 0.797, plus the failure taxonomy to confirm no format regression
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.5
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-05/step203
+    step: 203
+  - path: /home/ben/task/ckpts/exp-05/final
+    step: 406
+  training_summary:
+    final_loss: 0.246
+    steps: 406
+    notes: 20.6M tokens over 48558 rows, 9.5k tok/s, 63.8GB peak, 0.72h of training. The first attempt completed the epoch and then died in save_pretrained (see failure); the run was repeated verbatim after repairing the parent's generation_config.json, costing 0.75h.
+  measurements:
+  - metric: accuracy
+    value: 0.76667
+    n: 150
+    path: /home/ben/task/eval/exp-05_greedy_dev150.json
+    delta_vs_comparator: 0.00667
+  diagnostic_result:
+    value: 0.7966666666666666
+    path: /home/ben/task/analysis/probe_exp05.json
+    notes: 'probe n=300 held-out gsm8k-train items: greedy_few 0.7967 (exp-02 0.8000, exp-03 0.8133), greedy_zero 0.8300 (exp-02 0.7967, exp-03 0.8267). Taxonomy on the dev-150 log: 115 correct, 33 wrong_number, 2 no_stop. Two non-terminating completions reappeared where exp-02 and exp-03 had none - a small format regression from training on the model''s own samples.'
+  watch_set_result:
+    fixed: null
+    still_failing: 61
+    regressions: null
+    path: /home/ben/task/analysis/probe_exp05.json
+  failure: 'First attempt: ValueError: GenerationConfig is invalid: `temperature`: `do_sample` is set to `False`. However, `temperature` is set to `0.0`. Cause: exp-04''s greedy variant was created with `cp -al` (hardlinks) and the greedy generation_config.json was then written in place, which rewrote the same inode inside ckpts/exp-02/final. The training run loaded that parent, inherited the invalid config, finished the epoch and then failed both saves. No weights survived; re-run verbatim after restoring the parent''s file.'
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: 'Greedy dev-150 0.760 -> 0.767 (+0.7 points, standard error 3.5) and probe greedy_few 0.800 -> 0.797. The pre-registered falsification clause on the probe fired. Honestly read, both deltas sit inside the noise band: one round of rejection-sampling fine-tuning on 33.5k self-verified samples produced no measurable change, and it reintroduced 2 non-terminating completions. The pass@4-minus-pass@1 gap did not convert into pass@1 at this scale.'
+  decision: iterate
+  next_step: 'exp-06: three candidates are now indistinguishable at n=150 (exp-02+greedy 0.760, exp-03+greedy 0.740, exp-05+greedy 0.767) and a uniform soup of the three is built. Decide what ships with a single larger protocol (n=500, a strict superset of the 150) scored identically for every arm, rather than picking on noise.'

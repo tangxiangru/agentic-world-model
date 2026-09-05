@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T14:37:57Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.85
+  remaining_h: 9.15
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp-01/final
+    score: {metric: accuracy, value: 0.5333, protocol_n: 150}
+  trigger: "exp-01 (GSM8K-train only, 7.4k) reached 0.533 dev-150 with monotonic gains across epochs; data volume/diversity is the obvious next lever."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp01_ep3_dev150.json, locator: "accuracy 0.5333"}
+  alternatives_rejected:
+    - {option: "more epochs on the 7.4k GSM8K-train set", reason: "loss already ~0.22 at epoch 3; extra epochs risk memorization without new problem coverage"}
+    - {option: "include MetaMathQA MATH_* types", reason: "MATH answers are non-numeric (\\sqrt{5}, \\boxed{}) and off-distribution for the numeric gsm8k grader; would add noise"}
+    - {option: "include GSM_SV / GSM_FOBAR (backward/self-verify)", reason: "different question framing than GSM8K test; keep only forward AnsAug+Rephrased to match test distribution"}
+    - {option: "RFT/self-distillation from exp-01", reason: "reuses the same 7.4k questions; less new coverage than MetaMathQA's rephrasings; hold as a later step"}
+  pitfalls_hit:
+    - {what: "MetaMathQA GSM responses carry BOTH '#### N' and 'The answer is: N' (double_answer_format)", cost_h: 0.0, fix: "strip both markers and emit exactly one 'ANSWER: N'; verified 0 leftovers in samples"}
+  smoke_runs:
+    - {command: [python, scripts/build_meta.py], outcome: "gsm=7473 meta=48000 total=55473; single ANSWER marker; contamination check 0 flagged exit 0; token max 751 p99 461, 0 rows > 768"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-01 generalizes from only 7.4k GSM8K-train problems; many GSM8K test problem phrasings/structures are unseen, capping accuracy at 0.533."
+  evidence:
+    - {path: /home/ben/task/eval/exp01_ep3_dev150.json, locator: "accuracy 0.5333", observation: "incumbent ceiling with GSM8K-train-only SFT"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Full SFT from the base snapshot on GSM8K-train + a 48k forward-style MetaMathQA GSM subset (single ANSWER marker, decontaminated) will raise dev-150 accuracy above exp-01's 0.533."
+  mechanism: "MetaMathQA's rephrasings and answer-augmentations expose the model to far more grade-school problem structures and correct solution paths in the grader's exact format, improving coverage of unseen test phrasings."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: "+3 to +10 pts on dev-150"
+  falsified_if: "best trained checkpoint dev-150 accuracy is not higher than exp-01's 0.533 under the same protocol"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/train_meta_messages.jsonl
+      source: "openai/gsm8k (main/train) + meta-math/MetaMathQA (GSM_AnsAug, GSM_Rephrased)"
+      n_examples: 55473
+      built_by: /home/ben/task/scripts/build_meta.py
+      build_command: [python, scripts/build_meta.py]
+      selection: "GSM8K train (7473) + 48000 forward GSM MetaMath rows; strip <<..>>, '#### N' and 'The answer is: N'; single 'ANSWER: N'; numeric answers only"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3"
+    peft: "none (full FT; vision tower + projector frozen)"
+    hyperparams: {lr: 2.0e-5, epochs: 3, batch_size: 8, grad_accum: 4, max_seq_len: 768, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "clean CoT then '\\n\\nANSWER: <N>', rendered via templates/gemma3.jinja so the assistant turn ends with <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/train_meta_messages.jsonl, --out, ckpts/exp-02, --epochs, "3", --lr, "2e-5", --bs, "8", --grad_accum, "4", --max_seq_len, "768", --seed, "0", --save_strategy, epoch]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    configs: []
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --gpu-memory-utilization, "0.6", --max-connections, "8", --json-output-file, "{out}.json"]
+    dev_set: "official gsm8k test --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.5333
+    path: /home/ben/task/eval/exp01_ep3_dev150.json
+  diagnostic:
+    what: "does the larger, more diverse dataset raise accuracy over GSM8K-train-only SFT"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.4
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1734, step: 1734}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-3468, step: 3468}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 5202}
+  training_summary: {final_loss: 0.22, steps: 5202, notes: "3 epochs on 55473 rows (GSM8K-train + 48k MetaMath GSM forward), bs8 x ga4, max_seq_len 768; training converged normally"}
+  measurements:
+    - {metric: accuracy, value: 0.0667, n: 150, path: /home/ben/task/eval/exp02_ep3_dev150.json, delta_vs_comparator: -0.4666}
+    - {metric: accuracy, value: 0.06, n: 150, path: /home/ben/task/eval/exp02_ep2_dev150.json, delta_vs_comparator: -0.4733}
+    - {metric: accuracy, value: 0.02, n: 150, path: /home/ben/task/eval/exp02_ep1_dev150.json, delta_vs_comparator: -0.5133}
+  diagnostic_result: {value: 0.0667, path: /home/ben/task/eval/exp02_ep3_dev150.json, notes: "collapse is a STOPPING failure, not a reasoning failure: eval-log inspection shows correct first answers; the model continues generating additional problems/answers under the grader's 10-shot in-context list, so match(numeric,end) reads a later wrong number. Confirmed with deterministic zero-shot vs 10-shot generation tests."}
+  watch_set_result: {fixed: 0, still_failing: 0, regressions: 0, path: /home/ben/task/eval/exp02_ep3_dev150.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: |
+    MetaMath augmentation did NOT raise accuracy; dev-150 collapsed to 0.067 (vs exp-01 0.5333). Root cause
+    is not coverage but stopping: MetaMath-heavy training made the model mimic the in-context problem list and
+    fail to emit <end_of_turn> after its (correct) first answer, so the end-anchored numeric grader scores a later
+    wrong number. The coverage hypothesis is untestable until stopping is fixed.
+  decision: iterate
+  next_step: "exp-03: continue SFT from exp-02/final on few-shot-CONTEXT data (exemplar prefix in grader format, target ends after one answer) to restore stopping while preserving reasoning. Keep exp-01 as final_model until beaten."

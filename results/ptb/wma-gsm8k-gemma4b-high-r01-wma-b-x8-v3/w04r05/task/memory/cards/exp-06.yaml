@@ -1,0 +1,140 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T04:06:15Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.9
+  remaining_h: 4.1
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.712, protocol_n: 500}
+  trigger: "exp-05 confirmed at n=500 that RFT is the lever still paying (+3.8, McNemar z=2.11), but exp-04's corpus mined only 40000 of the 70331 pool problems at n=4 and mined nothing at all from the 5353 that round 1 never solved. Sampling the rest from the stronger exp-04/final now yields 88571 verified on-policy rows instead of 48186."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-05_paired.json, locator: "delta=0.038, mcnemar_z=2.11, exp04_fixes=50, exp04_breaks=31"}
+    - {path: /home/ben/task/analysis/rft_stats_v2.json, locator: "rft_rows=88571 against exp-04's 48186; pass_count_histogram now has 284 problems solved 5-8 times out of 8"}
+    - {path: /home/ben/task/logs/rft_sample_r2.log, locator: "first_sample_accuracy 0.1593 on the 5353 previously-unsolved problems", observation: "exp-04/final solves 16% of what exp-02/final never solved once in 4 tries - those problems now contribute rows"}
+  alternatives_rejected:
+    - {option: "Continue from ckpts/exp-04/final instead of exp-02/final", reason: "that stacks a third sequential fine-tune and re-trains exp-04 on its own outputs, the classic self-distillation collapse; one clean RFT pass from exp-02/final over the full pool is the same idea with a fresh cosine schedule and keeps the comparison against exp-04 to a single variable - corpus size"}
+    - {option: "Fresh run from base on sft_v1 + all RFT rows (~235k rows)", reason: "~3.1 h against 4.1 h left, with no eval margin; exp-02's own trajectory was flat from step 1000, so a longer from-base run has no evidence behind it"}
+    - {option: "DPO on the 11641 problems still unsolved", reason: "no correct chain exists for them, so there is no chosen response to prefer; they are outside what any self-generated method can teach in the time left"}
+    - {option: "Stop here and ship exp-04/final", reason: "4.1 h remain and final_model already holds exp-04/final as a measured fallback, so the downside of trying is bounded by the eval time, not by the model"}
+  pitfalls_hit:
+    - {what: "a parent saved by save_full carries do_sample:false with temperature:0.0, and transformers' GenerationConfig.save_pretrained raises ValueError on that pair - a run whose --parent is such a checkpoint would train a full epoch and then die at save", cost_h: 0.0, fix: "train_sft.py now resets model.generation_config to a serialisable one right after loading; save_full still overwrites the file with the greedy JSON. This card's parent (exp-02/final) predates the temperature key, so it was never exposed, but exp-04/final would have been."}
+    - {what: "build_rft.py read a single samples file, but round 2 produced two", cost_h: 0.0, fix: "--samples now takes nargs='+' and the three files are merged in one pass"}
+  smoke_runs:
+    - {command: [python, scripts/build_rft.py, --samples, data/rft_samples.jsonl, data/rft_samples_r2a.jsonl, data/rft_samples_r2b.jsonl, --out, data/rft_v2.jsonl, --anchor, data/sft_v1.jsonl, --n-anchor, '24000', --seed, '1'], outcome: "88571 RFT rows + 24000 anchor = 112571; mix pass1 9967 / pass2 21001 / pass3 28403 / pass4 28916 / pass5-8 284"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/rft_v2_docs.jsonl], outcome: "112571 documents scanned, 0 contaminated, 0 matches"}
+    - {command: [python, scripts/vllm_gen.py, --model, ckpts/exp-04/final, --input, data/rft_pool_hard.jsonl, --n, '8', --temperature, '1.0'], outcome: "0.159 first-sample accuracy on 5353 problems exp-02/final never solved; the hard tail is partially reachable now"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent's RFT corpus is undersized and blind to its own hard tail. It covers 40000 of 70331 available problems, keeps at most 2 solutions each, and contains zero rows for the 5353 problems the sampling model could not solve - which are exactly the problems the incumbent still gets wrong."
+  evidence:
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "problems_sampled=40000 of the 70331 in data/rft_pool.jsonl; pass_count_histogram['0']=5426", observation: "43% of the pool was never sampled and the unsolved 5426 contributed nothing"}
+    - {path: /home/ben/task/analysis/exp-04_watch.json, locator: "still_failing=110 of 500", observation: "the incumbent still misses 22% of held-out train problems"}
+    - {path: /home/ben/task/analysis/exp-05_paired.json, locator: "exp04_breaks=31", observation: "even the winning model breaks 31 items the previous one got right, so the update is still noisy enough to have room"}
+  affected_share: 0.43
+  failure_examples:
+    - {id: pool-uncovered, source: /home/ben/task/analysis/rft_stats.json, question: "(aggregate over 30331 problems)", gold: "n/a", model_output: "never sampled in round 1", failure: "no training signal from 43% of the available problems"}
+    - {id: hard-tail-r1, source: /home/ben/task/analysis/rft_stats.json, question: "(aggregate over 5426 problems)", gold: "n/a", model_output: "0 of 4 correct from exp-02/final", failure: "contributed no rows to exp-04's corpus"}
+    - {id: hard-tail-r2, source: /home/ben/task/logs/rft_sample_r2.log, question: "(the 5353 of those re-sampled at n=8 from exp-04/final)", gold: "n/a", model_output: "first-sample accuracy 0.159; 284 of them now solved 5-8 times out of 8", failure: "reachable but previously unmined"}
+    - {id: watch-residual, source: /home/ben/task/analysis/exp-04_watch.json, question: "(aggregate over 500 held-out train problems)", gold: "n/a", model_output: "110 still wrong under greedy", failure: "the residual this card tries to cut"}
+  watch_set:
+    path: /home/ben/task/data/dev_train500.jsonl
+    n: 500
+    selection: "the same 500 held-out gsm8k-train problems used since exp-02; exp-02/final 0.690, exp-04/final 0.718"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "One RFT pass from ckpts/exp-02/final over 88,571 verified self-generated solutions covering all 70,331 pool problems - including 284 from the hard tail that only the stronger model could solve - scores higher at --limit 500 than exp-04/final's 0.712, which used 48,186 rows over 40,000 problems."
+  mechanism: "RFT's gain scales with how much of the problem space the verified corpus covers: each additional distinct problem with a correct chain is an extra region where the model's first sample is pulled toward a chain it can already produce. Round 2 nearly doubles the rows and covers 76% more distinct problems, and the hard-tail rows are the only training signal in this batch for problems the previous sampler could not reach at all. Starting from exp-02/final rather than exp-04/final keeps the update one step off-policy at most and avoids re-training a model on its own outputs."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+1 to +3 points at n=500; smaller than round 1's +3.8 because the first 48k rows already captured the easy majority of the effect"}
+  falsified_if: "n=500 accuracy is at or below exp-04/final's 0.712, or the held-out train probe is at or below its 0.718"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v2.jsonl
+      source: "synthetic:self - ckpts/exp-02/final at T=1.0 top_p=0.95 n=4 over 40000 pool problems (round 1) plus ckpts/exp-04/final at T=1.0 top_p=0.95 n=4 over the remaining 30331 and n=8 over the 5353 round 1 never solved - plus 24000 anchor rows from data/sft_v1.jsonl"
+      n_examples: 112571
+      built_by: /home/ben/task/scripts/build_rft.py
+      build_command: [python, scripts/build_rft.py, --samples, data/rft_samples.jsonl, data/rft_samples_r2a.jsonl, data/rft_samples_r2b.jsonl, --out, data/rft_v2.jsonl, --stats-out, analysis/rft_stats_v2.json, --anchor, data/sft_v1.jsonl, --n-anchor, '24000', --seed, '1']
+      selection: "keep only samples the grader would score correct AND that finished on a stop token; 1 solution per problem when 4 or more samples were correct, 2 when fewer; deduped on the sequence of numbers the solution computes, preferring the shortest. Questions are the 70331 distinct OMI-2 gsm8k-derived problems with integer answers in data/rft_pool.jsonl, with dev_train500 excluded throughout. 15% of rows carry a k-shot system prefix (k~U{2,8}) built from gsm8k train gold."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE"
+    peft: "none"
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 24, grad_accum: 3, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02 and exp-04: prompt from scripts/common.render_prompt (byte-for-byte templates/gemma3.jinja), loss on the completion only, target '<self-generated chain>\\n\\nANSWER: <int><end_of_turn>\\n'. Rows over 2048 tokens are dropped, never truncated."
+    stop_token: "<end_of_turn>"
+    answer_marker: null
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_v2.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-06, --bs, '24', --grad-accum, '3', --lr, '7e-6', --epochs, '1', --max-seq-len, '2048', --save-steps, '800', --attn, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 800
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 500 (inspect_evals/gsm8k test split, first 500 in dataset order, 10-shot with fewshot_seed=42)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.712
+    path: /home/ben/task/eval/exp04_final_dev500.json
+  diagnostic:
+    what: "greedy accuracy on the 500 held-out gsm8k-train problems (scripts/vllm_gen.py --temperature 0.0 --fewshot); exp-02/final 0.690, exp-04/final 0.718. Read this first - it costs 90 seconds against the official eval's 13 minutes."
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.47
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 1557}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-800, step: 800}
+  training_summary:
+    final_loss: 0.2483
+    steps: 1557
+    notes: "112071 of 112571 rows kept (500 dropped over 2048 tokens, 0.44%); total_flos 1.12e18; the generation_config reset added to train_sft.py worked - final/ shipped temperature 0.0 with no save-time error"
+  measurements:
+    - {metric: accuracy, value: 0.718, n: 500, path: /home/ben/task/eval/exp06_final_dev500.json, delta_vs_comparator: 0.006}
+  diagnostic_result:
+    value: 0.702
+    path: /home/ben/task/analysis/exp-06_watch.json
+    notes: "held-out train probe 0.718 (exp-04) -> 0.702, i.e. DOWN 1.6 where the card predicted up. On the official n=500 it is 0.712 -> 0.718, up 0.6. Paired on the same 500 graded items: 30 fixed, 27 broken, McNemar z=0.40 (analysis/exp-06_paired.json). The two models are indistinguishable."
+  watch_set_result:
+    fixed: 30
+    still_failing: 111
+    regressions: 38
+    path: /home/ben/task/analysis/exp-06_watch.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Nearly doubling the verified RFT corpus (48186 -> 88571 rows, 40000 -> 70331 distinct problems, plus 284 hard-tail problems only the stronger sampler could solve) produced no measurable gain: official n=500 0.712 -> 0.718 (McNemar z=0.40 on 57 discordant items) and the held-out train probe 0.718 -> 0.702. The card's falsified_if is met on the probe."
+  decision: reject
+  next_step: "RFT's return is exhausted at this scale: round 1 bought +3.8 at n=500, round 2 bought nothing from twice the data. The corpus-coverage mechanism is wrong - what round 1 captured was the on-policy correction itself, not a per-problem effect that scales with how many problems are covered. exp-04/final stays the incumbent under exp-05's pre-registered rule (a difference under one paired SE is broken by the held-out probe, which favours exp-04 by 1.6). exp-07 tries the one combination not yet tested: a weight average of exp-04/final and exp-06/final, two RFT endpoints trained independently from the same exp-02 parent, which is a different mechanism from more data."

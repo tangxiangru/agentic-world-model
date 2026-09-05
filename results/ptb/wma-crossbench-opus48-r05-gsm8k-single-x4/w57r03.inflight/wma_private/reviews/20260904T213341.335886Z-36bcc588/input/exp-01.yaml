@@ -1,0 +1,96 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T21:20:16Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.25
+  remaining_h: 9.75
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0533, protocol_n: 150}
+  trigger: "Base gemma-3-4b-pt is pretrained (not instruction-tuned); under the fixed 10-shot GSM8K grader it does not reliably stop after the answer (generations run to max_tokens=4000, eval very slow), the classic base-model floor."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/base_dev150.log, locator: "requests take full max_tokens; ~5 req/min at max-connections 2"}
+  alternatives_rejected:
+    - {option: "Full-parameter fine-tune", reason: "Model is Gemma3ForConditionalGeneration (multimodal); LoRA on language-model layers is memory-safe, fast (~15 min), reliably mergeable, and typically matches full FT for GSM8K SFT. Keep full FT as a later option."}
+    - {option: "Add MetaMathQA augmentation now", reason: "Establish a clean GSM8K-train SFT incumbent first; add augmentation as a follow-up card only if it beats this under the same protocol."}
+    - {option: "Train with the 10-shot prefix to match eval exactly", reason: "Fewshot prefix (~1700 tok) triples sequence length and risks overfitting the 10 fixed fewshot items; zero-shot SFT + fixed 10-shot eval is standard and keeps rows short (max 552 tok)."}
+  pitfalls_hit:
+    - {what: "Baseline eval of the un-finetuned base model is very slow because it never emits a stop token", cost_h: 0.3, fix: "one-time comparator cost; post-SFT models stop early and eval fast"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --max_rows, "32", --bs, "4", --epochs, "1", --lora_r, "8"], outcome: "8 steps, loss 0.86; LoRA targets = language_model q/k/v/o/gate/up/down only; merge+save produced a complete Gemma3ForConditionalGeneration (8.6GB, all tokenizer+processor files); config loads."}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The base model has never been trained to answer GSM8K-style problems in the grader's required format ('ANSWER: N' on the last line, then stop). It produces unfocused chains and does not terminate, so accuracy sits at the base floor and eval is slow."
+  evidence:
+    - {path: /home/ben/task/logs/base_dev150.log, locator: "all requests hit max_tokens", observation: "base model does not stop after the answer"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/watch_set.jsonl
+    n: 150
+    selection: "150 GSM8K TRAIN items held out (seed 1234) and EXCLUDED from training; a clean local generalization check"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "LoRA SFT of gemma-3-4b-pt on the 7473 GSM8K TRAIN examples, reformatted into the grader's exact per-question prompt with targets ending 'ANSWER: N'<end_of_turn>, will raise GSM8K test accuracy (n=150) substantially over the base model."
+  mechanism: "SFT teaches the model (a) the required answer format and (b) to emit <end_of_turn> right after the answer so the numeric-match scorer reads the correct final number; correct worked solutions on in-domain train data improve reasoning."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "+20 pts or more"}
+  falsified_if: "dev-150 accuracy is not higher than the base_model comparator measured under the same protocol."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train_sft.jsonl
+      source: openai/gsm8k (config main, split train)
+      n_examples: 7323
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --split, train, --out, data/gsm8k_train.jsonl, "then hold out 150 (seed 1234) -> gsm8k_train_sft.jsonl"]
+      selection: "GSM8K TRAIN only (test forbidden); strip <<calc>> annotations; replace '#### N' with 'ANSWER: N'; user turn = grader's MATH_PROMPT_TEMPLATE"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3 + peft 0.18.1 (LoRA), merged
+    peft: "LoRA r=32 alpha=64 dropout=0.05 targets=q,k,v,o,gate,up,down (language_model only)"
+    hyperparams: {lr: 2.0e-4, epochs: 3, batch_size: 16, grad_accum: 1, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "reasoning text then blank line then 'ANSWER: N', terminated by <end_of_turn> (id 106); completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --base, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/gsm8k_train_sft.jsonl, --out, ckpts/exp-01, --epochs, "3", --lr, "2e-4", --bs, "16", --grad_accum, "1", --max_seq_len, "1024", --lora_r, "32", --lora_alpha, "64", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/ckpts/exp-01
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, ckpts/exp-01, --limit, "150", --json-output-file, eval/exp-01_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0533
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "does the SFT model emit <end_of_turn> and finish quickly (fast eval) vs base running to max_tokens"
+    n: 150
+    metric: accuracy
+    direction: higher

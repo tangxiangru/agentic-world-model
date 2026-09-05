@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-04T08:10:00Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 6.95
+  remaining_h: 3.05
+  incumbent:
+    ref: exp-07
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.714, protocol_n: 500}
+  trigger: "The deliverable is finished and verified (0.7267 under the harness default invocation), and 3.05 h of GPU sit idle. Every card since exp-04 has been a re-selection among existing weights and all of them landed on the same plateau (0.714-0.718 at n=500); the one input never varied is problem diversity -- exp-04's corpus draws on only ~20k unique augmented problems out of the 73317 available in the shards already on disk."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-05, exp-06, exp-07 rows", observation: "checkpoint selection, souping and the tie-break all returned the same plateau; no re-selection among existing weights has anything left"}
+    - {path: /home/ben/task/data/v2/sft_train.jsonl, locator: "build log: augmented=73317 at 1 solution per problem, against 71429 rows skipped by the cap in the exp-02/exp-04 build", observation: "3.4x more unique augmented problems are reachable from shards already downloaded"}
+  alternatives_rejected:
+    - {option: "Stop and ship (leave 3 h idle)", reason: "the deliverable is safe either way -- final_model is already written and verified, and this card only overwrites it on a pre-committed 2 pp win at n=500 -- so the downside is spent time, not a worse submission"}
+    - {option: "Full test-set (--limit 1319) measurement of the deliverable instead", reason: "~25 min for a more precise number that changes no decision; it documents the result rather than improving it"}
+    - {option: "A wider soup (exp-02 + exp-04 + checkpoint-750)", reason: "exp-06 and exp-07 measured souping at exactly null on 500 items, and exp-05 measured checkpoint-500 as worse; a third ingredient is not a new mechanism"}
+    - {option: "Match exp-04 exactly at 2 epochs over the larger corpus", reason: "202k row-passes is 2.5 h of training against 3.05 h remaining, which leaves no slot to evaluate or close. 1.2 epochs is 121k row-passes, close to exp-04's 150k, and fits with ~40 min of margin"}
+  pitfalls_hit:
+    - {what: "The larger build reaches 73317 unique augmented problems, not the 95000 asked for -- train_1M simply does not contain more, and dropping to 1 solution per problem also cuts the original-gsm8k rows from 14197 to 7176", cost_h: 0.05, fix: "accept 101098 rows and note that this card trades solutions-per-problem for problems, which is the variable under test"}
+  smoke_runs:
+    - {command: [python, scripts/build_data.py, --out-dir, data/v2, --max-per-problem, '1', --n-augmented, '95000'], outcome: "80493 rows (7176 original-gsm8k + 73317 augmented, 1 solution per problem); dev_train.jsonl byte-identical to the holdout every earlier card used"}
+    - {command: [python, scripts/build_mix.py, --sft, data/v2/sft_train.jsonl, --out, data/v2/mix_train.jsonl], outcome: "101098 rows = 80493 sft + 20605 rejection-sampled"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/v2/mix_train_docs.jsonl], outcome: "101098 documents scanned, 0 contaminated, exit 0"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "Accuracy has been flat at 0.714-0.718 (n=500) across three cards that all re-selected among the same two sets of weights. Those weights were trained on a corpus that covers ~20k unique augmented problems with 2 solutions each; 71429 further rows were discarded by that per-problem cap. If the plateau is a data-coverage ceiling rather than a model-capacity ceiling, no amount of re-selection will move it and only new problems will."
+  evidence:
+    - {path: /home/ben/task/eval/exp-07_soup_dev500.json, locator: "accuracy=0.714", observation: "soup arm at n=500"}
+    - {path: /home/ben/task/eval/exp-07_exp04_dev500.json, locator: "accuracy=0.718", observation: "incumbent arm at n=500; the two differ by 2 items in 500"}
+    - {path: /home/ben/task/analysis/exp-07_paired.json, locator: "pooled500 soup_fixed=26 soup_broke=28", observation: "re-selection among existing weights is exhausted"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/dev_train.jsonl
+    n: 250
+    selection: "the same 250 gsm8k TRAIN problems held out of every training corpus this session (seed 0); data/v2/dev_train.jsonl is byte-identical and its problems are excluded from the new corpus too"
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Retraining from the immutable base on a corpus that covers 3.4x more unique augmented problems (73317 against ~20k) at roughly matched compute -- 101098 rows for 1.2 epochs, 121k row-passes against exp-04's 150k -- raises accuracy at n=500 over the incumbent plateau."
+  mechanism: "Coverage, not repetition, is what a 4B model is short of on grade-school word problems: each additional distinct problem adds a new situation to generalise from, whereas a second solution to a problem it has already seen mostly re-teaches phrasing. If the plateau is a coverage ceiling this moves it; if it is a capacity ceiling, trading solutions-per-problem for problems will do nothing or slightly hurt."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: "-2 to +3 pts at n=500 against the incumbent's 0.718; the corpus is more diverse but sees 20% fewer row-passes"
+  falsified_if: "accuracy at n=500 is at or below 0.718, i.e. more unique problems at matched compute does not beat the plateau -- which would say the ceiling is capacity or recipe, not coverage"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/v2/mix_train.jsonl
+      source: "derived:exp-04 -- nvidia/OpenMathInstruct-2 @469216e train_1M rows with problem_source in {gsm8k, augmented_gsm8k} at ONE solution per unique problem (7176 + 73317), plus the 20605 rejection-sampled chains from exp-04. openai/gsm8k @740312a TRAIN split supplies few-shot demos only. The gsm8k TEST split is never read."
+      n_examples: 101098
+      built_by: /home/ben/task/scripts/build_mix.py
+      build_command: [python, scripts/build_mix.py, --sft, data/v2/sft_train.jsonl, --rft, data/rft_raw.jsonl, --out, data/v2/mix_train.jsonl, --docs-out, data/v2/mix_train_docs.jsonl, --max-rft, '40000', --max-sft, '90000']
+      selection: "identical filters to exp-02/exp-04 except --max-per-problem 1 instead of 2; the 250 held-out dev problems are excluded; 6% of rows carry a k-shot prefix"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, torch 2.8.0, flash_attention_2 (identical to exp-02 and exp-04)"
+    peft: "none (full fine-tune; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1.2, batch_size: "token-budget 4096 padded tokens per micro-batch", grad_accum: 16, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02 and exp-04"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/v2/mix_train.jsonl, --out, /home/ben/task/ckpts/exp-08, --max-seq-len, '2560', --lr, '1e-5', --epochs, '1.2', --token-budget, '4096', --accum, '16', --save-steps, '0', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/exp-08
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.55}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 500 (inspect_evals/gsm8k test split, first 500 items, 10-shot, fewshot_seed=42), greedy decode written by scripts/make_final.py --greedy"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-07
+    value: 0.718
+    path: /home/ben/task/eval/exp-07_exp04_dev500.json
+  diagnostic:
+    what: "termination/format-failure share from scripts/analyze_log.py, to confirm the shorter schedule did not weaken the stop-token habit"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.55
+  output_checkpoint: /home/ben/task/ckpts/exp-08_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08/final, step: 740}
+    - {path: /home/ben/task/ckpts/exp-08_greedy, step: 740}
+  training_summary:
+    final_loss: 0.3080
+    steps: 740
+    notes: "101098 rows kept, 0 dropped; 37.8M tokens/epoch; 5176 s at 23.4 samples/s. WMA precondition 1: GPU confirmed at 0 MiB before launch. WMA precondition 2: scored a make_final.py --greedy copy whose generation_config.json diffs IDENTICAL against final_model's, not the raw checkpoint. WMA precondition 3: the [batches] header reported 615 optimizer steps/epoch and 740 total, matching the 1.2-epoch arithmetic the card assumed. Final train_loss 0.3080 against exp-04's 0.2837 -- the shorter schedule did not reach the same fit."
+  measurements:
+    - {metric: accuracy, value: 0.674, n: 500, path: /home/ben/task/eval/exp-08_dev500.json, delta_vs_comparator: -0.044}
+  diagnostic_result:
+    value: 0.032
+    path: /home/ben/task/analysis/exp-08_diag.json
+    notes: "termination/format share 0.032 at n=500 against 0.02-0.047 for the earlier greedy arms, and 6 of 500 hit the token cap: the stop-token habit survived the shorter schedule, so the loss is reasoning quality, not formatting. Mean output 617 chars."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "0.674 at n=500 against the incumbent's 0.718 -- 4.4 pts WORSE, more than twice the n=500 noise floor, and the falsifier fires cleanly. Trading solutions-per-problem and epochs for 3.4x more unique problems did not move a coverage ceiling; there was no coverage ceiling to move. The card cannot separate the two things it changed at once, but the loss direction plus the higher final train_loss (0.3080 against exp-04's 0.2837) points at the 1.2-epoch schedule rather than at the corpus: this model is simply less converged."
+  decision: reject
+  next_step: "final_model is untouched, exactly as the pre-committed swap rule in analysis/exp-08_swap_rule.md required (bar was 0.738; the result is 0.674). The guard is what made a 1.5 h negative result cost nothing but time. If this line were resumed, the test worth running is the clean one this card confounded: the same 101k-row corpus at 2 full epochs, matched to exp-04's schedule rather than to its token count."

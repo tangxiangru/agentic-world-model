@@ -1,0 +1,152 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T13:00:00Z'
+situation:
+  elapsed_h: 5.0
+  remaining_h: 5.0
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.780, protocol_n: 150}
+  trigger: "exp-03's 33 remaining dev failures are all arithmetic/reasoning inside well-formed answers, and sampling the same checkpoint 6x on the gsm8k TRAIN split shows the gap is recoverable: pass@6 is 0.9505 while a single sample is right 0.7604 of the time (logs/rft_sample.log)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "wrong[*] gold vs answer", observation: "33/150 wrong, all well-formed wrong numbers: (400,280), (72,432), (25000,52500), (75,105), (26,18)"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "final stats block", observation: "pass_at_6 0.9505, sample_accuracy 0.7604 over 44838 samples from 7473 train questions - the model can reach the right answer on 95% of train problems, it just does not do so on the first try"}
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "result.diagnostic_result", observation: "the data-volume lever is spent: 151858 gsm8k-family rows exist in OpenMathInstruct-2's train_1M, 120000 were used"}
+  alternatives_rejected:
+    - {option: "Another SFT card on the 31858 unused OpenMathInstruct-2 rows alone", reason: "27% more of the same distribution after a 5x increase bought +8 pts; the marginal return is well inside the n=150 noise floor. Those rows are used here as the stabiliser instead of as the intervention."}
+    - {option: "Train RFT data from the base checkpoint rather than continuing from exp-03/final", reason: "would cost the full 2.2 h again to re-learn what exp-03 already knows, and there is not enough time left for that plus an eval plus packaging"}
+    - {option: "RFT rows only, no SFT mixed in", reason: "13845 rows over only 7473 distinct problems, all of them the model's own text: a narrow, on-policy distribution that invites drift and memorisation. 20000 held-out OpenMathInstruct-2 rows are mixed in at 59% to keep the distribution wide."}
+    - {option: "DPO on correct/incorrect sample pairs", reason: "the pairs exist (34094 correct, 10744 wrong), but a preference-training pipeline is new code on a 5 h budget and its gain over RFT on gsm8k is not established. RFT reuses the trainer that has now run three times."}
+    - {option: "Keep more than 2 correct samples per question", reason: "would let easy questions dominate; the 2-per-question cap plus exact-duplicate dropping keeps the file balanced across the 7103 questions that produced any correct sample"}
+  pitfalls_hit:
+    - {what: "the WMA verdict caught a blocker before launch: exp-03/final ships the greedy generation_config (do_sample false WITH temperature/top_p/top_k set), and GenerationConfig.validate() turns that combination into a ValueError inside save_pretrained, so the first checkpoint save ~15 min in would have killed the run with no weights written. Reproduced locally on this exact file.", cost_h: 0.15, fix: "train_sft.py now replaces model.generation_config with a clean GenerationConfig(bos=2, eos=[1,106], pad=0) right after loading; the explicit greedy JSON is still written next to the final weights"}
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model, ckpts/exp-03/final, --n-samples, '6'], outcome: "44838 samples in ~14 min at 8.6k output tok/s; 34094 scored correct by the grader's own match(numeric=True); 190 rejected for a missing or doubled ANSWER marker; 13845 kept"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/rft_v1.jsonl.questions.jsonl], outcome: "13845 documents scanned, 0 contaminated, 0 matches (logs/contam_rft.log)"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/rft_mix_v1.jsonl.questions.jsonl], outcome: "the mixed 33845-row file: 0 contaminated, 0 matches (logs/contam_mix.log)"}
+    - {command: [python, -c, "GenerationConfig.from_pretrained('ckpts/exp-03/final').save_pretrained(tmp)"], outcome: "ValueError reproduced: 'temperature: do_sample is set to False. However, temperature is set to 0.0'. A clean GenerationConfig(bos=2, eos=[1,106], pad=0) saves fine. Separately confirmed the greedy JSON still reaches vLLM: to_diff_dict() on ckpts/exp-03/final gives {'temperature': 0.0, 'top_k': 0, ...}, and the eval log shows vLLM overriding its defaults with it."}
+problem:
+  statement: "exp-03 answers 33 of 150 dev items with a confidently wrong number. The model is not missing the format or the method - on its own training-split questions it reaches the correct answer within 6 samples 95% of the time - it picks a wrong chain on the first, greedy attempt."
+  evidence:
+    - path: /home/ben/task/analysis/exp-03_diag.json
+      locator: "report.n_wrong=33, wrong[*]"
+      observation: "cap-hits 1/150 and no-ANSWER 1/150, so none of the 33 is a format failure"
+    - path: /home/ben/task/logs/rft_sample.log
+      locator: "stats"
+      observation: "pass@6 0.9505 vs sample accuracy 0.7604 on gsm8k train: an 19-point gap between what the model can produce and what it produces first"
+  affected_share: 0.22
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-03/final for one epoch on its own verified correct samples (13845 rows from the gsm8k TRAIN split) mixed with 20000 unseen OpenMathInstruct-2 rows raises dev-150 accuracy above exp-03's 0.780."
+  mechanism: "Rejection sampling concentrates the training distribution on the chains this model actually produces and that end at the right answer, so the probability mass it already puts on a correct chain is reinforced and the mass on the wrong first attempt is not. That is exactly the pass@6-vs-pass@1 gap the diagnostic measured. The 20000 held-out off-policy rows are there to keep the update from narrowing onto 7473 problems."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +5 pts; RFT on gsm8k is reported at a few points on top of a well-fit SFT model, and at n=150 the read has stderr ~0.034, so a gain under 3 pts will not be separable from noise"
+  falsified_if: "dev-150 accuracy is at or below exp-03's 0.780 and the full-test tie-break below does not put exp-04 ahead. Pre-committed reading plan, fixed before the run: if the dev-150 gap is 5 pp or less in either direction, the decision is made by re-reading BOTH ckpts/exp-03/final and ckpts/exp-04/final with evaluate.py --limit -1 (all 1319 items, same other flags), not by the 150-item point estimate. Whichever checkpoint wins that read is what final_model/ holds."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "derived:exp-03 (13845 rows self-sampled from ckpts/exp-03/final on openai/gsm8k main/TRAIN questions) + nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (20000 gsm8k-family rows held out of exp-03's 120000)"
+      n_examples: 33845
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/data/rft_v1.jsonl, --n-samples, '6', --keep-per-question, '2', --temperature, '1.0', --max-tokens, '640', --gpu-mem, '0.85', --seed, '0']
+      selection: >-
+        6 samples per gsm8k TRAIN question at temperature 1.0 / top_p 0.95, stopping on token 106;
+        a sample is kept only if inspect_ai's own match_str(location='end', numeric=True) reads the
+        gold answer out of it AND it contains 'ANSWER:' exactly once; at most 2 per question, exact
+        duplicates dropped. No test item is involved at any point - the questions are the train
+        split and the solutions are the model's own text. Mixed with the 20000 OpenMathInstruct-2
+        rows that exp-03 did not see (data/sft_v2_unseen.jsonl, set difference on target hash),
+        shuffled once with seed 0.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer (torch 2.8.0+cu129)"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: "token-budget micro-batches of 14000 padded tokens or 64 rows; grad_accum 4", grad_accum: 4, max_seq_len: 3328, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit, gradient checkpointing, sdpa; loss at supervised positions only, in checkpointed 2048-row chunks", seed: 0}
+    target_format: "unchanged from exp-02/03: prompt '<bos><start_of_turn>user\\n{grader MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n' ; target 'solution\\n\\nANSWER: <n><end_of_turn>\\n' ; loss on the target only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-03/final, --data, /home/ben/task/data/rft_mix_v1.jsonl, --out, /home/ben/task/ckpts/exp-04, --lr, '5e-6', --epochs, '1', --grad-accum, '4', --max-seq-len, '3328', --seed, '0', --save-steps, '150', --token-budget, '14000', --ce-chunk, '2048']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04_train.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 150
+    keep: 2   # train_sft.py hardcodes save_total_limit=2; ~330 steps, so {150, 300} then {300} plus final
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04/final, --limit, '150', --max-connections, '8', --max-tokens, '4000', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-04_dev150.json]
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test split, no shuffle)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.780
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "final_model/ currently holds exp-03/final at 0.780 and is NOT overwritten unless exp-04 wins under the pre-committed reading plan in falsified_if. The mix is 4.8% few-shot rows against exp-03's 8%, and all 13845 RFT rows are zero-shot samples while the grader always prompts 10-shot, so cap-hits and no-ANSWER must be read against exp-03's 1/150 and 1/150 before any delta is attributed to reasoning. scripts/analyze_eval.py: cap-hits and no-ANSWER share must stay near zero (RFT on the model's own text is where a stop-token regression would show up), and the wrong list is re-read to see whether the residue is still arithmetic. The checkpoint's generation_config.json is copied into section 5; it must match exp-03's exactly or the comparison is confounded."
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.51
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-150, step: 150}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-272, step: 272}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 272}
+  training_summary:
+    final_loss: 0.2511
+    steps: 272
+    notes: >-
+      33845 rows, 14.60M tokens, 1830.7 s = 8.0k tok/s. The generation-config fix held: the step-150
+      Trainer save completed, which is exactly where the run would have died without it.
+  measurements:
+    - {metric: accuracy, value: 0.7533, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: -0.0267}
+    - {metric: accuracy, value: 0.7407, n: 1319, path: /home/ben/task/eval/exp-04_full.json, delta_vs_comparator: -0.0061}
+    - {metric: accuracy, value: 0.7468, n: 1319, path: /home/ben/task/eval/exp-03_full.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.0133
+    path: /home/ben/task/analysis/exp-04_diag.json
+    notes: >-
+      The dev-150 gap was -2.7 pts, inside the 5 pp band the card pre-committed to, so the decision was
+      made on the full 1319-item read of both checkpoints under identical flags, not on the small-n
+      number: exp-03/final 0.7468 +- 0.0120, exp-04/final 0.7407 +- 0.0121. The two overlap; what the
+      read rules out is that RFT gained anything. Format did not regress but did drift slightly the
+      wrong way: cap-hits 1 -> 2 of 150, no-ANSWER 1 -> 2, mean completion 193 -> 216 tokens, which is
+      consistent with the mix's lower few-shot share (4.8% vs 8%) and with 41% of its rows being the
+      model's own zero-shot text. Decode was identical to exp-03's
+      ({"do_sample": false, "temperature": 0.0, "top_p": 1.0, "top_k": 0, "eos_token_id": [1,106]}),
+      so nothing rides along with this delta.
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: >-
+    Rejection fine-tuning did not beat its parent: 0.7407 vs 0.7468 on the full 1319-item test read
+    (dev-150: 0.7533 vs 0.780). The pass@6 0.9505 / pass@1 0.7604 gap that motivated the card is real,
+    but one epoch of self-verified samples at lr 5e-6 did not convert it - plausibly because the
+    13845 kept rows cover only the 7103 train problems the model was already getting right, so the
+    update reinforces what it can do rather than what it cannot.
+  decision: reject
+  next_step: >-
+    final_model/ keeps exp-03/final (0.7468 on the full test set), as the card's guard required.
+    Remaining time goes to exp-05: a weight-space average of exp-03/final and exp-04/final, which is
+    ~15 min of GPU and is the one cheap lever left that neither parent's training run can provide.

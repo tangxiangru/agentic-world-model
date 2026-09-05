@@ -32,15 +32,18 @@ APPROVED_BASE_MODELS = (
     "HuggingFaceTB/SmolLM3-3B-Base",
     "google/gemma-3-4b-pt",
 )
-APPROVED_TASKS = ("gsm8k", "aime2025")
+APPROVED_TASKS = ("gsm8k", "aime2025", "gpqamain", "bfcl", "humaneval")
 APPROVED_AGENT_SETUPS = (
+    ("claude_vertex_high_200k", "claude-opus-4-8", "high", 200_000),
+    ("claude_vertex_high_200k_awm", "claude-opus-4-8", "high", 200_000),
     ("claude_vertex_max", "claude-opus-5[1m]", "max", 1_000_000),
     ("claude_vertex_xhigh", "claude-opus-5[1m]", "xhigh", 1_000_000),
     ("claude_vertex_high", "claude-opus-5[1m]", "high", 1_000_000),
     ("claude_vertex_max_200k", "claude-opus-5", "max", 200_000),
-    # claude_vertex_max plus a read-only checkout of this repository at AWM_MOUNT and
-    # `awm sandbox setup` before the prompt; the cell's `awm` block says what it ships.
+    # A read-only public checkout at AWM_MOUNT runs `awm sandbox setup` before the prompt;
+    # the cell's `awm` block says what the scientist may see.
     ("claude_vertex_max_awm", "claude-opus-5[1m]", "max", 1_000_000),
+    ("claude_vertex_high_awm", "claude-opus-5[1m]", "high", 1_000_000),
 )
 
 #: Where an `_awm` scaffold expects the checkout inside the sandbox.
@@ -54,14 +57,23 @@ AWM_FORBIDDEN_TREES = (
     "awm/wma",
     "doc",
 )
-#: What a cell of the experiment-protocol line ships: the CLI, the protocol, nothing else.
+#: Scientist-visible protocol, CLI and thin request client; no WMA policy/runtime.
 EXP_PROTOCOL_SHIP = (
     "awm/__init__.py",
     "awm/cli.py",
     "awm/paths.py",
     "awm/sandbox.py",
+    "awm/wma_client.py",
     "awm/exp_protocol",
     "skills/exp_protocol",
+)
+#: Mounted only into the WMA sidecar container, never into the scientist.
+WMA_PRIVATE_SHIP = (
+    "awm/__init__.py",
+    "awm/paths.py",
+    "awm/exp_protocol",
+    "awm/wma",
+    "skills/wma",
 )
 
 
@@ -76,6 +88,8 @@ class Launch:
     environment: dict[str, str]
     #: {sha, paths, dir, digest} of the checkout an `_awm` cell ships; None otherwise.
     checkout: dict[str, Any] | None = None
+    #: Private WMA runtime mounted only into the host sidecar container.
+    wma_checkout: dict[str, Any] | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -162,6 +176,34 @@ def _validate_awm_block(cell_id: str, agent: Any, block: Any) -> None:
         )
 
 
+def _validate_wma_block(cell_id: str, agent: Any, block: Any) -> None:
+    """Validate a private online-WMA sidecar contract."""
+
+    if block is None:
+        return
+    if not str(agent).endswith("_awm"):
+        raise ExperimentError(f"cell {cell_id}: a wma block requires an _awm scientist scaffold")
+    if not isinstance(block, dict):
+        raise ExperimentError(f"cell {cell_id}: wma must be a mapping")
+    expected = {
+        "backend": "claude",
+        "effort": "high",
+        "mode": "online",
+        "budget": "cpu=10,gpu=0,wall=15,turns=40",
+    }
+    if block.get("model") not in {"claude-opus-5", "claude-opus-4-8"}:
+        raise ExperimentError(f"cell {cell_id}: unsupported frozen WMA model")
+    for key, value in expected.items():
+        if block.get(key) != value:
+            raise ExperimentError(f"cell {cell_id}: wma.{key} must be {value!r}")
+    sha = str(block.get("sha", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ExperimentError(f"cell {cell_id}: wma.sha must be a full commit id")
+    history = block.get("history")
+    if not isinstance(history, str) or not history.startswith("/"):
+        raise ExperimentError(f"cell {cell_id}: wma.history must be a fixed absolute host path")
+
+
 def _git_has_commit(sha: str) -> bool:
     return (
         subprocess.run(
@@ -204,7 +246,9 @@ def _tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
+def materialize_awm_checkout(
+    sha: str, shipped: list[str], *, private: bool = False
+) -> dict[str, Any]:
     """``git archive`` the given paths of ``sha`` onto the data volume, once per (sha, paths).
 
     The directory is what the scaffold sees at AWM_MOUNT, read-only. A marker
@@ -212,9 +256,12 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
     marker matches is reused, so dry-run, submit and a retry all bind the same
     bytes. The forbidden trees are checked again on the extracted files.
     """
-    for path in shipped:
-        _check_awm_path("<checkout>", path)
-    root = paths.data_root() / "ptb" / "awm-checkouts"
+    if not private:
+        for path in shipped:
+            _check_awm_path("<checkout>", path)
+    root = paths.data_root() / "ptb" / (
+        "wma-private-checkouts" if private else "awm-checkouts"
+    )
     key = hashlib.sha256("\n".join(shipped).encode()).hexdigest()[:12]
     target = root / f"{sha}-{key}"
     marker_name = ".awm-checkout.json"
@@ -255,9 +302,12 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
                 tar.extractall(staging, filter="data")
             else:  # Python < 3.12
                 tar.extractall(staging)
-        for tree in AWM_FORBIDDEN_TREES:
-            if (staging / tree).exists():
-                raise ExperimentError(f"archive of {sha[:12]} contains {tree}; refusing to ship it")
+        if not private:
+            for tree in AWM_FORBIDDEN_TREES:
+                if (staging / tree).exists():
+                    raise ExperimentError(
+                        f"archive of {sha[:12]} contains {tree}; refusing to ship it"
+                    )
         digest = _tree_digest(staging)
         marker = {
             "sha": sha,
@@ -371,7 +421,7 @@ def validate_manifest(data: dict[str, Any]) -> None:
         "context_windows": [200_000, 1_000_000],
         "agent_cli_version": "2.1.219",
         "judge_profile": "official",
-        "research_judge_profile": "claude-opus-5[1m]-xhigh",
+        "research_judge_profile": "claude-opus-5[1m]-high",
         "require_complete": True,
         "cli_auto_update": False,
     }
@@ -443,6 +493,7 @@ def validate_manifest(data: dict[str, Any]) -> None:
                 f"cell {cell_id} uses base model {base!r}, which contract.base_models does not pin"
             )
         _validate_awm_block(cell_id, cell.get("agent"), cell.get("awm"))
+        _validate_wma_block(cell_id, cell.get("agent"), cell.get("wma"))
         settings.append((task, *setup, base))
     replication = contract.get("replication")
     if replication is not None:
@@ -599,7 +650,25 @@ def build_launches(
             # Forwarded into the sandbox by the scaffold's env_passthrough.txt.
             environment["AWM_SANDBOX_SETUP"] = cell["awm"]["setup"]
             environment["AWM_CHECKOUT_SHA"] = cell["awm"]["sha"]
-        launches.append(Launch(cell["id"], command, environment, checkout))
+        wma_checkout = None
+        if cell.get("wma"):
+            wma_checkout = materialize_awm_checkout(
+                cell["wma"]["sha"], list(WMA_PRIVATE_SHIP), private=True
+            )
+            environment.update(
+                {
+                    "POST_TRAIN_BENCH_WMA_SIDECAR_CHECKOUT": wma_checkout["dir"],
+                    "POST_TRAIN_BENCH_WMA_CHECKOUT_SHA": cell["wma"]["sha"],
+                    "POST_TRAIN_BENCH_WMA_CHECKOUT_DIGEST": wma_checkout["digest"],
+                    "POST_TRAIN_BENCH_WMA_HISTORY": cell["wma"]["history"],
+                    "POST_TRAIN_BENCH_WMA_BACKEND": cell["wma"]["backend"],
+                    "POST_TRAIN_BENCH_WMA_MODEL": cell["wma"]["model"],
+                    "POST_TRAIN_BENCH_WMA_EFFORT": cell["wma"]["effort"],
+                    "POST_TRAIN_BENCH_WMA_BUDGET": cell["wma"]["budget"],
+                    "POST_TRAIN_BENCH_WMA_MODE": cell["wma"]["mode"],
+                }
+            )
+        launches.append(Launch(cell["id"], command, environment, checkout, wma_checkout))
     if len({launch.cell_id for launch in launches}) != len(launches):
         raise ExperimentError("launch result ids are not unique")
     return launches
@@ -631,6 +700,34 @@ def local_issues(
     for cell in selected_cells:
         if cell.get("awm"):
             issues.extend(_awm_issues(str(cell["id"]), cell["awm"]))
+        if cell.get("wma"):
+            wma = cell["wma"]
+            issues.extend(
+                _awm_issues(
+                    str(cell["id"]),
+                    {"sha": wma["sha"], "paths": list(WMA_PRIVATE_SHIP)},
+                )
+            )
+            history = Path(wma["history"])
+            if not history.is_dir():
+                issues.append(f"cell {cell['id']}: WMA history directory is missing: {history}")
+            if require_context and (wma["model"] == "claude-opus-4-8"
+                                    or contract.get("study") == "wma-crossbench-opus48-v1"):
+                validation = wma.get("runtime_validation")
+                try:
+                    if not isinstance(validation, str):
+                        raise ValueError("missing runtime_validation path")  # noqa: TRY004 - manifest validation
+                    checked = json.loads((paths.REPO_ROOT / validation).read_text())
+                    if (checked.get("passed") is not True or checked.get("model") != wma["model"]
+                            or checked.get("effort") != wma["effort"]
+                            or checked.get("private_sha") != wma["sha"]
+                            or checked.get("public_sha") != cell.get("awm", {}).get("sha")
+                            or checked.get("os_canaries") != "passed"
+                            or checked.get("comparison", {}).get("state") != "completed"
+                            or checked.get("review", {}).get("state") != "delivered"):
+                        raise ValueError("model/private source/canary/round-trip evidence differs")
+                except (OSError, ValueError) as exc:
+                    issues.append(f"cell {cell['id']}: WMA production acceptance is not ready: {exc}")
         for name in ("solve.sh", "api_keys.json", "profile.env"):
             relative = f"agents/{cell['agent']}/{name}"
             if not (PTB_ROOT / relative).is_file():
@@ -692,6 +789,11 @@ def local_issues(
                     issues.append(
                         f"invalid {expected_context}-token provider validation for {profile}: {path}"
                     )
+                if model == "claude-opus-4-8" and (
+                    record.get("model_verified") is not True
+                    or (record.get("canonical_model") or record.get("resolved_model")) != model
+                ):
+                    issues.append(f"actual Opus 4.8 model identity is not verified: {path}")
             except (OSError, ValueError, TypeError) as exc:
                 issues.append(
                     f"unreadable {expected_context}-token provider validation for {profile}: {exc}"
@@ -760,6 +862,7 @@ def site_issues() -> list[str]:
     env = read_ptb_env()
     partition = env.get("POST_TRAIN_BENCH_SLURM_PARTITION", "")
     nodelist = env.get("POST_TRAIN_BENCH_SLURM_NODELIST", "")
+    subqueue = env.get("POST_TRAIN_BENCH_SLURM_SUBQUEUE", "")
     issues: list[str] = []
     if env.get("POST_TRAIN_BENCH_SLURM_GPU_MODE") != "gres":
         issues.append("site must use POST_TRAIN_BENCH_SLURM_GPU_MODE=gres")
@@ -799,8 +902,32 @@ def site_issues() -> list[str]:
         ).split()
     except (OSError, subprocess.CalledProcessError) as exc:
         return issues + [f"cannot expand Slurm nodelist {nodelist}: {exc}"]
-    if len(nodes) != 4:
-        issues.append(f"site nodelist must resolve to four nodes, got {len(nodes)}")
+    if subqueue:
+        registry_path = env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
+        if not registry_path:
+            issues.append(f"subqueue {subqueue} requires an ownership registry path")
+        else:
+            try:
+                from awm import slurm_queue
+
+                registry = slurm_queue.load_registry(Path(registry_path))
+                config = slurm_queue.subqueue_config(registry, subqueue)
+            except (OSError, slurm_queue.QueueError) as exc:
+                issues.append(f"cannot validate Slurm subqueue {subqueue}: {exc}")
+            else:
+                expected_nodes = list(config["nodes"])
+                if set(nodes) != set(expected_nodes):
+                    issues.append(
+                        f"site nodelist for subqueue {subqueue} must be "
+                        f"{','.join(expected_nodes)}; got {','.join(nodes)}"
+                    )
+                branch = current_top_branch()
+                if branch not in config["branches"]:
+                    issues.append(
+                        f"current branch {branch} does not belong to Slurm subqueue {subqueue}"
+                    )
+    elif len(nodes) != 4:
+        issues.append(f"legacy site nodelist must resolve to four nodes, got {len(nodes)}")
     for node in nodes:
         line = subprocess.check_output(["scontrol", "show", "node", node, "-o"], text=True)
         cfg = re.search(r"\bCfgTRES=([^ ]+)", line)
@@ -814,6 +941,52 @@ def _release_command(ptb_env: dict[str, str], job_ids: str) -> list[str]:
     if ptb_env.get("POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT") == "1":
         command.insert(0, "sudo")
     return command
+
+
+def held_job_routing_issues(job_ids: list[str], ptb_env: dict[str, str]) -> list[str]:
+    """Verify scheduler routing while formal jobs are still held.
+
+    A receipt records operator intent. This checks that Slurm retained the
+    requested node boundary before any task can start outside its subqueue.
+    """
+    expected_spec = ptb_env.get("POST_TRAIN_BENCH_SLURM_NODELIST", "")
+    if not expected_spec:
+        return []  # legacy callers; site_issues() requires this for subqueues
+
+    def expand(spec: str) -> set[str] | None:
+        result = subprocess.run(
+            ["scontrol", "show", "hostnames", spec],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            return None
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+    expected = expand(expected_spec)
+    if not expected:
+        return [f"cannot expand requested Slurm nodelist {expected_spec}"]
+
+    issues: list[str] = []
+    for job_id in job_ids:
+        result = subprocess.run(
+            ["scontrol", "show", "job", job_id, "-o"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            issues.append(f"job {job_id}: cannot read held Slurm route: {result.stderr.strip()}")
+            continue
+        match = re.search(r"(?:^|\s)ReqNodeList=([^\s]+)", result.stdout)
+        requested = match.group(1) if match else ""
+        actual = None if requested in ("", "(null)") else expand(requested)
+        if actual != expected:
+            issues.append(
+                f"job {job_id}: held ReqNodeList={requested or '<missing>'}, expected {expected_spec}"
+            )
+    return issues
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -886,40 +1059,17 @@ def dry_run(data: dict[str, Any], *, pilot: bool = False) -> list[tuple[str, str
 
 
 def submit_context_smokes(data: dict[str, Any], cell_ids: list[str]) -> list[dict[str, str]]:
-    assert_source_ownership(data, {"top_branch": current_top_branch()})
-    issues = local_issues(data, require_context=False, cell_ids=cell_ids) + site_issues()
-    if issues:
-        raise ExperimentError("context-smoke gates failed:\n- " + "\n- ".join(issues))
-    jobs = []
-    for launch in build_launches(data, cell_ids=cell_ids, purpose="context-smoke"):
-        env = os.environ | launch.environment
-        env["POST_TRAIN_BENCH_REQUIRE_CONTEXT_VALIDATION"] = "0"
-        result = subprocess.run(
-            [*launch.command, "--runtime-smoke", "--walltime", "00:15:00"],
-            cwd=PTB_ROOT,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode:
-            raise ExperimentError(
-                result.stderr.strip() or f"context smoke failed for {launch.cell_id}"
-            )
-        match = re.search(r"Submitted Slurm job (\d+)", result.stdout)
-        if not match:
-            raise ExperimentError(f"could not parse context-smoke job id: {result.stdout}")
-        jobs.append(
-            {
-                "cell_id": launch.cell_id,
-                "job_id": match.group(1),
-                "job_name": _command_option(launch, "--job-name"),
-            }
-        )
-    return jobs
+    if not cell_ids:
+        raise ExperimentError("context smoke requires explicit cell IDs")
+    receipt_path = submit(data, cell_ids=cell_ids, context_smoke=True)
+    receipt = load_receipt(receipt_path)
+    return [{**job, "receipt": str(receipt_path)} for job in receipt["jobs"]]
 
 
-def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | None = None) -> Path:
+def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | None = None,
+           context_smoke: bool = False) -> Path:
+    if context_smoke and (pilot or not cell_ids):
+        raise ExperimentError("context smoke requires explicit cells and cannot be a pilot")
     if pilot and cell_ids:
         raise ExperimentError("pilot and explicit retry cells are mutually exclusive")
     snapshot = source_snapshot()
@@ -930,15 +1080,20 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
             raise ExperimentError("retry cell ids must be unique")
         for cell_id in selected_cell_ids:
             _cell(data, cell_id)
-    issues = local_issues(data, cell_ids=selected_cell_ids) + site_issues()
+    issues = (local_issues(data, cell_ids=selected_cell_ids, require_context=False) if context_smoke
+              else local_issues(data, cell_ids=selected_cell_ids)) + site_issues()
     if issues:
         raise ExperimentError("submission gates failed:\n- " + "\n- ".join(issues))
     if snapshot["top_status"] or snapshot["ptb_status"]:
         raise ExperimentError("formal source freeze requires clean top-level and PTB worktrees")
-    dry_run(data, pilot=pilot)
+    if not context_smoke:
+        dry_run(data, pilot=pilot)
     submitted_at = datetime.now(timezone.utc).isoformat()
     out_dir = paths.ensure(paths.data_root() / "ptb" / "batches" / data["batch_id"])
-    if pilot:
+    if context_smoke:
+        kind = f"context-smoke-{len(list(out_dir.glob('context-smoke-*.json'))) + 1}"
+        run_purpose = kind
+    elif pilot:
         kind = "pilot"
         run_purpose = None
     elif selected_cell_ids:
@@ -961,7 +1116,7 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         hold=not pilot,
         purpose=run_purpose,
     )
-    if any(
+    if not context_smoke and any(
         "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256" not in launch.environment
         for launch in launches
     ):
@@ -973,6 +1128,7 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         "state": "submitting",
         "manifest": data["_path"],
         "ownership": data["ownership"],
+        "subqueue": ptb_env.get("POST_TRAIN_BENCH_SLURM_SUBQUEUE", ""),
         "submitted_at": submitted_at,
         "source": snapshot,
         "contract": data["contract"],
@@ -980,12 +1136,21 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         "context_validation": {
             launch.cell_id: {
                 "path": launch.environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD"],
-                "sha256": launch.environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"],
+                "sha256": launch.environment.get("POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"),
             }
             for launch in launches
         },
         "awm_checkouts": {
             launch.cell_id: launch.checkout for launch in launches if launch.checkout
+        },
+        "wma_private_checkouts": {
+            launch.cell_id: launch.wma_checkout for launch in launches if launch.wma_checkout
+        },
+        "wma_runtime_validation": {
+            cell["id"]: {"path": cell["wma"]["runtime_validation"],
+                         "sha256": _sha256(paths.REPO_ROOT / cell["wma"]["runtime_validation"])}
+            for cell in (_cell(data, launch.cell_id) for launch in launches)
+            if not context_smoke and cell.get("wma", {}).get("runtime_validation")
         },
         "site": {
             key: ptb_env.get(key, "")
@@ -993,10 +1158,13 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
                 "POST_TRAIN_BENCH_SLURM_PARTITION",
                 "POST_TRAIN_BENCH_SLURM_NODELIST",
                 "POST_TRAIN_BENCH_SLURM_RESERVATION",
+                "POST_TRAIN_BENCH_SLURM_SUBQUEUE",
             )
         },
         "jobs": [],
     }
+    if context_smoke:
+        receipt["validation_only"] = True
     output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     frozen_environment = {
         "POST_TRAIN_BENCH_FROZEN_TOP_BRANCH": snapshot["top_branch"],
@@ -1004,10 +1172,22 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         "POST_TRAIN_BENCH_FROZEN_PTB_COMMIT": snapshot["ptb_commit"],
     }
     for launch in launches:
+        command = launch.command
+        launch_environment = os.environ | launch.environment | frozen_environment
+        if context_smoke:
+            if "--hold" not in command:
+                raise ExperimentError("context-smoke jobs must be submitted held")
+            command = (*command, "--runtime-smoke", "--walltime", "00:30:00")
+            launch_environment["POST_TRAIN_BENCH_REQUIRE_CONTEXT_VALIDATION"] = "0"
+            if launch.wma_checkout:
+                launch_environment["POST_TRAIN_BENCH_WMA_VALIDATION_DIR"] = str(
+                    paths.data_root() / "ptb" / "context-validation" / "wma-runtime"
+                    / launch.wma_checkout["sha"]
+                )
         result = subprocess.run(
-            launch.command,
+            command,
             cwd=PTB_ROOT,
-            env=os.environ | launch.environment | frozen_environment,
+            env=launch_environment,
             text=True,
             capture_output=True,
             check=False,
@@ -1043,30 +1223,55 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
             }
         )
         output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    ownership_registry = ptb_env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
     if not pilot:
         receipt["state"] = "held"
         output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
-        ownership_registry = ptb_env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
-        if ownership_registry:
-            try:
-                from awm import slurm_queue
+    if ownership_registry:
+        try:
+            from awm import slurm_queue
 
-                slurm_queue.register_receipt(
-                    output,
-                    registry_path=Path(ownership_registry),
-                )
-            except (OSError, slurm_queue.QueueError) as exc:
-                receipt["state"] = "ownership_registration_failed"
-                receipt["failure"] = {
-                    "reason": "all formal jobs remain held because ownership registration failed",
-                    "error": str(exc),
-                }
-                output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
-                raise ExperimentError(
-                    "formal jobs were submitted but remain held because ownership registration "
-                    f"failed: {exc} (receipt: {output})"
-                ) from exc
+            slurm_queue.register_receipt(
+                output,
+                registry_path=Path(ownership_registry),
+            )
+        except (OSError, slurm_queue.QueueError) as exc:
+            receipt["state"] = "ownership_registration_failed"
+            receipt["failure"] = {
+                "reason": (
+                    "all formal jobs remain held because ownership registration failed"
+                    if not pilot
+                    else "pilot jobs were submitted but ownership registration failed"
+                ),
+                "error": str(exc),
+            }
+            output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+            disposition = (
+                "formal jobs were submitted but remain held"
+                if not pilot
+                else "pilot jobs were submitted and must be resolved from this receipt"
+            )
+            raise ExperimentError(
+                f"{disposition}; ownership registration failed: {exc} (receipt: {output})"
+            ) from exc
+    if not pilot:
         job_ids = ",".join(job["job_id"] for job in receipt["jobs"])
+        routing_issues = held_job_routing_issues(
+            [job["job_id"] for job in receipt["jobs"]], ptb_env
+        )
+        if routing_issues:
+            receipt["state"] = "routing_verification_failed"
+            receipt["failure"] = {
+                "reason": "all formal jobs remain held because the scheduler route did not match the subqueue",
+                "issues": routing_issues,
+            }
+            output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+            raise ExperimentError(
+                "formal jobs were submitted but remain held; routing verification failed: "
+                + "; ".join(routing_issues)
+                + f" (receipt: {output})"
+            )
+        receipt["routing_verified_at"] = datetime.now(timezone.utc).isoformat()
         release = subprocess.run(
             _release_command(ptb_env, job_ids), text=True, capture_output=True, check=False
         )
@@ -1227,6 +1432,35 @@ def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
                         cell_issues.append("runtime base-model cache snapshot is incomplete")
                     if provenance.get("judge_profile") != "official":
                         cell_issues.append("runtime provenance judge profile is not official")
+                    expected_wma = expected_cell.get("wma")
+                    runtime_wma = provenance.get("wma_runtime") or {}
+                    if expected_wma:
+                        expected_private = (receipt.get("wma_private_checkouts") or {}).get(
+                            job["cell_id"], {}
+                        )
+                        for key in ("backend", "model", "effort", "mode", "budget"):
+                            if runtime_wma.get(key) != expected_wma.get(key):
+                                cell_issues.append(f"runtime WMA {key} differs from frozen cell")
+                        if runtime_wma.get("checkout_sha") != expected_wma.get("sha"):
+                            cell_issues.append("runtime WMA checkout SHA differs from frozen cell")
+                        if runtime_wma.get("checkout_digest") != expected_private.get("digest"):
+                            cell_issues.append("runtime WMA checkout digest differs from receipt")
+                        task_dir = result_dir / "task"
+                        status_path = task_dir / ".wma/sidecar_status.json"
+                        try:
+                            status = json.loads(status_path.read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            status = {}
+                        if status.get("state") != "completed":
+                            cell_issues.append("private WMA sidecar did not complete")
+                        if not list((task_dir / "memory/cards").glob("exp-*.verdict.json")):
+                            cell_issues.append("online WMA cell has no verdict")
+                        if (task_dir / "skills/wma").exists() or (task_dir / "skills/wma_meta").exists():
+                            cell_issues.append("scientist result exposed a private WMA skill")
+                        if list((task_dir / "memory/cards").glob("exp-*.transcript*.jsonl")):
+                            cell_issues.append("scientist result exposed a private WMA transcript")
+                    elif runtime_wma.get("enabled"):
+                        cell_issues.append("runtime enabled WMA for a cell with no WMA contract")
                     if slurm.get("partition") != site.get("POST_TRAIN_BENCH_SLURM_PARTITION"):
                         cell_issues.append("runtime Slurm partition differs from frozen site")
                     if str(slurm.get("cpus_per_task")) != str(contract.get("cpus")):
@@ -1269,6 +1503,289 @@ def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
     return issues
 
 
+OFFICIAL_JUDGE_RECOVERY_ISSUES = {
+    "missing or empty: judgement_gpt5_4.json or its _rerun variant",
+    "missing or empty: judgement_api.json or its _rerun variant",
+    "missing or empty: judgement_ptb_lookup.json or its _rerun variant",
+    "missing or empty: judgement_general.json or its _rerun variant",
+}
+
+
+def official_judge_recovery_candidates(
+    receipt: dict[str, Any],
+) -> tuple[list[dict[str, str]], dict[str, list[str]]]:
+    """Select failed cells whose only missing evidence is the four official judges."""
+
+    candidates: list[dict[str, str]] = []
+    skipped: dict[str, list[str]] = {}
+    for job in receipt_status(receipt):
+        cell_id = str(job["cell_id"])
+        result_name = job.get("result_dir")
+        if not result_name:
+            skipped[cell_id] = ["result directory not found"]
+            continue
+        issues = audit_result(Path(result_name))
+        if set(issues) != OFFICIAL_JUDGE_RECOVERY_ISSUES:
+            skipped[cell_id] = issues or ["result is already complete"]
+            continue
+        candidates.append(
+            {
+                "cell_id": cell_id,
+                "source_job_id": str(job["job_id"]),
+                "result_dir": str(Path(result_name).resolve()),
+            }
+        )
+    return candidates, skipped
+
+
+def submit_official_judge_recovery(
+    receipt: dict[str, Any], *, cell_ids: list[str] | None = None
+) -> Path:
+    """Resume judge-only work with receipt-backed, held Slurm submissions."""
+
+    candidates, skipped = official_judge_recovery_candidates(receipt)
+    if cell_ids:
+        requested = set(cell_ids)
+        if len(requested) != len(cell_ids):
+            raise ExperimentError("official judge recovery cell ids must be distinct")
+        available = {candidate["cell_id"]: candidate for candidate in candidates}
+        missing = sorted(requested - set(available))
+        if missing:
+            raise ExperimentError(
+                "requested cells are not judge-only recovery candidates: " + ", ".join(missing)
+            )
+        candidates = [available[cell_id] for cell_id in cell_ids]
+    if not candidates:
+        details = [f"{cell}: {', '.join(issues)}" for cell, issues in skipped.items()]
+        raise ExperimentError(
+            "receipt has no judge-only recovery candidates"
+            + (("\n- " + "\n- ".join(details)) if details else "")
+        )
+
+    snapshot = source_snapshot()
+    if snapshot["top_status"] or snapshot["ptb_status"]:
+        raise ExperimentError("official judge recovery requires clean top and PTB worktrees")
+    branch = snapshot["top_branch"]
+    if not branch:
+        raise ExperimentError("official judge recovery requires a named top-level branch")
+
+    env = read_ptb_env()
+    partition = env.get("POST_TRAIN_BENCH_SLURM_PARTITION", "")
+    nodelist = env.get("POST_TRAIN_BENCH_SLURM_NODELIST", "")
+    reservation = env.get("POST_TRAIN_BENCH_SLURM_RESERVATION", "")
+    subqueue = env.get("POST_TRAIN_BENCH_SLURM_SUBQUEUE", "")
+    ownership_registry = env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
+    required_site = {
+        "POST_TRAIN_BENCH_SLURM_PARTITION": partition,
+        "POST_TRAIN_BENCH_SLURM_NODELIST": nodelist,
+        "POST_TRAIN_BENCH_SLURM_SUBQUEUE": subqueue,
+        "POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": ownership_registry,
+    }
+    missing_site = [name for name, value in required_site.items() if not value]
+    if missing_site:
+        raise ExperimentError(
+            "official judge recovery requires site configuration: " + ", ".join(missing_site)
+        )
+
+    context_path = paths.REPO_ROOT / "data/ptb/context-validation/claude-opus-5-1m-high.json"
+    if not context_path.is_file():
+        raise ExperimentError(f"Opus 5 high context-validation evidence is missing: {context_path}")
+    context_data = json.loads(context_path.read_text(encoding="utf-8"))
+    if (
+        context_data.get("requested_model") != "claude-opus-5[1m]"
+        or context_data.get("effort") != "high"
+        or context_data.get("provider") != "vertex"
+        or context_data.get("verified") is not True
+    ):
+        raise ExperimentError("Opus 5 high context-validation evidence is invalid")
+    context_digest = _sha256(context_path)
+
+    containers = Path(env.get("POST_TRAIN_BENCH_CONTAINERS_DIR", PTB_ROOT / "containers"))
+    judge_container_name = env.get("POST_TRAIN_BENCH_CLAUDE_JUDGE_CONTAINER", "opus_5.sif")
+    judge_container = containers / judge_container_name
+    if not judge_container.is_file():
+        raise ExperimentError(f"official Claude judge container is missing: {judge_container}")
+    judge_container_digest = _sha256(judge_container)
+
+    source_receipt = Path(receipt["_path"])
+    submitted_at = datetime.now(timezone.utc)
+    timestamp = submitted_at.strftime("%Y-%m-%dT%H%M%S.%f%z")
+    output = source_receipt.with_name(f"official-judge-recovery-{timestamp}.json")
+    spec = "doc/spec/2026-09-02-ptb-official-claude-opus5-high-recovery.md"
+    if not (paths.REPO_ROOT / spec).is_file():
+        raise ExperimentError(f"official judge recovery spec is missing: {spec}")
+
+    recovery_receipt: dict[str, Any] = {
+        "schema_version": 1,
+        "kind": "official-judge-recovery",
+        "state": "submitting",
+        "batch_id": receipt["batch_id"],
+        "source_receipt": str(source_receipt),
+        "manifest": str(receipt.get("manifest", "")),
+        "ownership": {"branch": branch, "spec": spec},
+        "subqueue": subqueue,
+        "source": snapshot,
+        "submitted_at": submitted_at.isoformat(),
+        "contract": {
+            "profile": "official",
+            "backend": "claude",
+            "model": "claude-opus-5[1m]",
+            "effort": "high",
+            "auth_mode": "vertex",
+            "container": judge_container_name,
+            "container_sha256": judge_container_digest,
+            "context_validation": {
+                "path": str(context_path.resolve()),
+                "sha256": context_digest,
+            },
+        },
+        "site": {
+            "partition": partition,
+            "nodelist": nodelist,
+            "reservation": reservation,
+            "subqueue": subqueue,
+        },
+        "skipped": skipped,
+        "selected_cells": [candidate["cell_id"] for candidate in candidates],
+        "jobs": [],
+    }
+    output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+
+    entrypoint = PTB_ROOT / "src/commit_utils/slurm/official_judge_recovery.sbatch"
+    log_dir = PTB_ROOT / "logs/slurm"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    recovery_environment = {
+        "POST_TRAIN_BENCH_REPO_ROOT": str(PTB_ROOT),
+        "POST_TRAIN_BENCH_ENV_FILE": str(PTB_ROOT / ".env"),
+        "POST_TRAIN_BENCH_SLURM_ENTRYPOINT": str(entrypoint),
+        "POST_TRAIN_BENCH_SLURM_RUN_AS_USER": env.get(
+            "POST_TRAIN_BENCH_SLURM_RUN_AS_USER", ""
+        ),
+        "POST_TRAIN_BENCH_FROZEN_TOP_BRANCH": branch,
+        "POST_TRAIN_BENCH_FROZEN_TOP_COMMIT": snapshot["top_commit"],
+        "POST_TRAIN_BENCH_FROZEN_PTB_COMMIT": snapshot["ptb_commit"],
+        "POST_TRAIN_BENCH_BATCH_ID": receipt["batch_id"],
+        "POST_TRAIN_BENCH_SPEC_PATH": spec,
+        "POST_TRAIN_BENCH_CONTEXT_VALIDATION_RECORD": str(context_path.resolve()),
+        "POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256": context_digest,
+        "POST_TRAIN_BENCH_JUDGE_PROFILE": "official",
+        "POST_TRAIN_BENCH_JUDGE_AUTH_MODE": "vertex",
+        "POST_TRAIN_BENCH_CLAUDE_JUDGE_MODEL": "claude-opus-5[1m]",
+        "POST_TRAIN_BENCH_CLAUDE_JUDGE_CONTAINER": judge_container_name,
+        "POST_TRAIN_BENCH_OFFICIAL_JUDGE_CONTAINER": judge_container_name,
+        "POST_TRAIN_BENCH_OFFICIAL_JUDGE_CONTAINER_SHA256": judge_container_digest,
+    }
+    submit_as_root = env.get("POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT") == "1"
+    for candidate in candidates:
+        cell_id = candidate["cell_id"]
+        job_name = _slug(
+            f"{branch}.ptb.{receipt['batch_id']}.{cell_id}.official-judge-recovery"
+        )
+        if len(job_name) > 128:
+            raise ExperimentError(f"official judge recovery job name exceeds 128 characters: {job_name}")
+        command = [
+            "sbatch",
+            "--parsable",
+            "--hold",
+            f"--partition={partition}",
+            f"--nodelist={nodelist}",
+            "--nodes=1",
+            "--ntasks=1",
+            "--cpus-per-task=2",
+            "--mem=16G",
+            "--time=04:00:00",
+            f"--job-name={job_name}",
+            f"--chdir={PTB_ROOT}",
+            f"--output={log_dir}/official-judge-{cell_id}-%j.out",
+            f"--error={log_dir}/official-judge-{cell_id}-%j.err",
+        ]
+        if reservation:
+            command.append(f"--reservation={reservation}")
+        command.extend([str(entrypoint), candidate["result_dir"]])
+        if submit_as_root:
+            command = ["sudo", "--preserve-env", *command]
+        result = subprocess.run(
+            command,
+            cwd=PTB_ROOT,
+            env=os.environ
+            | recovery_environment
+            | {
+                "POST_TRAIN_BENCH_CELL_ID": cell_id,
+                "POST_TRAIN_BENCH_SOURCE_JOB_ID": candidate["source_job_id"],
+                "POST_TRAIN_BENCH_RUN_PURPOSE": "official-judge-recovery",
+                "POST_TRAIN_BENCH_SLURM_JOB_NAME": job_name,
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            recovery_receipt["state"] = "submission_failed"
+            recovery_receipt["failure"] = {
+                "cell_id": cell_id,
+                "stderr": result.stderr.strip(),
+                "held_job_ids": [job["job_id"] for job in recovery_receipt["jobs"]],
+            }
+            output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+            raise ExperimentError(
+                f"official judge recovery submission failed for {cell_id}; prior jobs remain held "
+                f"(receipt: {output}): {result.stderr.strip()}"
+            )
+        job_id = result.stdout.strip().split(";", 1)[0]
+        if not job_id.isdigit():
+            raise ExperimentError(f"invalid official judge recovery job id: {result.stdout}")
+        recovery_receipt["jobs"].append(
+            {
+                **candidate,
+                "job_id": job_id,
+                "job_name": job_name,
+            }
+        )
+        output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+
+    recovery_receipt["state"] = "held"
+    output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+    try:
+        from awm import slurm_queue
+
+        slurm_queue.register_receipt(
+            output,
+            label=f"{receipt['batch_id']} official Claude judge recovery",
+            registry_path=Path(ownership_registry),
+        )
+    except (OSError, slurm_queue.QueueError) as exc:
+        recovery_receipt["state"] = "ownership_registration_failed"
+        recovery_receipt["failure"] = {
+            "reason": "all official judge recovery jobs remain held",
+            "error": str(exc),
+        }
+        output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+        raise ExperimentError(
+            f"official judge recovery jobs remain held because ownership registration failed: "
+            f"{exc} (receipt: {output})"
+        ) from exc
+
+    job_ids = ",".join(job["job_id"] for job in recovery_receipt["jobs"])
+    release = subprocess.run(
+        _release_command(env, job_ids), text=True, capture_output=True, check=False
+    )
+    if release.returncode:
+        recovery_receipt["state"] = "release_failed"
+        recovery_receipt["failure"] = {
+            "reason": "all official judge recovery jobs remain held",
+            "stderr": release.stderr.strip(),
+        }
+        output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+        raise ExperimentError(
+            f"official judge recovery jobs remain held; release failed: {release.stderr.strip()} "
+            f"(receipt: {output})"
+        )
+    recovery_receipt["state"] = "submitted"
+    recovery_receipt["released_at"] = datetime.now(timezone.utc).isoformat()
+    output.write_text(json.dumps(recovery_receipt, indent=2) + "\n", encoding="utf-8")
+    return output
+
+
 def submit_research_judges(receipt: dict[str, Any]) -> Path:
     audit = audit_receipt(receipt)
     failures = {cell: issues for cell, issues in audit.items() if issues}
@@ -1303,10 +1820,10 @@ def submit_research_judges(receipt: dict[str, Any]) -> Path:
             (context_validation.get(cell_id) or {}).get("sha256"),
         )
         for cell_id, cell in cells.items()
-        if cell.get("agent_model") == "claude-opus-5[1m]" and cell.get("effort") == "xhigh"
+        if cell.get("agent_model") == "claude-opus-5[1m]" and cell.get("effort") == "high"
     }
     if len(evidence) != 1:
-        raise ExperimentError("official receipt has no unique Opus 5 xhigh 1M validation evidence")
+        raise ExperimentError("official receipt has no unique Opus 5 high 1M validation evidence")
     research_context_path, research_context_digest = evidence.pop()
     if (
         not research_context_path
@@ -1314,7 +1831,7 @@ def submit_research_judges(receipt: dict[str, Any]) -> Path:
         or not Path(research_context_path).is_file()
         or _sha256(Path(research_context_path)) != research_context_digest
     ):
-        raise ExperimentError("Opus 5 xhigh 1M validation evidence is missing or changed")
+        raise ExperimentError("Opus 5 high 1M validation evidence is missing or changed")
     research_environment = {
         "POST_TRAIN_BENCH_FROZEN_TOP_BRANCH": branch,
         "POST_TRAIN_BENCH_FROZEN_PTB_COMMIT": frozen_ptb_commit,
@@ -1377,7 +1894,7 @@ def submit_research_judges(receipt: dict[str, Any]) -> Path:
                 "source_receipt": str(source_receipt),
                 "ownership": receipt["ownership"],
                 "batch_id": receipt["batch_id"],
-                "profile": "claude-opus-5[1m]-xhigh",
+                "profile": "claude-opus-5[1m]-high",
                 "ptb_commit": frozen_ptb_commit,
                 "context_validation": {
                     "path": research_context_path,

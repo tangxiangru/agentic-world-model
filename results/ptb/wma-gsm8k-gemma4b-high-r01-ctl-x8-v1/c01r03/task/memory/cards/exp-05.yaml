@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T18:39:19Z'
+situation:
+  elapsed_h: 4.65
+  remaining_h: 5.35
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "exp-04 (1 epoch over 76.2k rows) lost to exp-03 (2 epochs over 36.8k rows): dev-500 greedy 0.698 vs 0.728, pooled over both sets 0.706 vs 0.726. The premise that sent exp-04 out - exp-02's identical epoch-1/epoch-2 scores - was measured at temperature 1.0, where sampling noise hides a few items, so it never was evidence against a second epoch."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/dev500_ckpts_exp-04_final.jsonl, locator: "first_sample_acc 0.698"}
+    - {path: /home/ben/task/analysis/dev500_ckpts_exp-03-greedy.jsonl, locator: "first_sample_acc 0.728"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion"}
+  alternatives_rejected:
+    - {option: "Keep exp-03 and stop", reason: "5.35 h remain; exp-04's weights have seen 2.1x the distinct problems and are merely undertrained, so one more epoch is the cheapest way to get both advantages at once"}
+    - {option: "Retrain from base for 2 epochs on sft_v2+sft_v3 (141k rows)", reason: "5.4 h of GPU against 5.35 h remaining - it does not fit, and it would leave nothing for the final verification"}
+    - {option: "Continue from exp-03 instead of exp-04", reason: "exp-03 has already made two passes over its 36.8k rows; exp-04 is the checkpoint that is short of optimiser budget, and it is the one whose deficit this card is testing"}
+    - {option: "Another rejection-sampling round at temperature 0.7 with the 10-shot prefix", reason: "would fix the 43.6% yield of the first round, but 0.6 h of sampling for ~10k rows is a worse use of the remaining GPU than 65.1k rows already built and decontaminated on disk"}
+  pitfalls_hit:
+    - what: "First launch of this card died at step 1000 with the weights unwritten: Trainer.save_model -> GenerationConfig.save_pretrained raises because the parent ckpts/exp-04/final had already been through scripts/set_decode.py, so it carries do_sample=False together with temperature=0.0 and top_k=-1, which GenerationConfig.validate() rejects"
+      cost_h: 0.6
+      fix: "scripts/train_sft.py now restores the base sampling-shaped generation config on any parent that has been decode-patched, and calls gc.validate() before training starts rather than at the first save; intermediate saves dropped (--save-steps 0) so the only save is the final one. set_decode.py is re-applied to the output afterwards. Never train from a directory that set_decode.py has touched without sanitising it first."
+    - what: "Model selection at n=150 is not possible: exp-03 and exp-04 differ by +1.3 pts there (0.7200 vs 0.7333, stderr 0.037) and by -3.0 pts on dev-500, i.e. opposite signs"
+      cost_h: 0.0
+      fix: "every candidate from here on is ranked on dev-500 (analysis/dev500_*.jsonl) and only reported on the official --limit 150"
+  smoke_runs:
+    - command: [python, scripts/build_data_v3.py]
+      outcome: "65,131 rows the exp-04 weights have not seen: 20,131 problems absent from sft_v2 plus 45,000 textually different second solutions to problems sft_v2 used once"
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/decon_sft_v3.jsonl]
+      outcome: "65,131 documents scanned, 0 contaminated, 0 matches"
+    - command: [bash, scripts/run_dev500.sh, ckpts/exp-03-greedy, ckpts/exp-04/final]
+      outcome: "500-item greedy holdout eval takes ~2 min per checkpoint; 0.728 and 0.698 respectively"
+problem:
+  statement: "exp-04's weights have seen 2.1x as many distinct problems as the incumbent but only one pass over them, and they score 3 pts worse on dev-500. One epoch of cosine-decayed SFT is not enough to consolidate a 76k corpus, so the extra data currently costs accuracy instead of buying it."
+  evidence:
+    - path: /home/ben/task/analysis/dev500_ckpts_exp-04_final.jsonl
+      locator: "first_sample_acc"
+      observation: "349/500 correct for exp-04 against 364/500 for exp-03, both greedy under the grader's own match_str"
+    - path: /home/ben/task/eval/exp-04_dev150.json
+      locator: "accuracy 0.7333"
+      observation: "n=150 disagrees in sign with dev-500, which is why it cannot be used to choose"
+    - path: /home/ben/task/memory/cards/exp-02.yaml
+      locator: "result.measurements"
+      observation: "the epoch-1 vs epoch-2 tie that justified a single epoch was measured under temperature-1.0 sampling, before exp-03 established that greedy is worth 11 pts"
+  affected_share: null
+  failure_examples:
+    - {id: dev500-delta, source: /home/ben/task/analysis/dev500_ckpts_exp-04_final.jsonl, question: "(15 net dev-500 items exp-03 gets right and exp-04 does not)", gold: "(various)", model_output: "(well-formed, terminated, wrong number)", failure: "undertrained on a corpus seen once"}
+    - {id: rft-coverage, source: /home/ben/task/data/rft_samples_gsm8k.jsonl, question: "(3,932 of 6,973 gsm8k train questions)", gold: "(various)", model_output: "(no correct terminated sample in 6 draws)", failure: "reasoning error, not formatting"}
+    - {id: exp04-wrong-40, source: /home/ben/task/eval/exp-04_dev150.json, question: "(the 40 graded items exp-04 gets wrong)", gold: "(various)", model_output: "(well-formed but wrong)", failure: "multi-step reasoning error"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing training from ckpts/exp-04/final for one cosine epoch at lr 5e-6 over the 65.1k rows of sft_v3 - none of which those weights have seen - will raise dev-500 greedy accuracy above exp-03's 0.728 and official --limit 150 accuracy above exp-03's 0.72."
+  mechanism: "exp-03 owes its edge to a second optimiser pass, exp-04 to a wider corpus; this run gives exp-04's weights that second pass without re-showing them anything, so the model ends with roughly the step count of exp-02/03 and roughly twice the distinct problems. The halved peak LR keeps the restart of the cosine schedule from undoing what the first epoch consolidated."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +5 pts on dev-500"
+  falsified_if: "dev-500 greedy accuracy is at or below exp-03's 0.728, or official --limit 150 accuracy is at or below 0.72"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "nvidia/OpenMathInstruct-2 (train_1M shards 0-2 and train_2M shards 0-1, problem_source in {gsm8k, augmented_gsm8k})"
+      n_examples: 65131
+      built_by: /home/ben/task/scripts/build_data_v3.py
+      build_command: [python, scripts/build_data_v3.py]
+      selection: "rows absent from sft_v2: 20,131 problems that corpus never contained (one solution each) plus 45,000 second solutions, textually distinct, to problems it used once; dev holdout questions excluded; boxed answers unwrapped, numeric answers only; every target ends 'ANSWER: {n}' + <end_of_turn>; 10% carry the grader's exact 10-shot prefix"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom ChunkedCETrainer"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 8, grad_accum: 4, max_seq_len: 2816, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant content = '{reasoning}' + blank line + 'ANSWER: {n}', then the stop token; prompt tokens masked to -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_exp05.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_exp05.sh
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.25}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.72
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "greedy accuracy on the 500-item gsm8k TRAIN holdout, the set that actually separates candidates; exp-03 scores 0.728 and exp-04 0.698 on it"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.14
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 2035}
+  training_summary: {final_loss: null, steps: 2035, notes: "train_loss 0.2752, 15.91 samples/s, 4091 s wall; 65091/65131 rows fit max_seq_len; parent generation config sanitised at load, scripts/set_decode.py --mode greedy re-applied to the output before any eval"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.74
+    path: /home/ben/task/analysis/dev500_ckpts_exp-05_final.jsonl
+    notes: "dev-500 greedy 0.740, the best of the three candidates: exp-05 0.740 > exp-03 0.728 > exp-04 0.698. Pooled over dev-500 and the official 150: exp-05 478/650 = 0.735, exp-03 472/650 = 0.726, exp-04 459/650 = 0.706."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The second epoch on unseen data recovered exp-04's deficit and passed the incumbent: dev-500 0.698 -> 0.740, ahead of exp-03's 0.728, while the official --limit 150 stays at 0.72 for both. The mechanism reads as stated - exp-04 was undertrained rather than mis-fed, and one more pass over 65.1k rows it had never seen fixed it."
+  decision: adopt
+  next_step: "The margin over exp-03 is 6 items in 650, so this is an adoption on the balance of evidence, not a demonstrated gap; both official numbers are identical at 0.72. exp-05 is now final_model. With ~2.8 h left, the one untried lever is a rejection-sampling round done correctly - the first attempt lost 68% of its samples to the temperature-1.0 zero-shot termination collapse. exp-06 samples at temperature 0.7 and adopts only if dev-500 beats 0.740."

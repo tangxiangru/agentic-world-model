@@ -1,0 +1,189 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T06:05:00Z'
+situation:
+  elapsed_h: 6.1
+  remaining_h: 3.9
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score:
+      metric: accuracy
+      value: 0.7933
+      protocol_n: 150
+  trigger: exp-03 is a full epoch of training away from exp-02 and lands within noise
+    of it (n=500 0.766 vs 0.784, watch-400 0.8275 vs 0.835). Two checkpoints that are
+    close in score but trained on different data are the setting where a parameter average
+    is worth its 2 minutes, and it costs no GPU training.
+  trigger_evidence:
+  - path: /home/ben/task/eval/exp-03_final_dev500.json
+    locator: accuracy 0.766 against exp-02's 0.784 at the same n
+  - path: /home/ben/task/analysis/exp-03_watch400.json
+    locator: summary.accuracy 0.8275 against exp-02's 0.835 on the same 400 items
+  alternatives_rejected:
+  - option: Weighted soup, or a soup that also includes the mid-run checkpoints
+    reason: every extra weight setting is another n=500 read (~8 min each) out of 3.9
+      h; take the uniform two-way first and only extend it if it wins
+  - option: Skip the soup and spend the slack on a longer exp-04
+    reason: the soup needs no GPU training at all and fits inside the slack whichever
+      way exp-04's probe goes
+  pitfalls_hit: []
+  smoke_runs:
+  - command: [python, scripts/soup.py, --inputs, /home/ben/task/ckpts/exp-02/final,
+      /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/ckpts/soup-0203]
+    outcome: ran the averaging end to end in ~2 min to confirm the shard/tied-weight
+      handling; the locked command re-runs it into ckpts/exp-05 and that directory is
+      the one evaluated
+problem:
+  statement: exp-02 (0.784 at n=500) and exp-03 (0.766) are two fine-tunes of the same
+    base that differ only in a second training stage, and neither dominates on both
+    reads. Whatever each learned separately is currently only available one at a time.
+  evidence:
+  - path: /home/ben/task/eval/exp-02_final_dev500.json
+    locator: accuracy 0.784, n=500
+    observation: incumbent
+  - path: /home/ben/task/eval/exp-03_final_dev500.json
+    locator: accuracy 0.766, n=500
+    observation: one epoch of on-policy RFT data away from the incumbent, 1.8 points
+      lower
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/sft_v1.jsonl.holdout
+    n: 400
+    selection: the same 400 openai/gsm8k *train* problems held out of every training
+      file since exp-02. Not benchmark test items - rule 7.
+hypothesis:
+  claim: A uniform parameter average of ckpts/exp-02/final and ckpts/exp-03/final will
+    score higher at n=500 than either ingredient.
+  mechanism: exp-03 was initialised from exp-02 and trained for one epoch at lr 5e-6,
+    so the two sit in the same loss basin and their weights are linearly connected;
+    averaging them cancels the part of exp-03's update that is fitting its own accepted
+    samples while keeping the part that generalises, which is the usual reason a soup
+    beats its ingredients.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: 0 to +2 points at n=500
+  falsified_if: the average scores at or below max(0.784, 0.766) at n=500, i.e. it does
+    not beat the better ingredient.
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/ckpts/exp-02/final/model.safetensors.index.json
+    source: derived:exp-02
+    n_examples: 1
+    built_by: /home/ben/task/scripts/train_sft.py
+    build_command: []
+    selection: 'merge card: the ingredient is one checkpoint, not a row set (n_examples must be positive, so it counts the checkpoint). Weight 0.5.'
+    contamination_check: not_run
+    mixture_weight: 0.5
+  - path: /home/ben/task/ckpts/exp-03/final/model.safetensors.index.json
+    source: derived:exp-03
+    n_examples: 1
+    built_by: /home/ben/task/scripts/train_sft.py
+    build_command: []
+    selection: 'merge card: the ingredient is one checkpoint, not a row set (n_examples must be positive, so it counts the checkpoint). Weight 0.5.'
+    contamination_check: not_run
+    mixture_weight: 0.5
+  method:
+    family: merge
+    framework: scripts/soup.py (safetensors, fp32 accumulate, bf16 store)
+    peft: none
+    hyperparams:
+      seed: 0
+    target_format: unchanged from the ingredients; the tokenizer, config and the greedy
+      generation_config are copied from exp-02/final
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/soup.py, --inputs, /home/ben/task/ckpts/exp-02/final, /home/ben/task/ckpts/exp-03/final,
+      --out, /home/ben/task/ckpts/exp-05]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: none (CPU merge) + ~12 min H100 for the two reads
+    planned_h: 0.3
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '16', --max-tokens, '1024', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150 (first 150 items of openai/gsm8k main test split)
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7933
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: n=500 confirmation read (exp-02 0.784, exp-03 0.766) and the 400-item watch
+      set (exp-02 0.835, exp-03 0.8275); the n=500 read is what decides adopt/reject,
+      as it did for exp-03
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/exp-05
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-05
+    step: 0
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: CPU merge, ~2 min; 884 tensors over 2 shards, fp32 accumulate then bf16 store;
+      generation_config (do_sample false / temperature 0.0 / eos [1,106]), tokenizer
+      and processor files copied from exp-02/final and verified after the merge.
+  measurements:
+  - metric: accuracy
+    value: 0.78
+    n: 150
+    path: /home/ben/task/eval/exp-05_dev150.json
+    delta_vs_comparator: -0.0133
+  - metric: accuracy
+    value: 0.774
+    n: 500
+    path: /home/ben/task/eval/exp-05_dev500.json
+    delta_vs_comparator: -0.01
+  diagnostic_result:
+    value: 0.8625
+    path: /home/ben/task/analysis/exp-05_watch400.json
+    notes: 'watch-400: soup 0.8625 against exp-02 0.835 and exp-03 0.8275 - the average
+      beats both ingredients by 2.75 and 3.5 points on the 400 held-out gsm8k-train
+      problems. The benchmark reads go the other way by about a point (n=500 0.774 vs
+      0.784), which is inside the +/-1.9 noise of a single n=500 read but is the read
+      the adopt margin was written against.'
+  watch_set_result:
+    fixed: 345
+    still_failing: 55
+    regressions: null
+    path: /home/ben/task/analysis/exp-05_watch400.json
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: 'The mechanism did what it should - the average generalises better than either
+    ingredient on the sensitive held-out read (0.8625 vs 0.835 / 0.8275) - but it does
+    not show up on the benchmark: n=500 0.774 against exp-02''s 0.784 and n=150 0.780
+    against 0.7933. The pre-registered margin (n=500 >= 0.804 and watch-400 >= 0.835)
+    is half met, so the claim as written is contradicted.'
+  decision: reject
+  next_step: 'Keep exp-02 in final_model. The split between the two reads is worth one
+    line for the next reader: exp-03 is a *descendant* of exp-02, not an independent
+    fine-tune, so this was not the setting model soups are usually claimed for. The
+    watch-400 gain is the reason the next card is an independent from-base sibling of
+    exp-02 (different solutions, different order) rather than a third continuation:
+    that is the setting where averaging has a track record, and it produces a second
+    independent estimate of the recipe at the same time.'

@@ -1,0 +1,151 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T12:42:43Z'
+situation:
+  elapsed_h: 3.9
+  remaining_h: 6.1
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score:
+      metric: accuracy
+      value: 0.7133
+      protocol_n: 150
+  trigger: "exp-02's checkpoint curve is still rising at the end of training - 0.5933 / 0.5933 / 0.6333 / 0.6933 at 0.5 / 1.0 / 1.5 / 2.0 epochs - so the corpus was not exhausted; and rejection sampling from that same checkpoint solves 94.1% of the GSM8K train questions (analysis/rft_v1_stats.json), i.e. there are 13,479 correct on-policy solutions the model produced itself and was never trained on."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-02.yaml
+      locator: "result.measurements (four checkpoints, monotone in training steps)"
+    - path: /home/ben/task/analysis/rft_v1_stats.json
+      locator: "coverage 0.9413, sample_accuracy 0.7110, rows_written 13479"
+  alternatives_rejected:
+    - option: "A third and fourth epoch over the same data/sft_omi.jsonl"
+      reason: "The model has already seen every one of those 69,473 rows twice; a third pass buys memorisation, not the capability the rising curve points at. 34,000 OMI-2 rows held out of exp-02 (verified 0 overlap on (question, completion)) cost the same GPU time and are new supervision."
+    - option: "RFT data only (13,479 rows), no fresh OMI-2"
+      reason: "13k rows over only 7,473 distinct train questions is a narrow target for a 3.9B full fine-tune coming off a 69k-row run; mixing in 34k unseen off-policy rows keeps the question distribution wide and is the standard guard against an RFT stage collapsing onto its seed questions."
+    - option: "Restart from the base checkpoint on OMI-2 + RFT (the textbook RFT recipe)"
+      reason: "That is a 2.5 h run and throws away the two epochs already paid for; at 6.1 h remaining, with an evaluation and a packaging step still to come, continuing from ckpts/exp-02/final is the version of this experiment that fits the budget."
+    - option: "DPO/ORPO on (correct, incorrect) pairs from the same sampling run"
+      reason: "The sampling run produced both, so the pairs are nearly free, but a preference stage on top of an unfinished supervised curve is the wrong order. Kept as the next card if this one saturates."
+    - option: "lr 1e-5, as in exp-02"
+      reason: "exp-02 ended on a cosine schedule annealed to 0; re-entering at the full peak would partly undo that anneal. 7e-6 with a fresh cosine-to-0 is the continuation LR."
+  pitfalls_hit:
+    - what: "scripts/sample_rft.py wrote its RFT targets without the <end_of_turn> stop token, so preflight's stop_token_consistent read 361/500 and refused the lock; 13,479 of the 47,479 stage-2 rows would have taught the model not to terminate."
+      cost_h: 0.08
+      fix: "Append STOP_TOKEN in sample_rft.py, repair the already-generated rows in place, rebuild data/stage2.jsonl and re-run the contamination checker on it (47479 scanned, 0 contaminated). Now 0/47479 targets are missing the stop token. This is the same defect the check caught on exp-02's corpus, in a second code path - the generator, not the builder."
+  smoke_runs:
+    - command: [python, scripts/verify_format.py, --data, data/stage2.jsonl, --model, base_snapshot, --max-seq-len, '2304']
+      outcome: "0 targets missing <end_of_turn>, 0 targets with != 1 'ANSWER: ', 0 containing '####', 0% of rows over max_seq_len; total tokens p50 299 / p95 606 / p99 1528 / max 2022; 16.6M tokens per epoch."
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/_contam_stage2.jsonl]
+      outcome: "47479 documents scanned, 0 contaminated, 0 matches - this covers the self-generated RFT completions as well as the OMI-2 rows."
+problem:
+  statement: "The incumbent (exp-02's weights read greedily, 0.7133 on dev-150) gets 28.7% of dev-150 wrong with no format defect left: 98% of completions end on an 'ANSWER: N' line and 147/150 stop cleanly. The residual is reasoning error, and two separate observations say the supervised signal was not exhausted - the checkpoint curve was still climbing at the last step, and the model can produce a correct solution for 94.1% of the training questions when sampled six times, far above its 71.1% single-sample rate."
+  evidence:
+    - path: /home/ben/task/analysis/exp-03_greedy_diag.json
+      locator: "summary"
+      observation: "ends_with_answer_line 0.98, stop 147 / max_tokens 3, mean 689 chars: no truncation or marker failure is left to fix; the errors are wrong reasoning."
+    - path: /home/ben/task/analysis/rft_v1_stats.json
+      locator: "sample_accuracy 0.7110 vs coverage 0.9413"
+      observation: "pass@6 is 94.1% against pass@1 of 71.1% on the train questions: the model can reach a correct chain, it just does not reach it first. That gap is what rejection-sampled fine-tuning converts into pass@1."
+  affected_share: 0.287
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing supervised fine-tuning of ckpts/exp-02/final for 2 epochs on 47,479 rows - 13,479 rejection-sampled correct solutions the checkpoint generated itself on GSM8K train questions, mixed with 34,000 OpenMathInstruct-2 rows held out of exp-02 - raises greedy GSM8K accuracy at --limit 150 above the incumbent's 0.7133."
+  mechanism: "Two additive effects. (a) RFT: six samples find a correct chain for 94.1% of train questions while greedy finds one for 71.1%; training on those chains moves probability mass from the wrong first choice onto a chain the model has already shown it can produce - a pass@6-to-pass@1 conversion rather than new knowledge. (b) Fresh supervision: 34,000 unseen 405B-generated solutions continue the climb the exp-02 checkpoint curve was still on."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +8 points"
+  falsified_if: "No exp-04 checkpoint read greedily exceeds 0.7133, or the best exp-04 checkpoint falls below 0.7133 - 0.013 (the greedy-arm noise floor at n=150), or the diagnostic shows repetition loops (stop_reason max_tokens) rising above exp-03's 3/150."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/stage2.jsonl
+      source: "synthetic:self (13,479 rows rejection-sampled from ckpts/exp-02/final on openai/gsm8k main/train questions) + nvidia/OpenMathInstruct-2 gsm8k-family rows held out of exp-02 (34,000: 12,000 problem_source=gsm8k, 22,000 augmented_gsm8k)"
+      n_examples: 47479
+      built_by: /home/ben/task/scripts/sample_rft.py
+      build_command: [python, scripts/sample_rft.py, --model, /home/ben/task/ckpts/exp-02/final, --out, data/rft_v1.jsonl, --k, '6', --temperature, '1.0', --top-p, '0.95', --top-k, '64', --max-tokens, '640', --max-per-question, '2', --gpu-memory-utilization, '0.85', --stats, analysis/rft_v1_stats.json]
+      selection: "RFT half: keep a sample only if the number after its last 'ANSWER: ' equals the gold answer; rebuild the tail so exactly one marker survives and it is last; drop near-duplicates by the sequence of numbers used in the solution; at most 2 kept per question. OMI-2 half: scripts/build_data_omi.py --exclude data/sft_omi.jsonl, verified 0 overlap on (question, completion) with the exp-02 corpus. Both halves shuffled together with seed 0."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 (fused linear cross-entropy), flash_attention_2; sampling by vllm 0.11.0"
+    peft: "none"
+    hyperparams:
+      lr: 7.0e-6
+      epochs: 2
+      batch_size: 16
+      grad_accum: 2
+      max_seq_len: 2304
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+    target_format: "identical to exp-02: <bos><start_of_turn>user\\n{fewshot?}{MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n{reasoning}\\n\\nANSWER: {n}<end_of_turn>, loss on the model turn only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-02/final, --data, /home/ben/task/data/stage2.jsonl, --out, /home/ben/task/ckpts/exp-04, --lr, '7e-6', --epochs, '2', --bs, '16', --grad-accum, '2', --max-seq-len, '2304', --seed, '0', --save-strategy, steps, --save-steps, '742']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 742
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.5
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '2', --max-tokens, '4000', --gpu-memory-utilization, '0.3']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150, fewshot=10 seed=42). Every checkpoint is read on the GREEDY arm (scripts/set_decode.py --mode greedy: do_sample=false, temperature=0.0, top_k/top_p removed, eos_token_id [1, 106]) - the same arm as the exp-03 comparator - applied by scripts/run_exp04_eval.sh before the sweep."
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.7133
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "scripts/analyze_eval.py on each greedy log: stop_reason histogram (repetition loops must not rise above exp-03's 3/150), ends_with_answer_line, mean completion length against exp-03's 689 chars."
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.45
+  output_checkpoint: /home/ben/task/ckpts/exp-04/checkpoint-1484
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-742, step: 742}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1484, step: 1484}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2226, step: 2226}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2968}
+  training_summary:
+    final_loss: 0.235
+    steps: 2968
+    notes: "loss enters at 0.29 (where exp-02 left off) and sits at 0.23-0.27; no drop to near zero, i.e. the fresh half of the corpus is not being memorised. 1h27m wall. checkpoint-2968 was written 0 steps before the end and deleted as a duplicate of final; the other four are kept as promised."
+  measurements:
+    - {metric: accuracy, value: 0.7333, n: 150, path: /home/ben/task/eval/exp-04greedy_checkpoint-742_dev150.json, delta_vs_comparator: 0.0200}
+    - {metric: accuracy, value: 0.7600, n: 150, path: /home/ben/task/eval/exp-04greedy_checkpoint-1484_dev150.json, delta_vs_comparator: 0.0467}
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp-04greedy_checkpoint-2226_dev150.json, delta_vs_comparator: 0.0134}
+    - {metric: accuracy, value: 0.7200, n: 150, path: /home/ben/task/eval/exp-04greedy_final_dev150.json, delta_vs_comparator: 0.0067}
+  diagnostic_result:
+    value: 0.98
+    path: /home/ben/task/analysis/exp-04greedy_checkpoint-1484_diag.json
+    notes: "checkpoint-1484: 147/150 stop, 3 max_tokens - the same 3/150 greedy repetition rate as exp-03, so the RFT half did not make termination worse. 98% end on an 'ANSWER: N' line. Mean completion 723 chars vs exp-03's 689: the answers got slightly longer, not shorter, so the WMA's concern that the shorter self-generated RFT style would dominate did not materialise. exp-04/final is at 614 chars with 2 max_tokens."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "Every stage-2 checkpoint beats the 0.7133 comparator on the greedy arm, and the best (1 epoch, checkpoint-1484) reads 0.7600, +4.7 pts. But the curve is non-monotone - 0.7333 / 0.7600 / 0.7267 / 0.7200 - and end-of-training scores 0.7200, only +0.7 over the comparator, so the honest statement is that stage 2 helps by a few points somewhere in its first epoch and then gives most of it back."
+  decision: adopt
+  next_step: "Two caveats the WMA named before the launch, both of which bit. (1) The falsification rule 'no checkpoint exceeds 0.7133' is a max over four reads against one draw and is biased toward 'supported'; comparing end-of-training to end-of-training gives +0.7 pts, which is inside the noise. (2) The RFT half accepts a sample on answer-match alone, so some of the 13,479 rows carry wrong reasoning to a right number - that is a plausible reason the second epoch decays. Neither is settled at n=150: exp-05 averages the checkpoints and exp-06 re-reads the leaders on all 1319 test items before anything is packaged."

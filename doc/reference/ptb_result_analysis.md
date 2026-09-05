@@ -43,6 +43,8 @@ Inside the reported result directory, the main files are:
 - `judgement_api*.json`: disallowed external API verdict;
 - `judgement_ptb_lookup*.json`: benchmark-lookup verdict;
 - `judgement_general*.json`: broad anomaly requiring human interpretation;
+- `judge_metadata_*.json`: canonical judge backend/model/effort/container/CLI evidence; new
+  official verdicts use Claude Opus 5 at high effort;
 - `final_model/`, `final_eval_*.txt`, and `metrics.json`: submitted artifact and official scoring.
 
 Prefer a nonempty `_rerun` judgement over the original canonical filename when both exist. A

@@ -1,0 +1,144 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: 2026-09-04T08:20:00Z
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.3
+  remaining_h: 2.7
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-04_greedy
+    score: {metric: accuracy, value: 0.806, protocol_n: 500}
+  trigger: "Every number in this session was produced by pointing evaluate.py at a path under ckpts/. The artifact that will actually be graded is final_model/, a separate copy that no eval has ever loaded, and pitfalls.yaml lists final_model_not_loadable as a failure that costs the whole session with no warning."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-06_exp04_dev500.json, locator: "accuracy 0.806", observation: "the incumbent's score, measured on ckpts/exp-04_greedy - not on final_model/"}
+    - {path: /home/ben/task/.claude/skills/exp_protocol/pitfalls.yaml, locator: "id: final_model_not_loadable", observation: "'The grader loads final_model/ with vLLM from a fresh process' - check: null, i.e. no preflight catches it"}
+    - {path: /home/ben/task/memory/cards/exp-06.verdict.json, locator: "suggestions.preconditions[2]", observation: "the WMA verified by shard slice-hash that final_model/ was at that time a copy of the wrong checkpoint (exp-02_greedy, 0.78); it has since been replaced and re-hashed against exp-04_greedy, but only a real eval proves the directory works"}
+  alternatives_rejected:
+    - {option: "A rejection-sampling fine-tuning round with the remaining 2.7 h", reason: "generation + training + eval is ~1.75 h, leaving under an hour of margin, and exp-06 measured the paired sd of this protocol at 0.015 - an RFT gain of the size RFT plausibly delivers could not be distinguished from noise, so it would be shipped on a coin flip. exp-05 already made that mistake once"}
+    - {option: "Trust the byte-hash equality between final_model/ and ckpts/exp-04_greedy and skip the eval", reason: "the hash covers the safetensors shards; it does not cover config.json, generation_config.json, the tokenizer files or vLLM's ability to load the directory under a different name. evaluate.py also routes the chat template off the model PATH string first (model_type() greps for 'gemma' before falling back to config.json), and 'final_model' contains no such substring - that fallback has never been exercised in this session"}
+    - {option: "Verify at --limit 150 (7 min) rather than the full split", reason: "the full split costs ~50 min of a 2.7 h budget and buys the session's only low-variance number: stderr falls from 0.034 at n=150 to ~0.011 at n=1319"}
+  pitfalls_hit:
+    - {what: "final_model/ was seeded early with exp-02_greedy (0.78) as insurance and stayed stale through two better checkpoints until the WMA hash-checked it", cost_h: 0.0, fix: "re-copied from ckpts/exp-04_greedy and shard-hash verified; this card now proves the copy by running the grader's own command against it"}
+  smoke_runs:
+    - {command: [python, -c, "load final_model/ on CPU with Gemma3ForConditionalGeneration + AutoTokenizer from a fresh process"], outcome: "4.30B params loaded, config bfloat16, architectures ['Gemma3ForConditionalGeneration'], <end_of_turn> = 106, generation_config {do_sample false, temperature 0.0, eos_token_id [1,106]}"}
+    - {command: [python, -c, "sha256 of the first MiB of each safetensors shard, final_model/ vs ckpts/exp-04_greedy/"], outcome: "identical for both shards"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The session's deliverable has never been executed as a deliverable. Two mechanical failures are live and neither would raise an error: evaluate.py picks the chat template from the model path string before falling back to config.json, and the path 'final_model' does not contain 'gemma', so the fallback branch decides the template; and the directory is a copy whose non-weight files were never exercised by vLLM."
+  evidence:
+    - {path: /home/ben/task/evaluate.py, locator: "model_type(), the 'gemma' in args.model_path.lower() test then the config.json fallback", observation: "for path 'final_model' the substring tests all fail and the architecture fallback runs - a code path no eval in this session has taken, since every previous eval used a path containing 'gemma' or 'exp-0'"}
+    - {path: /home/ben/task/.claude/skills/exp_protocol/pitfalls.yaml, locator: "id: final_model_not_loadable, check: null", observation: "no automated check covers this"}
+    - {path: /home/ben/task/eval/exp-06_exp04_dev500.json, locator: "accuracy 0.806 at n=500, stderr 0.0177", observation: "the number this card must reproduce from the shipped directory"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: gsm8k_082f84cc, source: /home/ben/task/analysis/exp-02_final_dev150_diag.json, question: "(Cindy/Marcia/Jan pets, official test item)", gold: "28", model_output: "4 + 6 + 18 = 30 ... ANSWER: 30", failure: "arithmetic slip - the dominant remaining error class the full-split number will price"}
+    - {id: gsm8k_01a47d5c, source: /home/ben/task/analysis/exp-02_final_dev150_diag.json, question: "(bee colony, official test item)", gold: "400", model_output: "x = 466.66 -> 466; 2*466 = 932 ... ANSWER: 932", failure: "wrong set-up carried through"}
+    - {id: gsm8k_0e2125c7, source: /home/ben/task/analysis/exp-02_final_dev150_diag.json, question: "(hospital daily profit, official test item)", gold: "10000", model_output: "1900000 - 3600000 = -1700000 ... ANSWER: -1700000", failure: "misread cost structure"}
+  watch_set:
+    path: /home/ben/task/data/probe200.jsonl
+    n: 200
+    selection: "200 items from the openai/gsm8k TRAIN split held out of every training mixture (rule 7: the benchmark test split is never a watch set)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Running the grader's own command against the shipped directory - python evaluate.py --model-path final_model, with the template selected through the config.json fallback branch rather than the path-substring branch - loads and scores the model, and the accuracy it reports on the full 1319-item test split lands within about two standard errors of the 0.806 measured on ckpts/exp-04_greedy at n=500."
+  mechanism: "final_model/ holds byte-identical safetensors to ckpts/exp-04_greedy plus the immutable snapshot's verbatim tokenizer files and a greedy generation_config, so if vLLM can load the directory at all and the template fallback resolves to gemma3.jinja, decoding is deterministic and the accuracy is a property of the weights, not of the path. n=1319 is a superset of the 500, so a large discrepancy would mean something about the directory, not about the items."
+  mechanism_test: "max_tokens share and well-formed ANSWER share on the full split should match the n=500 diagnostic (0.006 and 0.994). A template resolved to the wrong jinja would not error - it would show up as a collapse in the well-formed ANSWER share, which is the signal to watch rather than the accuracy."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: "0.77-0.84 at n=1319; the point is the reproduction and the tighter interval, not a gain"
+  falsified_if: "the eval fails to load final_model/, or the full-split accuracy falls below 0.77 (more than two n=500 standard errors under 0.806), or the well-formed ANSWER share drops below 0.95 - any of the three would mean the shipped directory is not the model that was measured."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-04
+    hash: "safetensors shards byte-identical to /home/ben/task/ckpts/exp-04_greedy (itself prep_ckpt.py --greedy over ckpts/exp-04/final)"
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/datasets/openai___gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866/gsm8k-test.arrow
+      source: "openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 (the benchmark; read by inspect_evals at eval time - no weight update in this card)"
+      n_examples: 1319
+      built_by: null
+      build_command: []
+      selection: "the entire official test split (--limit 1319); a superset of the 500 of exp-06 and the 150 of exp-01..exp-05"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "evaluate.py + vllm 0.11.0, evaluation only, no weight update"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "n/a - verification of the shipped artifact"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, final_model, --limit, "1319", --max-connections, "2", --max-tokens, "4000", --gpu-memory-utilization, "0.3", --json-output-file, /home/ben/task/eval/exp-07_final_model_full.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "1319", --max-connections, "2", --max-tokens, "4000", --gpu-memory-utilization, "0.3"]
+    note: "every flag except --limit is the evaluate.py default, and --model-path is the literal 'final_model' the grader will use. The comparator (exp-06, n=500) was measured under the same flags at a smaller n, so this is a reproduction on a superset rather than a like-for-like comparator; that is stated rather than hidden."
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.806
+    path: /home/ben/task/eval/exp-06_exp04_dev500.json
+  diagnostic:
+    what: "max_tokens share and well-formed ANSWER share on all 1319 items, against the n=500 values 0.006 and 0.994; a wrong chat template shows here before it shows in the accuracy"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.55
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 1230}
+    - {path: /home/ben/task/ckpts/exp-04_greedy, step: 1230}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1230}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-410, step: 410}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-820, step: 820}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1230, step: 1230}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 850}
+    - {path: /home/ben/task/ckpts/exp-02_greedy, step: 850}
+    - {path: /home/ben/task/ckpts/soup2, step: 0}
+    - {path: /home/ben/task/ckpts/soup3, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no weight update; verification of the shipped artifact"}
+  measurements:
+    - {metric: accuracy, value: 0.7933, n: 150, path: /home/ben/task/eval/exp-07_smoke_final_model_150.json, delta_vs_comparator: null}
+    - {metric: accuracy, value: 0.7756, n: 1319, path: /home/ben/task/eval/exp-07_final_model_full.json, delta_vs_comparator: -0.0304}
+  diagnostic_result:
+    value: 0.9939
+    path: /home/ben/task/analysis/exp-07_final_model_full_diag.json
+    notes: "Full split: accuracy 0.7756, stderr 0.0115, 296 wrong of 1319. max_tokens_share 0.0061 and wellformed_answer_share 0.9939 against 0.006 / 0.994 at n=500 - the chat-template fallback branch resolved correctly, which is what those two shares were watching for. Length p50 474 / p90 734 chars, matching n=500's 475 / 749. The WMA's tier-3 pre-check also passed exactly: final_model at --limit 150 returned 0.7933333, bit-for-bit the number ckpts/exp-04_greedy produced on the same items, confirming greedy determinism and that the copy is the measured model."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/probe_exp-04_greedy.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "final_model/ loads and scores through the grader's own command and through the config.json template-fallback branch that no earlier eval had exercised; at --limit 150 it reproduces 0.7933333 exactly. On the full 1319-item split it scores 0.7756 +/- 0.0115, which is 1.7 n=500-standard-errors below the 0.806 measured on the first 500 items - the first 500 were the easier end of the split, not a property of the directory, and the two diagnostics are identical to three decimal places."
+  decision: adopt
+  next_step: "Session complete. final_model/ = ckpts/exp-04_greedy: gemma-3-4b-pt fully fine-tuned on 230k OpenMathInstruct-2 rows rendered in the grader's own prompt format, shipped with greedy decode. Full-split GSM8K 0.7756 +/- 0.0115 against the immutable base model's 0.0533 at n=150. If this line is picked up again, the two untried levers are rejection-sampling fine-tuning on the model's own correct solutions and a self-consistency-style decode - and the first thing to build is an evaluation with a paired sd small enough to see a 1-point move, because this session's last three cards were all decided inside the noise."

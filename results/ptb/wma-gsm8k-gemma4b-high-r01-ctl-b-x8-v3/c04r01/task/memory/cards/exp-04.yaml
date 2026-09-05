@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T02:02:00Z'
+situation:
+  elapsed_h: 3.55
+  remaining_h: 6.45
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6933, protocol_n: 150}
+  trigger: "exp-03 died at step 2000 of 4035 (71 min of GPU lost, no weights) in its first checkpoint save, leaving its hypothesis untested; the underlying observation is unchanged: exp-02 fixed the format failure completely (max_tokens share 0.407 -> 0.000, every completion ends in one ANSWER line) and still misses 46 of 150; the remaining failures are reasoning errors, and the corpus used only 1-2 of the 6+ OpenMathInstruct-2 solutions available per problem."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.inspect.json, locator: "the 46 samples scored I", observation: "all stop cleanly with a single ANSWER line; errors are misread constraints and wrong intermediate quantities, e.g. gold 60 vs 7.5 where the model averaged four floor areas instead of summing them"}
+    - {path: /home/ben/task/analysis/exp02_dev250_fs10.json, locator: "accuracy", observation: "0.800 under the grader's 10-shot prefix on 250 held-out gsm8k-TRAIN items"}
+    - {path: /home/ben/task/analysis/exp02_dev250_fs0.json, locator: "accuracy", observation: "0.832 on the same 250 items with no few-shot prefix; paired flips 17 vs 9, McNemar p ~ 0.17, so the few-shot prefix looks mildly harmful but the evidence is weak"}
+  alternatives_rejected:
+    - {option: "Shrink the corpus to ~90k rows to claw back the 71 min exp-03 burned", reason: "6.45 h remain and the run needs 2.4 h; the slack is enough to keep the full corpus and still leave time for the final eval and packaging"}
+    - {option: "Rejection-sampling fine-tuning on exp-02's own correct samples", reason: "sampling 40k problems x 4 costs ~1.2 h of GPU before any training, and the OpenMathInstruct-2 solutions come from a 405B teacher that is stronger than exp-02; the unused teacher solutions are the cheaper source of the same signal"}
+    - {option: "Retrain from base on the union of sft_v2 and sft_v3 under one cosine schedule", reason: "cleaner LR schedule but ~3.6 h, and it throws away the 1.6 h already spent; continuing from exp-02 buys the same data exposure for 2.3 h"}
+    - {option: "Train every row with the grader's exact 10-shot prefix to close the 0.800/0.832 gap", reason: "the gap is not significant (p ~ 0.17) and a 1700-token prefix on every row would roughly quadruple cost; raising the few-shot share from 5% to 20% with 2-10 shots is the proportionate response"}
+  pitfalls_hit:
+    - {what: "dev_eval.py crashed in the vLLM engine: a local dl.py in the task dir shadowed the stdlib 'dl' module that setuptools imports, and it read sys.argv[1]", cost_h: 0.1, fix: "renamed dl.py to hf_download.py and cleared sys.argv before importing vllm"}
+    - {what: "exp-03 died at step 2000 saving a checkpoint: the parent ckpts/exp-02/final ships the greedy serving config (do_sample false with temperature 0.0 and top_k 1) and transformers 4.57 validates generation_config strictly on save, so every save in the run - including the final one - was doomed from the start", cost_h: 1.2, fix: "replace model.generation_config with a minimal valid GenerationConfig(bos=2, eos=[1,106], pad=0) right after load; the greedy serving config is still written to generation_config.json after training. Verified on a 3-step save test before relaunching."}
+    - {what: "dev_train250 is an optimistic probe, not a test proxy: the held-out gsm8k-train questions were excluded from training but OpenMathInstruct-2's augmented variants of those same problems were not", cost_h: 0.0, fix: "use it only for paired within-model comparisons; the graded number always comes from evaluate.py --limit 150"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/sft_v3.jsonl, --out, ckpts/savetest, --parent, /home/ben/task/ckpts/exp-02/final, --limit, "300", --max-steps, "3", --bs, "4", --max-seq-len, "2048", --save-steps, "2", --log-steps, "1"], outcome: "exit 0; wrote both checkpoint-3 and final/ with the greedy generation_config.json and text_config.use_cache true - the save path exp-03 died on now works end to end"}
+    - {command: [python, dev_eval.py, --model, ckpts/exp-02/final, --fewshot, "10", --out, analysis/exp02_dev250_fs10.json], outcome: "0.800 on 250 held-out gsm8k-train items, 0.8% truncated at 1024 max_tokens"}
+    - {command: [python, dev_eval.py, --model, ckpts/exp-02/final, --fewshot, "0", --out, analysis/exp02_dev250_fs0.json], outcome: "0.832 on the same items, 0% truncated"}
+    - {command: [python, -c, "tokenise 4000 rows of data/sft_v3.jsonl"], outcome: "p50 345, p90 1311, p99 1969, max 2680 tokens; 0.65% of rows exceed max_seq_len 2048 (14.4% would exceed 1024, which is why max_seq_len rises for this card)"}
+problem:
+  statement: "exp-02 gets 46 of 150 dev items wrong, all of them well-formed answers with faulty reasoning. It has seen only one or two chains of thought per training problem, so it has little exposure to alternative correct routes through the same problem types."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.inspect.json, locator: "samples scored I", observation: "46/150 wrong; 0 truncated; 0 missing the ANSWER marker, so none of the loss is a parsing artefact"}
+    - {path: /home/ben/task/data/sft_v3.jsonl, locator: "whole file", observation: "129971 further OpenMathInstruct-2 solutions (per-problem solution index 2-3) for the same 80463 problems, disjoint from sft_v2 except the 7223 gsm8k reference rows"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: dev150-w1, source: /home/ben/task/eval/exp-02_dev150.inspect.json, question: "worker-bee hive problem (benchmark item, quoted only as evidence of the failure mode, never used for training)", gold: "400", model_output: "9q = 700 ... q = 77.78 ... rounds down ... ANSWER: 308", failure: "set up the wrong equation, then rounded a non-integer instead of rechecking"}
+    - {id: dev150-w2, source: /home/ben/task/eval/exp-02_dev150.inspect.json, question: "hospital profit problem", gold: "10000", model_output: "100000 - 30000 = 70000 ... ANSWER: 70000", failure: "ignored a cost term stated in the problem"}
+    - {id: dev150-w3, source: /home/ben/task/eval/exp-02_dev150.inspect.json, question: "four-level building floor area", gold: "60", model_output: "total 30, average 30/4 = 7.5 ... ANSWER: 7.5", failure: "averaged when the question asked for a total, and halved from the wrong starting level"}
+    - {id: dev150-w4, source: /home/ben/task/eval/exp-02_dev150.inspect.json, question: "tomato cans", gold: "12", model_output: "32 / 16 = 2 cans, 2 * 3 = 6 ... ANSWER: 6", failure: "invented a can size not given in the problem"}
+  watch_set:
+    path: /home/ben/task/data/dev_train250.jsonl
+    n: 250
+    selection: "the last 250 rows of the gsm8k TRAIN split, excluded from every training file; used only for paired within-model comparisons because augmented variants of these problems remain in training"
+hypothesis:
+  claim: "A second SFT pass (exp-03 repeated with a save path that works) from ckpts/exp-02/final over 130k further OpenMathInstruct-2 solutions to the same problems (solution index 2-3, disjoint from sft_v2) will raise dev-150 accuracy above exp-02's 0.693."
+  mechanism: "Multiple distinct correct chains per problem is the axis OpenMathInstruct-2's own scaling ablation moves, and the failures are route-selection errors rather than format errors; seeing several valid routes per problem type should make the model less likely to commit to a wrong set-up. Raising the few-shot share from 5% to 20% additionally trains the behaviour the grader exercises, where the prompt carries 10 worked examples."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+1 to +4 pts on dev-150"}
+  falsified_if: "dev-150 accuracy at or below exp-02's 0.693."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (shards 0-13, problem_source in {gsm8k, augmented_gsm8k}) + openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 main/train"
+      n_examples: 129971
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v3.jsonl, --shards, "0,1,2,3,4,5,6,7,8,9,10,11,12,13", --max-per-problem, "2", --sol-start, "2", --target-rows, "130000", --gsm8k-repeat, "1", --fewshot-frac, "0.20", --fewshot-min, "2", --fewshot-max, "10", --seed, "7"]
+      selection: "per-problem solution index 2 and 3 under the same seed-0 shuffle that produced sft_v2, so the OpenMathInstruct-2 rows are disjoint from sft_v2; the 250 held-out probe questions removed; gsm8k train references included once; 20% of rows carry a random 2-10-shot prefix from gsm8k train"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom completion-only chunked cross-entropy"
+    peft: "none"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 16, grad_accum: 2, max_seq_len: 2048, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: "fp32 master weights, bf16 autocast, adamw_bnb_8bit", seed: 1}
+    target_format: "chain of thought, blank line, 'ANSWER: <n>', then <end_of_turn>; prompt rendered byte-identically to templates/gemma3.jinja"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v3.jsonl, --out, ckpts/exp-04, --parent, /home/ben/task/ckpts/exp-02/final, --lr, "1e-5", --epochs, "1", --bs, "16", --grad-accum, "2", --max-seq-len, "2048", --warmup, "0.02", --seed, "1", --save-steps, "2000", --log-steps, "50"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 2000
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6933
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "dev_train250 under the grader's 10-shot prefix, greedy (exp-02: 0.800); tests whether the extra few-shot training closes the 10-shot/0-shot gap"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.4
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 4035}
+  training_summary: {final_loss: 0.241, steps: 4035, notes: "train_loss 0.2535 over the epoch (exp-02 was 0.3137); 129094 rows after dropping 877 (0.68%) over max_seq_len 2048; 8633 s wall, 15.0 samples/s; checkpoint-2000 saved cleanly, which is where exp-03 died"}
+  measurements:
+    - {metric: accuracy, value: 0.7466666666666667, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.0533}
+  diagnostic_result: {value: 0.888, path: /home/ben/task/analysis/exp04_dev250_fs10.json, notes: "dev_train250 under the grader's 10-shot prefix: 0.800 (exp-02) -> 0.888 (exp-04), 0% truncated. Moves in the same direction as dev-150, so the gain is not a dev-150 artefact."}
+  watch_set_result: {fixed: 29, still_failing: 21, regressions: 7, path: /home/ben/task/analysis/exp04_dev250_fs10.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.693 -> 0.747 (+5.3 pts, stderr 0.036 each) and the held-out dev_train250 probe 0.800 -> 0.888 with 29 of exp-02's 50 probe failures fixed against 7 new regressions (net 22). A second pass over further teacher solutions to the same problems buys real reasoning accuracy, not just format."
+  decision: adopt
+  next_step: "One correction for the record: the card claimed sft_v3 was disjoint from sft_v2 apart from the gsm8k reference rows. It was not - the per-problem solution index is only disjoint across builds when the shuffle seed matches, and sft_v3 was built with seed 7 against sft_v2's seed 0, so 21351 of 129971 rows (16.4%) repeated exp-02 data. The result stands but the intervention was 'a second pass, ~84% of it new' rather than fully new. build_data.py now takes --exclude and filters by (question, solution) content; the third-pass file data/sft_v4.jsonl collides on only 35 of 109955 rows. exp-05 runs that third pass from ckpts/exp-04/final."

@@ -57,6 +57,30 @@ def test_setup_refuses_a_bad_tool(tmp_path) -> None:
         sandbox.setup(tmp_path / "task", sha="abc", tool="emacs", exp_protocol=True)
 
 
+def test_decision_mode_is_frozen_and_survives_repeat_setup(tmp_path):
+    from awm.exp_protocol import treatment
+    sandbox.setup(tmp_path, sha="abc", exp_protocol=True, decision_mode="multi-self")
+    expected = treatment.identity(tmp_path)
+    sandbox.setup(tmp_path, sha="abc", exp_protocol=True)
+    assert treatment.identity(tmp_path) == expected
+    with pytest.raises(sandbox.SandboxError, match="cannot change"):
+        sandbox.setup(tmp_path, sha="abc", exp_protocol=True, decision_mode="single")
+    assert treatment.identity(tmp_path) == expected
+
+
+def test_decision_mode_requires_protocol_and_valid_hash(tmp_path):
+    from awm.exp_protocol import treatment
+    with pytest.raises(sandbox.SandboxError, match="exp-protocol"):
+        sandbox.setup(tmp_path, sha="abc", decision_mode="single")
+    sandbox.setup(tmp_path, sha="abc", exp_protocol=True, decision_mode="single")
+    record = tmp_path / "awm_sandbox.json"
+    value = json.loads(record.read_text())
+    value["decision_mode"] = "multi-joint"
+    record.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="hash differs"):
+        treatment.identity(tmp_path)
+
+
 def test_cli_runs_setup(tmp_path, capsys) -> None:
     task = tmp_path / "task"
     rc = main(["sandbox", "setup", "--target", str(task), "--sha", "abc",

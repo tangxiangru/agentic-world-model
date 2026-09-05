@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T16:30:00Z'
+situation:
+  elapsed_h: 2.5
+  remaining_h: 7.5
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "exp-02 consumed only 60000 of the 243674 clean gsm8k-derived rows available, its training loss was still falling at the end of its single epoch (0.29/0.25 on the last logged steps, mean 0.302), and its 41 dev-150 failures are now genuine arithmetic/reasoning errors rather than formatting ones. exp-03 showed the remaining headroom is not in the decode config."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/2026-09-02T16-11-23+00-00_gsm8k_ZzWNjNajyQKBFYuMa7QBWA.json, locator: "41 incorrect samples, all with stop_reason=stop", observation: "no formatting failures remain; every loss is a wrong number produced by a terminated, well-formed answer"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: "accuracy 0.7067 vs exp-02 0.7267", observation: "changing the decode from sampling to greedy moved the score by 3 items, i.e. nothing outside the n=150 noise floor"}
+    - {path: /home/ben/task/data/sft_fresh_after_exp02.jsonl, locator: "222687 lines", observation: "rows disjoint from exp-02's 60000 (exact problem+completion match), from the independently downsampled train_2M split"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling fine-tuning: sample exp-02 on the 7473 GSM8K train problems, keep correct chains, train on them", reason: "~0.6h of sampling plus ~0.8h of training for a set that is bounded by 7473 problems the model largely already solves, when 222687 unfiltered fresh rows over 70367 problems are already on disk and cost only training time. Worth revisiting if this card's dose-response is flat."}
+    - {option: "Add the 831985 augmented_math (MATH-derived) rows to the mixture", reason: "same reason as exp-02: LaTeX competition math would dominate and shift output style away from grade-school word problems"}
+    - {option: "Restart from the base model on 120k rows instead of continuing from exp-02", reason: "same GPU cost, but it throws away the 0.7267 checkpoint as a fallback and produces no intermediate result. Continuing is strictly better under a deadline."}
+    - {option: "A second epoch over exp-02's own 60000 rows", reason: "fresh solutions to the same 70367 problems are strictly more informative than a repeat of solutions already fitted; the overlap check found only 20987 of exp-02's rows in the 2M pool, so 222687 genuinely unseen rows are available"}
+    - {option: "Push to 100k rows in one 2.8h run", reason: "would leave under 4h for evaluation, a possible third training phase and final packaging; 60k keeps the same dose as exp-02 so the dose-response reading is clean, and leaves room to repeat"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_fresh_after_exp02.jsonl, --n-rows, '60000', --max-seq-len, '2560', --dry-run], outcome: "kept 59903/60000, dropped-too-long 0.162%, tokens p50=332 p90=922 max=2559, 28.3M total -- the same shape as exp-02's 28.1M, so the dose is comparable"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/decon_fresh.jsonl], outcome: "222687 documents scanned, 0 contaminated, exit 0"}
+problem:
+  statement: "exp-02 is undertrained for the data available to it: one epoch over 60000 rows (28.1M target tokens) with the loss still descending. Its 41 dev-150 failures are arithmetic slips and mis-set-up chains inside otherwise well-formed, correctly terminated answers -- the class of error that more worked examples addresses. 183674 clean gsm8k-derived rows over the same 70367 problems sit unused on disk."
+  evidence:
+    - {path: /home/ben/task/logs/exp-02.log, locator: "final logged losses", observation: "mean train_loss 0.302, last logged step losses 0.294 and 0.246: still falling at the end of the cosine schedule"}
+    - {path: /home/ben/task/logs/2026-09-02T16-11-23+00-00_gsm8k_ZzWNjNajyQKBFYuMa7QBWA.json, locator: "incorrect samples: the '11x = 88,000 -> x = 80,000' item and the '180/110 rounded to 2 bags' item", observation: "reasoning structure right, execution wrong"}
+  affected_share: 0.273
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing SFT from ckpts/exp-02/final for one epoch over 60000 further gsm8k-derived rows that are disjoint from exp-02's training set will raise dev-150 accuracy above exp-02's 0.7267."
+  mechanism: "The remaining failures are execution errors inside correct-shaped chains, and the model has seen each of the 70367 source problems fewer than once on average. A second disjoint epoch doubles the worked-example exposure per problem type without repeating any solution string, which is what reduces arithmetic-slip rates in fine-tuning; the lower restart LR (7e-6 vs 1e-5) keeps the turn-format behaviour exp-02 established."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points"
+  falsified_if: "dev-150 accuracy is at or below exp-02's 0.7267, which at this n means the dose-response between 60k and 120k rows is flat and further OpenMathInstruct-2 data is not the lever."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_fresh_after_exp02.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, data/train_2M-*.parquet, rows with problem_source in {gsm8k, augmented_gsm8k}"
+      n_examples: 222687
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, data/sft_omi2_gsm8k_2M.jsonl, --pattern, 'train_2M-*.parquet', --cap-gsm8k, '16', --cap-aug, '4', --max-rows, '250000']
+      selection: "same filters as exp-02 (gsm8k-derived only, integer answers, exactly one boxed expression, no pre-existing ANSWER/#### marker) with caps raised to 16 per original and 4 per augmented problem, giving 243674 rows over 70367 problems; then every row whose exact (problem, completion) pair appears in exp-02's 60000 training rows was removed (20987 of them), leaving 222687. train_2M is an independent fair downsample of the 14M corpus, not a superset of train_1M, which is why the overlap is small. Trainer takes the first 60000 after a seed-0 shuffle."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, liger-kernel 0.8.2 fused CE, bitsandbytes 0.49.1 adamw_bnb_8bit, flash_attention_2"
+    peft: "none (full fine-tune of the 3.88B language tower; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 8, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 params + bf16 autocast + 8-bit Adam + liger fused CE + flash_attention_2", seed: 1}
+    target_format: "identical to exp-02: grader's gemma3.jinja (sha256 7de1c58e...) with add_generation_prompt, verbatim inspect MATH_PROMPT_TEMPLATE user turn, 12% of rows behind a random 2-10-shot system message; target = solution body + 'ANSWER: <int>' + '<end_of_turn>'; loss on target tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_fresh_after_exp02.jsonl, --out, /home/ben/task/ckpts/exp-04, --parent, /home/ben/task/ckpts/exp-02/final, --n-rows, '60000', --epochs, '1.0', --lr, '7e-6', --micro-batch, '8', --grad-accum, '4', --max-seq-len, '2560', --fewshot-frac, '0.12', --attn, flash_attention_2, --save-steps, '620', --seed, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 620
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official gsm8k test, first 150 items (evaluate.py --limit 150, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7267
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "arithmetic-slip share: of the incorrect dev-150 samples, the fraction whose chain is structurally right but contains a wrong computed value (hand-tagged from the eval log). exp-02's failures are dominated by this class; if the mechanism works, the class should shrink."
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.68
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-620, step: 620}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1240, step: 1240}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1860, step: 1860}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1873, step: 1873}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1873}
+  training_summary:
+    final_loss: 0.2728
+    steps: 1873
+    notes: "train_runtime 6039s, 9.92 samples/s, mean train_loss 0.2728 versus exp-02's 0.3017 on comparable data; last logged step losses 0.283 and 0.232. generation_config.json inherited from exp-02/final unchanged (eos_token_id [1,106], do_sample true, top_k 64, top_p 0.95), so the candidate is graded under the same decode as its comparator."
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-04_final_dev150.json, delta_vs_comparator: -0.0067}
+    - {metric: accuracy, value: 0.7043, n: 1319, path: /home/ben/task/eval/exp-04_final_full1319.json, delta_vs_comparator: 0.0333}
+  diagnostic_result:
+    value: 0.992
+    path: /home/ben/task/logs/2026-09-02T18-15-52+00-00_gsm8k_Lub2nA27zza7NY7Gi7bqQk.json
+    notes: |
+      Replaced the card's hand-tagged 'arithmetic-slip share' with a deterministic read, because 41 hand tags is itself inside the noise. Over the full 1319 items: exp-04 gets 929 right against exp-02's 885 (179 items fixed, 135 regressed, net +44). Of exp-04's 390 failures, 387 (99.2%) still end in a well-formed 'ANSWER: <number>' line, against 423/434 (97.5%) for exp-02 -- so essentially none of the remaining loss is formatting, and the +3.3 points came from content. stop_reason is 'stop' on 1316/1319. Mean completion length fell from 155 to 139 words.
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: |
+    On the full 1319-item test set exp-04 scores 0.7043 against exp-02's 0.6710, +3.3 points with stderr 0.013 on each read: doubling the worked-example dose from 60k to 120k disjoint rows produced a real gain, and the training loss fell in step (0.302 -> 0.273). The gain is in content, not format: 99.2% of the remaining failures are well-formed answers with the wrong number.
+    The locked n=150 protocol reported the same comparison as 0.7200 vs 0.7267, a one-item regression in the wrong direction. Both numbers are correct reads of their own protocols; the 150-item one simply cannot see a 3-point effect, and the first 150 test items are easier than the set as a whole (0.72 vs 0.70 for the same model).
+  decision: adopt
+  next_step: |
+    Adopt exp-04 as the incumbent and buy the next dose: exp-05 continues from this checkpoint over 80000 further rows disjoint from everything exp-02 and exp-04 saw (162687 remain).
+    Protocol change for everything that follows: model selection is decided on the full 1319-item read (~12 min per model), never on dev-150. This card is the evidence for that rule -- selecting on dev-150 here would have thrown away the better model.

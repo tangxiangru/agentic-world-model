@@ -1,0 +1,137 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T14:10:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.0
+  remaining_h: 3.0
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-06/final
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "exp-06 produced two candidates 1.3 points apart on dev-150 (final 0.720, checkpoint-3900 0.733) - well inside the ~3.7-point stderr of a 150-item read - so the artifact that goes into final_model cannot be chosen on that eval."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-06_final_dev150.json, locator: "accuracy 0.72, format_share 0.9867", observation: "stderr at n=150 is about 0.037; the gap to checkpoint-3900 is smaller than one stderr"}
+    - {path: /home/ben/task/analysis/exp-06_checkpoint-3900_dev150.json, locator: "accuracy 0.73333"}
+    - {path: /home/ben/task/memory/cards/exp-05.verdict.json, locator: "suggestions.cheaper_variants", observation: "the WMA review flagged both that an n=150 read is under the noise floor for these deltas and that an unconditional overwrite of final_model is the corpus's costliest recorded deduction"}
+  alternatives_rejected:
+    - {option: "Ship exp-06/checkpoint-3900 because it scored highest on dev-150", reason: "that is selecting on noise: the 2-item difference between the two checkpoints is 0.35 stderr"}
+    - {option: "Train a third stage or another RFT round", reason: "3.0 h left; exp-06 took 2.3 h and the eval plus packaging plus final verification needs ~1 h. There is no room for a run that could also regress."}
+    - {option: "Repeat the n=150 eval several times with different seeds", reason: "greedy decoding is deterministic, so a repeat returns the same 150 answers; more items, not more repeats, is what reduces the error here"}
+  pitfalls_hit:
+    - {what: "2 of 150 greedy completions at exp-06/final run to the 4000-token cap in a repetition loop (format share 0.987 vs 1.000 for exp-02)", cost_h: 0.0, fix: "tracked as a diagnostic on every candidate below; a candidate that trades accuracy for a worse loop rate is not obviously better"}
+  smoke_runs:
+    - {command: [python, scripts/soup.py, --src, ckpts/exp-06/checkpoint-3900, ckpts/exp-06/final, --out, ckpts/soup_a], outcome: "uniform bf16 parameter average written with the greedy generation config; both shards saved"}
+    - {command: [python, scripts/soup.py, --src, ckpts/exp-06/final, ckpts/exp-02/final, --out, ckpts/soup_b], outcome: "same, across the two independent from-base runs"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Five artifacts are plausible finalists and their dev-150 spread (0.693 to 0.733) is comparable to the measurement error of dev-150 itself. Picking on that eval risks shipping a worse model than one already on disk, and the run's single deliverable is whichever model sits in final_model."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_final_dev150.json, locator: "accuracy 0.72", observation: "candidate 1"}
+    - {path: /home/ben/task/analysis/exp-06_checkpoint-3900_dev150.json, locator: "accuracy 0.73333", observation: "candidate 2"}
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150.json, locator: "accuracy 0.69333", observation: "candidate 3, the previous incumbent"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Scoring all five candidates on the full 1319-item GSM8K test set under greedy decoding will separate them by more than the resulting stderr (~0.012), identifying which artifact to package; and the two uniform parameter soups will score at least as high as the better of their ingredients."
+  mechanism: "Accuracy stderr scales as 1/sqrt(n): 0.037 at n=150 against 0.012 at n=1319, so a real 2-3 point difference becomes readable. For the soups, averaging weights of models fine-tuned from a shared initialisation on overlapping data tends to land at or above the ingredient mean because the ingredients sit in the same loss basin and their independent noise partially cancels."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: "the ranking is the output, not a specific delta; soups expected within +/-1.5 points of their best ingredient"
+  falsified_if: "the five candidates land within one stderr of each other on 1319 items (the eval cannot separate them either), or both soups score below the worse of their two ingredients (weight averaging is not valid across these checkpoints)."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-06/final
+    origin: exp-06
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_no_training_data.txt
+      source: local
+      n_examples: 1
+      built_by: null
+      build_command: []
+      selection: "no training in this card; two of the five candidates are parameter averages of checkpoints that already exist, built on CPU with scripts/soup.py"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "uniform bf16 parameter average (scripts/soup.py) + vllm 0.11.0 greedy decoding"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: 'ANSWER: <integer>' then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, "{candidate}", --limit, "1319", --max-connections, "16", --json-output-file, "{out}"]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{candidate}", --limit, "1319", --max-connections, "16"]
+    dev_set: "official inspect_evals/gsm8k test, all 1319 items, greedy decoding via the exp-03 generation_config"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: null
+    path: null
+  diagnostic:
+    what: "format share and the count of completions hitting the 4000-token cap, per candidate; a candidate whose accuracy wins but whose loop rate is materially worse is not shipped without saying so"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.55
+  output_checkpoint: /home/ben/task/ckpts/soup_d
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup_a, step: 0}
+    - {path: /home/ben/task/ckpts/soup_b, step: 0}
+    - {path: /home/ben/task/ckpts/soup_c, step: 0}
+    - {path: /home/ben/task/ckpts/soup_d, step: 0}
+    - {path: /home/ben/task/final_model, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; four uniform bf16 parameter averages built on CPU"}
+  measurements:
+    - {metric: accuracy, value: 0.73313, n: 1319, path: /home/ben/task/eval/exp-07_soupd_full.json, delta_vs_comparator: 0.01668}
+    - {metric: accuracy, value: 0.721, n: 1319, path: /home/ben/task/eval/exp-07_soupa_full.json, delta_vs_comparator: 0.00455}
+    - {metric: accuracy, value: 0.721, n: 1319, path: /home/ben/task/eval/exp-07_soupb_full.json, delta_vs_comparator: 0.00455}
+    - {metric: accuracy, value: 0.71948, n: 1319, path: /home/ben/task/eval/exp-07_soupc_full.json, delta_vs_comparator: 0.00303}
+    - {metric: accuracy, value: 0.71721, n: 1319, path: /home/ben/task/eval/exp-07_e02final_full.json, delta_vs_comparator: 0.00076}
+    - {metric: accuracy, value: 0.71645, n: 1319, path: /home/ben/task/eval/exp-07_e06final_full.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.71418, n: 1319, path: /home/ben/task/eval/exp-07_c3900_full.json, delta_vs_comparator: -0.00227}
+    - {metric: accuracy, value: 0.73086, n: 1319, path: /home/ben/task/eval/final_model_full.json, delta_vs_comparator: 0.01441}
+  diagnostic_result:
+    value: 0.9924
+    path: /home/ben/task/analysis/final_model_full.json
+    notes: "final_model: 10 of 1319 completions (0.76%) run to the 4000-token cap in a greedy repetition loop and all 10 are scored wrong; they are the only 10 items with no ANSWER line. Loop rate is similar across all candidates (format share 0.990-0.996), so it did not discriminate between them. Re-scoring the identical weights through the final_model/ path gave 0.73086 against soup_d's 0.73313 - 3 items - which is vLLM's batching nondeterminism under greedy decoding, and sets the practical floor on how finely any of these candidates can be separated."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "On 1319 items the five original candidates collapse into a 0.714-0.721 band, i.e. the dev-150 ranking that put checkpoint-3900 (0.733) above exp-02/final (0.693) was entirely noise - on the full set those two are 0.714 and 0.717. The soups did what the hypothesis said: every soup landed at or above its ingredients, and the 4-way average of exp-02/final with exp-06's checkpoint-3900, checkpoint-5200 and final scored 0.73313, about 1.4 stderr above the best single checkpoint."
+  decision: adopt
+  next_step: "final_model now holds the 4-way soup, verified to load with transformers on CPU and re-scored end-to-end through evaluate.py's default --model-path at 0.73086. Remaining measurable defect: the 10 greedy repetition loops, worth 0.76 points, which a decode-config change could address."

@@ -1,0 +1,154 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-04T14:26:43Z'
+situation:
+  elapsed_h: 7.1
+  remaining_h: 2.9
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score:
+      metric: accuracy
+      value: 0.718
+      protocol_n: 500
+  trigger: "Two attempts to raise accuracy by feeding the model more of the same kind of single-solution data have now come back flat (exp-05 +1.0 pt at n=500, exp-06 -0.8 pt), while the model's own sampling still shows a 21-point pass@1-to-pass@4 gap on GSM8K train (0.667 vs 0.881). The benchmark scores one sample, so that gap is only reachable if the voting happens INSIDE the single graded completion."
+  trigger_evidence:
+  - path: /home/ben/task/data/rft_samples_summary.json
+    locator: "acc_first_sample 0.6675 vs pass_at_n 0.8808 at 4 samples, temperature 1.0"
+  - path: /home/ben/task/memory/cards/exp-05.yaml
+    locator: "conclusion: contradicted, 0.708 -> 0.718 at n=500"
+  - path: /home/ben/task/memory/cards/exp-06.yaml
+    locator: "conclusion: contradicted, 0.710 vs 0.718 at n=500"
+  alternatives_rejected:
+  - option: "Another 20k fresh OpenMathInstruct-2 rows (more of the same)"
+    reason: "exp-05 and exp-06 both measured flat; a third variation on single-solution SFT has no mechanism behind it that the last two hours have not already tested"
+  - option: "Mix single-attempt rows into this training set"
+    reason: "the model must commit to one output shape; a mixture would leave it uncertain whether to emit one attempt or three, and the graded prompt gives it no way to tell which is wanted"
+  - option: "5 attempts instead of 3"
+    reason: "only 4 samples per question exist, so 5 is not constructible without reuse; and 3 attempts already triple the completion length, which is the main new risk against the 4000-token cap"
+  - option: "Skip this and bank the incumbent"
+    reason: "final_model already holds the verified incumbent and is not touched unless this beats it, so the only thing at risk is 1.2 h of a 2.9 h budget. Doing nothing has zero upside and this is the one untested mechanism with a double-digit ceiling."
+  pitfalls_hit: []
+  smoke_runs:
+  - command: [python, build_vote.py, --samples, data/rft_samples.jsonl, --out, data/vote_train.jsonl, --n-attempts, '3', --seed, '5']
+    outcome: "7473 questions -> 5654 rows (3172 unanimous, 2482 contested, 1819 dropped for fewer than 2 correct samples); mean target 1486 chars; every target has exactly one 'ANSWER:' whose number is the gold and the last number in the text"
+  - command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/_decon_vote.jsonl]
+    outcome: "5654 documents scanned, 0 contaminated, 0 matches"
+problem:
+  statement: "The graded completion contains exactly one attempt at the problem, so a single derailed step is unrecoverable, and the model has no chance to use the redundancy that makes it right 88% of the time across 4 samples. Its single-attempt accuracy has now plateaued at 0.708-0.718 across three checkpoints, while 21 points of its own latent ability sit unreachable under one-sample grading."
+  evidence:
+  - path: /home/ben/task/data/rft_samples_summary.json
+    locator: "acc_first_sample 0.6675, pass_at_n 0.8808"
+    observation: "the redundancy exists in the model, and single-sample grading throws it away"
+  - path: /home/ben/task/analysis/exp-05_failures.json
+    locator: "summary.n_failures 45, no_answer_line_among_failures 0, completion_tokens_mean 151.5"
+    observation: "all 45 remaining failures are single well-formed wrong chains; mean completion is only 152 tokens against a 4000-token cap, so there is room for three attempts"
+  affected_share: 1.0
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-05_watch.jsonl
+    n: 45
+    selection: "ids only (rule 7) of every dev-150 item exp-05 scored incorrect"
+hypothesis:
+  claim: "Training the incumbent to answer with three independent attempts followed by an explicit majority vote, all inside the one graded completion, raises accuracy against exp-05's single-attempt score."
+  mechanism: "Self-consistency turns pass@k into pass@1 by voting. Here the k samples are generated sequentially inside one completion instead of across k requests, so the benchmark's one-sample budget is not violated. The training targets are built from real temperature-1.0 samples, 2482 of 5654 of them containing a genuinely wrong attempt outvoted by two correct ones, so the vote is trained to do work rather than to rubber-stamp attempt 1. Because attempts 2 and 3 are conditioned on the earlier attempts being present, greedy decoding can still produce different chains."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+3 to +8 pts if the attempts decorrelate; a loss of similar size if they collapse into three copies of the same chain"
+  falsified_if: "dev-150 accuracy is at or below 0.760, i.e. fails to clear the incumbent's 0.700 same-n read by at least +0.06 (twice the n=150 stderr, required because a swap of final_model must be paid for on evidence and there is no budget left for an n=500 tie-break of a format this verbose). Independently falsified if the three attempts are near-identical (mean pairwise distinct-answer rate below 0.1) or if completions start hitting the 4000-token cap."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/vote_train.jsonl
+    source: "synthetic:self - built from this lineage's own temperature-1.0 samples (4 per question) on hf:openai/gsm8k main/TRAIN questions; no test item is involved at any stage"
+    n_examples: 5654
+    built_by: /home/ben/task/build_vote.py
+    build_command: [python, build_vote.py, --samples, data/vote_train_input.jsonl, --out,
+      data/vote_train.jsonl, --n-attempts, '3', --seed, '5']
+    selection: "per question, parse the 4 samples, strip each one's own ANSWER line and replace it with 'This attempt gives <n>.', then choose 3 so that the majority answer equals the TRAIN gold - taking one wrong attempt when one is available (2482 of 5654 rows) and three correct ones otherwise. Targets close with a tally line and one 'ANSWER: <gold>'; verified to contain 'ANSWER:' exactly once, with the gold as the last number, and to end with <end_of_turn>. Questions with fewer than 2 correct samples are dropped (1819)."
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full-parameter, flash_attention_2"
+    peft: none
+    hyperparams:
+      lr: 5.0e-6
+      epochs: 2
+      batch_size: 2
+      grad_accum: 16
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 3
+      optim: adamw_bnb_8bit
+      system_prob: 0.7
+      frozen: "vision_tower + multi_modal_projector; 3.88B trainable"
+      loss: "completion-only; the few-shot prefix carries no loss"
+    target_format: "prompt unchanged from exp-03/exp-05. Target = 'Attempt 1:\\n<chain>\\nThis attempt gives <n>.' x3, then 'The attempts give a, b, c. The most common answer is <g>.', then 'ANSWER: <g>', then <end_of_turn>. Exactly one ANSWER marker; the gold is the last number in the target."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/vote_train.jsonl, --parent,
+      /home/ben/task/ckpts/exp-05/final, --out, /home/ben/task/ckpts/exp-07, --lr, '5e-6',
+      --epochs, '2', --bs, '2', --grad-accum, '16', --max-len, '3072', --system-prob,
+      '0.7', --save-steps, '150', --seed, '3']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: 150
+    keep: 2
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.8
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file,
+      '{out}.json']
+    dev_set: "official --limit 150 at evaluate.py defaults (--max-connections 2, --max-tokens 4000, --gpu-memory-utilization 0.3); served through a make_variant.py copy carrying the same greedy generation_config (temperature 0.0) as the comparator, so decode is held fixed"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7
+    path: /home/ben/task/eval/exp-05/exp-05_dev150.json
+  diagnostic:
+    what: "whether the three attempts actually decorrelate: the share of dev-150 completions whose three 'This attempt gives <n>.' values are not all identical, plus mean output tokens and the max_tokens count (against exp-05's 151.5 tokens and 0 truncations). If the attempts are identical the vote is a no-op and the mechanism did not fire, whatever the score does."
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.72
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-07/final, step: 350}
+  - {path: /home/ben/task/ckpts/exp-07/checkpoint-350, step: 350}
+  - {path: /home/ben/task/ckpts/exp-07/checkpoint-300, step: 300}
+  training_summary: {final_loss: 0.2134, steps: 350, notes: "5597/5654 rows kept at max_seq_len 3072 (57 dropped, 1%); 9.7M tokens per epoch, 2 epochs; train_runtime 2588 s. The WMA precondition to move --save-steps 150 -> 175 so the 1-epoch point survives save_total_limit was not applied: it needed a re-lock and there was no eval budget left to score a second checkpoint of a format this verbose."}
+  measurements:
+  - {metric: accuracy, value: 0.6933, n: 150, path: /home/ben/task/eval/exp-07/exp-07_dev150.json, delta_vs_comparator: -0.0067}
+  diagnostic_result:
+    value: 0.213
+    path: /home/ben/task/analysis/exp-07_failures.json
+    notes: "The format installed cleanly: 148 of 150 completions emit all three attempts, and on 32 of 150 items (21.3%) the attempts do NOT all agree, so the vote had real work to do on a fifth of the set - the attempts genuinely decorrelated under greedy decoding, which was the open question. It still bought nothing: accuracy 0.6933 vs 0.700. Cost side: mean output 582 tokens against exp-05's 152, and 2 completions hit the 4000-token cap where exp-05 had 0."
+  watch_set_result: {fixed: 11, still_failing: 34, regressions: 12, path: /home/ben/task/analysis/exp-05_watch.jsonl}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "In-context self-consistency scores 0.6933 against the incumbent's 0.700 on the same 150 items - nowhere near the pre-registered +0.06 bar, so the claim is contradicted. The mechanism itself did fire: three attempts were emitted on 148/150 items and they disagreed on 21.3%, so the attempts are not copies of each other. Voting simply did not pay: 11 of exp-05's failures were fixed and 12 new ones created, which is what happens when a wrong attempt can outvote a correct one as often as the reverse."
+  decision: reject
+  next_step: "final_model is left as exp-05/final with the greedy generation_config - unchanged and already verified from a fresh process. The verbose format also costs 4x the output tokens and reintroduced 2 truncations at the 4000-token cap, so it is worse on margins as well as on score. If this line were resumed, the fix is not more attempts but a vote that weights attempts by something other than a raw count."

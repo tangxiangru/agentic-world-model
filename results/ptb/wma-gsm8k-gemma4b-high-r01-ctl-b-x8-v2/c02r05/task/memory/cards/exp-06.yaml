@@ -1,0 +1,132 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T12:14:28Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.3
+  remaining_h: 4.7
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score: {metric: accuracy, value: 0.678, protocol_n: 500}
+  trigger: "Three artefacts now sit inside one item of each other on dev-500 (exp-02 0.676, exp-04 0.678, exp-05 soup 0.676). Changing the data (55k -> 88.5k rows, off-policy -> half self-generated) moved nothing and neither did weight averaging, so the axis I have never varied is the optimisation one: every run so far has been exactly one epoch of cosine-to-zero at lr 1e-5."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-05_soup_dev500.json, locator: "accuracy 0.676"}
+    - {path: /home/ben/task/eval/exp-04greedy_dev500.json, locator: "accuracy 0.678"}
+    - {path: /home/ben/task/eval/exp-02greedy_dev500.json, locator: "accuracy 0.676"}
+    - {path: /home/ben/task/logs/exp-04.log, locator: "train_runtime line: train_loss 0.2738 after 1 epoch", observation: "one epoch only; the schedule decayed to zero with the corpus seen once"}
+  alternatives_rejected:
+    - {option: "Retrain from base for 2 epochs", reason: "~3.8 h at 12.9 samples/s for 88.5k rows x2; more than the 4.7 h left once eval and packaging are counted"}
+    - {option: "Continue on the 34k rows of sft_v1 that exp-04 never saw", reason: "that is the data lever again, and exp-04 already showed adding 33k rows to exp-02's corpus changed nothing; the point of this card is to isolate optimisation"}
+    - {option: "Raise the LR for the second pass (1e-5 again)", reason: "restarting at the original LR after a cosine-to-zero schedule usually undoes the annealing; 5e-6 continues the anneal instead of restarting it"}
+    - {option: "Stop here and ship exp-04-greedy", reason: "still the fallback - final_model already holds a working greedy artefact, and exp-06 only replaces it if it beats 0.678 at n=500. The downside is bounded at 1.4 h."}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Every checkpoint produced so far plateaus at 0.676-0.678 on dev-500 regardless of corpus size or composition, and the soup of two of them is no better. The plateau is not explained by data volume, data source, or decoding, all of which have now been varied."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02greedy_dev500.json, locator: "accuracy 0.676", observation: "55k rows, off-policy only"}
+    - {path: /home/ben/task/eval/exp-04greedy_dev500.json, locator: "accuracy 0.678", observation: "88.5k rows, half self-generated"}
+    - {path: /home/ben/task/eval/exp-05_soup_dev500.json, locator: "accuracy 0.676", observation: "parameter average of the two"}
+  affected_share: 0.322
+  failure_examples:
+    - {id: "shared probe failures", source: /home/ben/task/analysis/exp-04_watch_rerun.json, question: "(61 held-out GSM8K TRAIN probe items that both exp-02 and exp-04 get wrong)", gold: "in analysis/probe250.jsonl", model_output: "in analysis/exp-03_probe250.json and analysis/exp-04_probe250.json", failure: "the hard core: wrong under every recipe tried so far"}
+    - {id: "exp-04 probe misses", source: /home/ben/task/analysis/exp-04_probe250.json, question: "(80 held-out probe items exp-04 gets wrong under greedy)", gold: "in analysis/probe250.jsonl", model_output: "results[] where correct=false", failure: "reasoning/arithmetic errors at the mode"}
+    - {id: "exp-04 dev-500 misses", source: /home/ben/task/eval/exp-04greedy_dev500.json, question: "(161 of 500 benchmark items wrong; items withheld per protocol rule 7)", gold: "n/a", model_output: "in the inspect log for that run", failure: "the residual 32.2% this card tries to reduce"}
+  watch_set:
+    path: /home/ben/task/analysis/probe250.jsonl
+    n: 250
+    selection: "same 250 held-out GSM8K TRAIN items used by exp-01..exp-05; no benchmark test item"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A second pass over 60k rows of the exp-04 corpus, continuing from ckpts/exp-04/final at lr 5e-6 with a fresh cosine-to-zero schedule, raises greedy dev-500 accuracy above exp-04's 0.678."
+  mechanism: "Every run so far has seen its corpus exactly once, so the model has had one gradient step per example at a schedule that annealed to zero before the data was exhausted as a learning signal. A second low-LR pass is the standard under-fit remedy: it lets the model consolidate the solution format and the arithmetic patterns it has already been shown, without the LR being high enough to move it into a different basin."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+0 to +3 pts"}
+  falsified_if: "greedy dev-500 accuracy is at or below 0.678, or greedy probe-250 accuracy is at or below exp-04's 0.680"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "synthetic:self (48539 rows sampled from ckpts/exp-02/final) + derived:exp-02 (40000 rows of data/sft_v1.jsonl: openai/gsm8k train rev 740312a and nvidia/OpenMathInstruct-2 rev 469216e gsm8k/augmented_gsm8k)"
+      n_examples: 88539
+      built_by: /home/ben/task/rft_sample.py
+      build_command: [python, rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --questions, data/rft_questions.jsonl, --out, data/rft_v1.jsonl, --n-questions, '32000', -k, '4', --temperature, '1.0', --top-p, '0.95', --top-k, '64', --max-tokens, '640', --keep-per-question, '2']
+      selection: "identical corpus to exp-04; the trainer reads the first 60000 of the 88539 shuffled lines (--limit 60000), so this is a second pass over roughly two thirds of what the parent already saw. Probe-250 items and the 10 harness fewshot items are excluded from the underlying question pools."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused-linear-CE
+    peft: "none (full fine-tune; vision tower and multimodal projector frozen)"
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02/exp-04: prompt through templates/gemma3.jinja (sha256 7de1c58e...), 12% of rows behind the exact 10-shot harness system message; target = worked solution, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the target only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, data/sft_v2.jsonl, --out, /home/ben/task/ckpts/exp-06, --limit, '60000', --max-seq-len, '3072', --fewshot-frac, '0.12', --epochs, '1', --batch-size, '16', --grad-accum, '2', --lr, '5e-6', --attn, sdpa, --liger]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 500 (first 500 items, no shuffle)
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.678
+    path: /home/ben/task/eval/exp-04greedy_dev500.json
+  diagnostic:
+    what: "greedy probe-250 accuracy against exp-04's 0.680 - a disjoint held-out read, since dev-500 alone has +/-0.021 stderr"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.35
+  output_checkpoint: /home/ben/task/ckpts/exp-06-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 1875}
+    - {path: /home/ben/task/ckpts/exp-06-greedy, step: 1875}
+  training_summary: {final_loss: 0.2448, steps: 1875, notes: "60000 rows, second pass, 4567 s, 13.1 samples/s; train_loss 0.2738 (exp-04, first pass) -> 0.2448"}
+  measurements:
+    - {metric: accuracy, value: 0.686, n: 500, path: /home/ben/task/eval/exp-06_greedy_dev500.json, delta_vs_comparator: 0.008}
+  diagnostic_result:
+    value: 0.696
+    path: /home/ben/task/analysis/exp-06_probe250.json
+    notes: "probe-250 greedy 0.680 -> 0.696 (+1.6). Both reads move the same way this time, unlike exp-04. Pooled over the 750 disjoint items of dev-500 + probe-250: 0.6787 -> 0.6893 (+1.1 pts, 8 more items)."
+  watch_set_result:
+    fixed: 18
+    still_failing: 62
+    regressions: 14
+    path: /home/ben/task/analysis/exp-06_watch_rerun.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-500 0.678 -> 0.686 and probe-250 0.680 -> 0.696; pooled over 750 disjoint items 0.6787 -> 0.6893. Each read alone is inside its own noise, but they agree in sign and magnitude, which the data-volume and soup interventions never did - the runs were mildly under-trained, and a second low-LR pass is what moved them."
+  decision: adopt
+  next_step: "final_model now holds exp-06-greedy. exp-07: a third pass at lr 2.5e-6 to find where the second-pass gain turns over; ship it only if it beats exp-06 on BOTH dev-500 and probe-250, since a single read cannot resolve a 1-point effect."

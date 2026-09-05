@@ -1,0 +1,146 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T08:56:56Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 1.75
+  remaining_h: 8.25
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.673, protocol_n: 1319}
+  trigger: "exp-02 closed the format bottleneck completely (max_tokens share 0.533 -> 0.027) and reached 0.72, so the 42 remaining dev-150 failures are reasoning errors, not stopping errors (analysis/exp-02_items.jsonl). exp-02 trained on 54,552 rows only because the throughput estimate at planning time was 9 samples/s; it actually ran at 21.2 samples/s and finished in 43 min against a 2.0 h budget, so roughly 2.2x more unique data now fits in the same wall clock."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_items.jsonl, locator: "stop_reason: 146 stop / 4 max_tokens; ends_with_answer_line false on 4 of 150", observation: "the format failure mode is gone, so extra data must buy reasoning"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.training_summary", observation: "2577 s for 54,552 rows = 21.2 samples/s, 43 min against a 2.0 h budget"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling fine-tuning from exp-02 instead", reason: "it is the natural attack on the residual reasoning failures and is planned as the next card, but it should be applied on top of the strongest SFT checkpoint, not a weaker one. Running the data-scaling card first means the RFT round starts from the better parent; running RFT first would make it stale the moment this card lands."}
+    - {option: "Continue training exp-02/final on the ~58k rows it did not see (about 45 min)", reason: "cheaper, but it restarts a cosine schedule mid-training on a checkpoint already annealed to lr ~0, which mixes a data effect with a schedule artefact. Restarting from the base under one clean cosine schedule keeps the only difference between exp-02 and exp-03 the corpus size."}
+    - {option: "Two epochs on the 54,552 rows of exp-02", reason: "same wall clock, but re-reading seen data risks memorisation, whereas OpenMathInstruct-2 has ~530k unused gsm8k-family rows available in the 8 downloaded shards. More unique data is the better-supported lever."}
+    - {option: "Go to the full 159,424 rendered rows", reason: "52.5M tokens is already ~1.55 h at the measured 9.4k tokens/s; the full set would be ~2.0 h and would leave no room for the RFT card and the final wider-n confirmation"}
+  pitfalls_hit:
+    - {what: "The greedy decode file written for vLLM (do_sample false + temperature 0.0, and originally top_k -1) is rejected by transformers' GenerationConfig.save_pretrained strict validation. exp-02's checkpoint carried it, so any card resuming from one of our own checkpoints would have crashed at save time after a full training run.", cost_h: 0.05, fix: "scripts/train_sft.py now replaces model.generation_config in memory with a valid one right after loading, and writes the vLLM decode file separately with json.dump after the save; top_k dropped entirely since temperature 0.0 already forces greedy. Verified: transformers loads exp-02's file and vLLM logged that it overrode its defaults from it."}
+  smoke_runs:
+    - {command: [python, scripts/make_sft_v3.py], outcome: "121,550 rows selected, 52.47M tokens, max 3063 tokens, 4,773 few-shot rows"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v3_check.jsonl], outcome: "121,550 documents scanned, 0 contaminated, exit 0"}
+    - {command: [python, evaluate.py, --model-path, ckpts/exp-02/step800_eval, --limit, '150', --max-connections, '8', --gpu-memory-utilization, '0.85'], outcome: "checkpoint selection, run before committing 1.6 h (WMA cheaper-variant on this card). exp-02's never-scored step-800 checkpoint gets 0.693 against final's 0.720 on the same 150 items, so training to the end was not worse here and the incumbent stays ckpts/exp-02/final. The intermediate checkpoint had to be given the tokenizer and the greedy generation_config.json first (Trainer writes only the base sampling config into checkpoint-N/), otherwise it would have been read under sampling and the comparison would have been meaningless."}
+    - {command: [python, evaluate.py, --model-path, ckpts/exp-02/final, --limit, '1319', --max-connections, '8', --gpu-memory-utilization, '0.85'], outcome: "the comparator, re-measured under this card's protocol: 0.673 +/- 0.013 on the full 1319-item test set, 5 min of generation. The 150-item slice reads 0.720, i.e. 4.7 pp optimistic, which is why this card's decision is taken at n=1319."}
+    - {command: [python, -c, "re-tokenise 431 rows of data/sft_v3.jsonl the way the trainer does - tok(prompt) + tok(completion), add_special_tokens=False - and compare against the stored n_tokens the truncation assert reads"], outcome: "0 discrepancy on all 431 rows (the 400 longest plus a stride sample); trainer-side maximum is 3062 tokens against the 3072 cap and 0 rows exceed it. The prompt/completion boundary falls on a clean token boundary, so joint and split tokenisation agree and the <2% assert is reading the right number."}
+    - {command: [python, -c, "diff the harness's system message from the exp-01 inspect log against scripts/build_sft.py fewshot_prefix()"], outcome: "byte-identical (5872 chars); the full rendered prompt matches the harness's byte-for-byte up to the question text, so pitfall template_unreachable is closed"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent gets 431 of 1319 full-test items wrong (0.673 accuracy), and 42 of the 150-item slice and essentially all of them are now reasoning failures: it stops correctly, emits exactly one ANSWER line and puts it last, but the arithmetic or the setup of the chain is wrong. exp-02 saw only 54,552 of the ~530k GSM8K-train-derived chains available, which was a wall-clock decision made against a throughput estimate that turned out to be 2.4x too pessimistic."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_items.jsonl, locator: "stop_reason counts", observation: "146 of 150 completions stop on eos; only 4 hit the cap, so at most 4 failures are attributable to generation length"}
+    - {path: /home/ben/task/analysis/exp-02_items.jsonl, locator: "ends_with_answer_line", observation: "146 of 150 end on an ANSWER line; the format mechanism has no headroom left"}
+    - {path: /home/ben/task/analysis/exp-02_watch_rerun.json, locator: "still_failing_ids", observation: "41 of the 140 items the base failed are still wrong, and 1 item the base got right regressed"}
+  affected_share: 0.28
+  failure_examples:
+    - {id: gsm8k_6e11451d, source: /home/ben/task/analysis/exp-02_items.jsonl, question: "dev-150 item still failing after exp-02", gold: "see analysis/exp-02_items.jsonl", model_output: "runs to the 4000-token cap", failure: "one of only 4 residual length failures"}
+    - {id: gsm8k_7feb8f87, source: /home/ben/task/analysis/exp-02_items.jsonl, question: "dev-150 item still failing after exp-02", gold: "see analysis/exp-02_items.jsonl", model_output: "runs to the 4000-token cap", failure: "residual length failure"}
+    - {id: gsm8k_cef581f8, source: /home/ben/task/analysis/exp-02_items.jsonl, question: "dev-150 item still failing after exp-02", gold: "see analysis/exp-02_items.jsonl", model_output: "runs to the 4000-token cap", failure: "residual length failure"}
+    - {id: gsm8k_d4c5048f, source: /home/ben/task/analysis/exp-02_items.jsonl, question: "dev-150 item still failing after exp-02", gold: "see analysis/exp-02_items.jsonl", model_output: "runs to the 4000-token cap", failure: "residual length failure"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch_rerun.json
+    n: 41
+    selection: "the 41 items of the 140-item exp-01 watch set that exp-02 still gets wrong; these are the reasoning failures this card has to move"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Training the same recipe from the same base checkpoint on 121,550 GSM8K-train-derived chains instead of 54,552 raises full-test accuracy against exp-02's 0.673."
+  mechanism: "exp-02's format gain is already saturated, so any further movement must come from reasoning. 2.2x more unique GSM8K-style problems and solution chains, drawn from ~530k available OpenMathInstruct-2 gsm8k-family rows with at most 2 solutions per problem, is additional reasoning supervision rather than repetition; the run is one clean cosine schedule from the base so the only difference against exp-02 is corpus size."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+1 to +5 pts against exp-02's full-test 0.673, i.e. 0.68-0.72. Data scaling past the format fix has clearly diminishing returns, so a null result is a real possibility; the decision is taken at n=1319 (stderr 0.013) rather than n=150 (stderr 0.037) precisely because the expected effect is close to the n=150 noise floor."
+  falsified_if: "Full-test accuracy at n=1319 is at or below exp-02's 0.673, or fewer than 8 of the 41 watch-set items are fixed. Either says corpus size is no longer the binding constraint and the remaining budget should go to on-policy rejection sampling instead."
+  decision_rule_precommitted: "Written before the launch, on the WMA's third precondition, so that a sub-noise delta cannot be converted into a win after the fact. Primary metric: accuracy at n=1319. Because both arms are scored on the same 1319 items, significance is judged by a two-sided exact McNemar test on the paired per-item outcomes against analysis/exp-02_full_items.jsonl, which is far more powerful than the ~0.018 unpaired standard error of the difference. (a) delta > 0 and p < 0.05 -> verdict supported, decision adopt, exp-03 becomes the incumbent and the RFT parent. (b) delta > 0 and p >= 0.05 -> verdict inconclusive, the effect is NOT claimed; the higher-scoring checkpoint may still be taken as the final artifact because choosing between two statistically indistinguishable models is free, but the next card records the effect as unproven. (c) delta <= 0 -> verdict contradicted, decision reject, exp-02/final stays the incumbent and the remaining budget goes to on-policy rejection sampling from it."
+  mixture_drift_caveat: "exp-03 is not a pure corpus-size change against exp-02. The math-family share rises from 9.2% to 11.8%, the few-shot share falls from 5.1% to 3.9%, and the subsample seed differs (7 vs 11) so the row sets are not nested. A null result therefore refutes 'this corpus at this size beats exp-02's', not data scaling in general."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "openai/gsm8k main train (7,473 rows) + nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e shards 0-7 (114,077 rows: 14,757 problem_source=gsm8k, 85,000 augmented_gsm8k, 11,000 augmented_math, 3,320 math). Both are built from the GSM8K and MATH *train* splits only; the builder never reads the GSM8K test split."
+      n_examples: 121550
+      built_by: /home/ben/task/scripts/make_sft_v3.py
+      build_command: [bash, -c, "python scripts/build_sft.py --out data/sft_v3_raw.jsonl --max-gsm-aug 130000 --max-math 22000 --max-per-problem 2 --fewshot-frac 0.04 --max-tokens 3072 && python scripts/make_sft_v3.py --src data/sft_v3_raw.jsonl --out data/sft_v3.jsonl --seed 11"]
+      selection: "identical filters to exp-02 (integer expected_answer, brace-balanced \\boxed unwrapping, <<..>> calculator annotations stripped from GSM8K gold, '####' bodies rejected, at most 2 solutions per problem for gsm8k-family and 1 for math-family, exact (question, completion) dedup, 49 rows over 3072 rendered tokens dropped, 1 row without exactly one 'ANSWER:' dropped), then subsampled to the quota above with 4,773 rows (3.9%) carrying the harness's exact 10-shot prefix. Supersets exp-02's corpus in distribution but is drawn with a different seed, so it is not a strict superset row-for-row."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE, flash_attention_2"
+    peft: "none - full parameter on the 3.880B language tower; the 419.8M vision tower and multimodal projector are frozen so the checkpoint keeps the Gemma3ForConditionalGeneration architecture vLLM loads"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 24, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    decode: "greedy: the run writes generation_config.json with do_sample false, temperature 0.0, top_p 1.0 and eos_token_id [1, 106]; top_k is omitted because temperature 0.0 already forces greedy and the vLLM sentinel -1 breaks a later save_pretrained. Confirmed on exp-02 that vLLM reads this file ('Default sampling parameters have been overridden by the model's Hugging Face generation config'). Same decode as exp-02, so the two are strictly comparable."
+    target_format: "<bos><start_of_turn>user\\n{optional 10-shot block}\\n\\n{MATH_PROMPT_TEMPLATE with the question}<end_of_turn>\\n<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: {integer}<end_of_turn>; loss on the model turn only, prompt tokens masked to -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v3.jsonl, --out, /home/ben/task/ckpts/exp-03, --epochs, '1', --lr, '1e-5', --bs, '24', --accum, '2', --max-len, '3072', --attn, flash_attention_2, --liger, '1', --seed, '0', --save-steps, '800']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 800
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '8', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 1319, i.e. the complete openai/gsm8k main test split; fewshot_seed 42 fixed by the task definition"
+    n: 1319
+    seed: 42
+    note: "raised from 150 to the full split on the WMA's first precondition: the expected effect (~+2.5 pp) sits below the n=150 ruler (stderr 3.7 pp). Measured cost is 5 min of generation, and exp-02 reads 0.673 at n=1319 against 0.720 at n=150, so the slice was materially optimistic. A fast n=150 pre-read may still be taken for triage but no decision is taken on it."
+  comparator:
+    ref: exp-02
+    value: 0.673
+    path: /home/ben/task/eval/exp-02_full1319.json
+  diagnostic:
+    what: "how many of the 41 watch-set reasoning failures are fixed, against how many previously-correct items regress. A gain that is all churn (many fixed, nearly as many broken) is noise, not added reasoning. The 41 ids are read from analysis/exp-02_watch_rerun.json field still_failing_ids, the same list the falsification rule counts against, and the churn count is computed over all 1319 items against analysis/exp-02_full_items.jsonl."
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.54
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 2533}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-2400, step: 2400}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1600, step: 1600}
+  training_summary:
+    final_loss: 0.3151
+    steps: 2533
+    notes: "5554 s (1.54 h) at 21.9 samples/s, inside the 1.8 h budget. 0 of 121,550 rows truncated, as the pre-launch re-tokenisation predicted. Loss trajectory matches exp-02's (0.28-0.37 mid-run, 0.315 mean) so the larger corpus did not train worse. Throughput dipped to ~4 s/step in the stretches where the length-grouped sampler batches the 4,773 few-shot rows together, which is expected and self-limiting."
+  measurements:
+    - {metric: accuracy, value: 0.7081, n: 1319, path: /home/ben/task/eval/exp-03_full1319.json, delta_vs_comparator: 0.0349}
+  diagnostic_result:
+    value: 0.0034
+    path: /home/ben/task/analysis/mcnemar_exp02_exp03.json
+    notes: "Pre-committed paired exact McNemar over the same 1319 items: 142 items exp-03 gets right that exp-02 got wrong against 96 the other way, 238 discordant, two-sided p = 0.0034. The gain is not churn-neutral reshuffling: the imbalance is what carries the significance. Format diagnostics stayed saturated (max_tokens 22/1319 -> 18/1319; not ending on an ANSWER line 0.0174 -> 0.0136), so this really is added reasoning and not a further format fix. stderr 0.013."
+  watch_set_result: {fixed: 15, still_failing: 26, regressions: 96, path: /home/ben/task/analysis/exp-03_watch_rerun.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Full-test accuracy 0.673 -> 0.7081 (+3.49 pts) on 121,550 rows against 54,552, inside the predicted +1 to +5 band. The pre-committed decision rule lands squarely in branch (a): delta > 0 and paired McNemar p = 0.0034 < 0.05, so the effect is claimed rather than merely observed. 15 of the 41 watch-set reasoning failures are fixed, above the 8-item falsification floor."
+  decision: adopt
+  next_step: "exp-04: data scaling worked but the run cost 1.54 h for +3.5 pts and 26 of the 41 watch items are still wrong, so the next increment of off-policy data is poor value. Rejection-sampling fine-tuning from ckpts/exp-03/final on its own answer-correct chains, weighted toward questions it solves only sometimes, attacks exactly the residual reasoning failures and is on-policy. A weight-average soup of exp-02 and exp-03 is a cheap second candidate if budget remains."

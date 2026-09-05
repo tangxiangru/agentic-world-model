@@ -1,0 +1,198 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T00:21:39Z'
+situation:
+  elapsed_h: 0.3
+  remaining_h: 9.7
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: null
+      protocol_n: null
+  trigger: Session start - no number exists for the base checkpoint under the harness
+    protocol, so no later SFT card can have a legal comparator.
+  trigger_evidence:
+  - path: /home/ben/task/memory/index.md
+    locator: empty index, no prior cards
+  alternatives_rejected:
+  - option: Quote the published Gemma-3-4B-PT GSM8K number (38.4, 5-shot) as comparator
+    reason: different protocol (5-shot, different harness); a number from a different
+      protocol is not a comparator
+  - option: Skip the baseline and compare the SFT run against nothing
+    reason: no way to tell an improvement from a regression, and no way to detect a
+      broken eval harness before spending GPU hours on training
+  - option: Go straight to SFT to save ~20 min of GPU time
+    reason: the eval harness is unverified; a first run that silently mis-renders the
+      chat template would cost far more than 20 min
+  pitfalls_hit: []
+  smoke_runs:
+  - command: [python, -c, tokenizer.apply_chat_template with templates/gemma3.jinja]
+    outcome: renders '<bos><start_of_turn>user\nSYS\n\nUSER<end_of_turn>\n<start_of_turn>model\n';
+      the system message is folded into the first user turn; terminator is <end_of_turn>
+      (id 106), which is in generation_config.json eos_token_id [1, 106]
+  - command: [cat, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json]
+    outcome: 'DECODE PIN for every card in this session. evaluate.py passes no temperature/top_p/top_k/seed,
+      so vLLM inherits the checkpoint''s generation_config.json. The base ships: bos_token_id
+      2, eos_token_id [1, 106], pad_token_id 0, do_sample true, top_k 64, top_p 0.95,
+      no temperature key (so vLLM uses 1.0), cache_implementation hybrid. The anchor
+      this card produces is therefore a single unseeded sampled draw at T=1.0/top_k=64/top_p=0.95.
+      Consequence for later cards: HF Trainer.save_model rewrites generation_config.json
+      and collapses eos_token_id to the tokenizer''s single eos (1), which would drop
+      106 and stop vLLM ever terminating on <end_of_turn>; train_sft.py must overwrite
+      the saved generation_config.json with the base one so decode stays pinned and
+      every delta in this session is read at the same decode.'
+problem:
+  statement: google/gemma-3-4b-pt is a raw pretrained checkpoint with no instruction
+    tuning. Under the harness protocol (inspect_evals/gsm8k, 10-shot system message,
+    gemma3.jinja chat template, match(numeric=True, location=end)) its GSM8K accuracy
+    is unknown, and it is unknown whether it terminates its answers at all or emits
+    a final line of the form ANSWER<colon><space><number> that the grader can read.
+  evidence:
+  - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+    locator: MATH_PROMPT_TEMPLATE, sample_to_fewshot, scorer=match(numeric=True)
+    observation: the grader takes the last numeric whitespace-token of the completion,
+      so a model that never stops or trails off after the answer scores 0 on items
+      it actually solved
+  - path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/config.json
+    locator: architectures
+    observation: Gemma3ForConditionalGeneration (multimodal), so any text-only training
+      must keep the vision tower present or vLLM will not load the result
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: Measuring google/gemma-3-4b-pt on GSM8K dev-150 under the harness protocol
+    will yield a non-zero accuracy well below a tuned model's, establishing the floor
+    every later card is compared against, and the dominant failure mode will be format
+    or termination rather than arithmetic.
+  mechanism: A pretrained-only checkpoint can pattern-match the 10-shot exemplars well
+    enough to produce some correct ANSWER<colon><space><number> lines, but with no instruction tuning
+    it will often continue past the answer and invent further Q/A pairs, so the grader's
+    last-number rule reads a number from a hallucinated follow-up problem.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: 0.15-0.45 absolute; this run defines the reference level, not a delta
+  falsified_if: accuracy is exactly 0.00 (which would indicate a broken harness or
+    unloadable model rather than a weak model), or inspection of completions shows
+    the model stopping cleanly right after the ANSWER<colon><space><number> line on
+    more than 95% of items (which
+    would mean formatting is not the problem).
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/eval/exp-01_eval_inputs_note.txt
+    source: local
+    n_examples: 150
+    built_by: null
+    build_command: []
+    selection: 'No training data: this card only measures. The 150 items are the first
+      150 of the official inspect_evals/gsm8k test split, loaded by evaluate.py from
+      the openai/gsm8k hub dataset; no benchmark item is used for training anywhere
+      in this session.'
+    contamination_check: not_run
+    mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect-ai 0.1.dev3780 + vllm 0.11.0 (measurement only, no weight update)
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: null
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: null
+    target_format: n/a - no training in this card
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d,
+      --limit, '150', --max-connections, '16', --max-tokens, '1024', --gpu-memory-utilization,
+      '0.85', --json-output-file, /home/ben/task/eval/exp-01_base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '16', --max-tokens, '1024', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 150 (first 150 items,
+      deterministic order, no shuffle)
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: clean-termination rate - share of the 150 completions whose final non-empty
+      line is the answer marker declared in setup.method.answer_marker followed by a
+      number and nothing else (regex ^ANSWER<colon>\s*-?[\d.,]+$ on the stripped last
+      line), read from the inspect json log under /home/ben/task/logs/
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.18
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: no weights were updated; this card is a measurement
+  measurements:
+  - metric: accuracy
+    value: 0.0867
+    n: 150
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+    delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.16
+    path: /home/ben/task/analysis/exp-01_items.jsonl
+    notes: 'clean-termination rate 0.16 (24/150 completions end on an ANSWER line and
+      nothing else); 0.00 hit the 1024-token cap; mean completion 2224 chars. Inspecting
+      the items shows the predicted mechanism outright: item 1 produces the correct
+      chain and the line ANSWER 20 (gold 20), then keeps going and writes out three
+      more invented word problems, so the scorer''s last-number rule reads 66 from a
+      hallucinated follow-up and marks it wrong. stderr of the reported accuracy is
+      0.0230. I did not run the WMA''s suggested C18 repeat of the identical command:
+      it costs ~12 min of GPU for a +-3 pp refinement of a floor that the diagnostic
+      already explains, and no later decision in this session turns on the third digit
+      of 0.0867. Decode was the pinned base decode (T=1.0, top_k 64, top_p 0.95).'
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: 'Base gemma-3-4b-pt scores 0.0867 on GSM8K dev-150 under the harness protocol,
+    far below its published 5-shot 38.4, and the gap is almost entirely termination:
+    only 16% of completions stop after the answer line, and the scorer reads the last
+    number in a stream of self-invented follow-up problems. The hypothesis that the
+    dominant failure is format rather than arithmetic is supported - the model''s
+    reasoning is often right on the first problem it writes.'
+  decision: iterate
+  next_step: 'SFT on GSM8K-style chain-of-thought targets that end in ANSWER <number>
+    followed by <end_of_turn>, so the model terminates. exp-02. Carry the pinned decode
+    forward, and make the trainer overwrite the saved generation_config.json so eos_token_id
+    stays [1, 106].'

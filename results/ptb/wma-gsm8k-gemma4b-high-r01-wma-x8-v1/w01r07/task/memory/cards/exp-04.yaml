@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T15:21:42Z'
+situation:
+  elapsed_h: 1.45
+  remaining_h: 8.55
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6533, protocol_n: 150}
+  trigger: "exp-03's checkpoint sweep: 0.5667 at step 150, 0.6600 at step 300, 0.6533 at step 365. Accuracy is still climbing steeply at step 300 and flat thereafter, so exp-02 was not trained past its optimum and there are more useful optimisation steps to buy."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "result.measurements (three points on the same 150-item protocol)"}
+    - {path: /home/ben/task/analysis/exp-02_diagnostic.json, locator: "scored=98, first_answer_correct=98"}
+  alternatives_rejected:
+    - {option: "A second epoch over the same 52473 rows", reason: "exp-03 shows the run is not overtrained but says nothing in favour of repetition; OpenMathInstruct-2's own ablations favour more unique problems over more passes, and 35795 deduped gsm8k-derived rows from train_1M were left unused by exp-02"}
+    - {option: "Rejection-sampling fine-tuning on exp-02's own samples", reason: "worth doing, but it is on-policy data whose value depends on the parent's solve rate; running it after the stronger parent exists is strictly better, so it is queued as the next card"}
+    - {option: "Downloading more shards of OpenMathInstruct-2's full 14M train split for still more unique gsm8k problems", reason: "would push the epoch past 3 h; 80795 unique problems is already 1.8x exp-02 and fits the 1.8 h slot"}
+    - {option: "Raising the learning rate above 1e-5", reason: "would confound the data change with an optimisation change; exp-02 gave no sign of underfitting"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v2.jsonl], outcome: "95741 documents scanned, 0 contaminated, exit 0"}
+    - {command: [python, -c, "token length survey of data/sft_v2.jsonl over a 3000-row sample"], outcome: "mean 645 tokens, max 2962, 0% over max_seq_len=3584; 61.7M tokens/epoch, 1.87x exp-02's 33M"}
+problem:
+  statement: "exp-02's model is right on 98 of 150 items and every one of the 52 failures is a reasoning or arithmetic error, not a formatting error. It was trained on 45000 of the 80795 deduped gsm8k-derived OpenMathInstruct-2 problems available in train_1M, and exp-03 shows accuracy was still rising when the schedule ended."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_diagnostic.json, locator: "scored=98 == first_answer_correct=98, stop 148/150", observation: "no format loss remains; 52 genuine solve failures"}
+    - {path: /home/ben/task/eval/exp-02_ckpt300_dev150.json, locator: accuracy, observation: "0.6600 at step 300 vs 0.5667 at step 150: +9.3 pts of reasoning bought by steps 150-300 alone"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "setup.data[0].source", observation: "45000 of 80795 available gsm8k-derived rows used"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Training the same recipe from the base snapshot on data/sft_v2.jsonl - all 80795 deduped gsm8k-derived OpenMathInstruct-2 train_1M rows plus two copies of gsm8k train, 95741 rows and 665 steps against exp-02's 365 - raises GSM8K accuracy over exp-02's 0.6533."
+  mechanism: "Format is already saturated by step 150, so every extra step is spent on solve rate; 1.8x the unique problems at the same effective batch gives 1.8x the optimisation steps without repeating any example, which is the regime exp-03 measured as still-improving."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +8 pts; the 150 -> 300 step segment was worth +9.3 pts but returns are diminishing"
+  falsified_if: "dev-150 accuracy at or below 0.6600 (exp-02's best checkpoint), i.e. doubling the unique problem count bought nothing measurable"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "openai/gsm8k main/train x2 (14946) + nvidia/OpenMathInstruct-2 train_1M rev 469216e3f46f4dacf476b382e192485ea51a143e, problem_source in {gsm8k, augmented_gsm8k}, all 80795 deduped"
+      n_examples: 95741
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v2.jsonl, --n-openmath, "100000", --gsm8k-repeat, "2", --p-fewshot-full, "0.08", --p-fewshot-short, "0.30", --seed, "7"]
+      selection: "identical rules to exp-02: numeric expected_answer only, \\boxed{} unwrapped, lowercase-problem dedup, solutions <=4000 chars, <<..>> spans stripped from gsm8k targets, every target ends '\\n\\nANSWER: <n><end_of_turn>'"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with liger fused linear-CE, custom pre-tokenised dataset + completion-only labels
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 24, grad_accum: 6, max_seq_len: 3584, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "chain of thought, then a blank line, then 'ANSWER: <number>', then <end_of_turn>; prompt tokens carry label -100"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_exp04.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_exp04.sh
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 220
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.6533
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "terminated-generation share and correct-first-ANSWER rate, read from the inspect log exactly as in exp-01/exp-02, to confirm the gain is solve rate and not a format regression"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.62
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 665}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-665, step: 665}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-660, step: 660}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-440, step: 440}
+  training_summary: {final_loss: 0.3507, steps: 665, notes: "5487 s wall, 61.7M tokens. checkpoint-220 was rotated out by save_total_limit=3 before I could fix it up; 440/660/665 survive, so the checkpoint sweep is coarser than exp-03's but still available."}
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.0534}
+  diagnostic_result:
+    value: 0.987
+    path: /home/ben/task/analysis/exp-04_diagnostic.json
+    notes: "148/150 terminate and scored=106 equals first_answer_correct=106, exactly as in exp-02: no format regression, the whole +5.3 is solve rate. Median completion 514 chars vs exp-02's 520, so the model did not buy accuracy by writing longer."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.6533 -> 0.7067 (+5.3 pts), clearing the 0.6600 falsification threshold, with train_loss essentially unchanged (0.3626 -> 0.3507). 98 -> 106 of 150 solved with format still saturated, so 1.8x the unique gsm8k-derived problems bought 8 more solved items and nothing else changed."
+  decision: adopt
+  next_step: "The run confounds 1.82x unique problems with 365 -> 665 steps, so it supports 'a bigger single-epoch run helps' and not either factor alone; recorded before reading the number. +5.3 pts is inside two standard errors at n=150, so the final choice between exp-02 and exp-04 must be made at a larger n, not here. Next: a second stage from exp-04/final on data/sft_v3.jsonl (95000 NEW OpenMathInstruct-2 405B solutions to the same 80818 problems, verified disjoint from stages 1-2 by exact completion match), which adds supervision without repeating a single target."

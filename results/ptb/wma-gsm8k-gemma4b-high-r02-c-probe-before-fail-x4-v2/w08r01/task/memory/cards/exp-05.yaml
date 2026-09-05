@@ -1,0 +1,140 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T22:20:42Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 6.55
+  remaining_h: 3.45
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "exp-04 produced a candidate that cannot be separated from the incumbent at n=150: dev-150 says 0.7133 vs 0.7200 (-0.7) while probe300 says 0.7767 vs 0.7467 (+3.0). Both gaps are inside their noise floors and they point opposite ways, so the choice of what goes into final_model is currently being made by noise."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.measurements, conclusion.summary"}
+    - {path: /home/ben/task/eval/exp-04-greedy_dev150.json, locator: "accuracy=0.7133, stderr=0.0370"}
+    - {path: /home/ben/task/eval/exp-02-greedy_dev150.json, locator: "accuracy=0.7200, stderr=0.0368"}
+  alternatives_rejected:
+    - {option: "Pick by the pooled 450-item total (0.7556 vs 0.7378) and skip the extra reads", reason: "the two components are measured on different distributions (GSM8K test items vs held-out GSM8K train items), so pooling weights a train-distribution proxy equally with the graded one; 30 min of GPU buys a direct answer instead of an argument about how to average"}
+    - {option: "Keep the incumbent because its dev-150 number is higher", reason: "0.7200 vs 0.7133 is a one-item difference at n=150 with stderr 0.037; treating that as a result is exactly what the protocol's comparator rule exists to prevent"}
+    - {option: "Train something else with the remaining 3.4 h", reason: "another stage plus its evaluation does not fit alongside the packaging and CPU verification still to do, and exp-04 just measured the marginal value of more off-policy rows at roughly zero. Deciding correctly between two finished candidates is worth more than a third rushed one."}
+    - {option: "--limit 1319 (the full test split) for both arms", reason: "~35 min per arm at the measured throughput; n=500 brings stderr to ~0.02, enough to separate a 2-3 point gap, and leaves margin for packaging and verification before the deadline"}
+  pitfalls_hit:
+    - {what: "intermediate Trainer checkpoints lack preprocessor_config.json and processor_config.json (only the explicit AutoProcessor.save_pretrained at the end of training writes them), so vLLM died on checkpoint-1100 with 'IndexError: list index out of range' inside get_image_processor_dict - Gemma-3 is a multimodal architecture and vLLM loads the image processor even for text-only use", cost_h: 0.1, fix: "copied both files from the base snapshot into the variant dir; package_final.py already does this automatically when building final_model"}
+    - {what: "two vLLM jobs chained in one shell command: the second inherited the first's not-yet-released GPU memory and failed engine startup", cost_h: 0.05, fix: "one vLLM process per command, GPU checked free in between"}
+  smoke_runs:
+    - {command: [python, make_variant.py, --src, ckpts/exp-04/final, --dst, ckpts/exp-04-greedy, --temperature, '0'], outcome: "greedy variant built and asserted to keep eos_token_id [1, 106]; both arms of this card are decode-identical and differ only in weights"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Two finished candidates are within one standard error of each other on the only protocol that has been run on the graded distribution, and the held-out probe disagrees with it in sign. Submitting either one is currently a coin flip dressed as a decision."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04-greedy_dev150.json, locator: "accuracy=0.7133, stderr=0.0370", observation: "the gap to the incumbent is one item at n=150"}
+    - {path: /home/ben/task/analysis/exp-04_final_probe300.json, locator: "summary.accuracy=0.7767", observation: "the held-out probe ranks the two candidates the other way round, by +3.0"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/watch100.jsonl
+    n: 100
+    selection: "GSM8K TRAIN rows 7173-7272, held out from every training file this session. No test-split item is used."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Scoring both greedy candidates on the same 500-item protocol separates them: at n=500 the standard error falls from ~0.037 to ~0.020, so a real 2-3 point difference becomes visible and whichever arm is higher is the one that should be packaged as final_model."
+  mechanism: "Nothing about either model changes. The n=150 reads are two draws with stderr 0.037 around unknown true means that are probably 1-3 points apart; more than tripling n shrinks the error bar enough for the ordering to carry information."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "the exp-04 arm within -2 to +4 points of the exp-02 arm; the point of the card is the ordering and the tighter interval, not a gain"
+  falsified_if: "the two arms are still within one combined standard error of each other at n=500, in which case the candidates are genuinely indistinguishable and the choice has to be made on another ground, recorded in the conclusion, rather than on this number"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe300.jsonl
+      source: "openai/gsm8k main/train rows 7173-7472 (held-out probe; NOT training data - this card trains nothing and touches no weights)"
+      n_examples: 300
+      built_by: /home/ben/task/build_probe.py
+      build_command: [python, build_probe.py]
+      selection: "held-out probe reserved at session start; its existing greedy reads for the two arms (0.7467 and 0.7767) are the prior this card is testing"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0 via evaluate.py; both arms decoded greedily from their own generation_config (temperature 0.0)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged; no weights are touched by this card"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04-greedy, --limit, '500', --max-connections, '2', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-04-greedy_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/eval/logs/exp-05-b}
+    log: /home/ben/task/logs/exp-05-b.log
+    # arm A (the comparator, run first, identical apart from --model-path):
+    # python evaluate.py --model-path /home/ben/task/ckpts/exp-02-greedy --limit 500
+    #   --max-connections 2 --gpu-memory-utilization 0.85
+    #   --json-output-file /home/ben/task/eval/exp-02-greedy_dev500.json
+    #   with INSPECT_LOG_DIR=/home/ben/task/eval/logs/exp-05-a and log logs/exp-05-a.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '2', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 500 (inspect_evals/gsm8k takes the first 500 test items; deterministic, and a superset of the 150 used so far)"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-03
+    value: null    # the comparator arm does not exist at n=500 yet: BOTH arms are measured inside this card
+    path: null     # -> /home/ben/task/eval/exp-02-greedy_dev500.json once run, same argv with --model-path ckpts/exp-02-greedy
+  diagnostic:
+    what: "format compliance and max completion length for both arms at n=500; exp-04 shortened the incumbent's worst greedy repetition loop at n=150 (5613 vs 14105 chars) and that should hold at the larger n"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.31
+  output_checkpoint: /home/ben/task/ckpts/exp-04-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02-greedy, step: 3037}
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 2188}
+  training_summary: {final_loss: null, steps: null, notes: "no training; two evaluation arms over identical invocations, differing only in --model-path"}
+  measurements:
+    - {metric: accuracy, value: 0.7500, n: 500, path: /home/ben/task/eval/exp-04-greedy_dev500.json, delta_vs_comparator: 0.0160}
+    - {metric: accuracy, value: 0.7340, n: 500, path: /home/ben/task/eval/exp-02-greedy_dev500.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.988
+    path: /home/ben/task/analysis/exp-05b_diag.json
+    notes: "arm B (exp-04) vs arm A (exp-02) at n=500: format compliance 0.988 vs 0.978, non-terminating failures 6 vs 11, mean completion 620 vs 741 chars, worst completion 13682 vs 16085 chars. The second stage did shorten the greedy repetition tail, which is where about half of its 8-item net gain comes from. Paired McNemar over the same 500 items (analysis/exp-05_paired.json): 25 items only arm B gets right against 17 only arm A gets right, 42 discordant, chi2 1.17, two-sided p ~ 0.28."
+  watch_set_result:
+    fixed: 8
+    still_failing: 20
+    regressions: 5
+    path: /home/ben/task/analysis/exp-05_watch100.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "At n=500 the arms are 0.7500 (exp-04) vs 0.7340 (exp-02), a 1.6-point gap with stderr ~0.020 each; paired over the same items it is 25 wins to 17, p ~ 0.28. That is a tighter interval than n=150 gave but still not a separation, so the card's own falsification clause fires: the two candidates are not statistically distinguishable. The ordering is nevertheless consistent across every independent read taken - dev-500 +1.6, probe300 +3.0, format compliance 0.988 vs 0.978, non-terminating failures 6 vs 11 - and only the n=150 subset, which is contained in the 500, pointed the other way."
+  decision: adopt
+  next_step: "final_model is packaged from ckpts/exp-04/final with the greedy generation_config (package_final.py --greedy --verify). The decision is made on consistent ordering across four independent reads rather than on a significant p-value, and that distinction is recorded here: if the true gap is zero, the cost of this choice is zero, and no read favoured the alternative. A larger head-to-head (--limit 1319 both arms, ~70 min) is what would actually settle it and is the first thing to do with more time."

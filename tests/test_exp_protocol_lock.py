@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 
-from awm.exp_protocol import lock, schema
 from exp_protocol_cards import closed_card, plan_card
+
+from awm.exp_protocol import lock, schema
 
 
 def setup_card(tmp_path):
@@ -91,7 +92,9 @@ def test_a_relock_keeps_the_previous_hash_and_the_reason(tmp_path) -> None:
     card["hypothesis"]["claim"] = "a story that fits the result"
     second = lock.write_lock(path, card, {}, relock_reason="parent checkpoint path was wrong")
     assert second["relocked_from"] == [{"plan_sha256": first["plan_sha256"], "locked_at": first["locked_at"],
+                                        "lock_id": first["lock_id"],
                                         "overrides": {}, "reason": "parent checkpoint path was wrong"}]
+    assert second["lock_id"] != first["lock_id"]
     assert lock.verify_lock(path, card).ok
     third = lock.write_lock(path, card, {}, relock_reason="again")
     assert [r["reason"] for r in third["relocked_from"]] == ["parent checkpoint path was wrong", "again"]

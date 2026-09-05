@@ -1,0 +1,237 @@
+{
+  "schema_version": "awm-wma-verdict-v1",
+  "card_id": "exp-03",
+  "wma_skill": "176f0a464986",
+  "backend": "claude",
+  "mode": "online",
+  "issued_at": "2026-09-04T04:43:37Z",
+  "change_types": [
+    "C1a",
+    "C11"
+  ],
+  "levels": {
+    "L0_runs": {
+      "answer": "yes",
+      "confidence": 0.9,
+      "basis": [
+        "e1",
+        "e9",
+        "e14",
+        "e4",
+        "e11"
+      ],
+      "note": "No training, no data build: the candidate directory /home/ben/task/ckpts/exp-02-greedy already exists complete (both safetensors shards, index, config.json, tokenizer set, preprocessor_config.json, processor_config.json) and the 205-byte generation_config.json is already written (e1). The identical evaluate.py invocation ran to completion on exp-02/final 6 minutes earlier in 84 s of generation (e4), and preflight is 5 pass / 1 warn / 0 fail, the warn being max_seq_len headroom which a decode-only card does not use (e9). Template resolution is safe: the path contains no model-name substring, so evaluate.py falls back to config.json architectures -> Gemma3ForConditionalGeneration -> templates/gemma3.jinja, the same template the comparator used (e14). The one live risk is GPU contention, not the command: a second vLLM engine (rft_sample.py, 7,473 prompts, 43.7 GiB) came up at 04:36, one minute before the exp-03 lock (e11); with 0.3 x 80 GiB = 24 GiB requested it still fits in the free 36 GiB, but if that engine grows or the eval starts mid-profile the KV-cache allocation can fail. That is the residual 0.1."
+    },
+    "L1_valid": {
+      "answer": "yes",
+      "confidence": 0.88,
+      "basis": [
+        "e1",
+        "e2",
+        "e3",
+        "e4"
+      ],
+      "note": "The whole card rests on one mechanism -- that vLLM, not inspect-ai, decides the sampling parameters -- and both halves of it are checked in this session's own artifacts. (a) inspect-ai forwards no temperature: the exp-02 eval log records model_generate_config = {timeout, attempt_timeout, max_connections 2, max_tokens 4000} and nothing else (e4). (b) vLLM adopts the checkpoint's file: the exp-02 eval log carries the vLLM line 'Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator' (e3). So exp-02's 0.5867 was indeed a sampled read (top_k 64 / top_p 0.95 / T=1.0), and temperature 0.0 in the new file will be picked up the same way -- do_sample is inert either way, and the field that acts, temperature, is the one that was set (manual sec.4 'right diagnosis, wrong field' avoided). The silent-failure sweep is clean: temperature is 0.0, not JSON null (sec.4 'field written as null'); top_k/top_p are popped rather than set to the -1 sentinel that has cost other runs a later save_pretrained (sec.4 'save-time validation'); eos_token_id survives as [1, 106], so the C1b termination path is untouched. finalize.py rebuilds the config from the BASE snapshot rather than from src, which is a real sec.4 'config fields vanish' hazard, but I diffed the two: base and exp-02/final agree on bos_token_id 2, cache_implementation hybrid, eos [1,106], pad 0, and differ only in the sampling fields being edited, so nothing is lost (e1, e2). Residual risk is not loadability but degeneration: greedy could enter a repetition loop and return stop_reason max_tokens on some items -- a valid, scorable, but worse candidate."
+    },
+    "L2_effect": {
+      "metric": "accuracy",
+      "direction": "higher",
+      "interval": [
+        0.02,
+        0.13
+      ],
+      "confidence": 0.72,
+      "basis": [
+        "e5",
+        "e6",
+        "e7",
+        "e12",
+        "e8",
+        "e13"
+      ],
+      "note": "Four same-weights sampling->greedy contrasts on gsm8k in history all point the same way: +20.0 pp at n=150 on the identical mechanism (no temperature key -> vLLM sampled at T=1.0, rewritten to 0.0; e6), +14.0 / +12.7 pp at n=150 on two reads of one config edit (e7), +14.4 pp at n=500 (e12). None shares this base model -- history holds Qwen3-1.7B/4B and SmolLM3 runs, no gemma-3-4b -- and, more importantly, in every one of them the sampled arm was *unrestricted* T=1.0, whereas exp-02 samples under top_k 64 and top_p 0.95, which truncates most of the harmful tail. I therefore discount the precedent magnitudes by roughly half and centre near +6 to +7 pp. The upside is capped by what is left to win: the comparator's failures are arithmetic, not format (150/150 stop cleanly, 150/150 end in an ANSWER line, mean 488 chars; e5), so greedy can only recover items the weights already get right on the mode path. The downside case exists -- one run's greedy edit took 0.06 to 0.013 at n=150 because outputs collapsed into repetition (e8) -- but the distinguishing condition is that that model was already degenerate, while this one terminates on 150/150 items under sampling; I put maybe 8-10 % on a flat-or-negative result from a partial greedy collapse. The interval width (11 pp) is deliberately well above the noise floor here: n=150 greedy is ~1.3 pp, but the *comparator* is a single sampled n=150 read (stderr 0.040, sampled spread ~3.3 pp; e13), so the measured gap carries the sampled arm's noise whatever greedy does. Confidence is held at 0.72 rather than higher because there is no same-base-model precedent and no gemma-style restricted-sampling precedent anywhere in the 143 historical runs, and the gpu_min=0.0 budget forbade the sample_probe that would have settled it."
+    },
+    "L3_worth_now": {
+      "answer": "yes",
+      "confidence": 0.88,
+      "expected_cost_h": 0.12,
+      "basis": [
+        "e10",
+        "e13",
+        "e4",
+        "e7"
+      ],
+      "note": "This is the cheapest lever on the board and it is also an infrastructure fix. Cost is one eval: 84 s of generation plus vLLM startup, ~5-8 min wall against 6.0 h remaining and a planned 0.15 h (e4, e10). Expected value has two parts. The direct one is the point estimate above, obtained with zero GPU-hours; the manual's own accounting says a decode read is minutes against the 61-72 % of a budget that trainings consume. The indirect one is larger and is what makes this the right *next* action rather than a later one: every comparison the run has made so far, including the 0.5867 incumbent it just adopted, was scored under sampling with a ~3-4 pt floor, and the RFT line already warming up on the GPU (e11) will be judged against that floor unless greedy is established first. Fixing the ruler before spending the next hours on candidates is worth more than the points themselves. The rejected alternatives are sound: a small non-zero temperature adds an unknown with no diversity to exploit at one sample per item, and touching eos_token_id [1,106] would risk the termination behaviour exp-02 just bought. The only thing I would attach to the 'yes' is that the same GPU minute is now contested by the RFT sampling job, and that the checkpoint sweep (C5, +-15 pp controlled, three saved checkpoints available at no training cost) is the natural companion read once the greedy protocol is in force."
+    }
+  },
+  "evidence": [
+    {
+      "id": "e1",
+      "path": "/home/ben/task/ckpts/exp-02-greedy/generation_config.json",
+      "locator": "whole file (205 bytes)",
+      "note": "Already written: do_sample false, temperature 0.0, eos_token_id [1,106], bos 2, pad 0, cache_implementation hybrid; top_k and top_p absent. No null values, no top_k=-1 sentinel. Directory also holds both safetensors shards, config.json, tokenizer set, preprocessor_config.json and processor_config.json."
+    },
+    {
+      "id": "e2",
+      "path": "/home/ben/task/scripts/finalize.py",
+      "locator": "main(), the --greedy branch and AUX list",
+      "note": "Builds generation_config from the BASE snapshot, not from --src, then sets do_sample false / temperature 0.0 and pops top_k, top_p. Diffing base against exp-02/final shows they agree on every non-sampling field, so the rebuild loses nothing; AUX copies the tokenizer, preprocessor_config.json and processor_config.json that the Trainer never writes."
+    },
+    {
+      "id": "e3",
+      "path": "/home/ben/task/logs/eval-exp02-final.log",
+      "locator": "vLLM startup warning",
+      "note": "'Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator' -- direct in-session proof that the checkpoint's generation_config.json becomes the server's default sampling params."
+    },
+    {
+      "id": "e4",
+      "path": "/home/ben/task/logs/2026-09-04T04-31-55+00-00_gsm8k_gDxbyt39nV8WCvQqZ4xMkC.json",
+      "locator": "plan.config, eval.model_generate_config, stats",
+      "note": "Comparator run. Generate config is {timeout, attempt_timeout, max_connections 2, max_tokens 4000} -- no temperature, top_p or top_k, so inspect-ai overrides nothing. Same --limit 150, same fewshot seed 42, same template, 150/150 samples in 84 s: the exp-03 arm differs from it only in the decode config, so this is not a C12 comparison."
+    },
+    {
+      "id": "e5",
+      "path": "/home/ben/task/analysis/exp-02_final150.json",
+      "locator": "summary and wrong[]",
+      "note": "Comparator diagnostics: accuracy 0.5867, stop_reasons {stop: 150}, share ending in an ANSWER line 1.0, mean completion 488 chars. The wrong answers are arithmetic/reading errors with well-formed chains, so the headroom greedy can reach is reasoning-path headroom, and a greedy repetition collapse is unlikely on weights that terminate on 150/150 items."
+    },
+    {
+      "id": "e6",
+      "path": "history/r-1fff43fc/exp-03.yaml",
+      "locator": "problem.statement, setup.method.hyperparams.other, result.measurements",
+      "note": "Closest mechanism match in history: saved generation_config carried no temperature so vLLM sampled at T=1.0; rewritten to temperature 0.0 (top_p 1.0, top_k -1), weights unchanged, gsm8k --limit 150: 0.533 -> 0.733, +20.0 pp, verdict supported. Different base (Qwen3 family) and the sampled arm was unrestricted, so this is an upper bound for a top_k 64 / top_p 0.95 comparator."
+    },
+    {
+      "id": "e7",
+      "path": "history/r-59151c09/exp-10.yaml",
+      "locator": "result.measurements, diagnostic_result, provenance.unresolved",
+      "note": "decode-config card, config edit only, gsm8k --limit 150 on the same weights: 0.700 -> 0.840 and 0.827 on an immediate repeat (+14.0 / +12.7 pp); output tokens fell 31,593 -> 21,087. The card notes the pre-greedy weights also read 0.733 once, so the true gain there is +10.7 to +14. Cost: minutes, taken with 45 min left in that run."
+    },
+    {
+      "id": "e8",
+      "path": "history/r-87e033c4/exp-04.yaml",
+      "locator": "problem.evidence, result.measurements, conclusion",
+      "note": "The counter-precedent: an in-place greedy edit (temperature 0.0, top_p 1.0, top_k -1) moved n=150 accuracy 0.060 -> 0.013, verdict contradicted, because under greedy the outputs collapsed into endless repetitions of '<think>'. The distinguishing condition against this card is e5: that model was already degenerate at 0.06, this one terminates cleanly on every item."
+    },
+    {
+      "id": "e9",
+      "path": "/home/ben/task/memory/cards/exp-03.preflight.json",
+      "locator": "results, summary",
+      "note": "5 pass / 1 warn / 0 fail / 3 skip. command_resolves, output_dir_creatable, parent_checkpoint_loadable and comparator_same_protocol all pass; the skips are data-format checks that a decode-only card has no data for, and the warn (max_seq_len not declared) does not apply to an eval-only launch."
+    },
+    {
+      "id": "e10",
+      "path": "/home/ben/task/memory/cards/exp-03.yaml",
+      "locator": "situation, setup.budget",
+      "note": "4.0 h elapsed, 6.0 h remaining, planned_h 0.15, incumbent exp-02 at 0.5867 (n=150). Alternatives rejected: more training instead of the decode read; a small non-zero temperature; touching eos_token_id."
+    },
+    {
+      "id": "e11",
+      "path": "/home/ben/task/logs/rft_sample.log",
+      "locator": "engine init at 04:36:12 and 'Adding requests: 0/7473'",
+      "note": "A second vLLM engine (scripts/rft_sample.py, k samples at temperature 0.9, max_model_len 1024, ~43.7 GiB reported) started one minute before the exp-03 lock at 04:37:14. If still resident, the eval's gpu_memory_utilization 0.3 (~24 GiB) still fits the free ~36 GiB, but the two engines contend and a KV-cache allocation failure is the plausible L0 crash. nvidia-smi is not available in this container, so occupancy could not be confirmed directly."
+    },
+    {
+      "id": "e12",
+      "path": "history/r-426bd770/index.md",
+      "locator": "exp-03 row",
+      "note": "Same-weights pre-greedy vs greedy generation config at n=500: 0.676 -> 0.820, +14.4 pp. Larger n than this card's protocol, different base model."
+    },
+    {
+      "id": "e13",
+      "path": "/home/ben/task/eval/exp-02_final_dev150.json",
+      "locator": "whole file",
+      "note": "Comparator value 0.5867 with stderr 0.0403 -- a single sampled n=150 read. Manual sec.5 puts sampled n=150 spread at ~3.3 pp, so the comparator side of the gap carries that noise even though the greedy side will be near-deterministic."
+    },
+    {
+      "id": "e14",
+      "path": "/home/ben/task/evaluate.py",
+      "locator": "model_type() and template_kwargs(), lines 98-135",
+      "note": "The model path 'ckpts/exp-02-greedy' matches none of the name substrings, so model_type falls through to config.json architectures -> Gemma3ForConditionalGeneration -> templates/gemma3.jinja; config.json is present in the new directory, so the prompt rendering is byte-identical to the comparator's."
+    }
+  ],
+  "probes": [
+    {
+      "id": "p1",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 1
+      },
+      "result": "Read exp-02-greedy/generation_config.json, exp-02/final/generation_config.json and finalize.py and diffed them: temperature 0.0 present and non-null, top_k/top_p removed (not set to the -1 sentinel), eos_token_id [1,106] preserved, and the base-snapshot rebuild drops no non-sampling field.",
+      "changed": "L1"
+    },
+    {
+      "id": "p2",
+      "kind": "data_probe",
+      "cost": {
+        "cpu_min": 2
+      },
+      "result": "Parsed the exp-02 inspect log: model_generate_config carries no temperature/top_p/top_k, and the vLLM startup log prints the 'Default sampling parameters have been overridden by the model's HF generation config' warning. Both halves of the card's trigger mechanism confirmed from this session's own artifacts, and the comparator's invocation (limit 150, max_connections 2, max_tokens 4000) matches the exp-03 command.",
+      "changed": "L1"
+    },
+    {
+      "id": "p3",
+      "kind": "data_probe",
+      "cost": {
+        "cpu_min": 1
+      },
+      "result": "analysis/exp-02_final150.json: 150/150 stop_reason=stop, 100 % end in an ANSWER line, mean 488 chars, and the 62 wrong items are well-formed chains with arithmetic errors. Lowers the probability of a greedy repetition collapse and caps the reachable headroom at reasoning-path gains.",
+      "changed": "L2"
+    },
+    {
+      "id": "p4",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 3
+      },
+      "result": "Retrieved history by change type and evaluation size: no gemma-3-4b run exists in the 143 archived runs (Qwen3-1.7B/4B and SmolLM3 only). Four same-weights sampling->greedy gsm8k contrasts found (+20.0 @150, +14.0/+12.7 @150, +14.4 @500) and one negative (-4.7 @150 on an already-degenerate model). All positive precedents had unrestricted T=1.0 comparators, which is why the interval is centred below them.",
+      "changed": "L2"
+    },
+    {
+      "id": "p5",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 1
+      },
+      "result": "evaluate.py template resolution for a path with no model-name substring falls back to config.json architectures and selects gemma3.jinja, the comparator's template; config.json is present in exp-02-greedy. No template drift.",
+      "changed": "none"
+    },
+    {
+      "id": "p6",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 1
+      },
+      "result": "Checked GPU occupancy: nvidia-smi is absent in this container, but rft_sample.log shows a second vLLM engine initialised at 04:36:12 with ~43.7 GiB reported, one minute before the lock. Left L0 at 0.9 rather than 0.95.",
+      "changed": "L0"
+    }
+  ],
+  "suggestions": {
+    "preconditions": [
+      "[tier 1, 1 min] After launch, grep the exp-03 vLLM startup log for 'Default sampling parameters have been overridden' and read the params it prints: the file on disk is already correct, but that line is the only proof temperature 0.0 reached the server rather than being dropped between the checkpoint and the engine.",
+      "[tier 1, 1 min] Confirm the rft_sample.py vLLM engine (started 04:36, ~43.7 GiB) has exited before launching, or run the eval after it: two engines on one H100 is the plausible way this five-minute card turns into a KV-cache allocation failure.",
+      "[tier 1, 0 min] Keep --limit 150, --max-connections 2 and --max-tokens 4000 exactly as the comparator used them (verified in the exp-02 log); changing any of them makes the result a C12 invocation difference rather than a decode result.",
+      "[tier 1, 2 min] Read the card's own diagnostic off the exp-03 output before reading the accuracy: stop_reason distribution and mean completion length. The falsifier is a greedy repetition loop, and it shows up as stop_reason max_tokens, not as a low score.",
+      "[tier 1, 1 min] If greedy wins, propagate the same generation_config into whatever is packaged as final_model, with a regression guard: the graded submission loads final_model, and a greedy-scored candidate packaged with the sampling config forfeits the entire gain (C9)."
+    ],
+    "cheaper_variants": [
+      "[tier 3, 2 min] A --limit 50 pre-read is not worth it here: the full n=150 read is ~5-8 min including startup, and at n=50 the +-10-15 pp floor cannot resolve the expected +6 pp, while --limit takes the first N so the two reads are not nested subsets. Run the full protocol once.",
+      "[tier 3, ~10 min] Once greedy is in force, sweep checkpoint-3000 and checkpoint-3507 under the same protocol before committing the remaining hours to RFT: C5 is +-15 pp controlled at no training cost, the checkpoints already exist, and every earlier comparison between them was made under the sampled ruler.",
+      "[tier 4, 5 min] If the measured gap lands under ~4 pt, one C18 repeat is the only way to separate it from the sampled comparator's own 3-4 pt spread -- and the repeat is best spent on the exp-02 sampled arm, since the greedy arm will be near-deterministic.",
+      "[tier 1, 2 min] Score the exp-03 output against the exp-02 per-item results rather than against the aggregate: the same 150 items were run both times, so a paired count of flips (right->wrong, wrong->right) reads the decode effect at far better precision than two accuracy numbers with a 4 pt stderr each."
+    ]
+  },
+  "cost": {
+    "cpu_min": 6,
+    "gpu_min": 0,
+    "wall_min": 6.375067,
+    "usd": 2.36,
+    "turns": 33
+  },
+  "model": "claude-opus-5",
+  "effort": "high",
+  "access": {
+    "files": 10,
+    "outside": []
+  }
+}

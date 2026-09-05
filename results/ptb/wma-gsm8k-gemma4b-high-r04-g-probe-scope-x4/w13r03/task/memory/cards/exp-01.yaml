@@ -1,0 +1,112 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T07:55:10Z'
+situation:
+  elapsed_h: 0.2
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Nothing has been measured in this session; memory/index.md has zero cards, so no later training card has a comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "table body empty"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and compare later checkpoints to the published Gemma-3-4B-PT GSM8K number (38.4, 8-shot CoT)", reason: "different harness, prompt and decoding; protocol rule 2 requires the comparator be measured under this evaluate.py protocol"}
+    - {option: "Baseline at --limit 1319 (full test set)", reason: "~9x the wall clock of --limit 150 and eval GPU time is the scarce resource; 150 is the harness default and will be the fixed protocol for every card this session"}
+    - {option: "Leave the checkpoint's shipped generation_config (do_sample, top_k 64, top_p 0.95, no temperature) and measure under T=1.0 sampling", reason: "the WMA verdict's first precondition. evaluate.py never sends temperature, so vLLM's get_diff_sampling_param reads it from generation_config.json (vllm/config/model.py L1344-L1395) and would sample. A sampled anchor cannot be re-derived and every later delta would inherit that noise, so the decode config is fixed to greedy NOW, for the baseline and for every later card, by pointing --model-path at a symlink copy of the snapshot whose generation_config.json is {do_sample: false, temperature: 0.0} with top_k/top_p removed. The weights are byte-identical symlinks to the immutable snapshot."}
+    - {option: "--max-connections 16", reason: "WMA precedent (history/r-4463b5d3/exp-08.yaml, r-946d7e92, r-ee271986/exp-02.yaml) shows conn 16-24 with gpu-mem 0.85 corrupting completions and moving the read by ~2.7 pp on identical weights. Dropped to 8 as the session-wide value; at n=150 the extra wall clock over 16 is ~1-2 min."}
+    - {option: "--max-tokens 4000 (the evaluate.py default)", reason: "the base checkpoint is expected not to terminate, so a 4000-token cap makes every non-terminating sample 4x more expensive in wall clock. GSM8K chains are <400 tokens; 1024 is generous and is fixed session-wide."}
+  pitfalls_hit:
+    - {what: "first data build capped rows at 1024 tokens and dropped 3.7% of them, concentrated in the few-shot-prefixed rows; rebuilt at 2048 (0.03% dropped)", cost_h: 0.1, fix: "scripts/build_data.py --max-tokens 2048"}
+    - {what: "first lock attempt failed preflight data_files_exist: the gsm8k parquet path in the card guessed a 'snapshots/main' component that does not exist", cost_h: 0.02, fix: "used the real snapshot hash 740312add88f781978c0658806c59bc2815b9866"}
+  smoke_runs: []
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained, non-instruction-tuned checkpoint. This harness prompts it through templates/gemma3.jinja with a 10-shot system prefix and an instruction to end with 'ANSWER: $ANSWER', and grades with inspect_ai match(location='end', numeric=True), i.e. the LAST numeric token of the completion must equal gold. A base checkpoint has never been trained to stop at <end_of_turn> or to put the answer last, so its accuracy under this harness is unknown and is probably far below its latent math ability."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L20-L31 MATH_PROMPT_TEMPLATE; L74 scorer=match(numeric=True)", observation: "grader reads the last number in the completion; prompt demands a trailing 'ANSWER: $ANSWER' line"}
+    - {path: /home/ben/task/templates/gemma3.jinja, locator: "whole file", observation: "assistant turns terminate with <end_of_turn>; a pt checkpoint has no chat post-training and may never emit it"}
+    - {path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json, locator: "whole file", observation: "do_sample=true, top_k=64, top_p=0.95 and no temperature; evaluate.py never sets temperature, so vLLM would sample at T=1.0 - hence the greedy copy at ckpts/base_greedy"}
+    - {path: /home/ben/task/ckpts/base_greedy/generation_config.json, locator: "whole file", observation: "the decode config this session freezes: do_sample false, temperature 0.0, top_k/top_p removed; weights are symlinks to the immutable snapshot blobs"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Measuring the untrained snapshot under the frozen session protocol (evaluate.py --limit 150, greedy decoding, --max-connections 8, --max-tokens 1024) gives the floor accuracy that every later card is compared against; it will land below the published 38.4 8-shot-CoT figure because of the chat template and the trailing-answer requirement."
+  mechanism: "The base model has no <end_of_turn> habit and no 'ANSWER: N'-last habit, so a share of completions run past the answer or hit the token cap, and match(location='end') then reads the wrong number."
+  expected_effect:
+    metric: accuracy
+    direction: lower
+    against: base_model
+    magnitude: "below 0.384; I expect 0.10-0.35"
+  falsified_if: "the run scores at or above 0.384, which would mean the harness prompt/decoding costs the base model nothing and there is less post-training headroom than assumed"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/base_greedy
+    origin: base_model
+    hash: "symlinks to snapshot cc012e0a6d0787b4adcc0fa2c4da74402494554d; only generation_config.json differs (greedy)"
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+      source: "openai/gsm8k (benchmark input read by evaluate.py; NOT training data - no weights are updated in this card)"
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "first 150 items of the official test split, as evaluate.py --limit 150 takes them"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0 (evaluation only, no weight update); decode-config change only (greedy)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - no training in this card"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/base_greedy, --limit, '150', --max-connections, '8', --max-tokens, '1024', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-01_base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01_base_dev150.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '8', --max-tokens, '1024', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle); 10-shot system prefix drawn from the gsm8k TRAIN split with fewshot_seed=42"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of completions whose last line is not an 'ANSWER:' line, share whose stop_reason != stop, and the completion-token profile against the 1024 cap - read out of the inspect json log in logs/ by /home/ben/task/scripts/inspect_report.py (written before launch; --json-output-file emits metrics only)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.06
+  output_checkpoint: /home/ben/task/ckpts/base_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/base_greedy, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no weight update; this card only fixes the decode config and measures the anchor"}
+  measurements:
+    - {metric: accuracy, value: 0.02, n: 150, path: /home/ben/task/eval/exp-01_base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-01_base_samples.jsonl
+    notes: "150/150 completions have no trailing 'ANSWER:' line and 150/150 have stop_reason=max_tokens; completion tokens p50=p90=max=1024, i.e. EVERY sample ran to the cap and none emitted <end_of_turn>. Latent ability is far higher than the score: the FIRST 'ANSWER: n' line in the completion is present in 138/150 and correct in 43/150 (0.287), close to the published 38.4 8-shot-CoT figure. Sample 0 answers correctly, then re-emits the prompt template and degenerates into a 'CDCl' repetition loop until the cap. Greedy decoding confirmed active: vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config' once, and the degenerate exact repetition is the greedy signature."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The anchor is 0.0200 (3/150) under the frozen protocol (greedy, --limit 150, conn 8, max-tokens 1024). It is a termination failure, not a maths failure: every one of the 150 completions hit the 1024-token cap without emitting <end_of_turn>, while the model's first 'ANSWER:' line is already correct on 28.7% of items."
+  decision: adopt
+  next_step: "exp-02: completion-only SFT on 67k GSM8K-style rows rendered with the grader's own chat template and terminated with <end_of_turn>. The gap between 0.287 (first-answer) and 0.020 (scored) says most of the first win is teaching the model to stop; the rest has to come from better chains."

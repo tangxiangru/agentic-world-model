@@ -1,0 +1,242 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T15:06:22Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 0.07
+  remaining_h: 9.93
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: >-
+    Session start. No number exists yet for the parent checkpoint under the grading
+    protocol, so no later card can have a legal comparator (pitfall
+    comparator_protocol_mismatch).
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "table is empty"}
+  alternatives_rejected:
+    - option: Skip the baseline and compare a fine-tune against a published gemma-3-4b-pt GSM8K number.
+      reason: A published number is a different protocol (different prompt, decoder, n); protocol rule 2 forbids it as a comparator.
+    - option: Use the default --limit 150 as the dev protocol.
+      reason: stderr at n=150 is ~4 points; n=200 with the same decoder costs ~30% more GPU time and every later card reuses it.
+    - option: Evaluate with --max-connections 24.
+      reason: >-
+        Rejected after the exp-01 WMA verdict (e7/e8): concurrency is not supposed to change
+        the sampled distribution, but the corpus has 8-vs-2 on identical weights giving
+        0.2733 vs 0.8533 with 99/150 completions starting "!!!!", and EngineDeadError at 8
+        and 16. This card produces the comparator every later card inherits, so it is the
+        one place not to gamble. Settled on 8 plus an explicit garbage check on the sample
+        log before the number is accepted.
+    - option: Evaluate with --max-connections 2 (the script default).
+      reason: ~4x the wall time of 8 for the same number; 8 with a post-hoc garbage check buys the speed back at a cost I can detect.
+    - option: A second, repeated read of the same command (WMA cheaper_variant, C18) to turn the comparator into an interval.
+      reason: >-
+        Deferred, not dismissed. At T=1.0/n=200 the noise floor is real, but the first
+        intervention (post-training a pt checkpoint) is expected to move accuracy by tens of
+        points, far outside it. If a later card's delta lands inside +/-6 pp I will spend the
+        repeat then, on the two checkpoints that are actually close.
+    - option: Make the dev protocol greedy to halve the noise floor.
+      reason: >-
+        evaluate.py exposes no temperature flag; the decoder comes from each model dir's
+        generation_config.json. The parent's says do_sample/top_k 64/top_p 0.95, so the
+        protocol is sampled at T=1.0 and that is what the comparator must be measured at.
+        Recorded as a decode contract instead: every measurement in this session records the
+        candidate's generation_config alongside its score, so a decode change can never hide
+        inside a weights delta (WMA precondition 4).
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, -c, "render the 10-shot prompt with templates/gemma3.jinja and grade 3 synthetic completions with inspect's own match_str"]
+      outcome: >-
+        Prompt ends "...\n\nReasoning:<end_of_turn>\n<start_of_turn>model\n"; system message is
+        5872 chars of 10 unterminated question/Reasoning/ANSWER blocks. Grader confirmed to
+        read the LAST numeric word, so trailing non-numeric prose still scores correct.
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: >-
+    google/gemma-3-4b-pt is a pretrained (not instruction-tuned) checkpoint. Under the
+    inspect_evals/gsm8k harness it is served by vLLM with templates/gemma3.jinja, given a
+    10-shot system message and asked to end with "ANSWER: $ANSWER"; the scorer is
+    match(location="end", numeric=True), which reads the LAST numeric token of the
+    completion. A pt checkpoint typically (a) fails to stop at <end_of_turn> and rambles
+    past its answer, so the last number is not the answer, and (b) does arithmetic badly.
+    Which of the two dominates decides whether the first intervention should be
+    format/termination SFT or reasoning-quality data. Neither the score nor the split is known.
+  evidence:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      locator: "lines 24-38 (MATH_PROMPT_TEMPLATE), 41-75 (10-shot system message, scorer=match(numeric=True))"
+      observation: The grader reads the last numeric token of the completion, so an unterminated tail silently destroys an otherwise-correct answer.
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py
+      locator: "match_str, location='end' branch"
+      observation: v is reversed-word-split and the first numeric word wins; correctness therefore depends on stopping cleanly.
+    - path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json
+      locator: "whole file"
+      observation: 'do_sample true, top_k 64, top_p 0.95, no temperature -> vLLM samples at T=1.0, adding variance the protocol must absorb.'
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/work/probe_set.jsonl
+    n: 200
+    selection: >-
+      The LAST 200 rows of the official gsm8k TRAIN split (indices 7273-7472), held out
+      from every training file this session. Not test items (protocol rule 7). Scored by
+      work/probe_eval.py, which renders the identical 10-shot system message, the identical
+      MATH_PROMPT_TEMPLATE and templates/gemma3.jinja, and applies inspect's own
+      match(location="end", numeric=True) - so it is a faithful, fast stand-in for the
+      official harness on in-distribution items.
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: >-
+    Measured under the grading protocol, the parent checkpoint's GSM8K accuracy is limited
+    mainly by output discipline rather than arithmetic: a majority of its incorrect
+    completions will fail to end in a clean "ANSWER: n" line (no stop token, or the answer
+    followed by further text), rather than ending cleanly on a wrong number.
+  mechanism: >-
+    gemma-3-4b-pt has had no post-training, so nothing taught it to end a turn with
+    <end_of_turn>. Given a 10-shot prompt it continues the pattern and starts an 11th
+    problem; match(location="end") then reads a number out of that continuation.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "n/a - this card measures the baseline, it does not intervene"
+  falsified_if: >-
+    Fewer than half of the incorrect completions are termination/format failures, i.e. most
+    wrong items end in a clean "ANSWER: n" line whose n is simply the wrong number.
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/work/probe_set.jsonl
+      source: local
+      n_examples: 200
+      built_by: /home/ben/task/work/build_probe.py
+      build_command: [python, work/build_probe.py]
+      selection: >-
+        Rows 7273-7472 of the openai/gsm8k TRAIN split, held out from all training this
+        session. Read by the diagnostic (work/probe_eval.py), not by a trainer - this card
+        trains nothing.
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect-ai + vLLM 0.11.0
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bfloat16, seed: null}
+    target_format: "n/a - no training in this card"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '200', --max-connections, '8', --max-tokens, '4000', --gpu-memory-utilization, '0.6', --json-output-file, /home/ben/task/logs/exp-01-base-n200.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01-base-n200.log
+  output_dir: /home/ben/task/logs
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: 1xH100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '<MODEL>', --limit, '200', --max-connections, '8', --max-tokens, '4000', --gpu-memory-utilization, '0.6', --json-output-file, '<OUT>.json']
+    dev_set: official --limit 200
+    n: 200
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: >-
+      Cut the way the scorer cuts (WMA p1: trailing NON-numeric prose still scores correct,
+      only a number after the answer destroys it). Over the per-sample inspect log, bucket
+      each incorrect completion as (a) RECOVERABLE-BY-TERMINATION - the completion contains a
+      correct "ANSWER: <gold>" line but a number appears after it, or it was truncated at
+      max_tokens before producing any ANSWER line - vs (b) GENUINELY-WRONG - it ends on a
+      clean answer that is simply not the gold number. Report the share of (a), plus the
+      truncation rate and the stop reason distribution from the same log. Also grep the
+      completions for degenerate output (e.g. leading "!!!!" runs) as the concurrency guard
+      the WMA verdict asks for.
+    n: null
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.39
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.08, n: 200, path: /home/ben/task/logs/exp-01-base-n200.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.185
+    path: /home/ben/task/logs/inspect/2026-09-03T15-25-20+00-00_gsm8k_HhxBWd3hv7W83RzwJXJxqC.json
+    notes: >-
+      Decode contract for this measurement (parent generation_config.json, verbatim, no
+      nulls): do_sample true, top_k 64, top_p 0.95, cache_implementation hybrid,
+      bos_token_id 2, pad_token_id 0, eos_token_id [1, 106]. temperature is absent, so
+      vLLM sampled at T=1.0. Confirmed in vllm/config sources that only
+      repetition_penalty/temperature/top_k/top_p/min_p/max_new_tokens are read from
+      generation_config, and in vllm/sampling_params.update_from_generation_config that
+      the eos LIST is turned into stop_token_ids - so <end_of_turn> (106) really is a
+      stop token for the served model.
+      CONCURRENCY GUARD (all three signatures checked, all clean): 200/200 samples
+      present; 0 completions with a "!!!" garbage prefix; generated tokens NOT pinned at
+      the cap for nearly every sample (mean 2212, max 4000).
+      DIAGNOSTIC, cut the way the scorer cuts: end-anchored accuracy 0.080 vs IN-LINE
+      accuracy 0.175 (grading the FIRST "ANSWER: n" line). Of the 184 incorrect items:
+      23 have a correct first ANSWER line that a later number destroys, 11 were truncated
+      at max_tokens with no ANSWER line at all, 8 produced no ANSWER line for other
+      reasons, and 142 are wrong at the first answer too. Termination-recoverable share
+      of failures = 34/184 = 0.185.
+      NON-TERMINATION IS SEVERE BUT IS NOT THE MAIN LOSS: 96/200 (48%) ran to the 4000-token
+      cap and mean output was 2212 tokens, against ~150 tokens for a gsm8k solution; the
+      model continues into an 11th, 12th ... problem exactly as the mechanism predicted
+      (sample 1 emits five further "PROBLEM: ... ANSWER: ..." blocks). But fixing only
+      termination caps out at the in-line accuracy of 0.175.
+  watch_set_result:
+    fixed: 0
+    still_failing: 183
+    regressions: 0
+    path: /home/ben/task/logs/exp-01-base-probe.json
+    notes: >-
+      work/probe_eval.py on the 200 held-out TRAIN rows: accuracy 0.085, clean_format_rate
+      0.285, truncation_rate 0.415. Against the official 0.080 / 48% truncation on the test
+      items this validates the probe as a faithful stand-in (0.5 pp apart) at ~1.5 min of
+      GPU instead of ~23 min, which is what makes fast iteration affordable from here.
+      "fixed"/"still_failing" are relative to the baseline itself, hence 0 and 183.
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: >-
+    The parent scores 0.080 at n=200 under the grading protocol, at the bottom of the
+    WMA's [0.08, 0.38] interval. The mechanism is exactly as predicted - 48% of completions
+    run to the 4000-token cap because the model continues the 10-shot pattern into new
+    problems instead of stopping - but the hypothesis as written is falsified: only 18.5%
+    of failures are termination-recoverable, not a majority. The honest headroom of a
+    pure format/termination fix is the in-line accuracy, 0.175; the other 71% of items are
+    wrong at the model's own first answer.
+  decision: iterate
+  next_step: >-
+    exp-02: SFT that fixes both at once - targets that end in "ANSWER: n<end_of_turn>"
+    (termination, worth up to +9.5 pp on its own) trained on ~95k high-quality GSM8K-style
+    solutions (reasoning quality, which is where the other 71% lives). Do not spend a card
+    on a termination-only intervention: this measurement prices its ceiling at 0.175.
+    Carry the decode contract forward - every candidate's generation_config goes in its
+    card next to the number.

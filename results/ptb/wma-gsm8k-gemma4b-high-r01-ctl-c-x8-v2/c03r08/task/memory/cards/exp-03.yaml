@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T00:49:05Z'
+situation:
+  elapsed_h: 1.9
+  remaining_h: 8.1
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/hf
+    score: {metric: accuracy, value: 0.62, protocol_n: 150}
+  trigger: "The vLLM server the grader starts logs 'Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator' - so the checkpoint's own generation_config.json, which gemma-3-4b ships with do_sample=true/top_k=64/top_p=0.95 and no temperature, is what decides how the benchmark is decoded. Every score so far is a temperature-1.0 sample, not a greedy decode."
+  trigger_evidence:
+    - path: /home/ben/task/logs/eval_base_dev150.log
+      locator: "grep 'Default sampling parameters have been overridden'"
+    - path: /home/ben/task/ckpts/exp-02/hf/generation_config.json
+      locator: "whole file: do_sample true, top_k 64, top_p 0.95, no temperature key"
+  alternatives_rejected:
+    - option: "Pass temperature via evaluate.py"
+      reason: "rule 5 forbids modifying evaluate.py, and it sets no temperature; the only lever inside my artefact is generation_config.json."
+    - option: "Leave it and spend the 15 minutes on training instead"
+      reason: "it is 15 minutes for a change that applies to every later checkpoint too - if greedy wins, every subsequent card inherits the gain, and if it loses I stop thinking about it."
+    - option: "Test at temperature 0.3 as well"
+      reason: "one variable per card; greedy is the natural endpoint and a third arm would need its own eval slot. Revisit only if greedy is worse."
+  pitfalls_hit:
+    - what: "Trainer.save_model + tokenizer.save_pretrained do not write preprocessor_config.json / processor_config.json, which a Gemma3ForConditionalGeneration needs at load time."
+      cost_h: 0.0
+      fix: "scripts/finalize_model.py copies the missing side-cars from the immutable base snapshot and re-loads the directory with AutoConfig/AutoTokenizer/AutoProcessor; ckpts/exp-02/hf passed and is what exp-02 was scored on."
+  smoke_runs: []
+problem:
+  statement: "The incumbent is graded under stochastic decoding it did not choose: temperature 1.0 with top_k=64/top_p=0.95, inherited from the base checkpoint's generation_config. On a task whose answer is a single number at the end of a chain, any sampling noise inside the chain turns a correct derivation into a wrong final token, and it also makes every A/B comparison between checkpoints noisier than it needs to be."
+  evidence:
+    - path: /home/ben/task/logs/eval_base_dev150.log
+      locator: "APIServer log line: 'Default sampling parameters have been overridden by the model's Hugging Face generation config'"
+      observation: "vLLM is using the checkpoint's generation_config as its default SamplingParams; inspect-ai sends no temperature of its own."
+    - path: /home/ben/task/eval/exp02_dev150.json
+      locator: "accuracy 0.62, stderr 0.0398"
+      observation: "the incumbent's number is one draw from a sampling distribution, so part of the 0.62 is decode luck in either direction."
+  affected_share: 1.0
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe250.jsonl
+    n: 250
+    selection: "250 gsm8k TRAIN questions held out of every training file; used here to measure the same greedy-vs-sampled contrast off-benchmark at n=250."
+hypothesis:
+  claim: "Setting temperature 0 (greedy) in the checkpoint's generation_config.json raises dev-150 accuracy relative to exp-02's 0.62 under the identical grading protocol, and the same contrast reproduces on the 250-item held-out probe."
+  mechanism: "GSM8K is graded on the last number of a single chain, so it is an all-or-nothing task: sampling at temperature 1.0 gives every token in a 300-character derivation a chance to derail an otherwise correct chain. Greedy decoding takes the mode of the distribution the SFT put there, which for a task with one right answer should dominate the mean of a sample."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points on dev-150; probe250 should move in the same direction"
+  falsified_if: "dev-150 greedy accuracy <= 0.62, or the probe250 greedy accuracy is not higher than the probe250 sampled accuracy."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/hf
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe250.jsonl
+      source: "derived:exp-02 - 250 gsm8k TRAIN questions held out of all training files"
+      n_examples: 250
+      built_by: /home/ben/task/scripts/gen_vllm.py
+      build_command: [python, scripts/gen_vllm.py, --model, ckpts/exp-02/hf, --questions, data/probe250.jsonl, --out, analysis/exp03_probe_greedy.jsonl, --n, "1", --temperature, "0.0", --fewshot]
+      selection: "DIAGNOSTIC INPUT ONLY - this card trains nothing and changes no weight. No benchmark test item is involved."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vLLM 0.11.0 default sampling params read from generation_config.json"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02: chain, blank line, 'ANSWER: <number>', <end_of_turn>."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_exp03.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_exp03.sh
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-02/hf_greedy
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --max-tokens, "4000", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.62
+    path: /home/ben/task/eval/exp02_dev150.json
+  diagnostic:
+    what: "probe250 accuracy, same model, greedy vs temperature-1.0/top_p 0.95/top_k 64, both with the grader's 10-shot prefix"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/exp-02/hf_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/hf_greedy, step: 976}
+    - {path: /home/ben/task/ckpts/exp-02/hf, step: 976}
+  training_summary: {final_loss: null, steps: null, notes: "no weights changed; hf_greedy symlinks the exp-02 tensors and overrides generation_config.json only"}
+  measurements:
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp03_dev150.json, delta_vs_comparator: 0.1067}
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp03_dev150_rep2.json, delta_vs_comparator: 0.1}
+  diagnostic_result:
+    value: 0.744
+    path: /home/ben/task/analysis/exp03_probe_summary.json
+    notes: "probe250 greedy 0.744 vs sampled 0.740 - essentially no difference off-benchmark (28 items greedy-only correct, 27 sampled-only). The benchmark slice disagrees: two independent greedy dev-150 runs give 0.7267 and 0.720 against the sampled 0.620. The greedy runs are not bit-identical, so vLLM greedy still carries batching nondeterminism, but the gap to sampling replicates and the probe rules out the gain being an artefact of the decode change breaking something."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp03_probe_summary.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: contradicted
+  summary: "Greedy decoding takes dev-150 from 0.620 to 0.7267 and 0.720 on two independent runs (+10.3 mean). The claim holds on the benchmark but the mechanism does not generalise the way I argued: on 250 held-out gsm8k TRAIN questions greedy and sampled are indistinguishable (0.744 vs 0.740), so 'sampling derails chains' cannot be the whole story - the effect is specific to the test slice, plausibly because the model's next-token distribution is flatter on unfamiliar items than on train-distribution ones."
+  decision: adopt
+  next_step: "Every later checkpoint ships generation_config with temperature 0 (scripts/finalize_model.py --greedy), and every later comparator is measured greedy. The incumbent is now exp-02 at 0.7267 greedy, not 0.620. Next: sft_v2 (87775 rows, 81k unique OMI2 problems vs ~35k in v1) from the base snapshot, testing unique-problem coverage against exp-02's 2 solutions per problem."

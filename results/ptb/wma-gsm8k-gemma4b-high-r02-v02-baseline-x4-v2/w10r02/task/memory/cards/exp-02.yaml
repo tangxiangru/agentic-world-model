@@ -1,0 +1,140 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T07:48:38Z'
+situation:
+  elapsed_h: 0.5
+  remaining_h: 9.5
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.04, protocol_n: 150}
+  trigger: "exp-01 measured the base model at 0.040 on n=150 and its diagnostic showed the loss is format, not maths: 112/150 completions keep generating past their own 'ANSWER:' line and 81/150 hit the 4000-token cap, so the grader's last-number rule reads a stray number from the continuation."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-01.yaml
+      locator: "result.diagnostic_result"
+    - path: /home/ben/task/analysis/exp-01_failures.json
+      locator: "item 2: the completion contains a correct in-line 'ANSWER: 26' and is still scored wrong; item 3: the model restarts the prompt and invents a new problem"
+  alternatives_rejected:
+    - option: "LoRA instead of full fine-tuning"
+      reason: "the intervention has to install a turn-ending behaviour the pretrained model has never seen; full FT fits in 80 GB with liger fused CE (measured ~49 GB) and removes an axis I would otherwise have to tune"
+    - option: "Re-measure the base model greedily first, so the comparator shares the trained checkpoint's decode setting (WMA cheaper_variant on exp-01)"
+      reason: "deferred, not dropped: the decode axis gets its own card measured on the TRAINED checkpoint, which is where the shipping decision lives. The confound is bounded - exp-01 is 0.040 and decode effects in the corpus are a few points, so decode cannot explain the effect size this card expects."
+    - option: "Train on the grader's fixed 10-shot prompt for every row"
+      reason: "those 10 shots are ~1300 tokens per row; it would triple the token bill and overfit those particular shots. Instead 25% of rows carry a random 1-8-shot prefix built the same way from gsm8k TRAIN, so k-shot context is in distribution without being memorised."
+    - option: "2 epochs now"
+      reason: "1 epoch is ~1.75 h at the measured 13.2 samples/s; a second epoch is a decision to make after seeing this card's number, from the saved optimizer state"
+  pitfalls_hit:
+    - what: "first smoke run OOMed inside cross_entropy: gemma-3's 262k vocab materialises a 12 GB logit tensor at bs=8 x 2048"
+      cost_h: 0.15
+      fix: "installed liger-kernel 0.8.2 and set use_liger_kernel=True (fused linear CE, no materialised logits)"
+    - what: "bs=8 left the GPU under-fed at 6.9 samples/s because rows are short (p50 353 tokens)"
+      cost_h: 0.1
+      fix: "bs=32 -> 12.8 samples/s, bs=64 -> 13.2, so bs=32 x grad_accum 2 is the knee"
+  smoke_runs:
+    - command: [python, train_sft.py, --data, data/sft_v1.jsonl, --max-rows, '20000', --max-steps, '12', --bs, '32', --grad-accum, '1']
+      outcome: "ran clean, loss 0.53 over steps 1-12, 12.8 samples/s, no OOM (logs/smoke3.log)"
+    - command: [python, -c, "decode SFTRows labels for row 0"]
+      outcome: "loss tokens start after '<start_of_turn>model\\n' and end with 'ANSWER: 1750<end_of_turn>' - completion-only masking and the stop token are both as declared"
+    - command: [python, -c, "jinja2-render templates/gemma3.jinja vs build_data.render_prompt"]
+      outcome: "byte-identical for 0-shot and k-shot; the string trained on is the string the grader renders"
+    - command: [python, -c, "render inspect's own 10-shot message list (hf_dataset seed 42) through templates/gemma3.jinja and diff against build_data.render_prompt + gold_fewshot"]
+      outcome: "FOUND A MISMATCH before launch: inspect's sample_to_fewshot keeps gsm8k's <<48/2=24>> calculator annotations in the shot bodies and my first build stripped them, so the k-shot rows would have trained on a context the grader never produces. Fixed in build_data.gold_fewshot and rebuilt; per-shot strings are now identical to inspect's and the full 10-shot render matches byte-for-byte. Contamination re-checked on the rebuilt file: 0 matches"
+problem:
+  statement: "The base model does not end its turn. It answers and then keeps generating - a new problem, a repeat of the instructions, an unrelated calculation - until the 4000-token cap, and the grader reads the last number of that continuation. It has also never been shown the 'ANSWER: N' final-line convention the prompt demands."
+  evidence:
+    - path: /home/ben/task/memory/cards/exp-01.yaml
+      locator: "result.diagnostic_result.notes"
+      observation: "74.7% of completions have text after the first ANSWER line; 54% hit the token cap; 12.7% never write an ANSWER line"
+    - path: /home/ben/task/analysis/exp-01_failures.json
+      locator: "144 incorrect items of 150"
+      observation: "the extracted answer is frequently a number from run-on text, e.g. '<<0166>>', a leaked gsm8k calculator annotation"
+  affected_share: 0.747
+  failure_examples:
+    - {id: base-fail-1, source: /home/ben/task/analysis/exp-01_failures.json, question: "(gsm8k test item - not reproduced here, rule 7)", gold: "20", model_output: "<<0166>>", failure: "emits a calculator annotation instead of a solution"}
+    - {id: base-fail-2, source: /home/ben/task/analysis/exp-01_failures.json, question: "(gsm8k test item - not reproduced here, rule 7)", gold: "17", model_output: "... ANSWER: 26", failure: "wrong arithmetic and a run-on continuation"}
+    - {id: base-fail-3, source: /home/ben/task/analysis/exp-01_failures.json, question: "(gsm8k test item - not reproduced here, rule 7)", gold: "400", model_output: "restates a new problem, then '(6.4 / 4 + 6.8) x 18 + 79 Answer:'", failure: "never answers the asked question; grader reads 79"}
+  watch_set: null
+hypothesis:
+  claim: "Completion-only SFT on 83k (prompt, solution) pairs whose prompts are byte-identical to the grader's rendered prompt and whose targets end 'ANSWER: <n><end_of_turn>' raises gsm8k n=150 accuracy far above the base model's 0.040."
+  mechanism: "Both missing pieces are supervised directly: the turn terminator (every target ends with token 106, so the model stops after the answer line) and the answer convention (exactly one 'ANSWER: N', as the last line). Beyond format, 77k of the rows are correct GSM8K-style chains of thought, which trains the reasoning itself."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+40 to +65 points; format alone should recover most of the 74.7% that currently run on"
+  falsified_if: "n=150 accuracy below 0.35, or the non-termination diagnostic still above 0.10 after training - either would mean the stop token did not take and the mechanism is wrong"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "openai/gsm8k train split + nvidia/OpenMathInstruct-2 snapshot 469216e3f46f4dacf476b382e192485ea51a143e (train_1M shards)"
+      n_examples: 83473
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v1.jsonl]
+      selection: "gsm8k_gold 7473 (gold chains, <<..>> annotations stripped, '#### N' rewritten as 'ANSWER: N'); OpenMathInstruct-2 problem_source in {gsm8k, augmented_gsm8k} 70000, integer answers only, max 2 solutions per problem, \\boxed{} unwrapped, trailing 'the answer is ...' removed; augmented_math 6000 as a difficulty tail. Exact (question, solution) dedup. Every target ends 'ANSWER: <int><end_of_turn>' and contains 'ANSWER:' exactly once. 25% of rows carry a random 1-8-shot prefix drawn from gsm8k TRAIN, rendered byte-identically to inspect's sample_to_fewshot, calculator annotations included."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused CE"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 32, grad_accum: 2, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "prompt = the exact string templates/gemma3.jinja renders for [system(k-shot)?, user(MATH_PROMPT_TEMPLATE)] with add_generation_prompt; target = chain of thought, blank line, 'ANSWER: <int>', then <end_of_turn>. Loss on target tokens only (prompt tokens are -100)."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_v1.jsonl, --out, /home/ben/task/ckpts/exp-02, --max-seq-len, '2048', --lr, '1e-5', --epochs, '1', --bs, '32', --grad-accum, '2', --save-steps, '650', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 650
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '16', --max-tokens, '4000', --gpu-memory-utilization, '0.3']
+    dev_set: "official --limit 150 (first 150 items of the gsm8k test split, no shuffle)"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.04
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic:
+    what: "the same C11 instrumentation as exp-01, from the inspect json log: share of completions with text after the first ANSWER line, stop-reason split, output-token p50, '!!!' garbage share"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.03
+  output_checkpoint: /home/ben/task/ckpts/exp-02
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02, step: 1293}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1293, step: 1293}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-650, step: 650}
+  training_summary: {final_loss: 0.283, steps: 1293, notes: "train_loss 0.339 over the epoch, 22.2 samples/s, 3721 s wall. 82752 of 83473 rows used; 721 (0.9%) dropped as longer than max_seq_len 2048, under the 2% pitfall threshold."}
+  measurements:
+    - {metric: accuracy, value: 0.6733, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: 0.6333}
+    - {metric: accuracy, value: 0.68, n: 150, path: /home/ben/task/eval/exp-02_ck650_dev150.json, delta_vs_comparator: 0.64}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/eval/logs/exp-02_dev150/2026-09-03T09-17-13+00-00_gsm8k_Ha8Qawc7ARJ9GPPa3XgZsG.json
+    notes: "non-termination 74.7% -> 0.0% (0/150 completions have text after their ANSWER line); stop reasons 147 stop / 3 max_tokens (was 69/81); output tokens p50 4000 -> 172; 3/150 still emit no ANSWER line (all three are the max_tokens cases, i.e. loops); 0 '!!!' garbage, so --max-connections 16 is again clean."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "0.040 -> 0.6733 at n=150 (+63.3). The mechanism is confirmed exactly as stated: the run-on rate went 74.7% -> 0.0% and median output length 4000 -> 172 tokens, so the grader now reads the model's own answer. Caveat as flagged by the WMA: the delta is compound - the comparator decoded sampled (base generation_config) and this checkpoint decodes greedy (temperature 0.0), so C1a rides along with the training. At this effect size it cannot change the sign, but the clean decode contrast is still owed."
+  decision: adopt
+  next_step: "Failures are now reasoning, not format: 46 of 49 are wrong arithmetic or a wrong plan, 3 are non-terminating loops. checkpoint-650 scores 0.680 and the final 0.6733, i.e. the second half of the epoch bought nothing measurable at n=150 (stderr 0.038), so more epochs on the same data is not the lever - exp-03 goes on-policy with rejection sampling instead."

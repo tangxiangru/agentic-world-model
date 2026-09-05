@@ -1,0 +1,143 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T11:43:38Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 4.6
+  remaining_h: 5.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.7081, protocol_n: 1319}
+  trigger: "exp-03 bought +3.5 pts for 1.54 h of GPU by doubling the off-policy corpus, and 26 of the 41 watch-set reasoning failures are still wrong. The next increment of the same data is poor value, but sampling the incumbent 4x on 27,473 training questions shows it already produces a correct chain for 88.4% of them - so the supervision needed to fix its own errors is recoverable from the model itself."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "result.measurements and result.watch_set_result", observation: "0.673 -> 0.7081 for 1.54 h; 26 of 41 watch items still failing"}
+    - {path: /home/ben/task/logs/rft-gen.log, locator: "sampling stats line", observation: "109,892 samples over 27,473 questions: 24,296 questions (0.884) yield at least one answer-correct chain; 7,004 of those are solved by at most half the samples"}
+    - {path: /home/ben/task/analysis/exp-03_full_items.jsonl, locator: "stop_reason and ends_with_answer_line", observation: "18 of 1319 hit the cap and 0.0136 do not end on an ANSWER line: format is saturated, so only reasoning is left to move"}
+  alternatives_rejected:
+    - {option: "Another off-policy data-scaling round (exp-03 with ~250k rows)", reason: "exp-03 cost 1.54 h for +3.5 pts on a 2.2x corpus increase; a further doubling would cost ~3 h, which does not fit in the 5.4 h left alongside a final verification, and log-scaling says it would buy less than the first doubling"}
+    - {option: "Mix the RFT chains with a slice of the sft_v3 corpus", reason: "standard as a forgetting guard, but it would confound the on-policy effect with a second data change; the low learning rate (3e-6 against exp-03's 1e-5) is the forgetting guard instead, and a regression would be visible in the paired McNemar churn"}
+    - {option: "STaR-style rationalisation on the 3,177 questions no sample solved", reason: "would mean showing the model the gold answer and keeping whatever chain it writes backwards from it, which produces chains whose reasoning does not support the answer; not worth the failure mode with limited budget"}
+    - {option: "Keep every correct chain rather than capping by difficulty", reason: "17,292 of the 24,296 solved questions are solved by more than half the samples; keeping 2 chains each would make the corpus mostly restatements of what the model already does reliably. Capping easy questions at 1 chain and hard ones at 2 doubles the weight of the informative half."}
+    - {option: "Weight-average soup of exp-02 and exp-03", reason: "much cheaper (~15 min) and still planned as a later candidate, but it cannot add reasoning the parents do not have; the on-policy round is the one with a mechanism for fixing residual errors, so it gets the GPU first"}
+  pitfalls_hit:
+    - {what: "Intermediate Trainer checkpoints (checkpoint-N/) carry no tokenizer and keep the base's sampling generation_config, so scoring one without repairing it first would read it under do_sample/top_k 64 instead of greedy and make the comparison meaningless", cost_h: 0.05, fix: "built ckpts/exp-02/step800_eval with the tokenizer and greedy config symlinked/copied in before scoring; noted for any future checkpoint-selection read"}
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model, ckpts/exp-03/final, --limit-q, '300', --max-aug, '2000', --k, '4'], outcome: "1,200 generations in 23 s (52 gen/s); solve rate 254/300 = 0.847; 303 rows kept; projected ~36 min for the full run, which matched (actual 27 min)"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/rft_v1_check.jsonl], outcome: "28,163 documents scanned, 0 contaminated, exit 0"}
+    - {command: [python, -c, "assert every rft_v1 target ends '<end_of_turn>' and contains exactly one 'ANSWER:'"], outcome: "28,163/28,163 pass; max 2776 tokens against the 3072 cap; 1,389 rows (4.9%) carry the harness's 10-shot prefix"}
+    - {command: [python, scripts/mcnemar.py, --a, analysis/exp-02_full_items.jsonl, --b, analysis/exp-02_full_items.jsonl], outcome: "self-test p=1.0 with b=c=0, and a 14-item synthetic flip gives p=1.2e-4; the paired test used for this card's decision is validated"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent is wrong on 385 of the 1319 test items and the failures are purely reasoning: it stops, emits one ANSWER line and puts it last, but sets up or computes the chain wrongly. Off-policy supervision from OpenMathInstruct-2 has been the only signal so far, and it is written in another model's style; the incumbent's own errors are not specifically targeted by any of it."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_full_items.jsonl, locator: "correct field", observation: "385 of 1319 items wrong at 0.7081 accuracy"}
+    - {path: /home/ben/task/analysis/exp-03_full_items.jsonl, locator: "stop_reason / ends_with_answer_line", observation: "1301 of 1319 stop on eos and 0.9864 end on an ANSWER line, so at most ~1.4% of failures are format-related"}
+    - {path: /home/ben/task/analysis/exp-03_watch_rerun.json, locator: "still_failing", observation: "26 of the 41 reasoning failures carried over from exp-02 are still wrong after doubling the off-policy corpus"}
+    - {path: /home/ben/task/logs/rft-gen.log, locator: "sampling stats", observation: "34,856 of 109,892 sampled chains reach a wrong answer, i.e. the model is unreliable rather than uniformly unable - 7,004 questions are solved by at most half of 4 samples"}
+  affected_share: 0.292
+  failure_examples:
+    - {id: gsm8k_6e11451d, source: /home/ben/task/analysis/exp-03_full_items.jsonl, question: "carried over from the exp-02 watch set", gold: "see analysis/exp-03_full_items.jsonl", model_output: "still incorrect after exp-03", failure: "residual reasoning failure untouched by off-policy data scaling"}
+    - {id: gsm8k_7feb8f87, source: /home/ben/task/analysis/exp-03_full_items.jsonl, question: "carried over from the exp-02 watch set", gold: "see analysis/exp-03_full_items.jsonl", model_output: "still incorrect after exp-03", failure: "residual reasoning failure untouched by off-policy data scaling"}
+    - {id: gsm8k_cef581f8, source: /home/ben/task/analysis/exp-03_full_items.jsonl, question: "carried over from the exp-02 watch set", gold: "see analysis/exp-03_full_items.jsonl", model_output: "still incorrect after exp-03", failure: "residual reasoning failure untouched by off-policy data scaling"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_watch_rerun.json
+    n: 26
+    selection: "the 26 items of the original 41-item reasoning watch set that exp-03 still gets wrong; the hardest residue after two rounds of off-policy SFT"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing training from ckpts/exp-03/final on 28,163 of its own answer-correct chains, with questions it solves only sometimes weighted twice as heavily as ones it always solves, raises full-test accuracy against exp-03's 0.7081."
+  mechanism: "The model already reaches the right answer on 88.4% of training questions given 4 tries but is unreliable: 34,856 of 109,892 sampled chains land on a wrong answer. Rejection sampling keeps only the chains that worked and discards the ones that did not, so the update sharpens probability mass onto the model's own successful reasoning paths rather than teaching a new style. Because the supervision is on-policy the update is small and targeted, which is why the learning rate drops from 1e-5 to 3e-6."
+  decision_rule_precommitted: "Identical to exp-03's, pre-committed before launch. Primary metric: accuracy at n=1319 under the same argv. Significance: two-sided exact McNemar on the paired per-item outcomes against analysis/exp-03_full_items.jsonl (scripts/mcnemar.py, already self-tested). (a) delta > 0 and p < 0.05 -> supported, adopt, exp-04 becomes final_model. (b) delta > 0 and p >= 0.05 -> inconclusive, the effect is NOT claimed; the higher-scoring checkpoint may still be taken as the final artifact since choosing between two statistically indistinguishable models is free, and the card records the effect as unproven. (c) delta <= 0 -> contradicted, reject, exp-03/final stays final_model."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +4 pts (0.72-0.75). Rejection-sampling rounds on top of a saturated-format SFT model are consistently positive but small, and this is a single round at a low learning rate."
+  falsified_if: "Full-test accuracy at n=1319 is at or below exp-03's 0.7081, or the paired McNemar shows regressions outnumbering gains. Either says the model's own correct chains carry no supervision it has not already absorbed, and the remaining budget should go to weight averaging instead. The 26-item watch set is deliberately NOT a falsifier here: at n=26 a plausible ~20% fix rate is 5 items with a binomial spread of roughly +/-3, so the clause would fire or not on noise and could contradict the primary metric on the same run. It is reported as a diagnostic only."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: "synthetic:self - chains generated by ckpts/exp-03/final, which is itself google/gemma-3-4b-pt fine-tuned only on GSM8K-train-derived data. The questions are openai/gsm8k main train (7,473) plus 20,000 nvidia/OpenMathInstruct-2 augmented_gsm8k problems (rev 469216e3f46f4dacf476b382e192485ea51a143e). The GSM8K test split is never read by the sampler."
+      n_examples: 28163
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, ckpts/exp-03/final, --out, data/rft_v1.jsonl, --max-aug, '20000', --k, '4', --temp, '1.0', --top-p, '0.95', --keep-per-q, '2', --hard-boost, '1', --fewshot-frac, '0.05', --seed, '0']
+      selection: "k=4 samples per question at temperature 1.0 / top_p 0.95 / max 640 new tokens. A chain is kept only if its final 'ANSWER: <n>' line normalises to the gold integer (34,856 wrong chains and 679 with no answer line discarded), contains exactly one 'ANSWER:' marker, and is not a whitespace-normalised duplicate of another kept chain for the same question. Per question: 2 chains if at most half the samples were correct (7,004 hard questions), otherwise 1 (17,292 easy questions), shortest first, on the grounds that a question all 4 samples solve teaches little and a shorter correct chain has fewer places to slip. 3,177 questions no sample solved contribute nothing."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE, flash_attention_2"
+    peft: "none - full parameter on the 3.880B language tower; vision tower and multimodal projector frozen"
+    hyperparams: {lr: 3.0e-6, epochs: 1.0, batch_size: 24, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    decode: "greedy, identical to exp-02 and exp-03: generation_config.json with do_sample false, temperature 0.0, top_p 1.0, eos_token_id [1, 106], no top_k. Confirmed on exp-02 that vLLM reads and applies this file."
+    target_format: "<bos><start_of_turn>user\\n{optional 10-shot block}\\n\\n{MATH_PROMPT_TEMPLATE with the question}<end_of_turn>\\n<start_of_turn>model\\n{self-generated chain}\\n\\nANSWER: {integer}<end_of_turn>; loss on the model turn only, prompt tokens masked to -100. Byte-identical rendering to exp-02/exp-03 because the sampler imports the same template and prompt constants."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_v1.jsonl, --parent, /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/ckpts/exp-04, --epochs, '1', --lr, '3e-6', --bs, '24', --accum, '2', --max-len, '3072', --attn, flash_attention_2, --liger, '1', --seed, '0', --save-steps, '300']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 300
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '8', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 1319, the complete openai/gsm8k main test split; fewshot_seed 42 fixed by the task definition"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7081
+    path: /home/ben/task/eval/exp-03_full1319.json
+  diagnostic:
+    what: "paired exact McNemar against analysis/exp-03_full_items.jsonl: gains and regressions counted separately over the same 1319 items, plus the format diagnostics (max_tokens share, ANSWER-line share) to confirm nothing regressed there. Reported alongside, without falsifying power: how many of the 26 watch-set ids in analysis/exp-03_watch_rerun.json:still_failing_ids are fixed. For scale, exp-03 fixed 15 of 41 (37%) with an update fifteen times larger, so anything at or above ~5 of 26 is consistent with the mechanism working."
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.36
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 587}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-300, step: 300}
+  training_summary:
+    final_loss: 0.2333
+    steps: 587
+    notes: "1281 s (0.36 h) at 22.0 samples/s, well inside the 0.6 h budget. 0 of 28,163 rows truncated. Loss 0.233, below exp-03's 0.315, as expected when the targets are the model's own high-likelihood outputs; that is a sign of on-policy data, not of better generalisation. ckpts/exp-04/final/generation_config.json diffs identically against exp-03's, so eos_token_id [1, 106] survived the save from a self-checkpoint (the failure mode the WMA flagged)."
+  measurements:
+    - {metric: accuracy, value: 0.7255, n: 1319, path: /home/ben/task/eval/exp-04_full1319.json, delta_vs_comparator: 0.0174}
+  diagnostic_result:
+    value: 0.1242
+    path: /home/ben/task/analysis/mcnemar_exp03_exp04.json
+    notes: "Paired exact McNemar over the same 1319 items: 114 gains against 91 regressions, 205 discordant, two-sided p = 0.124. The point estimate moves the right way but most of the delta is churn - the gain/regression imbalance is 23 items, inside what reshuffling produces at this discordance. Format diagnostics improved slightly and are now effectively saturated: max_tokens 18 -> 9 of 1319, no-ANSWER-line share 0.0136 -> 0.0068, output tokens p50 173 -> 153 (the shortest-chain preference in the data selection shows up here). stderr 0.012."
+  watch_set_result: {fixed: 3, still_failing: 23, regressions: 91, path: /home/ben/task/analysis/exp-04_watch_rerun.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Full-test accuracy 0.7081 -> 0.7255 (+1.74 pts), inside the predicted +1 to +4 band, but the paired McNemar gives p = 0.124 so the effect is not distinguishable from churn on a single read. The pre-committed rule lands in branch (b): the improvement is NOT claimed. Only 3 of the 26 hardest watch items were fixed, which is consistent with the round having sharpened reliability broadly rather than solving the residue - the mechanism is untested, not refuted."
+  decision: adopt
+  next_step: "Branch (b) of the pre-committed rule permits taking the higher-scoring checkpoint as the artifact because the two are statistically indistinguishable, so final_model becomes ckpts/exp-04/final while the card records the RFT effect as unproven. exp-05: a second, larger on-policy round sampled from exp-04 over ~52k questions (including ~25k not seen in rft_v1) is the natural continuation - if a 28k-row round moves 1.7 pts of point estimate, a 2x round is the cheapest way to find out whether the effect is real or was noise."

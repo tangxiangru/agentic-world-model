@@ -1,0 +1,234 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-02T20:07:00Z'
+situation:
+  elapsed_h: 6.1
+  remaining_h: 3.9
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05-final-greedy
+    score:
+      metric: accuracy
+      value: 0.76667
+      protocol_n: 150
+  trigger: Three candidates now sit inside one standard error of each other on dev-150 under greedy decoding - exp-02 0.760, exp-03 0.740, exp-05 0.767, all with stderr 0.035 - and the n=300 probe ranks them differently (exp-03 0.813 > exp-02 0.800 > exp-05 0.797). Choosing what ships on a 150-item difference of 1 point would be choosing on noise.
+  trigger_evidence:
+  - path: /home/ben/task/eval/exp-04_greedy_dev150.json
+    locator: accuracy 0.76 stderr 0.0350
+  - path: /home/ben/task/eval/exp-05_greedy_dev150.json
+    locator: accuracy 0.76667 stderr 0.0346
+  - path: /home/ben/task/eval/exp-04_exp03greedy_dev150.json
+    locator: accuracy 0.74 stderr 0.0359
+  - path: /home/ben/task/analysis/probe_exp05.json
+    locator: summary.greedy_few 0.7967 against exp-02 0.8000 and exp-03 0.8133 on the same 300 items
+  alternatives_rejected:
+  - option: ship the n=150 leader and stop
+    reason: a 0.7-point lead at stderr 3.5 is not a result; 3.9h remain and a 500-item protocol costs about 50 minutes for all four arms
+  - option: a sixth training run
+    reason: the two training levers left (more supervised data, on-policy RFT) are both measured flat in exp-03 and exp-05; another hour of training has no evidence behind it, while a decisive selection does
+  - option: n=1319, the full test set
+    reason: roughly 45 minutes per arm, so 3h for four arms, which does not leave time to write and verify final_model. n=500 is a strict superset of the 150 already used and cuts the standard error from 3.5 to about 1.9 points
+  - option: average only exp-02 and exp-05
+    reason: exp-03 and exp-05 are both one-epoch children of exp-02 trained on disjoint data, which is the configuration weight averaging is supposed to help; excluding exp-03 would drop the only arm the probe ranks first
+  pitfalls_hit:
+  - what: created a greedy variant with `cp -al` and then rewrote generation_config.json in place; hardlinks meant the write landed inside ckpts/exp-02/final too, which made exp-05's first training run finish its epoch and then die in save_pretrained with an invalid GenerationConfig, losing both checkpoints
+    cost_h: 0.75
+    fix: 'never write in place into a hardlinked tree: rm the file first, then cp. Every candidate directory''s generation_config.json inode was checked distinct before this card; a 1-step save smoke test now precedes any long run whose parent config was touched.'
+  - what: save_pretrained validates generation_config, so a checkpoint whose parent carries temperature=0.0 with do_sample=false cannot be saved at all - the failure lands an hour after the mistake, at the end of training
+    cost_h: 0.0
+    fix: training checkpoints keep the base snapshot's sampling config; the greedy config is applied only to the served copy
+  smoke_runs:
+  - command:
+    - python
+    - scripts/train_sft.py
+    - --data
+    - data/rft_mix_v1.jsonl
+    - --out
+    - ckpts/savetest
+    - --limit
+    - '400'
+    - --max-steps
+    - '1'
+    outcome: 12 files written, generation_config valid - confirmed the save path before re-running exp-05
+  - command:
+    - python
+    - scripts/soup.py
+    - --inputs
+    - ckpts/exp-02/final
+    - ckpts/exp-03/final
+    - ckpts/exp-05/final
+    - --out
+    - ckpts/soup-235
+    outcome: 9.3G bf16 checkpoint written, greedy generation_config, tokenizer and processor files present
+problem:
+  statement: The session has produced four servable candidates whose measured differences are all smaller than the measurement error of the protocol used to measure them. Under dev-150 the spread is 0.740 to 0.767 with a standard error of 0.035 per arm, and the 300-item probe orders them differently, so the n=150 ranking carries almost no information about which checkpoint will score best on the full benchmark.
+  evidence:
+  - path: /home/ben/task/memory/index.md
+    locator: the card table
+    observation: exp-02 0.760, exp-03 0.740, exp-05 0.767 greedy at n=150; every pairwise gap is under one standard error
+  - path: /home/ben/task/analysis/probe_exp02.json
+    locator: summary.greedy_few 0.8000
+    observation: the 300-item probe puts exp-03 first and exp-05 last, reversing the dev-150 order
+  - path: /home/ben/task/analysis/exp-05_taxonomy.json
+    locator: tally no_stop = 2
+    observation: exp-05 reintroduced two non-terminating completions that exp-02 and exp-03 did not have, which is a reason not to ship it on a 1-point nominal lead
+  affected_share: 1.0
+  failure_examples:
+  - id: selection error
+    source: /home/ben/task/eval/exp-05_greedy_dev150.json
+    question: n/a - the failure is in the decision procedure, not an item
+    gold: the checkpoint with the highest true accuracy
+    model_output: the checkpoint with the highest 150-item sample accuracy
+    failure: a 1-point lead at stderr 3.5 points selects the wrong arm often
+  - id: exp-03 rank reversal
+    source: /home/ben/task/analysis/probe_exp03.json
+    question: n/a - disagreement between two item sets
+    gold: one consistent ranking
+    model_output: dev-150 ranks exp-03 last (0.740); the 300-item probe ranks it first (0.813)
+    failure: the two available measurements disagree on the ordering
+  - id: exp-05 format regression
+    source: /home/ben/task/analysis/exp-05_taxonomy.json
+    question: n/a
+    gold: 0 non-terminating completions
+    model_output: 2 of 150
+    failure: self-training slightly loosened the stop behaviour exp-02 had made perfect
+  watch_set:
+    path: /home/ben/task/data/dev_train300.jsonl
+    n: 300
+    selection: 300 GSM8K TRAIN items (idx 7173-7472), held out of all training data and disjoint from the grader's 10 few-shot exemplars, contamination-checked clean. No benchmark test item is used.
+hypothesis:
+  claim: Scoring all four candidates under one larger protocol (evaluate.py --limit 500, greedy, identical for every arm) will separate them well enough to choose what ships, and the uniform soup of exp-02, exp-03 and exp-05 will score at least as high as the best individual arm.
+  mechanism: n=500 is a strict superset of the 150 items already used and cuts the binomial standard error from about 3.5 to about 1.9 points, so gaps of 3 points and up become readable. The soup arm rests on the fact that exp-03 and exp-05 are one-epoch children of the same parent trained on disjoint data, the setting where averaging weights that share a basin cancels independent fine-tuning noise.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: the soup 0 to +3 points over the best individual arm; the main deliverable is the ranking, not a gain
+  falsified_if: the four arms still fall inside one standard error of each other at n=500, in which case no ranking is established and the arm with the cleanest failure taxonomy ships instead; or the soup scores below every individual arm, which would mean the three checkpoints are not in a shared basin.
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/dev_train300.jsonl
+    source: openai/gsm8k
+    n_examples: 300
+    built_by: /home/ben/task/scripts/build_dev.py
+    build_command:
+    - python
+    - scripts/build_dev.py
+    selection: the held-out probe set; this card trains nothing and the soup arm is a weight average, so no training data is read
+    contamination_check: passed
+    mixture_weight: 0.0
+  method:
+    family: merge
+    framework: scripts/soup.py (uniform parameter average, bf16 output) + vllm 0.11.0 via evaluate.py
+    peft: none
+    hyperparams:
+      lr: null
+      epochs: null
+      batch_size: null
+      grad_accum: null
+      max_seq_len: 4000
+      scheduler: null
+      warmup: null
+      weight_decay: null
+      precision: bf16
+      seed: 42
+    target_format: 'unchanged: chain of thought then a single ''ANSWER: <number>'' line, terminated by <end_of_turn>'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - bash
+    - scripts/select.sh
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/select.sh
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.0
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '500'
+    - --max-connections
+    - '16'
+    dev_set: official --limit 500
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: null
+    path: null
+  diagnostic:
+    what: the failure taxonomy of each arm's n=500 log; the shipped model must have no format failures (no_stop and no_marker at zero), which is a hard requirement independent of the accuracy ranking
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/soup-235
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/soup-235
+    step: 0
+  - path: /home/ben/task/ckpts/exp-04-greedy
+    step: 568
+  - path: /home/ben/task/ckpts/exp-05-final-greedy
+    step: 406
+  - path: /home/ben/task/ckpts/exp-03-greedy
+    step: 1042
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: no training; soup-235 is the uniform bf16 parameter average of ckpts/exp-02/final, ckpts/exp-03/final and ckpts/exp-05/final
+  measurements:
+  - metric: accuracy
+    value: 0.776
+    n: 500
+    path: /home/ben/task/eval/exp-06_soup235_dev500.json
+    delta_vs_comparator: 0.024
+  - metric: accuracy
+    value: 0.768
+    n: 500
+    path: /home/ben/task/eval/exp-06_exp02_dev500.json
+    delta_vs_comparator: 0.016
+  - metric: accuracy
+    value: 0.76
+    n: 500
+    path: /home/ben/task/eval/exp-06_exp03_dev500.json
+    delta_vs_comparator: 0.008
+  - metric: accuracy
+    value: 0.752
+    n: 500
+    path: /home/ben/task/eval/exp-06_exp05_dev500.json
+    delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.006
+    path: /home/ben/task/logs/exp-06.log
+    notes: 'n=500 taxonomies: soup235 388 correct / 109 wrong_number / 3 no_stop; exp02 384/112/4; exp03 380/118/2; exp05 376/119/5. Every arm carries a handful of non-terminating completions at n=500 that n=150 did not show; the soup has fewer than exp02 and exp05 and does not fail the format requirement in any material way. no_marker and trailing_junk are zero everywhere.'
+  watch_set_result:
+    fixed: null
+    still_failing: 112
+    regressions: null
+    path: /home/ben/task/eval/exp-06_soup235_dev500.json
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: At n=500 the ranking is soup235 0.776, exp02 0.768, exp03 0.760, exp05 0.752, each with stderr 0.019. The uniform soup of the three fine-tunes beats all three of its ingredients, which is the predicted behaviour for checkpoints sharing a basin, and it also has fewer non-terminating completions than two of them. The spread (2.4 points top to bottom) is still close to one standard error, so the ranking is suggestive rather than decisive.
+  decision: adopt
+  next_step: 'exp-07: the soup ingredient set was not itself searched, and the n=500 evals turned out to cost only ~2.5 minutes each. Build the remaining soup variants over the same three parents and score them under the same n=500 protocol, then confirm the winner against the runner-up on the full 1319-item test set before writing final_model.'

@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T11:46:17Z'
+situation:
+  elapsed_h: 3.6
+  remaining_h: 6.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6867, protocol_n: 150}
+  trigger: 'exp-02 solved the output protocol completely - 0/150 completions truncate and every one ends on a single ANSWER line - so all 47 remaining dev-150 failures are reasoning or arithmetic, which more of the same off-policy data is unlikely to fix.'
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_diagnostic.json, locator: 'stop_reasons, n_wrong', observation: 'stop_reason is "stop" for all 150; 47 wrong, and the sampled wrong outputs are well-formed chains with one bad step'}
+    - {path: /home/ben/task/analysis/exp-02_watch500.json, locator: accuracy, observation: '0.738 on the 500 held-out GSM8K train items'}
+  alternatives_rejected:
+    - {option: Continue training exp-02/final on the RFT rows alone at a low LR, reason: 'about 1.5 h cheaper, but it anneals a model that has already seen two cosine-decayed epochs and risks collapsing onto its own distribution; a fresh run from base on the union is the recipe with the stronger track record and the budget allows it'}
+    - {option: Keep all 66973 exp-02 rows and add all 43141 RFT rows, reason: '110k rows at 2 epochs is ~3.0 h and would leave under 2.5 h for evaluation and a fallback; the openmath bulk is subsampled to 43k instead, keeping all 6973 human-written GSM8K train references'}
+    - {option: DPO on correct-vs-incorrect self-samples, reason: 'the pairs exist as a by-product of the sampling run, but there is no measured preference baseline and a DPO run at 3.6 h elapsed is a bigger gamble than a second SFT round'}
+    - {option: Add OpenMathInstruct reference solutions for the 2396 pool questions where all 4 samples failed, reason: 'directly targets the hard tail but is only 2.5% of the mixture, and re-extracting those solutions risks letting a second answer format back into the data'}
+  pitfalls_hit:
+    - {what: 'Trainer save_total_limit=2 deleted raw checkpoint-500 during exp-02', cost_h: 0.0, fix: 'it had already been converted to ckpts/exp-02/ep1; this card saves at the epoch boundary only, so both survive'}
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model, ckpts/exp-02/final, --questions, data/dev_train500.jsonl, --score-only], outcome: 'exp-02 scores 369/500 = 0.738 greedy zero-shot on the held-out train probe; the offline vLLM scorer runs end to end'}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_v2.jsonl], outcome: '93114 documents scanned, 0 contaminated'}
+problem:
+  statement: 'exp-02 gets the format right and the mathematics wrong on 47 of 150 dev items. Its training data is entirely off-policy - chains written by a 405B model - so it has never been trained on reasoning it can actually reproduce, nor on the specific problems it currently fails.'
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_diagnostic.json, locator: 'wrong[0..3]', observation: 'failures are single bad steps inside otherwise coherent chains - a mis-set-up profit calculation, a units slip, a double-counted can'}
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: accuracy, observation: '0.6867'}
+  affected_share: 1.0
+  failure_examples:
+    - {id: dev150-w1, source: /home/ben/task/analysis/exp-02_diagnostic.json, question: hospital profit per day, gold: '10000', model_output: 'sets up revenue as 500*200 and cost as 30000+40000, answers 30000', failure: 'wrong problem set-up, arithmetic itself is fine'}
+    - {id: dev150-w2, source: /home/ben/task/analysis/exp-02_diagnostic.json, question: bags of dog food in the first year, gold: '5', model_output: 'rounds 6.64 up to 7 and adds 2, answers 9', failure: 'over-applies a ceiling rule'}
+    - {id: dev150-w3, source: /home/ben/task/analysis/exp-02_diagnostic.json, question: cans of tomatoes used, gold: '12', model_output: 'divides 16 ounces by 16 ounces per can then multiplies by 3, answers 3', failure: 'unit confusion collapses the chain'}
+    - {id: dev150-w4, source: /home/ben/task/analysis/exp-02_diagnostic.json, question: litres of water taken on, gold: '16', model_output: 'treats the leak rate as 2 litres per 10 feet of distance, answers 126', failure: 'misreads a rate as per-distance instead of per-time'}
+  watch_set:
+    path: /home/ben/task/data/dev_train500.jsonl
+    n: 500
+    selection: 'the last 500 items of the GSM8K *train* split, excluded from every training file; exp-02 scores 0.738 on them'
+hypothesis:
+  claim: 'Retraining from the base checkpoint on the union of the off-policy corpus and 43141 rejection-sampled self-solutions verified against the reference answer raises dev-150 accuracy above exp-02, because the supervision now comes from the model own output distribution and is known to be correct.'
+  mechanism: 'Rejection sampling keeps only chains whose graded answer equals gold, so the supervision is both on-policy and correct; it also reweights the corpus toward the 22577 problems the model can nearly solve, sharpening modes it half-learned instead of teaching phrasing it will not reproduce.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: +2 to +6 points on dev-150
+  falsified_if: 'dev-150 accuracy is at or below exp-02 0.6867, or the held-out train probe drops below exp-02 0.738'
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: 'derived:exp-02 for the 43141 rejection-sampled rows, plus nvidia/OpenMathInstruct-2 gsm8k family (43000) and openai/gsm8k train references (6973)'
+      n_examples: 93114
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, ckpts/exp-02/final, --questions, data/rft_questions.jsonl, --out, data/rft_v1.jsonl, --k, '4', --temperature, '0.9', --top-p, '0.95', --max-tokens, '640', --max-per-question, '2', --fewshot]
+      selection: 'k=4 samples at T=0.9 behind the grader 10-shot prefix over 24973 GSM8K-train and OpenMathInstruct augmented-gsm8k questions; a sample is kept only if the last number of the completion equals the reference answer and it holds exactly one ANSWER marker; exact-duplicate texts dropped; at most 2 shortest correct chains per question; 22577 of 24973 questions yielded at least one'
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE
+    peft: none
+    hyperparams: {lr: 2.0e-5, epochs: 2, batch_size: 8192, grad_accum: 8, max_seq_len: 2600, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: 'fp32 params + bf16 autocast, adamw_bnb_8bit', seed: 0}
+    target_format: 'chain of thought, blank line, one ANSWER line, then <end_of_turn>; loss on the model turn only; 8% of rows sit behind the exact 10-shot system prefix the grader uses'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_v2.jsonl, --out, /home/ben/task/ckpts/exp-03, --lr, '2e-5', --epochs, '2', --token-budget, '8192', --grad-accum, '8', --max-seq-len, '2600', --fewshot-frac, '0.08', --save-steps, '740', --attn, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 740
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6']
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.6867
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: greedy zero-shot accuracy on the 500 held-out GSM8K train items via scripts/rft_sample.py --score-only, where exp-02 scores 0.738
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.63
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/ep1, step: 740}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 1478}
+  training_summary: {final_loss: 0.2356, steps: 1478, notes: '93038 rows after dropping 76 over max_seq_len (0.08%); 44.6M padded tokens per epoch at ~10.2k tok/s'}
+  measurements:
+    - {metric: accuracy, value: 0.6933, n: 150, path: /home/ben/task/eval/exp-03_final_dev150.json, delta_vs_comparator: 0.0066}
+  diagnostic_result: {value: 0.74, path: /home/ben/task/analysis/exp-03_watch500.json, notes: '370/500 on the held-out GSM8K train probe, against 369/500 for exp-02 - a one-item difference'}
+  watch_set_result: {fixed: 370, still_failing: 130, regressions: null, path: /home/ben/task/analysis/exp-03_watch500.json}
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: 'dev-150 0.6867 -> 0.6933 (+0.7 pts, stderr 3.8) and the 500-item train probe 0.738 -> 0.740 (+1 item). Both moves are far inside noise, so the rejection-sampling round neither helped nor hurt measurably at this n; the predicted +2 to +6 was not observed.'
+  decision: iterate
+  next_step: 'The two candidates are statistically tied, so choose between them under a tighter protocol rather than on these numbers, and test a weight average of the two full fine-tunes at the same time.'

@@ -1,0 +1,102 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T17:05:00Z'
+situation:
+  elapsed_h: 3.2
+  remaining_h: 6.8
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp02/final
+    score: {metric: accuracy, value: 0.7933, protocol_n: 150}
+  trigger: "exp-02's two checkpoints under the identical protocol: epoch 1 (step881) 0.680, epoch 2 (final) 0.747 sampled. The second pass over the same 60k rows bought +6.7 pts, so the model was still far from saturating when the schedule ran out."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/summary_exp02_step881_dev150.json, locator: "accuracy 0.68"}
+    - {path: /home/ben/task/analysis/summary_exp02_final_dev150.json, locator: "accuracy 0.7467"}
+    - {path: /home/ben/task/ckpts/exp02/losslog.json, locator: "steps 900-1762", observation_note: "training loss fell 0.35 -> 0.21 across epoch 2, i.e. part of that pass was memorisation of the 60k rows"}
+  alternatives_rejected:
+    - {option: "a third and fourth epoch on the same data/sft_v1.jsonl", reason: "loss was already 0.21 and falling at the end of epoch 2; more passes over 60k rows buys memorisation, and 83k unused gsm8k-derived problems are sitting on disk"}
+    - {option: "restart from base on v1+v2 together (143k rows, 1 epoch)", reason: "~2.4 h and it throws away a measured 0.793 checkpoint; continuing costs 1.4 h and keeps the incumbent as the fallback"}
+    - {option: "rejection-sampling round now instead", reason: "self-samples from a model distilled off a 405B teacher are weaker supervision than more of the teacher's own solutions; RFT is queued as the next card if this one saturates"}
+    - {option: "raise max-per-problem from 2 to 4 on the data already used", reason: "more solutions per problem is a weaker axis than more problems when 1.3M unused gsm8k-derived problems exist"}
+  pitfalls_hit:
+    - {what: "three greedy completions hit the 4000-token cap in exp-03 (0 under sampling): greedy decoding can enter a repeat loop", cost_h: 0.0, fix: "accepted - greedy still nets +4.7 pts; watched as ends_with_answer_line in the diagnostic"}
+  smoke_runs: []
+problem:
+  statement: "The incumbent still gets 31 of 150 dev items wrong, and the failures are now reasoning failures, not contract failures: it mis-frames the question (answers -40 where the gold is 40), divides by the wrong count (7.5 vs 60), or double-counts a quantity. Contract compliance is 0.98-1.00 and every completion stops on <end_of_turn>, so nothing further is recoverable from formatting."
+  evidence:
+    - {path: /home/ben/task/analysis/summary_exp02_final_greedy_dev150.json, locator: "accuracy 0.7933, ends_with_answer_line 0.98", observation: "the contract is solved; 31 items remain wrong"}
+    - {path: /home/ben/task/analysis/wrong_exp02_final_dev150.jsonl, locator: "rows 1-3", observation: "gold 40 -> '-40' (sign/framing), gold 60 -> '7.5' (divided by levels instead of summing), gold 5 -> '4' (mis-modelled the year)"}
+  affected_share: 0.207
+  failure_examples:
+    - {id: wrong-1, source: /home/ben/task/analysis/wrong_exp02_final_dev150.jsonl, question: "(Thursday vs other-day revenue difference)", gold: '40', model_output: "...indicating the difference in revenue in the favor of Thursday: -40. ANSWER: -40", failure: "sign/framing error: computes the magnitude then negates it"}
+    - {id: wrong-2, source: /home/ben/task/analysis/wrong_exp02_final_dev150.jsonl, question: "(total square footage across levels)", gold: '60', model_output: "16 + 8 + 4 + 2 = 30 ... 30 / 4 = 7.5 ANSWER: 7.5", failure: "answers a different question (average instead of total) and mis-adds"}
+    - {id: wrong-3, source: /home/ben/task/analysis/wrong_exp02_final_dev150.jsonl, question: "(bags of puppy food in the first year)", gold: '5', model_output: "2 bags + 2 bags = 4 bags ANSWER: 4", failure: "mis-models the remaining days of the year"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing SFT from ckpts/exp02/final for one epoch over 82842 OpenMathInstruct-2 rows whose problems are disjoint from those exp-02 already saw raises greedy dev-150 accuracy above the incumbent's 0.7933."
+  mechanism: "exp-02 gained 6.7 pts from a second pass over the same rows while its loss fell to 0.21, which says the gain came from more optimisation on this distribution rather than from new information. 83k unseen problems give the same number of additional steps on the same distribution but with fresh supervision, so the part of exp-02's epoch-2 gain that was memorisation is replaced by generalisable signal."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: +1 to +4 pts}
+  falsified_if: "greedy dev-150 accuracy is at or below 0.7933, i.e. the extra 83k unseen problems buy nothing over the incumbent"
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp02/final, origin: exp-02, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (shards 0-3 of 32)
+      n_examples: 82842
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v2.jsonl, --n-gsm, '76000', --n-math, '12000', --exclude, data/sft_v1.jsonl, --seed, '1']
+      selection: "same filters as exp-02's data/sft_v1.jsonl (numeric answers, <=2 solutions per problem, \\boxed unwrapped, 'ANSWER: N' appended, last-number-equals-gold guard, targets end with the literal <end_of_turn>), with every problem that appears in data/sft_v1.jsonl excluded, so the two files share no problem. 20% carry a few-shot system prefix (5% the grader's exact 10-shot block)."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: custom loop on transformers 4.57.3 + bitsandbytes AdamW8bit
+    peft: none
+    hyperparams: {lr: 7.0e-06, epochs: 1, batch_size: 64, grad_accum: 5, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32 master weights + bf16 autocast, seed: 1}
+    target_format: "solution text, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the completion only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v2.jsonl, --model, /home/ben/task/ckpts/exp02/final, --out, ckpts/exp04, --epochs, '1', --lr, '7e-6', --max-seq-len, '3072', --token-budget, '8192', --eff-batch, '64', --seed, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp04
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6']
+    dev_set: official inspect_evals/gsm8k test --limit 150
+    n: 150
+    seed: 42
+  comparator: {ref: exp-02, value: 0.7933, path: /home/ben/task/eval/exp02_final_greedy_dev150.json}
+  diagnostic:
+    what: "ends_with_answer_line and the max_tokens stop count under greedy decoding: more training should not make the repeat-loop tail worse"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: failed
+  wall_h: 1.4
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: 0.289, steps: 1234, notes: "training itself completed all 1234 steps over 82842 rows (loss 0.38 -> 0.29); the run died in the save. No weights were written: ckpts/exp04/final held only config.json."}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: |
+    File "transformers/modeling_utils.py", save_pretrained
+      model_to_save.generation_config.save_pretrained(save_directory)
+    ValueError: GenerationConfig is invalid:
+      - `temperature`: `do_sample` is set to `False`. However, `temperature` is set to `0.0` --
+        this flag is only used in sample-based generation modes.
+    Fix these issues to save the configuration.
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "The hypothesis was never measured. The run trained to completion and then lost every weight in save_pretrained, because exp-03's greedy generation_config (do_sample=False with temperature=0.0) is one transformers refuses to serialise, and that ValueError aborts the save before the safetensors are written. Two adopted decisions interacted: exp-03's decode config travelled into the parent checkpoint, and train_sft.py copied it into the model object."
+  decision: iterate
+  next_step: "exp-05 re-asks the same question with the save path fixed (generation_config sanitised before save_pretrained, then the greedy file copied in and asserted), with --save-every 700 so a late failure cannot cost a whole run again, and over a larger mixture since the intervening data survey showed the unseen-problem pool is exhausted at ~81k."

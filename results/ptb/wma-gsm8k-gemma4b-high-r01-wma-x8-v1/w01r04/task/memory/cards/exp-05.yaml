@@ -1,0 +1,144 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T19:10:00Z'
+situation:
+  elapsed_h: 6.6
+  remaining_h: 3.4
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7333, protocol_n: 150}
+  trigger: "exp-04 added 58k solutions from the same 405B teacher over 33.8k problems the model had never seen and returned +1.3 pts, inside the 3.6 pt stderr. Two successive teacher-data cards (exp-02 epoch 2, exp-04) have now returned deltas at or under the noise floor, which says more of the same off-policy supervision is at its ceiling."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-04.yaml
+      locator: "result.measurements: 0.7333 vs comparator 0.72; conclusion.verdict inconclusive"
+    - path: /home/ben/task/memory/cards/exp-02.yaml
+      locator: "result.measurements: 0.6467 (epoch 1) vs 0.660 (epoch 2)"
+    - path: /home/ben/task/analysis/exp-04_failures.jsonl
+      locator: "40 failing dev-150 items"
+  alternatives_rejected:
+    - option: "A second epoch on sft_v2_fresh"
+      reason: "Same lever exp-02's epoch 2 already tested and it returned inside the noise floor."
+    - option: "Add OpenMathInstruct-2's augmented_math (277k MATH-derived rows)"
+      reason: "Different difficulty regime and mostly non-numeric answers; off-distribution for a grade-school benchmark graded by numeric end-match, and there is no time to find out."
+    - option: "DPO on correct/incorrect self-sample pairs"
+      reason: "Needs a preference-pair build and a second trainer path with 4.9 h left; RFT reuses the SFT trainer unchanged and gets the same on-policy signal from the same samples."
+    - option: "Stop experimenting and spend the remaining time on a larger-n selection eval"
+      reason: "Partly taken: the selection card is queued behind this one either way. But 1.4 h of the 4.9 h is affordable for the one lever not yet tried, and the selection eval only needs ~0.7 h."
+  pitfalls_hit:
+    - what: "vLLM sampling for the RFT corpus runs at only ~7.9k output tok/s on this checkpoint (gemma-3-4b, 262k vocab); raising concurrency (max_model_len 1024, max_num_seqs 512) did not move it, so it is decode-bound, not scheduler-bound. 96k generations took 1 h 19 min."
+      cost_h: 0.3
+      fix: "Budget ~8k output tok/s for any future sampling on this model; 4 samples on 24k questions is an hour and a quarter, not half an hour."
+    - what: "A 1 h 19 min generation run completed and then died in post-processing: norm() called int() on a sampled answer that parsed to float infinity, raising OverflowError after llm.generate() had returned. Every generation was lost because the outputs only lived in memory."
+      cost_h: 1.35
+      fix: "norm() now returns the raw string for anything over 24 characters, non-finite, or unparseable, and is unit-tested on inf/nan/1e999/overlong inputs. The re-run was cut to 12k questions to fit the remaining budget. The deeper lesson: post-processing that runs after an expensive generation should be defensive, or the raw generations should be written to disk before any parsing."
+  smoke_runs:
+    - command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/data/rft_smoke.jsonl, --n-questions, '64', --k, '4']
+      outcome: "44/64 questions (0.688) had at least one correct sample; 64 solutions kept; prompts rendered through templates/gemma3.jinja so the samples come from the graded distribution."
+problem:
+  statement: "The incumbent gets 26.7% of dev-150 wrong and the errors are reasoning errors inside clean chains, but the model has no supervision anywhere in its training that is drawn from its own output distribution. Every target it has ever been trained on was written by a different model, so nothing has ever corrected the specific chains it actually produces."
+  evidence:
+    - path: /home/ben/task/analysis/exp-04_diag.json
+      locator: "accuracy 0.7333, wellformed 0.9733"
+      observation: "Format is solved; 40 of 150 items are wrong on reasoning."
+    - path: /home/ben/task/analysis/exp-04_failures.jsonl
+      locator: "40 rows"
+      observation: "Arithmetic and set-up slips inside well-formed, terminated chains."
+    - path: /home/ben/task/memory/cards/exp-04.yaml
+      locator: "conclusion.summary"
+      observation: "58k more teacher solutions over twice the distinct problems bought a delta inside the noise floor."
+  affected_share: 0.267
+  failure_examples:
+    - {id: g1, source: /home/ben/task/analysis/exp-04_failures.jsonl, question: "(dev-150 failing item 1)", gold: "see file", model_output: "see file", failure: "arithmetic slip inside a well-formed chain"}
+    - {id: g2, source: /home/ben/task/analysis/exp-04_failures.jsonl, question: "(dev-150 failing item 2)", gold: "see file", model_output: "see file", failure: "wrong quantity carried between steps"}
+    - {id: g3, source: /home/ben/task/analysis/exp-04_failures.jsonl, question: "(dev-150 failing item 3)", gold: "see file", model_output: "see file", failure: "answered a different question than the one asked"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing training from ckpts/exp-04/final for one epoch on the model's own answer-verified solutions - drawn at temperature 1.0, kept only when the final ANSWER line equals gold, and concentrated on problems it does not already solve on every draw - raises greedy dev-150 accuracy above exp-04's 0.7333."
+  mechanism: "Rejection sampling puts probability mass on chains the model itself can reach, so the update is a reweighting of its own output distribution toward the correct branches rather than an attempt to imitate a 405B teacher's phrasing. Because grading is a single greedy sample, raising the probability of the correct branch at the points where the model is currently split (the problems it solves on some draws but not all) is exactly what moves the argmax path. Problems solved on all 4 draws contribute one solution instead of two, so the corpus is weighted toward that frontier."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +4 points on dev-150; the corpus came in at 6809 rows rather than the ~30k first planned, so the upper end of the original +2 to +5 is no longer available"
+  falsified_if: "Greedy dev-150 accuracy is at or below 0.7333, or the well-formed ANSWER-line share falls below 0.97."
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-04/final, origin: exp-04, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: "synthetic:self - sampled from /home/ben/task/ckpts/exp-04/final on questions from data/questions_pool.jsonl (gsm8k train + OpenMathInstruct-2 gsm8k/augmented_gsm8k problems, no new provenance)"
+      n_examples: 6809
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/data/rft_v1.jsonl, --n-questions, '12000', --k, '4', --temperature, '1.0', --top-p, '0.95', --max-tokens, '512', --max-per-question, '2', --seed, '0']
+      selection: "12000 questions drawn, 5273 (43.9%) had at least one correct sample and only 24 (0.2%) were solved on all four draws, so per-sample accuracy at temperature 1.0 on this pool is ~13% and the corpus is almost entirely frontier problems. Keep a sample only if its single 'ANSWER: <n>' line normalises to the gold answer; dedup exact duplicates; 2 solutions per problem, or 1 if all 4 draws were correct (mastered problems teach little)"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, full parameter, bf16, flash_attention_2 (same script as exp-02/exp-04)"
+    peft: none
+    hyperparams:
+      lr: 7.0e-6
+      epochs: 1
+      batch_size: 4
+      grad_accum: 16
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+      optim: adamw_bnb_8bit
+      gradient_checkpointing: true
+      group_by_length: true
+    target_format: "unchanged: chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the model turn only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+    decode: "checkpoints saved with the greedy generation_config adopted in exp-03"
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, /home/ben/task/data/rft_v1.jsonl, --out, /home/ben/task/ckpts/exp-05, --epochs, '1', --lr, '7e-6', --bs, '4', --accum, '16', --max-seq-len, '2048', --seed, '0', --decode, greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '8', --max-tokens, '1024', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator: {ref: exp-04, value: 0.7333, path: /home/ben/task/eval/exp-04_dev150.json}
+  diagnostic:
+    what: "well-formed ANSWER-line share and token-cap share; plus the sampler's own solve_rate_any_of_k, which measures how much headroom the on-policy corpus could cover"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.65
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 107}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-107, step: 107}
+  training_summary:
+    final_loss: 0.1978
+    steps: 107
+    notes: "451 s of training on 6809 rows; 1 h 19 min of that wall time was the first (lost) sampling run and 40 min the second. Loss opens near 0.20 - far below exp-04's 0.34 - because the targets are the model's own text."
+  measurements:
+    - {metric: accuracy, value: 0.74, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.0067}
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-05_diag.json
+    notes: "well-formed 0.993 (exp-04: 0.973), token-cap hits 1/150 (exp-04: 4/150) - the on-policy pass restored the format margin exp-04 had lost. Sampler headroom: only 43.9% of 12000 questions were solved at least once in 4 draws at temperature 1.0, and 0.2% on all four, i.e. per-sample accuracy on this pool is ~13%, so the corpus is almost entirely frontier problems and is 6809 rows rather than the ~30k first planned."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "dev-150 0.7333 -> 0.740 (+0.67 pts) against a 3.6 pt stderr: unresolved. The format diagnostic did improve (cap hits 4 -> 1, well-formed 0.973 -> 0.993), which is consistent with an on-policy pass tightening the output distribution, but the accuracy claim cannot be supported at this n from 6809 rows. Three cards in a row (exp-02 epoch 2, exp-04, exp-05) have now returned deltas inside the noise floor, so the model is at a plateau that a few thousand extra rows will not move."
+  decision: iterate
+  next_step: "exp-06: the three surviving candidates (exp-03 0.720, exp-04 0.7333, exp-05 0.740) are separated by less than one stderr at n=150 and cannot be ranked there. Re-score the top two at n=500 and ship the winner as final_model."

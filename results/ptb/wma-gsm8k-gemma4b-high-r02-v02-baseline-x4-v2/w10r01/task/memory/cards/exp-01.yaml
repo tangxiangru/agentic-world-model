@@ -1,0 +1,127 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T07:13:55Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.05
+  remaining_h: 9.95
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Session start: no measurement of the frozen base snapshot exists under the harness protocol, so no later card can have a legal comparator (rule 2)."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty table, no cards"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and train first", reason: "every later card needs a comparator measured under the same protocol; without it deltas are unreadable"}
+    - {option: "Baseline at --limit 500 for tighter CI", reason: "evaluate.py documents 150 as the good limit; a 500-item baseline could not be compared to cheap 150-item iteration evals"}
+    - {option: "--max-connections 16 for speed (the original locked argv)", reason: "WMA verdict exp-01.verdict.json e7: corpus has 0.2733 vs 0.8533 for concurrency 8 vs 2 on byte-identical greedy weights (99/150 completions began '!!!!'), plus EngineDeadError at 8/16. This number is the ruler for the whole session, so it is bought at the default concurrency 2."}
+    - {option: "Strip do_sample/top_k/top_p from the base snapshot so the baseline is greedy", reason: "the snapshot is immutable for this batch; the base floor must be the artifact as shipped. Greedy decoding is instead an explicit part of the candidate artifact (its own generation_config.json) and is measured as such."}
+  pitfalls_hit:
+    - {what: "MetaMathQA GSM_AnsAug/GSM_Rephrased bodies carry gsm8k's own '#### N' line, which would have taught a second answer marker (pitfalls.yaml double_answer_format)", cost_h: 0.15, fix: "assert target.count('ANSWER: ')==1 and '####' not in target in scripts/build_data.py; strip all ^####.* lines from MetaMath bodies"}
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a raw pretrained checkpoint with no instruction tuning. Under the harness's 10-shot gsm8k prompt it is unknown whether it terminates its turn, whether it emits the required 'ANSWER: $ANSWER' final line, and what its accuracy floor is."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L27-35,L50-66,L77", observation: "grader is match(numeric=True, location='end'): the LAST number in the completion is graded, so a non-terminating generation fails even with correct reasoning"}
+    - {path: /home/ben/task/templates/gemma3.jinja, locator: "L41-47", observation: "turn terminator is <end_of_turn>; the snapshot's generation_config.json has eos_token_id [1, 106] and 106 IS <end_of_turn>, so vLLM will stop cleanly - the eos_mismatch pitfall is closed for this base (WMA precondition 1, checked)"}
+    - {path: /home/ben/task/analysis/base_generation_config.json, locator: "whole file (copy of the snapshot's)", observation: "no temperature key, do_sample true, top_k 64, top_p 0.95 -> vLLM's default_sampling_params make this a SAMPLED read at T=1.0, so the n=150 noise floor is ~3.3pp rather than greedy's ~1.3pp"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/watch40.jsonl
+    n: 40
+    selection: "first 40 of a seed-0 shuffle of GSM8K *train*, held out of every training pool; used as a contamination-free probe of reasoning and format. No benchmark test item appears in it."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Measuring the frozen base snapshot under the harness protocol (evaluate.py --limit 150) yields a nonzero accuracy floor and a sample log that shows whether the -pt model terminates its turn and emits the ANSWER: line."
+  mechanism: "The 10 in-context exemplars in the system message specify both the reasoning style and the terminal 'ANSWER: N' line, so a pretrained model can pattern-match them without tuning; whether it also stops cleanly depends on whether vLLM honours <end_of_turn> for this checkpoint."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "0.15-0.45 (few-shot pretrained 4B range); a value near 0.0 would indicate a termination or format defect rather than a reasoning floor"
+  falsified_if: "accuracy is 0.00 and the log shows completions with correct arithmetic that never stop or never emit 'ANSWER:', i.e. the number measures plumbing rather than capability."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev_heldout300.jsonl
+      source: "openai/gsm8k (main, split=train) - held-out slice, never trained on"
+      n_examples: 300
+      built_by: /home/ben/task/scripts/make_dev.py
+      build_command: [python, scripts/make_dev.py]
+      selection: "seed-0 shuffle of the 7473 train items; first 300 reserved as dev, remaining 7173 form the SFT pool"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect_ai + vllm 0.11.0 (measurement only, no training)
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: n/a - measurement only
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --max-connections, '2', --json-output-file, /home/ben/task/eval/base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/eval/logs/base}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '2']
+    dev_set: official --limit 150 (inspect_evals/gsm8k test slice, first 150; 10-shot system message from the train split at fewshot_seed 42)
+    n: 150
+    seed: 42
+    decoding: "whatever the candidate's own generation_config.json specifies, because evaluate.py never sends a temperature and vLLM falls back to default_sampling_params. Base = sampled (do_sample, top_k 64, top_p 0.95, T=1.0); candidates from exp-02 on ship temperature 0.0 (greedy) as a declared part of the artifact."
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions containing an 'ANSWER:' line (format compliance) and share whose stop_reason is max_tokens (termination). Read from the inspect json log under eval/logs/base by scripts/diag_eval.py - NOT from --json-output-file, which writes only accuracy/stderr (WMA precondition 3)."
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.42
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training; measurement card"}
+  measurements:
+    - {metric: accuracy, value: 0.06, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.9067
+    path: /home/ben/task/analysis/base_dev150_diag.json
+    notes: "answer_marker_share 0.9067, but stop_reasons {max_tokens: 79, stop: 71} and out_tokens p50 = 4000. 53% of completions never terminate; median output is the full 4000-token cap for problems whose reference solutions run ~100 tokens. stderr 0.0195."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+  notes: "evaluate.py defaults in force and pinned by the lock's script hash: --max-tokens 4000, --gpu-memory-utilization 0.3, --templates-dir templates/. Decoding was sampled (the snapshot's generation_config has do_sample true, top_k 64, top_p 0.95 and no temperature, so vLLM served T=1.0), which is the artifact as shipped. The watch set was not scored: it needs scripts/gen.py and a GPU, and the GPU went straight to exp-02; it is scored from exp-02 onward."
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The base snapshot scores 0.060 +/- 0.019 on dev-150. The card's own falsified_if is very nearly met and the number must be read as a plumbing floor, not a reasoning floor: 90.7% of completions do contain an 'ANSWER:' line, yet 53% run to the 4000-token cap, so match(location='end') grades a number from text the model wrote after its own answer. The -pt checkpoint never learned to emit <end_of_turn>, even though 106 is in its eos_token_id."
+  decision: iterate
+  next_step: "exp-02: full-parameter SFT whose every target ends '\n\nANSWER: <n><end_of_turn>'. Turn termination, not arithmetic, is the first thing to buy. Read exp-02's max_tokens share before its accuracy."

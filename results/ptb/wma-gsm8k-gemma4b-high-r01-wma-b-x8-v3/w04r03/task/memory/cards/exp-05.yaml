@@ -1,0 +1,111 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T02:51:36Z'
+situation:
+  elapsed_h: 5.0
+  remaining_h: 5.0
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.8267, protocol_n: 150}
+  trigger: "exp-04 reached 0.8267 on dev-150 with an entirely off-policy corpus; sampling it 8x on the GSM8K TRAIN split shows it already solves 82.8% of samples but 143 of 7473 train problems are never solved and 635 are solved in at most 3 of 8 tries (data/rft_raw.jsonl.stats.json) - a concrete pool of in-distribution problems it is shaky on."
+  trigger_evidence:
+    - {path: /home/ben/task/data/rft_raw.jsonl.stats.json, locator: "whole file", observation: "pass_rate 0.828 over 59784 samples; coverage 0.981; 49497 correct solutions kept"}
+    - {path: /home/ben/task/analysis/exp-04_diag.json, locator: "format_failure_rate", observation: "0.013 - formatting is solved, so anything left to gain is reasoning"}
+  alternatives_rejected:
+    - {option: "A second epoch of the original 162k off-policy corpus", reason: "2.6 h for the epoch alone against 5.0 h remaining, and the loss was already at 0.23 with the cosine schedule fully decayed"}
+    - {option: "A fresh 160k rows from OpenMathInstruct-2 shards 10-31", reason: "the augmented-gsm8k pool saturated at ~80.4k distinct problems by shard 7, so more shards buy more solutions per problem already covered, not more problems"}
+    - {option: "DPO on correct/incorrect pairs from the same sampling run", reason: "the sampling gives 10279 incorrect samples so pairs exist, but a preference stage is a different objective and a different failure surface; with one experiment slot left, the lower-variance move is the one that reuses the exp-04 recipe unchanged"}
+    - {option: "Judge exp-05 on dev-150 like the earlier cards", reason: "dev-150 stderr is 0.031; an RFT round on a model already at 0.827 plausibly moves 2-4 pts, which n=150 cannot resolve. The protocol moves to --limit 500 (stderr ~0.017) and the exp-04 comparator is re-measured at 500 before launch"}
+  pitfalls_hit:
+    - {what: "GenerationConfig with temperature 0.0 (needed for vLLM greedy) loads fine but makes a later save_pretrained raise ValueError, which would have killed exp-05 at its save step after an hour of training", cost_h: 0.05, fix: "the trainer now installs a clean GenerationConfig (do_sample False, no temperature) on the model before training and writes the vLLM-greedy json itself after the save; verified by round-trip on CPU"}
+    - {what: "Trainer's own intermediate checkpoints collapse eos_token_id [1,106] to 1 and stay fp32, so a raw checkpoint-N/ scores wrong and is too big for --gpu-memory-utilization 0.3", cost_h: 0.0, fix: "scripts/pack_ckpt.py re-saves as bf16 with the right eos and greedy config; used for the ck1200 measurement"}
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/data/rft_raw.jsonl, --k, "8", --temp, "1.0"], outcome: "21 min on the H100 at 8.2k output tok/s; 59784 samples, 49505 correct (0.828), 7330 of 7473 problems solved at least once"}
+problem:
+  statement: "The exp-04 checkpoint's remaining errors are reasoning errors, not format errors (format-failure rate 0.013). Its own sampling shows where they concentrate: 143 GSM8K-train problems it never solves in 8 tries and 635 it solves at most 3 times in 8, against 3910 it solves every time. The off-policy corpus it was trained on weights all of those equally."
+  evidence:
+    - {path: /home/ben/task/data/rft_raw.jsonl.stats.json, locator: "problems_with_at_least_one=7330 of 7473", observation: "143 train problems unsolved in 8 samples at temperature 1.0"}
+    - {path: /home/ben/task/analysis/exp-04_diag.json, locator: "format_failure_rate=0.0133", observation: "only 2 of 150 dev completions fail on format, and both are max_tokens truncations"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-04 on its own correct solutions to GSM8K-train problems, with more solutions kept for the problems it finds hard, will raise dev-500 accuracy above exp-04's dev-500 score."
+  mechanism: "Rejection sampling keeps only chains that reach the gold answer, so the gradient points at reasoning the model can already produce but does not produce reliably; sampling 8x at temperature 1.0 and keeping 4 solutions for a problem solved 3-of-8 but 1 for a problem solved 8-of-8 concentrates the update on the shaky problems instead of re-teaching the ones already mastered. 20000 rows of the original off-policy corpus are mixed back in so the round does not collapse onto 7330 problems."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+1 to +4 pts on dev-500; published RFT gains shrink as the base SFT gets stronger and this one starts at 0.83"}
+  falsified_if: "dev-500 accuracy at or below exp-04's dev-500 comparator of 0.814 (stderr 0.017)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_v1.jsonl
+      source: "synthetic:self (exp-04 sampled on openai/gsm8k TRAIN) + derived:exp-04 slice of nvidia/OpenMathInstruct-2"
+      n_examples: 32336
+      built_by: /home/ben/task/scripts/build_rft.py
+      build_command: [python, scripts/build_rft.py, --out, data/rft_mix_v1.jsonl]
+      selection: "8 samples per GSM8K-TRAIN question from ckpts/exp-04/final at temperature 1.0 / top_p 0.95 / max_tokens 640, stop on [1,106]; a sample is kept only if its last line starts 'ANSWER:' and its last number equals the gold answer. Per problem, keep 4 solutions if pass_rate<=0.375, 3 if <=0.75, 2 if <1.0, 1 if the model got all 8 right, shortest first, exact-duplicates removed -> 12336 rows over 7330 problems. Mixed with 20000 rows drawn at random from data/sft_v1.jsonl. TRAIN split only; the test split is never read."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer subclassed for liger 0.8.2 fused-linear cross-entropy"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 2.0, batch_size: 24, grad_accum: 3, max_seq_len: 1408, scheduler: "cosine_with_min_lr 0.1", warmup: 0.03, weight_decay: 0.0, precision: "fp32 master + bf16 autocast, adamw_bnb_8bit, beta2 0.95, clip 1.0", seed: 0}
+    target_format: "identical to exp-04: user turn = MATH_PROMPT_TEMPLATE with the question; model turn = chain of thought then a final line 'ANSWER: <n>' then <end_of_turn>; loss on the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft_exp05.py, --data, data/rft_mix_v1.jsonl, --out, /home/ben/task/ckpts/exp-05, --parent, /home/ben/task/ckpts/exp-04/final, --lr, "5e-6", --epochs, "2", --bsz, "24", --accum, "3", --max-len, "1408", --fewshot-frac, "0.03", --warmup-ratio, "0.03", --save-steps, "450", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft_exp05.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 450
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16"]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.814
+    path: /home/ben/task/eval/exp-04_final_dev500.json
+  diagnostic:
+    what: "pass@1 at temperature 0 on the 300 held-out GSM8K-TRAIN probe items, exp-04 vs exp-05 (scripts/probe_eval.py)"
+    n: 300
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.01
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 890}
+    - {path: /home/ben/task/ckpts/exp-05/ck450, step: 450}
+  training_summary: {final_loss: 0.16, steps: 890, notes: "train_runtime 3646 s, mean train_loss 0.191; 32010 rows kept of 32336 (326 over max_seq_len 1408); 11.19M tokens per epoch, 2 epochs"}
+  measurements:
+    - {metric: accuracy, value: 0.794, n: 500, path: /home/ben/task/eval/exp-05_final_dev500.json, delta_vs_comparator: -0.020}
+    - {metric: accuracy, value: 0.788, n: 500, path: /home/ben/task/eval/exp-05_ck450_dev500.json, delta_vs_comparator: -0.026}
+  diagnostic_result:
+    value: null
+    path: /home/ben/task/analysis/exp-06_paired.json
+    notes: "the planned 0-shot/10-shot probe was run on the PARENT instead (0.887 vs 0.870 on 300 held-out TRAIN items) because it answers the prompt-mismatch question that would have explained a regression; it does not. Paired item-level against exp-04 on the same 500 items: 2 epochs fixed 27 and broke 37 (net -10); 1 epoch fixed 31 and broke 44 (net -13)."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "dev-500 0.814 -> 0.794 after 2 RFT epochs and 0.788 after 1, so the regression is not an end-of-schedule artefact - one epoch is already worse. The paired counts show it is a real exchange of items, not noise on the margin: 44 items the parent had right came back wrong after one epoch, against 31 newly right."
+  decision: reject
+  next_step: "final_model stays on exp-04/final. The mechanism's premise was that keeping more solutions for low-pass-rate problems concentrates the update where the model is shaky; what it actually did was train 2 epochs over 7330 problems (12336 rows) that the parent already solves 83% of the time, with only 20000 off-policy rows as ballast - too narrow a problem set and too many repeats for a model at this level. A future RFT round here should sample over the full ~80k augmented-gsm8k problem pool, not the 7.5k GSM8K-train questions."

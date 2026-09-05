@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T15:54:38Z'
+situation:
+  elapsed_h: 2.0
+  remaining_h: 8.0
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6067, protocol_n: 150}
+  trigger: "The vLLM server the grader starts logs 'Default sampling parameters have been overridden by the model's Hugging Face generation config'. gemma-3-4b-pt's generation_config.json ships do_sample=true, top_k=64, top_p=0.95 and no temperature, so every graded completion is drawn at temperature 1.0 - one stochastic sample per item on a task where greedy is strictly better."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-01_base_dev150.log, locator: "'Default sampling parameters have been overridden by the model's Hugging Face generation config'"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py, locator: "ModelConfig.get_diff_sampling_param, available_params list"}
+  alternatives_rejected:
+    - {option: "Pass --temperature to evaluate.py", reason: "evaluate.py exposes no such flag and rule 5 forbids editing it; the only reachable surface is the model directory we ship"}
+    - {option: "Set do_sample=false and leave the rest alone", reason: "vLLM's available_params list is repetition_penalty/temperature/top_k/top_p/min_p/max_new_tokens - do_sample is never read, so it would silently change nothing"}
+    - {option: "Leave sampling on and train the model to be robust to it", reason: "costs a training run to recover something a three-key config edit gets for free"}
+  pitfalls_hit:
+    - what: "ckpts/exp-02/checkpoint-1149 would not start under vLLM: Trainer's intermediate checkpoints contain no tokenizer files"
+      cost_h: 0.05
+      fix: "copied tokenizer.json/tokenizer.model/tokenizer_config.json/special_tokens_map.json/added_tokens.json/preprocessor_config.json/processor_config.json from the base snapshot; this is the final_model_not_loadable pitfall and must be re-checked on final_model"
+  smoke_runs:
+    - command: [cp, -al, ckpts/exp-02/final, ckpts/exp-03-greedy]
+      outcome: "hardlinked copy of the incumbent so the two decode configs differ in exactly one file and no weights are duplicated"
+    - command: [python, scripts/set_decode.py, --dir, ckpts/exp-03-greedy, --mode, greedy]
+      outcome: "generation_config.json now carries temperature 0.0, top_k -1, top_p 1.0; eos_token_id still [1, 106]"
+problem:
+  statement: "The incumbent is graded on a single temperature-1.0 sample per item. Its greedy answer is thrown away in favour of a random draw from the same distribution, which on a math task with one correct answer can only cost accuracy."
+  evidence:
+    - path: /home/ben/task/logs/exp-02_final_dev150.log
+      locator: "'Default sampling parameters have been overridden...'"
+      observation: "the warning is emitted for the fine-tuned checkpoint too - it inherited generation_config.json from the base snapshot through save_pretrained"
+    - path: /home/ben/task/eval/exp-02_final_dev150.json
+      locator: "accuracy 0.6067"
+      observation: "the incumbent's number was measured under temperature-1.0 sampling"
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Writing temperature=0.0, top_k=-1, top_p=1.0 into the shipped checkpoint's generation_config.json will raise accuracy on the official --limit 150 protocol against exp-02, with no change to the weights."
+  mechanism: "evaluate.py sends no sampling parameters, so vLLM's OpenAI server fills them from ModelConfig.get_diff_sampling_param(), which reads exactly these keys out of the model directory's generation_config.json. Setting temperature to 0 makes each item's completion the argmax chain instead of one random draw, removing sampling variance from a single-sample metric."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +8 pts"
+  falsified_if: "accuracy is not above exp-02's 0.6067, or the vLLM log still reports the sampling defaults it used for exp-02"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_no_training_data.txt
+      source: local
+      n_examples: 1
+      built_by: null
+      build_command: []
+      selection: "no training data: this card changes three decoding keys in the shipped model directory and nothing else"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 generation-config auto"
+    peft: none
+    hyperparams: {temperature: 0.0, top_k: -1, top_p: 1.0}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, ckpts/exp-03-greedy, --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/set_decode.py
+    env: {}
+    log: /home/ben/task/logs/exp-03_greedy_dev150.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6067
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "the sampling parameters vLLM reports at startup for this directory, read from the server log, to confirm temperature 0.0 actually reached the sampler"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 2300}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are hardlinks to ckpts/exp-02/final, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.1133}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/logs/exp-03_greedy_dev150.log
+    notes: "vllm.config.model.ModelConfig(ckpts/exp-03-greedy).get_diff_sampling_param() returns {'temperature': 0.0, 'top_k': -1}, so temperature 0 does reach the sampler. top_p is absent from the diff only because 1.0 is already both HF's and vLLM's default. 148/150 completions stop on <end_of_turn>, 2 hit max_tokens."
+  watch_set_result: null
+  failure: null
+  post_lock_notes: "cp -al hardlinks generation_config.json, so set_decode.py's in-place truncate also rewrote ckpts/exp-02/final/generation_config.json. Caught by reading get_diff_sampling_param() for both directories: both returned temperature 0.0. exp-02's own 0.6067 was measured before the edit, so the comparator stands. The hardlinks in ckpts/exp-03-greedy were then broken for every json/model file and ckpts/exp-02/final/generation_config.json restored from the base snapshot; both directories re-read and confirmed distinct inodes. Record this in the next card's pitfalls_hit."
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "0.6067 -> 0.7200 (+11.3 pts) from a three-key edit to generation_config.json, with byte-identical weights. Greedy decoding is worth more than the second SFT epoch was, and the effect is far outside the 0.037 stderr."
+  decision: adopt
+  next_step: "Every future checkpoint must ship this generation_config.json - scripts/set_decode.py is now a mandatory step before any eval or before writing final_model. Next, exp-04: rejection-sampling fine-tuning on self-generated solutions, now sampled from a model whose greedy accuracy is known."

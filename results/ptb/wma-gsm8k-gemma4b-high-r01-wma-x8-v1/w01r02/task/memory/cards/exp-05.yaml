@@ -1,0 +1,133 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T19:11:01Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.25
+  remaining_h: 4.75
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.78667, protocol_n: 150}
+  trigger: "exp-04's paired probe300 comparison against exp-02: 37 items fixed, 21 newly broken, 64 failing in both. The two checkpoints make substantially disjoint errors, which is the condition under which a uniform weight average beats both parents."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_probe_paired.json, locator: "fixed 37, regressions 21, still_failing 64"}
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: "accuracy 0.78667"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy 0.76667"}
+  alternatives_rejected:
+    - {option: "Just pick exp-04 because probe300 (n=300) prefers it", reason: "probe300 is held-out gsm8k TRAIN, not the benchmark distribution; it is a diagnostic, and the protocol metric is dev-150. Averaging does not require choosing."}
+    - {option: "Go straight to RFT", reason: "the soup costs ~6 min of CPU plus one eval, and RFT would then start from a better parent. Order the cheap lever first."}
+    - {option: "Weighted average favouring one parent", reason: "no evidence for a weighting; uniform is the default and the two parents cost the same compute (67.8M vs 94.5M training tokens)"}
+  pitfalls_hit:
+    - {what: "The WMA review for exp-04 returned 'review failed' rather than a verdict; I launched without it", cost_h: 0.0, fix: "do not block on the sidecar - the protocol says start the run if the verdict is not in"}
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Two checkpoints trained from the same base disagree about which one is better: exp-02 wins dev-150 by 3 items (0.7867 vs 0.7667) and exp-04 wins probe300 by 16 items (0.7867 vs 0.7333). With a per-arm stderr of 0.035 at n=150, the dev-150 difference is inside the noise, so choosing one discards whatever the other learned."
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: "accuracy 0.78667, stderr 0.03356", observation: "exp-02 weights, greedy"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy 0.76667, stderr 0.03465", observation: "exp-04 weights, greedy; the 2-point gap is 0.6 of one stderr"}
+    - {path: /home/ben/task/analysis/exp-04_probe_paired.json, locator: "whole file", observation: "58 of 300 probe items change verdict between the two checkpoints - the disagreement is real even where the aggregate looks similar"}
+  affected_share: 0.193
+  failure_examples:
+    - {id: probe-disjoint-58, source: /home/ben/task/analysis/exp-04_probe_paired.json, question: "(the 58 probe300 items where exactly one of the two checkpoints is right; probe300 is held-out gsm8k TRAIN)", gold: "n/a - aggregate", model_output: "n/a - aggregate", failure: "each parent solves items the other misses"}
+    - {id: probe-both-fail-64, source: /home/ben/task/analysis/exp-04_probe300_fs10.json, question: "(the 64 probe300 items both checkpoints get wrong)", gold: "n/a - aggregate", model_output: "n/a - aggregate", failure: "beyond the reach of either parent; a soup cannot fix these"}
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "300 items held out of the gsm8k TRAIN split (seed 0), excluded from every training file; exp-02 scores 0.7333 and exp-04 0.7867 on it"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A uniform weight average of exp-02/final and exp-04/final changes dev-150 accuracy relative to the better parent (exp-03's 0.78667), with no additional training."
+  mechanism: "Both are full fine-tunes from the same initialisation, so they lie in one loss basin and their weights are linearly connectable. Averaging cancels the run-specific noise each picked up from its own data order and keeps the shared solution, which is why soups recover the union of the parents' skills rather than their intersection."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0 to +4 points; soups typically match or slightly beat the best parent"
+  falsified_if: "dev-150 accuracy is below 0.7667 (both parents) or the probe300 accuracy is below both parents' - that would mean the two fine-tunes are not linearly connectable and averaging destroys rather than merges."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe300.jsonl
+      source: local
+      n_examples: 300
+      built_by: /home/ben/task/scripts/make_probe.py
+      build_command: [python, scripts/make_probe.py]
+      selection: "diagnostic/watch set only; this card trains nothing - the second parent is ckpts/exp-04/final (origin exp-04)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "scripts/soup.py - per-shard uniform mean in fp32, cast back to bf16"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged; both parents share it"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --src, ckpts/exp-02/final, ckpts/exp-04/final, --dst, ckpts/exp-05-soup]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/soup.log
+  output_dir: /home/ben/task/ckpts/exp-05-soup
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.78667
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "probe300 greedy 10-shot against both parents (0.7333 and 0.7867) and the paired fixed/regressed counts against each"
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/exp-05-soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05-soup, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; per-shard uniform mean of 883 tensors in fp32, cast to bf16, greedy generation_config"}
+  measurements:
+    - {metric: accuracy, value: 0.74, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: -0.04667}
+  diagnostic_result:
+    value: 0.81333
+    path: /home/ben/task/analysis/exp-05_probe300_fs10.json
+    notes: "probe300 0.8133 - above BOTH parents (exp-02 0.7333, exp-04 0.7867). Paired: +36/-12 against exp-02, +28/-20 against exp-04, 56 still failing (was 80 and 64). The merge behaved exactly as the mechanism predicts on probe300 and the opposite way on dev-150."
+  watch_set_result:
+    fixed: 36
+    still_failing: 56
+    regressions: 12
+    path: /home/ben/task/analysis/exp-05_probe_paired.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "The soup is the best model on probe300 (0.8133, above both parents) and the worst on dev-150 (0.7400, below both). Across all three checkpoints the two metrics rank the models in exactly reversed order - probe300 says soup > exp-04 > exp-02 (0.813/0.787/0.733), dev-150 says exp-02 > exp-04 > soup (0.787/0.767/0.740). A perfect anti-correlation over three points is not what noise alone usually looks like."
+  decision: iterate
+  next_step: "Stop trusting probe300 for model selection. Its items are gsm8k TRAIN questions, and OpenMathInstruct-2's augmented_gsm8k problems are augmentations OF gsm8k train problems - exact-question exclusion does not remove near-duplicates, so the checkpoints that saw more augmented solutions per problem (exp-04, and the soup that contains it) are advantaged on probe300 in a way that does not transfer. exp-06: re-score all three finalists on the full benchmark (--limit 1319) where the 150-item stderr of 0.035 is what is actually blocking the decision."

@@ -1,0 +1,138 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-04T05:36:03Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.25
+  remaining_h: 2.75
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7165, protocol_n: 1319}
+  trigger: "exp-06 killed the merging line (soup 0.7013, paired z -1.94 against checkpoint-900), so the only lever left inside 2.75 h is more data. The one monotone trend in this run is that every additional pass of fresh OpenMathInstruct-2 solutions raised the n=1319 score: exp-02 (80k rows) 0.6967, exp-04 (+25k fresh rows and 18k RFT rows) 0.7165. Exactly 30700 filtered solutions from the same three shards have never been used, and 30000 of them are now built."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/scoreboard.json, locator: "exp-02/final 0.6967 -> exp-04/checkpoint-900 0.7165 at n=1319"}
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "conclusion.verdict contradicted; next_step names this card"}
+    - {path: /home/ben/task/data/sft_omi2_gsm8k_slice3.jsonl, locator: "30000 rows, offset 105000 of the seed-7 shuffle"}
+  alternatives_rejected:
+    - {option: "A second RFT round sampled from checkpoint-900", reason: "sampling alone is ~21 min and the round-1 gain was only +2 pp at z=1.98; re-sampling the same 6973 questions the model has now trained on twice is the least promising use of those minutes and would leave no slack for the eval"}
+    - {option: "Download more OpenMathInstruct-2 shards for a larger pass", reason: "each shard is a multi-minute download plus a full re-filter, and a 1-epoch pass over materially more rows does not fit in the time left"}
+    - {option: "Restart from the base model on all 135k rows at once", reason: "~3 h of training against 2.75 h remaining"}
+    - {option: "Stop here", reason: "final_model/ is already packaged and verified, so this card carries no downside: package_final.py's scoreboard guard refuses to overwrite it with anything that scores lower at n=1319"}
+  pitfalls_hit:
+    - {what: "scripts/soup.py crashed at save_pretrained in exp-06 because the ingredient checkpoints carry the greedy generation_config, which transformers' save-time validator rejects (temperature 0.0 with do_sample false)", cost_h: 0.08, fix: "set the base generation_config on the model before saving and let set_decode.py write the greedy one afterwards; train_sft.py is unaffected because its finalize() copies the base file"}
+  smoke_runs:
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_omi2_gsm8k_slice3.jsonl], outcome: "0 contaminated documents, 0 matches"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent still gets 374 of 1319 test items wrong, essentially all of them well-formed chains with the wrong number (format compliance 0.99-1.00, token-cap share 0.012). Both interventions that moved this number were additional supervised passes over fresh grade-school solutions; the merging shortcut just failed, and 30000 unused rows of exactly that kind are on disk."
+  evidence:
+    - {path: /home/ben/task/eval/exp-05_exp04-900_full.json, locator: "accuracy 0.7165, cap share 0.0121", observation: "374 wrong answers, 16 of them non-terminations"}
+    - {path: /home/ben/task/eval/exp-06_soup_full.json, locator: "accuracy 0.7013", observation: "the zero-training alternative made it worse"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "(aggregate, 358 of 1319)", source: /home/ben/task/eval/exp-05_exp04-900_full.json, question: "harness test items", gold: "n/a", model_output: "valid ANSWER line, wrong number", failure: "reasoning or arithmetic error"}
+    - {id: "(aggregate, 16 of 1319)", source: /home/ben/task/eval/exp-05_exp04-900_full.json, question: "harness test items", gold: "n/a", model_output: "hits the 4000-token cap", failure: "non-termination"}
+    - {id: "(aggregate, 106 of 1319)", source: /home/ben/task/eval/exp-06_soup_full.json, question: "items where the soup and checkpoint-900 disagree", gold: "n/a", model_output: "43 gained, 63 lost by the soup", failure: "shows how much of the remaining error is unstable across nearby weights"}
+  watch_set:
+    path: /home/ben/task/data/gsm8k_devheld.jsonl
+    n: 500
+    selection: "500 GSM8K train rows held out from RFT sampling; format diagnostic only (exp-05 records why it cannot select on accuracy)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing SFT from exp-04/checkpoint-900 for one epoch at lr 3e-6 over the 30000 OpenMathInstruct-2 solutions no previous card has trained on raises accuracy at n=1319 above checkpoint-900's own reads under the same greedy protocol."
+  mechanism: "The residual error is reasoning error on grade-school word problems, and the two previous training cards each reduced it by showing more correct worked solutions over the same problem distribution. These 30000 rows come from the same filtered pool but a disjoint slice of the seed-7 shuffle, so they add new problems and new phrasings rather than re-presenting seen ones. The reduced learning rate protects the output contract, which is already at 0.99-1.00 compliance."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0 to +2 pp; the marginal return per fresh row should be smaller than exp-04's because the model has already seen 105k of them"
+  falsified_if: "the best exp-07 checkpoint's paired McNemar z against exp-04/checkpoint-900 on the same 1319 items is not above +1.0, or format compliance falls below 0.98. Adoption requires the paired test rather than the two means, because two reads of identical weights already differ by 0.9 pp."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/checkpoint-900
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_omi2_gsm8k_slice3.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, gsm8k + augmented_gsm8k rows, positions 105000-134999 of the seed-7 shuffle"
+      n_examples: 30000
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --n-target, '30000', --offset, '105000', --out, data/sft_omi2_gsm8k_slice3.jsonl]
+      selection: "identical filters to exp-02 and exp-04 (a single \\boxed matching the numeric expected_answer, unwrapped in place, '\\n\\nANSWER: <n><end_of_turn>' appended, no residual LaTeX, at most 2 solutions per problem); --offset 105000 makes the slice disjoint from the 80000 exp-02 trained on and the 25000 exp-04 trained on; 4436 rows (15%) carry a k-shot system message"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer, flash_attention_2, torch 2.8.0+cu129
+    peft: "none"
+    hyperparams: {lr: 3.0e-6, epochs: 1, batch_size: 4, grad_accum: 8, max_seq_len: 2304, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02 and exp-04: prompt rendered with templates/gemma3.jinja and add_generation_prompt=True; target = the jsonl 'completion' field, which ends '\\n\\nANSWER: <n><end_of_turn>'; loss on target tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_omi2_gsm8k_slice3.jsonl, --parent, /home/ben/task/ckpts/exp-04/checkpoint-900, --out, /home/ben/task/ckpts/exp-07, --lr, '3e-6', --epochs, '1', --bs, '4', --accum, '8', --max-seq-len, '2304', --attn, flash_attention_2, --save-steps, '460', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: 460
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --json-output-file, '{out}', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 1319 (the whole GSM8K test split)
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.7165
+    path: /home/ben/task/eval/exp-05_exp04-900_full.json
+  diagnostic:
+    what: "paired McNemar count against exp-04/checkpoint-900 on the same 1319 items (scripts/paired_compare.py), plus format compliance and token-cap share. scripts/set_decode.py --mode greedy MUST be run on each exp-07 checkpoint before any read, because train_sft.py's finalize() writes the base sampling generation_config - exp-03 measured that protocol gap at 7.3 pp."
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.85
+  output_checkpoint: /home/ben/task/ckpts/exp-07/checkpoint-460
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/checkpoint-460, step: 460}
+    - {path: /home/ben/task/ckpts/exp-07/checkpoint-920, step: 920}
+    - {path: /home/ben/task/ckpts/exp-07/checkpoint-929, step: 929}
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 929}
+  training_summary:
+    final_loss: null
+    steps: 929
+    notes: "29737 of 30000 rows kept at max_seq_len 2304; 39 min wall. The WMA's BLOCKING precondition was real: the parent checkpoint carried the greedy generation_config, which Trainer's save-time validator rejects, so the run would have died at step 460 with a weightless checkpoint dir. Fixed by running scripts/set_decode.py --mode base on ckpts/exp-04/checkpoint-900 before the launch (weights untouched; final_model/ holds its own greedy copy) and proven with an 8-step smoke run whose checkpoint-6 contained all 3 safetensors files; the parent was set back to greedy afterwards. set_decode.py --mode greedy was then run on every exp-07 checkpoint before any read. checkpoint-920 was not read: it is 9 optimiser steps from final and would have spent 13 min to measure nothing."
+  measurements:
+    - {metric: accuracy, value: 0.7081, n: 1319, path: /home/ben/task/eval/exp-07_ckpt460_full.json, delta_vs_comparator: -0.0084}
+    - {metric: accuracy, value: 0.6990, n: 1319, path: /home/ben/task/eval/exp-07_final_full.json, delta_vs_comparator: -0.0175}
+  diagnostic_result:
+    value: 0.0182
+    path: /home/ben/task/eval/exp-07_ckpt460_full.json
+    notes: "token-cap share rose from the incumbent's 0.0121 to 0.0182 (checkpoint-460) and 0.0197 (final) - this extra pass made the model terminate slightly less reliably, and that alone accounts for roughly half the lost items. Paired McNemar against exp-04/checkpoint-900 on the same 1319 items: checkpoint-460 80 gained / 91 lost, -0.83 pp, z=-0.84; final 71/94, -1.74 pp, z=-1.79. Format compliance stayed above 0.98, so the falsified_if format clause did not trigger; the paired clause did."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  decision: reject
+  summary: "A third pass over 30000 unseen OpenMathInstruct-2 solutions did not help: 0.7081 at step 460 and 0.6990 at the end of the epoch, both below the incumbent's 0.7165, with paired z of -0.84 and -1.79. The 'more fresh rows of the same kind' trend that held from exp-02 to exp-04 does not extend to a third helping - by 105k rows the marginal solution adds nothing this model can use, and the rising token-cap share (0.0121 -> 0.0182 -> 0.0197) suggests the extra epoch is mildly degrading the termination habit rather than the arithmetic."
+  next_step: "final_model/ is unchanged and holds exp-04/checkpoint-900 (0.7165 / 0.7074 across two n=1319 reads, greedy). If this line were continued, the next thing to try is a different data source rather than more of the same pool - OpenMathInstruct-2's augmented_math rows or a second RFT round over problems the model currently fails, not the 5th slice of the same 74.5k gsm8k problems."

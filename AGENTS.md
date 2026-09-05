@@ -15,6 +15,10 @@
   membership, or node placement is never
   sufficient ownership evidence. Query with `/rmeng_data/robtang/bin/awm-slurm-queue`; treat
   `OWNERSHIP FAIL` as an immediate investigation condition.
+- The `gangda` queue is hard-split into two non-borrowing 16-GPU subqueues:
+  `gangda_exp-protocol-evolve` owns `slurm2-a3nodesetondem-[0-1]`, and
+  `gangda_wma_evolve` owns `slurm2-a3nodesetondem-[2-3]`. New receipts inherit a subqueue from
+  their branch. Do not route a line onto the other subqueue's nodes.
 - Use the queue views according to their distinct purpose:
   - `gangda-slurm-queue` or `current --watch 5` shows only active and pending operations.
   - `gangda-slurm-queue failures` shows unresolved failures; `--include-resolved` is audit-only.
@@ -27,6 +31,13 @@
   individual jobs with `gangda-slurm-queue show JOB_ID`, then follow receipt -> cell -> manifest ->
   spec -> result directory. Preserve these paths in reports. The full workflow is
   `doc/reference/ptb_result_analysis.md`.
+- The `gangda_wma_evolve` completion hook is `tools/wma-evolve-hook`; its shared state is
+  `/rmeng_data/robtang/wma-evolve-hook/gangda_wma_evolve/`. It polls hourly, freezes every eight
+  new validator-clean cells, and launches read-only Claude Code `claude-opus-5`/max with the
+  `ultracode` workflow for trajectory diagnosis and next-wave design. PR #23 is an audit/handoff
+  surface, never an analysis dependency. The hook never edits, submits, cancels, commits, or
+  pushes; the iteration agent verifies its report and owns every mutation. See
+  `doc/reference/wma_evolve_hook.md`.
 - PostTrainBench remote ownership is fixed: `fork` is
   `https://github.com/tangxiangru/PostTrainBench.git` for the AWM branch, and `upstream` is the
   official `https://github.com/aisa-group/PostTrainBench.git` for fetch/rebase. Do not configure

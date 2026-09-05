@@ -1,0 +1,132 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T06:07:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.1
+  remaining_h: 2.9
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.71333, protocol_n: 150}
+  trigger: "Four candidates now exist and the 150-item protocol cannot separate them: exp-02 0.71333, exp-03 0.71333, soup23 0.71333, exp-05 0.69333, all inside one stderr (0.037). The submission has to be chosen and the 300-item train-holdout probe is a proxy, not the benchmark."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_final_dev150.json, locator: accuracy, observation: "0.71333 +/- 0.037"}
+    - {path: /home/ben/task/eval/soup23_dev150.json, locator: accuracy, observation: "0.71333 +/- 0.037"}
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: accuracy, observation: "0.69333 +/- 0.038"}
+    - {path: /home/ben/task/analysis/exp-03_holdout_fs1.json, locator: summary.accuracy, observation: "probe 0.760, the highest of the four"}
+  alternatives_rejected:
+    - {option: "Ship exp-03 on the probe result alone", reason: "the probe is drawn from the GSM8K *train* distribution and 300 items; it ranked exp-05 and soup23 within 1.7 points of exp-03, which is inside its own noise"}
+    - {option: "Score all four at --limit 500", reason: "~20 min each; 2.9 h left must also cover packaging, a CPU load check and closing five cards. Only the two probe leaders are scored."}
+    - {option: "Score at --limit 1319 (the full test split)", reason: "~50 min per model; two models would consume the entire remaining budget"}
+  pitfalls_hit:
+    - {what: "exp-05 (a second 0.5-epoch pass over sft_v4 at lr 5e-6) and exp-06 (uniform soup of exp-02+exp-03) both came in BELOW exp-03 on the probe, 0.743 and 0.747 against 0.760", cost_h: 1.6, fix: "stop iterating on the training recipe; spend what is left on choosing correctly and packaging safely"}
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The submission must be one checkpoint, and the instrument used to pick it so far (--limit 150, stderr 0.037) is too weak to rank candidates whose true accuracies plausibly differ by 2-4 points. Picking the argmax of four noisy 150-item scores is close to picking at random among the top three."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: accuracy, observation: "0.71333; three of four candidates sit on exactly this value"}
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: accuracy, observation: "0.69333, within one stderr of the other three"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: tie-150, source: /home/ben/task/eval/exp-03_final_dev150.json, question: "the 150-item protocol applied to exp-02, exp-03 and soup23", gold: "n/a", model_output: "0.71333 for all three", failure: "the instrument returns the identical value for three different models"}
+    - {id: probe-vs-protocol, source: /home/ben/task/analysis/exp-03_holdout_fs1.json, question: "exp-02 vs exp-03", gold: "n/a", model_output: "probe says +3.0 for exp-03, protocol says 0.0", failure: "the two instruments disagree and neither is decisive at its own n"}
+    - {id: exp05-disagreement, source: /home/ben/task/analysis/exp-05_holdout_fs1.json, question: "exp-05 vs exp-03", gold: "n/a", model_output: "probe 0.743 vs 0.760, protocol 0.693 vs 0.713", failure: "both instruments rank exp-05 lower but neither margin exceeds its stderr"}
+  watch_set:
+    path: /home/ben/task/data/dev_train_holdout.jsonl
+    n: 300
+    selection: "300 GSM8K *train* items (seed 12345) held out of every training file; no benchmark test item - protocol rule 7"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Scoring the two probe leaders, ckpts/exp-03/final and ckpts/soup23, on 500 protocol items instead of 150 separates them, or shows them to be within noise; whichever scores higher at n=500 becomes final_model."
+  mechanism: "Stderr falls from 0.037 to about 0.020 at n=500, so a 4-point true difference becomes visible where at n=150 it is not. The 350 extra items are new to both models and to every earlier measurement, so the comparison is not a re-reading of the same 150."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "no directional claim between the two; this run is a measurement, and a tie inside 2 points is a realistic outcome in which exp-03 is kept as incumbent"
+  falsified_if: "Either eval fails to run to completion, or both come back with n != 500, so no ranking can be made."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev_train_holdout.jsonl
+      source: "openai/gsm8k (main, train split); probe only - no training happens in this card"
+      n_examples: 300
+      built_by: /home/ben/task/build_dev.py
+      build_command: [python, build_dev.py]
+      selection: "random 300 of the 7473 train items, seed 12345; held out of all training data"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0 via the harness evaluate.py"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - measurement only"
+    stop_token: null
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, ckpts/exp-03/final, --limit, '500', --max-connections, '16', --json-output-file, /home/ben/task/eval/exp-03_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/eval500.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, unshuffled)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 500 completions that terminate, for both candidates"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.45
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 2889}
+    - {path: /home/ben/task/ckpts/soup23, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.74, n: 500, path: /home/ben/task/eval/exp-03_dev500.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.74, n: 500, path: /home/ben/task/eval/soup23_dev500.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.978
+    path: /home/ben/task/logs/2026-09-03T05-49-16+00-00_gsm8k_RsQhP8j7iSCWD5UBRLL8Sk.json
+    notes: "Both candidates: 489/500 terminate, 11/500 hit the 4000-token cap, 0/500 carry a second 'ANSWER:'. The two models are genuinely different - they disagree on 52 of the 500 items - but the disagreement is a dead-even 26/26 split, which is why the accuracies coincide rather than the runs being duplicates."
+  watch_set_result: {fixed: 0, still_failing: 72, regressions: 0, path: /home/ben/task/analysis/exp-03_holdout_fs1.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "n=500 did what it was asked to do - stderr 0.020 instead of 0.037, and a much better estimate of the level (0.740, not 0.713) - but it did not separate the candidates: exp-03 and soup23 both score 0.740, disagreeing on 52 items with a 26/26 split. The tie is real, not an artefact. exp-03 is kept because it is the incumbent, it leads on the only instrument that shows any separation (train-holdout probe 0.760 vs 0.7467), and a tie is not a reason to switch."
+  decision: adopt
+  next_step: "final_model/ is a byte-identical copy of ckpts/exp-03/final (safetensors md5-verified) and was re-scored from its own path at 0.720 on --limit 150, confirming the submitted directory serves correctly under a fresh vLLM process. Remaining budget goes to one last cheap merge test (exp-08: average exp-03 with its own continuation exp-05, i.e. trajectory averaging rather than cross-run averaging), which is only adopted if it beats 0.760 on the probe AND 0.740 at n=500."

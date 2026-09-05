@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T06:50:00Z'
+situation:
+  elapsed_h: 7.0
+  remaining_h: 3.0
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.6770, protocol_n: 1319}
+  trigger: "exp-04 came back +0.45 pts over exp-03 at McNemar p=0.72 - a tie. But the two disagree on 196 of 1319 items (101 fixed, 95 broken), so they are two nearby points in the same basin making largely independent errors, and exp-04 is a direct continuation of exp-03. That is the configuration a weight average exploits, and it costs minutes rather than the hour a further training round needs."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-04.yaml
+      locator: "result.diagnostic_result: 101 fixed / 95 broken / net +6, McNemar p=0.721"
+    - path: /home/ben/task/memory/cards/exp-03.yaml
+      locator: "result.diagnostic_result: 128 fixed / 99 broken vs exp-02"
+  alternatives_rejected:
+    - option: "A second RFT round with a stronger accept gate (majority-vote agreement across the k samples)"
+      reason: "this is the right fix for why exp-04's mechanism failed, but it needs a fresh sampling pass (0.65 h) plus training (0.6 h) plus eval, which is the whole remaining budget with nothing left for final verification of final_model/."
+    - option: "Score exp-03's checkpoint-300 / checkpoint-600 (the C5 checkpoint-selection lever)"
+      reason: "both sit mid-cosine at a high learning rate, and the one mid-cosine checkpoint already measured (exp-02's epoch-1 at 0.6333 vs its final 0.6733) was clearly worse. Low prior, and each read costs 3 min."
+    - option: "Do nothing further and spend the remaining time on verification"
+      reason: "verification needs ~0.3 h, not 3 h. The soup leaves well over an hour of slack and cannot damage the incumbent: promote.py refuses anything that does not beat 0.6770 at n=1319."
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The last two training rounds have stopped moving the number: exp-03 -> exp-04 is +0.45 pts at p=0.72. Both checkpoints sit near 0.67 while disagreeing on 15% of the test set, so neither is limited by knowledge the other lacks - each is losing items the other gets right."
+  evidence:
+    - path: /home/ben/task/eval/exp-04_final_full1319.json
+      locator: accuracy
+      observation: "0.6770 (stderr 0.013)"
+    - path: /home/ben/task/eval/exp-03_final_full1319.json
+      locator: accuracy
+      observation: "0.6725 (stderr 0.013); 196 of 1319 items are scored differently by the two checkpoints"
+  affected_share: 0.149
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A uniform weight average of ckpts/exp-03/final and ckpts/exp-04/final scores higher on the full 1319-item test set than exp-04's 0.6770."
+  mechanism: "exp-04 was initialised from exp-03 and trained for one short low-LR epoch, so the two sit in the same loss basin and their weights are linearly connectable. Averaging them cancels the part of each model's error that is idiosyncratic to its own fine-tuning noise while keeping what both agree on - which is exactly the structure the 101-fixed/95-broken churn describes. No training, no new data: two safetensors shards averaged in fp32 and cast back to bf16."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+0 to +2 pts. Model soups of two adjacent fine-tunes are usually worth about a point; the ruler resolves 1.3 pts, so this may well land inside the noise like exp-04 did."
+  falsified_if: "full-test (n=1319) accuracy is at or below exp-04's 0.6770, or the soup breaks format/termination (stop_reason 'stop' below 1290/1319)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-03/final/model.safetensors.index.json
+      source: derived:exp-03
+      n_examples: 1
+      built_by: null
+      build_command: []
+      selection: "NOT training data - this card trains nothing. The second ingredient of the average is ckpts/exp-03/final; the parent_checkpoint is the other. mixture_weight 0.5 each."
+      contamination_check: not_run
+      mixture_weight: 0.5
+  method:
+    family: merge
+    framework: "safetensors + torch; scripts/soup.py"
+    peft: none
+    hyperparams:
+      seed: 0
+      weights: "0.5 exp-03/final + 0.5 exp-04/final, accumulated in fp32 and written back as bf16"
+    target_format: "unchanged from exp-04; the merged directory takes config, tokenizer, processor json and the greedy generation_config from ckpts/exp-04/final."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --ckpt, /home/ben/task/ckpts/exp-03/final, --ckpt, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/ckpts/soup34, --template, /home/ben/task/ckpts/exp-04/final]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/soup34
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 1319 (the whole gsm8k test split)"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.6770
+    path: /home/ben/task/eval/exp-04_final_full1319.json
+  diagnostic:
+    what: "paired churn of the soup against BOTH ingredients on the same 1319 items. A soup that works should lose fewer items to each ingredient than the ingredients lose to each other (196 discordant); if it simply reproduces one ingredient, the merge did nothing."
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: /home/ben/task/ckpts/soup34
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup34, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; two safetensors shards averaged in fp32 and written back as bf16. scripts/verify_final.py on the merged dir: all 14 checks PASS, including a CPU load with transformers (4.300B params) and the greedy generation_config."}
+  measurements:
+    - {metric: accuracy, value: 0.6657, n: 1319, path: /home/ben/task/eval/exp-05_soup34_full1319.json, delta_vs_comparator: -0.0114}
+  diagnostic_result:
+    value: -15
+    path: /home/ben/task/logs/2026-09-04T06-54-59+00-00_gsm8k_iUrxeXMBSXS3ZphaQFHWdH.json
+    notes: "soup vs exp-04: 70 fixed, 85 broken, net -15 (discordant 155, p=0.26). soup vs exp-03: 57 fixed, 66 broken, net -9 (discordant 123, p=0.47). The merge is a real third model - it disagrees with each ingredient on ~10% of items, so it did not simply reproduce one of them - but it is worse than both. Termination held (1296/1319 stop)."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "0.6770 -> 0.6657 (-1.1 pts). The average of the two checkpoints is worse than either, so the errors the two make are not the independent fine-tuning noise the soup hypothesis assumed."
+  decision: reject
+  next_step: "final_model/ is untouched: promote.py was never called, and the incumbent stamp still reads exp-04 at 0.6770@1319. Reading this together with exp-04: exp-04 is a short low-LR continuation of exp-03, so the two are far closer than the independently-fine-tuned members a soup wants - averaging them mostly interpolates toward a point neither optimiser chose. The remaining lever with a mechanism that has actually worked in this batch is supervised data (exp-02 -> exp-03 was +2.2 from data scale alone), and the specific untested variant is distribution match: 80% of the training mixture is OpenMathInstruct-2's *augmented* gsm8k, i.e. synthetic variants, while the graded items are real GSM8K."

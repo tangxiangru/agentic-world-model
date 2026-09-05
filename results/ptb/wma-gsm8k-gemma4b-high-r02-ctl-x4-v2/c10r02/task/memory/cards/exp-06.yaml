@@ -1,0 +1,102 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T15:35:00Z'
+situation:
+  elapsed_h: 7.65
+  remaining_h: 2.35
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "Three single-attempt candidates now sit inside one standard error of each other - exp-02 0.7200 (sampled), exp-03 0.7267 (greedy), exp-04 0.7200 (greedy) - and exp-05's policy change was rejected at 0.7133. With 2.35 h left there is time for one cheap, low-risk intervention before shipping, and a weight average of two checkpoints on the same trajectory is the cheapest thing with a real chance of a point."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-02 .. exp-05 rows"}
+    - {path: /home/ben/task/eval/exp-04_dev150_inspect.json, locator: "10 items fixed / 11 broken vs exp-03 - the two checkpoints make different mistakes despite equal scores"}
+  alternatives_rejected:
+    - {option: "A confirmation eval at n=400 to pick between exp-02-greedy and exp-04-greedy", reason: "the standard error on the difference would still be ~2.5 pts, so it could not separate a 0.67 pt gap; it would consume the whole remaining budget and change nothing."}
+    - {option: "Include exp-05/final in the soup", reason: "exp-05 emits a three-attempt policy; averaging it with single-attempt checkpoints would blend two incompatible output distributions."}
+    - {option: "A third training stage", reason: "1.2 h of training plus 0.3 h of eval does not fit in 2.35 h with the finalisation and card-closing still to do, and exp-04 already showed same-distribution tokens return churn."}
+  pitfalls_hit:
+    - {what: "Ran scripts/make_decode_variant.py with --src equal to --dst; it deletes each destination file before relinking, so the freshly written safetensors were removed and replaced by symlinks pointing at themselves.", cost_h: 0.05, fix: "soup into ckpts/exp-06-raw and write the greedy variant into ckpts/exp-06; verified no dangling links before launching."}
+  smoke_runs: []
+problem:
+  statement: "exp-02/final and exp-04/final score identically (0.7267 vs 0.7200 on dev-150, greedy) but disagree on 21 items - 10 that only exp-04 gets right and 11 that only exp-02 gets right. Picking either one throws away whatever the other learned, and n=150 cannot tell them apart."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04_dev150_inspect.json, locator: "per-item comparison against eval/exp-03_greedy_dev150_inspect.json", observation: "10 fixed, 11 broken - equal scores, different errors"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: "accuracy 0.7267, stderr 0.0365", observation: "the standard error is 5x the gap between the candidates"}
+  affected_share: null
+  failure_examples:
+    - {id: dev-w1, source: /home/ben/task/eval/exp-04_dev150_inspect.json, question: "(one of the 10 items exp-04 fixes)", gold: "n/a", model_output: "exp-02 wrong, exp-04 right", failure: "exp-02-only error"}
+    - {id: dev-w2, source: /home/ben/task/eval/exp-03_greedy_dev150_inspect.json, question: "(one of the 11 items exp-04 breaks)", gold: "n/a", model_output: "exp-02 right, exp-04 wrong", failure: "exp-04-only error"}
+    - {id: dev-w3, source: /home/ben/task/eval/exp-04_dev150_inspect.json, question: "(one of the 31 items both get wrong)", gold: "n/a", model_output: "both wrong", failure: "shared error, untouched by averaging"}
+  watch_set: null
+hypothesis:
+  claim: "A uniform weight average of exp-02/final and exp-04/final, decoded greedily, will score at least as high as exp-03's 0.7267 on dev-150."
+  mechanism: "exp-04 is exp-02 continued for one low-LR stage, so the two sit in the same loss basin and their average is a valid model. Averaging along a trajectory cancels the part of each checkpoint's error that is optimisation noise, which is what 10-fixed / 11-broken churn looks like."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+0 to +2 points; this is a variance-reduction move, not a capability move"}
+  falsified_if: "dev-150 accuracy is below 0.7267, or the well-formed-ANSWER share falls below 0.95 (which would mean the average left the basin)."
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-02/final, origin: exp-02, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-04/final/model.safetensors.index.json
+      source: "derived:exp-04"
+      n_examples: 1
+      built_by: /home/ben/task/scripts/soup.py
+      build_command: [python, scripts/soup.py, --a, /home/ben/task/ckpts/exp-02/final, --b, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/ckpts/exp-06, --weight-a, '0.5']
+      selection: "no training data - the second parent's weights are the whole intervention"
+      contamination_check: not_run
+      mixture_weight: 0.5
+  method:
+    family: merge
+    framework: "safetensors tensor-wise mean in fp32, cast back to bf16"
+    peft: none
+    hyperparams: {weight_a: 0.5, seed: null}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-06, --limit, '150', --max-connections, '8', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-06_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/logs/exp-06_eval.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '8', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: null
+  comparator: {ref: exp-03, value: 0.7267, path: /home/ben/task/eval/exp-03_greedy_dev150.json}
+  diagnostic:
+    what: "well-formed-ANSWER share and stop_reason distribution - an average that left the basin would show up as broken formatting"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/exp-06
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06-raw, step: 0}
+    - {path: /home/ben/task/ckpts/exp-06, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; tensor-wise mean of 884 tensors in fp32, cast back to bf16"}
+  measurements:
+    - {metric: accuracy, value: 0.7733, n: 150, path: /home/ben/task/eval/exp-06_dev150.json, delta_vs_comparator: 0.0466}
+  diagnostic_result:
+    value: 0.993
+    path: /home/ben/task/analysis/exp-06_diag.json
+    notes: "149/150 well-formed and terminating (1 greedy repetition loop, fewer than either parent's 2-3); median 93 words. The average stayed well inside the basin."
+  watch_set_result: {fixed: 11, still_failing: 34, regressions: 4, path: /home/ben/task/eval/exp-06_dev150_inspect.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.7267 -> 0.7733 (+4.7 pts, n=150, stderr 0.034); against exp-04 it is +5.3. The item-level pattern is exactly the variance-cancellation the hypothesis predicted rather than churn: 11 fixed / 4 broken against exp-02 and 11 fixed / 3 broken against exp-04, and the soup's 116 correct items sit between its parents' intersection (98) and union (119) - it recovers 18 of the 21 items the parents disagreed on."
+  decision: adopt
+  next_step: "Ship exp-06 as final_model with greedy decoding, then re-run the protocol against the shipped final_model/ directory itself so the graded artifact - not just the checkpoint it was copied from - has a measured number."

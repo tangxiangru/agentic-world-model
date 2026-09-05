@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T05:24:34Z'
+situation:
+  elapsed_h: 6.5
+  remaining_h: 3.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.6867, protocol_n: 150}
+  trigger: "exp-05's two reads disagree in sign and the disagreement is monotone in RFT dose: dev-150 goes 0.6867 -> 0.700 (1 epoch) -> 0.7267 (2 epochs) while probe-200 goes 0.700 -> 0.660 -> 0.655. One of the two candidates has to go into final_model and n=150 cannot separate them."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-05_greedy_dev150.json, locator: "accuracy=0.7267"}
+    - {path: /home/ben/task/analysis/exp-05_probe200.json, locator: "accuracy=0.655"}
+    - {path: /home/ben/task/eval/exp-05_ckpt500_dev150.json, locator: "accuracy=0.700"}
+    - {path: /home/ben/task/analysis/exp-05_ckpt500_probe200.json, locator: "accuracy=0.660"}
+  alternatives_rejected:
+    - {option: "Adopt exp-05 on the dev-150 number alone", reason: "the graded 150 are the first 150 test items; a +4.0 point win there with a -4.5 point loss on the other read is exactly the situation where a wider sample is worth 45 minutes"}
+    - {option: "Trust probe-200 and keep exp-03", reason: "probe-200 is built from the TRAIN split and shares provenance with the augmented questions the RFT rows came from; it is the softer of the two reads and it is not the benchmark"}
+    - {option: "Train a third model (DPO, second RFT round) with the remaining 3.5h", reason: "there is no time to both train and settle the selection; an unsettled selection can cost more than a new run would gain"}
+    - {option: "Repeat the n=150 eval to average out noise", reason: "greedy decoding makes evaluate.py deterministic on a fixed item set - a repeat returns the same number and measures nothing"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "Two candidate checkpoints differ by 4 points on the graded 150 items and by 4.5 points the other way on a 200-item held-out train probe. Both evaluations are deterministic (greedy), so neither can be averaged down; the disagreement is about which 150-350 items happen to be in each set, and the wrong pick costs the batch its best model."
+  evidence:
+    - {path: /home/ben/task/eval/exp-05_greedy_dev150.json, locator: "accuracy", observation: "exp-05 final 0.7267 vs exp-03 0.6867 on the same 150 items"}
+    - {path: /home/ben/task/analysis/exp-05_probe200.json, locator: "accuracy", observation: "exp-05 final 0.655 vs exp-03 0.700 on the same 200 probe items"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: selection-risk, source: /home/ben/task/memory/index.md, question: "which checkpoint goes into final_model", gold: "the one that generalises", model_output: "dev-150 says exp-05, probe-200 says exp-03", failure: "n=150 cannot separate a 4-point difference from item-set luck"}
+  watch_set:
+    path: /home/ben/task/data/probe200.jsonl
+    n: 200
+    selection: "200 items held out (seed 0) from the openai/gsm8k TRAIN split; already scored for both candidates"
+hypothesis:
+  claim: "Scoring both candidates on the first 500 official test items separates them: the candidate with the higher 500-item accuracy is the better model, and the 350 items outside the graded 150 will show whether exp-05's +4.0 is a real gain or an artefact of that particular slice."
+  mechanism: "The graded 150 are a fixed prefix of the same test set; extending to 500 keeps them and adds 350 independent items, cutting the standard error from ~0.038 to ~0.021 and making a 4-point gap readable. Greedy decoding means the extra items are the only new information, with no sampling noise on top."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "if exp-05's dev-150 gain is real, +2 to +5 points at n=500; if it was slice luck, the two land within ~1 point"}
+  falsified_if: "exp-05 scores below exp-03 at n=500, i.e. its dev-150 advantage does not survive the additional 350 items."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final_greedy
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe200.jsonl
+      source: "openai/gsm8k:train held-out probe; already-scored evaluation input, no training in this card"
+      n_examples: 200
+      built_by: null
+      build_command: [python, -c, "held-out split of openai/gsm8k train, seed 0"]
+      selection: "no training happens in this card; it is a selection measurement between two existing checkpoints"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect-ai + vllm 0.11.0 via evaluate.py (unmodified), greedy generation_config"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "no training; both checkpoints already ship the exp-03 greedy generation_config"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, ckpts/exp-05/final_greedy, --limit, '500', --json-output-file, /home/ben/task/eval/exp-05_greedy_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --json-output-file, '{out}']
+    dev_set: official --limit 500 (first 500 items of openai/gsm8k test, no shuffle; a superset of the graded 150), evaluate.py defaults otherwise
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: null
+    path: /home/ben/task/eval/exp-03_greedy_dev500.json
+  diagnostic:
+    what: "accuracy on the 350 items outside the graded 150, computed from the two n=500 logs - the part of the comparison that is genuinely new information"
+    n: 350
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.75
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 2022}
+    - {path: /home/ben/task/ckpts/exp-05/final_greedy, step: 1028}
+  training_summary: {final_loss: null, steps: null, notes: "no training; two evaluations of existing checkpoints"}
+  measurements:
+    - {metric: accuracy, value: 0.678, n: 500, path: /home/ben/task/eval/exp-05_greedy_dev500.json, delta_vs_comparator: -0.026}
+    - {metric: accuracy, value: 0.704, n: 500, path: /home/ben/task/eval/exp-03_greedy_dev500.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.66
+    path: /home/ben/task/analysis/exp-06_split.json
+    notes: "Split by item id (the inspect log does not preserve dataset order - the graded 150 are a subset of the 500 but not its first 150). On the 350 items outside the graded set: exp-03 0.7057, exp-05 0.660. On the graded 150 inside the same runs: exp-03 0.700, exp-05 0.720. The two candidates also reproduced their standalone n=150 scores to within 1-2 items (exp-03 0.6867 vs 0.700, exp-05 0.7267 vs 0.720), so greedy evaluate.py is near-deterministic and the disagreement is a property of the item slice, not of measurement noise."
+  watch_set_result:
+    fixed: null
+    still_failing: null
+    regressions: null
+    path: /home/ben/task/analysis/exp-05_probe200.json
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "At n=500 the incumbent wins: exp-03 0.704 vs exp-05 0.678. exp-05's dev-150 advantage does not survive the extra 350 items - it loses them 0.660 to 0.7057 - and that agrees with the probe-200 read (0.655 vs 0.700). Three independent item sets now say exp-05 is the weaker model and one says it is stronger; the RFT gain was a property of the graded slice."
+  decision: reject
+  next_step: "final_model keeps exp-03's weights. exp-07: uniform weight-average (model soup) of exp-02/final, exp-04/final and exp-05/final - three full fine-tunes from the same parent - scored at n=500 against 0.704, as the last cheap shot at a model that beats the incumbent on the wide read rather than on one slice."

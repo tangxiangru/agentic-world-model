@@ -1,0 +1,105 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T22:30:44Z'
+situation:
+  elapsed_h: 1.0
+  remaining_h: 9.0
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp-01
+    score: {metric: accuracy, value: 0.36, protocol_n: 150}
+  trigger: "exp-01 (GSM8K-train-only SFT) reached 0.36; failure analysis shows format/stopping are solved (148/150 stop cleanly, all carry 'ANSWER:') and ~89/96 failures are genuine reasoning/arithmetic errors, so reasoning quality is the binding constraint."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/2026-09-04T22-23-12+00-00_gsm8k_HAq3J3ydgKxcuNVSwTHtWp.json, locator: "96 incorrect samples; only 7 recoverable by earlier stopping"}
+  alternatives_rejected:
+    - {option: "Continue SFT from exp-01 on MetaMath", reason: "cleaner to train from base on the richer mixture; exp-01's GSM8K-train is a subset already covered by MetaMath GSM_AnsAug"}
+    - {option: "Include MetaMath MATH-type data", reason: "eval is grade-school arithmetic; MATH answers are often non-numeric and off-distribution; keep exp-02 GSM-targeted, defer MATH to a later test"}
+    - {option: "RFT/self-consistency from exp-01", reason: "needs a sampling+filter pipeline; MetaMath is a faster, higher-confidence reasoning-quality boost first"}
+  pitfalls_hit:
+    - {what: "vLLM could not load exp-01 ckpt: multimodal Gemma3 needs preprocessor_config.json/processor_config.json which save_model omits", cost_h: 0.25, fix: "copy both files from source model into the checkpoint; train_sft.py now does this automatically"}
+    - {what: "pkill -f vllm inside a command whose own argv contained 'vllm' killed its own shell", cost_h: 0.1, fix: "never pkill -f a pattern present in the running command line"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/metamath_mix.jsonl, --smoke], outcome: "107473 rows, 0% truncation at max_seq_len=1280, supervised region ends 'ANSWER: 3<end_of_turn>'"}
+problem:
+  statement: "The model's step-by-step reasoning and arithmetic are not accurate enough; on-distribution GSM8K-train SFT plateaus at 0.36, with most errors being wrong intermediate computations or logic rather than formatting."
+  evidence:
+    - {path: /home/ben/task/eval/exp01_dev150.json, locator: "accuracy=0.36", observation: "GSM8K-train-only SFT plateau"}
+    - {path: /home/ben/task/logs/2026-09-04T22-23-12+00-00_gsm8k_HAq3J3ydgKxcuNVSwTHtWp.json, locator: "wrong=96, continued_past_first_ANSWER=17, would_be_correct_if_stopped=7", observation: "reasoning errors dominate over format/stop errors"}
+  affected_share: 0.93
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Full-parameter SFT from base on a MetaMathQA GSM-type mixture (~100k augmented problems: Rephrased/AnsAug/SV/FOBAR) plus GSM8K train, reformatted to a single 'ANSWER: N' target, will raise dev-150 accuracy above exp-01's 0.36."
+  mechanism: "MetaMath's rephrasings, self-verification and backward (FOBAR/SV) augmentations expose the model to far more varied grade-school reasoning chains and arithmetic than the 7.5k GSM8K train solutions, improving step accuracy and generalization on GSM8K."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: "+15 pts or more (expect 0.55-0.70)"
+  falsified_if: "dev-150 accuracy <= 0.40 (no meaningful gain over exp-01)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/metamath_mix.jsonl
+      source: "derived: meta-math/MetaMathQA (GSM_Rephrased 30k, GSM_AnsAug 30k, GSM_SV 20k, GSM_FOBAR 20k) + openai/gsm8k train 7473"
+      n_examples: 107473
+      built_by: /home/ben/task/build_metamath.py
+      build_command: [python, build_metamath.py]
+      selection: "GSM-type MetaMath only; numeric answers only; '#### N'/'The answer is: N' collapsed to a single 'ANSWER: N'; wrapped in eval MATH_PROMPT_TEMPLATE; shuffled seed=0"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers.Trainer 4.57.3
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 8, grad_accum: 2, max_seq_len: 1280, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant turn = reasoning then 'ANSWER: <target>', terminated by <end_of_turn>; completion-only loss (prompt masked)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/metamath_mix.jsonl, --output-dir, /home/ben/task/ckpts/exp-02, --epochs, "2", --lr, "1e-5", --batch-size, "8", --grad-accum, "2", --max-seq-len, "1280", --save-total-limit, "2", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    configs: []
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 3.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "32", --gpu-memory-utilization, "0.6", --json-output-file, "{out}"]
+    dev_set: "official gsm8k test --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.36
+    path: /home/ben/task/eval/exp01_dev150.json
+  diagnostic:
+    what: null
+    n: null
+    metric: accuracy
+    direction: higher
+result:
+  execution: not_run
+  wall_h: null
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: null}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: null
+  mechanism_verdict: null
+  summary: null
+  decision: null
+  next_step: null

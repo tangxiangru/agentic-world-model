@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T09:56:28Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.0
+  remaining_h: 7.0
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.6933, protocol_n: 150}
+  trigger: "After exp-03 removed the decode noise, 46 of 150 dev-150 items and 85 of 250 probe items are still wrong at the mode, and none of them is a formatting failure - the model's own reasoning is what is wrong. Meanwhile the model solves 83% of held-out training questions within 4 samples (analysis/rft_v1_stats.json), so it can reach many of those answers, just not on the first try."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_failure_tags.json, locator: "incorrect=67, runon=0, no_answer_line=0", observation: "no formatting failures remain; the residual is reasoning error"}
+    - {path: /home/ben/task/analysis/rft_v1_stats.json, locator: "pass_at_k=0.830, mean_correct_per_question=2.39", observation: "pass@4 is 0.83 against a greedy pass@1 of ~0.66 on probe-250 - a large sample/mode gap to close"}
+    - {path: /home/ben/task/analysis/exp-03_probe250.json, locator: "summary.accuracy=0.66", observation: "greedy pass@1 on the held-out probe set"}
+  alternatives_rejected:
+    - {option: "Continue training exp-02 on the RFT data alone", reason: "half the cost, but training on nothing but its own filtered output for a whole epoch narrows the model onto its current solution style; retraining from base on a mixture keeps the OpenMathInstruct-2 diversity in the loss"}
+    - {option: "DPO on correct/incorrect sample pairs", reason: "the pairs exist for free from the same sampling run, but DPO on a 4B base with no reference-tuned pipeline is a bigger change to get right in the remaining 7 h than RFT, which reuses the exp-02 trainer unchanged"}
+    - {option: "GRPO / online RL", reason: "would need a rollout loop plus a trainer; 7 h left is not enough to build and debug it, and a failed attempt costs the whole remaining budget"}
+    - {option: "k=8 instead of k=4 when sampling", reason: "sampling already took 42 min of GPU at k=4; k=8 would take ~85 min for a modest coverage gain (pass@4 is already 0.83)"}
+  pitfalls_hit:
+    - {what: "the first watcher script used pgrep -f on a pattern that matched its own command line, so the chained eval never started", cost_h: 0.1, fix: "launch evals directly with setsid instead of chaining on pgrep"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/sft_v2.jsonl, --max-seq-len, '3072', --fewshot-frac, '0.12', --dry-run], outcome: "88539 rows kept, 0 dropped for length; token len p50=312 p99=2472 max=2901"}
+    - {command: [python, rft_sample.py, --model, ckpts/exp-02/final, --n-questions, '32000', -k, '4'], outcome: "42 min, 128k generations at ~8000 output tok/s; 26567/32000 questions had at least one correct sample; 48542 rows written, 3 malformed rows dropped at mix time"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent's residual errors are reasoning errors that survive greedy decoding: 46/150 on dev-150 and 85/250 on the probe set. The model is not incapable on most of them - it finds a correct chain for 83% of held-out training questions within 4 temperature-1 samples - so the mode of its output distribution is misplaced relative to what it can do."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_probe250.json, locator: "summary.accuracy=0.66, results[] where correct=false", observation: "85 of 250 probe items wrong under greedy decoding"}
+    - {path: /home/ben/task/analysis/rft_v1_stats.json, locator: "pass_at_k=0.830", observation: "pass@4 0.83 vs greedy pass@1 0.66: a 17-point sample/mode gap"}
+    - {path: /home/ben/task/analysis/exp-02_failure_tags.json, locator: "runon=0, no_answer_line=0", observation: "none of the residual errors is a formatting or termination failure"}
+  affected_share: 0.34
+  failure_examples:
+    - {id: "exp-03 probe misses", source: /home/ben/task/analysis/exp-03_probe250.json, question: "(85 held-out GSM8K TRAIN probe items wrong under greedy; results[] where correct=false)", gold: "in analysis/probe250.jsonl", model_output: "in analysis/exp-03_probe250.json results[].output", failure: "wrong chain or wrong arithmetic at the mode"}
+    - {id: "exp-03 greedy truncations", source: /home/ben/task/analysis/exp-03_probe250.json, question: "(5 probe items whose greedy completion hit the 1024-token cap)", gold: "in analysis/probe250.jsonl", model_output: "finish_reason=length", failure: "greedy entered a repeating loop instead of terminating"}
+    - {id: "rft unsolved questions", source: /home/ben/task/analysis/rft_v1_stats.json, question: "(5433 of 32000 sampled training questions where none of 4 samples was correct)", gold: "in data/rft_questions.jsonl", model_output: "no correct sample in 4 draws", failure: "genuinely beyond the current model, so RFT contributes no rows for them"}
+  watch_set:
+    path: /home/ben/task/analysis/probe250.jsonl
+    n: 250
+    selection: "same 250 held-out GSM8K TRAIN items as exp-01..exp-03; excluded from data/rft_questions.jsonl and from every training pool, so no RFT row derives from them. Contains no benchmark test item."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Retraining from the base snapshot on 48.5k self-generated answer-verified solutions mixed with 40k of the original OpenMathInstruct-2/GSM8K corpus will raise greedy dev-150 accuracy against exp-03's 0.6933."
+  mechanism: "The RFT rows are drawn from the model's own distribution and kept only when the final answer matches gold, so training on them moves probability mass from the chains it happens to sample onto the chains that actually reach the right answer - i.e. it converts part of the 17-point pass@4-minus-pass@1 gap into pass@1. Keeping 40k off-policy rows in the mixture preserves the problem diversity that a pure self-training epoch would erode."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+2 to +6 pts"}
+  falsified_if: "greedy dev-150 accuracy is at or below 0.6933, or greedy probe-250 accuracy is at or below 0.660"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "synthetic:self (48539 rows sampled from ckpts/exp-02/final) + derived:exp-02 (40000 rows of data/sft_v1.jsonl, i.e. openai/gsm8k train rev 740312a and nvidia/OpenMathInstruct-2 rev 469216e gsm8k/augmented_gsm8k)"
+      n_examples: 88539
+      built_by: /home/ben/task/rft_sample.py
+      build_command: [python, rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --questions, data/rft_questions.jsonl, --out, data/rft_v1.jsonl, --n-questions, '32000', -k, '4', --temperature, '1.0', --top-p, '0.95', --top-k, '64', --max-tokens, '640', --keep-per-question, '2']
+      selection: "questions are the 67785 unique GSM8K-TRAIN + OpenMathInstruct-2 gsm8k/augmented_gsm8k problems in data/rft_questions.jsonl, from which 32000 were sampled (seed 0); the probe-250 items and the 10 harness fewshot items are excluded from that pool. A sample is kept only if its 'ANSWER: n' equals the gold answer; duplicates dropped; at most 2 shortest correct chains per question; 3 rows without a clean single ANSWER line or terminator removed at mix time. Mixed 1:0.82 with the first 40000 rows of data/sft_v1.jsonl, shuffled with seed 1."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused-linear-CE
+    peft: "none (full fine-tune; vision tower and multimodal projector frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02: prompt through templates/gemma3.jinja (sha256 7de1c58e...) with the inspect_evals MATH_PROMPT_TEMPLATE, 12% of rows behind the exact 10-shot harness system message; target = worked solution, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the target only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/sft_v2.jsonl, --out, /home/ben/task/ckpts/exp-04, --max-seq-len, '3072', --fewshot-frac, '0.12', --epochs, '1', --batch-size, '16', --grad-accum, '2', --lr, '1e-5', --attn, sdpa, --liger]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6933
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "greedy probe-250 accuracy (probe_eval.py --temperature 0) against exp-03's 0.660; measures whether pass@1 moved toward the 0.83 pass@4 ceiling on items no RFT row was built from"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.9
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2767}
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 2767}
+  training_summary: {final_loss: 0.2738, steps: 2767, notes: "88539 rows, 1 epoch, 6829 s, 12.97 samples/s; train_loss 0.274 vs exp-02's 0.319 - the self-generated half of the mixture is easier for the model to fit, as expected"}
+  measurements:
+    - {metric: accuracy, value: 0.6533, n: 150, path: /home/ben/task/eval/exp-04_greedy_dev150.json, delta_vs_comparator: -0.04}
+  diagnostic_result:
+    value: 0.68
+    path: /home/ben/task/analysis/exp-04_probe250.json
+    notes: "probe-250 greedy 0.660 -> 0.680 (+2.0), the opposite sign to dev-150's -4.0. Pooling the two disjoint sets (400 items): exp-03 0.6725 vs exp-04 0.6700 - a 1-item difference. The two reads disagree within their own noise, so the intervention has no measurable effect either way."
+  watch_set_result:
+    fixed: 24
+    still_failing: 61
+    regressions: 19
+    path: /home/ben/task/analysis/exp-04_watch_rerun.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "dev-150 0.6933 -> 0.6533 (-4.0) but probe-250 0.660 -> 0.680 (+2.0); pooled over both disjoint sets 0.6725 -> 0.6700, i.e. one item. 24 probe items fixed against 19 regressed. RFT neither helped nor hurt measurably at n=150; the two 250/150-item reads are too small to resolve an effect this size."
+  decision: iterate
+  next_step: "The remaining question is no longer 'does RFT help' but 'which artefact do I ship'. exp-05: build the uniform weight average of exp-02 and exp-04 (same base, different data mixtures - the classic soup setting) and score all three candidates on a larger dev slice, because dev-150's +/-0.039 stderr cannot separate them."

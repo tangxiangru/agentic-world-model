@@ -1,0 +1,112 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T12:42:46Z'
+situation:
+  elapsed_h: 4.8
+  remaining_h: 5.2
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.78, protocol_n: 500}
+  trigger: "Of the 110 greedy failures at n=500, 21 (19.1%) contain a 'However'-style self-override versus 9 of 390 correct answers (2.3%) - an 8x enrichment (analysis/exp-03_failure_patterns.json). Reading them, the model reaches the right number and then argues itself into a wrong one (e.g. the 25-orange item: computes 17, writes 'However, this calculation does not account for...', answers 20)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_failure_patterns.json, locator: "however: correct 9/390=0.023, failed 21/110=0.191"}
+    - {path: /home/ben/task/analysis/exp-03_diag500.json, locator: "median completion chars 544 overall vs 726 among failures"}
+  alternatives_rejected:
+    - {option: "one more stage of teacher (OpenMathInstruct-2) data only", reason: "OMI-2's GSM8K-derived problem pool is exhausted - excluding exp-02's questions, shards 3-18 yielded only 11430 new problems (analysis of the sft_v3 build). More teacher data now means mostly second solutions to problems already trained on."}
+    - {option: "DPO on (correct, self-override) pairs", reason: "would need a preference-pair build plus a DPO trainer with ~4.5h left; rejection sampling gets at the same signal by simply not showing the model any chain that ends wrong"}
+    - {option: "a bigger RFT sample (30k problems)", reason: "the first attempt at 30k took 50 min of H100 and then lost its output to an OverflowError in the scoring loop; 10k problems fit the remaining budget and already give 18406 verified chains"}
+    - {option: "restart SFT from base on v1+v2+RFT in one cosine cycle", reason: "~4.4h of training, more than the remaining budget, and it would throw away a validated 0.78 checkpoint"}
+  pitfalls_hit:
+    - {what: "RFT sampling run 1 (30k problems, 50 min of H100) crashed in the post-processing loop: norm() called int() on a float('inf') parsed from a model-emitted 400-digit number, killing the process after generation and salvaging only 487 of ~45k rows", cost_h: 0.85, fix: "guard norm() against inf/nan/overflow and wrap the comparison in try/except (data/rft_partial_crashed.jsonl keeps the salvage)"}
+    - {what: "vLLM sampling ran at 7.2k tok/s: with FlashInfer absent, top_p 0.95 + top_k 64 fall back to a PyTorch sort over the 262k vocab every step", cost_h: 0.1, fix: "sample with temperature 0.9 and top_p 1.0 / no top_k, which skips the sort - 11.9k tok/s"}
+    - {what: "killing the sampler left an orphaned VLLM::EngineCore holding 68 GiB", cost_h: 0.05, fix: "kill the pid listed by nvidia-smi, not just the python parent"}
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model, ckpts/exp-02/final, --n-problems, '10000', --k, '4', --temperature, '0.9', --top-p, '1.0'], outcome: "9527/10000 problems (95.3%) yielded at least one correct chain; 18406 rows kept from 40000 samples in 29 min"}
+problem:
+  statement: "exp-03's remaining 110 failures at n=500 are reasoning failures, and the single most over-represented pattern among them is self-override: the model produces a correct derivation, then writes 'However, ...' and replaces the right answer with a wrong one. It appears in 19.1% of failures against 2.3% of correct answers. The pattern is inherited from the OpenMathInstruct-2 teacher chains it was trained on, where such passages exist and were never penalised because the training target ends on the right number regardless of how it got there."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_failure_patterns.json, locator: "however 21/110 vs 9/390", observation: "8x enrichment among failures"}
+    - {path: /home/ben/task/analysis/exp-03_diag500.json, locator: "median_chars 544 vs 726 among failures", observation: "failures are systematically longer, consistent with extra second-guessing passages"}
+  affected_share: 0.191
+  failure_examples:
+    - {id: "n500-orange", source: /home/ben/task/logs/2026-09-03T10-44-56+00-00_gsm8k_L9K2KLdPrmhtGisMyxcYSA.json, question: "A basket contains 25 oranges among which 1 is bad, 20% are unripe, 2 are sour and the rest are good. How many oranges are good?", gold: "17", model_output: "25 - 1 - 5 - 2 = 17. However, this calculation does not account for the fact that the 5 unripe oranges are also good... 25 - 5 = 20. ANSWER: 20", failure: "correct value 17 computed, then overridden"}
+    - {id: "n500-bernadette", source: /home/ben/task/logs/2026-09-03T10-44-56+00-00_gsm8k_L9K2KLdPrmhtGisMyxcYSA.json, question: "Wayne and Bernadette are movie stars heading to the premiere...", gold: "17", model_output: "...difference is 16 - 4 = 12. However, the question asks how much earlier Bernadette should leave... ANSWER: 12", failure: "self-override plus a misread of the question"}
+    - {id: "n500-sandcastle", source: /home/ben/task/logs/2026-09-03T10-44-56+00-00_gsm8k_L9K2KLdPrmhtGisMyxcYSA.json, question: "each level of a sandcastle has half the square footage of the level below it; 4 levels, top level 16, average square footage?", gold: "60", model_output: "sets x = top level, then treats x as the bottom level; (16 + 11.2)/4 = 6.8. ANSWER: 6.8", failure: "algebraic set-up error, not self-override - the residual class this card does not address"}
+  watch_set: null
+hypothesis:
+  claim: "A second SFT stage from exp-02's checkpoint on a corpus whose GSM8K-style component is rejection-sampled from the model itself - every chain verified to end on the reference answer and every chain containing a 'However'/'Wait' self-override removed - raises accuracy at n=500 above the incumbent's 0.78 and lowers the share of failures containing a self-override."
+  mechanism: "Rejection sampling shows the model only chains it can actually produce that end correctly, so the gradient reinforces its own successful mode rather than a teacher's phrasing; and because every chain that talks itself into a wrong answer is rejected by the answer check (and any that survives is removed by the backtracking filter), the 'However' continuation loses probability mass. The 31430 fresh-problem and 50000 fresh-solution teacher rows are mixed in as replay so the second stage does not narrow the distribution to the 9527 sampled problems."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+1 to +4 points"}
+  falsified_if: "accuracy at n=500 is at or below 0.78, or the self-override share of failures is not below 0.191."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/stage2_v1.jsonl
+      source: "synthetic:self (rejection-sampled from ckpts/exp-02/final) + nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e shards 3-18"
+      n_examples: 99197
+      built_by: /home/ben/task/scripts/mix_data.py
+      build_command: [python, scripts/mix_data.py, --spec, "data/rft_v1.jsonl:-1:drop_backtrack", "data/sft_v3.jsonl:-1", "data/sft_v2.jsonl:50000", --out, data/stage2_v1.jsonl]
+      selection: "17767 rejection-sampled rows (10000 held-in GSM8K-train / OMI-2 GSM8K-derived problems, k=4 at temperature 0.9, keep chains whose ANSWER equals the reference, <=2 distinct chains per problem, then drop the 639 containing However/Wait); 31430 teacher rows on problems unseen in exp-02; 50000 teacher rows that are fresh solutions to problems exp-02 did see. No GSM8K test item anywhere."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2"
+    peft: "none (full parameter; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 32, grad_accum: 2, max_seq_len: 1280, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit, beta2=0.95", seed: 0}
+    target_format: "identical to exp-02: prompt = <bos><start_of_turn>user\\n[demos]MATH_PROMPT_TEMPLATE<end_of_turn>\\n<start_of_turn>model\\n ; target = {chain}\\n\\nANSWER: {n}<end_of_turn> ; completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-02/final, --data, /home/ben/task/data/stage2_v1.jsonl, --out, /home/ben/task/ckpts/exp-04, --max-seq-len, '1280', --lr, '7e-6', --epochs, '1', --bs, '32', --accum, '2', --liger]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, unshuffled)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.78
+    path: /home/ben/task/eval/exp-03_greedy_dev500.json
+  diagnostic:
+    what: "share of failures containing a 'However'/'Wait' self-override (0.191 for the incumbent)"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.29
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1533}
+  training_summary: {final_loss: 0.2792, steps: 1533, notes: "mean train loss; 98071 of 99197 rows kept (1126 = 1.14% over max_seq_len 1280, the measured figure the lock override cites); peak GPU 66.8 GiB; 21.1 samples/s. generation_config.json in the output dir was replaced with exp-03's greedy one before evaluation so the comparison against the 0.78 comparator holds decoding fixed."}
+  measurements:
+    - {metric: accuracy, value: 0.81, n: 500, path: /home/ben/task/eval/exp-04_dev500.json, delta_vs_comparator: 0.03}
+  diagnostic_result:
+    value: 0.211
+    path: /home/ben/task/analysis/exp-04_failure_patterns.json
+    notes: "self-override share among failures 0.191 -> 0.211 (20 of 95), i.e. it did NOT fall; among correct answers it went 0.023 -> 0.027. Clean-termination 493/500, max_tokens 7 (was 4). Paired against exp-03 over the same 500 items: 39 fixed, 24 broken, net +15, two-sided exact McNemar p = 0.077."
+  watch_set_result: {fixed: 39, still_failing: 95, regressions: 24, path: /home/ben/task/analysis/exp-04_failure_patterns.json}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Accuracy rose 0.780 -> 0.810 at n=500 (paired +15 net, p=0.077), but the hypothesis as written was a conjunction and its second half failed: the self-override share of failures went UP (0.191 -> 0.211), so the gain did not come from rejection sampling suppressing the 'However' pattern. What the stage most likely bought is the 49k rows of teacher data on problems exp-02 had not seen plus a second pass of on-policy correct chains; self-override survives at the same rate and is still the largest single tag among the 95 remaining failures."
+  decision: adopt
+  next_step: "exp-04/final is the new incumbent at 0.810 and is what final_model should hold. Two levers are now closed: the grader's 10-shot prefix costs nothing (held-out probe on 800 unseen OMI-2 GSM8K problems: 0-shot 0.8113 vs 10-shot 0.8138, analysis/probe_shots_exp04.json), so training with the exact prefix is not worth its 2043 tokens per row; and OMI-2's GSM8K problem pool is exhausted. The remaining scaling lever is the 119k unused fresh-solution rows in data/sft_v2.jsonl."

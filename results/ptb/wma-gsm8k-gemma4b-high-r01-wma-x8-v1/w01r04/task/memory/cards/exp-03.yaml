@@ -1,0 +1,115 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T17:10:00Z'
+situation:
+  elapsed_h: 3.2
+  remaining_h: 6.8
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.66, protocol_n: 150}
+  trigger: "exp-02 is graded under gemma's shipped sampling defaults. evaluate.py forwards no temperature/top_p/seed, and vLLM's ModelConfig.get_diff_sampling_param() pulls temperature/top_p/top_k straight out of the checkpoint's generation_config.json, which still says do_sample true, top_p 0.95, top_k 64. Every answer scored so far is a temperature-1 sample, not the model's best guess."
+  trigger_evidence:
+    - path: /home/ben/task/ckpts/exp-02/final/generation_config.json
+      locator: "do_sample/top_p/top_k"
+    - path: /home/ben/task/analysis/base_P1_diag.json
+      locator: "degenerate 'BuildConfig:' completion in the base run"
+    - path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py
+      locator: "ModelConfig.get_diff_sampling_param, available_params list"
+  alternatives_rejected:
+    - option: "Leave the shipped sampling config and spend the time on more training"
+      reason: "This costs one 6-minute eval on weights that already exist and is the only lever that changes the score without touching the weights; skipping it would leave points on the table for the rest of the batch."
+    - option: "Lower the temperature (e.g. 0.3) instead of going fully greedy"
+      reason: "Single-sample grading with no self-consistency vote: there is no reason to keep any entropy. Greedy is the limit of that direction and needs no tuning run."
+    - option: "Pass sampling parameters on the evaluate.py command line"
+      reason: "evaluate.py has no such flag and rule 5 forbids modifying it; the decode config must travel inside the model directory, which is also how the final grading will read it."
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, -c, "GenerationConfig.from_pretrained on a temperature-0 config"]
+      outcome: "transformers loads it with a benign 'flags not valid' warning; to_diff_dict keeps temperature 0.0 and top_k 0, which is exactly what vLLM reads, so the greedy setting does reach the sampler."
+problem:
+  statement: "The exp-02 checkpoint is decoded stochastically at temperature 1.0 with top_p 0.95 / top_k 64, purely because those values were inherited from the base checkpoint's generation_config.json. On a single-sample, exact-numeric-match benchmark this throws away accuracy: any sampled deviation inside a 400-character arithmetic chain changes the final number."
+  evidence:
+    - path: /home/ben/task/ckpts/exp-02/final/generation_config.json
+      locator: "whole file"
+      observation: "do_sample true, top_p 0.95, top_k 64, no temperature key -> vLLM defaults temperature to 1.0."
+    - path: /home/ben/task/analysis/exp-02_final_failures.jsonl
+      locator: "51 failing items"
+      observation: "All 51 failures are single arithmetic or set-up slips inside a well-formed chain - the class of error most sensitive to sampling noise."
+  affected_share: null
+  failure_examples:
+    - {id: f1, source: /home/ben/task/analysis/exp-02_final_failures.jsonl, question: "Henry's cookies (dev-150)", gold: "50", model_output: "... y=62.5 last year ... ANSWER: 62.5", failure: "algebraic set-up slip"}
+    - {id: f2, source: /home/ben/task/analysis/exp-02_final_failures.jsonl, question: "Trixie's kittens (dev-150)", gold: "40", model_output: "3 * 12 = 36 ... 7+36 = 43 ... ANSWER: 43", failure: "wrong quantity added"}
+    - {id: f3, source: /home/ben/task/analysis/exp-02_final_failures.jsonl, question: "square footage per level (dev-150)", gold: "60", model_output: "16 * 2 * 2 * 2 ... = 16384 (six stray lines) then a different, wrong solution ... ANSWER: 7.5", failure: "sampled a garbage prefix, then reasoned from it"}
+  watch_set: null
+hypothesis:
+  claim: "Replacing the inherited sampling defaults in the checkpoint's generation_config.json with greedy decoding (temperature 0, top_k 0, top_p 1) raises dev-150 accuracy relative to exp-02's 0.66 on byte-identical weights."
+  mechanism: "Grading is a single sample scored by exact numeric match. Under temperature-1 sampling the model must not deviate at any of ~120 generated tokens; greedy takes the argmax path, which is the mode the SFT objective actually optimised. The stray-prefix failure (f3) is a direct instance of sampling noise producing a wrong chain."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+3 to +10 points on dev-150"
+  falsified_if: "Greedy scores at or below 0.66 on dev-150, i.e. no gain beyond the 3.9 pt stderr in the positive direction."
+setup:
+  parent_checkpoint: {path: /home/ben/task/ckpts/exp-02/final, origin: exp-02, hash: null}
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "derived:exp-02 - no new data; the weights are exp-02's, unchanged"
+      n_examples: 59473
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py]
+      selection: "not re-read by this card; listed because the weights under test were trained on it"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 via evaluate.py; decode parameters read from generation_config.json"
+    peft: none
+    hyperparams: {temperature: 0.0, top_k: 0, top_p: 1.0, do_sample: false, seed: null}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03-greedy, --limit, '150', --max-connections, '8', --max-tokens, '1024', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '8', --max-tokens, '1024', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator: {ref: exp-02, value: 0.66, path: /home/ben/task/eval/exp-02_final_dev150.json}
+  diagnostic:
+    what: "well-formed ANSWER-line share and token-cap share under greedy (greedy can loop where sampling escapes)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.14
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 1858}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to ckpts/exp-02/final, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.06}
+  diagnostic_result:
+    value: 0.9867
+    path: /home/ben/task/analysis/exp-03_greedy_diag.json
+    notes: "well-formed 0.987 (vs 0.993 sampled), token-cap hits 2/150 (vs 1/150). Greedy loops on two items instead of one - the cost of removing entropy - but it is dwarfed by the gain."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.66 -> 0.72 (+6.0 pts) on byte-identical weights; the only change is temperature 1.0/top_p 0.95/top_k 64 -> greedy in generation_config.json. Six points for one 8-minute eval and no GPU-hours, and it confirms the read of the harness: evaluate.py forwards no sampling parameters, so the decode config shipped inside the model directory is what grades the model."
+  decision: adopt
+  next_step: "Greedy is now part of every candidate: the final_model must ship this generation_config. exp-04: attack the residual reasoning errors with rejection-sampling fine-tuning on the model's own verified-correct solutions."

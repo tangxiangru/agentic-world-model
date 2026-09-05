@@ -1,0 +1,141 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T02:54:18Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 4.7
+  remaining_h: 5.3
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "exp-04 closed inconclusive: its RFT checkpoint beats the incumbent by +2.8 on the n=500 held-out train probe but loses by -4.0 on the official n=150 read. Both moves are about one standard error of their own protocol, so the batch currently does not know which of its two checkpoints is better - and one of them has to be shipped as final_model."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_watch.json, locator: "incumbent_acc=0.690, exp04_acc=0.718, fixed=45, regressions=31"}
+    - {path: /home/ben/task/eval/exp04_final_dev150.json, locator: "accuracy=0.68"}
+    - {path: /home/ben/task/eval/exp03_greedy_dev150.json, locator: "accuracy=0.72"}
+  alternatives_rejected:
+    - {option: "Ship exp-03_greedy because it has the higher n=150 number", reason: "0.72 vs 0.68 at n=150 is 1.06 standard errors of the difference; picking on it is picking on noise, and the n=500 probe points the other way"}
+    - {option: "Ship exp-04/final because it has the higher probe number", reason: "the probe is gsm8k TRAIN problems; the benchmark is the test split. The probe is the better-powered read but not the graded one, so the decision needs the graded distribution at a usable n"}
+    - {option: "Repeat the n=150 eval several times to shrink the error", reason: "greedy decoding is deterministic, so repeats of the same 150 items return the same number; only more items help"}
+    - {option: "Also enter the 0.5/0.5 soup of exp-02/final and exp-04/final as a third candidate", reason: "already probed at n=500: 0.710, between its two parents and below exp-04/final. It has no case for 13 minutes of official eval, and the probe is the same ruler that ranks the other two."}
+  pitfalls_hit:
+    - {what: "ckpts/exp-04/checkpoint-500 inherited the parent's generation_config (do_sample:false, no temperature) instead of the greedy one save_full writes for final/, and would have been probed at temperature 1.0", cost_h: 0.0, fix: "patched its generation_config.json by hand before probing; only final/ gets the fix automatically"}
+    - {what: "scripts/soup.py triggered 'generation flags are not valid' on save because transformers rejects do_sample:false with temperature", cost_h: 0.0, fix: "the warning is from model.save_pretrained's own GenerationConfig; the file is then overwritten with raw JSON, which vLLM reads - verified the written file"}
+  smoke_runs:
+    - {command: [python, scripts/soup.py, --a, ckpts/exp-02/final, --b, ckpts/exp-04/final, --weight-a, '0.5', --out, ckpts/soup_02_04], outcome: "built; n=500 probe 0.710, between exp-02's 0.690 and exp-04's 0.718 - a soup of two points on one trajectory buys nothing here"}
+    - {command: [python, scripts/vllm_gen.py, --model, ckpts/exp-04/checkpoint-500, --input, data/dev_train500.jsonl, --temperature, '0.0', --fewshot], outcome: "0.714 - the RFT trajectory is flat after step 500, so there is no better intermediate checkpoint either"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The batch's two best checkpoints are separated by less than the resolution of the protocol used to compare them. At n=150 the standard error is 3.7 points; the candidates differ by 4. Shipping either one is currently a coin flip dressed up as a decision."
+  evidence:
+    - {path: /home/ben/task/eval/exp03_greedy_dev150.json, locator: "accuracy=0.72, stderr=0.0368", observation: "incumbent under the official n=150 protocol"}
+    - {path: /home/ben/task/eval/exp04_final_dev150.json, locator: "accuracy=0.68, stderr=0.0382", observation: "challenger under the same protocol; the intervals overlap almost entirely"}
+    - {path: /home/ben/task/analysis/exp-04_watch.json, locator: "fixed=45, regressions=31 out of 500", observation: "the two models disagree on 76 of 500 held-out train problems, and the disagreement is nearly symmetric - consistent with two genuinely close models rather than one dominating"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: n150-vs-n500, source: /home/ben/task/analysis/exp-04_watch.json, question: "(aggregate)", gold: "n/a", model_output: "official n=150 says exp-03 by 4.0; held-out n=500 probe says exp-04 by 2.8", failure: "the two reads of the same comparison have opposite signs, both inside noise"}
+    - {id: soup-probe, source: /home/ben/task/analysis/probe_soup.jsonl, question: "(aggregate over 500 held-out train problems)", gold: "n/a", model_output: "0.710", failure: "weight averaging lands between the parents, so it cannot break the tie"}
+    - {id: ck500-probe, source: /home/ben/task/analysis/probe_checkpoint-500.jsonl, question: "(aggregate over 500 held-out train problems)", gold: "n/a", model_output: "0.714 at step 500 against 0.718 at step 943", failure: "no checkpoint-selection lever left inside exp-04's trajectory either"}
+  watch_set:
+    path: /home/ben/task/data/dev_train500.jsonl
+    n: 500
+    selection: "the same 500 held-out gsm8k-train problems used since exp-02; exp-03_greedy 0.690, exp-04/final 0.718, soup 0.710, exp-04 step-500 0.714"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Scored on the official benchmark at --limit 500 instead of --limit 150, exp-04/final and exp-03_greedy separate by more than the n=500 standard error, and the ranking agrees with the held-out train probe rather than with the n=150 read."
+  mechanism: "Both models are deterministic under temperature 0.0, so repeating n=150 returns the identical number and only more items reduce the error. Going from 150 to 500 items cuts the standard error from ~3.7 to ~2.0 points and, because the 150 are a subset of the 500, adds 350 fresh items whose signal is independent of whatever made the first 150 favour exp-03. If the probe's +2.8 is real, it should survive on the graded distribution at this n."
+  falsified_if: "the two models land within 1 standard error (2 points) of each other at n=500, in which case the comparison is still unresolved and the incumbent should be kept on the principle that an unproven challenger does not displace a measured one"
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+1 to +4 points for exp-04/final at n=500, matching the direction and rough size of the n=500 probe"}
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev_train500.jsonl
+      source: "openai/gsm8k rev 740312ad main/train, 500 problems held out by scripts/build_sft.py --holdout 500 --seed 0"
+      n_examples: 500
+      built_by: /home/ben/task/scripts/build_sft.py
+      build_command: [python, scripts/build_sft.py, --out, data/sft_v1.jsonl, --holdout, '500']
+      selection: "held out of every training file; the probe that ranks the candidates before the official read"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "inspect-ai + vllm 0.11.0; no weights change in this card"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - nothing is trained. Both candidates already ship generation_config temperature 0.0, so the two arms differ only in weights."
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [bash, -c, "python evaluate.py --model-path /home/ben/task/ckpts/exp-03_greedy --limit 500 --max-connections 16 --gpu-memory-utilization 0.85 --json-output-file /home/ben/task/eval/exp03_greedy_dev500.json && python evaluate.py --model-path /home/ben/task/ckpts/exp-04/final --limit 500 --max-connections 16 --gpu-memory-utilization 0.85 --json-output-file /home/ben/task/eval/exp04_final_dev500.json"]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 500 (inspect_evals/gsm8k test split, first 500 in dataset order, 10-shot with fewshot_seed=42) - a superset of the 150 used by exp-01 to exp-04"
+    n: 500
+    seed: 42
+  comparator:
+    # The incumbent has never been scored at n=500. Its eval is the FIRST of the
+    # two commands in setup.command.argv, so the comparator is measured under
+    # exactly this protocol before the challenger is, and its path is filled in
+    # at close. Nothing else in this batch was measured at n=500.
+    ref: exp-03
+    value: null
+    path: null
+  diagnostic:
+    what: "agreement between the n=500 official ranking and the n=500 held-out-train-probe ranking (probe says exp-04 by +2.8); if the two disagree again, no read available in this batch can separate the models"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.42
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 943}
+    - {path: /home/ben/task/ckpts/exp-03_greedy, step: 2009}
+    - {path: /home/ben/task/ckpts/soup_02_04, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.674, n: 500, path: /home/ben/task/eval/exp03_greedy_dev500.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.712, n: 500, path: /home/ben/task/eval/exp04_final_dev500.json, delta_vs_comparator: 0.038}
+  diagnostic_result:
+    value: 0.038
+    path: /home/ben/task/analysis/exp-05_paired.json
+    notes: "Same 500 items, both models deterministic: exp-04/final fixes 50 items exp-03_greedy gets wrong and breaks 31 it gets right. McNemar z = 2.11 on 81 discordant pairs (p ~ 0.035); paired SE of the difference 1.8 points. The n=500 official ranking agrees with the n=500 held-out-train probe (+3.8 vs +2.8); the n=150 read that said the opposite was the outlier."
+  watch_set_result:
+    fixed: 45
+    still_failing: 110
+    regressions: 31
+    path: /home/ben/task/analysis/exp-04_watch.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "At n=500 the candidates separate: exp-03_greedy 0.674, exp-04/final 0.712, +3.8 points with a paired SE of 1.8 and McNemar z=2.11. The ranking matches the held-out train probe, so exp-04's RFT gain was real and the n=150 read that reversed it was noise. exp-04/final is adopted as final_model."
+  decision: adopt
+  next_step: "Two lessons carried into exp-06. (1) n=150 is not a decision-grade ruler for differences under ~8 points in this batch; every remaining comparison uses --limit 500. (2) RFT is the lever that is still paying, and it has only been run over 40000 of the 70331 pool problems, with nothing at all mined from the 5353 that round 1 never solved. exp-06 samples the remaining 30331 problems plus those 5353 at n=8 from exp-04/final and trains one clean RFT pass from ckpts/exp-02/final over the union."

@@ -1,0 +1,132 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T17:06:30Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.05
+  remaining_h: 6.95
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.5733, protocol_n: 150}
+  trigger: "exp-02 reached 0.5733 on dev-150 with format compliance 0.993, so the stopping problem is solved and the remaining 64 failures are reasoning or decoding. The vLLM startup line for that eval shows the server took its defaults from the checkpoint's generation_config (top_k 64, top_p 0.95, no temperature), i.e. the 0.5733 is a single sample drawn at temperature 1.0."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "accuracy=0.5733, format_compliance=0.9933, noncompliant_failures=1 of 64"}
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy, stderr"}
+  alternatives_rejected:
+    - {option: "Leave the checkpoint on the base decode and spend the time on more training instead", reason: "one eval (~8 min, no training) against a lever a same-protocol precedent measured at +20.6 points (history/r-a3f23d29/exp-02: 0.627 -> 0.833 at n=150); no training change comes close to that per minute"}
+    - {option: "Ask evaluate.py for temperature 0", reason: "evaluate.py must not be modified (task rule 5) and it sends no temperature at all; the only place the decode can be set is the checkpoint's own generation_config.json, which vLLM loads as the server's default sampling params"}
+    - {option: "Copy the checkpoint to set the new config", reason: "8.6 GB and ~1 min per variant for a two-field JSON change; make_variant.py symlinks the weights and rewrites only generation_config.json, so both arms are provably the same weights"}
+  pitfalls_hit:
+    - {what: "the intermediate checkpoints saved by Trainer carry eos_token_id [1, 1, 106] (the duplicate comes from the tokenizer-alignment rewrite); 106 is present so they are gradeable, but only ckpts/exp-02/final got the clean [1, 106] from the explicit GenerationConfig restore", cost_h: 0.0, fix: "checked before use; make_variant.py asserts 106 is in eos_token_id"}
+  smoke_runs:
+    - {command: [python, make_variant.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-02-greedy, --temperature, '0'], outcome: "weights symlinked, generation_config rewritten to {do_sample false, temperature 0.0, eos_token_id [1, 106]} with top_k/top_p removed; assertion that 106 is still an eos id passed"}
+    - {command: [python, -c, "inspect openai_completion_params"], outcome: "inspect only puts temperature in the request when config.temperature is not None; evaluate.py sets only max_tokens, so the checkpoint's generation_config is what decides the decode"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent is graded on one sample per item, decoded by sampling at temperature 1.0 with top_p 0.95 / top_k 64, because evaluate.py sends no temperature and vLLM falls back to the checkpoint's generation_config. Every token of a ~150-token arithmetic chain is therefore a draw from the tail, and a single bad draw changes the last number the grader reads."
+  evidence:
+    - {path: /home/ben/task/eval/logs/exp-01, locator: "vLLM server startup line", observation: "'Using default chat sampling params from model: {top_k: 64, top_p: 0.95}' - the checkpoint is decoded by sampling at temperature 1.0"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py, locator: "openai_completion_params", observation: "temperature is put in the request only if config.temperature is not None; evaluate.py sets only max_tokens, so the server's default from generation_config.json is what decodes"}
+  affected_share: null   # unknown before the run: the share of the 64 failures that are sampling noise rather than reasoning error is exactly what this card measures
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/watch100.jsonl
+    n: 100
+    selection: "GSM8K TRAIN rows 7173-7272, held out from every training file this session. No test-split item is used."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Writing temperature 0.0 (do_sample false, top_k/top_p removed) into the trained checkpoint's generation_config.json, with the weights and eos_token_id [1, 106] unchanged, raises accuracy on the --limit 150 protocol relative to the same weights decoded with the base sampling config."
+  mechanism: "The grader reads the last number of a single sample. Under top_p 0.95 / top_k 64 at temperature 1.0 every arithmetic step is a fresh draw from the tail, so one unlucky token anywhere in a 150-token chain flips the final number. Greedy decoding removes that variance and takes the model's argmax chain."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+5 to +20 points"
+  falsified_if: "greedy accuracy is not above the exp-02 sampling read by more than the n=150 noise floor (~3 points), or the vLLM startup line does not show temperature 0 in the default sampling params"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe300.jsonl
+      source: "openai/gsm8k main/train rows 7173-7472 (held-out probe; NOT training data - this card trains nothing and touches no weights)"
+      n_examples: 300
+      built_by: /home/ben/task/build_probe.py
+      build_command: [python, build_probe.py]
+      selection: "held-out probe reserved at session start; used only to re-read the watch set under the new decode"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 default_sampling_params read from generation_config.json"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02; no weights are touched"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02-greedy, --limit, '150', --max-connections, '2', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-02-greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {INSPECT_LOG_DIR: /home/ben/task/eval/logs/exp-03}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-02-greedy
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.25}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '2', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k takes the first 150 test items; deterministic)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.5733
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "format compliance and mean completion length under greedy vs sampling; plus the vLLM startup line confirming temperature 0 reached the server"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: /home/ben/task/ckpts/exp-02-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02-greedy, step: 3037}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to ckpts/exp-02/final, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-02-greedy_dev150.json, delta_vs_comparator: 0.1467}
+    - {metric: accuracy, value: 0.7467, n: 300, path: /home/ben/task/analysis/exp-03_probe300.json, delta_vs_comparator: 0.1833}
+  diagnostic_result:
+    value: 0.98
+    path: /home/ben/task/analysis/exp-03_diag.json
+    notes: "format compliance 0.9933 (sampling) -> 0.98 (greedy); non-terminating failures 1 -> 3 and max completion 13296 -> 14105 chars, i.e. greedy does fall into a repetition loop on a few items, which is the cost the WMA flagged - but it costs 2 items against 22 gained. Mean length 564 -> 739 chars. The vLLM server log did NOT print the 'Using default chat sampling params' line for temperature 0, only 'Default sampling parameters have been overridden by the model's Hugging Face generation config', so the log line named in falsified_if was not available; the decode change is instead confirmed behaviourally on 450 items (+14.7 at n=150, +18.3 at n=300, both far outside the noise floor)."
+  watch_set_result:
+    fixed: 22
+    still_failing: 23
+    regressions: 5
+    path: /home/ben/task/analysis/exp-03_watch100.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The same weights score 0.5733 sampled and 0.7200 greedy on dev-150 (+14.7), and 0.5633 vs 0.7467 on the 300 held-out probe items (+18.3). Both reads are far outside their noise floors and agree, so the sampling decode was costing roughly 15-18 points on its own. On the watch set 22 items flip to correct and 5 flip the other way: greedy is not uniformly better item-by-item, it is better on net, which is what a variance-removal mechanism should look like."
+  decision: adopt
+  next_step: "Greedy is now the decode for every later read and must be carried into final_model (package_final.py --greedy). exp-04: sweep checkpoint-1520 and checkpoint-2280 under greedy - the C5 lever is only interpretable now that the decode is fixed."

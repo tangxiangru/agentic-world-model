@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T12:24:06Z'
+situation:
+  elapsed_h: 5.7
+  remaining_h: 4.3
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7333, protocol_n: 150}
+  trigger: "exp-03 scored 0.7267 against exp-02's 0.7333 but disagreed with it on 29 of 150 items (14 fixed, 15 broken). Two checkpoints that are equally good and make largely different mistakes is the precondition for weight averaging, and exp-03 was initialised from exp-02 so they share a basin."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp03_watch_rerun.json, locator: "fixed=14, regressions=15, still_failing=26"}
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: result.measurements}
+  alternatives_rejected:
+    - {option: "another RFT round from exp-03", reason: "exp-03 already showed this line is exhausted: the parent solves 22791/45000 of its own training problems 4/4, so more self-samples carry little signal"}
+    - {option: "continue exp-02 on the 44946 held-out OpenMathInstruct-2 rows", reason: "45 min of training plus eval for more of the same off-policy distribution the model has already fit to loss 0.30; queued behind this card because the soup costs 25 min total"}
+    - {option: "just pick exp-02 and stop", reason: "the soup is 10 minutes of compute and cannot be worse than the worse parent by much, and averaging two checkpoints that disagree on 19% of items is the cheapest thing left with real upside"}
+    - {option: "logit-ensemble the two checkpoints at decode time", reason: "the grader loads exactly one model directory with vLLM; an ensemble cannot be shipped as final_model"}
+  pitfalls_hit:
+    - {what: "exp-03's first launch lost 49 min of training to a save-time GenerationConfig validation error; soup.py therefore builds its GenerationConfig the fixed way from the start", cost_h: 0.9, fix: "minimal valid GenerationConfig before save_pretrained, greedy generation_config.json written afterwards from the immutable base"}
+  smoke_runs: []
+problem:
+  statement: "The two trained checkpoints are statistically indistinguishable on dev-150 (0.7333 vs 0.7267, stderr 0.036 each) yet disagree on 29 of the 150 items. Neither dominates, and the disagreement means each one is throwing away answers the other gets right."
+  evidence:
+    - {path: /home/ben/task/analysis/exp03_watch_rerun.json, locator: "whole file", observation: "exp-03 fixes 14 exp-02 failures and breaks 15 exp-02 successes"}
+    - {path: /home/ben/task/eval/exp02_dev150.json, locator: accuracy, observation: "0.7333, stderr 0.0362"}
+    - {path: /home/ben/task/eval/exp03_dev150.json, locator: accuracy, observation: "0.7267, stderr 0.0365"}
+  affected_share: 0.19
+  failure_examples:
+    - {id: exp03-fixed-14, source: /home/ben/task/analysis/exp03_watch_rerun.json, question: "the 14 dev items exp-02 gets wrong and exp-03 gets right", gold: n/a, model_output: n/a, failure: "exp-02 loses these"}
+    - {id: exp03-regressions-15, source: /home/ben/task/analysis/exp03_watch_rerun.json, question: "the 15 dev items exp-02 gets right and exp-03 gets wrong", gold: n/a, model_output: n/a, failure: "exp-03 loses these"}
+    - {id: both-wrong-26, source: /home/ben/task/analysis/exp03_watch_rerun.json, question: "the 26 dev items both get wrong", gold: n/a, model_output: n/a, failure: "neither checkpoint reaches these; averaging is not expected to help here"}
+  watch_set:
+    path: /home/ben/task/analysis/exp03_watch_rerun.json
+    n: 29
+    selection: "the items on which exp-02 and exp-03 disagree (14 fixed + 15 regressions)"
+hypothesis:
+  claim: "A uniform parameter-space average of exp-02 and exp-03 scores higher on dev-150 than either parent."
+  mechanism: "exp-03 is one epoch of low-lr training away from exp-02, so the two are close enough in parameter space that the linear path between them stays in the same basin. Averaging such checkpoints cancels the part of each one's update that is fit to its own training noise while keeping the part both agree on, which is why checkpoint averaging typically lands at or above the better parent. The 29 disagreement items are where this can show up: an item one parent gets right by a thin margin should survive averaging, an item lost to noise should come back."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+0 to +3 points (0.733 -> 0.73-0.76); a soup rarely beats the better parent by much and rarely falls below it"
+  falsified_if: "dev-150 accuracy is below 0.7267, the worse of the two parents - that would mean the average left the basin rather than denoising it."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/soup.py
+      source: derived:exp-02 and derived:exp-03
+      n_examples: 2
+      built_by: null
+      build_command: []
+      selection: "no training data: the inputs are the two checkpoints /home/ben/task/ckpts/exp-02/final and /home/ben/task/ckpts/exp-03/final, averaged with equal weight 0.5/0.5 in fp32 and cast to bf16 for saving"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: merge
+    framework: "transformers 4.57.3 state_dict average, fp32 accumulation"
+    peft: none
+    hyperparams: {weights: 0.5/0.5, precision: fp32 accumulate then bf16 save}
+    target_format: "unchanged from the parents: {CoT}\\n\\nANSWER: <n><end_of_turn>"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, soup.py, --inputs, /home/ben/task/ckpts/exp-02/final, /home/ben/task/ckpts/exp-03/final, --weights, '0.5', '0.5', --out, /home/ben/task/ckpts/exp-04-soup]
+    cwd: /home/ben/task
+    script: /home/ben/task/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04-soup
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: none (CPU state_dict average), planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7333
+    path: /home/ben/task/eval/exp02_dev150.json
+  diagnostic:
+    what: "of the 29 items the parents disagree on, how many the soup gets right (a denoising average should beat the 14-or-15 either parent manages)"
+    n: 29
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.34
+  output_checkpoint: /home/ben/task/ckpts/exp-04-soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04-soup, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training: fp32 state_dict average of the two parents, saved in bf16"}
+  measurements:
+    - {metric: accuracy, value: 0.7533, n: 150, path: /home/ben/task/eval/exp04_dev150.json, delta_vs_comparator: 0.02}
+  diagnostic_result:
+    value: 16
+    path: /home/ben/task/analysis/exp04_watch_rerun.json
+    notes: "On the 29 items the parents disagree about, the soup is right on 16 - more than exp-02's 15 or exp-03's 14 on that same subset. Against exp-02 overall it fixes 12 and breaks 9. Format is untouched: 149/150 stop cleanly, one answer marker each."
+  watch_set_result: {fixed: 12, still_failing: 28, regressions: 9, path: /home/ben/task/analysis/exp04_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.7533 against exp-02's 0.7333 and exp-03's 0.7267: the average beats both parents, as the denoising account predicts, and it wins specifically on the subset where the parents disagree (16/29 vs 15 and 14). The margin is inside one stderr (0.035), so it is directional evidence rather than a separated result."
+  decision: adopt
+  next_step: "Averaging siblings works, so make a second sibling: continue exp-02 on the 44946 OpenMathInstruct-2 rows it never saw (off-policy, complementary to exp-03's self-samples), then average all three. Separately, the three candidates are all inside one stderr of each other at n=150 - a larger-n evaluation is needed before choosing what to ship."

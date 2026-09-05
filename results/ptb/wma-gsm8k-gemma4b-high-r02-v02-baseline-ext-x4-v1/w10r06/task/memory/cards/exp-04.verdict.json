@@ -1,0 +1,222 @@
+{
+  "schema_version": "awm-wma-verdict-v1",
+  "card_id": "exp-04",
+  "wma_skill": "176f0a464986",
+  "backend": "claude",
+  "mode": "online",
+  "issued_at": "2026-09-04T05:31:09Z",
+  "change_types": [
+    "C3",
+    "C4"
+  ],
+  "levels": {
+    "L0_runs": {
+      "answer": "yes",
+      "confidence": 0.93,
+      "basis": [
+        "e1",
+        "e2",
+        "e3",
+        "e4",
+        "e13"
+      ],
+      "note": "The strongest possible L0 evidence is present: this exact script at this exact (bs 4, grad_accum 8, max_seq_len 2816, bf16, adamw_bnb_8bit, gradient_checkpointing, flash_attention_2) configuration already ran to completion on this machine for 3.17 h and saved final/ (e4). Only three things move: --model now points at ckpts/exp-02/final instead of the base snapshot, --lr 1e-5 -> 7e-6, --save-steps 1000 -> 900. The new parent loads the same way -- train_sft.py calls AutoTokenizer.from_pretrained and Gemma3ForConditionalGeneration.from_pretrained on --model, and ckpts/exp-02/final carries config.json, both safetensors shards, the index and the full tokenizer set (e2, preflight parent_checkpoint_loadable e1). Data is clean end-to-end, not just on the first 500 rows: my own pass over all 60,825 rows found 0 targets missing <end_of_turn>, 0 with a marker count != 1, and a longest row of ~1,654 estimated tokens against max_seq_len 2816 (e3) -- so the `assert t_ids[-1] == EOT_ID` in build_rows cannot fire and dropped_too_long should be ~0 (exp-02 dropped 254 of 112,473). Memory risk is *lower* than exp-02's, which peaked at 73 of 80 GB: group_by_length batches the long tail together and sft_v2's long tail is shorter than sft_v1's (exp-02 log: p99 2474, max 2815 tokens; sft_v2 est. max 1654). The GPU is completely idle at the time of review -- 0 MiB of 81,559 in use, no processes -- so unlike exp-03 there is no vLLM engine to contend with (e13). Disk is fine: 4.8 T free, and save_total_limit=3 caps the ~20 GB-per-step-checkpoint growth at ~60 GB plus the 8.4 GB final/. Residual 0.07 is the unattended 1.6-1.8 h itself: the corpus base rate of trainings dying in the first 5 min is 42 %, and nothing in this launch watches the log. Step count: 60,825 rows / (4 x 8) = 1,901 optimizer steps; --save-steps 900 lands checkpoints at 900 and 1800 plus final/."
+    },
+    "L1_valid": {
+      "answer": "yes",
+      "confidence": 0.87,
+      "basis": [
+        "e1",
+        "e2",
+        "e3",
+        "e5",
+        "e10"
+      ],
+      "note": "Nothing about the format changes: same templates/gemma3.jinja render, same completion-only loss, same 'ANSWER: ' marker, same <end_of_turn> terminator, same fewshot_p 0.06, and a 10k replay slice of sft_v1 holds the shape. All 60,825 targets verified conformant (e3), so the trainer will not teach a second answer marker -- the double_answer_format pitfall that clean_rft.py was written to remove is genuinely gone from the merged file, not just from its first 500 rows. The real L1 hazard is packaging, and it is a two-part one. (a) train_sft.py writes final/ with trainer.save_model + tok.save_pretrained, which emits config.json, generation_config.json, the shards and the tokenizer set but NOT preprocessor_config.json or processor_config.json -- exactly the gap that had to be patched by hand after exp-02 for a checkpoint declaring Gemma3ForConditionalGeneration (e2, e4). (b) the generation_config.json inherited from ckpts/exp-02/final carries do_sample true, top_k 64, top_p 0.95 and no temperature (e10), so a raw `evaluate.py --model-path ckpts/exp-04/final` would be scored under sampling against a greedy comparator -- a decode confound worth roughly -10 pp on this run's own exp-02/exp-03 contrast, i.e. a valid-looking number that is not one. Both are closed by the route the card actually specifies: finalize.py copies preprocessor_config.json and processor_config.json from the base snapshot and rewrites generation_config.json from BASE with do_sample false / temperature 0.0 / top_k and top_p popped, eos_token_id [1, 106] intact (e5). So L1 is 'yes' *conditional on finalize.py --greedy running first*, which the evaluation section does state. The 0.13 residual is that conditional plus the diagnostic threshold: the card falsifies itself if the well-formed-ANSWER share drops below 0.98, and exp-03 already sits at 0.987 with 2/150 greedy repetition loops, so one or two extra degenerate items would trip it. One trap that did not bite: eos_token_id survives as [1, 106] in exp-02/final's saved generation_config, so the manual's 'Trainer collapses eos to 1' mechanism is not active in this pipeline."
+    },
+    "L2_effect": {
+      "metric": "accuracy",
+      "direction": "higher",
+      "interval": [
+        -0.02,
+        0.06
+      ],
+      "confidence": 0.6,
+      "basis": [
+        "e6",
+        "e8",
+        "e12",
+        "e4",
+        "e3"
+      ],
+      "note": "There is no gemma-3 run anywhere in the 143 historical runs -- I grepped for it and found zero -- so per the skill's own rule this confidence is capped at 0.6 whatever the argument. The reference class I can build is 'second-stage training continued from a fine-tuned checkpoint, gsm8k, scored at n=150': ~25 rft-family cards (e8) with median about -0.007, mean about -0.002, 7 positive / 2 flat / 16 negative, only 4 of 25 clearing +0.03 and 3 of 25 below -0.03. Extremes both ways: +0.127 (history/r-d2611dd8/exp-03) and -0.113 (history/r-65be88fb/exp-09) (e12). The wider sft-continuation class at n=150 is, if anything, worse -- the majority are logged 'contradicted / reject'. That base rate says: centred at zero, and the card's '+2 to +7 pt' is the optimistic third of the distribution, not the middle. Two things push me above the base rate rather than onto it. First, this incumbent is genuinely under-fed in a way most of those precedents' incumbents were not: exp-02 consumed 90k of 152,639 available GSM8K-sourced rows in one epoch and finished at loss 0.281 still falling from 0.589 (e4), so the 38k unseen 405B-generated rows are a continuation of a curve that had not flattened, not a re-serving of fitted data. Second, the intervention is low-variance by construction -- lr halved to 7e-6, one epoch, 10k replay, format byte-identical -- which trims the left tail that produced the -0.11 and -0.05 precedents (those were format or method changes riding along). Two things pull the other way. The 12,825 rejection-sampled rows cover the 91 % of train problems the model already solves, so they sharpen rather than extend, and the card's own evidence says the 680 unsolved problems contribute nothing; and a fresh cosine schedule with 3 % warmup restarting on a converged model is a warm restart, which typically costs before it pays inside a single epoch. Net: I put P(delta > 0) at roughly 0.6 and P(delta >= +0.03, i.e. a gain the n=150 ruler can actually resolve) at roughly 0.35. The interval is 8 pp wide against a noise floor of ~0.03 at n=150 (the manual's 150-499 band; the paired greedy-vs-greedy spread is tighter at ~1.3 pp since both arms are greedy on the same first-150 items, but the ledger floor is the right comparison). Finally, the result will be confounded: C3 (three new data sources) and C4 (lr, continuation-vs-fresh) ride on one launch, so whatever the number is, it will not say which of the two produced it. Note also that the card's falsified_if ('at or below 0.6867') would treat a +0.007 read as support; at n=150 one item is 0.67 pp, so a +1 to +2 pt result is inside the floor and should be called inconclusive."
+    },
+    "L3_worth_now": {
+      "answer": "yes",
+      "confidence": 0.68,
+      "expected_cost_h": 2.0,
+      "basis": [
+        "e7",
+        "e11",
+        "e4",
+        "e9",
+        "e8"
+      ],
+      "note": "The decisive L3 fact is that the downside is already bounded: final_model/ holds the 0.6867 greedy incumbent, packaged and smoke-loaded by vLLM at 05:26 (e7). A regression on exp-04 costs hours, not points -- there is a scored fallback and nothing has to be overwritten. Cost: 60,825 rows at exp-02's measured 9.84 samples/s is ~1.72 h, and sft_v2 is about half the total characters of sft_v1 (51.6 MB vs 104.7 MB) so 1.5-1.8 h is the honest band, plus ~0.2 h to finalize, evaluate and diff (e4). Against 5.15 h remaining and a planned 1.8 h (e11) that leaves ~3.1 h -- enough for one eval, a checkpoint read and packaging, but not enough for a second training. This is the last training this run can afford, which raises the bar and is why I hold the confidence at 0.68 rather than higher: the reference-class expected value is near zero (e8), and 1.8 of the remaining 5.15 h is a large bet on the optimistic third of that distribution. What keeps it a 'yes' rather than a 'defer' is that the alternatives the card rejected are correctly rejected (a fresh run cannot finish; DPO/GRPO cannot be stood up in 5 h; a second epoch over already-fitted rows is dominated by 62,658 unseen ones) and that the one genuinely cheaper lever left -- the C5 checkpoint sweep over exp-02's saved 2000 / 3000 / 3507 (e9), the manual's highest effect per minute at +-15 pp controlled -- costs ~12 min and can be run *before* the launch rather than instead of it. That sweep was already flagged on the exp-03 verdict and still has not been done; with the GPU idle right now it is 12 min out of 5.15 h and it either raises the incumbent for free or confirms final/ is the best of the trajectory. Two further things I would attach to the yes: save-steps 900 gives exp-04 its own C5 lever at 900 / 1800 / final for free, so plan to read more than just final/; and the run should decide adoption with a regression guard, since the manual's costliest single deduction is an unconditional final_model overwrite (0.567 put over 0.627)."
+    }
+  },
+  "evidence": [
+    {
+      "id": "e1",
+      "path": "/home/ben/task/memory/cards/exp-04.preflight.json",
+      "locator": "results, summary",
+      "note": "9 pass / 0 warn / 0 fail. stop_token_consistent 500/500; answer_marker_single 0/500 bad; max_seq_len_headroom 0/500 over 2816, longest ~695; parent_checkpoint_loadable pass on ckpts/exp-02/final; comparator_same_protocol pass but notes exp-03_greedy_dev150.json does not record n"
+    },
+    {
+      "id": "e2",
+      "path": "/home/ben/task/scripts/train_sft.py",
+      "locator": "lines 58-81 (build_rows), 104-166 (main)",
+      "note": "AutoTokenizer + Gemma3ForConditionalGeneration.from_pretrained(--model); vision tower and projector frozen; eager fallback on flash-attn failure; group_by_length with a length column; save_total_limit=3; trainer.save_model(out/final) + tok.save_pretrained -- writes no preprocessor_config.json or processor_config.json; asserts every target ends in token 106"
+    },
+    {
+      "id": "e3",
+      "path": "/home/ben/task/data/sft_v2.jsonl",
+      "locator": "whole file, 60825 rows (probe p1)",
+      "note": "source counts omi2_gsm8k 46014 / rft_self 12825 / omi2_math 1339 / gsm8k_train_orig 647 = exactly the claimed 38000 + 12825 + 10000 mix; 0 targets not ending in <end_of_turn>, 0 with marker count != 1; chars p50 706, p99 1960, max 6619 (est. max ~1654 tokens); 43,421 unique questions, 12,862 appearing more than once (<=2 solutions per problem as stated)"
+    },
+    {
+      "id": "e4",
+      "path": "/home/ben/task/memory/cards/exp-02.yaml",
+      "locator": "result.training_summary, result.measurements",
+      "note": "same script/config: 112,219 rows, 3,507 steps, 11,409 s (3.25 s/step, 9.84 samples/s), peak GPU 73 of 80 GB, flash_attention_2 loaded, 254 rows dropped over max_seq_len, final_loss 0.2809 from 0.589 at step 20; dev-150 0.5867; preprocessor/processor configs had to be copied into final/ by hand before evaluation"
+    },
+    {
+      "id": "e5",
+      "path": "/home/ben/task/scripts/finalize.py",
+      "locator": "lines 19-53",
+      "note": "AUX list copies tokenizer set plus preprocessor_config.json and processor_config.json from the base snapshot; --greedy rebuilds generation_config.json from BASE with do_sample false, temperature 0.0, top_k/top_p popped -- closes both packaging hazards, and works for bare checkpoint-N dirs that hold only weights"
+    },
+    {
+      "id": "e6",
+      "path": "/home/ben/task/eval/exp-03_greedy_dev150.json",
+      "locator": "whole file",
+      "note": "comparator 0.68667, stderr 0.038 at n=150 greedy; exp-02 sampled read was 0.58667"
+    },
+    {
+      "id": "e7",
+      "path": "/home/ben/task/final_model",
+      "locator": "directory listing + generation_config.json + logs/final_smoke.log",
+      "note": "the greedy incumbent is already packaged (temperature 0.0, do_sample false, eos [1,106], preprocessor_config.json present) and a vLLM smoke load at 05:26 completed both safetensors shards -- the run has a scored, loadable fallback, so an exp-04 regression costs hours only"
+    },
+    {
+      "id": "e8",
+      "path": "history/",
+      "locator": "rft-family cards continued from a fine-tuned checkpoint, gsm8k, n=150 (25 cards)",
+      "note": "median ~-0.007, mean ~-0.002; 7 positive / 2 flat / 16 negative; only 4 of 25 clear +0.03. Examples: r-628a7a20/exp-04 +0.0667 adopt, r-8fbb0755/exp-06 +0.0267 adopt, r-a2d62ed3/exp-08 +0.02 adopt, r-960d1065/exp-07 +0.0267, r-d42c24e0/exp-09 0.0, r-918be760/exp-15|24|25|26 -0.0133 each, r-b8ac2f29/exp-07 -0.04, r-5720f98a/exp-09 -0.0533"
+    },
+    {
+      "id": "e9",
+      "path": "/home/ben/task/ckpts/exp-02",
+      "locator": "checkpoint-2000, checkpoint-3000, checkpoint-3507, final",
+      "note": "three unread mid-trajectory checkpoints of the incumbent's own run; the C5 lever (+-15 pp controlled, the manual's highest effect per minute) has never been exercised, and was already raised on the exp-03 verdict"
+    },
+    {
+      "id": "e10",
+      "path": "/home/ben/task/ckpts/exp-02/final/generation_config.json",
+      "locator": "whole file",
+      "note": "do_sample true, top_k 64, top_p 0.95, no temperature, eos [1,106] -- this is what exp-04/final will inherit; evaluating it unfinalized would score a sampled candidate against a greedy comparator"
+    },
+    {
+      "id": "e11",
+      "path": "/home/ben/task/memory/cards/exp-04.yaml",
+      "locator": "situation, setup.budget",
+      "note": "elapsed 4.85 h, remaining 5.15 h, planned_h 1.8; alternatives rejected (fresh full run, RFT-only, DPO/GRPO, second epoch over sft_v1) with reasons that hold at this budget"
+    },
+    {
+      "id": "e12",
+      "path": "history/r-d2611dd8/exp-03.yaml",
+      "locator": "result.measurements, conclusion",
+      "note": "best-case precedent for this class: rft continued from exp-02, +0.127 at n=150, adopted. The mirror case is history/r-65be88fb/exp-09.yaml at -0.1133, n=150, contradicted -- the class has both tails"
+    },
+    {
+      "id": "e13",
+      "path": "/home/ben/task/system_monitor.log",
+      "locator": "last [GPU] block, 05:29:01",
+      "note": "0 % utilisation, 0 MiB used of 81,559 MiB, no GPU processes -- the rft_sample vLLM engine that contended with exp-03 has exited; the H100 is free for the launch"
+    }
+  ],
+  "probes": [
+    {
+      "id": "p1",
+      "kind": "data_probe",
+      "cost": {
+        "cpu_min": 1.5
+      },
+      "result": "full pass over all 60,825 rows of sft_v2.jsonl: 0 targets missing <end_of_turn>, 0 with 'ANSWER: ' count != 1, est. longest row ~1,654 tokens (< 2816); source field confirms the exact 38000 omi_fresh + 12825 rft_self + 10000 sft_v1-replay mix the card claims",
+      "changed": "L1"
+    },
+    {
+      "id": "p2",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 1
+      },
+      "result": "train_sft.py's save path writes no preprocessor_config.json / processor_config.json (the file pair exp-02 needed patched in by hand), and exp-04/final will inherit exp-02/final's sampling generation_config; finalize.py's AUX copy and --greedy rewrite close both, so L1 holds only on the finalize-first route the card states",
+      "changed": "L1"
+    },
+    {
+      "id": "p3",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 0.5
+      },
+      "result": "1,901 optimizer steps at 4 x 8; at exp-02's measured 9.84 samples/s that is ~1.72 h, and sft_v2 is ~49 % of sft_v1's total characters so 1.5-1.8 h is the band; --save-steps 900 with save_total_limit=3 yields checkpoints at 900 / 1800 plus final/, i.e. exp-04 gets its own C5 lever",
+      "changed": "L3"
+    },
+    {
+      "id": "p4",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 0.5
+      },
+      "result": "final_model/ already holds the greedy 0.6867 incumbent and logs/final_smoke.log shows vLLM loading both shards from it at 05:26; the GPU is idle (0 MiB used). Downside of the launch is bounded and there is no engine contention",
+      "changed": "L3"
+    },
+    {
+      "id": "p5",
+      "kind": "static_check",
+      "cost": {
+        "cpu_min": 1.5
+      },
+      "result": "history holds zero gemma-3 runs (grep over all cards), so no same-base precedent exists and L2 confidence is capped at 0.6; the nearest class -- rft continued from a fine-tuned checkpoint, gsm8k, n=150, 25 cards -- is centred at zero with 7 positive / 16 negative",
+      "changed": "L2"
+    }
+  ],
+  "suggestions": {
+    "preconditions": [
+      "[tier 3, 12 min] before launching, sweep exp-02's unread checkpoint-2000 and checkpoint-3000 with finalize.py --greedy + evaluate.py --limit 150 (C5, +-15 pp controlled, the manual's highest effect per minute). The GPU is idle now; after the launch it is not. If either beats 0.6867 the incumbent and the comparator both move before 1.8 h is spent against them.",
+      "[tier 1, 2 min] fix the adoption rule now, in writing: exp-04 replaces final_model/ only if its greedy n=150 read beats 0.6867 by more than the ~3 pp floor. The manual's costliest single deduction is an unconditional overwrite (0.567 put over 0.627), and final_model/ currently holds a verified 0.6867.",
+      "[tier 1, 1 min] confirm the eval will run finalize.py --greedy on ckpts/exp-04/final before evaluate.py. Evaluating the raw checkpoint inherits do_sample true / top_k 64 / top_p 0.95 from exp-02/final and would score a sampled candidate against a greedy comparator -- worth roughly -10 pp of pure artefact on this run's own numbers, and it would also be missing preprocessor_config.json.",
+      "[tier 2, 1 min] wrap the launch in the 60-second log watch (`until grep -qiE \"error|traceback|OutOfMemory\" logs/exp-04.log`) and check the printed `rows=... dropped_too_long=...` line reads ~60825 / 0. 42 % of trainings in the corpus die inside 5 min and nothing here is watching a 1.7 h unattended job."
+    ],
+    "cheaper_variants": [
+      "[tier 2, 3 min] run `--limit 2000 --save-steps 0 --dry-run` off first, or 60 steps on a 2,000-row slice, to confirm the exp-02/final parent loads under flash_attention_2 and the first loss value is near 0.28 rather than near 0.6 -- a loss that starts high would mean the continuation is not seeing the format it was trained on.",
+      "[tier 3, 4 min] read checkpoint-900 as soon as it lands (~50 min in) rather than waiting for final/. If dev-150 has already dropped below ~0.65 the warm restart is costing more than the new data is paying and the remaining 50 min can be spent elsewhere; if it is up, exp-04 has two candidates instead of one.",
+      "[tier 4, 4 min] whichever candidate wins at n=150, confirm it at --limit -1 (full gsm8k, 1,319 items, ~3 min) before adopting. The expected effect here is 0-5 pp and the n=150 floor is ~3 pp, so the dev read alone cannot separate the candidate from the incumbent; a full read costs one eval and settles the run's final ranking.",
+      "[tier 3, 5 min] if the n=150 gap comes back inside +-3 pp, take the C18 route (repeat the read) or the C6 route (uniform soup of exp-02/final and exp-04/final) rather than adopting on the point estimate -- two of the corpus's final submissions were soups that beat every ingredient, and it costs one eval."
+    ]
+  },
+  "cost": {
+    "cpu_min": 5,
+    "gpu_min": 0,
+    "wall_min": 5.735511,
+    "usd": 1.6647,
+    "turns": 24
+  },
+  "model": "claude-opus-5",
+  "effort": "high",
+  "access": {
+    "files": 7,
+    "outside": []
+  }
+}

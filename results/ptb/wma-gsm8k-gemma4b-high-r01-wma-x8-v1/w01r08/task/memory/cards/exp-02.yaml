@@ -1,0 +1,112 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T14:16:36Z'
+situation:
+  elapsed_h: 0.75
+  remaining_h: 9.25
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0333, protocol_n: 150}
+  trigger: "exp-01: the base model scores 0.033 on dev-150 and only 28/150 completions end with an 'ANSWER: N' line; 76/150 run to max_tokens without ever emitting <end_of_turn>."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/base_dev150.json, locator: "accuracy=0.0333"}
+    - {path: /home/ben/task/memory/cards/exp-01.yaml, locator: "result.diagnostic_result"}
+  alternatives_rejected:
+    - {option: "SFT on the 7.5k openai/gsm8k train split alone", reason: "7.5k short human CoTs is thin supervision; OpenMathInstruct-2 gives ~300k answer-verified 405B solutions over the same (gsm8k-train-derived) problem distribution at no extra cost"}
+    - {option: "MetaMathQA", reason: "its bodies carry a second answer marker ('The answer is: N') on top of gsm8k's '#### N'; the double_answer_format pitfall is a live risk"}
+    - {option: "LoRA instead of full fine-tune", reason: "the change needed is behavioural (stop token + answer contract) and full FT fits in 80GB once the lm_head is applied only at labelled positions"}
+    - {option: "train zero-shot only", reason: "the grader always prepends a fixed 10-shot system block; 20% of rows carry a few-shot system prefix (5% the grader's exact block) so the model is not seeing that shape for the first time at grading"}
+  pitfalls_hit:
+    - {what: "HF Trainer OOMed at 79GB: Gemma3's 262k vocab makes an 8x3072-token micro-batch materialise a ~26GB fp32 logit tensor in the built-in loss", cost_h: 0.15, fix: "custom loop; token-budget micro-batches (8192 padded tokens) and lm_head applied only at labelled positions (~35% of tokens). Peak 58.3GB."}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/sft_v1.jsonl, --max-seq-len, '3072', --max-steps, '25'], outcome: "25 steps in 1.75 min, loss 0.67 -> 0.41, peak mem 58.3GB; rendered example confirms the prompt ends '<start_of_turn>model\\n' and the target ends 'ANSWER: N<end_of_turn>'"}
+    - {command: [python, evaluate.py, --model-path, ckpts/smoke/final, --limit, '30'], outcome: "loadability + contract check of a 25-step checkpoint through the grader's own vLLM path"}
+problem:
+  statement: "gemma-3-4b-pt does not honour the grader's output contract: it does not stop at <end_of_turn> and does not put the answer last, so match(numeric=True, location='end') reads a number from a run-on tail. 81% of its dev-150 completions lack a final 'ANSWER: N' line, which caps accuracy at 0.033 regardless of reasoning ability."
+  evidence:
+    - {path: /home/ben/task/logs/2026-09-02T14-03-02+00-00_gsm8k_JYgwwBYRf2DQRkmhzGvocT.json, locator: "samples[*].output.choices[0]", observation: "stop_reason: 76 max_tokens / 74 stop; only 28/150 end with an ANSWER line"}
+    - {path: /home/ben/task/eval/base_dev150.json, locator: accuracy, observation: '0.0333'}
+  affected_share: 0.813
+  failure_examples:
+    - {id: dev-000, source: /home/ben/task/logs/2026-09-02T14-03-02+00-00_gsm8k_JYgwwBYRf2DQRkmhzGvocT.json, question: "Mimi picked up 2 dozen seashells ... How many seashells did Leigh have?", gold: '16', model_output: "...ANSWER: 16 / Frankie's parents let him have many pets... ANSWER: 19 / Olaf collects colorful toy cars...", failure: "solves it correctly (16) then invents further problems; the last number in the completion comes from an invented problem"}
+    - {id: dev-001, source: /home/ben/task/logs/2026-09-02T14-03-02+00-00_gsm8k_JYgwwBYRf2DQRkmhzGvocT.json, question: "(oranges: bad / unripe / sour)", gold: '20', model_output: "25 - 1 - 20% (2) - 2 = 21 / ANSWER: 21 / Solve the following math problem step by step...", failure: "answers, then restarts the prompt template and answers new problems"}
+    - {id: dev-002, source: /home/ben/task/logs/2026-09-02T14-03-02+00-00_gsm8k_JYgwwBYRf2DQRkmhzGvocT.json, question: "(bees in the hive)", gold: '3', model_output: "There are 700 bees in the hive... ANSWER: 700", failure: "terminates and formats correctly, but the reasoning itself is wrong - the residual failure mode once the contract is fixed"}
+  watch_set: null
+hypothesis:
+  claim: "Full-parameter SFT of gemma-3-4b-pt on 57k answer-verified GSM8K-derived solutions from OpenMathInstruct-2, rendered with the grader's own gemma3.jinja and with every target ending 'ANSWER: N<end_of_turn>', raises dev-150 accuracy above the base model's 0.033."
+  mechanism: "Two effects. (a) Contract: every target terminates with token 106, so the model emits <end_of_turn> and the last number in the completion is its answer - this alone addresses the 81% of completions the grader currently mis-reads. (b) Reasoning: the targets are Llama-3.1-405B solutions filtered to the correct final answer over the gsm8k-train problem distribution. The two are confounded here by design: the contract fix is a precondition for measuring anything, and exp-01's diagnostic already isolates (a) as ~0.8 of current failures."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: +40 to +65 pts}
+  falsified_if: "dev-150 accuracy is below 0.35, or the share of completions ending in an 'ANSWER: N' line stays under 0.90"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (shards 0-3 of 32)
+      n_examples: 60000
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v1.jsonl]
+      selection: "problem_source in {gsm8k, augmented_gsm8k} (52000 rows) + {math, augmented_math} (8000); numeric expected_answer only; <=2 solutions per distinct problem; solution <=3500 chars; \\boxed{X} unwrapped to X and '\\n\\nANSWER: <answer>' appended; rows whose LAST number is not the gold answer are dropped, since the grader reads the last number; exact-completion dedup; every target ends with the literal '<end_of_turn>' so the file itself carries the stop token the grader stops on. 20% of rows carry a few-shot system prefix (5% the grader's exact 10-shot block from data/fewshot_system.txt, 15% a random 2-4 shot block drawn from the gsm8k TRAIN split)."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: custom loop on transformers 4.57.3 + bitsandbytes AdamW8bit
+    peft: none
+    hyperparams: {lr: 1.0e-05, epochs: 2, batch_size: 64, grad_accum: 5, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32 master weights + bf16 autocast, seed: 0}
+    target_format: "solution text, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the completion only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v1.jsonl, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --out, ckpts/exp02, --epochs, '2', --lr, '1e-5', --max-seq-len, '3072', --token-budget, '8192', --eff-batch, '64', --seed, '0', --save-epoch-ends]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp02
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6']
+    dev_set: official inspect_evals/gsm8k test --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0333
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "share of the 150 completions that end with an 'ANSWER: N' line (contract compliance), read from the inspect log"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.97
+  output_checkpoint: /home/ben/task/ckpts/exp02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp02/step881, step: 881}
+    - {path: /home/ben/task/ckpts/exp02/final, step: 1762}
+  training_summary: {final_loss: 0.211, steps: 1762, notes: "59987 of 60000 rows survived the 3072-token cap (0.022% dropped); 32.57M tokens, 11.58M of them labelled. Loss 0.67 -> 0.35 over epoch 1, 0.35 -> 0.21 over epoch 2. Peak memory 58.5GB."}
+  measurements:
+    - {metric: accuracy, value: 0.7467, n: 150, path: /home/ben/task/eval/exp02_final_dev150.json, delta_vs_comparator: 0.7134}
+    - {metric: accuracy, value: 0.68, n: 150, path: /home/ben/task/eval/exp02_step881_dev150.json, delta_vs_comparator: 0.6467}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/summary_exp02_final_dev150.json
+    notes: "150/150 completions end with an 'ANSWER: N' line and 150/150 stop on <end_of_turn>; zero max_tokens truncations, against 76/150 for the base model. Mean completion 501 chars."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.033 -> 0.747 (+71.3) after two epochs; the epoch-1 checkpoint reads 0.680, so the second pass was worth +6.7. Contract compliance went 0.19 -> 1.00 and truncations 76 -> 0, confirming mechanism (a). Attribution: the 25-step smoke checkpoint already scored 0.433 on n=30 with the contract alone, so roughly the first 45 pts are the contract and the rest is the OpenMathInstruct-2 reasoning data - the two are not separated by this card."
+  decision: adopt
+  next_step: "The remaining 38 failures are reasoning errors, not format errors. Two follow-ups: exp-03 removes the sampling noise the checkpoint's generation_config still imposes, and exp-04 continues training on unseen problems since epoch 2 was still improving."

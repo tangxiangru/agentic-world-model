@@ -1,0 +1,135 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T01:07:43Z'
+situation:
+  elapsed_h: 2.3
+  remaining_h: 7.7
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/hf_greedy
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "exp-02's corpus drew up to 2 solutions per problem from a 1M slice of OpenMathInstruct-2, so its 45k OMI2 rows cover only ~35k distinct problems. The full gsm8k-sourced pool has 81069 distinct problems (counted over data/raw/omi2_gsm8k_2m.jsonl), i.e. the same training compute can buy roughly twice the problem coverage at one solution each."
+  trigger_evidence:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      locator: "87775 rows: 80552 OMI2 rows over 80800 distinct problems + 7223 gsm8k train chains"
+    - path: /home/ben/task/memory/cards/exp-02.yaml
+      locator: "setup.data[0].selection: 'at most 2 distinct solutions per problem'"
+  alternatives_rejected:
+    - option: "Rejection-sampling fine-tune (RFT) from exp-02 instead"
+      reason: "cheaper (~1.5 h) but it can only reinforce chains the model already produces; the coverage gap is a data problem, and data/rft_questions.jsonl (29223 questions) is already built so RFT stays available as the next card, run from whichever checkpoint wins here."
+    - option: "Continue training exp-02 on the extra problems instead of restarting from base"
+      reason: "exp-02 has already seen 35k of these problems twice under a cosine schedule that ran to zero; a second pass at a fresh LR would double-count them and confound problem coverage with a third epoch."
+    - option: "Add microsoft/orca-math-word-problems-200k for another 200k unique problems"
+      reason: "Orca-Math's seed pool is documented as including GSM8K without stating which split, so its problems may be agent-generated FROM gsm8k test items - rule 4 contamination that a clean decon result would not excuse. OpenMathInstruct-2 documents augmentation from the TRAIN split only."
+    - option: "3 epochs instead of 2"
+      reason: "exp-02's loss was already at 0.22 after 2 epochs on a third of the data; and 3 epochs on 88k rows is 3.4 h, which would leave no room for a follow-up card."
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The incumbent was trained on roughly 35k distinct math problems, seen twice each. For a 4B model, repeated exposure to the same problems buys less than exposure to new ones, so its remaining ~27% error rate on dev-150 is likely limited by problem coverage rather than by epochs."
+  evidence:
+    - path: /home/ben/task/eval/exp03_dev150.json
+      locator: "accuracy 0.7267"
+      observation: "27% of dev-150 still wrong after the format problem was fully solved (non-termination 0.000, no_answer_line 0.000 in analysis/exp02_dev150_format.json), so what remains is reasoning."
+    - path: /home/ben/task/analysis/exp03_probe_summary.json
+      locator: "probe_greedy 0.744"
+      observation: "the same ~25% error rate reproduces on 250 held-out gsm8k TRAIN questions, so it is not a test-slice artefact."
+  affected_share: 0.27
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe250.jsonl
+    n: 250
+    selection: "250 gsm8k TRAIN questions held out of sft_v1, sft_v2 and every other training file; exp-02 scores 0.744 greedy on them (analysis/exp03_probe_greedy.jsonl)."
+hypothesis:
+  claim: "Training from the same base snapshot on sft_v2 - 80800 distinct OMI2 problems at one solution each instead of ~35k problems at two - raises greedy dev-150 accuracy above exp-02's 0.7267 under the identical protocol."
+  mechanism: "Both corpora cost about the same number of gradient tokens per epoch-pair, but a second solution to a problem the model has already fitted contributes far less new signal than a first solution to a problem it has never seen. GSM8K generalisation is limited by the diversity of problem structures seen, so coverage should dominate repetition."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points on greedy dev-150"
+  falsified_if: "greedy dev-150 accuracy <= 0.7267, or probe250 greedy accuracy <= exp-02's 0.744."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "openai/gsm8k main/train (7223 rows after probe removal) + nvidia/OpenMathInstruct-2 train_2M rows whose problem_source contains 'gsm8k' (80552 rows over 80800 distinct problems: 73376 augmented_gsm8k, 7176 gsm8k)"
+      n_examples: 87775
+      built_by: /home/ben/task/scripts/build_sft_v2.py
+      build_command: [python, scripts/build_sft_v2.py]
+      selection: "one randomly chosen solution per distinct problem (seed 0), solutions 60-2200 chars, boxed tail line removed and replaced by a single 'ANSWER: N', non-numeric answers dropped, probe250 questions excluded. Same gsm8k train chains as v1. No gsm8k test item in either source."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE"
+    peft: none
+    hyperparams:
+      lr: 1.0e-5
+      epochs: 2.0
+      batch_size: 128
+      grad_accum: 4
+      max_seq_len: 2432
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: "fp32 master weights, bf16 autocast, adamw_bnb_8bit"
+      seed: 0
+    target_format: "identical to exp-02: chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on the target only; grader's MATH_PROMPT_TEMPLATE through templates/gemma3.jinja; 6% of rows carry the grader's exact 10-shot system prefix. The only variable changed against exp-02 is the corpus."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_exp04.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_exp04.sh
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 2.6
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --max-tokens, "4000", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7267
+    path: /home/ben/task/eval/exp03_dev150.json
+  diagnostic:
+    what: "probe250 greedy accuracy (250 held-out gsm8k TRAIN questions, grader's 10-shot prefix); exp-02 = 0.744"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.35
+  output_checkpoint: /home/ben/task/ckpts/exp-04/hf
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1630}
+    - {path: /home/ben/task/ckpts/exp-04/hf, step: 1630}
+  training_summary: {final_loss: 0.2042, steps: 1630, notes: "86799 of 87775 rows kept (976 over max_seq_len, 1.11%); loss to 0.204 vs exp-02's 0.220 on a third of the problems, i.e. the larger corpus did not overfit."}
+  measurements:
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp04_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.796
+    path: /home/ben/task/analysis/exp04_probe_summary.json
+    notes: "probe250 greedy 0.744 -> 0.796 (+5.2): 34 of exp-02's failures fixed, 21 regressions, n=250. dev-150 is bit-for-bit unchanged at 109/150 for both models, which at n=150 and ~20% item-level discordance has a paired standard error near 0.036 - so a true +5 would show up as 0.00 about as often as not. The two measurements are compatible; dev-150 simply cannot resolve a difference this size."
+  watch_set_result: {fixed: 34, still_failing: 51, regressions: 21, path: /home/ben/task/analysis/exp04_probe_summary.json}
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "Doubling distinct-problem coverage (35k problems x2 solutions -> 81k problems x1) left greedy dev-150 exactly where it was, 0.7267, while lifting the 250-item held-out probe from 0.744 to 0.796. The mechanism claim - coverage beats repetition - is supported by the probe and by the lower final loss; the benchmark measurement at n=150 is too coarse to confirm or deny it."
+  decision: adopt
+  next_step: "Take exp-04 as the parent anyway: it is no worse on dev-150 and clearly better on the larger held-out probe. Next card is on-policy rejection sampling from exp-04 (data/rft_questions.jsonl, 29223 questions, 4 draws each), which attacks the errors the corpus cannot fix. Model selection at the end must not rest on n=150: score the final candidates at --limit 500."

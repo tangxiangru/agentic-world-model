@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T16:08:40Z'
+situation:
+  elapsed_h: 6.98
+  remaining_h: 3.02
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.68, protocol_n: 150}
+  trigger: "Three arms now sit inside each other's noise on both reads - dev-150 0.680 / 0.680 / 0.6533 and probe-300 0.6933 / 0.7100 / 0.7167 for exp-02 / exp-03 / exp-04 - while the union of the items at least one of them gets right on the probe is 0.82. Highly correlated arms with no dominant member and a large oracle gap is the standard setting for weight-space averaging, and it costs no training time."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.diagnostic_result", observation_note: "oracle union 0.82, majority-of-3 0.7167, paired churn 21 fixed / 19 regressed"}
+    - {path: /home/ben/task/memory/index.md, locator: "exp-02, exp-03, exp-04 rows"}
+  alternatives_rejected:
+    - {option: "Another training card (second RFT round, DPO, more data)", reason: "3.0 h remain and every training card so far has returned less than its own measurement noise. exp-03 closed the off-policy data line (only 545 unseen GSM8K-derived problems exist in the whole 14M-row corpus) and exp-04 closed the on-policy one (net +2 of 300, symmetric churn). Another 1-2 h of training against a flat curve is the worst use of the remaining budget, and it would leave no time to verify the submitted artefact."}
+    - {option: "Break the exp-02/03/04 tie by re-scoring all three at --limit 500", reason: "~20 min of GPU per arm, 1 h total, to sharpen a difference of at most 3 pts between arms that are already known to be within noise. The soup is the cheaper move that can actually improve on all three rather than just rank them."}
+    - {option: "Output-space ensembling (majority vote over the three arms at eval)", reason: "forbidden by the deliverable: final_model/ must be a single checkpoint the grader loads with vLLM. Weight-space averaging is the version of the same idea that fits in one set of weights."}
+    - {option: "Soup only exp-03 + exp-04 (the two nearest arms)", reason: "they are 593 optimiser steps apart and differ least, so averaging them removes the least variance. Including exp-02 spans the whole 3680-step trajectory, and all three are sequential continuations of one run so they share a basin - the precondition for averaging to be meaningful at all."}
+  pitfalls_hit:
+    - {what: "exp-04's --save-steps stayed at the locked 300 although the verdict asked for 150; with only 593 steps the checkpoint sweep had 2 points instead of 4, so checkpoint selection was weaker than it could have been for that card", cost_h: 0.0, fix: "noted; not re-launched, the run was already in flight"}
+  smoke_runs:
+    - {command: [python, merge_models.py, --srcs, ckpts/exp-02/final, ckpts/exp-03/final, ckpts/exp-04/final, --dst, ckpts/soup3], outcome: "run once BEFORE this card was locked, as a check that the three checkpoints carry identical tensor sets and that the two-shard average completes: 630 + 253 tensors written, no key mismatch. Its output was then deleted so the locked command in setup.command.argv is the one that actually produces the artefact; the merge is deterministic, so re-running reproduces it byte for byte."}
+problem:
+  statement: "Four cards in, the batch has a 0.680 model and three candidates that cannot be told apart: dev-150 says exp-02 = exp-03 = 0.680 > exp-04 = 0.6533, the n=300 probe says exp-04 = 0.7167 > exp-03 = 0.7100 > exp-02 = 0.6933, and the two orderings are inconsistent. Every pairwise difference is smaller than the measurement floor of the read that produced it, so no further ranking effort can pick a winner, and each arm is individually leaving items on the table that another arm gets right (oracle union 0.82 against 0.69-0.72 individually)."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "whole file", observation: "0.680, stderr 0.0382"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "whole file", observation: "0.6533, stderr 0.0390 - 0.7 stderr below exp-02"}
+    - {path: /home/ben/task/analysis/exp-04_probe_sweep.json, locator: "whole file", observation: "0.7167 for both exp-04 checkpoints against exp-03's 0.7100 and exp-02's 0.6933"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe_train300.jsonl
+    n: 300
+    selection: "the same 300 held-out GSM8K-TRAIN items (seed 1234) used by every card in this batch; absent from sft_v1, sft_v2 and the RFT question pool, and not drawn from the benchmark test copy (rule 7). exp-04/final leaves 85 of them wrong."
+hypothesis:
+  claim: "A uniform weight-space average of ckpts/exp-02/final, ckpts/exp-03/final and ckpts/exp-04/final scores at least as well as the best of its three members on both reads, and higher than any of them on at least one."
+  mechanism: "The three arms are sequential continuations of a single SFT trajectory - exp-03 resumed from exp-02, exp-04 from exp-03 - so they lie in one loss basin and their parameters are linearly connected; averaging them is well defined rather than a lottery. Their errors are only partly shared (paired churn of ~20 fixed / ~20 regressed per step, oracle union 0.82 versus 0.69-0.72 individually), which is the variance a soup cancels: the average keeps the directions all three agree on and damps the ones only one of them took."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "probe 0.7167 -> 0.72-0.75; dev-150 back to at least 0.680"
+  falsified_if: "the soup's probe accuracy is below 0.7100 (i.e. below the median member) or its dev-150 accuracy is below 0.6533 (below the worst member) - either would mean averaging destroyed rather than pooled the arms"
+  adoption_rule: "Pre-registered, and it decides what ships. final_model/ currently holds the exp-02 copy that measured 0.680 on dev-150 and 0.6933 on the probe. The soup replaces it only if it is at least as good on BOTH reads - probe >= 0.6933 AND dev-150 >= 0.680 - and strictly better on at least one. This is deliberately a two-sided test rather than the >0.02 single-arbiter margin used in exp-03 and exp-04: those cards were asking whether an effect exists, this one is asking which of several near-identical artefacts to submit, and for that question the cost of a wrong choice is symmetric and small. If the soup fails the test, exp-02 ships unchanged."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe_train300.jsonl
+      source: "openai/gsm8k (config main, split train) - the held-out probe slice, NOT the benchmark test split"
+      n_examples: 300
+      built_by: null
+      build_command: [python, -c, 'shuffle openai/gsm8k train with seed 1234 and take the first 300']
+      selection: "no training data is read by this card - merging consumes weights only. The probe file is declared because it is the only data the card reads, as the arbiter of the adoption rule."
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors 1:1 uniform average on CPU, fp32 accumulation, bf16 output (merge_models.py)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged - no training. The merged weights inherit exp-02/03/04's shared target format: chain of thought, one 'ANSWER: <n>' line, <end_of_turn>."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, merge_models.py, --srcs, /home/ben/task/ckpts/exp-02/final, /home/ben/task/ckpts/exp-03/final, /home/ben/task/ckpts/exp-04/final, --dst, /home/ben/task/ckpts/soup3]
+    cwd: /home/ben/task
+    script: /home/ben/task/merge_models.py
+    env: {}
+    log: /home/ben/task/logs/merge_soup3.log
+  output_dir: /home/ben/task/ckpts/soup3
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-tokens, '4000', --max-connections, '4', --gpu-memory-utilization, '0.85']
+    checkpoint_prep: "{checkpoint} is `python finalize_model.py --src ckpts/soup3 --dst ckpts/soup3_eval --verify`, the same path exp-02, exp-03 and exp-04 were scored through: it copies the tokenizer/processor files and pins the greedy generation_config (do_sample false, temperature 0.0, top_p 1.0, eos_token_id [1, 106]). --verify additionally loads the merged weights on CPU, which for a merge is also the check that the average produced a model at all."
+    decode: "greedy, identical to every other trained arm."
+    dev_set: "official --limit 150 - the FIRST 150 items of the gsm8k test split"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.68
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "probe_eval.py greedy accuracy on the 300 held-out GSM8K-TRAIN items, plus the paired item-level comparison against all three members. For a soup the paired read is the mechanism test: pooling predicts the soup keeps most of what any member got right (few regressions against each) rather than trading one set of items for another."
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/soup3_eval
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup3, step: 0}
+    - {path: /home/ben/task/ckpts/soup3_eval, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training. Uniform 1/3 average of ckpts/exp-02/final, ckpts/exp-03/final and ckpts/exp-04/final over both safetensors shards (630 + 253 tensors), fp32 accumulation, bf16 output. finalize_model.py --verify loaded the result on CPU: 4.3B params, architectures Gemma3ForConditionalGeneration, tokenizer present, greedy generation_config with eos [1, 106]."}
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.0267}
+  diagnostic_result:
+    value: 0.7333
+    path: /home/ben/task/analysis/exp-05_soup3_probe.json
+    notes: "The soup is the best arm on BOTH reads, the first time any card has managed that. Probe (n=300, greedy, 10-shot): 0.7333 against 0.6933 / 0.7100 / 0.7167 for exp-02 / exp-03 / exp-04. dev-150: 0.7067 (stderr 0.0373) against 0.680 / 0.680 / 0.6533. Paired on the probe the mechanism reads exactly as pooling predicts - the soup gains against every member and loses little to any of them: vs exp-02 30 fixed / 18 regressed (net +12), vs exp-03 16 / 9 (net +7), vs exp-04 23 / 18 (net +5). It is not trading one set of items for another the way the exp-03 and exp-04 comparisons did. 80 of 300 probe items still fail. Format is unchanged: stop_reason stop on 149/150, mean output 186 tokens, 43 of 44 dev-150 errors are wrong reasoning or arithmetic."
+  watch_set_result: {fixed: 23, still_failing: 80, regressions: 18, path: /home/ben/task/analysis/exp-05_soup3_probe.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The uniform three-way soup beats every one of its members on both reads: probe 0.7333 (best member 0.7167) and dev-150 0.7067 (best member 0.680). The paired probe comparison shows the predicted pooling signature rather than churn - it gains net +12 / +7 / +5 against exp-02 / exp-03 / exp-04 with far fewer regressions than fixes in each case - so the gain is variance cancellation across three correlated arms, not another random reshuffle."
+  decision: adopt
+  next_step: "Pre-registered adoption_rule is met on both arms of the two-sided test (probe 0.7333 >= 0.6933, dev-150 0.7067 >= 0.680, strictly better on both), so final_model/ has been replaced with a byte copy of ckpts/soup3_eval. Remaining budget goes to (a) re-scoring the shipped final_model/ directory itself from a fresh process, not just the checkpoint it was copied from, and (b) if time allows, one more merge card over a wider set of members (the exp-02 and exp-03 intermediate checkpoints are still on disk), since the soup is the only lever in this batch that has produced a gain larger than its measurement noise."

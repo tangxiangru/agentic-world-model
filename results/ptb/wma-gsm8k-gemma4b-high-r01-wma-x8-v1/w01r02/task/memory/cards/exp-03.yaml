@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T16:22:05Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.42
+  remaining_h: 7.58
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.60667, protocol_n: 150}
+  trigger: "On identical weights and identical prompts, probe300 scores 0.7333 greedy and 0.6800 under the checkpoint's own generation_config (T=1.0, top_p 0.95, top_k 64). The 5.3-point gap is a decoding tax the artifact imposes on itself, and vLLM logged that it adopts that config."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_probe300_fs10.json, locator: "summary.greedy_accuracy = 0.7333, temperature 0.0"}
+    - {path: /home/ben/task/analysis/exp-02_probe300_fs10_samp.json, locator: "summary.greedy_accuracy = 0.6800, temperature 1.0, top_p 0.95, top_k 64"}
+    - {path: /home/ben/task/logs/exp-01.log, locator: "APIServer: 'Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator'"}
+  alternatives_rejected:
+    - {option: "Leave sampling on and rely on the model being good enough", reason: "the probe says it costs 5.3 points and the fix is a five-line json edit with no training"}
+    - {option: "Pass temperature=0 on the evaluate.py command line", reason: "evaluate.py must not be modified and does not expose it; the only place decoding can be set is the artifact's own generation_config.json, which is what ships in final_model"}
+    - {option: "Set a small nonzero temperature (0.1-0.3)", reason: "no evidence it beats greedy on a benchmark scored from one sample per item; greedy is the argmax of exactly the metric being scored"}
+  pitfalls_hit:
+    - {what: "I wrote elapsed_h 1.45 on exp-02 when bash timer.sh said 0.45 - estimated instead of read", cost_h: 0.0, fix: "read bash timer.sh for every card; this card's 2.42 h comes from timer.sh reporting 7:35 remaining"}
+  smoke_runs:
+    - {command: [python, scripts/make_variant.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-02-greedy, --greedy, "1"], outcome: "variant written; weights symlinked, eos_token_id still [1, 106], do_sample false / temperature 0.0 / top_p 1.0 / top_k -1"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02's checkpoint inherited google/gemma-3-4b-pt's generation_config, which sets do_sample=true, top_k=64, top_p=0.95 and no temperature. vLLM adopts those as its default sampling params and inspect-ai sends no temperature of its own, so every graded completion is drawn stochastically at T=1.0. On a benchmark scored from one sample per item that throws away accuracy the model already has."
+  evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample true, top_k 64, top_p 0.95", observation: "inherited unchanged from the base snapshot through Trainer.save_model"}
+    - {path: /home/ben/task/analysis/exp-02_probe300_fs10_samp.json, locator: "summary", observation: "0.6800 on probe300 under exactly those sampling params"}
+    - {path: /home/ben/task/analysis/exp-02_probe300_fs10.json, locator: "summary", observation: "0.7333 on the same 300 items, same prompts, greedy"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: probe300-aggregate, source: /home/ben/task/analysis/exp-02_probe300_fs10_samp.json, question: "(the 16 probe items greedy solves and sampling does not; probe300 is held-out gsm8k TRAIN, never benchmark test)", gold: "n/a - aggregate", model_output: "n/a - aggregate", failure: "sampled token choice diverges from the argmax chain mid-solution"}
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "300 items held out of the gsm8k TRAIN split (seed 0), excluded from all training files"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Rewriting generation_config.json to greedy (do_sample false, temperature 0.0, top_p 1.0, top_k -1) on exp-02's weights moves dev-150 accuracy upward relative to exp-02's 0.60667, with no weight change."
+  mechanism: "vLLM takes its default sampling params from the checkpoint's generation_config; with do_sample false it decodes the argmax chain, which on probe300 is worth +5.3 points over T=1.0/top_p 0.95/top_k 64 for the same weights."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+3 to +8 points, mirroring the +5.3 measured on probe300"
+  falsified_if: "dev-150 accuracy is at or below exp-02's 0.60667, or the vLLM log does not show the checkpoint's generation config being adopted - the latter would mean the mechanism I am relying on is not the one in play."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe300.jsonl
+      source: local
+      n_examples: 300
+      built_by: /home/ben/task/scripts/make_probe.py
+      build_command: [python, scripts/make_probe.py]
+      selection: "diagnostic/watch set only; no weights are trained in this card"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "scripts/make_variant.py (symlinks the weights, rewrites generation_config.json)"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02-greedy, --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85", --json-output-file, /home/ben/task/eval/exp-03_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.60667
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "confirm from the vLLM server log that the checkpoint's generation_config was adopted, and that the cap-hit rate stays at 0"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.05
+  output_checkpoint: /home/ben/task/ckpts/exp-02-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02-greedy, step: 2630}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to ckpts/exp-02/final"}
+  measurements:
+    - {metric: accuracy, value: 0.78667, n: 150, path: /home/ben/task/eval/exp-03_dev150.json, delta_vs_comparator: 0.18}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-03_diagnostic.json
+    notes: "vLLM logged the generation-config adoption once, as required; 150/150 stop on <end_of_turn>, 0 missing ANSWER markers, mean output 144 tokens."
+  watch_set_result:
+    fixed: null
+    still_failing: 80
+    regressions: null
+    path: /home/ben/task/analysis/exp-02_probe300_fs10.json
+    notes: "probe300 greedy 0.7333 was measured before the launch and is unchanged by this card - the variant only rewrites generation_config, and the probe was already greedy."
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.6067 -> 0.7867 (+18.0) from a five-line generation_config edit, no weight change. The direction and mechanism are exactly as predicted, but the magnitude is 3.4x what probe300 forecast (+5.3); at n=150 with stderr 0.034-0.040 per arm some of that gap is luck in the single sampled draw, so the honest reading is 'greedy is clearly better, by somewhere between 5 and 18 points'."
+  decision: adopt
+  next_step: "Every future checkpoint ships a greedy generation_config. exp-04: scale the SFT data - sft_v4 has 230476 rows (3 solutions per problem from OpenMathInstruct-2 train_2M) against sft_v2's 84127, and the unique-problem pool is capped at ~70k, so solution multiplicity is the only remaining data axis."

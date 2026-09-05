@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-04T13:54:33Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.1
+  remaining_h: 9.9
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: 150}
+  trigger: "Fresh batch: google/gemma-3-4b-pt is a base (pt) model never fine-tuned for GSM8K; it must be post-trained to excel at the benchmark."
+  trigger_evidence:
+    - {path: /home/ben/task/evaluate.py, locator: "task=inspect_evals/gsm8k, scorer match(numeric=True) in gsm8k.py"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full SFT", reason: "full FT of a 4B model fits on the 80GB H100 with GC+fused-adam; stronger GSM8K gains and nothing to merge at save time"}
+    - {option: "Train replicating the eval 10-shot prompt", reason: "same per-question format is enough; zero-shot rows are ~4x shorter -> more epochs per hour; eval few-shot only reinforces the learned format"}
+    - {option: "MetaMathQA / synthetic augmentation as first run", reason: "double_answer_format pitfall; establish the clean GSM8K-train SFT baseline first, then augment if time permits"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/build_data.py], outcome: "7473 rows; sample renders correctly; contamination check 0 matches, exit 0"}
+    - {command: [python, "-c", "tokenization check"], outcome: "single bos; prompt is prefix of full; completion tail '...ANSWER: 72<end_of_turn>'; max len 552, p99 423, 0 rows > 768"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The base google/gemma-3-4b-pt has had no task-specific post-training for GSM8K; it does not reliably produce grade-school-math chains of thought that end in the grader's 'ANSWER: N' form and stop."
+  evidence:
+    - {path: /home/ben/task/evaluate.py, locator: "gsm8k.py MATH_PROMPT_TEMPLATE + match(numeric=True,location=end)", observation: "grader reads the last numeric token; needs a clean CoT ending in an ANSWER line"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Full SFT of the base snapshot on the GSM8K TRAIN split, reformatted into the grader's exact per-question format (clean CoT + 'ANSWER: N' + <end_of_turn>), will raise GSM8K accuracy versus the base model."
+  mechanism: "The base model already has arithmetic/reasoning capacity from pretraining; SFT teaches it to emit a correct step-by-step solution in the grader's format and to stop on <end_of_turn>, converting latent capability into graded-correct outputs."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+20 pts or more on dev-150"
+  falsified_if: "trained checkpoint dev-150 accuracy is not higher than the base model's dev-150 accuracy under the same protocol"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/train_messages.jsonl
+      source: "openai/gsm8k (config main, split train)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py]
+      selection: "GSM8K train only (disjoint from test); strip <<..>> calculator markers; target = CoT + '\\n\\nANSWER: <gold>'"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers.Trainer 4.57.3"
+    peft: "none (full FT; vision tower + projector frozen)"
+    hyperparams: {lr: 2.0e-5, epochs: 3, batch_size: 8, grad_accum: 4, max_seq_len: 768, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "clean chain of thought, then '\\n\\nANSWER: <N>', rendered via templates/gemma3.jinja so the assistant turn ends with <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/train_messages.jsonl, --out, ckpts/exp-01, --epochs, "3", --lr, "2e-5", --bs, "8", --grad_accum, "4", --max_seq_len, "768", --seed, "0", --save_strategy, epoch]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    configs: []
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/ckpts/exp-01
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --json-output-file, "{out}.json"]
+    dev_set: "official gsm8k test --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "does the trained model emit 'ANSWER: N' and stop on <end_of_turn>"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.3
+  output_checkpoint: /home/ben/task/ckpts/exp-01/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-01/checkpoint-234, step: 234}
+    - {path: /home/ben/task/ckpts/exp-01/checkpoint-468, step: 468}
+    - {path: /home/ben/task/ckpts/exp-01/final, step: 702}
+  training_summary: {final_loss: 0.363, steps: 702, notes: "train_loss (mean) 0.363; last logged step loss ~0.22; healthy decrease, not flat/zero (seq_len ok)"}
+  measurements:
+    - {metric: accuracy, value: 0.0733, n: 150, path: /home/ben/task/eval/base_dev150.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.400, n: 150, path: /home/ben/task/eval/exp01_ep1_dev150.json, delta_vs_comparator: 0.327}
+    - {metric: accuracy, value: 0.4733, n: 150, path: /home/ben/task/eval/exp01_ep2_dev150.json, delta_vs_comparator: 0.400}
+    - {metric: accuracy, value: 0.5333, n: 150, path: /home/ben/task/eval/exp01_ep3_dev150.json, delta_vs_comparator: 0.460}
+  diagnostic_result: {value: 0.5333, path: /home/ben/task/eval/exp01_ep3_dev150.json, notes: "model emits ANSWER: N and stops on <end_of_turn>; base at 0.073 mostly fails format/stop"}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "SFT on GSM8K-train in the grader's exact format lifted dev-150 accuracy 0.073 -> 0.533 (+46 pts). Accuracy rose monotonically ep1 0.40 -> ep2 0.473 -> ep3 0.533; no overfitting at 3 epochs. epoch-3 saved as final_model."
+  decision: adopt
+  next_step: "exp-02: augment with additional decontaminated GSM8K-style CoT (e.g. MetaMathQA subset reformatted to single ANSWER marker) and/or more epochs, to push past 0.533."

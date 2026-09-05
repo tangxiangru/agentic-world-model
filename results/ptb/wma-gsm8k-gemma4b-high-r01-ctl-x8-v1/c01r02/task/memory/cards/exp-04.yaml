@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T16:42:23Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.75
+  remaining_h: 7.25
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.7533, protocol_n: 150}
+  trigger: "After exp-03 the format and decode problems are both solved and 37 of 150 dev items still fail; those are reasoning failures, and exp-02 saw only one epoch over 84k rows with the loss still falling (0.55 -> 0.29) when the cosine schedule ran out."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_failure_tags.json, locator: "accuracy 0.7533, no_answer_line 0.0067, hit_max_tokens 0.0067", observation: "37/150 wrong with format and termination clean, so the residue is solution quality"}
+    - {path: /home/ben/task/logs/exp-02.log, locator: "step 1375-1420", observation: "loss still ~0.29 and falling at the end of the single epoch; the model was not saturated when the LR annealed to zero"}
+  alternatives_rejected:
+    - {option: "A second epoch over the same data/sft_v2.jsonl", reason: "a disjoint slice of the same distributions is strictly more information for the same token cost; data/sft_v3.jsonl was built from OpenMathInstruct-2 rows 45000+ and MetaMathQA rows 12000+, which exp-02 never saw"}
+    - {option: "Go straight to rejection-sampling fine-tuning (RFT) from exp-02", reason: "RFT is on-policy and should be applied to the best available policy; running it after this stage costs nothing extra and starts from a stronger sampler. It is planned as exp-05."}
+    - {option: "Restart from base with 165k rows x 1 epoch instead of two stages", reason: "would throw away the 1.4 h already spent on exp-02 and gives no intermediate measurement"}
+    - {option: "Raise LR back to 1.4e-5 for the second stage", reason: "continuing from an annealed checkpoint at the original peak LR risks undoing it; 8e-6 with a short warmup is the standard continuation setting"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v3_check.jsonl], outcome: "81279 documents scanned, 0 contaminated, 0 matches (analysis/contam_sft_v3.err)"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent gets 37 of 150 dev items wrong with a clean format, a clean stop token and greedy decoding, so the remaining gap is the quality of the reasoning itself. It has been trained on 84k solutions for one epoch and its training loss was still falling when the schedule ended."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_failure_tags.json, locator: "items[] where correct=false", observation: "37/150 wrong; only 1 lacks an ANSWER line and only 1 hits the token cap, so 35 are pure reasoning errors"}
+    - {path: /home/ben/task/logs/exp-02.log, locator: "step 25 -> 1400", observation: "loss 0.55 -> 0.29, monotone; the single epoch did not saturate"}
+  affected_share: 0.95
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_watch.jsonl
+    n: 37
+    selection: "the 37 of 150 dev items the incumbent (exp-02 weights, greedy decode) got wrong, recorded as inspect sample ids only (rule 7)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A second SFT stage from ckpts/exp-02/final over a disjoint 81279-row GSM8K-train-derived slice (data/sft_v3.jsonl) at lr 8e-6 changes dev-150 accuracy relative to exp-03's 0.7533; I expect it higher, because exp-02 was still improving on held-out-in-distribution data when its schedule ended."
+  mechanism: "The residual errors are solution-quality errors, and the cheapest source of solution quality is more distinct correct solutions over the same problem distribution. sft_v3 draws OpenMathInstruct-2 rows 45k-95k and MetaMathQA rows 12k-24k, none of which exp-02 saw, so this is a genuine second epoch of information rather than a re-read of the first."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+1 to +5 points on dev-150"}
+  falsified_if: "dev-150 accuracy is at or below exp-03's 0.7533, which at this n would mean a second stage of the same kind of data buys nothing and the remaining budget should go to on-policy RFT instead."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "mixture - hf:openai/gsm8k split=train (x1); hf:meta-math/MetaMathQA GSM_AnsAug + GSM_Rephrased rows 12000-24000 of each type; hf:nvidia/OpenMathInstruct-2 config train_1M, problem_source in {gsm8k, augmented_gsm8k}, shuffled rows 45000+. Disjoint from data/sft_v2.jsonl apart from the 7473 gsm8k-train originals. GSM8K TRAIN only; datasets==4.5.0."
+      n_examples: 81279
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v3.jsonl, --gsm8k-repeat, "1", --metamath-cap, "12000", --metamath-offset, "12000", --omi2-cap, "50000", --omi2-offset, "45000", --fewshot-frac, "0.15", --varshot-frac, "0.08"]
+      selection: "identical rules to sft_v2: canonical numeric answer, trailing \\boxed sentence stripped, <<calc>> annotations removed, one 'ANSWER:' marker per target, dedup on (question, solution); 15% of rows carry the grader's byte-identical 10-shot system message, 8% carry k in {2,4,6,8} gsm8k-train demos, 77% zero-shot"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "custom PyTorch loop (train_sft.py) on transformers 4.57.3, flash_attention_2, gradient checkpointing"
+    peft: "none (full fine-tune of the 3.88B text tower; vision tower frozen)"
+    hyperparams: {lr: 8.0e-6, epochs: 1, batch_size: 64, grad_accum: 4, max_seq_len: 2816, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 1, label_budget: 4096, token_budget: 12288}
+    target_format: "unchanged from exp-02: grader-rendered prompt, target = chain of thought, blank line, 'ANSWER: <n>', then the stop token; loss on target tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v3.jsonl, --init, ckpts/exp-02/final, --out, ckpts/exp-04, --lr, "8e-6", --epochs, "1", --max-seq-len, "2816", --token-budget, "12288", --label-budget, "4096", --accum-rows, "64", --warmup, "0.02", --seed, "1", --save-every, "700", --log-every, "25"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 700
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 150 (inspect_evals/gsm8k test split, first 150 items, unshuffled)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7533
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "no-ANSWER-line rate, max-token-cap rate and mean completion length - a second stage at the wrong LR shows up first as format drift or as chains getting longer and looser"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.5
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-700, step: 700}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1395}
+  training_summary:
+    final_loss: 0.2755
+    steps: 1395
+    notes: "81.9 min for 1 epoch over 81242 rows / 55.0M tokens / 12.1M supervised tokens. Loss started at ~0.28 (where exp-02 ended) and stayed there, drifting 0.28 -> 0.2755 across the whole epoch: the model was already at the loss floor of this data distribution, which is the clearest single sign that the second stage added no information. 37 rows (0.05%) dropped for exceeding max_seq_len."
+  measurements:
+    - {metric: accuracy, value: 0.74, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: -0.0133}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-04_failure_tags.json
+    notes: "no-ANSWER-line 0.0067 -> 0.0 and max-token cap 0.0067 -> 0.0 (both now zero of 150); mean completion 425.7 -> 356.3 chars. No format drift and no loosening of the chains - the second stage made the model tidier without making it more correct."
+  watch_set_result: {fixed: 6, still_failing: 31, regressions: 8, path: /home/ben/task/analysis/exp-04_failure_tags.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: |
+    dev-150 0.7533 -> 0.7400 (-1.3 points; 111 vs 113 of 150 correct, against a stderr of ~0.036,
+    so the two are statistically tied and certainly not an improvement). Of exp-03's 37 failures
+    6 were fixed and 8 new ones appeared - churn, not progress. The training loss never left
+    ~0.28, so the mechanism is refuted directly: a disjoint slice of the SAME distributions is
+    not new information for this model, it is more of what it already fits.
+  decision: reject
+  next_step: "Stop buying more off-policy MetaMath/OpenMathInstruct rows - that well is dry at this scale. exp-05: on-policy rejection-sampling fine-tuning, where the training signal comes from what this model actually gets right and wrong rather than from another sample of the same corpus."

@@ -1,0 +1,130 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T15:05:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.8
+  remaining_h: 4.2
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.74, protocol_n: 150}
+  trigger: "exp-02/final (0.6933 greedy) and exp-04/final (0.7400 greedy) are two full finetunes of the SAME frozen base on two different corpora, and their errors are only partly shared: exp-04 fixes 20 of exp-02's 46 failures while breaking 13 of its correct items (analysis/exp-04_watch_rerun.json). Disagreement of that size between two models with a common init is the precondition for a weight average to beat both."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_watch_rerun.json, locator: whole file, observation: "fixed 20, regressions 13 -- 33 of 150 items flip between the two checkpoints"}
+    - {path: /home/ben/task/eval/exp-03_greedy_dev150.json, locator: accuracy, observation: "exp-02/final greedy 0.6933"}
+    - {path: /home/ben/task/eval/exp-04_final_greedy_dev150.json, locator: accuracy, observation: "exp-04/final greedy 0.7400"}
+  alternatives_rejected:
+    - {option: "Soup exp-02's four intermediate checkpoints instead", reason: "consecutive snapshots of one cosine schedule are far more correlated than two independent runs; the 33 flipped items show exp-02 and exp-04 are the genuinely diverse pair"}
+    - {option: "Weight the soup towards exp-04 (e.g. 0.25/0.75)", reason: "no budget to tune the mixing weight with a 3.0 pp floor at n=150; a uniform average is the standard default and one read is all this card can afford"}
+    - {option: "Skip the soup and spend the eval on a --limit 400 confirmation of exp-04", reason: "not rejected, scheduled after this: the confirmation read is what decides what ships, but it is worth knowing first whether there is a third candidate to confirm"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/soup.py, --ckpts, /home/ben/task/ckpts/exp-02/final, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/ckpts/soup_0204], outcome: "averaged in fp32 on CPU while exp-05 held the GPU, saved back in bf16; parameter sets matched exactly, 8.1 GB written"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Two checkpoints trained from the same base disagree on 33 of 150 graded items, which means a large part of each one's error is idiosyncratic to its training corpus rather than a shared capability limit. Shipping either one throws away whatever the other got right."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_watch_rerun.json, locator: whole file, observation: "20 fixed / 13 broken between the two"}
+    - {path: /home/ben/task/analysis/exp-04_final_greedy_dev150_failures.jsonl, locator: "39 failures", observation: "37 stop cleanly with a well-formed wrong answer"}
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150_failures.jsonl, locator: "46 failures", observation: "44 stop cleanly with a well-formed wrong answer"}
+  affected_share: 0.22
+  failure_examples:
+    - {id: soup-f1, source: /home/ben/task/analysis/exp-04_final_greedy_dev150_failures.jsonl, question: "(one of the 13 items exp-02 got right and exp-04 broke)", gold: see-file, model_output: see-file, failure: "correct under exp-02, wrong under exp-04 -- recoverable in principle by averaging"}
+    - {id: soup-f2, source: /home/ben/task/analysis/exp-03_greedy_dev150_failures.jsonl, question: "(one of the 26 items both models get wrong)", gold: see-file, model_output: see-file, failure: "shared failure -- a soup cannot fix this class"}
+    - {id: soup-f3, source: /home/ben/task/analysis/exp-04_final_greedy_dev150_failures.jsonl, question: "(one of the 2 items that still hit max_tokens)", gold: see-file, model_output: see-file, failure: "runaway completion; unaffected by averaging"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_final_greedy_dev150_failures.jsonl
+    n: 39
+    selection: "every item the incumbent (exp-04/final, greedy) gets wrong on the 150-item protocol"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A uniform parameter average of exp-02/final and exp-04/final scores higher under greedy decoding on the 150-item protocol than exp-04/final, the better of its two ingredients."
+  mechanism: "Both checkpoints are full finetunes of the same frozen base with the same architecture and no permutation between them, so they lie in a connected low-loss region and their average is a valid model. Averaging cancels the parts of each one's error that are idiosyncratic to its corpus while keeping the shared solution."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: -2 to +4 points
+  falsified_if: "Greedy accuracy on the 150-item protocol is at or below 0.74, or the soup's completions stop cleanly on fewer than 95% of items (which would mean the average degraded the turn-termination behaviour)."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/soup_0204
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4.jsonl
+      source: "not read by this card -- exp-04's training file, recorded because one ingredient of the average is its output"
+      n_examples: 133198
+      built_by: /home/ben/task/scripts/build_sft_v2.py
+      build_command: [python, scripts/build_sft_v2.py]
+      selection: "see exp-04; no training happens in this card"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "scripts/soup.py: fp32 CPU uniform average of the two state_dicts, saved in bf16"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "unchanged from the ingredients"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/soup_0204, exp-06_soup0204_greedy_dev150, greedy, '150']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/eval_exp-06_soup0204_greedy_dev150.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle), greedy decode as adopted in exp-03
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.74
+    path: /home/ben/task/eval/exp-04_final_greedy_dev150.json
+  diagnostic:
+    what: "of the 13 items exp-02 got right and exp-04 broke, how many the soup recovers; and how many of the 26 shared failures it fixes"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.22
+  output_checkpoint: /home/ben/task/ckpts/soup_0204
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup_0204, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; fp32 CPU uniform average of two state_dicts, written back in bf16. config.json dtype fields rewritten float32 -> bfloat16 per the verdict's precondition."}
+  measurements:
+    - {metric: accuracy, value: 0.6933, n: 150, path: /home/ben/task/eval/exp-06_soup0204_greedy_dev150.json, delta_vs_comparator: -0.0467}
+  diagnostic_result:
+    value: 6
+    path: /home/ben/task/analysis/soup_watch_rerun.json
+    notes: "the soup recovers 6 of the 13 items exp-02 got right and exp-04 broke, but fixes only 1 of the 26 both ingredients failed, and breaks 14 of exp-04's correct items. 149/150 stop cleanly, so the termination clause is not met."
+  watch_set_result: {fixed: 7, still_failing: 32, regressions: 14, path: /home/ben/task/analysis/soup_watch_rerun.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "0.6933 against exp-04's 0.7400 (-4.67 pts): the uniform average lands exactly on its weaker ingredient's score rather than above its better one. The mechanism is visibly half-right -- it does recover 6 of the 13 items exp-04 broke -- but it costs 14 of exp-04's correct items to do so, and it fixes almost none (1 of 26) of the failures the two ingredients share."
+  decision: reject
+  next_step: "Do not re-soup with a tuned mixing weight: the card rejected weight tuning for lack of eval budget before the read, and the -4.67 pt result gives no reason to reopen it. exp-04/final stays in final_model/."

@@ -1,0 +1,142 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T19:10:13Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 4.85
+  remaining_h: 5.15
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02-greedy
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "With the decode fixed (exp-03), 42 of 150 dev items still fail and only 3 of those are non-terminating: what is left is the model's own reasoning, which no decode or format change can reach. The incumbent saw exactly one epoch over 97173 rows, while the same filtered source holds 95034 (question, solution) pairs it has never seen."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "n_failures=42, noncompliant_failures=3, format_compliance=0.98"}
+    - {path: /home/ben/task/analysis/exp-03_probe300.json, locator: "summary.accuracy=0.7467"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling fine-tuning on the incumbent's own correct samples (the original plan for this card)", reason: "ABANDONED ON MEASURED COST, not on principle. Two sampling passes were run and killed. Zero-shot, k=4 over 20173 problems: 1.15 h, solve rate only 0.38 and mean generation 421 tokens against ~200 in the graded read - without the 10-shot prefix the model rambles into the 512-token cap, so most samples were rejected for finish_reason != stop, and the 9654 rows that survived are biased to the easy tail (kept at data/rft_v0_zeroshot.jsonl). Re-sampling under the grader's 10-shot prefix fixed the regime (prefix caching gave 20.8k input tok/s) but decode slowed to 9.4 generations/s because each sequence now carries a 2157-token KV, projecting 2.27 h for the same 76692 generations. With 5.15 h left that is over half the remaining budget for a +1 to +5 lever, against ~1.4 h for this card."}
+    - {option: "Repeat a second epoch over the stage-1 file", reason: "the model has already fitted those exact 97173 rows; the 185034-row pool at max_per_problem 4 contains 95034 pairs it has never seen, which is strictly more informative for the same compute"}
+    - {option: "Checkpoint sweep of checkpoint-1520 / 2280 under greedy (C5)", reason: "cheap (~10 min) but this was a single cosine-annealed epoch, so the final checkpoint is the annealed one and a mid-schedule checkpoint is both less trained and at a higher LR; kept as a fallback card if this one fails or if time runs short"}
+    - {option: "DPO on correct/incorrect sample pairs", reason: "the sampling pass produces the pairs for free, but DPO needs its own hyperparameter search and a reference model in memory; with ~5 h left, one well-understood method beats two half-tuned ones"}
+    - {option: "70000 fresh rows rather than all 95034", reason: "measured stage-1 throughput was 14.8 samples/s, so 70000 rows is ~1.31 h and fits the remaining budget with room for the evaluation, the checkpoint selection and the packaging; the 25034 rows left on the table are recorded here rather than passed off as full coverage"}
+  pitfalls_hit:
+    - {what: "the first RFT sampling launch (32173 problems, k=4, max_tokens 640) projected 3.5 h; a per-request SamplingParams seed and an over-long token cap were the suspects", cost_h: 0.1, fix: "killed, removed the per-request seed, cut max_tokens 640 -> 512 and max_model_len 1536 -> 1024, and cut the problem set to 20173. Throughput went 5.3k -> 7.7k output tok/s; most of the saving came from the smaller scope, so the seed was not the main cause."}
+    - {what: "pkill left an orphaned VLLM::EngineCore holding 66 GB, which would have made the next run fail exactly as the exp-01 eval did", cost_h: 0.05, fix: "killed the EngineCore pid explicitly and confirmed 0 MiB before relaunching"}
+    - {what: "probe_eval.py silently ignored the checkpoint's generation_config: vLLM's offline LLM.generate uses the SamplingParams it is handed verbatim, so the first 'greedy' probe run was actually another temperature-1.0 read (0.560, indistinguishable from the sampled 0.5633)", cost_h: 0.1, fix: "probe_eval.py now reads temperature/top_p/top_k out of generation_config.json when --temperature is omitted and prints the resolved params; the corrected run gave 0.7467"}
+  smoke_runs:
+    - {command: [python, package_final.py, --src, ckpts/exp-02/final, --dst, final_model, --greedy, --verify], outcome: "a valid submission is already in place at the incumbent's 0.72 before this card spends any GPU: loads on CPU as Gemma3ForConditionalGeneration, 4.300 B params, generation_config eos_token_id [1, 106] and temperature 0.0"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent's residual failures are reasoning and arithmetic errors inside otherwise well-formed chains (39 of its 42 dev failures are well-formed but wrong). It has had exactly one epoch of supervision over 97173 rows, which is a small fraction of the available in-domain data: the same filters over the same three OpenMathInstruct-2 shards yield 185034 rows, of which 95034 are pairs it has never been trained on."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_diag.json, locator: "n_failures=42 of 150, noncompliant_failures=3", observation: "39 of 42 failures are well-formed but wrong, i.e. reasoning error rather than format or stopping"}
+    - {path: /home/ben/task/analysis/exp-03_watch100.json, locator: "still_failing=23", observation: "23 of the 100 held-out watch items are still wrong under the best decode"}
+    - {path: /home/ben/task/analysis/rft_v0_zeroshot_stats.json, locator: "solve_rate=0.3803, rows_written=9654", observation: "the on-policy alternative was measured and priced out; see situation.alternatives_rejected"}
+  affected_share: 0.93
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/watch100.jsonl
+    n: 100
+    selection: "GSM8K TRAIN rows 7173-7272, held out from every training file this session, including data/sft_v2.jsonl. No test-split item is used."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A second supervised stage on 70000 OpenMathInstruct-2 gsm8k rows the incumbent has never seen, continued from ckpts/exp-02/final at a lower learning rate, raises greedy accuracy on the --limit 150 protocol above the incumbent's 0.72."
+  mechanism: "One epoch over 97k rows leaves the model short of the data's ceiling; 70k unseen problems and solutions from the same distribution add coverage of problem types and arithmetic patterns it has not fitted. The lower LR (5e-6, cosine) continues the anneal rather than restarting it, so the format and stopping behaviour already learned are preserved."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +4 points"
+  falsified_if: "greedy dev-150 accuracy for the selected checkpoint is not above 0.72, or probe300 does not exceed the incumbent's 0.7467"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e shards 00000-00002, rows with problem_source in {gsm8k, augmented_gsm8k}, admitted at up to 4 solutions per problem and then filtered to pairs absent from data/sft_v1.jsonl"
+      n_examples: 70000
+      built_by: /home/ben/task/build_sft_stage2.py
+      build_command: [python, build_sft_stage2.py, --n-rows, '70000', --max-per-problem, '4', --out, data/sft_v2.jsonl]
+      selection: "same filters as stage 1 (integer answers, \\boxed unwrapped, heavy-LaTeX dropped, 60 < len < 2500 chars, target ends '\\n\\nANSWER: <int>'); then every (question, target) pair present in stage 1 removed - 185034 pool - 90000 reused = 95034 fresh, of which 70000 sampled; 12% carry the grader's 10-shot system prefix; GSM8K TRAIN rows 7173+ excluded as the held-out probe"
+      contamination_check: passed
+      mixture_weight: 1.0
+      sha256: ea5caa3b276593564e78f8b763df30774e2a600becb602c331fc975d2eb08d12
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross-entropy, flash_attention_2"
+    peft: "none"
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "assistant turn = step-by-step solution, blank line, 'ANSWER: <int>', terminated by <end_of_turn>. Loss on the assistant turn only; prompt tokens masked to -100. Identical to stage 1."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v2.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, ckpts/exp-04, --lr, '5e-6', --epochs, '1', --bs, '16', --accum, '2', --max-len, '3072', --attn, flash_attention_2, --save-steps, '1100']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 1100
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '2', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (inspect_evals/gsm8k takes the first 150 test items; deterministic). Every arm is decoded greedily (generation_config temperature 0.0), as adopted in exp-03."
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.72
+    path: /home/ben/task/eval/exp-02-greedy_dev150.json
+  diagnostic:
+    what: "probe300 greedy accuracy for the final checkpoint and for checkpoint-1100. This, not dev-150, chooses which checkpoint is carried forward: 300 held-out GSM8K TRAIN items, so the selection step has no test-split exposure. The incumbent's value under the same protocol is 0.7467."
+    n: 300
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.30
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1100, step: 1100}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2188, step: 2188}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2188}
+  training_summary:
+    final_loss: 0.2455
+    steps: 2188
+    notes: "train_loss 0.2592 over the epoch (stage 1 was 0.3036 on its own data), train_runtime 4694.9 s (1.30 h), 14.91 samples/s. 70000 rows trained, 0 dropped. Greedy variants for grading built with make_variant.py: ckpts/exp-04-greedy and ckpts/exp-04-c1100-greedy."
+  measurements:
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp-04-greedy_dev150.json, delta_vs_comparator: -0.0067}
+    - {metric: accuracy, value: 0.7767, n: 300, path: /home/ben/task/analysis/exp-04_final_probe300.json, delta_vs_comparator: 0.0300}
+  diagnostic_result:
+    value: 0.7767
+    path: /home/ben/task/analysis/exp-04_final_probe300.json
+    notes: "checkpoint selection on probe300 greedy: final 0.7767, checkpoint-1100 0.7333 (analysis/exp-04_c1100_probe300.json), incumbent 0.7467. The annealed final checkpoint wins, so the C5 'trained to the end is often worse' pattern does not hold here. Format diagnostic on dev-150: compliance 0.9933, 1 non-terminating failure of 43, max completion 5613 chars against the incumbent's 14105 - the second stage removed two of the three greedy repetition loops."
+  watch_set_result:
+    fixed: 8
+    still_failing: 20
+    regressions: 5
+    path: /home/ben/task/analysis/exp-04_watch100.json
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "The two reads disagree in sign and both sit inside their noise floors: dev-150 0.7133 vs the incumbent's 0.7200 (-0.7, stderr 0.037) but probe300 0.7767 vs 0.7467 (+3.0). The card's pre-registered falsification clause required dev-150 above 0.72, and it is not, so the claim is contradicted as written. Pooling all 450 graded items gives 0.7378 for the incumbent and 0.7556 for this checkpoint (+1.8), i.e. the true effect is most likely small and positive rather than zero - but 70k more off-policy rows did not buy the +1 to +4 the card claimed on the protocol it claimed it on. The WMA's interval [-0.02, 0.05] was the better prediction."
+  decision: iterate
+  next_step: "exp-05: the head-to-head is undecidable at n=150 (both candidates within one stderr) and the two candidates disagree between the test and probe reads, so re-score both ckpts/exp-02-greedy and ckpts/exp-04-greedy at --limit 500 and let that pick final_model. This is exactly the read the WMA's cheaper_variants asked for."

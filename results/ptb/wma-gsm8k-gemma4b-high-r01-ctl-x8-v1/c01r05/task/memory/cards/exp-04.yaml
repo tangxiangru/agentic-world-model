@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T17:15:17Z'
+situation:
+  elapsed_h: 3.25
+  remaining_h: 6.75
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.815, protocol_n: 200}
+  trigger: "exp-02's second epoch was worth +8 points (0.69 -> 0.77) even though the format problem was already fully solved after epoch 1 (cap-hits 0/200, every completion carrying the ANSWER: line). The model is still under-trained on math, not on formatting."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_ep1_dev200.json, locator: "accuracy 0.69"}
+    - {path: /home/ben/task/eval/exp-02_ep2_dev200.json, locator: "accuracy 0.77"}
+    - {path: /home/ben/task/analysis/exp-02_ep1_diag.json, locator: "hit_cap=0, no_answer_line=0 already at epoch 1"}
+  alternatives_rejected:
+    - {option: "a third and fourth epoch on data/sft_v1.jsonl", reason: "the same 130k rows a third time buys memorisation, not coverage; a fresh slice costs the same GPU-hours"}
+    - {option: "restart from the base model on sft_v1 + sft_v2 combined (285k) for 2 epochs", reason: "5.7h of training and it discards the 2.4h already spent; continuing from exp-02/final reaches the same token count for half the cost"}
+    - {option: "rejection-sampling fine-tuning on exp-02's own correct samples", reason: "OpenMathInstruct-2's solutions come from a 405B teacher and millions of rows are still unused; self-samples from a 4B model are the weaker teacher while teacher data is not exhausted. Kept as the fallback if fresh SFT data stops paying - scripts/rft_sample.py is written and ready"}
+    - {option: "raise the few-shot fraction above 12% so training matches the harness's 10-shot prompt more often", reason: "checked the greedy completions first - they are in the verbose OpenMathInstruct style, not the terse gsm8k few-shot style, so the exemplars are not dragging the model's format; the extra ~1700 prompt tokens per row would cost ~40% more wall-clock for no identified problem"}
+  pitfalls_hit:
+    - {what: "OpenMathInstruct-2 has far fewer unique gsm8k-family PROBLEMS than rows: shards 0-1 hold 132k augmented_gsm8k rows over only 60.7k distinct problems, and excluding sft_v1's problems left just 35.5k new ones in all of shards 2-23", cost_h: 0.2, fix: "sft_v2 excludes exact (problem, solution) pairs from sft_v1 instead of whole problems, and allows up to 6 solutions per problem; that yields 155k genuinely new target texts from shards 2-3 alone"}
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_v2.jsonl], outcome: "155000 documents scanned, 0 contaminated, exit 0"}
+problem:
+  statement: "After 2 epochs on 130k rows the model still misses 37 of 200 dev items under greedy decoding, and the failures are no longer formatting: 3 completions hit the token cap and all but three carry the ANSWER: line. What is left is arithmetic and multi-step reasoning quality, which is what more supervised math data buys."
+  evidence:
+    - path: /home/ben/task/analysis/exp-03_greedy_diag.json
+      locator: "accuracy 0.815, hit_cap 3, no_answer_line 3, p50_tokens 160"
+      observation: "37/200 wrong with the output format essentially perfect"
+    - path: /home/ben/task/eval/exp-02_ep1_dev200.json
+      locator: "accuracy 0.69 vs 0.77 at epoch 2"
+      observation: "+8 points from a second pass over the same data - the curve had not flattened"
+  affected_share: 1.0
+  failure_examples:
+    - {id: null, source: /home/ben/task/analysis/exp-03_greedy_percorrect.json, question: null, gold: null, model_output: null, failure: "the 37 remaining dev-200 misses are recorded per id in the referenced file; item text and gold are deliberately not copied here - the benchmark test copy is checker input only"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_greedy_percorrect.json
+    n: 200
+    selection: "per-id correctness of the incumbent (exp-03, greedy decoding) over the same dev-200, so fixed/regressed can be counted after this run"
+hypothesis:
+  claim: "Continuing the fine-tune from ckpts/exp-02/final for two more epochs on 155k previously unseen OpenMathInstruct-2 target texts (data/sft_v2.jsonl) raises dev-200 accuracy above exp-02's 0.77 measured under the same sampled-decoding protocol."
+  mechanism: "Every measurement so far says the model is data- and step-limited rather than format-limited: epoch 2 on identical data still bought +8 points. 155k unseen solutions - 115k gsm8k-family and 40k competition-math, all from the same 405B teacher - add coverage of problem types and of correct arithmetic that the first slice did not contain."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +8 points on the sampled protocol (0.77 -> 0.79-0.85)"}
+  falsified_if: "neither the epoch-1 nor the epoch-2 checkpoint beats 0.77 under sampled decoding, which would say the model has saturated on this teacher's data and the remaining errors need a different intervention"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e (shards 2-3 of 32) + openai/gsm8k@740312add88f781978c0658806c59bc2815b9866 TRAIN split for the few-shot contexts"
+      n_examples: 155000
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, data/sft_v2.jsonl, --n-gsm, '115000', --n-math, '40000', --shard-start, '2', --exclude, data/sft_v1.jsonl, --max-per-problem, '6', --seed, '7', --fewshot-frac, '0.12']
+      selection: "same filters as sft_v1, but starting at shard 2, allowing up to 6 solutions per problem, and dropping any (problem, solution) pair already in sft_v1 - so every target text here is new even where the problem is not. 115k gsm8k-family + 40k competition-math rows; 12% carry a 2/4/8/10-shot context built from gsm8k TRAIN items"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE
+    peft: "none - full fine-tune of the 3.88B text tower; vision_tower and multi_modal_projector frozen"
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 109, grad_accum: 1, max_seq_len: 2560, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit", seed: 1}
+    target_format: "identical to exp-02: <bos><start_of_turn>user\\n{optional few-shot prefix}{MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n{solution}\\n\\nANSWER: {n}<end_of_turn>\\n , loss on the model turn only. Peak lr is 1.0e-5 rather than exp-02's 1.5e-5 because this continues an already-completed cosine cycle. batch_size is the mean example count of a 49152-padded-token micro-batch."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v2.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-04, --lr, '1.0e-5', --epochs, '2', --accum, '1', --token-budget, '49152', --max-seq-len, '2560', --save-steps, '1480', --warmup, '0.02', --seed, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTHONPATH: /home/ben/task/.liger, PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04_train.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 1480
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-tokens, '1024', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official gsm8k test, harness order, --limit 200"
+    n: 200
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.77
+    path: /home/ben/task/eval/exp-02_ep2_dev200.json
+  diagnostic:
+    what: "cap-hits and p50 completion length, to catch a continuation that starts to ramble or loop rather than reason"
+    n: 200
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.87
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1480, step: 1480}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2974, step: 2974}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2974}
+    - {path: /home/ben/task/ckpts/exp-04_ep1, step: 1480}
+    - {path: /home/ben/task/ckpts/exp-04_ep2, step: 2974}
+  training_summary:
+    final_loss: 0.236
+    steps: 2974
+    notes: "1487 micro-batches/epoch at 49152 padded tokens over 72.5M real tokens (0.1% padding); loss 0.283 at the end of epoch 1, 0.236 mean over the run, against exp-02's 0.259. 10340s wall. ckpts/exp-04_ep1 and _ep2 are the bf16 packagings of steps 1480 and 2974 with the greedy generation_config."
+  measurements:
+    - {metric: accuracy, value: 0.82, n: 200, path: /home/ben/task/eval/exp-04_ep2_sampled_dev200.json, delta_vs_comparator: 0.05}
+    - {metric: accuracy, value: 0.81, n: 200, path: /home/ben/task/eval/exp-04_ep2_greedy_dev200.json, delta_vs_comparator: -0.005}
+    - {metric: accuracy, value: 0.785, n: 200, path: /home/ben/task/eval/exp-04_ep1_greedy_dev200.json, delta_vs_comparator: -0.03}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-04_ep2_sampled_diag.json
+    notes: "no degeneration: cap-hits 0/200 sampled and 3/200 greedy, p50 length 155-162 tokens, unchanged from exp-02. The continuation did not teach the model to ramble."
+  watch_set_result:
+    fixed: 12
+    still_failing: 25
+    regressions: 13
+    path: /home/ben/task/analysis/exp-04_ep2_greedy_diag.json
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: contradicted
+  summary: "Against the comparator this card declared - exp-02 scored 0.77 with the inherited sampling config - exp-04 reaches 0.82 under the identical sampled protocol, so the claim as written is supported. But the decode-matched comparison tells a different story: greedy-vs-greedy it is 0.810 against exp-03's 0.815, and the watch-set diff is 12 fixed / 13 regressed, i.e. churn, not progress. 155k more rows and 2.9 GPU-hours bought nothing that survives a like-for-like decode."
+  decision: iterate
+  next_step: "The mechanism claim - that the model is still data-limited on this teacher - is contradicted: OpenMathInstruct-2 has saturated for this model at this scale. Do not buy a third slice (data/sft_v3.jsonl is built and contamination-checked but should stay unused). Two things are worth the remaining ~3.5h instead: (1) exp-05, average the exp-02 and exp-04 weights - they are 2.9h apart on the same trajectory and their errors are already known to be decorrelated (12 fixed / 13 regressed), which is exactly the situation where a soup helps; (2) re-score the finalists on 600 items rather than 200, because every gap seen here (0.785 / 0.810 / 0.815 / 0.820) is inside one standard error of 0.028 and picking a winner on dev-200 is picking noise."

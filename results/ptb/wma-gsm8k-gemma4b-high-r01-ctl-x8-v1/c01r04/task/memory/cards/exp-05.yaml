@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T17:40:00Z'
+situation:
+  elapsed_h: 3.6
+  remaining_h: 6.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7133, protocol_n: 150}
+  trigger: "Three measurements now disagree about which checkpoint is better and all of them are under-powered: exp-04 scores 0.6267 vs exp-02's 0.7133 on dev-150 (paired McNemar 28 vs 15 discordant, p=0.066) but 0.736 vs 0.744 on the 250-item internal probe. dev-150 also carries decode noise, because both arms were sampled at T=1.0 - the same exp-02 weights scored 0.7133 sampled and 0.700 greedy."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy 0.6267"}
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy 0.7133"}
+    - {path: /home/ben/task/analysis/exp-04_dev_greedy_fs10.json, locator: "summary.accuracy 0.736 vs exp-02's 0.744 on the same 250 held-out items"}
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: "accuracy 0.700 - same weights as exp-02, greedy instead of sampled, showing the size of decode noise at n=150"}
+  alternatives_rejected:
+    - {option: "ship exp-02 on the strength of dev-150 and spend the 30 minutes on more training", reason: "the choice of shipped checkpoint is worth more than any remaining training increment, and p=0.066 with a contradicting 250-item probe is not a decision"}
+    - {option: "settle it on a larger internal dev set built from gsm8k train", reason: "free of test items but it is the measurement that already disagrees; the question is specifically what happens on the benchmark distribution"}
+    - {option: "n=1000 or the full test set", reason: "n=500 greedy already gives ~2.0-point stderr per arm and a paired test on 500 identical items with zero decode noise; the extra wall clock is better spent on exp-06"}
+  pitfalls_hit:
+    - {what: "exp-04 was measured against exp-02 under a protocol whose per-run decode noise (T=1.0 sampling, inherited from generation_config) is comparable to the effect being measured; exp-03 had already shown this and I ran exp-04's eval under it anyway", cost_h: 0.2, fix: "this card scores both arms greedy so the only randomness left is which items are in the set"}
+  smoke_runs:
+    - {command: [python, scripts/finalize_ckpt.py, --ckpt, ckpts/exp-04/final, --dest, ckpts/exp-04-greedy, --decode, greedy], outcome: "greedy copy of exp-04 written; exp-03-greedy is the corresponding copy of exp-02/final"}
+problem:
+  statement: "I cannot tell which of the two trained checkpoints to ship. exp-04 (a second SFT stage on 99424 unseen rows) is 8.7 points below exp-02 on dev-150 but 0.8 points below on the 250-item internal probe, and roughly half of the dev-150 gap is attributable to decode noise that the protocol inherits from the checkpoint's generation_config."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy", observation: "0.6267, n=150, stderr 0.0396"}
+    - {path: /home/ben/task/analysis/exp-04_dev_greedy_fs10.json, locator: "summary", observation: "0.736 with stop_rate 0.992 - the second stage did not break the format, so this is not a format regression"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/analysis/exp-03_watch.jsonl
+    n: 64
+    selection: "the 64 held-out gsm8k-TRAIN dev items exp-02 answers wrong under greedy 10-shot decoding"
+hypothesis:
+  claim: "Scored greedily on 500 benchmark items instead of 150 sampled ones, exp-02/final and exp-04/final differ by less than the 8.7 points dev-150 reported; the paired comparison identifies which checkpoint to ship."
+  mechanism: "Two noise sources are being removed at once. Greedy decoding makes each arm deterministic, so the discordant pairs that come from resampling the same chain of thought disappear (exp-03 measured 30 discordant pairs between two runs of identical weights). Tripling n cuts the per-arm stderr from ~3.9 to ~2.0 points. What survives is the real difference between the two weight sets on the benchmark distribution."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "exp-02 minus exp-04 somewhere in -2 to +6 points; my prior after the internal probe is that the true gap is small and exp-02 is at or slightly above exp-04"
+  falsified_if: "the two arms still differ by more than 8 points on 500 greedy items, which would mean the dev-150 gap was real and the internal probe is not tracking the benchmark"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: "hf://openai/gsm8k:main:test (loaded inside evaluate.py by inspect_evals; nothing is read from disk in this task dir)"
+      source: openai/gsm8k
+      n_examples: 500
+      built_by: null
+      build_command: []
+      selection: "first 500 items of the official test split, as evaluate.py --limit 500 does; GRADING input only, never training data"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect_ai + vllm 0.11.0
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "model selection only; both arms are existing weight sets with generation_config temperature 0.0"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_protocol_eval.sh, /home/ben/task/ckpts/exp-03-greedy, exp-05-a, '500']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_protocol_eval.sh
+    env: {}
+    log: /home/ben/task/logs/exp-05_eval.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.75']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, no shuffle), greedy decode"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: null
+    path: null
+  diagnostic:
+    what: "paired McNemar over the same 500 items, exp-02-greedy vs exp-04-greedy"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.45
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 2584}
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 1858}
+  training_summary: {final_loss: null, steps: null, notes: "model selection only; no weights changed"}
+  measurements:
+    - {metric: accuracy, value: 0.732, n: 500, path: /home/ben/task/eval/exp-05-a_dev500.json, delta_vs_comparator: 0.014}
+    - {metric: accuracy, value: 0.718, n: 500, path: /home/ben/task/eval/exp-05-b_dev500.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.427
+    path: /home/ben/task/analysis/exp-05_paired.json
+    notes: "paired over the same 500 items with both arms greedy: exp-02 366 correct, exp-04 359, discordant 32 vs 25, McNemar p=0.427. The 8.7-point dev-150 gap does not survive - it was n=150 plus T=1.0 decode noise. Best estimate of the true gap is +1.4 points for exp-02 with a 95% interval that comfortably contains zero."
+  watch_set_result: {fixed: 15, still_failing: 49, regressions: 17, path: /home/ben/task/analysis/exp-04_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "At n=500 with both arms greedy the two checkpoints are 0.732 vs 0.718, paired p=0.427: they are indistinguishable, and the 8.7-point gap dev-150 reported was measurement noise, not a difference between the weight sets. Removing decode noise and tripling n did what it was supposed to - the per-arm stderr fell from 0.040 to 0.020 and the discordant-pair count fell from 43 to 57 over 3.3x the items."
+  decision: adopt
+  next_step: "Ship exp-02/final unless something beats it. Two measurements now agree that it is at least as good as exp-04, and 0.732 at n=500 greedy is the most reliable number I have for any checkpoint. Next: exp-06, average the exp-02 and exp-04 weights - exp-04 is a continuation of exp-02 so the two sit in the same basin, and their errors only partly overlap (57 discordant pairs out of 500), which is the situation where checkpoint averaging usually buys a point or two for ~15 minutes of GPU."

@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T13:00:00Z'
+situation:
+  elapsed_h: 6.0
+  remaining_h: 4.0
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-soup
+    score: {metric: accuracy, value: 0.7533, protocol_n: 150}
+  trigger: "exp-04 showed that averaging two siblings beats both of them (0.7533 vs 0.7333 and 0.7267), and wins on exactly the subset where they disagree (16/29). A soup improves with the number and the diversity of its ingredients, and right now there are only two, both fitted to overlapping data."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.measurements, result.diagnostic_result"}
+    - {path: /home/ben/task/analysis/exp04_watch_rerun.json, locator: soup_correct_on_disagreement}
+  alternatives_rejected:
+    - {option: "stop here and ship exp-04", reason: "4h of budget left and one more sibling is 40 min of training; the soup can only be built from ingredients that exist"}
+    - {option: "train the sibling from the base model instead of from exp-02", reason: "2.5h, and a checkpoint that far from the others may not average cleanly - siblings one low-lr epoch apart provably do (exp-04)"}
+    - {option: "another self-sampling round for the third ingredient", reason: "exp-03 already tested that data source and it neither helped nor hurt; a different data source gives the soup more to cancel"}
+    - {option: "vary the seed instead of the data", reason: "same data at a different shuffle produces a less diverse sibling than 45k rows the parent has never seen"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The exp-04 soup has only two ingredients and they are not very different: exp-03 is exp-02 continued on data exp-02 itself generated. The averaging gain (+2.0 pts) is bounded by how much independent noise there is to cancel, and two overlapping siblings do not supply much."
+  evidence:
+    - {path: /home/ben/task/analysis/exp03_watch_rerun.json, locator: "fixed/regressions", observation: "the two parents disagree on only 29 of 150 items, and both are wrong on 26"}
+    - {path: /home/ben/task/analysis/exp04_watch_rerun.json, locator: soup_correct_on_disagreement, observation: "the soup converts 16 of those 29, so the headroom that averaging can reach is the disagreement set, and it is small"}
+  affected_share: 0.19
+  failure_examples:
+    - {id: both-wrong-26, source: /home/ben/task/analysis/exp03_watch_rerun.json, question: "26 dev items both exp-02 and exp-03 answer wrong", gold: n/a, model_output: n/a, failure: "outside the reach of averaging these two: neither ingredient has the answer"}
+    - {id: soup-regressions-9, source: /home/ben/task/analysis/exp04_watch_rerun.json, question: "9 items exp-02 gets right and the 2-way soup gets wrong", gold: n/a, model_output: n/a, failure: "averaging two ingredients still loses items; a third vote should reduce this"}
+    - {id: exp03-regressions-15, source: /home/ben/task/analysis/exp03_watch_rerun.json, question: "15 items exp-02 gets right and exp-03 gets wrong", gold: n/a, model_output: n/a, failure: "the self-sample epoch cost these, showing one sibling's damage is not cancelled by only one other"}
+  watch_set:
+    path: /home/ben/task/analysis/exp04_wrong.jsonl
+    n: 37
+    selection: "every dev-150 item the current incumbent (the exp-04 soup) answers incorrectly"
+hypothesis:
+  claim: "Continuing exp-02 for one epoch on the 44946 OpenMathInstruct-2 rows it never saw produces a sibling whose errors are less correlated with exp-03's than exp-03's are with exp-02's, so a three-way average of exp-02, exp-03 and this sibling scores higher on dev-150 than the two-way exp-04 soup."
+  mechanism: "exp-03 and this sibling start from the same parent and take one low-lr epoch in different directions: exp-03 toward the model's own samples, this one toward held-out Llama-405B text. Their update noise is therefore drawn from different sources and cancels when averaged, while the component both share - what one epoch from exp-02 on grade-school math agrees on - survives. This card produces the ingredient; exp-06 does the averaging and is where the claim is decided. Measuring this checkpoint alone at n=150 first is what tells us whether any gain comes from the ingredient or from the averaging."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "the sibling alone: 0.72-0.76, i.e. about the same as its siblings. The three-way soup in exp-06: +0 to +2 over exp-04's 0.7533"
+  falsified_if: "the sibling alone scores below 0.70 at n=150, which would mean the extra epoch degraded the parent rather than moving it sideways, and it should not go into a soup."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_heldout.jsonl
+      source: "derived:exp-02 - the slice of data/sft_v2.jsonl (OpenMathInstruct-2 train_1M rev 469216e3f46f4dacf476b382e192485ea51a143e + openai/gsm8k main train) that exp-02 did not train on"
+      n_examples: 44946
+      built_by: /home/ben/task/build_rft_mix.py
+      build_command: [python, -c, "rows=sft_v2 shuffled with random.Random(0); write rows[105000:] to data/sft_heldout.jsonl"]
+      selection: "exp-02 trained on random.Random(0).shuffle(rows); rows[:105000] of data/sft_v2.jsonl. This file is rows[105000:] under the identical shuffle, so it is exactly the part of the corpus the parent never saw. 1824 of the rows carry the grader's 10-shot system prefix."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with a custom token-budget batch sampler
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 4, grad_accum: 4, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32 master weights + bf16 autocast, adamw_bnb_8bit, seed: 1, token_budget: 6144}
+    target_format: "identical to exp-02 and exp-03: <bos><start_of_turn>user\\n{MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n{CoT}\\n\\nANSWER: <n><end_of_turn>, loss on the model turn only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, train_sft.py, --data, data/sft_heldout.jsonl, --model, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-05, --max-seq-len, '2560', --accum, '4', --token-budget, '6144', --lr, '5e-6', --epochs, '1', --seed, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7533
+    path: /home/ben/task/eval/exp04_dev150.json
+  diagnostic:
+    what: "how many dev items this sibling disagrees with exp-03 on, against the 29 exp-02 and exp-03 disagree on - the diversity the three-way soup has to work with"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.82
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 858}
+  training_summary: {final_loss: 0.3024, steps: 858, notes: "44791 rows after the 0.34% max-seq-len drop, 19.3M tokens, 46.5 min. train_loss 0.3024 sits between exp-02's 0.338 and exp-03's 0.267, as expected for held-out off-policy text."}
+  measurements:
+    - {metric: accuracy, value: 0.7533, n: 150, path: /home/ben/task/eval/exp05_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 30
+    path: /home/ben/task/analysis/exp05_watch_rerun.json
+    notes: "The sibling disagrees with exp-03 on 30 of 150 items, slightly more than the 29 exp-02 and exp-03 disagree on, so it is at least as independent an ingredient as the one exp-04 used. Only 19 items are wrong in all three checkpoints, meaning 131/150 are reachable by at least one. Against the exp-04 soup it fixes 13 and breaks 13. 150/150 completions stopped cleanly, the best format result of the session."
+  watch_set_result: {fixed: 13, still_failing: 24, regressions: 13, path: /home/ben/task/analysis/exp05_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The sibling scores 0.7533 alone, equal to the exp-04 soup and above both of its own siblings (0.7333, 0.7267), and it is genuinely diverse: 30 disagreements with exp-03, with only 19 of 150 items wrong in all three checkpoints. It comfortably clears the 0.70 falsification bar, so it is a valid soup ingredient."
+  decision: adopt
+  next_step: "Average all three (exp-02, exp-03, exp-05) and measure at n=150. Then, because every candidate so far sits inside one stderr of the others, run a larger-n evaluation to choose what ships."

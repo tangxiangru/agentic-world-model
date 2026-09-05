@@ -1,0 +1,141 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: 2026-09-04T04:30:00Z
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.6
+  remaining_h: 6.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02_greedy
+    score: {metric: accuracy, value: 0.78, protocol_n: 150}
+  trigger: "After exp-03 the cheap levers are spent: the output contract is fixed (well-formed ANSWER share 0.993, max_tokens share 0.007) and decode is greedy. The 33 remaining failures at n=150 are reasoning errors under the model's own argmax, which only more/better training signal can move."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150_diag.json, locator: "summary; wrong[*]", observation: "33 wrong of 150; max_tokens_share 0.0067, wellformed_answer_share 0.9933 - essentially nothing left to gain from formatting or termination"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.training_summary", observation: "exp-02 saw 80k distinct problems twice with the SAME target text each time (final loss 0.20), i.e. 160k row-visits over 41.2M distinct tokens"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling fine-tuning (sample k solutions from exp-02, keep the correct ones, retrain)", reason: "generation for even 15k problems x 4 samples is ~50 min of GPU before any training starts, and RFT re-trains on problems the model already fits (train loss 0.20). Cheaper first to spend the same GPU hours on 3.5x more distinct human-unseen targets; RFT stays available if this run leaves time"}
+    - {option: "Continue training exp-02/final on the new rows instead of restarting from base", reason: "sft_big.jsonl contains the same 80k problems exp-02 already fit twice, so continuing would be a third and fourth pass over them under a restarted schedule; from base every problem is seen ~3 times but with three DIFFERENT solutions, which is the variable being tested"}
+    - {option: "More epochs on the exp-02 mixture", reason: "exp-02's train loss was already 0.20 at the end of epoch 2 and its checkpoint-424 was lost, so there is no evidence a third pass over identical targets helps; distinct targets are the better use of the same tokens"}
+    - {option: "microsoft/orca-math-word-problems-200k as the extra data", reason: "it has no gold-answer field - the answer has to be guessed as the last number of a free-text solution, which is exactly the noise the grader is sensitive to. OpenMathInstruct-2 ships expected_answer for every row"}
+    - {option: "Train on all 279714 rows of sft_big.jsonl", reason: "measured 14.1k tokens/s => 2.9 h, against 6.4 h remaining that leaves no room for the eval, the final packaging and a fallback. 230k rows is 2.4 h"}
+  pitfalls_hit:
+    - {what: "exp-02's end-of-epoch-1 checkpoint was evicted by save_total_limit=2 because the run wrote three saves, not two", cost_h: 0.0, fix: "train_sft.py now takes --save-total-limit; this card passes 6, and save-steps 410 places saves at 410/820/1230 so all three survive"}
+  smoke_runs:
+    - {command: [python, -c, "build_rows(sft_big.jsonl, max_rows=230000) + TokenBudgetBatches(49152)"], outcome: "230000 rows kept, 110 dropped over max_seq_len (0.048%), 119.7M tokens, 2460 micro-batches of 11/89/244 rows"}
+    - {command: [python, "../contamination_check.py", --reference, "../test_data.json", --input, data/decon_big.jsonl], outcome: "279714 documents scanned, 0 contaminated, 0 matches"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent solves the easy half of GSM8K but still mis-sets-up or mis-computes 33 of 150 test items under greedy decode. Its training signal was thin: 80k distinct problems, one solution each, shown twice - so for any given problem it saw exactly one way of solving it and then memorised that wording (train loss 0.20)."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150_diag.json, locator: "wrong[*], 33 items", observation: "all but one terminate cleanly with a well-formed ANSWER line; the errors are in the chain"}
+    - {path: /home/ben/task/analysis/exp-02_final_dev150_diag.json, locator: "wrong[1] (gsm8k_01a47d5c)", observation: "'x = 466.666 which we round down to 466' then '2 * 466 = 932' for a gold of 400 - a set-up error, not an arithmetic one"}
+    - {path: /home/ben/task/analysis/exp-02_final_dev150_diag.json, locator: "wrong[3] (gsm8k_18abb77f)", observation: "'30 / 4 = 7.5' offered as an average where the gold is 60 - the wrong quantity was averaged"}
+  affected_share: 0.22
+  failure_examples:
+    - {id: gsm8k_082f84cc, source: /home/ben/task/analysis/exp-02_final_dev150_diag.json, question: "(Cindy/Marcia/Jan pets, official test item)", gold: "28", model_output: "4 + 6 + 18 = 30 ... ANSWER: 30", failure: "arithmetic slip in the final sum"}
+    - {id: gsm8k_01a47d5c, source: /home/ben/task/analysis/exp-02_final_dev150_diag.json, question: "(bee colony, official test item)", gold: "400", model_output: "x = 466.66 -> 466; 2*466 = 932 ... ANSWER: 932", failure: "wrong equation set up, carried through"}
+    - {id: gsm8k_0e2125c7, source: /home/ben/task/analysis/exp-02_final_dev150_diag.json, question: "(hospital daily profit, official test item)", gold: "10000", model_output: "1900000 - 3600000 = -1700000 ... ANSWER: -1700000", failure: "misread the cost structure, no sanity check on a negative profit"}
+    - {id: gsm8k_18abb77f, source: /home/ben/task/analysis/exp-02_final_dev150_diag.json, question: "(sandcastle levels, official test item)", gold: "60", model_output: "30 / 4 = 7.5 ... ANSWER: 7.5", failure: "averaged the wrong quantity"}
+  watch_set:
+    path: /home/ben/task/data/probe200.jsonl
+    n: 200
+    selection: "200 items from the openai/gsm8k TRAIN split held out of every training mixture by build_data.py (--exclude / holdout_train_idx.json); the benchmark test split is never used as a watch set (rule 7)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Replacing exp-02's mixture (80k problems x 1 solution, seen twice) with 230k rows carrying up to 3 DIFFERENT OpenMathInstruct-2 solutions per problem plus 40k MATH-domain rows, at one epoch and the same token-budget/lr recipe, moves n=150 greedy accuracy upward against exp-03's 0.78."
+  mechanism: "Several distinct correct derivations of the same problem teach the mapping rather than one memorised surface form, which is what generalises to a held-out problem needing a set-up the model has not seen worded that way; and it spends the second pass's tokens on new targets instead of re-fitting old ones. The MATH rows add algebraic set-up practice for the multi-step items where the current failures cluster."
+  mechanism_test: "final train loss should be materially HIGHER than exp-02's 0.20 (each target is seen once, not twice) while dev accuracy rises - the signature of less memorisation. If loss lands near 0.20 again the extra solutions were near-duplicates."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0.01 to +0.06 absolute at n=150"
+  falsified_if: "greedy accuracy at n=150 is not above 0.78 by more than the greedy noise floor (~0.013), i.e. 0.793 or below. In that case the incumbent ckpts/exp-02_greedy stays in final_model/ and the remaining time goes to rejection-sampling fine-tuning instead."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_big.jsonl
+      source: "nvidia/OpenMathInstruct-2 split train_2M (282276 gsm8k+augmented_gsm8k rows, 1717724 math+augmented_math rows); datasets==4.5.0"
+      n_examples: 279714
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_big.jsonl, --split, train_2M, --n, "260000", --n-math, "40000", --max-per-problem, "3", --fewshot-share, "0.13", --full-fewshot-share, "0.04"]
+      selection: "up to 3 solutions per distinct problem statement (exp-02 allowed 1); drop non-numeric expected_answer; drop solutions over 3000 chars; drop the 300 gsm8k-train holdout questions (1024 rows removed); unwrap every \\boxed{x} so the only answer marker is the appended 'ANSWER: <expected_answer>'; prompts rendered by render.py through templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4), 4% with the exact inspect 10-shot prefix, 13% with 1-4 demos from non-holdout gsm8k train, 83% zero-shot. The trainer reads a seed-0 shuffled 230000-row prefix of this file (--max-rows 230000)."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE; flash_attention_2 2.8.3"
+    peft: "none (full fine-tune of the 3.88B language tower; 419.8M SigLIP vision tower and projector frozen, so config.json stays Gemma3ForConditionalGeneration)"
+    hyperparams: {lr: 2.0e-5, epochs: 1.0, batch_size: "token-budget 49152 padded tokens per micro-batch -> 11/89/244 rows min/median/max, 2460 micro-batches", grad_accum: 2, max_seq_len: 3072, scheduler: cosine_with_min_lr, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit; saved bf16", seed: 0}
+    steps: "1230 optimizer steps, 119.7M training tokens, ~2.4 h at the 14.1k tokens/s exp-02 measured"
+    target_format: "completion = <cleaned OpenMathInstruct-2 solution> + '\\n\\nANSWER: ' + <expected_answer> + '<end_of_turn>'; loss on completion tokens only; rows over max_seq_len dropped (110 of 230110, 0.048%), never truncated"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/sft_big.jsonl, --output-dir, /home/ben/task/ckpts/exp-04, --max-rows, "230000", --lr, "2e-5", --epochs, "1", --token-budget, "49152", --grad-accum, "2", --max-seq-len, "3072", --scheduler, cosine_with_min_lr, --min-lr-ratio, "0.1", --dtype, fp32, --save-steps, "410", --save-total-limit, "6", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 410
+    keep: all   # saves land at 410, 820, 1230 plus final/; --save-total-limit 6 so none is evicted
+  budget: {gpu: H100-80GB, planned_h: 2.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "2", --max-tokens, "4000", --gpu-memory-utilization, "0.3"]
+    note: "identical flags to exp-01/02/03, all at the evaluate.py defaults. The candidate is prepared with prep_ckpt.py --greedy so it carries the same temperature-0.0 generation_config exp-03 adopted; decode is therefore held constant and the only difference from the comparator is the training mixture."
+    dev_set: "official inspect_evals/gsm8k test split --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.78
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "final train loss vs exp-02's 0.2002 (mechanism_test), plus max_tokens share and well-formed ANSWER share from the inspect log to confirm the output contract survived the mixture change"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.34
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-410, step: 410}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-820, step: 820}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1230, step: 1230}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1230}
+    - {path: /home/ben/task/ckpts/exp-04_greedy, step: 1230}
+  training_summary: {final_loss: 0.2758, steps: 1230, notes: "mean train_loss 0.3154 over the run (exp-02: 0.2699); 27.35 samples/s = 14.2k tokens/s; 119.7M tokens in one epoch; peak GPU 75.6 GB, no OOM. --save-total-limit 6 kept all three scheduled saves this time."}
+  measurements:
+    - {metric: accuracy, value: 0.7933, n: 150, path: /home/ben/task/eval/exp-04_greedy_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 0.2758
+    path: /home/ben/task/analysis/exp-04_greedy_dev150_diag.json
+    notes: "mechanism_test met: final train loss 0.2758 and mean 0.3154 against exp-02's 0.2002 / 0.2699 - each target really was seen once and the extra solutions were not near-duplicates. Output contract survived the mixture change: max_tokens_share 0.0067, wellformed_answer_share 0.9933, length p50 465 / p90 709 chars. 31 wrong of 150 vs 33 for exp-03. Held-out probe200 (gsm8k TRAIN, greedy, 10-shot): exp-02 0.835 -> exp-04 0.850."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/probe_exp-04_greedy.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "0.780 -> 0.7933 at n=150 (+1.33 pts, 2 items) against a greedy noise floor of ~1.3 pts: the direction is right and the same ordering shows on the held-out probe200 (0.835 -> 0.850), but 2 items out of 150 cannot separate the two recipes. The mechanism did what was predicted - train loss rose from 0.20 to 0.28 because the targets stopped repeating - so the extra solutions were genuinely distinct; they just did not buy much accuracy."
+  decision: iterate
+  next_step: "Two full fine-tunes of the same base now sit at 0.78 and 0.7933 with different data mixtures and demonstrably different loss surfaces. exp-05: average their weights. A uniform soup of the two scores 0.875 on probe200 against 0.835/0.850 for its ingredients, which is a larger gap than either ingredient showed over the other."

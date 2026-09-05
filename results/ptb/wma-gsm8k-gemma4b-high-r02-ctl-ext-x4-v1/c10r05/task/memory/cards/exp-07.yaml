@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-04T08:15:00Z'
+situation:
+  elapsed_h: 7.2
+  remaining_h: 2.8
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.762, protocol_n: 500}
+  trigger: "exp-06 re-scored the candidates at n=500 and found exp-03's epoch-2 checkpoint 2.4 pts BELOW its epoch-1 one (0.734 vs 0.758) - a gap n=150 had shown as a tie in the other direction. exp-05's RFT stage was therefore built on top of the weaker of the two parents."
+  trigger_evidence:
+    - path: /home/ben/task/eval/exp-03_ck2817_dev500.json
+      locator: "accuracy 0.758, stderr 0.0192 (epoch 1)"
+    - path: /home/ben/task/eval/exp-03_final_dev500.json
+      locator: "accuracy 0.734, stderr 0.0198 (epoch 2) - the parent exp-05 was trained from"
+    - path: /home/ben/task/eval/exp-05_final_dev500.json
+      locator: "accuracy 0.762 - the RFT stage recovered 2.8 pts on top of the weaker parent"
+  alternatives_rejected:
+    - option: "Stop here and ship exp-05/final"
+      reason: "2.8 h remain and this costs ~45 min; final_model already holds exp-05/final, so the downside is bounded to the time and the upside is the 2.4 pt parent gap."
+    - option: "A second RFT round sampled from exp-05/final"
+      reason: "sampling alone was 35 min last time and a second round on the same question pool has a smaller expected effect than fixing the parent, which is a measured 2.4 pt difference."
+    - option: "Re-sample RFT data on-policy for checkpoint-2817 before training"
+      reason: "35 min of sampling for data that would differ only marginally - both parents come from the same run 2817 steps apart and agree on 92%+ of training questions. Re-using data/rft_mix.jsonl keeps this a single-variable change (parent only) against exp-05."
+    - option: "More unseen OpenMathInstruct-2 rows"
+      reason: "exp-03 epoch 1 -> 2 was flat and then negative at n=500; that distribution is spent."
+  pitfalls_hit:
+    - what: "the container's root overlay (/, 64 MB) is 100% full, so uv pip install --system writes truncated files: liger_kernel's 178 source files were all NUL-filled and the first launch of this card died on 'source code string cannot contain null bytes' after three earlier runs had used it successfully"
+      cost_h: 0.1
+      fix: "install training-only packages with --target /home/ben/task/pylibs on the 5.9 TB volume and pass PYTHONPATH; check df -h / before any pip install. final_model is unaffected - liger is a training kernel and is not needed to load or serve the model."
+    - what: "exp-05 was launched from exp-03/final on the n=150 reading that its two epochs were tied; at n=500 they were not, so the RFT stage was spent on the weaker parent"
+      cost_h: 0.0
+      fix: "separate close candidates at the larger n BEFORE choosing a parent, not only when picking the final model"
+  smoke_runs:
+    - command: [uv, pip, install, --target, /home/ben/task/pylibs, --link-mode=copy, --no-deps, liger-kernel]
+      outcome: "the site-packages copy of liger_kernel had been silently null-filled (178 .py files containing NUL) because the container's root overlay is a 64 MB filesystem that is 100% full; reinstalling into a task-local dir on the big volume and putting it on PYTHONPATH restores the import"
+    - command: [python, package_final.py, --src, /home/ben/task/ckpts/exp-05/final, --dst, /home/ben/task/final_model]
+      outcome: "final_model/ written with all 12 required files and loaded on CPU with transformers (4.30B params, vocab 262145); the fallback is in place before this run starts"
+problem:
+  statement: "The RFT stage that produced the current incumbent was applied to exp-03/final, which n=500 shows is 2.4 pts worse than exp-03/checkpoint-2817. The incumbent may be carrying a handicap that costs it points it never needed to lose."
+  evidence:
+    - path: /home/ben/task/eval/exp-03_final_dev500.json
+      locator: "accuracy 0.734 - the parent used"
+      observation: "2.4 pts below checkpoint-2817 at the same n, seed and template"
+    - path: /home/ben/task/eval/exp-03_ck2817_dev500.json
+      locator: "accuracy 0.758 - the parent not used"
+      observation: "already within 0.4 pts of the post-RFT incumbent without any RFT at all"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Running the identical RFT stage (same data/rft_mix.jsonl, same lr, same 1 epoch) from exp-03/checkpoint-2817 instead of exp-03/final scores higher at n=500 than exp-05/final's 0.762."
+  mechanism: "Parent and data are the only two inputs to this stage and only the parent changes, so the 2.4 pt advantage checkpoint-2817 holds before RFT should carry through the same +2.8 pt RFT step. The RFT rows were sampled from exp-03/final, which makes them slightly off-policy here, but the two checkpoints are 2817 steps apart in one run and the rows are filtered on correctness, not on likelihood."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0 to +3 pts at n=500"
+  falsified_if: "the exp-07 checkpoint scores at or below exp-05/final's 0.762 at n=500, in which case exp-05/final stays as final_model."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/checkpoint-2817
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix.jsonl
+      source: "synthetic:self (22,242 rows sampled from exp-03/final) + derived:exp-03 unseen slice of nvidia/OpenMathInstruct-2 train split (20,422 augmented_gsm8k + 4,577 gsm8k)"
+      n_examples: 47241
+      built_by: /home/ben/task/mix_rft.py
+      build_command: [python, rft_sample.py, --model, /home/ben/task/ckpts/exp-03/final, --questions, data/rft_questions.jsonl, --out, data/rft_exp03.jsonl, --k, '4', --temperature, '1.0', --top-p, '0.95', --max-tokens, '512', --keep-per-question, '2', --keep-per-question-hard, '4', --seed, '0']
+      selection: "Questions: all 7,473 GSM8K TRAIN problems plus 5,527 distinct OpenMathInstruct-2 augmented_gsm8k problems - no benchmark test item. A sample is kept only if the number after its single 'ANSWER: ' equals the gold answer; the text is cut at the end of that answer line so nothing follows it; identical samples are deduped; up to 2 distinct paths per question, up to 4 for questions solved in at most half of the 4 tries. Fresh rows are drawn from data/sft_extra250k.jsonl, which was built disjoint by row hash from exp-03's training file. Dedup by row id across the mixture."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE + flash_attention_2, custom completion-only collator; sampling with vLLM 0.11.0"
+    peft: none
+    hyperparams: {lr: 6.0e-6, epochs: 1, batch_size: 32, grad_accum: 2, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "<chain of thought> + blank line + 'ANSWER: <n>' + <end_of_turn>; loss on the model turn only (prompt masked to -100)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --train-file, data/rft_mix.jsonl, --parent, /home/ben/task/ckpts/exp-03/checkpoint-2817, --output-dir, /home/ben/task/ckpts/exp-07, --lr, '6e-6', --epochs, '1', --batch-size, '32', --grad-accum, '2', --max-seq-len, '2560', --save-epochs, --seed, '0', --attn, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True', PYTHONPATH: /home/ben/task/pylibs}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --json-output-file, '{out}.json', --max-connections, '16', --gpu-memory-utilization, '0.8']
+    dev_set: "official --limit 500 (inspect_evals/gsm8k test split, first 500 items, 10-shot seed 42)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.762
+    path: /home/ben/task/eval/exp-05_final_dev500.json
+  diagnostic:
+    what: "share of completions whose stop_reason is 'stop', plus median completion length (RFT on self-samples should not lengthen or destabilise the output)"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.52
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/checkpoint-739, step: 739}
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 739}
+  training_summary: {final_loss: 0.241, steps: 739, notes: "1642 s; train_loss 0.2415 against exp-05's 0.2390 from the other parent - the two stages are near-identical in optimisation terms"}
+  measurements:
+    - {metric: accuracy, value: 0.766, n: 500, path: /home/ben/task/eval/exp-07_final_dev500.json, delta_vs_comparator: 0.004}
+  diagnostic_result:
+    value: 0.984
+    path: /home/ben/task/analysis/exp-07_final_dev500_diagnostic.json
+    notes: "stop share 0.984 (exp-05: 0.990), missing-marker share 0.016 (exp-05: 0.010), median completion 497 chars (exp-05: 475). Slightly worse on all three format diagnostics than exp-05 while being 2 items better on accuracy."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: "0.766 at n=500 against exp-05's 0.762 - 2 items, 0.2 stderr. The 2.4 pt advantage checkpoint-2817 held over exp-03/final before RFT did NOT carry through: after the identical RFT stage the two parents land 0.4 pts apart. The RFT stage washes out the parent difference, so which exp-03 epoch it starts from does not matter."
+  decision: iterate
+  next_step: "exp-08: three checkpoints now sit inside 0.8 pts at n=500 (0.766 / 0.762 / 0.758) and the two RFT models were trained on identical data from two points of one run - the classic setting for weight averaging. Soup exp-05/final and exp-07/final and score the average under the same n=500 protocol."

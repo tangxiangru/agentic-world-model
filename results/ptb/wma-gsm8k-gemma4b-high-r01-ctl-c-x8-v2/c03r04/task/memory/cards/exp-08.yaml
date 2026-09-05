@@ -1,0 +1,125 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T05:28:06Z'
+situation:
+  elapsed_h: 6.8
+  remaining_h: 3.2
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final_greedy
+    score: {metric: accuracy, value: 0.7066, protocol_n: 1319}
+  trigger: "exp-07 settled the ranking: continued training past exp-02 is worth about +0.8 points (0.6983 -> 0.7066 at n=1319), and exp-04 got that from self-generated data. The untested question is whether the same step budget spent on fresh 405B-teacher data - problems exp-02 never saw, solved by the teacher rather than by the model - is worth more."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-07_shootout_full.json, locator: scores, observation: "exp-02 0.6983 -> exp-04 0.7066 at n=1319: continued training moved it, and self-generated data was enough to do that"}
+    - {path: /home/ben/task/eval/final_model_default_args.json, locator: accuracy, observation: "final_model/ already verified end-to-end at 0.6933 on the graded n=150 default protocol, so this card cannot leave the batch without an artefact"}
+  alternatives_rejected:
+    - {option: "Stop here and ship exp-04", reason: "3.2h remain; a 1h run plus a 20-minute n=1319 measurement fits with 1.5h of margin, and final_model/ is already packaged and verified so the downside is bounded at zero"}
+    - {option: "Retrain from base on 120k+ rows for 2 epochs", reason: "~5h at the measured 10k tokens/s; does not fit"}
+    - {option: "Start from exp-02/final for a cleaner A/B against exp-04", reason: "cleaner as an experiment, but exp-04 is the incumbent and the job of the last run is the best artefact; the comparator (exp-04 at n=1319) is equally valid either way"}
+    - {option: "A second RFT round from exp-04", reason: "exp-04 already showed self-generated data returns little; the point of this card is the opposite arm of that comparison"}
+  pitfalls_hit:
+    - {what: "adding --skip-file to scripts/build_data.py in place would have invalidated the build script exp-02 and exp-04 name in setup.data[].built_by", cost_h: 0.0, fix: "copied it to scripts/build_data2.py and patched the copy"}
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_fresh_check.jsonl], outcome: "50000 documents scanned, 0 contaminated, 0 matches"}
+    - {command: [python, scripts/train_sft.py, --data, data/sft_fresh_mix.jsonl, --stats-only, --epochs, '1'], outcome: "59978 rows kept, 22 over max_seq_len (0.037%), 35.6M tokens, 3047 micro-batches"}
+problem:
+  statement: "exp-04 (0.7066 at n=1319) got its gain over exp-02 from 38k self-generated chains, but exp-04's own diagnostic showed the pass@4-to-pass@1 conversion did not happen and the card was scored contradicted. It is therefore not established whether the +0.8 points came from the self-generated content or simply from 1305 more optimizer steps on gsm8k-shaped text. If it is the latter, fresh teacher data at the same step budget should do at least as well, and no card has tested that."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-07_shootout_full.json, locator: "pairs.exp02_vs_exp04, discordant=219", observation: "104 items exp-02 wins, 115 exp-04 wins: continued training reshuffles a sixth of the benchmark for a net 11 items"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion.verdict", observation: "contradicted - the self-distillation mechanism it was built on did not fire"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-04/final for one epoch on 50000 OpenMathInstruct-2 rows drawn from gsm8k problems no previous card trained on, plus a 10000-row replay slice, raises accuracy above exp-04's 0.7066 at n=1319."
+  mechanism: "exp-02 saw 75k rows over about 55k distinct problems, a small slice of the ~460k gsm8k-derived rows available. The 50k fresh rows carry teacher chains for problems the model has never been fit to, so the gradient carries new information instead of reinforcing chains the model already produces - which is exactly what exp-04's self-generated data could not do. The 10k replay slice holds the format and the previous distribution in place."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +3 points"
+  falsified_if: "n=1319 accuracy is at or below exp-04's 0.7066, or format compliance falls below 0.97"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_fresh_mix.jsonl
+      source: "nvidia/OpenMathInstruct-2 @ 469216e3f46f4dacf476b382e192485ea51a143e (problem_source in {gsm8k, augmented_gsm8k}, problems disjoint from data/sft_v2.jsonl) plus a 10000-row replay slice of data/rft_mix_v1.jsonl"
+      n_examples: 60000
+      built_by: /home/ben/task/scripts/build_data2.py
+      build_command: [python, scripts/build_data2.py, --out, data/sft_fresh.jsonl,
+        --n, '50000', --fewshot-frac, '0.12', --max-per-problem, '2', --seed, '21',
+        --skip-file, data/sft_v2.jsonl]
+      selection: "same filters as exp-02 (numeric expected_answer, at most 2 solutions per problem, no \\boxed / '####' / 'ANSWER:' left in the body, a final '\\n\\nANSWER: <n>' line appended, rendered through templates/gemma3.jinja, 12% carrying the grader's 10-shot system prefix) plus the constraint that the problem md5 does not appear in data/sft_v2.jsonl; 10000 rows of rft_mix_v1 shuffled in as replay"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with a custom sparse-LM-head completion-only loss
+    peft: none
+    hyperparams: {lr: 7.0e-06, epochs: 1, batch_size: 1, grad_accum: 4, max_seq_len: 3072,
+      scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02/exp-04: chain of thought, blank line, 'ANSWER: <n>' as the final line, then the stop token"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_fresh_mix.jsonl, --out, /home/ben/task/ckpts/exp-08,
+      --parent, /home/ben/task/ckpts/exp-04/final, --epochs, '1', --lr, '7e-6', --accum,
+      '4', --token-budget, '14336', --max-rows-per-batch, '32', --save-steps, '0',
+      --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/exp-08
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.1
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections,
+      '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 1319 (the whole test split)
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7066
+    path: /home/ben/task/eval/exp07_exp04_dev1319.json
+  diagnostic:
+    what: "format compliance and token-cap overruns at n=1319, plus a McNemar comparison against exp-04's per-item results on the same 1319 items"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.97
+  output_checkpoint: /home/ben/task/ckpts/exp-08/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08/final, step: 762}
+    - {path: /home/ben/task/ckpts/exp-08/final_greedy, step: 762}
+  training_summary:
+    final_loss: 0.28773
+    steps: 762
+    notes: "train_loss 0.2877 over the run (above exp-04's 0.2167 because the 50k rows are unseen problems, not a second pass). 3490 s wall, peak 71.9 GB, 35.6M tokens in one epoch."
+  measurements:
+    - {metric: accuracy, value: 0.71039, n: 1319, path: /home/ben/task/eval/exp08_dev1319.json, delta_vs_comparator: 0.00379}
+    - {metric: accuracy, value: 0.7, n: 150, path: /home/ben/task/eval/final_model_default_args.json, delta_vs_comparator: null}
+  diagnostic_result:
+    value: 0.98863
+    path: /home/ben/task/analysis/exp-08_vs_exp04.json
+    notes: "937/1319 correct vs exp-04's 932: +5 items. McNemar 98 vs 103 discordant, z=0.28, p=0.78 - not separable. Format compliance 1304/1319 vs exp-04's 1307, token-cap overruns 14 vs 12: unchanged within noise, well above the 0.97 floor."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "0.7104 vs exp-04's 0.7066 at n=1319 (+0.38 points, 5 items), clearing both pre-registered falsification tests: the direction is right and format compliance held at 0.989. But the effect is a fifth of the predicted +1 to +3 and McNemar gives p=0.78 across 201 discordant items, so fresh teacher data is not measurably better than self-generated data at the same step budget - the honest reading is that both are equivalent and the model is data-saturated at this scale."
+  decision: adopt
+  next_step: "final_model/ now holds exp-08/final with a greedy generation_config; verified from a fresh process with evaluate.py's own default arguments at 0.700 on n=150. A batch with more time should stop adding gsm8k-style SFT data - four consecutive interventions moved the score by under a point each - and attack the 257 items every checkpoint gets wrong, e.g. with a verifier or a process-reward signal rather than more imitation."

@@ -1,0 +1,115 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T00:10:00Z'
+situation:
+  elapsed_h: 6.1
+  remaining_h: 3.9
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04_greedy
+    score: {metric: accuracy, value: 0.7467, protocol_n: 150}
+  trigger: "exp-05 scored 0.7467 at n=150, exactly equal to exp-04, while its 250-item probe fell 0.780 -> 0.756. Two checkpoints of the same lineage now sit at the same protocol score with different error sets, which is the situation a weight average is for; and there is not enough time left (3.9h, of which ~0.5h is reserved for packaging and verification) for another sampling-plus-training round."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp05_dev150.json, locator: "accuracy 0.7466666"}
+    - {path: /home/ben/task/analysis/probe_exp05_greedy.json, locator: "accuracy 0.756"}
+    - {path: /home/ben/task/analysis/probe_exp04_greedy.json, locator: "accuracy 0.780"}
+  alternatives_rejected:
+    - {option: "A second rejection-sampling round from exp-04", reason: "sampling alone measured 1.2h in exp-04; with training and evaluation it does not fit in 3.9h with a safe reserve"}
+    - {option: "Ship exp-04 and stop", reason: "that stays the fallback and final_model already holds it; the soup costs one probe and at most one protocol eval to test, and cannot lose the incumbent"}
+    - {option: "Average exp-02, exp-04 and exp-05", reason: "exp-02 is 5 points behind on the probe and 2.7 behind on the protocol; averaging it in would pull the soup toward the weaker model. Two-way between the two 0.7467 checkpoints is the comparison worth making."}
+  pitfalls_hit:
+    - {what: "exp-05 was locked expecting +1 to +4 and delivered 0.0 on the protocol and -2.4 on the probe: extra 405B-written solutions to problems already covered are not new supervision in the way distinct problems are", cost_h: 1.4, fix: "recorded as contradicted in exp-05; treat 'more solutions per already-covered problem' as spent"}
+  smoke_runs:
+    - command: [python, soup.py, --src, ckpts/exp-04/final, ckpts/exp-05/final, --dst, ckpts/soup_0405]
+      outcome: "both shards averaged in float32 and written back as bfloat16; tokenizer and config copied from exp-04/final"
+problem:
+  statement: "exp-04 and exp-05 tie at 0.7467 on the protocol but disagree on the probe (0.780 vs 0.756) and therefore on which items they get wrong. Picking one on a 150-item set with stderr 0.036 is picking on noise, and neither model on its own has moved past 0.75."
+  evidence:
+    - {path: /home/ben/task/eval/exp04_dev150.json, locator: "accuracy", observation: "0.7467, stderr 0.0356"}
+    - {path: /home/ben/task/eval/exp05_dev150.json, locator: "accuracy", observation: "0.7467, stderr 0.0356 - identical"}
+    - {path: /home/ben/task/analysis/probe_exp05_greedy.json, locator: "samples", observation: "probe disagrees with exp-04's probe by 2.4 points on the same 250 items"}
+  affected_share: 0.22
+  watch_set:
+    path: /home/ben/task/data/dev250.jsonl
+    n: 250
+    selection: "250 items sampled with seed 1234 from the GSM8K train split, excluded from every training file in this batch"
+hypothesis:
+  claim: "The uniform weight average of exp-04/final and exp-05/final scores higher on the dev250 greedy probe than either parent, and if it does, higher than exp-04's 0.7467 on the protocol."
+  mechanism: "exp-05 is one fine-tuning epoch downstream of exp-04, so the two sit in the same loss basin and their difference is largely the noise of one epoch's data order and gradient path. Averaging weights in that regime cancels part of that noise while keeping the shared solution, which is the standard model-soup result."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+0 to +2 points; this is a variance-reduction move, not a new capability"
+  falsified_if: "the dev250 greedy probe for the soup is at or below exp-04's 0.780, in which case no protocol eval is spent and exp-04 remains final_model."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev250.jsonl
+      source: "derived:exp-01 (openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 TRAIN split, seed 1234); probe input, not training data - this card trains nothing"
+      n_examples: 250
+      built_by: /home/ben/task/prepare_data.py
+      build_command: [python, soup.py, --src, ckpts/exp-04/final, ckpts/exp-05/final, --dst, ckpts/soup_0405]
+      selection: "the held-out probe; no gradient step is taken in this card"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors load/save; uniform mean in float32, stored bfloat16"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged; no training in this card"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, eval_probe.py, --model, ckpts/soup_0405, --decode, greedy, --out, analysis/probe_soup0405_greedy.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/eval_probe.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/logs/exp-06_probe.log
+  output_dir: /home/ben/task/ckpts/soup_0405
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.7467
+    path: /home/ben/task/eval/exp04_dev150.json
+  diagnostic:
+    what: "eval_probe.py --decode greedy on dev250, run first as the gate: the protocol eval is only spent if the soup beats exp-04's 0.780 there"
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/ckpts/soup_0405_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup_0405, step: null}
+    - {path: /home/ben/task/ckpts/soup_0405_greedy, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training: uniform mean of exp-04/final and exp-05/final, computed in float32 and stored bfloat16"}
+  measurements:
+    - {metric: accuracy, value: 0.70, n: 150, path: /home/ben/task/eval/soup0405_dev150.json, delta_vs_comparator: -0.0467}
+  diagnostic_result:
+    value: 0.784
+    path: /home/ben/task/analysis/probe_soup0405_greedy.json
+    notes: "dev250 greedy 0.784 against exp-04's 0.780 and exp-05's 0.756 - it did clear the gate, but by one item out of 250, and 11 fixed against 10 regressed. The protocol then came in at 0.700, 4.7 below exp-04. The two measurements disagree in sign; the honest reading is that the soup is indistinguishable from its parents and the gate was too weak a filter at n=250."
+  watch_set_result: {fixed: 11, still_failing: 54, regressions: 10, path: /home/ben/task/analysis/probe_soup0405_greedy.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The soup scored 0.700 at n=150 against exp-04's 0.7467, so the claim as written - higher than exp-04 on the protocol - is contradicted, even though the 250-item probe was nominally +0.4. Averaging did not cancel the noise; it landed a checkpoint no better than either parent and possibly worse."
+  decision: reject
+  next_step: "exp-04 stays the incumbent and final_model. exp-07: measure how much of exp-04's error is caused by the harness's 10-shot system block itself - training used zero-shot prompts with only 8% of rows carrying a 1-3 shot prefix, while every graded item carries ~1500 tokens of 10-shot context. Probe exp-04 on dev250 at 10 shots (0.780, already measured) against 0 shots."

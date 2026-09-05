@@ -1,0 +1,156 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T00:15:00Z'
+situation:
+  elapsed_h: 1.65
+  remaining_h: 8.35
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04-greedy
+    score: {metric: accuracy, value: 0.6867, protocol_n: 150}
+  trigger: "The recipe is fixed and validated at pilot scale (exp-03 format fix +12.7, exp-04
+    greedy +10.0) but has only ever seen 15000 of the 152817 available GSM8K-domain rows; the
+    remaining lever with a known direction is training-set size."
+  trigger_evidence:
+    - path: /home/ben/task/memory/index.md
+      locator: "exp-02 (0.460) -> exp-03 (0.587) -> exp-04 (0.687), all at 15k rows"
+    - path: /home/ben/task/data/sft_pool.jsonl
+      locator: "152817 rows, 0 contaminated (logs/contam_pool.log)"
+  alternatives_rejected:
+    - option: "Train on all 152817 rows"
+      reason: "measured throughput 11.1 samples/s means 3.8 h for one epoch; that would leave no
+        room for a rejection-sampling round and no slack in the 8.35 h left"
+    - option: "Two epochs over 45k rows instead of one epoch over 90k"
+      reason: "at this scale unique problems are the scarce resource; 90k rows cover 65208 distinct
+        problems against roughly 33k for the 45k file"
+    - option: "Raise the learning rate to 2e-5 to compensate for a single epoch"
+      reason: "1e-5 is the only setting measured on this model; changing data size and lr together
+        would confound the result of a 2.3 h run"
+    - option: "Add MATH-domain rows (augmented_math) for general math ability"
+      reason: "the benchmark is grade-school word problems; the same GPU-hours spent in-domain are
+        worth more, and the mixture change is untested"
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_pool.contam.jsonl]
+      outcome: "0 of 152817 pool documents contaminated; data/sft_main90k.jsonl is the first 90000
+        lines of that shuffled pool (logs/contam_pool.log)"
+problem:
+  statement: "The incumbent is trained on 15000 rows covering roughly 13k distinct grade-school
+    problems. Its remaining dev-150 errors are reasoning and arithmetic errors inside a
+    well-formed answer, the kind that more in-domain training problems reduce."
+  evidence:
+    - path: /home/ben/task/analysis/exp-04_greedy_dev150_samples.jsonl
+      locator: "47 incorrect rows of 150"
+      observation: "149/150 are well formed (one ANSWER line, clean stop); the failures are wrong numbers, not wrong shape"
+    - path: /home/ben/task/eval/exp-04_greedy_dev150.json
+      locator: "accuracy"
+      observation: "0.6867 with 15k training rows"
+  affected_share: 0.313
+  failure_examples:
+    - {id: reason-1, source: /home/ben/task/analysis/exp-04_greedy_dev150_samples.jsonl,
+       question: "(dev-150 item, gold 17)", gold: "17",
+       model_output: "2% of 25 = 0.5 sour oranges ... 25 - 6.5 = 18.5 ... ANSWER: 18.5",
+       failure: "accepts a fractional count of a discrete object"}
+    - {id: reason-2, source: /home/ben/task/analysis/exp-04_greedy_dev150_samples.jsonl,
+       question: "(dev-150 item, gold 400)", gold: "400",
+       model_output: "$11x = 700$ which implies $x = 64$ ... ANSWER: 512",
+       failure: "division done in one asserted step and got wrong"}
+    - {id: reason-3, source: /home/ben/task/analysis/exp-04_greedy_dev150_samples.jsonl,
+       question: "(dev-150 item, gold 40)", gold: "40",
+       model_output: "(sets up the wrong relation between the three quantities) ... ANSWER: 36",
+       failure: "misreads a multi-entity comparison in the problem statement"}
+  watch_set: null
+hypothesis:
+  claim: "Training the same recipe on 90000 rows covering 65208 distinct problems, instead of
+    15000 rows, raises dev-150 accuracy over exp-04's 0.6867 measured under the same greedy
+    decode config."
+  mechanism: "The failures left are reasoning and arithmetic errors on problem types the model has
+    seen few or no examples of; 4.3x more distinct verified problems is the standard way to reduce
+    them, and OpenMathInstruct-2's own scaling curves are monotone in this range."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+3 to +10 points"}
+  falsified_if: "dev-150 accuracy under greedy is not above exp-04's 0.6867"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_main90k.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (train_1M, problem_source in {gsm8k, augmented_gsm8k}); few-shot prefixes drawn from openai/gsm8k train split"
+      n_examples: 90000
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, data/sft_pool.jsonl, --n, '200000',
+        --max-per-problem, '2', --gsm8k-repeat, '0', --fewshot-frac, '0.2', --fewshot-max, '4', --seed, '2']
+      selection: "exp-03's recipe at scale: no terse targets, at most 2 verified solutions per
+        problem, boxed answers unwrapped, numeric answers only, a single 'ANSWER: N' line appended;
+        17895 of the 90000 rows carry 1-4 terse gsm8k-train exemplars in the prompt; first 90000
+        lines of the shuffled 152817-row pool; 65208 distinct problems"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom prompt/completion collator (scripts/train_sft.py)"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 4, grad_accum: 8, max_seq_len: 1536,
+      scheduler: cosine, warmup: 0.03, weight_decay: 0.0,
+      precision: "fp32 weights + bf16 autocast, adamw_bnb_8bit", seed: 0}
+    decode_config: "the training script now writes greedy generation_config.json (do_sample=false,
+      temperature=0, no top_k/top_p) and copies the Gemma3 processor configs into the checkpoint,
+      so the saved model is graded under exp-04's adopted decode config" 
+    target_format: "<start_of_turn>model\\n{rich step-by-step body}\\nANSWER: {number}<end_of_turn>; loss on completion tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d,
+      --data, data/sft_main90k.jsonl, --out, /home/ben/task/ckpts/exp-05, --max-len, '1536',
+      --lr, '1e-5', --epochs, '1', --bs, '4', --grad-accum, '8', --seed, '0', --save-steps, '1400']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints: {every_steps: 1400, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 2.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '32', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: "official gsm8k test --limit 150 (first 150 items, dataset not shuffled)"
+    n: 150
+    seed: 42
+  comparator: {ref: exp-04, value: 0.6867, path: /home/ben/task/eval/exp-04_greedy_dev150.json}
+  diagnostic:
+    what: "share of dev-150 completions that are well formed (exactly one ANSWER line, stop_reason=stop)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.21
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 2811}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-2800, step: 2800}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-1400, step: 1400}
+  training_summary: {final_loss: 0.2894, steps: 2811, notes: "7947 s wall, 11.3 samples/s; mid-run
+    checkpoints at 1400 and 2800 kept as insurance"}
+  measurements:
+    - {metric: accuracy, value: 0.78, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.0933}
+  diagnostic_result:
+    value: 0.973
+    path: /home/ben/task/analysis/exp-05_dev150_samples.jsonl
+    notes: "146/150 well formed; the 4 failures are greedy run-ons that hit max_tokens=4000 with no
+      ANSWER line (0 such cases at 15k scale), mean output 282 tokens vs 200"
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.687 -> 0.780 (+9.3) from 15k to 90k rows / 13k to 65k distinct problems, same
+    recipe and same greedy decode. Format stayed clean apart from 4 greedy run-ons (2.7%), which are
+    now the only non-reasoning failure mode."
+  decision: adopt
+  next_step: "OpenMathInstruct-2 has only ~80.8k distinct gsm8k-domain problems and 65k are already
+    used, but 196774 further verified solutions for those problems are unused; continue training from
+    this checkpoint on 70k of them at a lower lr, then a rejection-sampling round if time allows."

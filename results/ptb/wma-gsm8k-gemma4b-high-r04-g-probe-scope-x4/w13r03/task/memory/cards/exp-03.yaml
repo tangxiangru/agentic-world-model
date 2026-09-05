@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T11:50:35Z'
+situation:
+  elapsed_h: 5.4
+  remaining_h: 4.6
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7333, protocol_n: 150}
+  trigger: "exp-02 removed the termination failure completely (1/150 non-terminating, down from 150/150) and the remaining 40/150 failures are genuine reasoning errors, so no further format work can help. Reading the 40: mis-set-up algebra (bee problem: solved for the wrong variable and answered 200 instead of 400), a dropped constraint (hospital problem: computed gross profit 70000 and ignored that the question asks about the doctors' share, gold 10000), a wrong denominator (pyramid levels: averaged 4 levels but summed only the top 4 of 5, 7.5 vs 60), and an invented assumption (dog food: assumed a 365-day year the problem did not state, 9 vs 5)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_e2_samples.jsonl, locator: "the 40 records with correct=false", observation: "all 40 have stop_reason=stop and a well-formed trailing 'ANSWER:' line; the answers are simply wrong"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.diagnostic_result", observation: "termination 149/150, completion tokens p50 157 - format is solved"}
+  alternatives_rejected:
+    - {option: "A third epoch on data/sft_v1.jsonl", reason: "exp-02 already showed epoch 2 (0.7333) beating epoch 1 (0.7133) by less than one stderr, so the epoch axis is flat here; a third pass over the same 67k rows re-reads solutions the model already fits at loss 0.275 and is the classic way to buy overfitting with an hour of GPU."}
+    - {option: "Pure RFT: train on the self-sampled chains only", reason: "the sampler solves 93.6% of the training problems at k=4, so a pure self-distillation set is dominated by problems the model already gets right and would narrow the distribution. The mixture therefore carries 20001 rows for 10k gsm8k-style OpenMathInstruct-2 problems the stage-1 set never saw, plus a 15000-row replay slice of stage 1."}
+    - {option: "Retrain from the base checkpoint on stage1 + stage2 combined", reason: "148k rows x 2 epochs is ~4.5 h against 6.0 h remaining, which would leave no time to evaluate, select and package final_model. Continuing from exp-02/final for one epoch is ~1.2 h."}
+    - {option: "DPO / GRPO on correct-vs-incorrect pairs", reason: "the sampler already produced the pairs, but a preference or RL stage on a 4B needs a reward pass plus a reference model in memory and has far more ways to fail silently in the ~1.5 h available; SFT on verified-correct chains is the same signal with a fraction of the risk."}
+    - {option: "Keep 2 chains for every solved problem", reason: "a problem the model answers correctly on 4 of 4 samples carries almost no gradient signal. The quota is 1 chain when all k samples are correct and 2 when only some are, which concentrates the set on the frontier; mean correct-of-4 was 3.16, so this is the difference between ~62k and 45606 rows."}
+  pitfalls_hit:
+    - {what: "Trainer's save_pretrained wrote config.text_config.dtype=float32 even after model.to(bfloat16), because the config was populated at fp32 load time; vLLM would have upcast the bf16 shards", cost_h: 0.05, fix: "patched ckpts/exp-02/final/config.json and added _force_bf16_config() to scripts/finalize_ckpt.py"}
+    - {what: "the first build of the stage-2 mixture asserted on a self-sampled chain that quotes the instruction's own 'ANSWER: $12' inside its reasoning, i.e. two answer markers in one target (the double_answer_format pitfall)", cost_h: 0.03, fix: "build_rft_mix.py now drops rows whose completion contains 'ANSWER: ' more than once; 1 of 80607 rows was dropped"}
+    - {what: "THE EXPENSIVE ONE - the first launch of this card trained all 1260 steps (69 min) and then died with zero weights on disk. Continuing from a checkpoint this script itself saved means model.generation_config carries the session's greedy decode config (do_sample False + temperature 0.0), and transformers 4.57 GenerationConfig.validate(strict=True) REFUSES to save that combination: every save_pretrained call, including the end-of-epoch one, raised 'GenerationConfig is invalid'. ckpts/exp-03/checkpoint-1260 contained config.json and nothing else. It cost a full training run and it only appears on the second and later stages of a pipeline, never on the first.", cost_h: 1.25, fix: "train_sft.py now neutralises model.generation_config (temperature/top_p/top_k = None) right after load and writes the greedy json back verbatim after the final save; the run is relaunched with --save-epochs 0 so the only write is the final one"}
+  smoke_runs:
+    - {command: [python, scripts/sample_rft.py, --model, ckpts/exp-02/final, --out, data/rft_smoke.jsonl, --n-omi, '0', --max-problems, '200', --k, '4'], outcome: "200 problems in 15 s of generation; 190/200 solved at least once, mean 3.16 correct of 4, 369 rows. Confirmed the sampler, the answer parser and the <end_of_turn> stop before the 50-minute run."}
+    - {command: [python, scripts/build_rft_mix.py, --rft, data/rft_v1.jsonl, --seen, data/sft_v1_decon.jsonl, --replay, data/sft_v1.jsonl, --out, data/mix_v2.jsonl, --n-fresh, '20000', --n-replay, '15000'], outcome: "80606 rows; token length p50 312 p95 513 max 2032; 0 dropped over 2048; 1 dropped for a second ANSWER marker; every row ends with <end_of_turn>"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/mix_v2_decon.jsonl], outcome: "80606 documents scanned, 0 contaminated, 0 matches"}
+problem:
+  statement: "exp-02 scores 0.7333 and its 40 remaining failures on the graded slice are reasoning errors, not formatting errors: every one of them terminates correctly and emits a well-formed 'ANSWER:' line, and the number in it is wrong. The chains are fluent and step-by-step but set the problem up incorrectly (wrong variable solved for, a constraint from the question dropped, a denominator that does not match the enumeration, an assumption invented to fill a gap). The stage-1 data cannot fix this by being read again: the model already fits it to loss 0.275."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_e2_samples.jsonl, locator: "id gsm8k_01a47d5c", observation: "sets up W=2B, B=2Q correctly, solves 7Q=700 to Q=100, then reports the wrong quantity: 200 instead of 400"}
+    - {path: /home/ben/task/analysis/exp-02_e2_samples.jsonl, locator: "id gsm8k_0e2125c7", observation: "computes revenue 100000 and cost 30000 correctly, answers 70000; gold is 10000, so the question's actual subject was dropped"}
+    - {path: /home/ben/task/analysis/exp-02_e2_samples.jsonl, locator: "id gsm8k_18abb77f", observation: "enumerates 16+8+4+2=30 over 4 levels and answers 7.5; gold 60 - the enumeration itself is wrong"}
+    - {path: /home/ben/task/analysis/exp-02_e2_samples.jsonl, locator: "id gsm8k_1c7c4606", observation: "invents 'assumed to be 365 days (since the problem doesn't specify)' and answers 9; gold 5"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: gsm8k_01a47d5c, source: /home/ben/task/analysis/exp-02_e2_samples.jsonl, question: "bee hive: twice as many workers as babies, twice as many babies as queens, 700 bees total", gold: "400", model_output: "... 7Q = 700 ... ANSWER: 200", failure: "correct algebra, reports the wrong variable"}
+    - {id: gsm8k_0e2125c7, source: /home/ben/task/analysis/exp-02_e2_samples.jsonl, question: "hospital: 500 patients/day, 24 min each, doctors cost $150/h, hospital charges $200/h", gold: "10000", model_output: "... profit of 70000 dollars per day ... ANSWER: 70000", failure: "answers a different quantity than the one asked"}
+    - {id: gsm8k_18abb77f, source: /home/ben/task/analysis/exp-02_e2_samples.jsonl, question: "pyramid levels, each half the one below, top level 16 sq ft", gold: "60", model_output: "16+8+4+2=30 over 4 levels ... ANSWER: 7.5", failure: "wrong enumeration of the levels"}
+    - {id: gsm8k_1c7c4606, source: /home/ben/task/analysis/exp-02_e2_samples.jsonl, question: "Cecilia's puppy: 1 cup/day for 180 days then 2 cups/day, 110 cups per bag", gold: "5", model_output: "'assumed to be 365 days (since the problem doesn't specify)' ... ANSWER: 9", failure: "invents an unstated assumption"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch.jsonl
+    n: 40
+    selection: "every item exp-02's epoch-2 checkpoint got wrong on the frozen 150-item protocol"
+hypothesis:
+  claim: "A second training stage from exp-02/final on 80606 rows - 45606 rejection-sampled chains the checkpoint itself produced and that were verified against gold, 20001 OpenMathInstruct-2 rows for gsm8k-style problems stage 1 never saw, and a 15000-row replay slice of stage 1 - raises accuracy on the frozen 150-item protocol against exp-02's 0.7333."
+  mechanism: "Two effects. (1) Rejection sampling: training on the model's own correct chains reweights its distribution towards the reasoning paths that actually reach gold, and the quota rule (1 chain when all 4 samples are correct, 2 when only some are) concentrates that reweighting on the problems it currently gets right only sometimes - the frontier where the 40 failures live. (2) Coverage: the 20001 fresh rows cover ~10k gsm8k-style problems stage 1 never saw, so the stage adds new problem set-ups rather than only re-reading old ones. The replay slice holds the stage on the distribution that already scores 0.7333."
+  mechanism_note: "The two effects are not separable by this card; the diagnostic below measures the frontier effect only through the watch set."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +6 pts (0.733 -> 0.75-0.79). This is inside the +-3.7 pt stderr of n=150, so the card also prescribes a larger-n selection eval before anything is shipped."}
+  falsified_if: "accuracy at or below 0.7333, or fewer than 8 of the 40 watch-set items fixed"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: "bf16 save of step 2108; config forced to bfloat16"
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/mix_v2.jsonl
+      source: "synthetic:self (45606 rows sampled from /home/ben/task/ckpts/exp-02/final) + nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (20001 rows) + derived:exp-02 (15000-row replay slice of data/sft_v1.jsonl). Problems come from the GSM8K TRAIN split and OpenMathInstruct-2's gsm8k/augmented_gsm8k slices; the test split is never opened."
+      n_examples: 80606
+      built_by: /home/ben/task/scripts/build_rft_mix.py
+      build_command: [python, scripts/build_rft_mix.py, --rft, data/rft_v1.jsonl, --seen, data/sft_v1_decon.jsonl, --replay, data/sft_v1.jsonl, --out, data/mix_v2.jsonl, --n-fresh, '20000', --n-replay, '15000']
+      selection: "Sampling (scripts/sample_rft.py --model ckpts/exp-02/final --n-omi 30000 --k 4 --temperature 1.0 --top-p 0.95 --max-per-problem 2 --seed 0): 37473 problems (7473 GSM8K train + 30000 OpenMathInstruct-2 gsm8k-style), 4 samples each, keep only samples whose trailing 'ANSWER: n' equals gold, dedup identical chains, shortest first, quota 1 if all 4 are correct else 2 -> 45606 rows over 35073 solved problems (93.6%). Fresh rows: OpenMathInstruct-2 gsm8k-style problems absent from both the stage-1 question set and the sampled set, one \\boxed answer agreeing with expected_answer, at most 2 shortest per problem. Replay: 15000 rows drawn at seed 0 from data/sft_v1.jsonl. Rows over 2048 tokens dropped (0) and rows with a second 'ANSWER: ' marker dropped (1)."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross-entropy; bitsandbytes 0.49.1 8-bit AdamW; sampling with vllm 0.11.0"
+    peft: "none (full fine-tune of the 3.88B language model; vision tower and projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 16, grad_accum: 4, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast", seed: 0}
+    target_format: "identical to exp-02: the grader's own prompt rendering (templates/gemma3.jinja, add_generation_prompt=True), loss on the completion only, completion is the chain then a blank line then 'ANSWER: <n>' then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/mix_v2.jsonl, --out, /home/ben/task/ckpts/exp-03, --init, /home/ben/task/ckpts/exp-02/final, --lr, '7e-6', --epochs, '1', --bs, '16', --grad-accum, '4', --max-seq-len, '2048', --seed, '0', --save-epochs, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-03_train.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.25}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '8', --max-tokens, '1024', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle); 10-shot system prefix from the gsm8k TRAIN split with fewshot_seed=42; greedy decoding via the checkpoint's generation_config (temperature 0.0, no top_k/top_p); inspect_ai 0.1.dev3780, vllm 0.11.0"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7333
+    path: /home/ben/task/eval/exp-02_e2_dev150.json
+  diagnostic:
+    what: "how many of the 40 watch-set items (exp-02's failures) this checkpoint now gets right, and how many previously-correct items it breaks - the frontier effect the quota rule is supposed to buy, which the aggregate score at n=150 cannot resolve"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.15
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 1260}
+  training_summary: {final_loss: 0.2167, steps: 1260, notes: "train_runtime 4131 s (1.15 h), 19.51 samples/s, no intermediate checkpoints (--save-epochs 0 after the save-path failure). Final logged loss 0.2114 with grad_norm 3.28. Saved config carries dtype bfloat16 at both the top level and text_config, and generation_config.json is the session's greedy dict; the 8.1 GB of shards are present."}
+  measurements:
+    - {metric: accuracy, value: 0.8000, n: 150, path: /home/ben/task/eval/exp-03_dev150.json, delta_vs_comparator: 0.0667}
+  diagnostic_result:
+    value: 0.0133
+    path: /home/ben/task/analysis/exp-03_samples.jsonl
+    notes: "Termination held: 2/150 non-terminating (exp-02 had 1/150), completion tokens p50 141 p90 267. Paired against exp-02/final on the identical 150 items (scripts/paired_compare.py): 102 both correct, 18 only exp-03, 8 only exp-02, 22 neither; paired difference +0.0667 with paired se 0.0340, z=+1.96. The paired read is what resolves this - each arm's own stderr is ~0.036, which alone would have called +6.7 pts unresolved."
+  watch_set_result: {fixed: 18, still_failing: 22, regressions: 8, path: /home/ben/task/analysis/exp-03_samples.jsonl}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "0.7333 -> 0.8000 at n=150 (+6.7 pts), above the +2 to +6 the card predicted and above the world model's [-0.02, +0.05] interval. 18 of the 40 watch-set items are fixed against 8 regressions elsewhere, net +10, and termination is unchanged at 2/150 - so the gain is reasoning, not format, which is what the frontier-weighted rejection sampling plus fresh-problem coverage was for."
+  decision: adopt
+  next_step: "exp-04 re-scores exp-03/final, exp-02/final and exp-02/e1 on the first 500 test items under the otherwise identical protocol before anything is written to final_model. The regression rule, written down before those numbers were read: final_model gets exp-03/final only if its PAIRED advantage over exp-02/final at n=500 is positive; otherwise the incumbent ships. Two caveats this card did not resolve, both flagged by the WMA and both accepted rather than fixed: (a) the mixture is 98.5% zero-shot (1234 of 80606 rows carry a k-shot prefix, down from 8% in stage 1) while the grader always prepends a 10-shot block - accepted because the measured termination and accuracy under the real 10-shot protocol both improved, so the shift did not bite; (b) the rejection-sampling and fresh-coverage effects are confounded in this single arm and cannot be separated by it."
