@@ -47,7 +47,8 @@ def synthetic_runtime_source(name):
 @pytest.fixture(autouse=True)
 def use_explicit_synthetic_runtime_identities(monkeypatch):
     monkeypatch.setattr(environment, "SOURCE_RUNTIME_SHA256", {
-        name: hashlib.sha256(json.dumps(synthetic_runtime_source(name), sort_keys=True).encode()).hexdigest()
+        name: hashlib.sha256(json.dumps({k: v for k, v in synthetic_runtime_source(name).items()
+                                        if k != "materialization"}, sort_keys=True).encode()).hexdigest()
         for name in ("opus_5.sif", "vllm_debug.sif")})
 
 
@@ -68,7 +69,7 @@ def report_fixture(tmp_path):
     for name, digest in {"opus_5.sif": rec["contract"]["container"]["sha256"],
                          "vllm_debug.sif": rec["contract"]["evaluation_container"]["sha256"]}.items():
         base = f"official_eval/{name}/normal/" + ("home/task" if name == "opus_5.sif" else "result")
-        source_runtime = synthetic_runtime_source(name)
+        source_runtime = {**synthetic_runtime_source(name), "materialization": None}
         source_sha = environment.SOURCE_RUNTIME_SHA256[name]
         materialization = {"source_image": {"sha256": digest}, "source_runtime": source_runtime,
                            "source_runtime_sha256": source_sha}

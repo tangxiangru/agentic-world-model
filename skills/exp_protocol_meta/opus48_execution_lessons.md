@@ -31,3 +31,12 @@ The completed review and E-repair decision are in
 `doc/spec/2026-09-05-exp-protocol-e-repair-discovery.md`. Recipe observations,
 including BF16, RFT and few-shot effects, remain conditional precedents rather
 than mandatory scientist rules.
+
+
+Native admission lessons from job93133: retain Inspect's extensionless JSON view
+record as a regular file; missing ancillary bytes can make a sound raw run fail
+archive validation. Compare runtime identity against the pinned native identity
+function, not a generic hash of serialized dataclass fields: unstaged Runtime
+omits null materialization. Preserve failed harvest diagnostics and revalidate
+unchanged raw evidence; do not mutate frozen expected hashes or rerun models to
+repair a consumer-only serialization/retention defect.

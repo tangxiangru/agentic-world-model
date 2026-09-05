@@ -98,3 +98,10 @@ two exact native view-record paths through the same no-symlink regular-file
 reader and validates every indexed byte as before. Retain the first status as
 an audit record and reharvest the identical attempt; no PTB/runtime/source or
 scientific treatment changes and no new GPU attempt are required.
+
+The next archive check exposed a consumer canonicalization mismatch: the native
+Runtime.identity omits `materialization: null` for the original unstaged runtime,
+while AWM hashed the serialized field. Recomputing with the pinned native rule
+reproduces both pre-existing frozen source hashes exactly; neither expected hash
+is changed. Full real-byte native validation now passes for both images. The
+synthetic fixture was corrected to use the same original identity convention.

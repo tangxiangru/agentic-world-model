@@ -203,7 +203,12 @@ def _validate_native_files(root, indexed, name, image, receipt):
     transported_runtime = runtime.get("runtime")
     if not isinstance(original_runtime, dict) or not isinstance(transported_runtime, dict):
         raise EnvironmentError("native runtime manifests are missing")
-    original_sha = hashlib.sha256(json.dumps(original_runtime, sort_keys=True).encode()).hexdigest()
+    # Runtime.identity preserves the original unstaged identity by omitting the
+    # optional null field emitted by dataclasses.asdict in the transport receipt.
+    original_payload = dict(original_runtime)
+    if original_payload.get("materialization") is None:
+        original_payload.pop("materialization", None)
+    original_sha = hashlib.sha256(json.dumps(original_payload, sort_keys=True).encode()).hexdigest()
     transported_sha = hashlib.sha256(json.dumps(transported_runtime, sort_keys=True).encode()).hexdigest()
     materialization_sha = hashlib.sha256(
         (json.dumps(materialization, sort_keys=True, indent=2) + "\n").encode()).hexdigest()
