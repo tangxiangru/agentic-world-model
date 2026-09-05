@@ -70,3 +70,7 @@ AIME2025 remains reserved; this is discovery, not baseline promotion.
 CPU regression/behavior checks and informed reviews are prerequisites, not
 evidence the node passed. The actual acceptance receipt and its validated raw
 results are the final admission gate. No HumanEval model result exists yet.
+
+## Actual node entrypoint correction
+
+Environment job93104 reached the frozen source on ondem0 but stopped before the probe: the worker has no `python` alias. Its exact stderr is retained in the failed environment bundle. A no-GPU, non-root read in owned job93070 confirmed `/usr/bin/python3`3.10.12, working pidfd APIs, and readable shared bwrap/Apptainer/config paths. V2 changes the host call to python3, retains the same probe logic and hashes, and freezes a new PTB commit. It is still an environment operation, not a scientist repeat or score.
