@@ -523,3 +523,26 @@ def test_humaneval_release_refuses_missing_admission_before_any_release(tmp_path
     monkeypatch.setattr(ptb.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not release"))
     with pytest.raises(ptb.ExperimentError, match="HumanEval environment admission failed"):
         ptb.release_held(path)
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_native_extensionless_view_record_is_retained_without_following_links(tmp_path, monkeypatch, symlink):
+    rec, job, root, report = report_fixture(tmp_path)
+    relative = "official_eval/opus_5.sif/normal/home/.local/share/inspect_ai/view/last-eval-result"
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    raw = b'{"location":"/home/ben/task/logs/example.json"}\n'
+    if symlink:
+        other = tmp_path / "outside.json"
+        other.write_bytes(raw)
+        path.symlink_to(other)
+    else:
+        path.write_bytes(raw)
+    report["images"]["opus_5.sif"]["raw_files"].append(
+        {"path": relative, "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)})
+    (root / "acceptance.json").write_text(json.dumps(report))
+    monkeypatch.setattr(ptb, "_expanded_nodes", lambda _: NODES)
+    status = ptb_ops.harvest_environment(rec, job, tmp_path / "bundle", state="COMPLETED")
+    assert status["acceptance_state"] == ("failed" if symlink else "passed")
+    if not symlink:
+        assert (tmp_path / "bundle/environment" / relative).read_bytes() == raw

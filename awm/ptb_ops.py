@@ -609,7 +609,12 @@ def harvest_environment(receipt: dict, job: dict, out_dir: Path, *, state: str |
                     errors.append("symlink environment directory refused")
             for filename in files:
                 relative = (Path(directory) / filename).relative_to(root)
-                if relative.suffix not in {".json", ".jsonl", ".txt", ".log", ".out", ".err", ".eval", ".gz"}:
+                inspect_view_record = relative.as_posix() in {
+                    f"official_eval/{image}/normal/home/.local/share/inspect_ai/view/last-eval-result"
+                    for image in ("opus_5.sif", "vllm_debug.sif")
+                }
+                if (not inspect_view_record
+                        and relative.suffix not in {".json", ".jsonl", ".txt", ".log", ".out", ".err", ".eval", ".gz"}):
                     errors.append(f"unsupported environment artifact: {relative}")
                     continue
                 try:

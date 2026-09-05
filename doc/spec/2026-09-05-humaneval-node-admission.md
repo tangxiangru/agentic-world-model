@@ -87,3 +87,14 @@ timeout. This is a source repair, never retrospective relabeling of V2.
 Final focused CPU suite17 passed; related sandbox/evidence/provenance suite
 passed with22 explicit native skips. Independent review found and fixed zombie
 reaping and PID ownership races. Production retains the existing time budgets.
+
+## Real acceptance and archive repair
+
+Job93133 completed both images on ondem0, with normal native cases and outer
+termination cleanup passing. The first harvest omitted Inspect's ordinary
+extensionless JSON file `view/last-eval-result`, so the archived copy failed
+raw-index verification. The source evidence is intact. AWM now retains only the
+two exact native view-record paths through the same no-symlink regular-file
+reader and validates every indexed byte as before. Retain the first status as
+an audit record and reharvest the identical attempt; no PTB/runtime/source or
+scientific treatment changes and no new GPU attempt are required.
