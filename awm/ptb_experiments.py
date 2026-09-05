@@ -21,7 +21,7 @@ from typing import Any
 
 import yaml
 
-from awm import paths
+from awm import paths, ptb_environment
 
 PTB_ROOT = paths.REPO_ROOT / "third_party" / "PostTrainBench"
 SUBMIT = PTB_ROOT / "src" / "commit_utils" / "slurm" / "submit.sh"
@@ -469,6 +469,11 @@ def validate_manifest(data: dict[str, Any]) -> None:
         raise ExperimentError("ownership.branch must be a non-empty Slurm-safe branch name")
     if not spec.startswith("doc/spec/") or not (paths.REPO_ROOT / spec).is_file():
         raise ExperimentError("ownership.spec must name an existing committed spec under doc/spec")
+    try:
+        ptb_environment.validate_operation(data)
+        ptb_environment.requested_nodes(data)
+    except ptb_environment.EnvironmentError as exc:
+        raise ExperimentError(str(exc)) from exc
     contract = data.get("contract") or {}
     tasks = _batch_tasks(contract)
     expected = {
@@ -639,7 +644,10 @@ def build_launches(
     if cell_ids:
         selected = [_cell(data, cell_id) for cell_id in cell_ids]
     hours = data["pilot"]["agent_budget_hours"] if pilot else contract["agent_budget_hours"]
-    run_purpose = purpose or (f"pilot-{hours}h" if pilot else "formal")
+    operation = ptb_environment.is_operation(data)
+    if operation and (pilot or purpose not in (None, ptb_environment.KIND)):
+        raise ExperimentError("environment acceptance cannot become a pilot, retry or context smoke")
+    run_purpose = ptb_environment.KIND if operation else purpose or (f"pilot-{hours}h" if pilot else "formal")
     launches = []
     for cell in selected:
         branch, job_name, experiment_name = _run_identity(data, cell["id"], run_purpose)
@@ -667,8 +675,13 @@ def build_launches(
             "--judge-profile",
             "official",
         )
-        if hold:
+        if hold or operation:
             command = (*command, "--hold")
+        requested = ptb_environment.requested_nodes(data)
+        if requested is not None:
+            command = (*command, "--nodelist", ",".join(sorted(requested)))
+        if operation:
+            command = (*command, "--environment-acceptance", "humaneval", "--walltime", data["operation"]["walltime"])
         context_profile = f"{cell['agent_model']}:{cell['effort']}"
         record = (paths.REPO_ROOT / data["context_validation"][context_profile]).resolve()
         environment = {
@@ -698,6 +711,16 @@ def build_launches(
             "POST_TRAIN_BENCH_SPEC_PATH": data["ownership"]["spec"],
             "POST_TRAIN_BENCH_EXPECTED_CONTEXT_TOKENS": str(cell["context_tokens"]),
         }
+        if requested is not None:
+            environment["POST_TRAIN_BENCH_FROZEN_REQUESTED_NODES"] = ",".join(sorted(requested))
+        if operation:
+            environment["POST_TRAIN_BENCH_ENVIRONMENT_ACCEPTANCE_OUTPUT_ROOT"] = str(
+                ptb_environment.environment_output_root(paths.data_root(), data))
+            environment["POST_TRAIN_BENCH_ENVIRONMENT_ACCEPTANCE_SPEC"] = json.dumps({
+                "operation": data["operation"], "images": {
+                    contract["container"]["name"] + ".sif": contract["container"]["sha256"],
+                    contract["evaluation_container"]["name"]: contract["evaluation_container"]["sha256"]}}, sort_keys=True)
+            environment["POST_TRAIN_BENCH_REQUIRE_COMPLETE"] = "0"
         if record.is_file():
             environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"] = _sha256(record)
         checkout = None
@@ -727,6 +750,20 @@ def local_issues(
     selected_cells = (
         [_cell(data, cell_id) for cell_id in cell_ids] if cell_ids else list(data["cells"])
     )
+    try:
+        ptb_environment.validate_operation(data)
+        site = read_ptb_env().get("POST_TRAIN_BENCH_SLURM_NODELIST", "")
+        if "placement" in data:
+            ptb_environment.effective_nodes(data, _expanded_nodes(site))
+    except (ptb_environment.EnvironmentError, ExperimentError) as exc:
+        issues.append(str(exc))
+    if ptb_environment.is_operation(data):
+        for name, relative in ptb_environment.SOURCE_PATHS.items():
+            path = PTB_ROOT / relative
+            if not path.is_file() or not _is_git_tracked(PTB_ROOT, relative):
+                issues.append(f"missing or untracked environment source: {relative}")
+            elif _sha256(path) != data["operation"][f"{name}_sha256"]:
+                issues.append(f"environment source hash mismatch: {relative}")
     selected_tasks = {_cell_task(contract, cell) for cell in selected_cells}
     for task in selected_tasks:
         required_assets = [
@@ -749,6 +786,7 @@ def local_issues(
             elif not _is_git_tracked(PTB_ROOT, relative):
                 issues.append(f"untracked agent asset cannot enter frozen source: {relative}")
     env = read_ptb_env()
+    issues.extend(ptb_environment.worker_source_issues(paths.REPO_ROOT, PTB_ROOT, env))
     containers = Path(env.get("POST_TRAIN_BENCH_CONTAINERS_DIR", PTB_ROOT / "containers"))
     hf_home = Path(env.get("HF_HOME", ""))
     selected_base_models = {cell["base_model"] for cell in selected_cells}
@@ -1062,6 +1100,15 @@ def submit(
     cell_ids: list[str] | None = None,
     keep_held: bool = False,
 ) -> Path:
+    operation = ptb_environment.is_operation(data)
+    if operation and (pilot or cell_ids):
+        raise ExperimentError("environment acceptance requires a new immutable whole-batch receipt")
+    if "placement" in data:
+        keep_held = True
+    if operation:
+        keep_held = True
+        if not read_ptb_env().get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY"):
+            raise ExperimentError("environment acceptance requires the ownership registry")
     if pilot and cell_ids:
         raise ExperimentError("pilot and explicit retry cells are mutually exclusive")
     if pilot and keep_held:
@@ -1082,7 +1129,10 @@ def submit(
     dry_run(data, pilot=pilot)
     submitted_at = datetime.now(timezone.utc).isoformat()
     out_dir = paths.ensure(paths.data_root() / "ptb" / "batches" / data["batch_id"])
-    if pilot:
+    if operation:
+        kind = ptb_environment.KIND
+        run_purpose = kind
+    elif pilot:
         kind = "pilot"
         run_purpose = None
     elif selected_cell_ids:
@@ -1143,6 +1193,12 @@ def submit(
         },
         "jobs": [],
     }
+    if "placement" in data:
+        receipt["placement"] = data["placement"]
+    if operation:
+        receipt["operation"] = data["operation"]
+        receipt["environment_output_root"] = str(ptb_environment.environment_output_root(paths.data_root(), data))
+        receipt["environment_uid"] = os.getuid()
     output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     frozen_environment = {
         "POST_TRAIN_BENCH_FROZEN_TOP_BRANCH": snapshot["top_branch"],
@@ -1300,6 +1356,10 @@ def release_held(
     frozen_nodes = _expanded_nodes(frozen_nodelist)
     if not frozen_nodes:
         raise ExperimentError("held receipt has no frozen Slurm nodes")
+    try:
+        requested_nodes = ptb_environment.effective_nodes(receipt, frozen_nodes)
+    except ptb_environment.EnvironmentError as exc:
+        raise ExperimentError(str(exc)) from exc
     reservation = str(
         (receipt.get("site") or {}).get("POST_TRAIN_BENCH_SLURM_RESERVATION", "")
     )
@@ -1352,11 +1412,11 @@ def release_held(
                 f"{reason.group(1) if reason else 'missing'}, expected JobHeldUser"
             )
         actual_nodes = _expanded_nodes(requested.group(1) if requested else "")
-        if actual_nodes != frozen_nodes:
+        if actual_nodes != requested_nodes:
             raise ExperimentError(
                 f"held job {job_id} ReqNodeList differs from frozen receipt: "
                 f"{','.join(sorted(actual_nodes)) or '(null)'} vs "
-                f"{','.join(sorted(frozen_nodes))}"
+                f"{','.join(sorted(requested_nodes))}"
             )
 
     job_ids = ",".join(str(job["job_id"]) for job in receipt["jobs"])
@@ -1477,7 +1537,11 @@ def result_for_job(job_id: str) -> Path | None:
 def receipt_status(receipt: dict[str, Any]) -> list[dict[str, str | None]]:
     status = []
     for job in receipt["jobs"]:
-        result_dir = result_for_job(job["job_id"])
+        if ptb_environment.is_operation(receipt):
+            candidate = ptb_environment.report_directory(receipt, job)
+            result_dir = candidate if candidate.is_dir() else None
+        else:
+            result_dir = result_for_job(job["job_id"])
         status.append(
             {
                 "cell_id": job["cell_id"],
@@ -1492,6 +1556,19 @@ def receipt_status(receipt: dict[str, Any]) -> list[dict[str, str | None]]:
 
 def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
     issues: dict[str, list[str]] = {}
+    if ptb_environment.is_operation(receipt):
+        for job in receipt["jobs"]:
+            errors = []
+            if _job_state(str(job["job_id"])) != "COMPLETED":
+                errors.append("environment job has not completed")
+            try:
+                ptb_environment.validate_acceptance(receipt, job,
+                    site_nodes=_expanded_nodes(str(receipt.get("site", {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", ""))),
+                    expected_uid=receipt.get("environment_uid"))
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                errors.append(str(exc))
+            issues[job["cell_id"]] = errors
+        return issues
     expected_source = receipt.get("source") or {}
     ownership = receipt.get("ownership") or {}
     contract = receipt.get("contract") or {}
@@ -1571,6 +1648,10 @@ def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
                         cell_issues.append("runtime base-model cache snapshot is incomplete")
                     if provenance.get("judge_profile") != "official":
                         cell_issues.append("runtime provenance judge profile is not official")
+                    allowed_nodes = ptb_environment.effective_nodes(receipt, _expanded_nodes(
+                        str(site.get("POST_TRAIN_BENCH_SLURM_NODELIST", ""))))
+                    if slurm.get("node") not in allowed_nodes:
+                        cell_issues.append("runtime Slurm node is outside frozen requested nodes")
                     if slurm.get("partition") != site.get("POST_TRAIN_BENCH_SLURM_PARTITION"):
                         cell_issues.append("runtime Slurm partition differs from frozen site")
                     if str(slurm.get("cpus_per_task")) != str(contract.get("cpus")):

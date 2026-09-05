@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from awm import ptb_environment
+
 DEFAULT_QUEUE_ROOT = Path("/rmeng_data/robtang/slurm-queue")
 DEFAULT_NODES = [f"slurm2-a3nodesetondem-{index}" for index in range(4)]
 DEFAULT_SUBQUEUES = {
@@ -234,6 +236,14 @@ def register_receipt(
     }
     if subqueue:
         source["subqueue"] = subqueue
+        try:
+            allowed = ptb_environment.effective_nodes(receipt, set(subqueue_config(registry, subqueue)["nodes"]))
+        except ptb_environment.EnvironmentError as exc:
+            raise QueueError(str(exc)) from exc
+        if "placement" in receipt:
+            source["placement"] = receipt["placement"]
+            for job in source["jobs"]:
+                job["requested_nodes"] = sorted(allowed)
     return _update_registry(source, registry_path)
 
 
@@ -435,6 +445,7 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
                     "job_id": job_id,
                     "cell_id": expected_job.get("cell_id", ""),
                     "expected_name": expected_job.get("job_name", ""),
+                    "requested_nodes": expected_job.get("requested_nodes"),
                     "work_dir": expected_job.get("work_dir", ""),
                     "stdout": expected_job.get("stdout", ""),
                 }
@@ -490,13 +501,15 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
                 for part in str(job.get("nodes", "")).split(",")
                 if part and part not in {"-", "(null)", "N/A"}
             }
-            outside = sorted(actual_nodes - allowed_nodes)
+            job_allowed = set(job["requested_nodes"]) if job.get("requested_nodes") else allowed_nodes
+            job_allowed &= allowed_nodes
+            outside = sorted(actual_nodes - job_allowed)
             if outside:
                 placement_violations.append(
                     {
                         "job_id": job["job_id"],
                         "subqueue": name,
-                        "expected_nodes": sorted(allowed_nodes),
+                        "expected_nodes": sorted(job_allowed),
                         "actual_nodes": sorted(actual_nodes),
                         "outside_nodes": outside,
                     }

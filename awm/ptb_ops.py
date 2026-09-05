@@ -30,7 +30,7 @@ from typing import Any
 
 import yaml
 
-from awm import paths, ptb_evidence_retention, ptb_results, slurm_queue
+from awm import paths, ptb_environment, ptb_evidence_retention, ptb_results, slurm_queue
 from awm import ptb_experiments as ptb
 
 QUEUE_PATH = Path("experiments/posttrainbench/queue.yaml")
@@ -139,7 +139,7 @@ def load_queue(path: Path, repo_root: Path) -> list[dict[str, Any]]:
 
 # ---------------------------------------------------------------- receipts
 
-RECEIPT_NAME = re.compile(r"^(?P<kind>pilot|formal(?:-retry\d+)?)-(?P<stamp>.+)\.json$")
+RECEIPT_NAME = re.compile(r"^(?P<kind>environment-acceptance|pilot|formal(?:-retry\d+)?)-(?P<stamp>.+)\.json$")
 
 
 def _receipt_kind(name: str) -> str:
@@ -270,7 +270,8 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
         formal_receipts = [
             (name, receipt)
             for name, receipt in receipts
-            if _receipt_kind(name).startswith("formal")
+            if (_receipt_kind(name) == ptb_environment.KIND if ptb_environment.is_operation(manifest)
+                else _receipt_kind(name).startswith("formal"))
         ]
         if formal_receipts:
             held_receipts = [
@@ -335,7 +336,9 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
                 actions.append(Action("blocked", batch,
                                       "pilot did not validate as eligible; the planner decides what happens"))
                 continue
-        actions.append(Action("submit", batch, "formal cells", manifest=entry["manifest"]))
+        actions.append(Action("submit", batch,
+                              "environment acceptance" if ptb_environment.is_operation(manifest) else "formal cells",
+                              manifest=entry["manifest"], keep_held=ptb_environment.is_operation(manifest)))
     return actions
 
 
@@ -583,6 +586,54 @@ def _submission_ownership_issue() -> str | None:
     return "OWNERSHIP FAIL: " + (", ".join(parts) or "see gangda-slurm-queue")
 
 
+def harvest_environment(receipt: dict, job: dict, out_dir: Path, *, state: str | None,
+                        slurm_log_dir: Path | None = None) -> dict:
+    """Retain a probe attempt without asking a scientific validator to score it."""
+    status = harvest_job(None, out_dir, batch=receipt["batch_id"], cell=job["cell_id"],
+                         job_id=str(job["job_id"]), job_name=job.get("job_name"), state=state,
+                         slurm_log_dir=slurm_log_dir)
+    status.update(scientific_result=False, complete=False, eligible=False,
+                  acceptance_state="failed", acceptance_errors=[])
+    errors = status["acceptance_errors"]
+    try:
+        root = ptb_environment.report_directory(receipt, job)
+        status["environment_result_dir"] = str(root)
+        target = out_dir / "environment"
+        target.mkdir()
+        # Preserve failed/interrupted logs too, independent of a successful report.
+        for directory, dirs, files in os.walk(root, followlinks=False,
+                                             onerror=lambda exc: errors.append(str(exc))):
+            for dirname in list(dirs):
+                if (Path(directory) / dirname).is_symlink():
+                    dirs.remove(dirname)
+                    errors.append("symlink environment directory refused")
+            for filename in files:
+                relative = (Path(directory) / filename).relative_to(root)
+                if relative.suffix not in {".json", ".jsonl", ".txt", ".log", ".out", ".err", ".eval", ".gz"}:
+                    errors.append(f"unsupported environment artifact: {relative}")
+                    continue
+                try:
+                    raw = ptb_environment._read_regular(root, relative.as_posix())
+                    destination = target / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(raw)
+                except (OSError, ValueError) as exc:
+                    errors.append(str(exc))
+        site_nodes = ptb._expanded_nodes(str(receipt.get("site", {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", "")))
+        report = ptb_environment.validate_acceptance(
+            receipt, job, site_nodes=site_nodes, expected_uid=receipt.get("environment_uid"),
+            directory=target)
+        if state != "COMPLETED":
+            errors.append(f"environment scheduler state is {state}, expected COMPLETED")
+        if not errors:
+            status["acceptance_state"] = "passed"
+            status["accepted_node"] = report["node"]
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        errors.append(str(exc))
+    (out_dir / STATUS).write_text(json.dumps(status, indent=2) + "\n")
+    return status
+
+
 def _receipt_expected_nodes(receipt_path: Path) -> set[str]:
     receipt = ptb.load_receipt(receipt_path)
     nodelist = str((receipt.get("site") or {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", ""))
@@ -599,7 +650,11 @@ def _receipt_expected_nodes(receipt_path: Path) -> set[str]:
             f"cannot expand frozen Slurm nodelist {nodelist}: "
             f"{result.stderr.strip() or 'scontrol failed'}"
         )
-    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    try:
+        return ptb_environment.effective_nodes(receipt, {
+            line.strip() for line in result.stdout.splitlines() if line.strip()})
+    except ptb_environment.EnvironmentError as exc:
+        raise OpsError(str(exc)) from exc
 
 
 def _log(repo_root: Path, line: str) -> None:
@@ -709,9 +764,19 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
             else:
                 line = f"cancel {action.batch}/{action.cell} job={record['job_id']} ({record['state_before']}): {action.detail}"
         elif action.kind == "harvest":
-            result_dir = result_for_job(str(action.job_id))
             out_dir = repo_root / RESULTS_ROOT / action.batch / str(action.cell)
             receipt_path = repo_root / RESULTS_ROOT / action.batch / str(action.receipt)
+            loaded_receipt = ptb.load_receipt(receipt_path)
+            if ptb_environment.is_operation(loaded_receipt):
+                job = next(j for j in loaded_receipt["jobs"] if str(j["job_id"]) == str(action.job_id)
+                           and str(j["cell_id"]) == str(action.cell))
+                status = harvest_environment(loaded_receipt, job, out_dir, state=action.state,
+                                             slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm")
+                line = f"harvest {action.batch}/{action.cell} job={action.job_id}: environment {status['acceptance_state']} (not scientific)"
+                _log(repo_root, line)
+                written.append(line)
+                continue
+            result_dir = result_for_job(str(action.job_id))
             try:
                 expected_task = ptb.receipt_task(ptb.load_receipt(receipt_path), str(action.job_id), str(action.cell))
             except (ptb.ExperimentError, OSError, ValueError):
@@ -772,6 +837,15 @@ def harvest_cli(args) -> int:
             matches.append((path, task))
         except (ptb.ExperimentError, OSError, ValueError):
             continue
+    if len(matches) == 1:
+        receipt = ptb.load_receipt(matches[0][0])
+        if ptb_environment.is_operation(receipt):
+            job = next(j for j in receipt["jobs"] if str(j["job_id"]) == str(args.job)
+                       and str(j["cell_id"]) == str(args.cell))
+            status = harvest_environment(receipt, job, out, state=args.state,
+                                         slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm")
+            print(f"wrote {out / STATUS}: environment {status['acceptance_state']} (not scientific)")
+            return 0 if status["acceptance_state"] == "passed" else 1
     expected_task = matches[0][1] if len(matches) == 1 else None
     expected_nodes = _receipt_expected_nodes(matches[0][0]) if len(matches) == 1 else None
     status = harvest_job(Path(args.result_dir) if args.result_dir else None, out, batch=args.batch,

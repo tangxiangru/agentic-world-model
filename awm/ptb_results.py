@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from awm import paths
+from awm import paths, ptb_environment
 from awm import ptb_experiments as ptb
 
 JUDGE_FLAGS = (
@@ -133,6 +133,10 @@ def _expected_nodes_by_job(batch_id: str) -> dict[str, set[str]]:
             continue
         nodelist = str((receipt.get("site") or {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", ""))
         nodes = _expand_nodelist(nodelist) if nodelist else set()
+        try:
+            nodes = ptb_environment.effective_nodes(receipt, nodes)
+        except ptb_environment.EnvironmentError:
+            nodes = set()
         for job in receipt["jobs"]:
             if isinstance(job, dict) and job.get("job_id"):
                 expected[str(job["job_id"])] = nodes
@@ -143,6 +147,8 @@ def discover_attempts(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]
     """Discover attempts by frozen provenance instead of directory-name conventions."""
     cells = {str(cell["id"]): cell for cell in manifest["cells"]}
     attempts: dict[str, list[dict[str, Any]]] = {cell_id: [] for cell_id in cells}
+    if ptb_environment.is_operation(manifest):
+        return attempts  # Environment probes can never be discovered as scientific sessions.
     expected_nodes = _expected_nodes_by_job(str(manifest.get("batch_id", "")))
     for provenance_path in _results_root().glob("*/*/runtime_provenance.json"):
         provenance = _read_json(provenance_path)
