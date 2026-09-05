@@ -1,0 +1,97 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-05T01:40:12Z'
+situation:
+  elapsed_h: 4.1
+  remaining_h: 5.9
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03
+    score: {metric: accuracy, value: 0.660, protocol_n: 150}
+  trigger: "exp-03 reached 0.660; to push further, add self-generated correct chain-of-thought (rejection sampling / STaR) in the model's own style for GSM8K-train questions."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: "accuracy 0.660"}
+  alternatives_rejected:
+    - {option: "More MetaMath (120k)", reason: "train_loss already 0.13 at 2 epochs; self-generated correct solutions target the model's actual reasoning distribution and are cheap to sample"}
+    - {option: "More epochs", reason: "overfitting risk; data is the lever"}
+  pitfalls_hit:
+    - {what: "vllm 0.11 LLM.generate() rejected prompt_token_ids kwarg (API change); process hung holding 66GB GPU (orphaned EngineCore) after the crash", cost_h: 0.9, fix: "pass prompts=[TokensPrompt(prompt_token_ids=ids)]; kill -9 main+EngineCore to free GPU; re-lock"}
+  smoke_runs: []
+problem:
+  statement: "exp-03 still misses ~34% of dev-150. Rejection-sampled correct solutions from exp-03 on GSM8K-train give additional in-distribution supervised targets to reinforce correct multi-step reasoning."
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: "accuracy 0.660", observation: "51/150 still wrong"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Sampling exp-03 (n=4, temp 1.0) on the 7473 GSM8K-train questions and keeping up to 2 answer-correct, single-ANSWER-marker solutions per question will yield several thousand clean self-generated RFT examples (solvable-any fraction > 0.6), usable to retrain in exp-05."
+  mechanism: "The greedy-66% model, sampled at temperature, produces correct solutions for most train problems; filtering by final-answer correctness removes wrong chains, leaving correct self-consistent CoT."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "diagnostic: solvable-any fraction ~0.80; ~10-14k kept rows"
+  falsified_if: "solvable-any fraction < 0.5 or kept rows < 4000 (sampling/stop path broken)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data: []
+  method:
+    family: other
+    framework: "vllm 0.11 offline sampling (rejection sampling / STaR)"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: 2048, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 0}
+    target_format: "generated reasoning ending 'ANSWER: N'; <end_of_turn> appended for training targets"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-03, --n, "4", --temperature, "1.0", --top-p, "0.95", --max-tokens, "512", --keep, "2", --out, /home/ben/task/data/rft.jsonl, --out-check, /home/ben/task/data/rft_check.jsonl]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/rft_sample.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/data
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.5
+  rendered_training: null
+evaluation:
+  protocol:
+    command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-03, --n, "4"]
+    dev_set: "GSM8K train (7473) sampling-coverage diagnostic"
+    n: 7473
+    seed: 0
+  comparator:
+    ref: exp-03
+    value: 0.660
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "solvable-any fraction over GSM8K-train and count of kept clean RFT rows"
+    n: 7473
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: null
+  checkpoints_kept:
+    - {path: /home/ben/task/data/rft.jsonl, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "vllm offline sampling; 29892 generations in ~7min; finish_reasons stop=29870 length=22"}
+  measurements:
+    - {metric: accuracy, value: 0.934, n: 7473, path: /home/ben/task/logs/exp-04b.log, delta_vs_comparator: 0.274}
+  diagnostic_result: {value: 13382.0, path: /home/ben/task/data/rft.jsonl, notes: "solvable-any 0.934; 13382 kept clean single-ANSWER correct rows; contamination-clean vs test"}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "exp-03 sampled at temp 1.0 solves 93.4% of GSM8K-train with n=4; 13382 clean correct self-generated solutions kept (contam-clean). Stop-token path verified (29870/29892 finish=stop). Ready to feed exp-05."
+  decision: iterate
+  next_step: "exp-05: SFT from base on mix (67k) + RFT (13.4k), 2 epochs; compare to exp-03 0.660."

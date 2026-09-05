@@ -1,0 +1,104 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-04T23:34:22Z'
+situation:
+  elapsed_h: 1.4
+  remaining_h: 8.6
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/merged
+    score: {metric: accuracy, value: 0.38, protocol_n: 150}
+  trigger: "exp-02 analysis: 19 of 93 dev-150 failures are 'answer-then-continue' (model gives the correct ANSWER then invents new problems; last-number scorer reads the wrong tail); 33 samples emit >1 ANSWER block. Ceiling if stopping fixed ~0.507."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy 0.38 n=150"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.diagnostic_result notes"}
+  alternatives_rejected:
+    - {option: "Post-hoc truncate model output at first ANSWER line", reason: "cannot modify evaluate.py; must fix the model's stopping behavior itself"}
+    - {option: "Just train more epochs 0-shot", reason: "the continuation is driven by the 10-shot eval context mismatch, not undertraining"}
+  pitfalls_hit:
+    - {what: "few-shot rows up to 2504 tokens; 3.4% exceed 2048 and right-truncation would drop the completion (seq_len_truncation pitfall)", cost_h: 0.1, fix: "set max_seq_len 2688 (>max 2504) so 0% truncate; verified on CPU"}
+  smoke_runs:
+    - {command: [python, -c, "cpu prefix+EOT+length check over all 7473 few-shot rows"], outcome: "0 prefix violations, all end at EOT after trim, max 2504 tokens, 0% > 2688"}
+problem:
+  statement: "Trained 0-shot, exp-02 does not reliably stop after its first answer when placed in the eval's 10-shot context: it continues generating new problems, so the last-number scorer reads a wrong number even when the first answer was correct."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "n=150", observation: "19/93 wrong were correct-then-continued; 33 multi-ANSWER outputs"}
+  affected_share: 0.20
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "SFT on few-shot-structured prompts (system message of k solved GSM8K-train examples in the grader's format + the target question) will teach answer-once-and-stop and raise n=150 accuracy above exp-02's 0.38."
+  mechanism: "Matching the eval's multi-shot input distribution and always ending the single target with <end_of_turn> teaches the model to emit exactly one solution then stop, eliminating the answer-then-continue losses; correct-first answers now become gradable."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+8 to +15 pts (target region 0.46-0.55)"
+  falsified_if: "n=150 accuracy <= 0.38 (no improvement over exp-02), or multi-ANSWER outputs remain frequent (>15%)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train_fewshot.jsonl
+      source: local
+      n_examples: 7473
+      built_by: /home/ben/task/prep_data_fewshot.py
+      build_command: [python, prep_data_fewshot.py, data/gsm8k_train_fewshot.jsonl, "0"]
+      selection: "GSM8K train; each row = k in {2,3,4,5,6,8,10,10} random other-train examples as fewshots (grader format, clean reasoning) + target question; completion = clean reasoning + 'ANSWER: N'"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + peft 0.18.1 LoRA"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=language_model q,k,v,o,gate,up,down"
+    hyperparams: {lr: 2.0e-4, epochs: 3, batch_size: 8, grad_accum: 4, max_seq_len: 2688, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "reasoning then 'ANSWER: <int>' then <end_of_turn>; completion-only loss (prompt incl. fewshots masked)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/gsm8k_train_fewshot.jsonl, --out, /home/ben/task/ckpts/exp-03/merged, --epochs, "3", --lr, "2e-4", --bs, "8", --grad-accum, "4", --max-seq-len, "2688", --lora-r, "64", --lora-alpha, "128", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 2.0
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03/merged, --limit, "150", --json-output-file, /home/ben/task/eval/exp-03_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.38
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "share of dev-150 outputs with >1 ANSWER block (multi-answer continuation)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: failed
+  wall_h: 0.67
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: 249, notes: "OOM at epoch ~1.03 (249/702 steps). Loss was descending healthily (0.69->0.46). Merged model never written."}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: "torch.OutOfMemoryError: CUDA out of memory in Gemma3 cross_entropy: full 262144-vocab logits for batch 8 x seq up to 2688 upcast to fp32 (~13.7 GiB alloc) exceeded free memory. batch/seq too large for the multimodal LM head loss."
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Few-shot SFT config OOMed at epoch 1 due to the huge fp32 logits tensor over Gemma3's 262k vocab at batch 8 x seq 2688. Training dynamics looked healthy before the crash. Retry with a memory-safe config."
+  decision: iterate
+  next_step: "exp-04: same few-shot intervention with max_seq_len 1280 + left-truncation (preserve BOS+completion), batch 8 grad_accum 4, expandable_segments alloc, to avoid the logits OOM."

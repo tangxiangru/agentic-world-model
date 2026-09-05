@@ -221,3 +221,11 @@
 - 2026-09-04T15:17:54+00:00 harvest exp-protocol-gsm8k-gemma4b-high-r02-guard-drift-b-x2-v1/g03r02 job=91073 CANCELLED incomplete (1 issue(s)) clean
 - 2026-09-04T22:35:07+00:00 release exp-protocol-opus48-gsm8k-none-x4-v1: 4 held job(s) 92125,92126,92127,92128
 - 2026-09-04T22:35:07+00:00 release exp-protocol-opus48-gsm8k-tools-x4-v1: 4 held job(s) 92133,92134,92135,92136
+- 2026-09-05T12:12:31+00:00 harvest exp-protocol-opus48-gsm8k-none-x4-v1/n03g01 job=92125 COMPLETED acc=0.5951 complete clean
+- 2026-09-05T12:12:32+00:00 harvest exp-protocol-opus48-gsm8k-none-x4-v1/n03g02 job=92126 COMPLETED acc=0.5944 complete clean
+- 2026-09-05T12:12:33+00:00 harvest exp-protocol-opus48-gsm8k-none-x4-v1/n03g03 job=92127 FAILED incomplete (4 issue(s)) general_anomaly
+- 2026-09-05T12:12:34+00:00 harvest exp-protocol-opus48-gsm8k-none-x4-v1/n03g04 job=92128 COMPLETED acc=0.7043 complete clean
+- 2026-09-05T12:12:37+00:00 harvest exp-protocol-opus48-gsm8k-tools-x4-v1/e03g01 job=92133 COMPLETED acc=0.6376 complete clean
+- 2026-09-05T12:12:39+00:00 harvest exp-protocol-opus48-gsm8k-tools-x4-v1/e03g02 job=92134 COMPLETED acc=0.5428 complete general_anomaly
+- 2026-09-05T12:12:43+00:00 harvest exp-protocol-opus48-gsm8k-tools-x4-v1/e03g03 job=92135 COMPLETED acc=0.4276 complete clean
+- 2026-09-05T12:12:46+00:00 harvest exp-protocol-opus48-gsm8k-tools-x4-v1/e03g04 job=92136 COMPLETED acc=0.5830 complete clean
