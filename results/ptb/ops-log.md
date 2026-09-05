@@ -240,3 +240,6 @@
 - 2026-09-05T17:37:43+00:00 submit exp-protocol-humaneval-environment-ondem0-v1 (held): 1 job(s) 93104 -> results/ptb/exp-protocol-humaneval-environment-ondem0-v1/environment-acceptance-2026-09-05T173743.092547+0000.json
 - 2026-09-05T17:42:23+00:00 release exp-protocol-humaneval-environment-ondem0-v1: 1 held job(s) 93104
 - 2026-09-05T17:47:16+00:00 harvest exp-protocol-humaneval-environment-ondem0-v1/h04env01 job=93104: environment failed (not scientific)
+- 2026-09-05T17:54:07+00:00 submit exp-protocol-humaneval-environment-ondem0-v2 (held): 1 job(s) 93118 -> results/ptb/exp-protocol-humaneval-environment-ondem0-v2/environment-acceptance-2026-09-05T175406.777488+0000.json
+- 2026-09-05T17:56:43+00:00 release exp-protocol-humaneval-environment-ondem0-v2: 1 held job(s) 93118
+- 2026-09-05T18:10:53+00:00 harvest exp-protocol-humaneval-environment-ondem0-v2/h04env01 job=93118: environment failed (not scientific)
